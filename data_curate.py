@@ -12,7 +12,7 @@ Downloads daily stock data from nasdaq
 def download_daily_stock_data():
 
 
-    symbols = ['GOOG', 'TSLA', 'NVDA', "GTLB", "AMPL", "U", "ADSK", "RBLX", "CRWD", "ADBE", "NET", 'COIN']
+    symbols = ['COUR', 'GOOG', 'TSLA', 'NVDA', "GTLB", "AMPL", "U", "ADSK", "RBLX", "CRWD", "ADBE", "NET", 'COIN']
     for symbol in symbols:
 
         start = datetime.datetime(2017, 1, 1)

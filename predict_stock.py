@@ -99,11 +99,11 @@ def make_predictions():
             data = []
 
             # create all possible sequences of length seq_len
-            for index in range(len(data_raw) - lookback):
-                data.append(data_raw[index: index + lookback])
+            for index in range(lookback, len(data_raw) + 1):
+                data.append(data_raw[index - lookback: index])
 
             data = np.array(data)
-            test_set_size = int(np.round(0.2 * data.shape[0]))
+            test_set_size = int(np.round(0.1 * data.shape[0]))
             train_set_size = data.shape[0] - (test_set_size)
 
             x_train = data[:train_set_size, :-1, :]
@@ -114,7 +114,7 @@ def make_predictions():
 
             return [x_train, y_train, x_test, y_test]
 
-        lookback = 20  # choose sequence length
+        lookback = 20  # choose sequence length , GTLB only has been open for 27days cant go over that :O
         x_train, y_train, x_test, y_test = split_data(price, lookback)
 
         # y_train = get_labels(x_train)
@@ -133,7 +133,6 @@ def make_predictions():
         hidden_dim = 32
         num_layers = 2
         output_dim = 1
-        num_epochs = 100
 
         model = GRU(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers)
         model.to(device)
@@ -143,9 +142,12 @@ def make_predictions():
 
         start_time = datetime.now()
 
-        num_epochs = 100
+        num_epochs = 70
         hist = np.zeros(num_epochs)
         y_train_pred = None
+        min_val_loss = np.inf
+        best_y_test_pred_inverted = []
+
         # Number of steps to unroll
         for t in range(num_epochs):
             y_train_pred = model(x_train)
@@ -157,6 +159,20 @@ def make_predictions():
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
+            ## test
+            y_test_pred = model(x_test)
+            # invert predictions
+            y_test_pred_inverted = scaler.inverse_transform(y_test_pred.detach().cpu().numpy())
+            y_train_pred_inverted = scaler.inverse_transform(y_train_pred.detach().cpu().numpy())
+
+            # print(y_test_pred_inverted)
+            loss = criterion(y_test_pred, y_test)
+            print(f"val loss: {loss}")
+            print(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
+            if loss < min_val_loss:
+                min_val_loss = loss
+                # torch.save(model.state_dict(), "model.pt")
+                best_y_test_pred_inverted = y_test_pred_inverted
 
         training_time = datetime.now() - start_time
         print("Training time: {}".format(training_time))
@@ -164,20 +180,11 @@ def make_predictions():
         print(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
 
 
-        ## test
-        y_test_pred = model(x_test)
-        # invert predictions
-        y_test_pred_inverted = scaler.inverse_transform(y_test_pred.detach().cpu().numpy())
-        y_train_pred_inverted = scaler.inverse_transform(y_train_pred.detach().cpu().numpy())
 
-        # print(y_test_pred_inverted)
-        loss = criterion(y_test_pred, y_test)
-        print(f"val loss: {loss}")
-        print(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
         last_preds = {
             "instrument": csv_file.stem,
             "last_close_price": last_close_price,
-            "predicted_close_price": y_test_pred_inverted[-1].item(),
+            "predicted_close_price": best_y_test_pred_inverted[-1].item(),
             "val_loss": loss.item(),
         }
         with open(save_file_name, "a") as f:
@@ -192,7 +199,7 @@ def make_predictions():
         # shift test predictions for plotting
         testPredictPlot = np.empty_like(price)
         testPredictPlot[:, :] = np.nan
-        testPredictPlot[len(y_train_pred_inverted) + lookback - 1:len(price) - 1, :] = y_test_pred_inverted
+        testPredictPlot[len(y_train_pred_inverted) + lookback - 1:len(price), :] = best_y_test_pred_inverted
 
         original = scaler.inverse_transform(price['Close'].values.reshape(-1, 1))
 
