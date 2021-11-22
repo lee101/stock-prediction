@@ -11,8 +11,8 @@ class GRU(nn.Module):
         self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).requires_grad_()
-        out, (hn) = self.gru(x, (h0.detach()))
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).requires_grad_().to('cuda')
+        out, (hn) = self.gru(x, (h0))
         out = self.fc(out[:, -1, :])
         return out
 
