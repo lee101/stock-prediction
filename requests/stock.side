@@ -1,0 +1,232 @@
+{
+  "id": "51ebd8e9-7a3d-4080-8cfc-27881036c8dd",
+  "version": "2.0",
+  "name": "stock",
+  "url": "https://www.cmcmarketsstockbroking.com.au/Manage/Open",
+  "tests": [{
+    "id": "66ed5d69-c51d-42f1-94a3-d86c5098ab46",
+    "name": "refresh order to latest",
+    "commands": [{
+      "id": "4457a594-14df-4f7f-a095-032a76e899c9",
+      "comment": "",
+      "command": "open",
+      "target": "/",
+      "targets": [],
+      "value": ""
+    }, {
+      "id": "8c21ad51-aa52-4a72-b9de-0d44a697b305",
+      "comment": "",
+      "command": "setWindowSize",
+      "target": "2048x1152",
+      "targets": [],
+      "value": ""
+    }, {
+      "id": "d3fe5b02-8ddc-40b6-8eef-941647a750b7",
+      "comment": "",
+      "command": "type",
+      "target": "id=logonPassword",
+      "targets": [
+        ["id=logonPassword", "id"],
+        ["name=logonPassword", "name"],
+        ["css=#logonPassword", "css:finder"],
+        ["xpath=//input[@id='logonPassword']", "xpath:attributes"],
+        ["xpath=//div[@id='login-screen-app']/div/div/div[3]/div/div/div[3]/div[2]/input", "xpath:idRelative"],
+        ["xpath=//div[2]/input", "xpath:position"]
+      ],
+      "value": "Nc4lp2010c;"
+    }, {
+      "id": "b67467ad-e66c-4e16-9a90-9f3da3e09d2e",
+      "comment": "",
+      "command": "click",
+      "target": "id=loginButton",
+      "targets": [
+        ["id=loginButton", "id"],
+        ["css=#loginButton", "css:finder"],
+        ["xpath=//button[@id='loginButton']", "xpath:attributes"],
+        ["xpath=//div[@id='login-screen-app']/div/div/div[3]/div/div/div[3]/div[4]/button", "xpath:idRelative"],
+        ["xpath=//div[4]/button", "xpath:position"],
+        ["xpath=//button[contains(.,'Login')]", "xpath:innerText"]
+      ],
+      "value": ""
+    }, {
+      "id": "362802ea-de92-4090-9fd7-92cd4f653daf",
+      "comment": "",
+      "command": "click",
+      "target": "linkText=Open Orders",
+      "targets": [
+        ["linkText=Open Orders", "linkText"],
+        ["css=.on li:nth-child(3) > a", "css:finder"],
+        ["xpath=//a[contains(text(),'Open Orders')]", "xpath:link"],
+        ["xpath=//div[@id='navigation']/div[2]/div/ul/li[3]/a", "xpath:idRelative"],
+        ["xpath=//a[contains(@href, '/Manage/Open')]", "xpath:href"],
+        ["xpath=//div[2]/div/ul/li[3]/a", "xpath:position"],
+        ["xpath=//a[contains(.,'Open Orders')]", "xpath:innerText"]
+      ],
+      "value": ""
+    }, {
+      "id": "ee4de045-3912-44ef-98a4-69fdcf992b74",
+      "comment": "",
+      "command": "click",
+      "target": "linkText=Amend",
+      "targets": [
+        ["linkText=Amend", "linkText"],
+        ["css=.ng-scope:nth-child(1) > .ng-binding:nth-child(2)", "css:finder"],
+        ["xpath=//a[contains(text(),'Amend')]", "xpath:link"],
+        ["xpath=//div[@id='trade-page']/div[2]/div/div[2]/table/tbody/tr[2]/td[8]/span/a", "xpath:idRelative"],
+        ["xpath=(//a[contains(@href, 'javascript:')])[9]", "xpath:href"],
+        ["xpath=//span/a", "xpath:position"],
+        ["xpath=//a[contains(.,'Amend')]", "xpath:innerText"]
+      ],
+      "value": ""
+    }, {
+      "id": "4e8b3eef-93a8-46a5-a549-9165733db593",
+      "comment": "",
+      "command": "click",
+      "target": "css=.price > .b",
+      "targets": [
+        ["linkText=186.450 USD", "linkText"],
+        ["css=.price > .b", "css:finder"],
+        ["xpath=//a[contains(text(),'186.450 USD')]", "xpath:link"],
+        ["xpath=//div[@id='otHandle']/div[6]/div[9]/div/div[2]/div[2]/a", "xpath:idRelative"],
+        ["xpath=(//a[contains(@href, 'javascript:')])[18]", "xpath:href"],
+        ["xpath=//div[9]/div/div[2]/div[2]/a", "xpath:position"],
+        ["xpath=//a[contains(.,'186.450 USD')]", "xpath:innerText"]
+      ],
+      "value": ""
+    }, {
+      "id": "c78c418a-acca-46bf-963f-c0e3941ac2a5",
+      "comment": "",
+      "command": "click",
+      "target": "name=otTradingPin",
+      "targets": [
+        ["name=otTradingPin", "name"],
+        ["css=.ng-invalid:nth-child(2)", "css:finder"],
+        ["xpath=//input[@name='otTradingPin']", "xpath:attributes"],
+        ["xpath=//div[@id='otHandle']/div[6]/div[20]/div/div/input[2]", "xpath:idRelative"],
+        ["xpath=//div[20]/div/div/input[2]", "xpath:position"]
+      ],
+      "value": ""
+    }, {
+      "id": "9be86cdf-dc37-4f4c-ab99-c70f51b6a765",
+      "comment": "",
+      "command": "type",
+      "target": "name=otTradingPin",
+      "targets": [
+        ["name=otTradingPin", "name"],
+        ["css=.ng-dirty:nth-child(2)", "css:finder"],
+        ["xpath=//input[@name='otTradingPin']", "xpath:attributes"],
+        ["xpath=//div[@id='otHandle']/div[6]/div[20]/div/div/input[2]", "xpath:idRelative"],
+        ["xpath=//div[20]/div/div/input[2]", "xpath:position"]
+      ],
+      "value": "1379"
+    }, {
+      "id": "6fa0d776-0aad-47c2-ab66-d4c9848a2f3f",
+      "comment": "",
+      "command": "click",
+      "target": "css=.btn-large:nth-child(1)",
+      "targets": [
+        ["css=.btn-large:nth-child(1)", "css:finder"],
+        ["xpath=//input[@value='Amend Order']", "xpath:attributes"],
+        ["xpath=//div[@id='otHandle']/div[6]/div[24]/div/div/input", "xpath:idRelative"],
+        ["xpath=//div[24]/div/div/input", "xpath:position"]
+      ],
+      "value": ""
+    }]
+  }, {
+    "id": "e1b57096-e196-4cf3-a7b7-6d369b49eadf",
+    "name": "refresh order no login",
+    "commands": [{
+      "id": "3721c11b-dfdc-421b-85f8-79784c8d1cc4",
+      "comment": "",
+      "command": "open",
+      "target": "https://www.cmcmarketsstockbroking.com.au/Manage/Open",
+      "targets": [],
+      "value": ""
+    }, {
+      "id": "8832a151-cfe4-4d35-b09c-a047c0954e5e",
+      "comment": "",
+      "command": "setWindowSize",
+      "target": "2048x1152",
+      "targets": [],
+      "value": ""
+    }, {
+      "id": "f146d0c2-2817-4e82-b1c9-4df68b1e8dd8",
+      "comment": "",
+      "command": "click",
+      "target": "linkText=Amend",
+      "targets": [
+        ["linkText=Amend", "linkText"],
+        ["css=.ng-scope:nth-child(1) > .ng-binding:nth-child(2)", "css:finder"],
+        ["xpath=//a[contains(text(),'Amend')]", "xpath:link"],
+        ["xpath=//div[@id='trade-page']/div[2]/div/div[2]/table/tbody/tr[2]/td[8]/span/a", "xpath:idRelative"],
+        ["xpath=(//a[contains(@href, 'javascript:')])[9]", "xpath:href"],
+        ["xpath=//span/a", "xpath:position"],
+        ["xpath=//a[contains(.,'Amend')]", "xpath:innerText"]
+      ],
+      "value": ""
+    }, {
+      "id": "2658352a-fc41-4555-a0f1-de865a666447",
+      "comment": "",
+      "command": "click",
+      "target": "css=.price > .b",
+      "targets": [
+        ["linkText=186.450 USD", "linkText"],
+        ["css=.price > .b", "css:finder"],
+        ["xpath=//a[contains(text(),'186.450 USD')]", "xpath:link"],
+        ["xpath=//div[@id='otHandle']/div[6]/div[9]/div/div[2]/div[2]/a", "xpath:idRelative"],
+        ["xpath=(//a[contains(@href, 'javascript:')])[18]", "xpath:href"],
+        ["xpath=//div[9]/div/div[2]/div[2]/a", "xpath:position"],
+        ["xpath=//a[contains(.,'186.450 USD')]", "xpath:innerText"]
+      ],
+      "value": ""
+    }, {
+      "id": "32c36f77-d17d-453e-85ee-3a5bcea06cba",
+      "comment": "",
+      "command": "click",
+      "target": "name=otTradingPin",
+      "targets": [
+        ["name=otTradingPin", "name"],
+        ["css=.ng-invalid:nth-child(2)", "css:finder"],
+        ["xpath=//input[@name='otTradingPin']", "xpath:attributes"],
+        ["xpath=//div[@id='otHandle']/div[6]/div[20]/div/div/input[2]", "xpath:idRelative"],
+        ["xpath=//div[20]/div/div/input[2]", "xpath:position"]
+      ],
+      "value": ""
+    }, {
+      "id": "9c38b1b2-1ee3-4383-ad32-7b3967f20b50",
+      "comment": "",
+      "command": "type",
+      "target": "name=otTradingPin",
+      "targets": [
+        ["name=otTradingPin", "name"],
+        ["css=.ng-dirty:nth-child(2)", "css:finder"],
+        ["xpath=//input[@name='otTradingPin']", "xpath:attributes"],
+        ["xpath=//div[@id='otHandle']/div[6]/div[20]/div/div/input[2]", "xpath:idRelative"],
+        ["xpath=//div[20]/div/div/input[2]", "xpath:position"]
+      ],
+      "value": "1379"
+    }, {
+      "id": "d1295aa5-223f-4519-8594-625ee00acef2",
+      "comment": "",
+      "command": "click",
+      "target": "css=.btn-large:nth-child(1)",
+      "targets": [
+        ["css=.btn-large:nth-child(1)", "css:finder"],
+        ["xpath=//input[@value='Amend Order']", "xpath:attributes"],
+        ["xpath=//div[@id='otHandle']/div[6]/div[24]/div/div/input", "xpath:idRelative"],
+        ["xpath=//div[24]/div/div/input", "xpath:position"]
+      ],
+      "value": ""
+    }]
+  }],
+  "suites": [{
+    "id": "200582d1-a159-449f-941f-6b18a62490e7",
+    "name": "Default Suite",
+    "persistSession": false,
+    "parallel": false,
+    "timeout": 300,
+    "tests": ["66ed5d69-c51d-42f1-94a3-d86c5098ab46"]
+  }],
+  "urls": ["https://www.cmcmarketsstockbroking.com.au/", "https://www.cmcmarketsstockbroking.com.au/Manage/Open"],
+  "plugins": []
+}

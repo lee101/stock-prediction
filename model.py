@@ -12,7 +12,7 @@ class GRU(nn.Module):
 
     def forward(self, x):
         h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).requires_grad_().to('cuda')
-        out, (hn) = self.gru(x, (h0))
+        out, (hn) = self.gru(x, h0)
         out = self.fc(out[:, -1, :])
         return out
 

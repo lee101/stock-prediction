@@ -24,7 +24,8 @@ def load_stock_data_from_csv(csv_file_path: Path):
     """
     return pd.read_csv(csv_file_path)
 
-def train_test_split(stock_data: pd.DataFrame, test_size = 50):
+
+def train_test_split(stock_data: pd.DataFrame, test_size=50):
     """
     Splits stock data into train and test sets.
     test_size : int, number of examples be used for test set.
@@ -47,6 +48,7 @@ def get_labels(x_train):
     x_train = x_train.shift(-1)
     return x_train["Close"]
 
+
 scaler = MinMaxScaler(feature_range=(-1, 1))
 
 
@@ -68,6 +70,7 @@ def pre_process_data(x_train):
 
     return x_train
 
+
 def make_predictions():
     """
     Make predictions for all csv files in directory.
@@ -80,189 +83,227 @@ def make_predictions():
         'last_close_price',
         'predicted_close_price',
         'val_loss',
+        'percent_movement',
+        "likely_percent_uncertainty",
     ]
     with open(save_file_name, "a") as f:
         writer = csv.DictWriter(f, CSV_KEYS)
         writer.writeheader()
 
-    last_preds = {}
-    for csv_file in (base_dir / "data").glob('*.csv'):
-        stock_data = load_stock_data_from_csv(csv_file)
-        # x_train, x_test = train_test_split(stock_data)
-        last_close_price = stock_data['Close'].iloc[-1]
-        data = pre_process_data(stock_data)
-        price = data[["Close"]]
-        # x_test = pre_process_data(x_test)
+    # experiment with shared weights roughly a failure
+    # input_dim = 1
+    # hidden_dim = 32
+    # num_layers = 2
+    # output_dim = 1
+    #
+    # model = GRU(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers)
+    # model.to(device)
+    # model.load_state_dict(torch.load(base_dir / "data/model.pth"))
 
-        def split_data(stock, lookback):
-            data_raw = stock.to_numpy()  # convert to numpy array
-            data = []
+    # criterion = torch.nn.L1Loss(reduction='mean')
+    # optimiser = torch.optim.Adam(model.parameters(), lr=0.01)
+    total_val_loss = 0
+    csv_files = list((base_dir / "data").glob('*.csv'))
+    for key_to_predict in ['Close', 'High', 'Low']:
+        for days_to_drop in [1,2,3,4,5,6,7,8,9,10,11]:
+            for csv_file in csv_files:
+                stock_data = load_stock_data_from_csv(csv_file)
+                stock_data = stock_data.dropna()
+                # drop last days_to_drop rows
+                stock_data = stock_data.iloc[:-days_to_drop]
 
-            # create all possible sequences of length seq_len
-            for index in range(lookback, len(data_raw) + 1):
-                data.append(data_raw[index - lookback: index])
+                # x_train, x_test = train_test_split(stock_data)
+                last_close_price = stock_data['Close'].iloc[-1]
+                data = pre_process_data(stock_data)
+                price = data[["Close"]]
 
-            data = np.array(data)
-            test_set_size = int(np.round(0.1 * data.shape[0]))
-            train_set_size = data.shape[0] - (test_set_size)
+                # x_test = pre_process_data(x_test)
 
-            x_train = data[:train_set_size, :-1, :]
-            y_train = data[:train_set_size, -1, :]
+                def split_data(stock, lookback):
+                    data_raw = stock.to_numpy()  # convert to numpy array
+                    data = []
 
-            x_test = data[train_set_size:, :-1]
-            y_test = data[train_set_size:, -1, :]
+                    # create all possible sequences of length seq_len
+                    for index in range(lookback, len(data_raw) + 1):
+                        data.append(data_raw[index - lookback: index])
 
-            return [x_train, y_train, x_test, y_test]
+                    data = np.array(data)
+                    test_set_size = int(np.round(0.1 * data.shape[0]))
+                    train_set_size = data.shape[0] - (test_set_size)
 
-        lookback = 20  # choose sequence length , GTLB only has been open for 27days cant go over that :O
-        x_train, y_train, x_test, y_test = split_data(price, lookback)
+                    x_train = data[:train_set_size, :-1, :]
+                    y_train = data[:train_set_size, -1, :]
 
-        # y_train = get_labels(x_train)
-        # x_test = get_labels(x_test)
+                    x_test = data[train_set_size:, :-1]
+                    y_test = data[train_set_size:, -1, :]
 
-        # x_train = x_train['Close']
-        # x_test = x_test['Close']
+                    return [x_train, y_train, x_test, y_test]
 
-        x_train = torch.from_numpy(x_train).type(torch.Tensor).to(device)
-        x_test = torch.from_numpy(x_test).type(torch.Tensor).to(device)
-        y_train = torch.from_numpy(y_train).type(torch.Tensor).to(device)
-        y_test = torch.from_numpy(y_test).type(torch.Tensor).to(device)
+                lookback = 20  # choose sequence length , GTLB only has been open for 27days cant go over that :O
+                if len(price) > 40:
+                    lookback = 30
+                # elif len(price) < 25:
+                #     lookback = 10
+                x_train, y_train, x_test, y_test = split_data(price, lookback)
 
+                # y_train = get_labels(x_train)
+                # x_test = get_labels(x_test)
 
-        input_dim = 1
-        hidden_dim = 32
-        num_layers = 2
-        output_dim = 1
+                # x_train = x_train['Close']
+                # x_test = x_test['Close']
 
-        model = GRU(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers)
-        model.to(device)
+                x_train = torch.from_numpy(x_train).type(torch.Tensor).to(device)
+                x_test = torch.from_numpy(x_test).type(torch.Tensor).to(device)
+                y_train = torch.from_numpy(y_train).type(torch.Tensor).to(device)
+                y_test = torch.from_numpy(y_test).type(torch.Tensor).to(device)
 
-        criterion = torch.nn.MSELoss(reduction='mean')
-        optimiser = torch.optim.Adam(model.parameters(), lr=0.01)
+                input_dim = 1
+                hidden_dim = 32
+                num_layers = 2
+                output_dim = 1
 
-        start_time = datetime.now()
+                model = GRU(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers)
+                model.to(device)
+                model.train()
+                criterion = torch.nn.L1Loss(reduction='mean')
+                optimiser = torch.optim.Adam(model.parameters(), lr=0.01)
 
-        num_epochs = 70
-        hist = np.zeros(num_epochs)
-        y_train_pred = None
-        min_val_loss = np.inf
-        best_y_test_pred_inverted = []
+                start_time = datetime.now()
 
-        # Number of steps to unroll
-        for t in range(num_epochs):
-            y_train_pred = model(x_train)
+                num_epochs = 100
+                hist = np.zeros(num_epochs)
+                y_train_pred = None
+                min_val_loss = np.inf
+                best_y_test_pred_inverted = []
 
-            loss = criterion(y_train_pred, y_train)
-            print("Epoch ", t, "MSE: ", loss.item())
-            hist[t] = loss.item()
+                # Number of steps to unroll
+                for t in range(num_epochs):
+                    model.train()
+                    y_train_pred = model(x_train)
 
-            optimiser.zero_grad()
-            loss.backward()
-            optimiser.step()
-            ## test
-            y_test_pred = model(x_test)
-            # invert predictions
-            y_test_pred_inverted = scaler.inverse_transform(y_test_pred.detach().cpu().numpy())
-            y_train_pred_inverted = scaler.inverse_transform(y_train_pred.detach().cpu().numpy())
+                    loss = criterion(y_train_pred, y_train)
+                    print("Epoch ", t, "MSE: ", loss.item())
+                    hist[t] = loss.item()
 
-            # print(y_test_pred_inverted)
-            loss = criterion(y_test_pred, y_test)
-            print(f"val loss: {loss}")
-            print(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
-            if loss < min_val_loss:
-                min_val_loss = loss
-                # torch.save(model.state_dict(), "model.pt")
-                best_y_test_pred_inverted = y_test_pred_inverted
+                    optimiser.zero_grad()
+                    loss.backward()
+                    optimiser.step()
+                    ## test
+                    model.eval()
 
-        training_time = datetime.now() - start_time
-        print("Training time: {}".format(training_time))
+                    y_test_pred = model(x_test)
+                    # invert predictions
+                    y_test_pred_inverted = scaler.inverse_transform(y_test_pred.detach().cpu().numpy())
+                    y_train_pred_inverted = scaler.inverse_transform(y_train_pred.detach().cpu().numpy())
 
-        print(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
+                    # print(y_test_pred_inverted)
+                    loss = criterion(y_test_pred, y_test)
+                    print(f"val loss: {loss}")
+                    print(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
+                    if loss < min_val_loss:
+                        min_val_loss = loss
+                        torch.save(model.state_dict(), "data/model.pth")
+                        best_y_test_pred_inverted = y_test_pred_inverted
+                        # percent estimate
+                        y_test_end_scaled_loss = scaler.inverse_transform(np.add(y_test_pred.detach().cpu().numpy(), loss.detach().cpu().numpy()))
+                        likely_percent_uncertainty = ((y_test_end_scaled_loss[-1] - y_test_pred_inverted[-1]) / \
+                                                      y_test_pred_inverted[-1]).item()
 
+                training_time = datetime.now() - start_time
+                print("Training time: {}".format(training_time))
 
+                print(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
 
-        last_preds = {
-            "instrument": csv_file.stem,
-            "last_close_price": last_close_price,
-            "predicted_close_price": best_y_test_pred_inverted[-1].item(),
-            "val_loss": loss.item(),
-        }
-        with open(save_file_name, "a") as f:
-            writer = csv.DictWriter(f, CSV_KEYS)
-            writer.writerow(last_preds)
+                val_loss = loss.item()
+                percent_movement = (best_y_test_pred_inverted[-1].item() - last_close_price) / last_close_price
+                last_preds = {
+                    "instrument": csv_file.stem,
+                    "last_close_price": last_close_price,
+                    "predicted_close_price": best_y_test_pred_inverted[-1].item(),
+                    "val_loss": val_loss,
+                    "percent_movement": percent_movement,
+                    "likely_percent_uncertainty": likely_percent_uncertainty,
+                    "minus_uncertainty": percent_movement - likely_percent_uncertainty,
+                }
+                total_val_loss += val_loss
+                with open(save_file_name, "a") as f:
+                    writer = csv.DictWriter(f, CSV_KEYS)
+                    writer.writerow(last_preds)
 
-        # shift train predictions for plotting
-        trainPredictPlot = np.empty_like(price)
-        trainPredictPlot[:, :] = np.nan
-        trainPredictPlot[lookback:len(y_train_pred_inverted) + lookback, :] = y_train_pred_inverted
+                # shift train predictions for plotting
+                trainPredictPlot = np.empty_like(price)
+                trainPredictPlot[:, :] = np.nan
+                trainPredictPlot[lookback:len(y_train_pred_inverted) + lookback, :] = y_train_pred_inverted
 
-        # shift test predictions for plotting
-        testPredictPlot = np.empty_like(price)
-        testPredictPlot[:, :] = np.nan
-        testPredictPlot[len(y_train_pred_inverted) + lookback - 1:len(price), :] = best_y_test_pred_inverted
+                # shift test predictions for plotting
+                testPredictPlot = np.empty_like(price)
+                testPredictPlot[:, :] = np.nan
+                testPredictPlot[len(y_train_pred_inverted) + lookback - 1:len(price), :] = best_y_test_pred_inverted
 
-        original = scaler.inverse_transform(price['Close'].values.reshape(-1, 1))
+                original = scaler.inverse_transform(price['Close'].values.reshape(-1, 1))
 
-        predictions = np.append(trainPredictPlot, testPredictPlot, axis=1)
-        predictions = np.append(predictions, original, axis=1)
-        result = pd.DataFrame(predictions)
-        import plotly.express as px
-        import plotly.graph_objects as go
+                predictions = np.append(trainPredictPlot, testPredictPlot, axis=1)
+                predictions = np.append(predictions, original, axis=1)
+                result = pd.DataFrame(predictions)
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(go.Scatter(x=result.index, y=result[0],
-                                            mode='lines',
-                                            name='Train prediction')))
-        fig.add_trace(go.Scatter(x=result.index, y=result[1],
-                                 mode='lines',
-                                 name='Test prediction'))
-        fig.add_trace(go.Scatter(go.Scatter(x=result.index, y=result[2],
-                                            mode='lines',
-                                            name='Actual Value')))
-        fig.update_layout(
-            xaxis=dict(
-                showline=True,
-                showgrid=True,
-                showticklabels=False,
-                linecolor='white',
-                linewidth=2
-            ),
-            yaxis=dict(
-                title_text='Close (USD)',
-                titlefont=dict(
-                    family='Rockwell',
-                    size=12,
-                    color='white',
-                ),
-                showline=True,
-                showgrid=True,
-                showticklabels=True,
-                linecolor='white',
-                linewidth=2,
-                ticks='outside',
-                tickfont=dict(
-                    family='Rockwell',
-                    size=12,
-                    color='white',
-                ),
-            ),
-            showlegend=True,
-            template='plotly_dark'
+                # # plot
+                # import plotly.graph_objects as go
+                #
+                # fig = go.Figure()
+                # fig.add_trace(go.Scatter(go.Scatter(x=result.index, y=result[0],
+                #                                     mode='lines',
+                #                                     name='Train prediction')))
+                # fig.add_trace(go.Scatter(x=result.index, y=result[1],
+                #                          mode='lines',
+                #                          name='Test prediction'))
+                # fig.add_trace(go.Scatter(go.Scatter(x=result.index, y=result[2],
+                #                                     mode='lines',
+                #                                     name='Actual Value')))
+                # fig.update_layout(
+                #     xaxis=dict(
+                #         showline=True,
+                #         showgrid=True,
+                #         showticklabels=False,
+                #         linecolor='white',
+                #         linewidth=2
+                #     ),
+                #     yaxis=dict(
+                #         title_text='Close (USD)',
+                #         titlefont=dict(
+                #             family='Rockwell',
+                #             size=12,
+                #             color='white',
+                #         ),
+                #         showline=True,
+                #         showgrid=True,
+                #         showticklabels=True,
+                #         linecolor='white',
+                #         linewidth=2,
+                #         ticks='outside',
+                #         tickfont=dict(
+                #             family='Rockwell',
+                #             size=12,
+                #             color='white',
+                #         ),
+                #     ),
+                #     showlegend=True,
+                #     template='plotly_dark'
+                #
+                # )
+                #
+                # annotations = []
+                # annotations.append(dict(xref='paper', yref='paper', x=0.0, y=1.05,
+                #                         xanchor='left', yanchor='bottom',
+                #                         text=csv_file.stem,
+                #                         font=dict(family='Rockwell',
+                #                                   size=26,
+                #                                   color='white'),
+                #                         showarrow=False))
+                # fig.update_layout(annotations=annotations)
+                #
+                # fig.show()
 
-        )
-
-        annotations = []
-        annotations.append(dict(xref='paper', yref='paper', x=0.0, y=1.05,
-                                xanchor='left', yanchor='bottom',
-                                text=csv_file.stem,
-                                font=dict(family='Rockwell',
-                                          size=26,
-                                          color='white'),
-                                showarrow=False))
-        fig.update_layout(annotations=annotations)
-
-        fig.show()
-
+    print(f"val_loss: {total_val_loss / len(csv_files)}")
 
 
 if __name__ == "__main__":
