@@ -35,24 +35,10 @@ def train_test_split(stock_data: pd.DataFrame, test_size=50):
     return x_train, x_test
 
 
-# Make predictions for all csv files in ectory
-
-def get_labels(x_train):
-    """
-    Predict the next day closing price "Close"
-    :param x_train:
-    :return:
-    """
-
-    # shift df by 1
-    x_train = x_train.shift(-1)
-    return x_train["Close"]
-
-
 scaler = MinMaxScaler(feature_range=(-1, 1))
 
 
-def pre_process_data(x_train):
+def pre_process_data(x_train, key_to_predict):
     # drop useless data
     # x_train = x_train.drop(columns=["Volume",
     #                                 "Ex - Dividend",
@@ -66,7 +52,7 @@ def pre_process_data(x_train):
     #                                 "Adj.Volume",
     #                                 ])
 
-    x_train['Close'] = scaler.fit_transform(x_train['Close'].values.reshape(-1, 1))
+    x_train[key_to_predict] = scaler.fit_transform(x_train[key_to_predict].values.reshape(-1, 1))
 
     return x_train
 
@@ -77,14 +63,28 @@ def make_predictions():
     """
     results_dir = base_dir / 'results'
     results_dir.mkdir(exist_ok=True)
-    save_file_name = results_dir / "predictions.csv"
+    time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    save_file_name = results_dir / f"predictions-{time}.csv"
     CSV_KEYS = [
         'instrument',
-        'last_close_price',
-        'predicted_close_price',
-        'val_loss',
-        'percent_movement',
-        "likely_percent_uncertainty",
+        'close_last_price',
+        'close_predicted_price',
+        'close_val_loss',
+        'close_percent_movement',
+        "close_likely_percent_uncertainty",
+        "close_minus_uncertainty",
+        'high_last_price',
+        'high_predicted_price',
+        'high_val_loss',
+        'high_percent_movement',
+        "high_likely_percent_uncertainty",
+        "high_minus_uncertainty",
+        'low_last_price',
+        'low_predicted_price',
+        'low_val_loss',
+        'low_percent_movement',
+        "low_likely_percent_uncertainty",
+        "low_minus_uncertainty",
     ]
     with open(save_file_name, "a") as f:
         writer = csv.DictWriter(f, CSV_KEYS)
@@ -104,18 +104,23 @@ def make_predictions():
     # optimiser = torch.optim.Adam(model.parameters(), lr=0.01)
     total_val_loss = 0
     csv_files = list((base_dir / "data").glob('*.csv'))
-    for key_to_predict in ['Close', 'High', 'Low']:
-        for days_to_drop in [1,2,3,4,5,6,7,8,9,10,11]:
-            for csv_file in csv_files:
+
+    for days_to_drop in [0]:#[1,2,3,4,5,6,7,8,9,10,11]:
+        for csv_file in csv_files:
+            last_preds = {
+                "instrument": csv_file.stem,
+            }
+            for key_to_predict in ['Close', 'High', 'Low']:
                 stock_data = load_stock_data_from_csv(csv_file)
                 stock_data = stock_data.dropna()
                 # drop last days_to_drop rows
-                stock_data = stock_data.iloc[:-days_to_drop]
+                if days_to_drop:
+                    stock_data = stock_data.iloc[:-days_to_drop]
 
                 # x_train, x_test = train_test_split(stock_data)
-                last_close_price = stock_data['Close'].iloc[-1]
-                data = pre_process_data(stock_data)
-                price = data[["Close"]]
+                last_close_price = stock_data[key_to_predict].iloc[-1]
+                data = pre_process_data(stock_data, key_to_predict)
+                price = data[[key_to_predict]]
 
                 # x_test = pre_process_data(x_test)
 
@@ -142,15 +147,8 @@ def make_predictions():
                 lookback = 20  # choose sequence length , GTLB only has been open for 27days cant go over that :O
                 if len(price) > 40:
                     lookback = 30
-                # elif len(price) < 25:
-                #     lookback = 10
                 x_train, y_train, x_test, y_test = split_data(price, lookback)
 
-                # y_train = get_labels(x_train)
-                # x_test = get_labels(x_test)
-
-                # x_train = x_train['Close']
-                # x_test = x_test['Close']
 
                 x_train = torch.from_numpy(x_train).type(torch.Tensor).to(device)
                 x_test = torch.from_numpy(x_test).type(torch.Tensor).to(device)
@@ -166,7 +164,7 @@ def make_predictions():
                 model.to(device)
                 model.train()
                 criterion = torch.nn.L1Loss(reduction='mean')
-                optimiser = torch.optim.Adam(model.parameters(), lr=0.01)
+                optimiser = torch.optim.AdamW(model.parameters(), lr=0.01)
 
                 start_time = datetime.now()
 
@@ -216,35 +214,33 @@ def make_predictions():
 
                 val_loss = loss.item()
                 percent_movement = (best_y_test_pred_inverted[-1].item() - last_close_price) / last_close_price
-                last_preds = {
-                    "instrument": csv_file.stem,
-                    "last_close_price": last_close_price,
-                    "predicted_close_price": best_y_test_pred_inverted[-1].item(),
-                    "val_loss": val_loss,
-                    "percent_movement": percent_movement,
-                    "likely_percent_uncertainty": likely_percent_uncertainty,
-                    "minus_uncertainty": percent_movement - likely_percent_uncertainty,
-                }
+                last_preds[key_to_predict.lower() + "_last_price"] = last_close_price
+                last_preds[key_to_predict.lower() + "_predicted_price"] = best_y_test_pred_inverted[-1].item()
+                last_preds[key_to_predict.lower() + "_val_loss"] = val_loss
+                last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
+                last_preds[key_to_predict.lower() + "_likely_percent_uncertainty"] = likely_percent_uncertainty
+                last_preds[key_to_predict.lower() + "_minus_uncertainty"] = percent_movement - likely_percent_uncertainty
                 total_val_loss += val_loss
-                with open(save_file_name, "a") as f:
-                    writer = csv.DictWriter(f, CSV_KEYS)
-                    writer.writerow(last_preds)
 
-                # shift train predictions for plotting
-                trainPredictPlot = np.empty_like(price)
-                trainPredictPlot[:, :] = np.nan
-                trainPredictPlot[lookback:len(y_train_pred_inverted) + lookback, :] = y_train_pred_inverted
+            with open(save_file_name, "a") as f:
+                writer = csv.DictWriter(f, CSV_KEYS)
+                writer.writerow(last_preds)
 
-                # shift test predictions for plotting
-                testPredictPlot = np.empty_like(price)
-                testPredictPlot[:, :] = np.nan
-                testPredictPlot[len(y_train_pred_inverted) + lookback - 1:len(price), :] = best_y_test_pred_inverted
-
-                original = scaler.inverse_transform(price['Close'].values.reshape(-1, 1))
-
-                predictions = np.append(trainPredictPlot, testPredictPlot, axis=1)
-                predictions = np.append(predictions, original, axis=1)
-                result = pd.DataFrame(predictions)
+                # # shift train predictions for plotting
+                # trainPredictPlot = np.empty_like(price)
+                # trainPredictPlot[:, :] = np.nan
+                # trainPredictPlot[lookback:len(y_train_pred_inverted) + lookback, :] = y_train_pred_inverted
+                #
+                # # shift test predictions for plotting
+                # testPredictPlot = np.empty_like(price)
+                # testPredictPlot[:, :] = np.nan
+                # testPredictPlot[len(y_train_pred_inverted) + lookback - 1:len(price), :] = best_y_test_pred_inverted
+                #
+                # original = scaler.inverse_transform(price['Close'].values.reshape(-1, 1))
+                #
+                # predictions = np.append(trainPredictPlot, testPredictPlot, axis=1)
+                # predictions = np.append(predictions, original, axis=1)
+                # result = pd.DataFrame(predictions)
 
                 # # plot
                 # import plotly.graph_objects as go
