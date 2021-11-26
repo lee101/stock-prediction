@@ -11,32 +11,44 @@ Downloads daily stock data from nasdaq
 
 arqit? ARQQ
 SHOP
-
+TEAM?
+PFE
+MRNA
 """
 
 
-def download_daily_stock_data():
+def download_daily_stock_data(path=None):
     symbols = [
-        'COUR',
+        # 'COUR',
         'GOOG',
         'TSLA',
         'NVDA',
+        'APPLE',
         # "GTLB", not quite enough daily data yet :(
-        "AMPL",
+        # "AMPL",
         "U",
-        "ADSK",
-        "RBLX",
-        "CRWD",
+        # "ADSK",
+        # "RBLX",
+        # "CRWD",
         "ADBE",
         "NET",
-        'COIN',
-        'QUBT',
+        # 'COIN',
+        # 'QUBT',
+        # 'ARQQ',
+        # 'TEAM',
+        # 'PFE',
+        # 'MRNA',
     ]
+    save_path = base_dir / 'data'
+    if path:
+        save_path = base_dir / 'data' / path
+
     for symbol in symbols:
         start = datetime.datetime(2017, 1, 1)
         end = datetime.datetime.now()
         df = web.DataReader(symbol, 'yahoo', start, end)
-        file_save_path = (base_dir / 'data' / '{}-{}.csv'.format(symbol, end))
+
+        file_save_path = (save_path / '{}-{}.csv'.format(symbol, end))
         df.to_csv(file_save_path)
     return df
 

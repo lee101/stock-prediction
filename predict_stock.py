@@ -57,7 +57,7 @@ def pre_process_data(x_train, key_to_predict):
     return x_train
 
 
-def make_predictions():
+def make_predictions(input_data_path = None):
     """
     Make predictions for all csv files in directory.
     """
@@ -103,9 +103,13 @@ def make_predictions():
     # criterion = torch.nn.L1Loss(reduction='mean')
     # optimiser = torch.optim.Adam(model.parameters(), lr=0.01)
     total_val_loss = 0
-    csv_files = list((base_dir / "data").glob('*.csv'))
+    if input_data_path:
+        input_data_files = base_dir / "data" / input_data_path
+    else:
+        input_data_files = base_dir / "data"
+    csv_files = list(input_data_files.glob('*.csv'))
 
-    for days_to_drop in [0]:#[1,2,3,4,5,6,7,8,9,10,11]:
+    for days_to_drop in [1,2,3,4,5,6,7,8,9,10,11]:
         for csv_file in csv_files:
             last_preds = {
                 "instrument": csv_file.stem,
