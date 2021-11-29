@@ -109,7 +109,7 @@ def make_predictions(input_data_path = None):
         input_data_files = base_dir / "data"
     csv_files = list(input_data_files.glob('*.csv'))
 
-    for days_to_drop in [1,2,3,4,5,6,7,8,9,10,11]:
+    for days_to_drop in [0]:#[1,2,3,4,5,6,7,8,9,10,11]:
         for csv_file in csv_files:
             last_preds = {
                 "instrument": csv_file.stem,
