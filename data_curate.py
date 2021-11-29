@@ -23,7 +23,7 @@ def download_daily_stock_data(path=None):
         'GOOG',
         'TSLA',
         'NVDA',
-        'APPLE',
+        'AAPL',
         # "GTLB", not quite enough daily data yet :(
         # "AMPL",
         "U",
@@ -42,7 +42,7 @@ def download_daily_stock_data(path=None):
     save_path = base_dir / 'data'
     if path:
         save_path = base_dir / 'data' / path
-
+    save_path.mkdir(parents=True, exist_ok=True)
     for symbol in symbols:
         start = datetime.datetime(2017, 1, 1)
         end = datetime.datetime.now()
