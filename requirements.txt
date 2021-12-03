@@ -5,4 +5,5 @@ torch
 torch==1.9.0+cu111
 torchvision==0.10.0+cu111
 pandas
-
+scipy
+alpaca_trade_api==1.4.2

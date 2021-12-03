@@ -151,6 +151,13 @@ def make_predictions(input_data_path = None):
                 lookback = 20  # choose sequence length , GTLB only has been open for 27days cant go over that :O
                 if len(price) > 40:
                     lookback = 30
+                # longer didnt help
+                # if len(price) > 100:
+                #     lookback = 90
+                # if len(price) > 200:
+                #     lookback = 180
+                # if len(price) > 300:
+                #     lookback = 280
                 x_train, y_train, x_test, y_test = split_data(price, lookback)
 
 
