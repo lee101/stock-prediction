@@ -170,7 +170,8 @@ def make_predictions(input_data_path = None):
                 hidden_dim = 32
                 num_layers = 2
                 output_dim = 1
-
+                # TODO use pytorch forecasting
+                # from pytorch_forecasting import Baseline, TemporalFusionTransformer
                 model = GRU(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers)
                 model.to(device)
                 model.train()
@@ -194,9 +195,9 @@ def make_predictions(input_data_path = None):
                     print("Epoch ", t, "MSE: ", loss.item())
                     hist[t] = loss.item()
 
-                    optimiser.zero_grad()
                     loss.backward()
                     optimiser.step()
+                    optimiser.zero_grad()
                     ## test
                     model.eval()
 

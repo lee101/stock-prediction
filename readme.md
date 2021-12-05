@@ -30,3 +30,6 @@ on more incl asx
 val_loss: 0.29750736078004475
 new val loss when having more data in sequences: 0.3078561797738075
 just more history: 0.3317318992770236
+
+flipped loss:
+val_loss: 0.274111845449585
