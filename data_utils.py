@@ -1,5 +1,4 @@
-import numpy
-from Cython.Includes import numpy
+import numpy as np
 
 
 def split_data(stock, lookback):
