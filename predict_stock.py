@@ -447,28 +447,7 @@ def make_predictions(input_data_path=None):
                         # add depreciation loss
                         loss += len(y_test) * (.001 / 365)
 
-                        # those where not scaled properly, scale properly for logging purposes
-                        last_values_scaled = scaler.inverse_transform(
-                            last_values.detach().cpu().numpy()
-                        )
-                        percent_movements_scaled = ((
-                            scaler.inverse_transform(y_test.detach().cpu().numpy())
-                            - last_values_scaled
-                        ) / last_values_scaled) + 1
-                        detached_y_test_pred = y_test_pred.detach().cpu().numpy()
-                        current_profit = np.product(
-                            # saved money
-                            (1 - np.abs(detached_y_test_pred))
-                            +
-                            # bought
-                            (np.clip(detached_y_test_pred, 0, 1) * percent_movements_scaled)
-                            +
-                            # sold
-                            (np.abs(np.clip(detached_y_test_pred, -1, 0)) - (
-                                    np.clip(detached_y_test_pred, -1, 0) * percent_movements_scaled))
-                            # fee
-                            - (np.abs(detached_y_test_pred) * TRADING_FEE)
-                        )
+                        current_profit = calculate_trading_profit(y_test, y_test_pred)
                         print(f"{training_mode} current_profit validation: {current_profit}")
                         tb_writer.add_scalar(f"{training_mode} current_profit validation", current_profit, t)
                     if "BuyOrSell" == training_mode:
@@ -610,6 +589,41 @@ def make_predictions(input_data_path=None):
 
     print(f"val_loss: {total_val_loss / len(csv_files)}")
     print(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
+
+
+def calculate_trading_profit(x_test, y_test, y_test_pred):
+    """
+    Calculate trading profits
+    :param x_test:
+    :param y_test:
+    :param y_test_pred:
+    :return:
+    """
+    last_values = x_test[:, -1, :]
+    percent_movements = ((y_test - last_values) / last_values) + 1
+    # those where not scaled properly, scale properly for logging purposes
+    last_values_scaled = scaler.inverse_transform(
+        last_values.detach().cpu().numpy()
+    )
+    percent_movements_scaled = ((
+                                    scaler.inverse_transform(y_test.detach().cpu().numpy())
+                                    - last_values_scaled
+                                ) / last_values_scaled) + 1
+    detached_y_test_pred = y_test_pred.detach().cpu().numpy()
+    current_profit = np.product(
+        # saved money
+        (1 - np.abs(detached_y_test_pred))
+        +
+        # bought
+        (np.clip(detached_y_test_pred, 0, 1) * percent_movements_scaled)
+        +
+        # sold
+        (np.abs(np.clip(detached_y_test_pred, -1, 0)) - (
+            np.clip(detached_y_test_pred, -1, 0) * percent_movements_scaled))
+        # fee
+        - (np.abs(detached_y_test_pred) * TRADING_FEE)
+    )
+    return current_profit
 
 
 if __name__ == "__main__":
