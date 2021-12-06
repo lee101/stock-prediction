@@ -63,6 +63,11 @@ def pre_process_data(x_train, key_to_predict):
     return x_train
 
 
+def compute_profit(y_test_end_scaled_loss, best_y_test_pred_inverted):
+
+    pass
+
+
 def make_predictions(input_data_path=None):
     """
     Make predictions for all csv files in directory.
@@ -94,7 +99,7 @@ def make_predictions(input_data_path=None):
     #
     # ]
 
-
+    headers_written = False
     # experiment with shared weights roughly a failure
     # input_dim = 1
     # hidden_dim = 32
@@ -200,8 +205,9 @@ def make_predictions(input_data_path=None):
 
                     y_test_pred = model(x_test)
                     # invert predictions
+                    detached_y_test_pred = y_test_pred.detach().cpu().numpy()
                     y_test_pred_inverted = scaler.inverse_transform(
-                        y_test_pred.detach().cpu().numpy()
+                        detached_y_test_pred
                     )
                     y_train_pred_inverted = scaler.inverse_transform(
                         y_train_pred.detach().cpu().numpy()
@@ -219,12 +225,18 @@ def make_predictions(input_data_path=None):
                         best_y_test_pred_inverted = y_test_pred_inverted
                         # percent estimate
                         y_test_end_scaled_loss = scaler.inverse_transform(
-                            np.add(y_test_pred.detach().cpu().numpy(), loss.detach().cpu().numpy())
+                            np.add(detached_y_test_pred, loss.detach().cpu().numpy())
                         )
+
                         likely_percent_uncertainty = (
                             (y_test_end_scaled_loss[-1] - y_test_pred_inverted[-1])
                             / y_test_pred_inverted[-1]
                         ).item()
+                    detached_y_test = y_test.detach().cpu().numpy()
+                    calculated_profit = compute_profit(detached_y_test_pred, detached_y_test)
+                    print(f"{csv_file}: {training_mode} calculated_profit: {calculated_profit}")
+                    tb_writer.add_scalar(f"Profit/{csv_file}: {training_mode} calculated_profit", calculated_profit, t)
+
 
                 training_time = datetime.now() - start_time
                 print("Training time: {}".format(training_time))
@@ -319,31 +331,52 @@ def make_predictions(input_data_path=None):
                         # sigmoid = torch.nn.Sigmoid()
                         # y_train_pred = sigmoid(y_train_pred)
                         ## map to three trinary predictions -1 0 and 1
-                        y_train_pred = torch.round(y_train_pred)
+                        # y_train_pred = torch.round(y_train_pred) # turn off rounding because ruins gradient
                         y_train_pred = torch.clamp(y_train_pred, -1, 1)
                         # compute percent movement between y_train and last_values
                         last_values = x_train[:, -1, :]
-                        percent_movements = (y_train - last_values) / last_values
+                        percent_movements = ((y_train - last_values) / last_values) + 1
                         # negative as profit is good
-                        loss = -torch.sum(
-                            (y_train_pred * percent_movements) - (y_train_pred * TRADING_FEE)
+                        loss = -torch.prod(
+                            # saved money
+                            (1 - torch.abs(y_train_pred))
+                            +
+                            # bought
+                            (torch.clamp(y_train_pred, 0, 1) * percent_movements)
+                            +
+                            # sold
+                            (torch.abs(torch.clamp(y_train_pred, -1, 0)) - (
+                                    torch.clamp(y_train_pred, -1, 0) * percent_movements))
+                            # fee
+                            - (torch.abs(y_train_pred) * TRADING_FEE)
                         )
+                        # add depreciation loss for doing nothing
+                        loss += len(y_train) * (.001 / 365)
 
                         # those where not scaled properly, scale properly for logging purposes
                         last_values_scaled = scaler.inverse_transform(
                             last_values.detach().cpu().numpy()
                         )
-                        percent_movements_scaled = (
+                        percent_movements_scaled = ((
                             scaler.inverse_transform(y_train.detach().cpu().numpy())
                             - last_values_scaled
-                        ) / last_values_scaled
+                        ) / last_values_scaled) + 1
 
-                        current_profit = np.sum(
-                            (y_train_pred.detach().cpu().numpy() * percent_movements_scaled)
-                            - (y_train_pred.detach().cpu().numpy() * TRADING_FEE)
+                        detached_y_train_pred = y_train_pred.detach().cpu().numpy()
+                        current_profit = np.product(
+                            # saved money
+                            (1 - np.abs(detached_y_train_pred))
+                            +
+                            # bought
+                            (np.clip(detached_y_train_pred, 0, 1) * percent_movements_scaled)
+                            +
+                            # sold
+                            (np.abs(np.clip(detached_y_train_pred, -1, 0)) - (np.clip(detached_y_train_pred, -1, 0) * percent_movements_scaled))
+                            # fee
+                            - (np.abs(detached_y_train_pred) * TRADING_FEE)
                         )
-                        print(f"current_profit: {current_profit}")
-                        tb_writer.add_scalar("current_profit", current_profit, t)
+                        print(f"{training_mode} current_profit: {current_profit}")
+                        tb_writer.add_scalar(f"{training_mode} current_profit", current_profit, t)
                     elif "Leverage" == training_mode:
                         # sigmoid = torch.nn.Sigmoid()
                         # y_train_pred = sigmoid(y_train_pred)
@@ -352,9 +385,10 @@ def make_predictions(input_data_path=None):
                         y_train_pred = torch.clamp(y_train_pred, -4, 4)
                         # compute percent movement between y_train and last_values
                         last_values = x_train[:, -1, :]
-                        percent_movements = (y_train - last_values) / last_values
+                        percent_movements = ((y_train - last_values) / last_values) + 1
                         # negative as profit is good
-                        loss = -torch.sum(y_train_pred * percent_movements)
+                        loss = -torch.prod(1 + (y_train_pred * percent_movements))
+                        loss += len(y_test) * (.001 / 365)
 
                         # those where not scaled properly, scale properly for logging purposes
                         last_values_scaled = scaler.inverse_transform(
@@ -364,16 +398,20 @@ def make_predictions(input_data_path=None):
                             scaler.inverse_transform(y_train.detach().cpu().numpy())
                             - last_values_scaled
                         ) / last_values_scaled
-                        current_profit = np.sum(
+                        current_profit = np.product(
                             y_train_pred.detach().cpu().numpy() * percent_movements_scaled
                         )
                         print(f"current_profit: {current_profit}")
+                        tb_writer.add_scalar(f"{training_mode} current_profit", current_profit, t)
                     print("Epoch ", t, "MSE: ", loss.item())
+                    tb_writer.add_scalar(f"{training_mode} loss", loss.item(), t)
                     hist[t] = loss.item()
 
                     loss.backward()
                     optimiser.step()
                     optimiser.zero_grad()
+
+
                     ## test
                     model.eval()
 
@@ -388,30 +426,51 @@ def make_predictions(input_data_path=None):
                         # sigmoid = torch.nn.Sigmoid()
                         # y_test_pred = sigmoid(y_test_pred)
                         ## map to three trinary predictions -1 0 and 1
-                        y_test_pred = torch.round(y_test_pred)
+                        # y_test_pred = torch.round(y_test_pred)  # turn off rounding because ruins gradient
                         y_test_pred = torch.clamp(y_test_pred, -1, 1)
                         # compute percent movement between y_test and last_values
                         last_values = x_test[:, -1, :]
-                        percent_movements = (y_test - last_values) / last_values
+                        percent_movements = ((y_test - last_values) / last_values) + 1
                         # negative as profit is good
-                        loss = -torch.sum(
-                            (y_test_pred * percent_movements) - (y_test_pred * TRADING_FEE)
+                        loss = -torch.prod(
+                            # saved money
+                            (1 - torch.abs(y_test_pred))
+                            +
+                            # bought
+                            (torch.clamp(y_test_pred, 0, 1) * percent_movements)
+                            +
+                            # sold
+                            (torch.abs(torch.clamp(y_test_pred, -1, 0)) - (torch.clamp(y_test_pred, -1, 0) * percent_movements))
+                            # fee
+                            - (torch.abs(y_test_pred) * TRADING_FEE)
                         )
+                        # add depreciation loss
+                        loss += len(y_test) * (.001 / 365)
 
                         # those where not scaled properly, scale properly for logging purposes
                         last_values_scaled = scaler.inverse_transform(
                             last_values.detach().cpu().numpy()
                         )
-                        percent_movements_scaled = (
+                        percent_movements_scaled = ((
                             scaler.inverse_transform(y_test.detach().cpu().numpy())
                             - last_values_scaled
-                        ) / last_values_scaled
-
-                        current_profit = np.sum(
-                            (y_test_pred.detach().cpu().numpy() * percent_movements_scaled)
-                            - (y_test_pred.detach().cpu().numpy() * TRADING_FEE)
+                        ) / last_values_scaled) + 1
+                        detached_y_test_pred = y_test_pred.detach().cpu().numpy()
+                        current_profit = np.product(
+                            # saved money
+                            (1 - np.abs(detached_y_test_pred))
+                            +
+                            # bought
+                            (np.clip(detached_y_test_pred, 0, 1) * percent_movements_scaled)
+                            +
+                            # sold
+                            (np.abs(np.clip(detached_y_test_pred, -1, 0)) - (
+                                    np.clip(detached_y_test_pred, -1, 0) * percent_movements_scaled))
+                            # fee
+                            - (np.abs(detached_y_test_pred) * TRADING_FEE)
                         )
-                        print(f"current_profit: {current_profit}")
+                        print(f"{training_mode} current_profit validation: {current_profit}")
+                        tb_writer.add_scalar(f"{training_mode} current_profit validation", current_profit, t)
                     if "BuyOrSell" == training_mode:
                         # sigmoid = torch.nn.Sigmoid()
                         # y_test_pred = sigmoid(y_test_pred)
@@ -421,22 +480,24 @@ def make_predictions(input_data_path=None):
                         y_test_pred = torch.clamp(y_test_pred, -4, 4)
                         # compute percent movement between y_test and last_values
                         last_values = x_test[:, -1, :]
-                        percent_movements = (y_test - last_values) / last_values
+                        percent_movements = ((y_test - last_values) / last_values) + 1
                         # negative as profit is good
-                        loss = -torch.sum(y_test_pred * percent_movements)
+                        loss = -torch.prod(1 + (y_test_pred * percent_movements))
+                        loss += len(y_test) * (.001 / 365)
 
                         # those where not scaled properly, scale properly for logging purposes
                         last_values_scaled = scaler.inverse_transform(
                             last_values.detach().cpu().numpy()
                         )
-                        percent_movements_scaled = (
+                        percent_movements_scaled = ((
                             scaler.inverse_transform(y_test.detach().cpu().numpy())
                             - last_values_scaled
-                        ) / last_values_scaled
-                        current_profit = np.sum(
+                        ) / last_values_scaled) + 1
+                        current_profit = np.product(
                             y_test_pred.detach().cpu().numpy() * percent_movements_scaled
                         )
-                        print(f"current_profit validation: {current_profit}")
+                        print(f"{training_mode} current_profit validation: {current_profit}")
+                        tb_writer.add_scalar(f"{training_mode} current_profit validation", current_profit, t)
                     print(f"{training_mode} val loss: {loss}")
                     print(
                         f"{training_mode} Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}"
