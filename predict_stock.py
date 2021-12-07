@@ -8,7 +8,7 @@ import torch
 import transformers
 
 from data_utils import split_data
-from loss_utils import calculate_trading_profit, calculate_trading_profit_torch
+from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE
 from model import GRU
 
 transformers.set_seed(42)
@@ -119,12 +119,13 @@ def make_predictions(input_data_path=None):
 
     for days_to_drop in [0]:  # [1,2,3,4,5,6,7,8,9,10,11]:
         for csv_file in csv_files:
+            instrument_name = csv_file.stem.split('-')[0]
             last_preds = {
-                "instrument": csv_file.stem,
+                "instrument": instrument_name,
             }
             training_mode = "predict"
             for key_to_predict in [
-                "Close",
+                # "Close",
                 # 'High',
                 # 'Low',
             ]:  # , 'TakeProfit', 'StopLoss']:
@@ -186,11 +187,13 @@ def make_predictions(input_data_path=None):
                 # Number of steps to unroll
                 for t in range(num_epochs):
                     model.train()
-                    y_train_pred = model(x_train)
+                    random_aug = torch.rand(x_train.shape) * .002 - .001
+                    augmented = x_train + random_aug
+                    y_train_pred = model(augmented)
 
                     loss = criterion(y_train_pred, y_train)
                     print("Epoch ", t, "MSE: ", loss.item())
-                    tb_writer.add_scalar(f"Loss/{csv_file}train", loss.item(), t)
+                    tb_writer.add_scalar(f"Loss/{instrument_name}train", loss.item(), t)
                     hist[t] = loss.item()
 
                     loss.backward()
@@ -212,9 +215,9 @@ def make_predictions(input_data_path=None):
                     # print(y_test_pred_inverted)
                     loss = criterion(y_test_pred, y_test)
                     print(f"val loss: {loss}")
-                    tb_writer.add_scalar(f"Loss/{csv_file}val", loss.item(), t)
+                    # tb_writer.add_scalar(f"Loss/{instrument_name}val", loss.item(), t)
                     print(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
-                    tb_writer.add_scalar(f"Prediction/{csv_file}last_pred", y_test_pred_inverted[-1], t)
+                    # tb_writer.add_scalar(f"Prediction/{instrument_name}last_pred", y_test_pred_inverted[-1], t)
                     if loss < min_val_loss:
                         min_val_loss = loss
                         torch.save(model.state_dict(), "data/model.pth")
@@ -230,13 +233,13 @@ def make_predictions(input_data_path=None):
                         ).item()
                     detached_y_test = y_test.detach().cpu().numpy()
                     calculated_profit = calculate_trading_profit(scaler, x_test, detached_y_test, detached_y_test_pred)
-                    print(f"{csv_file}: {training_mode} calculated_profit: {calculated_profit}")
-                    tb_writer.add_scalar(f"Profit/{csv_file}: {training_mode} calculated_profit", calculated_profit, t)
+                    print(f"{instrument_name}: {training_mode} calculated_profit: {calculated_profit}")
+                    # tb_writer.add_scalar(f"Profit/{instrument_name}: {training_mode} calculated_profit", calculated_profit, t)
 
 
                 training_time = datetime.now() - start_time
                 print("Training time: {}".format(training_time))
-                tb_writer.add_scalar("Time/training", training_time.total_seconds(), 0)
+                # tb_writer.add_scalar("Time/training", training_time.total_seconds(), 0)
 
                 # print(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
                 # tb_writer.add_scalar("Prediction/train", y_train_pred_inverted[-1], 0)
@@ -313,7 +316,7 @@ def make_predictions(input_data_path=None):
 
                 start_time = datetime.now()
 
-                num_epochs = 100
+                num_epochs = 10000
                 hist = np.zeros(num_epochs)
                 y_train_pred = None
                 min_val_loss = np.inf
@@ -323,7 +326,9 @@ def make_predictions(input_data_path=None):
                 # Number of steps to unroll
                 for t in range(num_epochs):
                     model.train()
-                    y_train_pred = model(x_train)
+                    random_aug = torch.rand(x_train.shape) * .002 - .001
+                    augmented = x_train + random_aug.to(DEVICE)
+                    y_train_pred = model(augmented)
 
                     # loss = criterion(y_train_pred, y_train)
                     if "BuyOrSell" == training_mode:
@@ -342,7 +347,7 @@ def make_predictions(input_data_path=None):
                         #                                           y_train_pred.detach().cpu().numpy())
 
                         print(f"{training_mode} current_profit: {-loss}")
-                        tb_writer.add_scalar(f"{csv_file}/{training_mode}/current_profit/train", -loss, t)
+                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/train", -loss, t)
                     elif "Leverage" == training_mode:
                         # sigmoid = torch.nn.Sigmoid()
                         # y_train_pred = sigmoid(y_train_pred)
@@ -368,9 +373,9 @@ def make_predictions(input_data_path=None):
                             y_train_pred.detach().cpu().numpy() * percent_movements_scaled
                         )
                         print(f"current_profit: {current_profit}")
-                        tb_writer.add_scalar(f"{csv_file}/{training_mode}/current_profit/test", current_profit, t)
+                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/test", current_profit, t)
                     print("Epoch ", t, "MSE: ", loss.item())
-                    tb_writer.add_scalar(f"{csv_file}/{training_mode}/loss", loss.item(), t)
+                    tb_writer.add_scalar(f"{instrument_name}/{training_mode}/loss", loss.item(), t)
                     hist[t] = loss.item()
 
                     loss.backward()
@@ -401,7 +406,7 @@ def make_predictions(input_data_path=None):
 
                         # current_profit = calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy())
                         print(f"{training_mode} current_profit validation: {-loss}")
-                        tb_writer.add_scalar(f"{csv_file}/{training_mode}/current_profit/validation", -loss, t)
+                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss, t)
                     # if "Leverage" == training_mode:
                     #     # sigmoid = torch.nn.Sigmoid()
                     #     # y_test_pred = sigmoid(y_test_pred)
@@ -428,7 +433,7 @@ def make_predictions(input_data_path=None):
                     #         y_test_pred.detach().cpu().numpy() * percent_movements_scaled
                     #     )
                     #     print(f"{training_mode} current_profit validation: {current_profit}")
-                    #     tb_writer.add_scalar(f"{csv_file}/{training_mode}/current_profit/validation", current_profit, t)
+                    #     tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", current_profit, t)
                     print(f"{training_mode} val loss: {loss}")
                     print(
                         f"{training_mode} Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}"

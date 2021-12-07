@@ -33,3 +33,19 @@ just more history: 0.3317318992770236
 
 flipped loss:
 val_loss: 0.274111845449585
+
+
+
+
+## random augs:
++1000 epocs
+total_profit avg per symbol: 0.047912802015032084
+now:
+ 04841010911124093 
+now 0.06202507019042969
+
+total_profit avg per symbol: 0.0720802800995963 
+
+after random aug + 1000epocs :
+
+0.09813719136374337
