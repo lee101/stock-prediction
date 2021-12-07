@@ -13,7 +13,7 @@ from model import GRU
 
 transformers.set_seed(42)
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 base_dir = Path(__file__).parent
 print(base_dir)
@@ -125,7 +125,7 @@ def make_predictions(input_data_path=None):
             }
             training_mode = "predict"
             for key_to_predict in [
-                # "Close",
+                "Close",
                 # 'High',
                 # 'Low',
             ]:  # , 'TakeProfit', 'StopLoss']:
@@ -154,10 +154,10 @@ def make_predictions(input_data_path=None):
                 #     lookback = 280
                 x_train, y_train, x_test, y_test = split_data(price, lookback)
 
-                x_train = torch.from_numpy(x_train).type(torch.Tensor).to(device)
-                x_test = torch.from_numpy(x_test).type(torch.Tensor).to(device)
-                y_train = torch.from_numpy(y_train).type(torch.Tensor).to(device)
-                y_test = torch.from_numpy(y_test).type(torch.Tensor).to(device)
+                x_train = torch.from_numpy(x_train).type(torch.Tensor).to(DEVICE)
+                x_test = torch.from_numpy(x_test).type(torch.Tensor).to(DEVICE)
+                y_train = torch.from_numpy(y_train).type(torch.Tensor).to(DEVICE)
+                y_test = torch.from_numpy(y_test).type(torch.Tensor).to(DEVICE)
 
                 input_dim = 1
                 hidden_dim = 32
@@ -171,30 +171,30 @@ def make_predictions(input_data_path=None):
                     output_dim=output_dim,
                     num_layers=num_layers,
                 )
-                model.to(device)
+                model.to(DEVICE)
                 model.train()
                 criterion = torch.nn.L1Loss(reduction="mean")
                 optimiser = torch.optim.AdamW(model.parameters(), lr=0.01)
 
                 start_time = datetime.now()
 
-                num_epochs = 100
+                num_epochs = 100000
                 hist = np.zeros(num_epochs)
                 y_train_pred = None
                 min_val_loss = np.inf
                 best_y_test_pred_inverted = []
 
                 # Number of steps to unroll
-                for t in range(num_epochs):
+                for epoc_idx in range(num_epochs):
                     model.train()
                     random_aug = torch.rand(x_train.shape) * .002 - .001
-                    augmented = x_train + random_aug
+                    augmented = x_train + random_aug.to(DEVICE)
                     y_train_pred = model(augmented)
 
                     loss = criterion(y_train_pred, y_train)
-                    print("Epoch ", t, "MSE: ", loss.item())
-                    tb_writer.add_scalar(f"Loss/{instrument_name}train", loss.item(), t)
-                    hist[t] = loss.item()
+                    print("Epoch ", epoc_idx, "MSE: ", loss.item())
+                    tb_writer.add_scalar(f"{key_to_predict}/Loss/{instrument_name}/train", loss.item(), epoc_idx)
+                    hist[epoc_idx] = loss.item()
 
                     loss.backward()
                     optimiser.step()
@@ -215,9 +215,17 @@ def make_predictions(input_data_path=None):
                     # print(y_test_pred_inverted)
                     loss = criterion(y_test_pred, y_test)
                     print(f"val loss: {loss}")
-                    # tb_writer.add_scalar(f"Loss/{instrument_name}val", loss.item(), t)
+                    tb_writer.add_scalar(f"{key_to_predict}/Loss/{instrument_name}/val", loss.item(), epoc_idx)
                     print(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
-                    # tb_writer.add_scalar(f"Prediction/{instrument_name}last_pred", y_test_pred_inverted[-1], t)
+                    tb_writer.add_scalar(f"{key_to_predict}/Prediction/{instrument_name}last_pred", y_test_pred_inverted[-1], epoc_idx)
+
+                    detached_y_test = y_test.detach().cpu().numpy()
+                    last_values = x_test[:, -1, :]
+                    # predict trade if last value is above the prediction
+                    trading_preds = (y_test_pred > last_values) * 2 - 1
+                    calculated_profit = calculate_trading_profit_torch(scaler, x_test, y_test, trading_preds).item()
+                    print(f"{instrument_name}: {key_to_predict} calculated_profit: {calculated_profit}")
+                    tb_writer.add_scalar(f"{key_to_predict}/Profit/{instrument_name}:  calculated_profit", calculated_profit, epoc_idx)
                     if loss < min_val_loss:
                         min_val_loss = loss
                         torch.save(model.state_dict(), "data/model.pth")
@@ -231,10 +239,7 @@ def make_predictions(input_data_path=None):
                             (y_test_end_scaled_loss[-1] - y_test_pred_inverted[-1])
                             / y_test_pred_inverted[-1]
                         ).item()
-                    detached_y_test = y_test.detach().cpu().numpy()
-                    calculated_profit = calculate_trading_profit(scaler, x_test, detached_y_test, detached_y_test_pred)
-                    print(f"{instrument_name}: {training_mode} calculated_profit: {calculated_profit}")
-                    # tb_writer.add_scalar(f"Profit/{instrument_name}: {training_mode} calculated_profit", calculated_profit, t)
+                        min_loss_trading_profit = calculated_profit
 
 
                 training_time = datetime.now() - start_time
@@ -253,6 +258,7 @@ def make_predictions(input_data_path=None):
                     -1
                 ].item()
                 last_preds[key_to_predict.lower() + "_val_loss"] = val_loss
+                last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = min_loss_trading_profit
                 last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
                 last_preds[
                     key_to_predict.lower() + "_likely_percent_uncertainty"
@@ -263,7 +269,7 @@ def make_predictions(input_data_path=None):
                 total_val_loss += val_loss
             key_to_predict = "Close"
             for training_mode in [
-                "BuyOrSell",
+                # "BuyOrSell",
               # "Leverage",
             ]:
                 print(f"training mode: {training_mode}")
@@ -292,10 +298,10 @@ def make_predictions(input_data_path=None):
                 #     lookback = 280
                 x_train, y_train, x_test, y_test = split_data(price, lookback)
 
-                x_train = torch.from_numpy(x_train).type(torch.Tensor).to(device)
-                x_test = torch.from_numpy(x_test).type(torch.Tensor).to(device)
-                y_train = torch.from_numpy(y_train).type(torch.Tensor).to(device)
-                y_test = torch.from_numpy(y_test).type(torch.Tensor).to(device)
+                x_train = torch.from_numpy(x_train).type(torch.Tensor).to(DEVICE)
+                x_test = torch.from_numpy(x_test).type(torch.Tensor).to(DEVICE)
+                y_train = torch.from_numpy(y_train).type(torch.Tensor).to(DEVICE)
+                y_test = torch.from_numpy(y_test).type(torch.Tensor).to(DEVICE)
 
                 input_dim = 1
                 hidden_dim = 32
@@ -309,14 +315,14 @@ def make_predictions(input_data_path=None):
                     output_dim=output_dim,
                     num_layers=num_layers,
                 )
-                model.to(device)
+                model.to(DEVICE)
                 model.train()
                 criterion = torch.nn.L1Loss(reduction="mean")
                 optimiser = torch.optim.AdamW(model.parameters(), lr=0.01)
 
                 start_time = datetime.now()
 
-                num_epochs = 100000
+                num_epochs = 100 #100000 TODO more is better
                 hist = np.zeros(num_epochs)
                 y_train_pred = None
                 min_val_loss = np.inf
@@ -324,7 +330,7 @@ def make_predictions(input_data_path=None):
                 best_y_test_pred_inverted = []
 
                 # Number of steps to unroll
-                for t in range(num_epochs):
+                for epoc_idx in range(num_epochs):
                     model.train()
                     random_aug = torch.rand(x_train.shape) * .002 - .001
                     augmented = x_train + random_aug.to(DEVICE)
@@ -347,7 +353,7 @@ def make_predictions(input_data_path=None):
                         #                                           y_train_pred.detach().cpu().numpy())
 
                         print(f"{training_mode} current_profit: {-loss}")
-                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/train", -loss, t)
+                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/train", -loss, epoc_idx)
                     elif "Leverage" == training_mode:
                         # sigmoid = torch.nn.Sigmoid()
                         # y_train_pred = sigmoid(y_train_pred)
@@ -373,10 +379,10 @@ def make_predictions(input_data_path=None):
                             y_train_pred.detach().cpu().numpy() * percent_movements_scaled
                         )
                         print(f"current_profit: {current_profit}")
-                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/test", current_profit, t)
-                    print("Epoch ", t, "MSE: ", loss.item())
-                    tb_writer.add_scalar(f"{instrument_name}/{training_mode}/loss", loss.item(), t)
-                    hist[t] = loss.item()
+                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/test", current_profit, epoc_idx)
+                    print("Epoch ", epoc_idx, "MSE: ", loss.item())
+                    tb_writer.add_scalar(f"{instrument_name}/{training_mode}/loss", loss.item(), epoc_idx)
+                    hist[epoc_idx] = loss.item()
 
                     loss.backward()
                     optimiser.step()
@@ -406,7 +412,7 @@ def make_predictions(input_data_path=None):
 
                         # current_profit = calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy())
                         print(f"{training_mode} current_profit validation: {-loss}")
-                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss, t)
+                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss, epoc_idx)
                     # if "Leverage" == training_mode:
                     #     # sigmoid = torch.nn.Sigmoid()
                     #     # y_test_pred = sigmoid(y_test_pred)
