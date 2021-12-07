@@ -342,7 +342,7 @@ def make_predictions(input_data_path=None):
                         #                                           y_train_pred.detach().cpu().numpy())
 
                         print(f"{training_mode} current_profit: {-loss}")
-                        tb_writer.add_scalar(f"{csv_file}{training_mode} current_profit train", -loss, t)
+                        tb_writer.add_scalar(f"{csv_file}/{training_mode}/current_profit/train", -loss, t)
                     elif "Leverage" == training_mode:
                         # sigmoid = torch.nn.Sigmoid()
                         # y_train_pred = sigmoid(y_train_pred)
@@ -368,9 +368,9 @@ def make_predictions(input_data_path=None):
                             y_train_pred.detach().cpu().numpy() * percent_movements_scaled
                         )
                         print(f"current_profit: {current_profit}")
-                        tb_writer.add_scalar(f"{csv_file}{training_mode} current_profit test", current_profit, t)
+                        tb_writer.add_scalar(f"{csv_file}/{training_mode}/current_profit/test", current_profit, t)
                     print("Epoch ", t, "MSE: ", loss.item())
-                    tb_writer.add_scalar(f"{csv_file}{training_mode} loss", loss.item(), t)
+                    tb_writer.add_scalar(f"{csv_file}/{training_mode}/loss", loss.item(), t)
                     hist[t] = loss.item()
 
                     loss.backward()
@@ -401,7 +401,7 @@ def make_predictions(input_data_path=None):
 
                         # current_profit = calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy())
                         print(f"{training_mode} current_profit validation: {-loss}")
-                        tb_writer.add_scalar(f"{csv_file}{training_mode} current_profit validation", -loss, t)
+                        tb_writer.add_scalar(f"{csv_file}/{training_mode}/current_profit/validation", -loss, t)
                     # if "Leverage" == training_mode:
                     #     # sigmoid = torch.nn.Sigmoid()
                     #     # y_test_pred = sigmoid(y_test_pred)
@@ -428,7 +428,7 @@ def make_predictions(input_data_path=None):
                     #         y_test_pred.detach().cpu().numpy() * percent_movements_scaled
                     #     )
                     #     print(f"{training_mode} current_profit validation: {current_profit}")
-                    #     tb_writer.add_scalar(f"{csv_file}{training_mode} current_profit validation", current_profit, t)
+                    #     tb_writer.add_scalar(f"{csv_file}/{training_mode}/current_profit/validation", current_profit, t)
                     print(f"{training_mode} val loss: {loss}")
                     print(
                         f"{training_mode} Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}"
