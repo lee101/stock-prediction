@@ -1,4 +1,5 @@
-from predict_stock import calculate_trading_profit
+from loss_utils import calculate_trading_profit
+
 
 def test_calculate_trading_profit():
     x_test = [1., 2.]
