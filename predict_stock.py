@@ -316,7 +316,7 @@ def make_predictions(input_data_path=None):
 
                 start_time = datetime.now()
 
-                num_epochs = 10000
+                num_epochs = 100000
                 hist = np.zeros(num_epochs)
                 y_train_pred = None
                 min_val_loss = np.inf

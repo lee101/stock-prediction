@@ -49,3 +49,7 @@ total_profit avg per symbol: 0.0720802800995963
 after random aug + 1000epocs :
 
 0.09813719136374337
+
+leave it to train 100k
+total_profit avg per symbol: 0.18346667289733887
+graphs not looking good though..
