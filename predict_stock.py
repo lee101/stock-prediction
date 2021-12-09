@@ -11,6 +11,8 @@ from data_utils import split_data
 from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform
 from model import GRU
 
+from neuralprophet import NeuralProphet
+
 transformers.set_seed(42)
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -129,7 +131,7 @@ def make_predictions(input_data_path=None):
             }
             training_mode = "predict"
             for key_to_predict in [
-                "Close",
+                # "Close",
                 # 'High',
                 # 'Low',
             ]:  # , 'TakeProfit', 'StopLoss']:
@@ -277,9 +279,10 @@ def make_predictions(input_data_path=None):
                 "BuyOrSell",
               # "Leverage",
             ]:
-                print(f"training mode: {training_mode}")
+                print(f"training mode: {training_mode} {instrument_name}")
                 stock_data = load_stock_data_from_csv(csv_file)
                 stock_data = stock_data.dropna()
+
                 # drop last days_to_drop rows
                 if days_to_drop:
                     stock_data = stock_data.iloc[:-days_to_drop]
@@ -307,6 +310,28 @@ def make_predictions(input_data_path=None):
                 x_test = torch.from_numpy(x_test).type(torch.Tensor).to(DEVICE)
                 y_train = torch.from_numpy(y_train).type(torch.Tensor).to(DEVICE)
                 y_test = torch.from_numpy(y_test).type(torch.Tensor).to(DEVICE)
+
+                # NeuralProphet
+                # m = TFT(n_lags=60,
+                #     n_forecasts=20,
+                #     epochs=100,
+                #     attention_head_size=1,
+                #     hidden_continuous_size=8)
+                ## rename column Date to ds
+                valid_size = 30
+                stock_data["ds"] = stock_data["Date"]
+                stock_data['y'] = stock_data["Close"]
+                stock_data = stock_data.drop(columns=["Date", "Close", "Open", "High", "Low", "Volume", "Adj Close"])
+                train_stock_data, test_stock_data = stock_data.iloc[:-valid_size], stock_data.iloc[-valid_size:]
+
+                m = NeuralProphet()
+                metrics = m.fit(train_stock_data, freq='D')
+                print(metrics)
+                # future = m.make_future_dataframe(stock_data, preiods=20, n_historic_predictions=10)
+                forecast = m.predict(test_stock_data)
+                print(forecast)
+                f = m.plot(forecast)
+                f.savefig(f"data/{instrument_name}_forecast.png")
 
                 ## attach predictions?
                 # TODO well we can't really, we can only attach the predictions to validation data
@@ -336,7 +361,7 @@ def make_predictions(input_data_path=None):
 
                 start_time = datetime.now()
 
-                num_epochs = 100000 #100000 TODO more is better
+                num_epochs = 1 #100000 TODO more is better
                 hist = np.zeros(num_epochs)
                 y_train_pred = None
                 min_val_loss = np.inf
