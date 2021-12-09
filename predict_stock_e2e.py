@@ -5,7 +5,7 @@ from predict_stock import make_predictions
 
 if __name__ == '__main__':
     # in development, use the following line to avoid re downloading data
-    if True:
+    if False:
         current_time_formatted = '2021-12-05 18:20:29'
     else:
         current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

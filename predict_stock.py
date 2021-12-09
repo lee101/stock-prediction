@@ -295,8 +295,8 @@ def make_predictions(input_data_path=None):
                 if len(price) > 40:
                     lookback = 30
                 # longer didnt help
-                # if len(price) > 100:
-                #     lookback = 90
+                if len(price) > 100:
+                    lookback = 90
                 # if len(price) > 200:
                 #     lookback = 180
                 # if len(price) > 300:
@@ -336,7 +336,7 @@ def make_predictions(input_data_path=None):
 
                 start_time = datetime.now()
 
-                num_epochs = 100 #100000 TODO more is better
+                num_epochs = 100000 #100000 TODO more is better
                 hist = np.zeros(num_epochs)
                 y_train_pred = None
                 min_val_loss = np.inf
@@ -467,7 +467,7 @@ def make_predictions(input_data_path=None):
                     )
                     if loss < min_val_loss:
                         min_val_loss = loss
-                        torch.save(model.state_dict(), "data/model-classify.pth")
+                        torch.save(model.state_dict(), f"data/model-classify-{instrument_name}.pth")
                         best_y_test_pred = y_test_pred
                         best_current_profit = -loss.item()
                         # percent estimate
