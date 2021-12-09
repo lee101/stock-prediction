@@ -34,7 +34,8 @@ just more history: 0.3317318992770236
 flipped loss:
 val_loss: 0.274111845449585
 
-
+now with aug:
+val_loss: 0.12366707782660212
 
 
 ## random augs:
@@ -53,3 +54,6 @@ after random aug + 1000epocs :
 leave it to train 100k
 total_profit avg per symbol: 0.18346667289733887
 graphs not looking good though..
+
+
+now 67.57110960142953 ???

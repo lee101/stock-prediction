@@ -18,5 +18,5 @@ def split_data(stock, lookback):
 
     x_test = data[train_set_size:, :-1]
     y_test = data[train_set_size:, -1, :]
-
+    # todo train2 val2 and holdout sets
     return [x_train, y_train, x_test, y_test]
