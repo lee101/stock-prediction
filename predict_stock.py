@@ -1,5 +1,5 @@
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -60,10 +60,10 @@ def pre_process_data(x_train, key_to_predict):
     #                                 "Adj.Close",
     #                                 "Adj.Volume",
     #                                 ])
+    newdata = x_train.copy()
+    newdata[key_to_predict] = scaler.fit_transform(x_train[key_to_predict].values.reshape(-1, 1))
 
-    x_train[key_to_predict] = scaler.fit_transform(x_train[key_to_predict].values.reshape(-1, 1))
-
-    return x_train
+    return newdata
 
 
 torch.autograd.set_detect_anomaly(True)
@@ -324,13 +324,29 @@ def make_predictions(input_data_path=None):
                 stock_data = stock_data.drop(columns=["Date", "Close", "Open", "High", "Low", "Volume", "Adj Close"])
                 train_stock_data, test_stock_data = stock_data.iloc[:-valid_size], stock_data.iloc[-valid_size:]
 
-                m = NeuralProphet()
+                m = NeuralProphet(
+                    # n_forecasts=1,
+                    # n_lags=1,
+
+                    daily_seasonality=True,
+
+                )
                 metrics = m.fit(train_stock_data, freq='D')
                 print(metrics)
-                # future = m.make_future_dataframe(stock_data, preiods=20, n_historic_predictions=10)
-                forecast = m.predict(test_stock_data)
-                print(forecast)
-                f = m.plot(forecast)
+                # TODO forecast future data
+                # df_future = m.make_future_dataframe(test_stock_data, periods=20)
+
+                # forecast = m.predict(df_future)
+
+                forecasts = pd.DataFrame()
+                for i in range(len(test_stock_data)):
+                    current_frame = test_stock_data.iloc[0:i + 1]
+                    df_future = m.make_future_dataframe(current_frame, periods=1)
+                    forecast = m.predict(df_future)
+                    forecasts = forecasts.append(forecast)
+                # forecast = m.predict(test_stock_data)
+                print(forecasts)
+                f = m.plot(forecasts)
                 f.savefig(f"data/{instrument_name}_forecast.png")
 
                 ## attach predictions?
@@ -512,6 +528,9 @@ def make_predictions(input_data_path=None):
                 last_preds[training_mode.lower() + "_val_profit"] = best_current_profit
                 total_val_loss += val_loss
                 total_profit += best_current_profit
+
+
+            #### Now use another net - neuralprophet
 
             CSV_KEYS = list(last_preds.keys())
             if not headers_written:
