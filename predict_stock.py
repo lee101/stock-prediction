@@ -226,7 +226,8 @@ def make_predictions(input_data_path=None):
                     last_values = x_test[:, -1, :]
                     # predict trade if last value is above the prediction
                     trading_preds = (y_test_pred > last_values) * 2 - 1
-                    calculated_profit = calculate_trading_profit_torch(scaler, x_test, y_test, trading_preds).item()
+                    last_values = x_test[:, -1, :]
+                    calculated_profit = calculate_trading_profit_torch(scaler, last_values, y_test, trading_preds).item()
                     print(f"{instrument_name}: {key_to_predict} calculated_profit: {calculated_profit}")
                     tb_writer.add_scalar(f"{key_to_predict}/Profit/{instrument_name}:  calculated_profit", calculated_profit, epoc_idx)
                     if loss < min_val_loss:
@@ -333,7 +334,7 @@ def make_predictions(input_data_path=None):
 
                 start_time = datetime.now()
 
-                num_epochs = 1 #100000 TODO more is better
+                num_epochs = 1000 #100000 TODO more is better
                 hist = np.zeros(num_epochs)
                 y_train_pred = None
                 min_val_loss = np.inf
@@ -357,7 +358,8 @@ def make_predictions(input_data_path=None):
                         y_train_pred = torch.clamp(y_train_pred, -1, 1)
                         # compute percent movement between y_train and last_values
 
-                        loss = -calculate_trading_profit_torch(scaler, x_train, y_train, y_train_pred)
+                        last_values = x_train[:, -1, :]
+                        loss = -calculate_trading_profit_torch(scaler, last_values, y_train, y_train_pred)
                         # add depreciation loss
                         # loss -= len(y_train) * (.001 / 365)
 
@@ -420,11 +422,10 @@ def make_predictions(input_data_path=None):
 
                         # y_test_inverted = torch_inverse_transform(scaler, y_test)
                         # plot trading graph
-                        for i in range(len(y_test_pred)):
-                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/predictions/test", y_test_pred[i], i)
-                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", y_test[i], i)
+
                         # negative as profit is good
-                        loss = -calculate_trading_profit_torch(scaler, x_test, y_test, y_test_pred)
+                        last_values = x_test[:, -1, :]
+                        loss = -calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred)
                         # add depreciation loss
                         # loss -= len(y_test) * (.001 / 365)
 
@@ -467,7 +468,10 @@ def make_predictions(input_data_path=None):
                         torch.save(model.state_dict(), f"data/model-classify-{instrument_name}.pth")
                         best_y_test_pred = y_test_pred
                         best_current_profit = -loss.item()
-                        # percent estimate
+                        for i in range(len(y_test_pred)):
+                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/predictions/test", y_test_pred[i],
+                                                 i)
+                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", torch_inverse_transform(scaler, y_test[i]), i)
 
                 training_time = datetime.now() - start_time
                 print("Training time: {}".format(training_time))

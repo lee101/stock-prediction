@@ -52,43 +52,81 @@ def torch_inverse_transform(scaler, values):
     return values
 
 
-def calculate_trading_profit_torch(scaler, x_test, y_test, y_test_pred):
+# def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
+#     """
+#     Calculate trading profits
+#     :param last_values:
+#     :param y_test:
+#     :param y_test_pred:
+#     :return:
+#     """
+#     percent_movements = ((y_test - last_values) / last_values) + 1
+#     # those where not scaled properly, scale properly for logging purposes
+#     last_values_scaled = torch_inverse_transform(scaler, last_values)
+#     percent_movements_scaled = (
+#         (torch_inverse_transform(scaler, y_test) - last_values_scaled) / last_values_scaled
+#     ) + 1
+#     bought_profits =((torch.clamp(y_test_pred, 0, 10) * percent_movements_scaled)
+#              - (torch.clamp(y_test_pred, 1, 100) - 1)
+#              - torch.clamp(y_test_pred, 0, 10))
+#     # bought_profits = (
+#     #                      (torch.clamp(y_test_pred, 0, 10) * percent_movements_scaled)
+#     #                      - (torch.clamp(y_test_pred, 1, 100) - 1)
+#     #                  ) - 1
+#     saved_money = torch.clamp(
+#         1 - torch.abs(y_test_pred), 0, 500
+#     )  # only can save positive amount if we dont leverage
+#     sold_profits = torch.abs((-torch.clamp(y_test_pred, -10, 0) * (1 - (percent_movements_scaled - 1))))
+#     sold_saved_money = torch.clamp(torch.abs(torch.clamp(y_test_pred, -1, 0)), 0, 1)
+#     current_profit = torch.sum(
+#         # saved money
+#         saved_money
+#         +
+#         # bought
+#         bought_profits
+#         +
+#         # sold
+#         sold_profits
+#         + sold_saved_money
+#         # fee
+#         - (torch.abs(y_test_pred) * TRADING_FEE)
+#     ) / len(y_test_pred)
+#     # todo random deprecation?
+#     return current_profi
+
+
+def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
     """
     Calculate trading profits
-    :param x_test:
+    :param last_values:
     :param y_test:
     :param y_test_pred:
     :return:
     """
-    last_values = x_test[:, -1, :]
-    percent_movements = ((y_test - last_values) / last_values) + 1
-    # those where not scaled properly, scale properly for logging purposes
+    # percent_movements = ((y_test - last_values) / last_values) + 1
+
     last_values_scaled = torch_inverse_transform(scaler, last_values)
-    percent_movements_scaled = (
-        (torch_inverse_transform(scaler, y_test) - last_values_scaled) / last_values_scaled
-    ) + 1
-    bought_profits = (
-                         (torch.clamp(y_test_pred, 0, 10) * percent_movements_scaled)
-                         - (torch.clamp(y_test_pred, 1, 100) - 1)
-                     ) - 1
-    saved_money = torch.clamp(
-        1 - torch.abs(y_test_pred), 0, 500
-    )  # only can save positive amount if we dont leverage
-    sold_profits = torch.abs((torch.clamp(y_test_pred, -10, 0) * percent_movements_scaled))
-    sold_saved_money = torch.clamp(torch.abs(torch.clamp(y_test_pred, -1, 0)), 0, 1)
+    percent_movements_scaled = (torch_inverse_transform(scaler, y_test) - last_values_scaled) / (
+        (torch_inverse_transform(scaler, y_test) + last_values_scaled) / 2
+    )  # not scientific
+    detached_y_test_pred = y_test_pred
+    bought_profits = torch.clip(detached_y_test_pred, 0, 10) * percent_movements_scaled
+    sold_profits = torch.clip(y_test_pred, -10, 0) * percent_movements_scaled
+    # saved_money = torch.clamp(
+    #             1 - torch.abs(y_test_pred), 0, 500
+    #         )
     current_profit = torch.sum(
         # saved money
-        saved_money
-        +
+        # saved_money
+        # +
         # bought
         bought_profits
         +
         # sold
         sold_profits
-        + sold_saved_money
         # fee
-        - (torch.abs(y_test_pred) * TRADING_FEE)
-    )
+        - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+    ) / len(detached_y_test_pred)
     # todo random deprecation?
     return current_profit
 
@@ -101,32 +139,33 @@ def calculate_trading_profit_no_scale(last_values, y_test, y_test_pred):
     :param y_test_pred: how much portfolio was invested - 1s for selling all, 1s for buying all
     :return:
     """
-    percent_movements = ((y_test - last_values) / last_values) + 1
-    # those where not scaled properly, scale properly for logging purposes
-    last_values_scaled = last_values
-
-    percent_movements_scaled = ((y_test - last_values_scaled) / last_values_scaled) + 1
-    bought_profits = (
-        (torch.clamp(y_test_pred, 0, 10) * percent_movements_scaled)
-        - (torch.clamp(y_test_pred, 1, 100) - 1)
-    ) - 1
-    saved_money = torch.clamp(
-        1 - torch.abs(y_test_pred), 0, 500
-    )  # only can save positive amount if we dont leverage
-    sold_profits = torch.abs((torch.clamp(y_test_pred, -10, 0) * percent_movements_scaled))
-    sold_saved_money = torch.clamp(torch.abs(torch.clamp(y_test_pred, -1, 0)), 0, 1)
-    current_profit = torch.sum(
-        # saved money
-        saved_money
-        +
-        # bought
-        bought_profits
-        +
-        # sold
-        sold_profits
-        + sold_saved_money
-        # fee
-        - (torch.abs(y_test_pred) * TRADING_FEE)
-    )
-    # todo random deprecation?
-    return current_profit
+    return calculate_trading_profit_torch(None, last_values, y_test, y_test_pred)
+    # percent_movements = ((y_test - last_values) / last_values) + 1
+    # # those where not scaled properly, scale properly for logging purposes
+    # last_values_scaled = last_values
+    #
+    # percent_movements_scaled = ((y_test - last_values_scaled) / last_values_scaled) + 1
+    # bought_profits = (
+    #     (torch.clamp(y_test_pred, 0, 10) * percent_movements_scaled)
+    #     - (torch.clamp(y_test_pred, 1, 100) - 1)
+    # ) - 1
+    # saved_money = torch.clamp(
+    #     1 - torch.abs(y_test_pred), 0, 500
+    # )  # only can save positive amount if we dont leverage
+    # sold_profits = torch.abs((torch.clamp(y_test_pred, -10, 0) * percent_movements_scaled))
+    # sold_saved_money = torch.clamp(torch.abs(torch.clamp(y_test_pred, -1, 0)), 0, 1)
+    # current_profit = torch.sum(
+    #     # saved money
+    #     saved_money
+    #     +
+    #     # bought
+    #     bought_profits
+    #     +
+    #     # sold
+    #     sold_profits
+    #     + sold_saved_money
+    #     # fee
+    #     - (torch.abs(y_test_pred) * TRADING_FEE)
+    # )
+    # # todo random deprecation?
+    # return current_profit
