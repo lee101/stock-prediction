@@ -57,3 +57,18 @@ graphs not looking good though..
 
 
 now 67.57110960142953 ???
+
+
+=== now we are training on better money loss/trading
+Training time: 0:00:21.642027
+Best val loss: -0.0022790967486798763
+Best current profit: 0.0022790967486798763
+val_loss: -0.010014724565727162
+total_profit avg per symbol: 0.022031369014174906 <- daily
+
+
+===== 15min data
+
+val_loss: 2.8128517085081384e-06
+total_profit avg per symbol: -8.676310565241302e-08
+better hourly? try dropping 4?

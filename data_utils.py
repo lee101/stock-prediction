@@ -20,3 +20,14 @@ def split_data(stock, lookback):
     y_test = data[train_set_size:, -1, :]
     # todo train2 val2 and holdout sets
     return [x_train, y_train, x_test, y_test]
+
+
+def drop_n_rows(df, n):
+    """
+    drop n rows for every 1 row in the dataframe
+    :param stock:
+    :param n:
+    :return:
+    """
+    drop_idxes = np.arange(0, len(df), n)
+    df.drop(drop_idxes, inplace=True)

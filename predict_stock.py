@@ -284,6 +284,9 @@ def make_predictions(input_data_path=None):
                 print(f"training mode: {training_mode} {instrument_name}")
                 stock_data = load_stock_data_from_csv(csv_file)
                 stock_data = stock_data.dropna()
+                if stock_data.empty:
+                    print(f"Empty data for {instrument_name}")
+                    continue
 
                 # drop last days_to_drop rows
                 if days_to_drop:
