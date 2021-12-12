@@ -77,3 +77,8 @@ drop 1/2 1/2 not good either
 
 val_loss: 1.0086527977039492e-05
 total_profit avg per symbol: -3.3665687038109127e-07
+
+===== passing also data in of high//low
+Best current profit: 0.006474322639405727
+val_loss: -0.024440492995630336
+total_profit avg per symbol: 0.055027083498743634

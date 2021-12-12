@@ -300,8 +300,10 @@ def make_predictions(input_data_path=None):
 
                 # x_train, x_test = train_test_split(stock_data)
                 last_close_price = stock_data[key_to_predict].iloc[-1]
-                data = pre_process_data(stock_data, key_to_predict)
-                price = data[[key_to_predict]]
+                data = pre_process_data(stock_data, "High")
+                data = pre_process_data(data, "Low") # todo scaler for each, this messes up the scaler
+                data = pre_process_data(data, key_to_predict)
+                price = data[[key_to_predict, "High", "Low"]]
 
                 # x_test = pre_process_data(x_test)
 
@@ -324,7 +326,7 @@ def make_predictions(input_data_path=None):
 
 
 
-                input_dim = 1
+                input_dim = 3
                 hidden_dim = 32
                 num_layers = 2
                 output_dim = 1
@@ -480,7 +482,7 @@ def make_predictions(input_data_path=None):
                         for i in range(len(y_test_pred)):
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/predictions/test", y_test_pred[i],
                                                  i)
-                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", torch_inverse_transform(scaler, y_test[i]), i)
+                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", torch_inverse_transform(scaler, y_test[i][0:1]), i)
 
                 training_time = datetime.now() - start_time
                 print("Training time: {}".format(training_time))
