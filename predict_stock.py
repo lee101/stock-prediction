@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 import transformers
 
-from data_utils import split_data
+from data_utils import split_data, drop_n_rows
 from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
     calculate_trading_profit_no_scale
 from model import GRU
@@ -287,6 +287,12 @@ def make_predictions(input_data_path=None):
                 if stock_data.empty:
                     print(f"Empty data for {instrument_name}")
                     continue
+                # use a quarter of 15min data / hours data
+                # drop_n_rows(stock_data, 2)
+                # stock_data.reset_index(drop=True, inplace=True)
+                # drop_n_rows(stock_data, 2)
+                # stock_data.reset_index(drop=True, inplace=True)
+
 
                 # drop last days_to_drop rows
                 if days_to_drop:

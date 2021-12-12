@@ -72,3 +72,8 @@ total_profit avg per symbol: 0.022031369014174906 <- daily
 val_loss: 2.8128517085081384e-06
 total_profit avg per symbol: -8.676310565241302e-08
 better hourly? try dropping 4?
+==========
+drop 1/2 1/2 not good either
+
+val_loss: 1.0086527977039492e-05
+total_profit avg per symbol: -3.3665687038109127e-07
