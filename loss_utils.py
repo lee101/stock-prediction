@@ -169,3 +169,41 @@ def calculate_trading_profit_no_scale(last_values, y_test, y_test_pred):
     # )
     # # todo random deprecation?
     # return current_profit
+
+
+
+def get_trading_profits_list(scaler, last_values, y_test, y_test_pred):
+    """
+    Calculate trading profits
+    :param last_values:
+    :param y_test:
+    :param y_test_pred:
+    :return:
+    """
+    # percent_movements = ((y_test - last_values) / last_values) + 1
+
+    last_values_scaled = torch_inverse_transform(scaler, last_values)
+    percent_movements_scaled = (torch_inverse_transform(scaler, y_test) - last_values_scaled) / (
+        (torch_inverse_transform(scaler, y_test) + last_values_scaled) / 2
+    )  # not scientific
+    detached_y_test_pred = y_test_pred
+    bought_profits = torch.clip(detached_y_test_pred, 0, 10) * percent_movements_scaled
+    sold_profits = torch.clip(y_test_pred, -10, 0) * percent_movements_scaled
+    # saved_money = torch.clamp(
+    #             1 - torch.abs(y_test_pred), 0, 500
+    #         )
+    current_profits = (
+        # saved money
+        # saved_money
+        # +
+        # bought
+        bought_profits
+        +
+        # sold
+        sold_profits
+        # fee
+        - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+    )
+
+    # todo random deprecation?
+    return current_profits

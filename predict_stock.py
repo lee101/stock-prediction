@@ -9,7 +9,7 @@ import transformers
 
 from data_utils import split_data, drop_n_rows
 from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
-    calculate_trading_profit_no_scale
+    calculate_trading_profit_no_scale, get_trading_profits_list
 from model import GRU
 
 from neuralprophet import NeuralProphet
@@ -437,6 +437,7 @@ def make_predictions(input_data_path=None):
                         # negative as profit is good
                         last_values = x_test[:, -1, :]
                         loss = -calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred)
+                        trading_profits_list = get_trading_profits_list(scaler, last_values, y_test, y_test_pred)
                         # add depreciation loss
                         # loss -= len(y_test) * (.001 / 365)
 
@@ -483,6 +484,9 @@ def make_predictions(input_data_path=None):
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/predictions/test", y_test_pred[i],
                                                  i)
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", torch_inverse_transform(scaler, y_test[i][0:1]), i)
+                            # log trading_profits_list
+                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/trading_profits/test", trading_profits_list[i][0:1], i)
+
 
                 training_time = datetime.now() - start_time
                 print("Training time: {}".format(training_time))

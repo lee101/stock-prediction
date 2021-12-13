@@ -82,3 +82,11 @@ total_profit avg per symbol: -3.3665687038109127e-07
 Best current profit: 0.006474322639405727
 val_loss: -0.024440492995630336
 total_profit avg per symbol: 0.055027083498743634
+
+total_profit avg per symbol: 0.05783164164083199
+
+
+
+=====
+try 15min data and shift results by 4hours or 1 day
+try trading strategy within bounds of the day predictions
