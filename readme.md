@@ -118,3 +118,11 @@ also predict percent away from market buy/sell, - compute open/close based tradi
 ================= wow!!!
 val_loss: 12.973313212394714
 total_profit avg per symbol: 4.278735787607729
+
+
+==== after fixing bug
+Best current profit: 0.0022790967486798763
+val_loss: -0.0019214446920077233
+total_profit avg per symbol: 0.02520072289090347
+
+Process finished with exit code 0
