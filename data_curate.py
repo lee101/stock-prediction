@@ -33,18 +33,18 @@ def download_daily_stock_data(path=None):
         "ADBE",
         "NET",
         'COIN',
-        'QUBT',
-        'ARQQ',
+        # 'QUBT',
+        # 'ARQQ',
         # avoiding .6% buffer
-        'REA.AX',
-        'XRO.AX',
-        'SEK.AX',
-        'NXL.AX', # data anlytics
-        'APX.AX', # data collection for ml/labelling
-        'CDD.AX',
-        'NVX.AX',
-        'BRN.AX', # brainchip
-        'AV1.AX',
+        # 'REA.AX',
+        # 'XRO.AX',
+        # 'SEK.AX',
+        # 'NXL.AX', # data anlytics
+        # 'APX.AX', # data collection for ml/labelling
+        # 'CDD.AX',
+        # 'NVX.AX',
+        # 'BRN.AX', # brainchip
+        # 'AV1.AX',
         # 'TEAM',
         # 'PFE',
         # 'MRNA',

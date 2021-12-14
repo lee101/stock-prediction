@@ -138,3 +138,7 @@ run for 10k epocs?
 Best current profit: -1.7888361298901145e-06
 val_loss: -0.006090741769895658
 total_profit avg per symbol: 0.012417618472702507
+
+
+lower loss
+total_profit avg per symbol: 0.029944509490936373
