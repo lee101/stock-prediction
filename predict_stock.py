@@ -9,7 +9,7 @@ import transformers
 
 from data_utils import split_data, drop_n_rows
 from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
-    calculate_trading_profit_no_scale, get_trading_profits_list
+    calculate_trading_profit_no_scale, get_trading_profits_list, percent_movements_augment
 from model import GRU, GRU
 
 from neuralprophet import NeuralProphet
@@ -46,8 +46,7 @@ def train_test_split(stock_data: pd.DataFrame, test_size=50):
 
 
 scaler = MinMaxScaler(feature_range=(-1, 1))
-
-
+scaler.fit_transform([1])
 def pre_process_data(x_train, key_to_predict):
     # drop useless data
     # x_train = x_train.drop(columns=["Volume",
@@ -62,7 +61,7 @@ def pre_process_data(x_train, key_to_predict):
     #                                 "Adj.Volume",
     #                                 ])
     newdata = x_train.copy()
-    newdata[key_to_predict] = scaler.fit_transform(x_train[key_to_predict].values.reshape(-1, 1))
+    newdata[key_to_predict] = percent_movements_augment(x_train[key_to_predict].values.reshape(-1, 1))
 
     return newdata
 

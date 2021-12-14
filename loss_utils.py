@@ -209,3 +209,12 @@ def get_trading_profits_list(scaler, last_values, y_test, y_test_pred):
 
     # todo random deprecation?
     return current_profits
+
+
+def percent_movements_augment(to_scale_tensor):
+    """ scales a tensor so that each element is the percentage change from the next"""
+    scaled_tensor = to_scale_tensor.clone()
+    scaled_tensor[0] = 0
+    scaled_tensor[1:] = (to_scale_tensor[1:] - to_scale_tensor[:-1]) / to_scale_tensor[:-1]
+    return scaled_tensor
+    # return (to_scale_tensor - to_scale_tensor.shift(1)) / to_scale_tensor.shift(1)
