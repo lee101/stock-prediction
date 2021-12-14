@@ -126,3 +126,15 @@ val_loss: -0.0019214446920077233
 total_profit avg per symbol: 0.02520072289090347
 
 Process finished with exit code 0
+
+
+
+-===back to 6ch GRU
+
+val_loss: -0.009624959769610086
+total_profit avg per symbol: 0.014541518018852617
+
+run for 10k epocs?
+Best current profit: -1.7888361298901145e-06
+val_loss: -0.006090741769895658
+total_profit avg per symbol: 0.012417618472702507
