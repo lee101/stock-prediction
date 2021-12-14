@@ -109,3 +109,12 @@ numlayers 32 1k epocs
 0.0170769194062945 terrible 
 
 numlayers 32 10k epocs
+val_loss: 0.006968238504711621
+total_profit avg per symbol: 0.02565125921381299
+
+===todo predict output length of hodl
+also predict percent away from market buy/sell, - compute open/close based trading sucucess loss
+
+================= wow!!!
+val_loss: 12.973313212394714
+total_profit avg per symbol: 4.278735787607729

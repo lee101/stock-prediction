@@ -106,8 +106,9 @@ def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
     # percent_movements = ((y_test - last_values) / last_values) + 1
 
     last_values_scaled = torch_inverse_transform(scaler, last_values)
-    percent_movements_scaled = (torch_inverse_transform(scaler, y_test) - last_values_scaled) / (
-        (torch_inverse_transform(scaler, y_test) + last_values_scaled) / 2
+    y_test_rescaled = torch_inverse_transform(scaler, y_test)
+    percent_movements_scaled = (y_test_rescaled - last_values_scaled) / (
+        (y_test_rescaled + last_values_scaled) / 2
     )  # not scientific
     detached_y_test_pred = y_test_pred
     bought_profits = torch.clip(detached_y_test_pred, 0, 10) * percent_movements_scaled

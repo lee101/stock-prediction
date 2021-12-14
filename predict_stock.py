@@ -10,7 +10,7 @@ import transformers
 from data_utils import split_data, drop_n_rows
 from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
     calculate_trading_profit_no_scale, get_trading_profits_list
-from model import GRU
+from model import GRU, get_model
 
 from neuralprophet import NeuralProphet
 
@@ -172,11 +172,11 @@ def make_predictions(input_data_path=None):
                 output_dim = 1
                 # TODO use pytorch forecasting
                 # from pytorch_forecasting import Baseline, TemporalFusionTransformer
-                model = GRU(
+                model = get_model(
                     input_dim=input_dim,
-                    hidden_dim=hidden_dim,
+                    # hidden_dim=hidden_dim,
                     output_dim=output_dim,
-                    num_layers=num_layers,
+                    # num_layers=num_layers,
                 )
                 model.to(DEVICE)
                 model.train()
@@ -223,11 +223,11 @@ def make_predictions(input_data_path=None):
                     tb_writer.add_scalar(f"{key_to_predict}/Prediction/{instrument_name}last_pred", y_test_pred_inverted[-1], epoc_idx)
 
                     # detached_y_test = y_test.detach().cpu().numpy()
-                    last_values = x_test[:, -1, :]
+                    last_values = x_test[:, -1, 0]
                     # predict trade if last value is above the prediction
                     trading_preds = (y_test_pred > last_values) * 2 - 1
-                    last_values = x_test[:, -1, :]
-                    calculated_profit = calculate_trading_profit_torch(scaler, last_values, y_test, trading_preds).item()
+                    last_values = x_test[:, -1, 0]
+                    calculated_profit = calculate_trading_profit_torch(scaler, last_values, y_test[:, 0], trading_preds[:, 0]).item()
                     print(f"{instrument_name}: {key_to_predict} calculated_profit: {calculated_profit}")
                     tb_writer.add_scalar(f"{key_to_predict}/Profit/{instrument_name}:  calculated_profit", calculated_profit, epoc_idx)
                     if loss < min_val_loss:
@@ -307,12 +307,12 @@ def make_predictions(input_data_path=None):
 
                 # x_test = pre_process_data(x_test)
 
-                lookback = 20  # choose sequence length , GTLB only has been open for 27days cant go over that :O
+                lookback = 16  # choose sequence length , GTLB only has been open for 27days cant go over that :O
                 if len(price) > 40:
-                    lookback = 30
+                    lookback = 33
                 # longer didnt help
-                if len(price) > 100:
-                    lookback = 90
+                if len(price) > 129:
+                    lookback = 129
                 # if len(price) > 200:
                 #     lookback = 180
                 # if len(price) > 300:
@@ -328,15 +328,16 @@ def make_predictions(input_data_path=None):
 
                 input_dim = 3
                 hidden_dim = 32
-                num_layers = 32
+                num_layers = 6
                 output_dim = 1
                 # TODO use pytorch forecasting
                 # from pytorch_forecasting import Baseline, TemporalFusionTransformer
-                model = GRU(
+                model = get_model(
                     input_dim=input_dim,
-                    hidden_dim=hidden_dim,
+                    input_len=lookback - 1,
+                    # hidden_dim=hidden_dim,
                     output_dim=output_dim,
-                    num_layers=num_layers,
+                    # num_layers=num_layers,
                 )
                 model.to(DEVICE)
                 model.train()
@@ -345,7 +346,7 @@ def make_predictions(input_data_path=None):
 
                 start_time = datetime.now()
 
-                num_epochs = 10000 #100000 TODO more is better
+                num_epochs = 1000 #100000 TODO more is better
                 hist = np.zeros(num_epochs)
                 y_train_pred = None
                 min_val_loss = np.inf
@@ -361,6 +362,8 @@ def make_predictions(input_data_path=None):
                     random_aug = torch.rand(x_train.shape) * .002 - .001
                     augmented = x_train + random_aug.to(DEVICE)
                     y_train_pred = model(augmented)
+                    # sciNet gives back 3 values, we only need the first one
+                    y_train_pred = y_train_pred[:, :, 0]
 
                     # loss = criterion(y_train_pred, y_train)
                     if "BuyOrSell" == training_mode:
@@ -371,12 +374,12 @@ def make_predictions(input_data_path=None):
                         y_train_pred = torch.clamp(y_train_pred, -1, 1)
                         # compute percent movement between y_train and last_values
 
-                        last_values = x_train[:, -1, :]
-                        loss = -calculate_trading_profit_torch(scaler, last_values, y_train, y_train_pred)
+                        last_values = x_train[:, -1, 0]
+                        loss = -calculate_trading_profit_torch(scaler, last_values, y_train[:,0], y_train_pred[:, 0])
                         # add depreciation loss
                         # loss -= len(y_train) * (.001 / 365)
 
-                        # current_profit = calculate_trading_profit(scaler, x_train, y_train.detach().cpu().numpy(),
+                        # current_profit [:,0]= calculate_trading_profit(scaler, x_train, y_train.detach().cpu().numpy()[:, 0],
                         #                                           y_train_pred.detach().cpu().numpy())
 
                         print(f"{training_mode} current_profit: {-loss}")
@@ -388,7 +391,7 @@ def make_predictions(input_data_path=None):
                     #     y_train_pred = (y_train_pred * 8) - 4  # how much leveraged? -4x to 4x
                     #     y_train_pred = torch.clamp(y_train_pred, -4, 4)
                     #     # compute percent movement between y_train and last_values
-                    #     last_values = x_train[:, -1, :]
+                    #     last_values = x_train[:, -1, 0]
                     #     percent_movements = ((y_train - last_values) / last_values) + 1
                     #     # negative as profit is good
                     #     loss = -torch.prod(1 + (y_train_pred * percent_movements))
@@ -420,6 +423,8 @@ def make_predictions(input_data_path=None):
                     model.eval()
 
                     y_test_pred = model(x_test)
+                    # sciNet gives back 3 values, we only need the first one
+                    y_test_pred = y_test_pred[:, :, 0]
                     # dont actually need to invert predictions
                     # y_test_pred_inverted = y_test_pred.detach().cpu().numpy()
                     # y_train_pred_inverted = y_train_pred.detach().cpu().numpy()
@@ -437,13 +442,14 @@ def make_predictions(input_data_path=None):
                         # plot trading graph
 
                         # negative as profit is good
-                        last_values = x_test[:, -1, :]
-                        loss = -calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred)
-                        trading_profits_list = get_trading_profits_list(scaler, last_values, y_test, y_test_pred)
+                        last_values = x_test[:, -1, 0]
+                        loss = -calculate_trading_profit_torch(scaler, last_values, y_test[:,0], y_test_pred[:, 0])
+                        trading_profits_list = get_trading_profits_list(scaler, last_values, y_test[:, 0], y_test_pred[
+                                                                                                           :, 0])
                         # add depreciation loss
                         # loss -= len(y_test) * (.001 / 365)
 
-                        # current_profit = calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy())
+                        # current_profit [:,0]= calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy()[:, 0])
                         print(f"{training_mode} current_profit validation: {-loss}")
                         tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss, epoc_idx)
                     # if "Leverage" == training_mode:
@@ -454,7 +460,7 @@ def make_predictions(input_data_path=None):
                     #     y_test_pred = (y_test_pred * 8) - 4  # how much leveraged? -4x to 4x
                     #     y_test_pred = torch.clamp(y_test_pred, -4, 4)
                     #     # compute percent movement between y_test and last_values
-                    #     last_values = x_test[:, -1, :]
+                    #     last_values = x_test[:, -1, 0]
                     #     percent_movements = ((y_test - last_values) / last_values) + 1
                     #     # negative as profit is good
                     #     loss = -torch.prod(1 + (y_test_pred * percent_movements))
@@ -488,7 +494,7 @@ def make_predictions(input_data_path=None):
                                                  i)
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", torch_inverse_transform(scaler, y_test[i][0:1]), i)
                             # log trading_profits_list
-                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/trading_profits/test", trading_profits_list[i][0:1], i)
+                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/trading_profits/test", trading_profits_list[i], i)
                     else:
                         number_of_unsuccessful_epochs += 1
 
