@@ -89,4 +89,23 @@ total_profit avg per symbol: 0.05783164164083199
 
 =====
 try 15min data and shift results by 4hours or 1 day
-try trading strategy within bounds of the day predictions
+try trading strategy within bounds of the day predictions+
+
+
+===== dropout+relu
+val_loss: -0.009048829903456124
+total_profit avg per symbol: 0.03414255767188412
+
+only relu even lower?
+0.03064739210509515
+only dropout?
+0.046652720959281524
+
+numlaryers 2->6
+0.06964204791370121 wow!
+training time 20-48
+
+numlayers 32 1k epocs
+0.0170769194062945 terrible 
+
+numlayers 32 10k epocs

@@ -168,7 +168,7 @@ def make_predictions(input_data_path=None):
 
                 input_dim = 1
                 hidden_dim = 32
-                num_layers = 2
+                num_layers = 6
                 output_dim = 1
                 # TODO use pytorch forecasting
                 # from pytorch_forecasting import Baseline, TemporalFusionTransformer
@@ -328,7 +328,7 @@ def make_predictions(input_data_path=None):
 
                 input_dim = 3
                 hidden_dim = 32
-                num_layers = 2
+                num_layers = 32
                 output_dim = 1
                 # TODO use pytorch forecasting
                 # from pytorch_forecasting import Baseline, TemporalFusionTransformer
@@ -345,10 +345,12 @@ def make_predictions(input_data_path=None):
 
                 start_time = datetime.now()
 
-                num_epochs = 1000 #100000 TODO more is better
+                num_epochs = 10000 #100000 TODO more is better
                 hist = np.zeros(num_epochs)
                 y_train_pred = None
                 min_val_loss = np.inf
+                # count the amount that the model doesnt improve, terminate if it doesnt improve for a while
+                number_of_unsuccessful_epochs = 0
                 best_current_profit = np.inf
                 best_y_test_pred = []
                 best_y_train_pred = []
@@ -476,6 +478,7 @@ def make_predictions(input_data_path=None):
                         f"{training_mode} Last prediction: y_test_pred[-1] = {y_test_pred[-1]}"
                     )
                     if loss < min_val_loss:
+                        number_of_unsuccessful_epochs = 0
                         min_val_loss = loss
                         torch.save(model.state_dict(), f"data/model-classify-{instrument_name}.pth")
                         best_y_test_pred = y_test_pred
@@ -486,8 +489,12 @@ def make_predictions(input_data_path=None):
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", torch_inverse_transform(scaler, y_test[i][0:1]), i)
                             # log trading_profits_list
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/trading_profits/test", trading_profits_list[i][0:1], i)
+                    else:
+                        number_of_unsuccessful_epochs += 1
 
-
+                    if number_of_unsuccessful_epochs > 10:
+                        print(f"{instrument_name}/{training_mode} Early stopping")
+                        break
                 training_time = datetime.now() - start_time
                 print("Training time: {}".format(training_time))
                 print("Best val loss: {}".format(min_val_loss))
