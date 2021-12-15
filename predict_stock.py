@@ -46,7 +46,7 @@ def train_test_split(stock_data: pd.DataFrame, test_size=50):
 
 
 scaler = MinMaxScaler(feature_range=(-1, 1))
-scaler.fit_transform([1])
+scaler.fit_transform([[-1, 1]])
 def pre_process_data(x_train, key_to_predict):
     # drop useless data
     # x_train = x_train.drop(columns=["Volume",
@@ -373,11 +373,20 @@ def make_predictions(input_data_path=None):
                         # compute percent movement between y_train and last_values
 
                         last_values = x_train[:, -1, 0]
-                        loss = -calculate_trading_profit_torch(scaler, last_values, y_train[:,0], y_train_pred[:, 0])
+                        loss = -calculate_trading_profit_torch(scaler, last_values, y_train[:, 0], y_train_pred[:, 0])
+
+                        ## log if loss is nan
+                        if np.isnan(loss.item()):
+                            print(f"{instrument_name} loss is nan")
+                            print(f"{last_values} last_values")
+                            print(f"{y_train} last_values")
+                            print(f"{y_train_pred} last_values")
+                            continue
+
                         # add depreciation loss
                         # loss -= len(y_train) * (.001 / 365)
 
-                        # current_profit [:,0]= calculate_trading_profit(scaler, x_train, y_train.detach().cpu().numpy()[:, 0],
+                        # current_profit [:, 0]= calculate_trading_profit(scaler, x_train, y_train.detach().cpu().numpy()[:, 0],
                         #                                           y_train_pred.detach().cpu().numpy())
 
                         print(f"{training_mode} current_profit: {-loss}")
@@ -441,13 +450,13 @@ def make_predictions(input_data_path=None):
 
                         # negative as profit is good
                         last_values = x_test[:, -1, 0]
-                        loss = -calculate_trading_profit_torch(scaler, last_values, y_test[:,0], y_test_pred[:, 0])
+                        loss = -calculate_trading_profit_torch(scaler, last_values, y_test[:, 0], y_test_pred[:, 0])
                         trading_profits_list = get_trading_profits_list(scaler, last_values, y_test[:, 0], y_test_pred[
                                                                                                            :, 0])
                         # add depreciation loss
                         # loss -= len(y_test) * (.001 / 365)
 
-                        # current_profit [:,0]= calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy()[:, 0])
+                        # current_profit [:, 0]= calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy()[:, 0])
                         print(f"{training_mode} current_profit validation: {-loss}")
                         tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss, epoc_idx)
                     # if "Leverage" == training_mode:

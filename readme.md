@@ -142,3 +142,9 @@ total_profit avg per symbol: 0.012417618472702507
 
 lower loss
 total_profit avg per symbol: 0.029944509490936373
+========== percent change augmentation wow!
+val_loss: -0.04609658126719296
+total_profit avg per symbol: 0.0835958324605599
+
+==== adding in open price
+0.06239748735060857

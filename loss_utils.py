@@ -47,9 +47,9 @@ def torch_inverse_transform(scaler, values):
     if not scaler:
         return values
     # copy memory of torch tensor
-    values = values.clone()
-    values -= torch.tensor(scaler.min_).to(DEVICE)
-    values /= torch.tensor(scaler.scale_).to(DEVICE)
+    # values = values.clone()
+    # values -= torch.tensor(scaler.min_).to(DEVICE)
+    # values /= torch.tensor(scaler.scale_).to(DEVICE)
     return values
 
 
@@ -106,8 +106,8 @@ def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
     """
     # percent_movements = ((y_test - last_values) / last_values) + 1
 
-    last_values_scaled = torch_inverse_transform(scaler, last_values)
-    y_test_rescaled = torch_inverse_transform(scaler, y_test)
+    last_values_scaled = last_values + 1 # no scaling
+    y_test_rescaled = y_test  + 1 # no scaling
     percent_movements_scaled = (y_test_rescaled - last_values_scaled) / (
         (y_test_rescaled + last_values_scaled) / 2
     )  # not scientific
@@ -213,8 +213,7 @@ def get_trading_profits_list(scaler, last_values, y_test, y_test_pred):
 
 def percent_movements_augment(to_scale_tensor):
     """ scales a tensor so that each element is the percentage change from the next"""
-    scaled_tensor = to_scale_tensor.clone()
-    scaled_tensor[0] = 0
-    scaled_tensor[1:] = (to_scale_tensor[1:] - to_scale_tensor[:-1]) / to_scale_tensor[:-1]
-    return scaled_tensor
+    to_scale_tensor[1:] = (to_scale_tensor[1:] - to_scale_tensor[:-1]) / to_scale_tensor[:-1]
+    to_scale_tensor[0] = 0
+    return to_scale_tensor
     # return (to_scale_tensor - to_scale_tensor.shift(1)) / to_scale_tensor.shift(1)
