@@ -9,8 +9,8 @@ import transformers
 
 from data_utils import split_data, drop_n_rows
 from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
-    calculate_trading_profit_no_scale, get_trading_profits_list, percent_movements_augment
-from model import GRU, GRU
+    calculate_trading_profit_no_scale, get_trading_profits_list
+from model import GRU, get_model
 
 from neuralprophet import NeuralProphet
 
@@ -171,11 +171,11 @@ def make_predictions(input_data_path=None):
                 output_dim = 1
                 # TODO use pytorch forecasting
                 # from pytorch_forecasting import Baseline, TemporalFusionTransformer
-                model = GRU(
+                model = get_model(
                     input_dim=input_dim,
-                    hidden_dim=hidden_dim,
+                    # hidden_dim=hidden_dim,
                     output_dim=output_dim,
-                    num_layers=num_layers,
+                    # num_layers=num_layers,
                 )
                 model.to(DEVICE)
                 model.train()
@@ -333,11 +333,12 @@ def make_predictions(input_data_path=None):
                 output_dim = 1
                 # TODO use pytorch forecasting
                 # from pytorch_forecasting import Baseline, TemporalFusionTransformer
-                model = GRU(
+                model = get_model(
                     input_dim=input_dim,
-                    hidden_dim=hidden_dim,
+                    input_len=lookback - 1,
+                    # hidden_dim=hidden_dim,
                     output_dim=output_dim,
-                    num_layers=num_layers,
+                    # num_layers=num_layers,
                 )
                 model.to(DEVICE)
                 model.train()
@@ -363,7 +364,7 @@ def make_predictions(input_data_path=None):
                     augmented = x_train + random_aug.to(DEVICE)
                     y_train_pred = model(augmented)
                     # sciNet gives back 3 values, we only need the first one
-                    # y_train_pred = y_train_pred[:, :, 0]
+                    y_train_pred = y_train_pred[:, :, 0]
 
                     # loss = criterion(y_train_pred, y_train)
                     if "BuyOrSell" == training_mode:
@@ -433,7 +434,7 @@ def make_predictions(input_data_path=None):
 
                     y_test_pred = model(x_test)
                     # sciNet gives back 3 values, we only need the first one
-                    # y_test_pred = y_test_pred[:, :, 0]
+                    y_test_pred = y_test_pred[:, :, 0]
                     # dont actually need to invert predictions
                     # y_test_pred_inverted = y_test_pred.detach().cpu().numpy()
                     # y_train_pred_inverted = y_train_pred.detach().cpu().numpy()
