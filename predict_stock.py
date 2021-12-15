@@ -101,7 +101,7 @@ def make_predictions(input_data_path=None):
 
     headers_written = False
     # experiment with shared weights roughly a failure
-    # input_dim = 1
+    # input_dim = 4
     # hidden_dim = 32
     # num_layers = 2
     # output_dim = 1
@@ -165,7 +165,7 @@ def make_predictions(input_data_path=None):
                 y_train = torch.from_numpy(y_train).type(torch.Tensor).to(DEVICE)
                 y_test = torch.from_numpy(y_test).type(torch.Tensor).to(DEVICE)
 
-                input_dim = 1
+                input_dim = 4
                 hidden_dim = 32
                 num_layers = 6
                 output_dim = 1
@@ -300,9 +300,11 @@ def make_predictions(input_data_path=None):
                 # x_train, x_test = train_test_split(stock_data)
                 last_close_price = stock_data[key_to_predict].iloc[-1]
                 data = pre_process_data(stock_data, "High")
-                data = pre_process_data(data, "Low") # todo scaler for each, this messes up the scaler
+                # todo scaler for each, this messes up the scaler
+                data = pre_process_data(data, "Low")
+                data = pre_process_data(data, "Open")
                 data = pre_process_data(data, key_to_predict)
-                price = data[[key_to_predict, "High", "Low"]]
+                price = data[[key_to_predict, "High", "Low", "Open"]]
 
                 # x_test = pre_process_data(x_test)
 
@@ -325,7 +327,7 @@ def make_predictions(input_data_path=None):
 
 
 
-                input_dim = 3
+                input_dim = 4
                 hidden_dim = 32
                 num_layers = 6
                 output_dim = 1

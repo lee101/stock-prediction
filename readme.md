@@ -148,3 +148,11 @@ total_profit avg per symbol: 0.0835958324605599
 
 ==== adding in open price
 0.06239748735060857
+
+====back down after changing the +1 loss function
+val_loss: -0.004483513654122362
+total_profit avg per symbol: 0.011341570208969642
+
+now with added open price
+val_loss: -0.00627030248142546
+total_profit avg per symbol: 0.013123613936841139
