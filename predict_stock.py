@@ -9,7 +9,7 @@ import transformers
 
 from data_utils import split_data, drop_n_rows
 from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
-    calculate_trading_profit_no_scale, get_trading_profits_list
+    calculate_trading_profit_no_scale, get_trading_profits_list, percent_movements_augment
 from model import GRU, get_model
 
 from neuralprophet import NeuralProphet
