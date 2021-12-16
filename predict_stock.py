@@ -131,7 +131,7 @@ def make_predictions(input_data_path=None):
             }
             training_mode = "predict"
             for key_to_predict in [
-                # "Close",
+                "Close",
                 # 'High',
                 # 'Low',
             ]:  # , 'TakeProfit', 'StopLoss']:
@@ -143,19 +143,23 @@ def make_predictions(input_data_path=None):
 
                 # x_train, x_test = train_test_split(stock_data)
                 last_close_price = stock_data[key_to_predict].iloc[-1]
-                data = pre_process_data(stock_data, key_to_predict)
-                price = data[[key_to_predict]]
+                data = pre_process_data(stock_data, "High")
+                # todo scaler for each, this messes up the scaler
+                data = pre_process_data(data, "Low")
+                data = pre_process_data(data, "Open")
+                data = pre_process_data(data, key_to_predict)
+                price = data[[key_to_predict, "High", "Low", "Open"]]
 
                 # x_test = pre_process_data(x_test)
 
-                lookback = 20  # choose sequence length , GTLB only has been open for 27days cant go over that :O
+                lookback = 19  # choose sequence length , GTLB only has been open for 27days cant go over that :O
                 if len(price) > 40:
-                    lookback = 30
+                    lookback = 33
                 # longer didnt help
-                # if len(price) > 100:
-                #     lookback = 90
-                # if len(price) > 200:
-                #     lookback = 180
+                if len(price) > 100:
+                    lookback = 65
+                if len(price) > 200:
+                    lookback = 129
                 # if len(price) > 300:
                 #     lookback = 280
                 x_train, y_train, x_test, y_test = split_data(price, lookback)
@@ -173,6 +177,7 @@ def make_predictions(input_data_path=None):
                 # from pytorch_forecasting import Baseline, TemporalFusionTransformer
                 model = get_model(
                     input_dim=input_dim,
+                    input_len=lookback - 1,
                     # hidden_dim=hidden_dim,
                     output_dim=output_dim,
                     # num_layers=num_layers,
@@ -196,7 +201,7 @@ def make_predictions(input_data_path=None):
                     random_aug = torch.rand(x_train.shape) * .002 - .001
                     augmented = x_train + random_aug.to(DEVICE)
                     y_train_pred = model(augmented)
-
+                    y_train_pred = y_train_pred[:, 0, :]
                     loss = criterion(y_train_pred, y_train)
                     print("Epoch ", epoc_idx, "MSE: ", loss.item())
                     tb_writer.add_scalar(f"{key_to_predict}/Loss/{instrument_name}/train", loss.item(), epoc_idx)
@@ -209,8 +214,9 @@ def make_predictions(input_data_path=None):
                     model.eval()
 
                     y_test_pred = model(x_test)
+                    # sciNet gives back 3 values, we only need the first one
+                    y_test_pred = y_test_pred[:, 0, :]
                     # invert predictions
-                    detached_y_test_pred = y_test_pred.detach().cpu().numpy()
                     y_test_pred_inverted = torch_inverse_transform(scaler, y_test_pred)
                     # y_train_pred_inverted = torch_inverse_transform(scaler, y_train_pred)
 
@@ -219,14 +225,15 @@ def make_predictions(input_data_path=None):
                     print(f"val loss: {loss}")
                     tb_writer.add_scalar(f"{key_to_predict}/Loss/{instrument_name}/val", loss.item(), epoc_idx)
                     print(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
-                    tb_writer.add_scalar(f"{key_to_predict}/Prediction/{instrument_name}last_pred", y_test_pred_inverted[-1], epoc_idx)
+                    tb_writer.add_scalar(f"{key_to_predict}/Prediction/{instrument_name}last_pred", y_test_pred_inverted[-1][0], epoc_idx)
 
                     # detached_y_test = y_test.detach().cpu().numpy()
                     last_values = x_test[:, -1, 0]
                     # predict trade if last value is above the prediction
-                    trading_preds = (y_test_pred > last_values) * 2 - 1
+                    # TODO trade on all predi
+                    trading_preds = (y_test_pred[:, 0] > last_values) * 2 - 1
                     last_values = x_test[:, -1, 0]
-                    calculated_profit = calculate_trading_profit_torch(scaler, last_values, y_test[:, 0], trading_preds[:, 0]).item()
+                    calculated_profit = calculate_trading_profit_torch(scaler, last_values, y_test[:, 0], trading_preds[:]).item()
                     print(f"{instrument_name}: {key_to_predict} calculated_profit: {calculated_profit}")
                     tb_writer.add_scalar(f"{key_to_predict}/Profit/{instrument_name}:  calculated_profit", calculated_profit, epoc_idx)
                     if loss < min_val_loss:
@@ -238,10 +245,10 @@ def make_predictions(input_data_path=None):
                         # percent estimate
                         y_test_end_scaled_loss = torch_inverse_transform(scaler, torch.add(y_test_pred, loss))
 
-                        likely_percent_uncertainty = (
-                            (y_test_end_scaled_loss[-1] - y_test_pred_inverted[-1])
-                            / y_test_pred_inverted[-1]
-                        ).item()
+                        # likely_percent_uncertainty = (
+                        #     (y_test_end_scaled_loss[-1] - y_test_pred_inverted[-1])
+                        #     / y_test_pred_inverted[-1]
+                        # ).item()
                         min_loss_trading_profit = calculated_profit
 
 
@@ -254,22 +261,22 @@ def make_predictions(input_data_path=None):
                 # tb_writer.add_scalar("Prediction/train", y_train_pred_inverted[-1], 0)
 
                 val_loss = loss.item()
-                percent_movement = (
-                    best_y_test_pred_inverted[-1].item() - last_close_price
-                ) / last_close_price
+                # percent_movement = (
+                #     best_y_test_pred_inverted[-1].item() - last_close_price
+                # ) / last_close_price
                 last_preds[key_to_predict.lower() + "_last_price"] = last_close_price
                 last_preds[key_to_predict.lower() + "_predicted_price"] = best_y_test_pred_inverted[
                     -1
-                ].item()
+                ]
                 last_preds[key_to_predict.lower() + "_val_loss"] = val_loss
                 last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = min_loss_trading_profit
-                last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
-                last_preds[
-                    key_to_predict.lower() + "_likely_percent_uncertainty"
-                ] = likely_percent_uncertainty
-                last_preds[key_to_predict.lower() + "_minus_uncertainty"] = (
-                    percent_movement - likely_percent_uncertainty
-                )
+                # last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
+                # last_preds[
+                #     key_to_predict.lower() + "_likely_percent_uncertainty"
+                # ] = likely_percent_uncertainty
+                # last_preds[key_to_predict.lower() + "_minus_uncertainty"] = (
+                #     percent_movement - likely_percent_uncertainty
+                # )
                 total_val_loss += val_loss
 
 
@@ -364,7 +371,7 @@ def make_predictions(input_data_path=None):
                     augmented = x_train + random_aug.to(DEVICE)
                     y_train_pred = model(augmented)
                     # sciNet gives back 3 values, we only need the first one
-                    y_train_pred = y_train_pred[:, :, 0]
+                    y_train_pred = y_train_pred[:, 0, 0]
 
                     # loss = criterion(y_train_pred, y_train)
                     if "BuyOrSell" == training_mode:
@@ -372,11 +379,11 @@ def make_predictions(input_data_path=None):
                         # y_train_pred = sigmoid(y_train_pred)
                         ## map to three trinary predictions -1 0 and 1
                         # y_train_pred = torch.round(y_train_pred) # turn off rounding because ruins gradient
-                        y_train_pred = torch.clamp(y_train_pred, -1, 1)
+                        # y_train_pred = torch.clamp(y_train_pred, -40, 40) turn off clamping in training for more gradient info
                         # compute percent movement between y_train and last_values
 
                         last_values = x_train[:, -1, 0]
-                        loss = -calculate_trading_profit_torch(scaler, last_values, y_train[:, 0], y_train_pred[:, 0])
+                        loss = -calculate_trading_profit_torch(scaler, last_values, y_train[:, 0], y_train_pred)
 
                         ## log if loss is nan
                         if np.isnan(loss.item()):
