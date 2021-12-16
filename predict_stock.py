@@ -180,7 +180,7 @@ def make_predictions(input_data_path=None):
                 model.to(DEVICE)
                 model.train()
                 criterion = torch.nn.L1Loss(reduction="mean")
-                optimiser = torch.optim.AdamW(model.parameters(), lr=0.01)
+                optimiser = torch.optim.AdamW(model.parameters(), lr=0.01, betas=(0.9, 0.999), weight_decay=1e-5)
 
                 start_time = datetime.now()
 
@@ -193,7 +193,7 @@ def make_predictions(input_data_path=None):
                 # Number of steps to unroll
                 for epoc_idx in range(num_epochs):
                     model.train()
-                    random_aug = torch.rand(x_train.shape) * .002 - .001
+                    random_aug = torch.rand(x_train.shape) * .0002 - .0001
                     augmented = x_train + random_aug.to(DEVICE)
                     y_train_pred = model(augmented)
 
@@ -340,6 +340,8 @@ def make_predictions(input_data_path=None):
                     num_layers=num_layers,
                 )
                 model.to(DEVICE)
+                # model.load_state_dict(torch.load(base_dir / f"data/model-classify-{instrument_name}.pth"))
+
                 model.train()
                 criterion = torch.nn.L1Loss(reduction="mean")
                 optimiser = torch.optim.AdamW(model.parameters(), lr=0.01)
@@ -371,7 +373,10 @@ def make_predictions(input_data_path=None):
                         # y_train_pred = sigmoid(y_train_pred)
                         ## map to three trinary predictions -1 0 and 1
                         # y_train_pred = torch.round(y_train_pred) # turn off rounding because ruins gradient
-                        y_train_pred = torch.clamp(y_train_pred, -1, 1)
+                        # if num_epochs > 400:
+                        #     y_train_pred = torch.clamp(y_train_pred, -2, 2) # no clamping in training for grads
+                        sigmoid = torch.nn.Sigmoid()
+                        y_train_pred = sigmoid(y_train_pred) * 4 - 2
                         # compute percent movement between y_train and last_values
 
                         last_values = x_train[:, -1, 0]
@@ -445,7 +450,9 @@ def make_predictions(input_data_path=None):
                         # y_test_pred = sigmoid(y_test_pred)
                         ## map to three trinary predictions -1 0 and 1
                         # y_test_pred = torch.round(y_test_pred)  # turn off rounding because ruins gradient
-                        y_test_pred = torch.clamp(y_test_pred, -4, 4) # 4x leverage
+                        sigmoid = torch.nn.Sigmoid()
+                        y_test_pred = sigmoid(y_test_pred) * 4 - 2  # how much leveraged? -1 to 1
+                        # y_test_pred = torch.clamp(y_test_pred, -4, 4) # 4x leverage
 
                         # y_test_inverted = torch_inverse_transform(scaler, y_test)
                         # plot trading graph
@@ -496,6 +503,7 @@ def make_predictions(input_data_path=None):
                         number_of_unsuccessful_epochs = 0
                         min_val_loss = loss
                         torch.save(model.state_dict(), f"data/model-classify-{instrument_name}.pth")
+                        torch.save(model.state_dict(), f"data/model-classify.pth")
                         best_y_test_pred = y_test_pred
                         best_current_profit = -loss.item()
                         for i in range(len(y_test_pred)):
@@ -507,7 +515,7 @@ def make_predictions(input_data_path=None):
                     else:
                         number_of_unsuccessful_epochs += 1
 
-                    if number_of_unsuccessful_epochs > 40:
+                    if number_of_unsuccessful_epochs > 130:
                         print(f"{instrument_name}/{training_mode} Early stopping")
                         break
                 training_time = datetime.now() - start_time

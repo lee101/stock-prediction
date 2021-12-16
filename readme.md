@@ -156,3 +156,50 @@ total_profit avg per symbol: 0.011341570208969642
 now with added open price
 val_loss: -0.00627030248142546
 total_profit avg per symbol: 0.013123613936841139
+
+-- scinet
+0.01109844121
+
+
+-- no scinet
+
+
+total_profit avg per symbol: 0.013164439284082619
+
+
+-- unlocking clamping in training + lower random aug
+
+total_profit avg per symbol: 0.013164260120902327
+
+
+
+====clamping grads after epoc
+model per isntrument - saving first time saved
+
+total_profit avg per symbol: 0.01066157597961137
+
+-- omni saved model from prev non instrument
+
+TODO global model?
+
+===cancel model saving - bring back more augmentation
+- clamping after 300epocs
+- 
+total_profit avg per symbol: 0.01328011912482907
+
+
+==== everything is early stopping
+turned off early stopping after 30 unsuccessful epocs
+
+total_profit avg per symbol: 0.013270534476760076
+
+====== softmax
+
+total_profit avg per symbol: 0.009848967136349529
+
+====== sigmoid is better?
+
+0.006266821141252876
+====
+
+total_profit avg per symbol: 0.006266821199460537
