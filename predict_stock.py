@@ -131,7 +131,7 @@ def make_predictions(input_data_path=None):
             }
             training_mode = "predict"
             for key_to_predict in [
-                # "Close",
+                "Close",
                 # 'High',
                 # 'Low',
             ]:  # , 'TakeProfit', 'StopLoss']:
@@ -143,8 +143,13 @@ def make_predictions(input_data_path=None):
 
                 # x_train, x_test = train_test_split(stock_data)
                 last_close_price = stock_data[key_to_predict].iloc[-1]
-                data = pre_process_data(stock_data, key_to_predict)
-                price = data[[key_to_predict]]
+                data = pre_process_data(stock_data, "High")
+                # todo scaler for each, this messes up the scaler
+                data = pre_process_data(data, "Low")
+                data = pre_process_data(data, "Open")
+                data = pre_process_data(data, key_to_predict)
+                price = data[[key_to_predict, "High", "Low", "Open"]]
+                price.drop(price.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
 
                 # x_test = pre_process_data(x_test)
 
@@ -193,7 +198,7 @@ def make_predictions(input_data_path=None):
                 # Number of steps to unroll
                 for epoc_idx in range(num_epochs):
                     model.train()
-                    random_aug = torch.rand(x_train.shape) * .002 - .001
+                    random_aug = torch.rand(x_train.shape) * .0002 - .0001
                     augmented = x_train + random_aug.to(DEVICE)
                     y_train_pred = model(augmented)
 
@@ -210,7 +215,6 @@ def make_predictions(input_data_path=None):
 
                     y_test_pred = model(x_test)
                     # invert predictions
-                    detached_y_test_pred = y_test_pred.detach().cpu().numpy()
                     y_test_pred_inverted = torch_inverse_transform(scaler, y_test_pred)
                     # y_train_pred_inverted = torch_inverse_transform(scaler, y_train_pred)
 
@@ -277,7 +281,7 @@ def make_predictions(input_data_path=None):
 
             key_to_predict = "Close"
             for training_mode in [
-                "BuyOrSell",
+                # "BuyOrSell",
               # "Leverage",
             ]:
                 print(f"training mode: {training_mode} {instrument_name}")
@@ -305,15 +309,15 @@ def make_predictions(input_data_path=None):
                 data = pre_process_data(data, "Open")
                 data = pre_process_data(data, key_to_predict)
                 price = data[[key_to_predict, "High", "Low", "Open"]]
-
+                price.drop(price.tail(1).index, inplace=True) # drop last row because of percent change augmentation
                 # x_test = pre_process_data(x_test)
 
                 lookback = 16  # choose sequence length , GTLB only has been open for 27days cant go over that :O
                 if len(price) > 40:
                     lookback = 33
                 # longer didnt help
-                if len(price) > 129:
-                    lookback = 129
+                # if len(price) > 129:
+                #     lookback = 129
                 # if len(price) > 200:
                 #     lookback = 180
                 # if len(price) > 300:
@@ -501,7 +505,7 @@ def make_predictions(input_data_path=None):
                         for i in range(len(y_test_pred)):
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/predictions/test", y_test_pred[i],
                                                  i)
-                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", torch_inverse_transform(scaler, y_test[i][0:1]), i)
+                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", y_test[i][0:1], i)
                             # log trading_profits_list
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/trading_profits/test", trading_profits_list[i], i)
                     else:
