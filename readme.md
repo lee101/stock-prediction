@@ -162,3 +162,13 @@ total_profit avg per symbol:
 
 from trying to match percent change
 val_loss: 0.0251106689684093
+====
+val_loss: 0.024709051416721195
+total_buy_val_loss: -0.006730597996011056 < - losses at end of training/overfit
+total_profit avg per symbol: 0.013266819747514091
+
+
+===removed clamping in training - slightly better
+val_loss: 0.024133487895596772
+total_buy_val_loss: -0.0067360673833718465
+total_profit avg per symbol: 0.013524375013730605

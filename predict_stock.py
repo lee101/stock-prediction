@@ -376,7 +376,7 @@ def make_predictions(input_data_path=None):
                         # y_train_pred = sigmoid(y_train_pred)
                         ## map to three trinary predictions -1 0 and 1
                         # y_train_pred = torch.round(y_train_pred) # turn off rounding because ruins gradient
-                        y_train_pred = torch.clamp(y_train_pred, -1, 1)
+                        # y_train_pred = torch.clamp(y_train_pred, -1, 1)
                         # compute percent movement between y_train and last_values
 
                         last_values = x_train[:, -1, 0]
