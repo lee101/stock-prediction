@@ -159,3 +159,13 @@ total_profit avg per symbol: 0.013123613936841139
 
 -- scinet
 0.01109844121
+=======
+total_profit avg per symbol:
+0.013155548607755
+
+from trying to match percent change
+val_loss: 0.0251106689684093
+
+
+scinet really not working
+val_loss: 4.582421191036701

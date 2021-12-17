@@ -113,6 +113,7 @@ def make_predictions(input_data_path=None):
     # criterion = torch.nn.L1Loss(reduction='mean')
     # optimiser = torch.optim.Adam(model.parameters(), lr=0.01)
     total_val_loss = 0
+    total_buy_val_loss = 0
     total_profit = 0
 
     timing_idx = 0
@@ -149,6 +150,7 @@ def make_predictions(input_data_path=None):
                 data = pre_process_data(data, "Open")
                 data = pre_process_data(data, key_to_predict)
                 price = data[[key_to_predict, "High", "Low", "Open"]]
+                price.drop(price.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
 
                 # x_test = pre_process_data(x_test)
 
@@ -198,7 +200,7 @@ def make_predictions(input_data_path=None):
                 # Number of steps to unroll
                 for epoc_idx in range(num_epochs):
                     model.train()
-                    random_aug = torch.rand(x_train.shape) * .002 - .001
+                    random_aug = torch.rand(x_train.shape) * .0002 - .0001
                     augmented = x_train + random_aug.to(DEVICE)
                     y_train_pred = model(augmented)
                     y_train_pred = y_train_pred[:, 0, :]
@@ -284,7 +286,7 @@ def make_predictions(input_data_path=None):
 
             key_to_predict = "Close"
             for training_mode in [
-                "BuyOrSell",
+                # "BuyOrSell",
               # "Leverage",
             ]:
                 print(f"training mode: {training_mode} {instrument_name}")
@@ -312,15 +314,15 @@ def make_predictions(input_data_path=None):
                 data = pre_process_data(data, "Open")
                 data = pre_process_data(data, key_to_predict)
                 price = data[[key_to_predict, "High", "Low", "Open"]]
-
+                price.drop(price.tail(1).index, inplace=True) # drop last row because of percent change augmentation
                 # x_test = pre_process_data(x_test)
 
                 lookback = 16  # choose sequence length , GTLB only has been open for 27days cant go over that :O
                 if len(price) > 40:
                     lookback = 33
                 # longer didnt help
-                if len(price) > 129:
-                    lookback = 129
+                # if len(price) > 129:
+                #     lookback = 129
                 # if len(price) > 200:
                 #     lookback = 180
                 # if len(price) > 300:
@@ -509,7 +511,7 @@ def make_predictions(input_data_path=None):
                         for i in range(len(y_test_pred)):
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/predictions/test", y_test_pred[i],
                                                  i)
-                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", torch_inverse_transform(scaler, y_test[i][0:1]), i)
+                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", y_test[i][0:1], i)
                             # log trading_profits_list
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/trading_profits/test", trading_profits_list[i], i)
                     else:
@@ -531,7 +533,7 @@ def make_predictions(input_data_path=None):
                 ].item()
                 last_preds[training_mode.lower() + "_val_loss_classifier"] = val_loss
                 last_preds[training_mode.lower() + "_val_profit"] = best_current_profit
-                total_val_loss += val_loss
+                total_buy_val_loss += val_loss
                 total_profit += best_current_profit
 
             CSV_KEYS = list(last_preds.keys())
@@ -618,6 +620,7 @@ def make_predictions(input_data_path=None):
                 # fig.show()
 
     print(f"val_loss: {total_val_loss / len(csv_files)}")
+    print(f"total_buy_val_loss: {total_buy_val_loss / len(csv_files)}")
     print(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
 
 def df_to_torch(df):

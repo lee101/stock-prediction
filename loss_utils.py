@@ -182,10 +182,7 @@ def get_trading_profits_list(scaler, last_values, y_test, y_test_pred):
     """
     # percent_movements = ((y_test - last_values) / last_values) + 1
 
-    last_values_scaled = torch_inverse_transform(scaler, last_values)
-    percent_movements_scaled = (torch_inverse_transform(scaler, y_test) - last_values_scaled) / (
-        (torch_inverse_transform(scaler, y_test) + last_values_scaled) / 2
-    )  # not scientific
+    percent_movements_scaled = y_test  # not scientific
     detached_y_test_pred = y_test_pred
     bought_profits = torch.clip(detached_y_test_pred, 0, 10) * percent_movements_scaled
     sold_profits = torch.clip(y_test_pred, -10, 0) * percent_movements_scaled
@@ -211,7 +208,7 @@ def get_trading_profits_list(scaler, last_values, y_test, y_test_pred):
 
 def percent_movements_augment(to_scale_tensor):
     """ scales a tensor so that each element is the percentage change from the next"""
-    to_scale_tensor[1:] = (to_scale_tensor[1:] - to_scale_tensor[:-1]) / to_scale_tensor[:-1]
-    to_scale_tensor[0] = 0
+    to_scale_tensor[0:-1] = (to_scale_tensor[1:] - to_scale_tensor[:-1]) / to_scale_tensor[:-1]
+    to_scale_tensor[-1] = 0
     return to_scale_tensor
     # return (to_scale_tensor - to_scale_tensor.shift(1)) / to_scale_tensor.shift(1)
