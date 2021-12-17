@@ -113,6 +113,7 @@ def make_predictions(input_data_path=None):
     # criterion = torch.nn.L1Loss(reduction='mean')
     # optimiser = torch.optim.Adam(model.parameters(), lr=0.01)
     total_val_loss = 0
+    total_buy_val_loss = 0
     total_profit = 0
 
     timing_idx = 0
@@ -281,7 +282,7 @@ def make_predictions(input_data_path=None):
 
             key_to_predict = "Close"
             for training_mode in [
-                # "BuyOrSell",
+                "BuyOrSell",
               # "Leverage",
             ]:
                 print(f"training mode: {training_mode} {instrument_name}")
@@ -527,7 +528,7 @@ def make_predictions(input_data_path=None):
                 ].item()
                 last_preds[training_mode.lower() + "_val_loss_classifier"] = val_loss
                 last_preds[training_mode.lower() + "_val_profit"] = best_current_profit
-                total_val_loss += val_loss
+                total_buy_val_loss += val_loss
                 total_profit += best_current_profit
 
             CSV_KEYS = list(last_preds.keys())
@@ -614,6 +615,7 @@ def make_predictions(input_data_path=None):
                 # fig.show()
 
     print(f"val_loss: {total_val_loss / len(csv_files)}")
+    print(f"total_buy_val_loss: {total_buy_val_loss / len(csv_files)}")
     print(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
 
 def df_to_torch(df):
