@@ -1,7 +1,8 @@
 from datetime import datetime
 
 from data_curate import download_daily_stock_data
-from predict_stock import make_predictions
+# from predict_stock import make_predictions
+from predict_stock_forecasting import make_predictions
 
 if __name__ == '__main__':
     # in development, use the following line to avoid re downloading data

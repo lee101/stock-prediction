@@ -172,3 +172,9 @@ total_profit avg per symbol: 0.013266819747514091
 val_loss: 0.024133487895596772
 total_buy_val_loss: -0.0067360673833718465
 total_profit avg per symbol: 0.013524375013730605
+
+
+=====torchforecastiong
+mean val loss:$0.04344227537512779
+val_loss: 0.031683046370744705
+

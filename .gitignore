@@ -3,3 +3,5 @@ data
 results
 env.py
 logs
+lightning_logs
+
