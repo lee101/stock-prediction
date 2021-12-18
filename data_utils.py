@@ -1,5 +1,7 @@
 import numpy as np
 
+from loss_utils import calculate_takeprofit_torch
+
 
 def split_data(stock, lookback):
     data_raw = stock.to_numpy()  # convert to numpy array
@@ -31,3 +33,4 @@ def drop_n_rows(df, n):
     """
     drop_idxes = np.arange(0, len(df), n)
     df.drop(drop_idxes, inplace=True)
+

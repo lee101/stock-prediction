@@ -9,7 +9,8 @@ import transformers
 
 from data_utils import split_data, drop_n_rows
 from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
-    calculate_trading_profit_no_scale, get_trading_profits_list, percent_movements_augment
+    calculate_trading_profit_no_scale, get_trading_profits_list, percent_movements_augment, \
+    percent_movements_augment_to, calculate_takeprofit_torch
 from model import GRU, GRU
 
 from neuralprophet import NeuralProphet
@@ -132,7 +133,7 @@ def make_predictions(input_data_path=None):
             }
             training_mode = "predict"
             for key_to_predict in [
-                "Close",
+                # "Close",
                 # 'High',
                 # 'Low',
             ]:  # , 'TakeProfit', 'StopLoss']:
@@ -282,8 +283,9 @@ def make_predictions(input_data_path=None):
 
             key_to_predict = "Close"
             for training_mode in [
-                "BuyOrSell",
-              # "Leverage",
+                # "BuyOrSell",
+                "TakeProfit",
+                # "StopLoss",
             ]:
                 print(f"training mode: {training_mode} {instrument_name}")
                 stock_data = load_stock_data_from_csv(csv_file)
@@ -304,12 +306,18 @@ def make_predictions(input_data_path=None):
 
                 # x_train, x_test = train_test_split(stock_data)
                 last_close_price = stock_data[key_to_predict].iloc[-1]
+                next_day_high_above_low_percents = percent_movements_augment_to(stock_data["Open"], stock_data['High'])
+                next_day_high_above_low_percents.drop(next_day_high_above_low_percents.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
+
                 data = pre_process_data(stock_data, "High")
                 # todo scaler for each, this messes up the scaler
                 data = pre_process_data(data, "Low")
                 data = pre_process_data(data, "Open")
                 data = pre_process_data(data, key_to_predict)
                 price = data[[key_to_predict, "High", "Low", "Open"]]
+                # if training_mode == "TakeProfit":
+                #     price['movementToHigh'] = percent_movements_augment_to(price["Open"], price['High'])
+                # close to high growth in change, a bit wierd
                 price.drop(price.tail(1).index, inplace=True) # drop last row because of percent change augmentation
                 # x_test = pre_process_data(x_test)
 
@@ -324,15 +332,20 @@ def make_predictions(input_data_path=None):
                 # if len(price) > 300:
                 #     lookback = 280
                 x_train, y_train, x_test, y_test = split_data(price, lookback)
+                x_ndhalp_train, y_ndhalp_train, x_ndhalp_test, y_ndhalp_test = split_data(
+                    next_day_high_above_low_percents.to_frame(), lookback)
 
                 x_train = torch.from_numpy(x_train).type(torch.Tensor).to(DEVICE)
                 x_test = torch.from_numpy(x_test).type(torch.Tensor).to(DEVICE)
                 y_train = torch.from_numpy(y_train).type(torch.Tensor).to(DEVICE)
                 y_test = torch.from_numpy(y_test).type(torch.Tensor).to(DEVICE)
 
+                x_ndhalp_test = torch.from_numpy(x_ndhalp_test).type(torch.Tensor).to(DEVICE)
+                y_ndhalp_test = torch.from_numpy(y_ndhalp_test).type(torch.Tensor).to(DEVICE)
+                x_ndhalp_train = torch.from_numpy(x_ndhalp_train).type(torch.Tensor).to(DEVICE)
+                y_ndhalp_train = torch.from_numpy(y_ndhalp_train).type(torch.Tensor).to(DEVICE)
 
-
-                input_dim = 4
+                input_dim = x_train.shape[-1]
                 hidden_dim = 32
                 num_layers = 6
                 output_dim = 1
@@ -398,6 +411,36 @@ def make_predictions(input_data_path=None):
 
                         print(f"{training_mode} current_profit: {-loss}")
                         tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/train", -loss, epoc_idx)
+                    elif "TakeProfit" == training_mode:
+                        # sigmoid = torch.nn.Sigmoid()
+                        # y_train_pred = sigmoid(y_train_pred)
+                        ## map to three trinary predictions -1 0 and 1
+                        # y_train_pred = torch.round(y_train_pred) # turn off rounding because ruins gradient
+                        # y_train_pred = torch.clamp(y_train_pred, -1, 1)
+                        # compute percent movement between y_train and last_values
+
+                        last_values = x_train[:, -1, 0]
+                        loss = -calculate_takeprofit_torch(scaler, y_ndhalp_train, y_train[:, 0],
+                                                               y_train_pred[:, 0])
+
+                        ## log if loss is nan
+                        if np.isnan(loss.item()):
+                            print(f"{instrument_name} loss is nan")
+                            print(f"{last_values} last_values")
+                            print(f"{y_train} last_values")
+                            print(f"{y_train_pred} last_values")
+                            continue
+
+                        # add depreciation loss
+                        # loss -= len(y_train) * (.001 / 365)
+
+                        # current_profit [:, 0]= calculate_trading_profit(scaler, x_train, y_train.detach().cpu().numpy()[:, 0],
+                        #                                           y_train_pred.detach().cpu().numpy())
+
+                        print(f"{training_mode} current_profit: {-loss}")
+                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/train", -loss,
+                                             epoc_idx)
+
                     # elif "Leverage" == training_mode:
                     #     # sigmoid = torch.nn.Sigmoid()
                     #     # y_train_pred = sigmoid(y_train_pred)
@@ -466,6 +509,30 @@ def make_predictions(input_data_path=None):
                         # current_profit [:, 0]= calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy()[:, 0])
                         print(f"{training_mode} current_profit validation: {-loss}")
                         tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss, epoc_idx)
+                    if "TakeProfit" == training_mode:
+                        # sigmoid = torch.nn.Sigmoid()
+                        # y_test_pred = sigmoid(y_test_pred)
+                        ## map to three trinary predictions -1 0 and 1
+                        # y_test_pred = torch.round(y_test_pred)  # turn off rounding because ruins gradient
+                        y_test_pred = torch.clamp(y_test_pred, -4, 4)  # 4x leverage
+
+                        # y_test_inverted = torch_inverse_transform(scaler, y_test)
+                        # plot trading graph
+
+                        # negative as profit is good
+                        last_values = x_test[:, -1, 0]
+                        loss = -calculate_takeprofit_torch(scaler, y_ndhalp_test, y_test[:, 0], y_test_pred[:, 0])
+                        # trading_profits_list = get_trading_profits_list(scaler, last_values, y_test[:, 0],
+                        #                                                 y_test_pred[
+                        #                                                 :, 0])
+                        # add depreciation loss
+                        # loss -= len(y_test) * (.001 / 365)
+
+                        # current_profit [:, 0]= calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy()[:, 0])
+                        print(f"{training_mode} current_profit validation: {-loss}")
+                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss,
+                                             epoc_idx)
+
                     # if "Leverage" == training_mode:
                     #     # sigmoid = torch.nn.Sigmoid()
                     #     # y_test_pred = sigmoid(y_test_pred)
@@ -508,7 +575,7 @@ def make_predictions(input_data_path=None):
                                                  i)
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", y_test[i][0:1], i)
                             # log trading_profits_list
-                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/trading_profits/test", trading_profits_list[i], i)
+                            # tb_writer.add_scalar(f"{instrument_name}/{training_mode}/trading_profits/test", trading_profits_list[i], i)
                     else:
                         number_of_unsuccessful_epochs += 1
 

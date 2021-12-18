@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 
 from data_utils import drop_n_rows
-from loss_utils import percent_movements_augment
+from loss_utils import percent_movements_augment, calculate_takeprofit_torch
 
 
 def test_drop_n_rows():
@@ -20,3 +20,8 @@ def test_drop_n_rows_three():
 
 def test_to_augment_percent():
     assert percent_movements_augment(torch.tensor([100.,150., 50.])) == [1,0.5, -0.666]
+
+
+def test_calculate_takeprofit_torch():
+    profit = calculate_takeprofit_torch(None, torch.tensor([1.2, 1.3]), torch.tensor([1.1, 1.1]), torch.tensor([1.2, 1.05]))
+    assert profit

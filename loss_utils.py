@@ -212,3 +212,47 @@ def percent_movements_augment(to_scale_tensor):
     to_scale_tensor[-1] = 0
     return to_scale_tensor
     # return (to_scale_tensor - to_scale_tensor.shift(1)) / to_scale_tensor.shift(1)
+
+def percent_movements_augment_to(to_scale_tensor, movement_to_tensor):
+    """ percent changes moving from to scale to movement to"""
+    output = (movement_to_tensor - to_scale_tensor) / to_scale_tensor
+    return output
+    # return (to_scale_tensor - to_scale_tensor.shift(1)) / to_scale_tensor.shift(1)
+
+
+def calculate_takeprofit_torch(scaler, y_ndhalp_test, y_test, y_test_pred):
+    """
+    Calculate trading take profits
+    :param y_ndhalp_train: how much the high is actually above this current close
+    :param y_test: end close state
+    :param y_test_pred: preds for how much more to sell at
+    :return:
+    """
+    where_under = (y_test_pred < y_ndhalp_test).float()
+    where_over = (y_test_pred >= y_ndhalp_test).float()
+    under_sold_prices = y_test_pred * where_under
+    hodl_prices = where_over * y_test
+    current_profit = torch.sum(under_sold_prices)
+    current_end_profits = torch.sum(hodl_prices) # we predicted to sell higher so we get the real end value
+    return (current_profit + current_end_profits) / len(y_test)
+    # percent_movements_scaled = y_test  # not scientific
+    # detached_y_test_pred = y_test_pred
+    # bought_profits = torch.clip(detached_y_test_pred, 0, 10) * percent_movements_scaled
+    # sold_profits = torch.clip(y_test_pred, -10, 0) * percent_movements_scaled
+    # # saved_money = torch.clamp(
+    # #             1 - torch.abs(y_test_pred), 0, 500
+    # #         )
+    # current_profit = torch.sum(
+    #     # saved money
+    #     # saved_money
+    #     # +
+    #     # bought
+    #     bought_profits
+    #     +
+    #     # sold
+    #     sold_profits
+    #     # fee
+    #     - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+    # ) / len(detached_y_test_pred)
+    # # todo random deprecation?
+    # return current_profit
