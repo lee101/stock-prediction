@@ -11,3 +11,7 @@ account = alpaca_api.get_account()
 print(account)
 alpaca_clock = alpaca_api.get_clock()
 print(alpaca_clock)
+if not alpaca_clock.is_open:
+    print('Market closed')
+
+alpaca_api.submit_order(short_stock, qty, side, "market", "day")

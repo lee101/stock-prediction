@@ -1,29 +1,21 @@
 import csv
-from datetime import datetime, timedelta
+import pickle
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytorch_lightning as pl
 import torch
 import transformers
-
-from data_utils import split_data, drop_n_rows
-from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
-    calculate_trading_profit_no_scale, get_trading_profits_list, percent_movements_augment
-from model import GRU, GRU
-
-from neuralprophet import NeuralProphet
-
-import numpy as np
-import pandas as pd
-import pytorch_lightning as pl
+from pytorch_forecasting import Baseline, TemporalFusionTransformer, TimeSeriesDataSet
+from pytorch_forecasting.metrics import QuantileLoss
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
-import torch
 
-from pytorch_forecasting import Baseline, TemporalFusionTransformer, TimeSeriesDataSet
-from pytorch_forecasting.data import GroupNormalizer
-from pytorch_forecasting.metrics import SMAPE, PoissonLoss, QuantileLoss
+from data_utils import split_data
+from loss_utils import calculate_trading_profit_torch, DEVICE, get_trading_profits_list, percent_movements_augment
+from model import GRU
 
 transformers.set_seed(42)
 
@@ -33,11 +25,11 @@ base_dir = Path(__file__).parent
 print(base_dir)
 from sklearn.preprocessing import MinMaxScaler
 
-
 from torch.utils.tensorboard import SummaryWriter
 
 current_date_formatted = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
+
 
 def load_stock_data_from_csv(csv_file_path: Path):
     """
@@ -58,6 +50,8 @@ def train_test_split(stock_data: pd.DataFrame, test_size=50):
 
 scaler = MinMaxScaler(feature_range=(-1, 1))
 scaler.fit_transform([[-1, 1]])
+
+
 def pre_process_data(x_train, key_to_predict):
     # drop useless data
     # x_train = x_train.drop(columns=["Volume",
@@ -79,6 +73,7 @@ def pre_process_data(x_train, key_to_predict):
 
 pl.seed_everything(42)
 torch.autograd.set_detect_anomaly(True)
+
 
 def make_predictions(input_data_path=None):
     """
@@ -229,7 +224,7 @@ def make_predictions(input_data_path=None):
                 val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size * 10, num_workers=0)
                 actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
                 baseline_predictions = Baseline().predict(val_dataloader)
-                print((actuals[:,:-1] - baseline_predictions[:,:-1]).abs().mean().item())
+                print((actuals[:, :-1] - baseline_predictions[:, :-1]).abs().mean().item())
 
                 trainer = pl.Trainer(
                     gpus=0,
@@ -238,24 +233,34 @@ def make_predictions(input_data_path=None):
                     gradient_clip_val=0.1,
                 )
 
-
+                # best hyperpramams look like:
+                # {'gradient_clip_val': 0.05690473137493243, 'hidden_size': 50, 'dropout': 0.23151352460442215,
+                #  'hidden_continuous_size': 22, 'attention_head_size': 2, 'learning_rate': 0.0816548812864903}
+                best_hyperparams_save_file = f"data/test_study{instrument_name}.pkl"
+                params = pickle.load(open(best_hyperparams_save_file, "rb"))
+                added_best_params = {}
+                if params and params.best_trial.params:
+                    added_best_params = params.best_trial.params
+                added_params = {  # not meaningful for finding the learning rate but otherwise very important
+                    "learning_rate": 0.03,
+                    "hidden_size": 16,  # most important hyperparameter apart from learning rate
+                    # number of attention heads. Set to up to 4 for large datasets
+                    "attention_head_size": 1,
+                    "dropout": 0.1,  # between 0.1 and 0.3 are good values
+                    "hidden_continuous_size": 8,  # set to <= hidden_size
+                    "output_size": 7,  # 7 quantiles by default
+                    "loss": QuantileLoss(),
+                    # reduce learning rate if no improvement in validation loss after x epochs
+                    "reduce_on_plateau_patience": 4,
+                }
+                added_params.update(added_best_params)
+                gradient_clip_val = added_params.pop("gradient_clip_val") or 0.1
                 tft = TemporalFusionTransformer.from_dataset(
                     training,
-                    # not meaningful for finding the learning rate but otherwise very important
-                    learning_rate=0.03,
-                    hidden_size=16,  # most important hyperparameter apart from learning rate
-                    # number of attention heads. Set to up to 4 for large datasets
-                    attention_head_size=1,
-                    dropout=0.1,  # between 0.1 and 0.3 are good values
-                    hidden_continuous_size=8,  # set to <= hidden_size
-                    output_size=7,  # 7 quantiles by default
-                    loss=QuantileLoss(),
-                    # reduce learning rate if no improvement in validation loss after x epochs
-                    reduce_on_plateau_patience=4,
+                    **added_params
                 )
 
-
-                print(f"Number of parameters in network: {tft.size()/1e3:.1f}k")
+                print(f"Number of parameters in network: {tft.size() / 1e3:.1f}k")
 
                 early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=10, verbose=False,
                                                     mode="min")
@@ -265,7 +270,7 @@ def make_predictions(input_data_path=None):
                     max_epochs=30,
                     gpus=1,
                     weights_summary="top",
-                    gradient_clip_val=0.1,
+                    gradient_clip_val=gradient_clip_val,
                     limit_train_batches=30,  # coment in for training, running valiation every 30 batches
                     # fast_dev_run=True,  # comment in to check that networkor dataset has no serious bugs
                     callbacks=[lr_logger, early_stop_callback],
@@ -280,20 +285,52 @@ def make_predictions(input_data_path=None):
                 best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
                 actuals = torch.cat([y[0] for x, y in iter(val_dataloader)])
                 predictions = best_tft.predict(val_dataloader)
-                mean_val_loss = (actuals[:,:-1] - predictions[:,:-1]).abs().mean()
+                mean_val_loss = (actuals[:, :-1] - predictions[:, :-1]).abs().mean()
+
+                if not added_best_params:
+                    # find best hyperparams
+                    from pytorch_forecasting.models.temporal_fusion_transformer.tuning import optimize_hyperparameters
+
+                    # create study
+                    study = optimize_hyperparameters(
+                        train_dataloader,
+                        val_dataloader,
+                        model_path="optuna_test",
+                        n_trials=200,
+                        max_epochs=50,
+                        gradient_clip_val_range=(0.01, 1.0),
+                        hidden_size_range=(8, 128),
+                        hidden_continuous_size_range=(8, 128),
+                        attention_head_size_range=(1, 4),
+                        learning_rate_range=(0.001, 0.1),
+                        dropout_range=(0.1, 0.3),
+                        trainer_kwargs=dict(limit_train_batches=30),
+                        reduce_on_plateau_patience=4,
+                        use_learning_rate_finder=False,
+                        # use Optuna to find ideal learning rate or use in-built learning rate finder
+                    )
+
+                    # save study results - also we can resume tuning at a later point in time
+                    with open(best_hyperparams_save_file, "wb") as fout:
+                        pickle.dump(study, fout)
+
+                    # show best hyperparameters
+                    print(study.best_trial.params)
+
                 print(f"mean val loss:${mean_val_loss}")
 
                 raw_predictions, x = best_tft.predict(val_dataloader, mode="raw", return_x=True)
-                for idx in range(1):  # plot 10 examples
-                    plot = best_tft.plot_prediction(x, raw_predictions, idx=idx, add_loss_to_title=True)
-                    ## display plot
-                    plot.show()
+                # for idx in range(1):  # plot 10 examples
+                #     plot = best_tft.plot_prediction(x, raw_predictions, idx=idx, add_loss_to_title=True)
+                ## display plot
+                # note last one at zero actual movement is not true
+                # plot.show()
 
                 # predict trade if last value is above the prediction
-                trading_preds = (predictions[:,:-1] > 0) * 2 - 1
+                trading_preds = (predictions[:, :-1] > 0) * 2 - 1
                 # last_values = x_test[:, -1, 0]
-                calculated_profit = calculate_trading_profit_torch(scaler, None, actuals[:,:-1], trading_preds).item()
-
+                calculated_profit = calculate_trading_profit_torch(scaler, None, actuals[:, :-1], trading_preds).item()
+                # calculated_profit_values =
                 #
                 # x_train, y_train, x_test, y_test = split_data(price, lookback)
                 #
@@ -395,7 +432,7 @@ def make_predictions(input_data_path=None):
                 # ) / last_close_price
                 last_preds[key_to_predict.lower() + "_last_price"] = last_close_price
                 last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[0,
-                    -1
+                                                                                      -1
                 ].item()
                 last_preds[key_to_predict.lower() + "_val_loss"] = val_loss
                 last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = calculated_profit
@@ -408,13 +445,12 @@ def make_predictions(input_data_path=None):
                 # )
                 total_val_loss += val_loss
 
-
             ##### Now train other network to predict buy or sell leverage
 
             key_to_predict = "Close"
             for training_mode in [
-                # "BuyOrSell",
-              # "Leverage",
+                "BuyOrSell",
+                # "Leverage",
             ]:
                 print(f"training mode: {training_mode} {instrument_name}")
                 stock_data = load_stock_data_from_csv(csv_file)
@@ -428,7 +464,6 @@ def make_predictions(input_data_path=None):
                 # drop_n_rows(stock_data, 2)
                 # stock_data.reset_index(drop=True, inplace=True)
 
-
                 # drop last days_to_drop rows
                 if days_to_drop:
                     stock_data = stock_data.iloc[:-days_to_drop]
@@ -441,7 +476,7 @@ def make_predictions(input_data_path=None):
                 data = pre_process_data(data, "Open")
                 data = pre_process_data(data, key_to_predict)
                 price = data[[key_to_predict, "High", "Low", "Open"]]
-                price.drop(price.tail(1).index, inplace=True) # drop last row because of percent change augmentation
+                price.drop(price.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
                 # x_test = pre_process_data(x_test)
 
                 lookback = 16  # choose sequence length , GTLB only has been open for 27days cant go over that :O
@@ -460,8 +495,6 @@ def make_predictions(input_data_path=None):
                 x_test = torch.from_numpy(x_test).type(torch.Tensor).to(DEVICE)
                 y_train = torch.from_numpy(y_train).type(torch.Tensor).to(DEVICE)
                 y_test = torch.from_numpy(y_test).type(torch.Tensor).to(DEVICE)
-
-
 
                 input_dim = 4
                 hidden_dim = 32
@@ -482,7 +515,7 @@ def make_predictions(input_data_path=None):
 
                 start_time = datetime.now()
 
-                num_epochs = 1000 #100000 TODO more is better
+                num_epochs = 1000  # 100000 TODO more is better
                 hist = np.zeros(num_epochs)
                 y_train_pred = None
                 min_val_loss = np.inf
@@ -563,7 +596,6 @@ def make_predictions(input_data_path=None):
                     optimiser.step()
                     optimiser.zero_grad()
 
-
                     ## test
                     model.eval()
 
@@ -581,7 +613,7 @@ def make_predictions(input_data_path=None):
                         # y_test_pred = sigmoid(y_test_pred)
                         ## map to three trinary predictions -1 0 and 1
                         # y_test_pred = torch.round(y_test_pred)  # turn off rounding because ruins gradient
-                        y_test_pred = torch.clamp(y_test_pred, -4, 4) # 4x leverage
+                        y_test_pred = torch.clamp(y_test_pred, -4, 4)  # 4x leverage
 
                         # y_test_inverted = torch_inverse_transform(scaler, y_test)
                         # plot trading graph
@@ -596,7 +628,8 @@ def make_predictions(input_data_path=None):
 
                         # current_profit [:, 0]= calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy()[:, 0])
                         print(f"{training_mode} current_profit validation: {-loss}")
-                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss, epoc_idx)
+                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss,
+                                             epoc_idx)
                     # if "Leverage" == training_mode:
                     #     # sigmoid = torch.nn.Sigmoid()
                     #     # y_test_pred = sigmoid(y_test_pred)
@@ -639,7 +672,8 @@ def make_predictions(input_data_path=None):
                                                  i)
                             tb_writer.add_scalar(f"{instrument_name}/{training_mode}/actual/test", y_test[i][0:1], i)
                             # log trading_profits_list
-                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/trading_profits/test", trading_profits_list[i], i)
+                            tb_writer.add_scalar(f"{instrument_name}/{training_mode}/trading_profits/test",
+                                                 trading_profits_list[i], i)
                     else:
                         number_of_unsuccessful_epochs += 1
 
@@ -749,7 +783,10 @@ def make_predictions(input_data_path=None):
     print(f"total_buy_val_loss: {total_buy_val_loss / len(csv_files)}")
     print(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
 
+
 def df_to_torch(df):
     return torch.tensor(df.values, dtype=torch.float)
+
+
 if __name__ == "__main__":
     make_predictions()

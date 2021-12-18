@@ -178,3 +178,31 @@ total_profit avg per symbol: 0.013524375013730605
 mean val loss:$0.04344227537512779
 val_loss: 0.031683046370744705
 
+again 30epoc
+val_loss: .03192209452390671
+
+0.03335287271 avg profit trading on preds is high though
+
+
+{'gradient_clip_val': 0.021436335688506693, 'hidden_size': 100, 'dropout': 0.13881629517612382, 'hidden_continuous_size': 61, 'attention_head_size': 3, 'learning_rate': 0.0277579953131985}
+mean val loss:$0.02416972815990448
+val_loss: 0.031672656536102295
+total_buy_val_loss: 0.0
+total_profit avg per symbol: 0.0
+
+Process finished with exit code 0
+=========
+
+current day Dec18th
+Best val loss: -0.0037966917734593153
+Best current profit: 0.0037966917734593153
+val_loss: 0.03043694794178009
+total_buy_val_loss: 0.009012913603025178
+total_profit avg per symbol: 0.0021874699159525335
+========== running after htune:
+
+running Training time: 0:00:01.827697 Best val loss: -0.00021820170513819903 Best current profit: 0.00021820170513819903
+val_loss: 0.03161906823515892 total_buy_val_loss: -0.0067360673833718465 total_profit avg per symbol:
+0.013325717154884842
+
+Process finished with exit code 0

@@ -5,3 +5,4 @@ env.py
 logs
 lightning_logs
 
+optuna_test
