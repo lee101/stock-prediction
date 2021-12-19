@@ -24,4 +24,15 @@ def test_to_augment_percent():
 
 def test_calculate_takeprofit_torch():
     profit = calculate_takeprofit_torch(None, torch.tensor([1.2, 1.3]), torch.tensor([1.1, 1.1]), torch.tensor([1.2, 1.05]))
-    assert profit
+    assert profit == 1.075
+
+
+
+def test_calculate_takeprofit_torch_should_be_save_left():
+    y_test_pred = torch.tensor([1.5, 1.55])
+    leaving_profit = calculate_takeprofit_torch(None, torch.tensor([1.2, 1.3]), torch.tensor([1.1, 1.1]), y_test_pred)
+    y_test_pred2 = torch.tensor([1.4, 1.34])
+
+    leaving_profit2 = calculate_takeprofit_torch(None, torch.tensor([1.2, 1.3]), torch.tensor([1.1, 1.1]), y_test_pred2)
+
+    assert leaving_profit == leaving_profit2
