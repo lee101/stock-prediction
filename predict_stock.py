@@ -283,7 +283,7 @@ def make_predictions(input_data_path=None):
 
             key_to_predict = "Close"
             for training_mode in [
-                # "BuyOrSell",
+                "BuyOrSell",
                 "TakeProfit",
                 # "StopLoss",
             ]:
@@ -420,7 +420,7 @@ def make_predictions(input_data_path=None):
                         # compute percent movement between y_train and last_values
 
                         last_values = x_train[:, -1, 0]
-                        loss = -calculate_takeprofit_torch(scaler, y_ndhp_train, y_train[:, 0],
+                        loss = -calculate_takeprofit_torch(scaler, y_ndhp_train[:, 0], y_train[:, 0],
                                                                y_train_pred[:, 0])
 
                         ## log if loss is nan
@@ -521,7 +521,7 @@ def make_predictions(input_data_path=None):
 
                         # negative as profit is good
                         last_values = x_test[:, -1, 0]
-                        loss = -calculate_takeprofit_torch(scaler, y_ndhp_test, y_test[:, 0], y_test_pred[:, 0])
+                        loss = -calculate_takeprofit_torch(scaler, y_ndhp_test[:, 0], y_test[:, 0], y_test_pred[:, 0])
                         # trading_profits_list = get_trading_profits_list(scaler, last_values, y_test[:, 0],
                         #                                                 y_test_pred[
                         #                                                 :, 0])

@@ -206,3 +206,25 @@ val_loss: 0.03161906823515892 total_buy_val_loss: -0.0067360673833718465 total_p
 0.013325717154884842
 
 Process finished with exit code 0
+
+
+
+=======
+take profit training
+
+Training time: 0:00:01.391649
+Best val loss: -0.0008918015519157052
+Best current profit: 0.0008918015519157052
+val_loss: 0.0
+total_buy_val_loss: 0.0018733083804060395
+total_profit avg per symbol: -0.0018733083804060395
+'do_forecasting' ((), {}) 44.71 sec
+===== all bots
+
+Training time: 0:00:01.933525
+Best val loss: -0.008965459652245045
+Best current profit: 0.008965459652245045
+val_loss: 0.029988354071974754
+total_buy_val_loss: 0.008610340521651475
+total_profit avg per symbol: 0.004202203740229986
+'do_forecasting' ((), {}) 302.33 sec
