@@ -306,8 +306,8 @@ def make_predictions(input_data_path=None):
 
                 # x_train, x_test = train_test_split(stock_data)
                 last_close_price = stock_data[key_to_predict].iloc[-1]
-                next_day_high_above_low_percents = percent_movements_augment_to(stock_data["Open"], stock_data['High'])
-                next_day_high_above_low_percents.drop(next_day_high_above_low_percents.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
+                next_day_high_percents = percent_movements_augment_to(stock_data["Open"], stock_data['High'])
+                next_day_high_percents.drop(next_day_high_percents.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
 
                 data = pre_process_data(stock_data, "High")
                 # todo scaler for each, this messes up the scaler
@@ -332,18 +332,18 @@ def make_predictions(input_data_path=None):
                 # if len(price) > 300:
                 #     lookback = 280
                 x_train, y_train, x_test, y_test = split_data(price, lookback)
-                x_ndhalp_train, y_ndhalp_train, x_ndhalp_test, y_ndhalp_test = split_data(
-                    next_day_high_above_low_percents.to_frame(), lookback)
+                x_ndhp_train, y_ndhp_train, x_ndhp_test, y_ndhp_test = split_data(
+                    next_day_high_percents.to_frame(), lookback)
 
                 x_train = torch.from_numpy(x_train).type(torch.Tensor).to(DEVICE)
                 x_test = torch.from_numpy(x_test).type(torch.Tensor).to(DEVICE)
                 y_train = torch.from_numpy(y_train).type(torch.Tensor).to(DEVICE)
                 y_test = torch.from_numpy(y_test).type(torch.Tensor).to(DEVICE)
 
-                x_ndhalp_test = torch.from_numpy(x_ndhalp_test).type(torch.Tensor).to(DEVICE)
-                y_ndhalp_test = torch.from_numpy(y_ndhalp_test).type(torch.Tensor).to(DEVICE)
-                x_ndhalp_train = torch.from_numpy(x_ndhalp_train).type(torch.Tensor).to(DEVICE)
-                y_ndhalp_train = torch.from_numpy(y_ndhalp_train).type(torch.Tensor).to(DEVICE)
+                x_ndhp_test = torch.from_numpy(x_ndhp_test).type(torch.Tensor).to(DEVICE)
+                y_ndhp_test = torch.from_numpy(y_ndhp_test).type(torch.Tensor).to(DEVICE)
+                x_ndhp_train = torch.from_numpy(x_ndhp_train).type(torch.Tensor).to(DEVICE)
+                y_ndhp_train = torch.from_numpy(y_ndhp_train).type(torch.Tensor).to(DEVICE)
 
                 input_dim = x_train.shape[-1]
                 hidden_dim = 32
@@ -420,7 +420,7 @@ def make_predictions(input_data_path=None):
                         # compute percent movement between y_train and last_values
 
                         last_values = x_train[:, -1, 0]
-                        loss = -calculate_takeprofit_torch(scaler, y_ndhalp_train, y_train[:, 0],
+                        loss = -calculate_takeprofit_torch(scaler, y_ndhp_train, y_train[:, 0],
                                                                y_train_pred[:, 0])
 
                         ## log if loss is nan
@@ -521,7 +521,7 @@ def make_predictions(input_data_path=None):
 
                         # negative as profit is good
                         last_values = x_test[:, -1, 0]
-                        loss = -calculate_takeprofit_torch(scaler, y_ndhalp_test, y_test[:, 0], y_test_pred[:, 0])
+                        loss = -calculate_takeprofit_torch(scaler, y_ndhp_test, y_test[:, 0], y_test_pred[:, 0])
                         # trading_profits_list = get_trading_profits_list(scaler, last_values, y_test[:, 0],
                         #                                                 y_test_pred[
                         #                                                 :, 0])
