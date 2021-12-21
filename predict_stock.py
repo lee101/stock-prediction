@@ -133,9 +133,9 @@ def make_predictions(input_data_path=None):
             }
             training_mode = "predict"
             for key_to_predict in [
-                "Close",
-                'High',
-                'Low',
+                # "Close",
+                # 'High',
+                # 'Low',
             ]:  # , 'TakeProfit', 'StopLoss']:
                 stock_data = load_stock_data_from_csv(csv_file)
                 stock_data = stock_data.dropna()
@@ -285,7 +285,7 @@ def make_predictions(input_data_path=None):
 
             key_to_predict = "Close"
             for training_mode in [
-                "BuyOrSell",
+                # "BuyOrSell",
                 "TakeProfit",
                 # "StopLoss",
             ]:
@@ -362,7 +362,11 @@ def make_predictions(input_data_path=None):
                 model.to(DEVICE)
                 model.train()
                 criterion = torch.nn.L1Loss(reduction="mean")
-                optimiser = torch.optim.AdamW(model.parameters(), lr=0.01)
+                optimiser = None
+                if "TakeProfit" == training_mode:
+                    optimiser = torch.optim.Adam(model.parameters(), lr=0.001)
+                else:
+                    optimiser = torch.optim.AdamW(model.parameters(), lr=0.001)
 
                 start_time = datetime.now()
 
@@ -416,12 +420,16 @@ def make_predictions(input_data_path=None):
                     elif "TakeProfit" == training_mode:
                         # sigmoid = torch.nn.Sigmoid()
                         # y_train_pred = sigmoid(y_train_pred)
+                        ssign = torch.nn.Softsign()
+                        y_train_pred = ssign(y_train_pred) * .1
                         ## map to three trinary predictions -1 0 and 1
                         # y_train_pred = torch.round(y_train_pred) # turn off rounding because ruins gradient
                         # y_train_pred = torch.clamp(y_train_pred, -1, 1)
                         # compute percent movement between y_train and last_values
 
                         last_values = x_train[:, -1, 0]
+                        # loss = -calculate_takeprofit_torch(scaler, y_ndhp_train[:, 0], y_train[:, 0],
+                        #                                        y_train_pred[:, 0])
                         loss = -calculate_takeprofit_torch(scaler, y_ndhp_train[:, 0], y_train[:, 0],
                                                                y_train_pred[:, 0])
 
@@ -494,9 +502,11 @@ def make_predictions(input_data_path=None):
                     if "BuyOrSell" == training_mode:
                         # sigmoid = torch.nn.Sigmoid()
                         # y_test_pred = sigmoid(y_test_pred)
+                        ssign = torch.nn.Softsign()
+                        y_test_pred = ssign(y_test_pred) * 4  # 4x leverage
                         ## map to three trinary predictions -1 0 and 1
                         # y_test_pred = torch.round(y_test_pred)  # turn off rounding because ruins gradient
-                        y_test_pred = torch.clamp(y_test_pred, -4, 4) # 4x leverage
+                        # y_test_pred = torch.clamp(y_test_pred, -4, 4) # 4x leverage
 
                         # y_test_inverted = torch_inverse_transform(scaler, y_test)
                         # plot trading graph
@@ -513,11 +523,11 @@ def make_predictions(input_data_path=None):
                         print(f"{training_mode} current_profit validation: {-loss}")
                         tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss, epoc_idx)
                     if "TakeProfit" == training_mode:
-                        # sigmoid = torch.nn.Sigmoid()
-                        # y_test_pred = sigmoid(y_test_pred)
+                        ssign = torch.nn.Softsign()
+                        y_test_pred = ssign(y_test_pred) * .1 # max 10% added for sell
                         ## map to three trinary predictions -1 0 and 1
                         # y_test_pred = torch.round(y_test_pred)  # turn off rounding because ruins gradient
-                        y_test_pred = torch.clamp(y_test_pred, -4, 4)  # 4x leverage
+                        # y_test_pred = torch.clamp(y_test_pred, -4, 4)  # 4x leverage
 
                         # y_test_inverted = torch_inverse_transform(scaler, y_test)
                         # plot trading graph

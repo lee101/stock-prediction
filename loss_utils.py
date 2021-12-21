@@ -256,3 +256,22 @@ def calculate_takeprofit_torch(scaler, y_ndhalp_test, y_test, y_test_pred):
     # ) / len(detached_y_test_pred)
     # # todo random deprecation?
     # return current_profit
+
+
+def calculate_takeprofit_torch_sq(scaler, y_ndhalp_test, y_test, y_test_pred):
+    """
+    Calculate trading take profits
+    :param y_ndhalp_train: how much the high is actually above this current close
+    :param y_test: end close state
+    :param y_test_pred: preds for how much more to sell at
+    :return:
+    We also square things so its more sensitive to outliers avoiding soemthing?
+    """
+    where_under = (y_test_pred < y_ndhalp_test).float()
+    where_over = (y_test_pred >= y_ndhalp_test).float()
+    under_sold_prices = y_test_pred * where_under
+    hodl_prices = where_over * y_test
+    all_profits_sq = (under_sold_prices + hodl_prices)**2
+    # current_profit = torch.sum(under_sold_prices)
+    # current_end_profits = torch.sum(hodl_prices)  # we predicted to sell higher so we get the real end value
+    return torch.sqrt(all_profits_sq / len(y_test))

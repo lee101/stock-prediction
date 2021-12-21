@@ -228,3 +228,47 @@ val_loss: 0.029988354071974754
 total_buy_val_loss: 0.008610340521651475
 total_profit avg per symbol: 0.004202203740229986
 'do_forecasting' ((), {}) 302.33 sec
+
+====
+Best val loss: -0.0005545503227040172
+Best current profit: 0.0005545503227040172
+val_loss: 0.0756575134000741
+total_buy_val_loss: -0.0028890144926663197
+total_profit avg per symbol: 0.010314296004935386
+'do_forecastin
+
+==== ran both high low close
+NVDA/TakeProfit Early stopping
+Training time: 0:00:01.437688
+Best val loss: -0.0005545503227040172
+Best current profit: 0.0005545503227040172
+val_loss: 0.0756575134000741
+total_buy_val_loss: -0.0028890144926663197
+total_profit avg per symbol: 0.010314296004935386
+'do_forecasting' ((), {}) 192.71 sec
+
+
+========== ran just takeprofit
+
+Best val loss: -0.006021939683705568
+Best current profit: 0.006021939683705568
+val_loss: 0.0
+total_buy_val_loss: 0.0025406482145626796
+total_profit avg per symbol: 0.008230986168200616
+'do_forecasting' ((), {}) 142.03 sec
+=============================
+takeprofits soft/lower learning rate .001
+Best val loss: -0.006132283713668585
+Best current profit: 0.006132283713668585
+val_loss: 0.0
+total_buy_val_loss: 0.000646751399472123
+total_profit avg per symbol: 0.009979900700272992
+
+
+============
+Best val loss: -0.006132282316684723
+Best current profit: 0.006132282316684723
+val_loss: 0.0
+total_buy_val_loss: 0.0006467541315942071
+total_profit avg per symbol: 0.009979980124626309
+'do_forecasting' ((), {}) 21.06 sec
