@@ -133,9 +133,9 @@ def make_predictions(input_data_path=None):
             }
             training_mode = "predict"
             for key_to_predict in [
-                # "Close",
-                # 'High',
-                # 'Low',
+                "Close",
+                'High',
+                'Low',
             ]:  # , 'TakeProfit', 'StopLoss']:
                 stock_data = load_stock_data_from_csv(csv_file)
                 stock_data = stock_data.dropna()
@@ -149,8 +149,8 @@ def make_predictions(input_data_path=None):
                 # todo scaler for each, this messes up the scaler
                 data = pre_process_data(data, "Low")
                 data = pre_process_data(data, "Open")
-                data = pre_process_data(data, key_to_predict)
-                price = data[[key_to_predict, "High", "Low", "Open"]]
+                data = pre_process_data(data, "Close")
+                price = data[["Close", "High", "Low", "Open"]]
                 price.drop(price.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
 
                 # x_test = pre_process_data(x_test)
@@ -210,6 +210,8 @@ def make_predictions(input_data_path=None):
                     hist[epoc_idx] = loss.item()
 
                     loss.backward()
+
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0) # nans caused by overflow in linear la
                     optimiser.step()
                     optimiser.zero_grad()
                     ## test
@@ -260,22 +262,22 @@ def make_predictions(input_data_path=None):
                 # tb_writer.add_scalar("Prediction/train", y_train_pred_inverted[-1], 0)
 
                 val_loss = loss.item()
-                percent_movement = (
-                    best_y_test_pred_inverted[-1].item() - last_close_price
-                ) / last_close_price
+                # percent_movement = (
+                #     best_y_test_pred_inverted[-1].item() - last_close_price
+                # ) / last_close_price
                 last_preds[key_to_predict.lower() + "_last_price"] = last_close_price
                 last_preds[key_to_predict.lower() + "_predicted_price"] = best_y_test_pred_inverted[
                     -1
                 ].item()
                 last_preds[key_to_predict.lower() + "_val_loss"] = val_loss
                 last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = min_loss_trading_profit
-                last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
-                last_preds[
-                    key_to_predict.lower() + "_likely_percent_uncertainty"
-                ] = likely_percent_uncertainty
-                last_preds[key_to_predict.lower() + "_minus_uncertainty"] = (
-                    percent_movement - likely_percent_uncertainty
-                )
+                # last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
+                # last_preds[
+                #     key_to_predict.lower() + "_likely_percent_uncertainty"
+                # ] = likely_percent_uncertainty
+                # last_preds[key_to_predict.lower() + "_minus_uncertainty"] = (
+                #     percent_movement - likely_percent_uncertainty
+                # )
                 total_val_loss += val_loss
 
 
@@ -472,6 +474,7 @@ def make_predictions(input_data_path=None):
                     hist[epoc_idx] = loss.item()
 
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0) # nans caused by overflow in linear la
                     optimiser.step()
                     optimiser.zero_grad()
 
