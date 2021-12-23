@@ -272,3 +272,88 @@ val_loss: 0.0
 total_buy_val_loss: 0.0006467541315942071
 total_profit avg per symbol: 0.009979980124626309
 'do_forecasting' ((), {}) 21.06 sec
+
+
+====last try of takeprofit
+Training time: 0:00:02.356594
+Best val loss: -0.006077495403587818
+Best current profit: 0.006077495403587818
+val_loss: 0.0
+total_buy_val_loss: 5.3777912398800254e-05
+total_profit avg per symbol: 0.005922729891608469
+'do_forecasting' ((), {}) 32.68 sec
+
+
+===== buyorsell
+BuyOrSell Last prediction: y_test_pred[-1] = tensor([3.6366], device='cuda:0', grad_fn=<SelectBackward>)
+NVDA/BuyOrSell Early stopping
+Training time: 0:00:46.871617
+Best val loss: -0.00019864326168317348
+Best current profit: 0.00019864326168317348
+val_loss: 0.0
+total_buy_val_loss: -0.007066633733302297
+total_profit avg per symbol: 0.012501559103498039
+'do_forecasting' ((), {}) 423.17 sec
+
+went well i think? didnt converge on a single thing
+
+
+
+
+====================== real data today at dec 21
+
+TakeProfit val loss: -0.0006072151008993387
+TakeProfit Last prediction: y_test_pred[-1] = tensor([0.0508], device='cuda:0', grad_fn=<SelectBackward>)
+ADBE/TakeProfit Early stopping
+Training time: 0:00:01.260577
+Best val loss: -0.004476953763514757
+Best current profit: 0.004476953763514757
+val_loss: 0.0
+total_buy_val_loss: 0.00746355892624706
+total_profit avg per symbol: 0.01257198243304932
+'do_forecasting' ((), {}) 173.10 sec
+
+===================== 
+
+NVDA/BuyOrSell Early stopping
+Training time: 0:00:01.707755
+Best val loss: -0.00021820170513819903
+Best current profit: 0.00021820170513819903
+val_loss: 0.028930338099598885
+total_buy_val_loss: -0.0067360673833718465
+total_profit avg per symbol: 0.013259957291893443
+'do_forecasting' ((), {}) 568.73 sec
+===================
+
+BuyOrSell current_profit validation: 0.00021820170513819903
+BuyOrSell val loss: -0.00021820170513819903
+BuyOrSell Last prediction: y_test_pred[-1] = tensor([4.], device='cuda:0', grad_fn=<SelectBackward>)
+NVDA/BuyOrSell Early stopping
+Training time: 0:00:01.707755
+Best val loss: -0.00021820170513819903
+Best current profit: 0.00021820170513819903
+val_loss: 0.028930338099598885
+total_buy_val_loss: -0.0067360673833718465
+total_profit avg per symbol: 0.013259957291893443
+'do_forecasting' ((), {}) 568.73 sec
+
+
+
+======forecasting: on benchmark
+
+mean val loss:$0.010524841025471687
+val_loss: 0.030675603076815605
+total_buy_val_loss: 0.0
+total_profit avg per symbol: 0.0
+'do_forecasting' ((), {}) 909.92 sec
+=======================
+forecasting on benchmark model reloading
+mean val loss:$0.006169136613607407
+val_loss: 0.027966106310486794
+total_buy_val_loss: 0.0
+total_profit avg per symbol: 0.0
+'do_forecasting' ((), {}) 532.15 sec
+
+
+todo a few epocs if reloaded
+==========

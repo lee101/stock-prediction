@@ -271,7 +271,8 @@ def calculate_takeprofit_torch_sq(scaler, y_ndhalp_test, y_test, y_test_pred):
     where_over = (y_test_pred >= y_ndhalp_test).float()
     under_sold_prices = y_test_pred * where_under
     hodl_prices = where_over * y_test
-    all_profits_sq = (under_sold_prices + hodl_prices)**2
+    all_profits_sq = (under_sold_prices + hodl_prices)
+    where_loosing = torch.sum((all_profits_sq < 0).float()) / len(y_test) # we want to minimize loosing money add this weighted rate in
     # current_profit = torch.sum(under_sold_prices)
     # current_end_profits = torch.sum(hodl_prices)  # we predicted to sell higher so we get the real end value
-    return torch.sqrt(all_profits_sq / len(y_test))
+    return (torch.sum(all_profits_sq) / len(y_test)) * where_loosing # mul by loosing rate

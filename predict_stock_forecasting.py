@@ -10,7 +10,7 @@ import torch
 import transformers
 from pytorch_forecasting import Baseline, TemporalFusionTransformer, TimeSeriesDataSet
 from pytorch_forecasting.metrics import QuantileLoss
-from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor
+from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from data_utils import split_data
@@ -220,8 +220,8 @@ def make_predictions(input_data_path=None):
 
                 # create dataloaders for model
                 batch_size = 128  # set this between 32 to 128
-                train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=0)
-                val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size * 10, num_workers=0)
+                train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, pin_memory=True, num_workers=0)
+                val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size * 10, pin_memory=True, num_workers=0)
                 actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
                 baseline_predictions = Baseline().predict(val_dataloader)
                 print((actuals[:, :-1] - baseline_predictions[:, :-1]).abs().mean().item())
@@ -264,25 +264,49 @@ def make_predictions(input_data_path=None):
 
                 early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=10, verbose=False,
                                                     mode="min")
+                model_checkpoint = ModelCheckpoint(
+                    monitor="val_loss",
+                    mode="min",
+                    # save a few of the top models
+                    # incase one does great on other metrics than just val_loss
+                    save_top_k=1,
+                    verbose=True,
+                    filename=instrument_name + "_{epoch}_{val_loss:.4f}",
+                )
                 lr_logger = LearningRateMonitor()  # log the learning rate
-                logger = TensorBoardLogger("lightning_logs")  # logging results to a tensorboard
+                logger = TensorBoardLogger(f"lightning_logs/{instrument_name}")  # logging results to a tensorboard
                 trainer = pl.Trainer(
                     max_epochs=30,
                     gpus=1,
                     weights_summary="top",
                     gradient_clip_val=gradient_clip_val,
+                    # track_grad_norm=2,
+                    # auto_lr_find=True,
+                    # auto_scale_batch_size='binsearch',
                     limit_train_batches=30,  # coment in for training, running valiation every 30 batches
                     # fast_dev_run=True,  # comment in to check that networkor dataset has no serious bugs
-                    callbacks=[lr_logger, early_stop_callback],
+                    callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                trainer.fit(
-                    tft,
-                    train_dataloader=train_dataloader,
-                    val_dataloaders=val_dataloader,
-                )
-                best_model_path = trainer.checkpoint_callback.best_model_path
-                best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
+                retrain = True
+                checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
+                checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
+                best_tft = tft
+                if checkpoint_files:
+                    best_checkpoint_path = checkpoint_files[0]
+                    print(f"Loading best checkpoint from {best_checkpoint_path}")
+                    best_tft = TemporalFusionTransformer.load_from_checkpoint(str(best_checkpoint_path))
+
+                if retrain:
+                    trainer.fit(
+                        best_tft,
+                        train_dataloader=train_dataloader,
+                        val_dataloaders=val_dataloader,
+                    )
+                    best_model_path = trainer.checkpoint_callback.best_model_path
+                    best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
+
+
                 actuals = torch.cat([y[0] for x, y in iter(val_dataloader)])
                 predictions = best_tft.predict(val_dataloader)
                 mean_val_loss = (actuals[:, :-1] - predictions[:, :-1]).abs().mean()
@@ -449,7 +473,7 @@ def make_predictions(input_data_path=None):
 
             key_to_predict = "Close"
             for training_mode in [
-                "BuyOrSell",
+                # "BuyOrSell",
                 # "Leverage",
             ]:
                 print(f"training mode: {training_mode} {instrument_name}")

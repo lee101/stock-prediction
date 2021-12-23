@@ -10,7 +10,7 @@ import transformers
 from data_utils import split_data, drop_n_rows
 from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
     calculate_trading_profit_no_scale, get_trading_profits_list, percent_movements_augment, \
-    percent_movements_augment_to, calculate_takeprofit_torch
+    percent_movements_augment_to, calculate_takeprofit_torch, calculate_takeprofit_torch_sq
 from model import GRU, GRU
 
 from neuralprophet import NeuralProphet
@@ -285,7 +285,7 @@ def make_predictions(input_data_path=None):
 
             key_to_predict = "Close"
             for training_mode in [
-                # "BuyOrSell",
+                "BuyOrSell",
                 "TakeProfit",
                 # "StopLoss",
             ]:
@@ -430,7 +430,7 @@ def make_predictions(input_data_path=None):
                         last_values = x_train[:, -1, 0]
                         # loss = -calculate_takeprofit_torch(scaler, y_ndhp_train[:, 0], y_train[:, 0],
                         #                                        y_train_pred[:, 0])
-                        loss = -calculate_takeprofit_torch(scaler, y_ndhp_train[:, 0], y_train[:, 0],
+                        loss = -calculate_takeprofit_torch_sq(scaler, y_ndhp_train[:, 0], y_train[:, 0],
                                                                y_train_pred[:, 0])
 
                         ## log if loss is nan
