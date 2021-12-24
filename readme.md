@@ -356,4 +356,21 @@ total_profit avg per symbol: 0.0
 
 
 todo a few epocs if reloaded
-==========
+========== on 15min data
+mean val loss:$0.0014578874688595533
+Empty data for AMPL
+Empty data for ARQQ
+val_loss: 0.0008029807358980179
+total_buy_val_loss: 0.0
+total_profit avg per symbol: 0.0
+'do_forecasting' ((), {}) 398.30 sec
+
+
+can predict next 15min
+can predict next day
+=======================
+on dec 24
+mean val loss:$0.03528802841901779
+val_loss: 0.021195612847805023
+total_buy_val_loss: 0.0
+total_profit avg per symbol: 0.0

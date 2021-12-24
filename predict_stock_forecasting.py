@@ -35,7 +35,10 @@ def load_stock_data_from_csv(csv_file_path: Path):
     """
     Loads stock data from csv file.
     """
-    return pd.read_csv(csv_file_path)
+    csv = pd.read_csv(csv_file_path)
+    # rename columns to capitalized first letters
+    csv.columns = [col.title() for col in csv.columns]
+    return csv
 
 
 def train_test_split(stock_data: pd.DataFrame, test_size=50):
@@ -145,6 +148,9 @@ def make_predictions(input_data_path=None):
             ]:  # , 'TakeProfit', 'StopLoss']:
                 stock_data = load_stock_data_from_csv(csv_file)
                 stock_data = stock_data.dropna()
+                if stock_data.empty:
+                    print(f"Empty data for {instrument_name}")
+                    continue
                 # drop last days_to_drop rows
                 if days_to_drop:
                     stock_data = stock_data.iloc[:-days_to_drop]
@@ -155,8 +161,9 @@ def make_predictions(input_data_path=None):
                 # todo scaler for each, this messes up the scaler
                 data = pre_process_data(data, "Low")
                 data = pre_process_data(data, "Open")
-                data = pre_process_data(data, key_to_predict)
-                price = data
+                data = pre_process_data(data, "Close")
+                price = data[["Close", "High", "Low", "Open"]]
+                price.drop(price.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
 
                 # x_test = pre_process_data(x_test)
 
@@ -220,8 +227,10 @@ def make_predictions(input_data_path=None):
 
                 # create dataloaders for model
                 batch_size = 128  # set this between 32 to 128
-                train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, pin_memory=True, num_workers=0)
-                val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size * 10, pin_memory=True, num_workers=0)
+                train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, pin_memory=True,
+                                                          num_workers=0)
+                val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size * 10, pin_memory=True,
+                                                          num_workers=0)
                 actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
                 baseline_predictions = Baseline().predict(val_dataloader)
                 print((actuals[:, :-1] - baseline_predictions[:, :-1]).abs().mean().item())
@@ -288,7 +297,7 @@ def make_predictions(input_data_path=None):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                retrain = True
+                retrain = False
                 checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
                 checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 best_tft = tft
@@ -305,7 +314,6 @@ def make_predictions(input_data_path=None):
                     )
                     best_model_path = trainer.checkpoint_callback.best_model_path
                     best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
-
 
                 actuals = torch.cat([y[0] for x, y in iter(val_dataloader)])
                 predictions = best_tft.predict(val_dataloader)
@@ -354,6 +362,9 @@ def make_predictions(input_data_path=None):
                 trading_preds = (predictions[:, :-1] > 0) * 2 - 1
                 # last_values = x_test[:, -1, 0]
                 calculated_profit = calculate_trading_profit_torch(scaler, None, actuals[:, :-1], trading_preds).item()
+                trading_preds_buy_only = (predictions[:, :-1] > 0)
+
+                calculated_profit_buy_only = calculate_trading_profit_torch(scaler, None, actuals[:, :-1], trading_preds).item()
                 # calculated_profit_values =
                 #
                 # x_train, y_train, x_test, y_test = split_data(price, lookback)
@@ -458,8 +469,9 @@ def make_predictions(input_data_path=None):
                 last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[0,
                                                                                       -1
                 ].item()
-                last_preds[key_to_predict.lower() + "_val_loss"] = val_loss
+                last_preds[key_to_predict.lower() + "_val_loss"] = val_loss.item()
                 last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = calculated_profit
+                last_preds[key_to_predict.lower() + "min_loss_buy_only_trading_profit"] = calculated_profit_buy_only
                 # last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
                 # last_preds[
                 #     key_to_predict.lower() + "_likely_percent_uncertainty"
@@ -473,7 +485,7 @@ def make_predictions(input_data_path=None):
 
             key_to_predict = "Close"
             for training_mode in [
-                # "BuyOrSell",
+                "BuyOrSell",
                 # "Leverage",
             ]:
                 print(f"training mode: {training_mode} {instrument_name}")
@@ -498,8 +510,8 @@ def make_predictions(input_data_path=None):
                 # todo scaler for each, this messes up the scaler
                 data = pre_process_data(data, "Low")
                 data = pre_process_data(data, "Open")
-                data = pre_process_data(data, key_to_predict)
-                price = data[[key_to_predict, "High", "Low", "Open"]]
+                data = pre_process_data(data, "Close")
+                price = data[["Close", "High", "Low", "Open"]]
                 price.drop(price.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
                 # x_test = pre_process_data(x_test)
 
@@ -806,6 +818,8 @@ def make_predictions(input_data_path=None):
     print(f"val_loss: {total_val_loss / len(csv_files)}")
     print(f"total_buy_val_loss: {total_buy_val_loss / len(csv_files)}")
     print(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
+    # return csv file name
+    return pd.read_csv(save_file_name)
 
 
 def df_to_torch(df):
