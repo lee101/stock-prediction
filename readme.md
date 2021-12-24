@@ -374,3 +374,18 @@ mean val loss:$0.03528802841901779
 val_loss: 0.021195612847805023
 total_buy_val_loss: 0.0
 total_profit avg per symbol: 0.0
+
+
+
+==========
+now with sharpe Training time: 0:00:01.772795 Best val loss: -0.00021820170513819903 Best current profit:
+0.00021820170513819903 val_loss: 0.02782493084669113 total_forecasted_profit: 0.034632797236554325 total_buy_val_loss:
+-0.0067360673833718465 total_profit avg per symbol: 0.013302900502367265 Trade suggestion
+
+
+==== now with trading loss pure loss function
+val_loss: 0.02700655721127987
+total_forecasted_profit: 0.05131187697406858
+total_buy_val_loss: 0.0
+total_profit avg per symbol: 0.0
+Trade suggestion

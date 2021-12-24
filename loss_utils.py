@@ -2,6 +2,8 @@ import numpy as np
 
 # TRADING_FEE = 0.0007 # fee actually changes for small trades - this is for 100k
 # TRADING_FEE = 0.003  # fee actually changes for small trades
+from pytorch_forecasting import MultiHorizonMetric
+
 TRADING_FEE = 0.0005
 
 import torch
@@ -129,6 +131,28 @@ def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
     ) / len(detached_y_test_pred)
     # todo random deprecation?
     return current_profit
+
+
+class TradingLossBinary(MultiHorizonMetric):
+    """
+    trading loss for use with pytorch forecasting
+    """
+
+    def loss(self, y_pred, target):
+        y_pred = self.to_prediction(y_pred)
+        loss = calculate_trading_profit_torch(None, None, target, (y_pred > 0).float() * 2 - 1)
+        return -loss
+
+
+class TradingLoss(MultiHorizonMetric):
+    """
+    trading loss for use with pytorch forecasting
+    """
+
+    def loss(self, y_pred, target):
+        y_pred = self.to_prediction(y_pred)
+        loss = calculate_trading_profit_torch(None, None, target, y_pred)
+        return -loss
 
 
 def calculate_trading_profit_no_scale(last_values, y_test, y_test_pred):

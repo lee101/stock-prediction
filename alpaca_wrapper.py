@@ -1,5 +1,5 @@
 from time import time, sleep
-
+from loguru import logger
 from env import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT
 import alpaca_trade_api as tradeapi
 alpaca_api = tradeapi.REST(
@@ -25,21 +25,26 @@ def cancel_all_orders():
 
 # alpaca_api.submit_order(short_stock, qty, side, "market", "day")
 def close_position(position):
-    if position.side == 'long':
-        result = alpaca_api.submit_order(
-            position.symbol,
-            position.qty,
-            'sell',
-            'market',
-            'day')
+    try:
+        if position.side == 'long':
+            result = alpaca_api.submit_order(
+                position.symbol,
+                position.qty,
+                'sell',
+                'market',
+                'day')
 
-    else:
-        result = alpaca_api.submit_order(
-            position.symbol,
-            position.qty,
-            'buy',
-            'market',
-            'day')
+        else:
+            result = alpaca_api.submit_order(
+                position.symbol,
+                position.qty,
+                'buy',
+                'market',
+                'day')
+    except Exception as e:
+        logger.error(e)
+        # close all positions? perhaps not
+        return None
     print(result)
 
 
@@ -57,7 +62,9 @@ def buy_stock(currentBuySymbol, row):
             if polls > 10:
                 print('polling for too long, closing all positions again')
                 # alpaca_api.close_all_positions() # todo respect manual orders
-
+            if polls > 20:
+                print('polling for too long, exiting, market is probably closed')
+                break
     notional_value = abs(account.cash) * 1.9 # trade with margin
     result = alpaca_api.submit_order(
         currentBuySymbol,

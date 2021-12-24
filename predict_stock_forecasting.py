@@ -9,12 +9,13 @@ import pytorch_lightning as pl
 import torch
 import transformers
 from pytorch_forecasting import Baseline, TemporalFusionTransformer, TimeSeriesDataSet
-from pytorch_forecasting.metrics import QuantileLoss
+from pytorch_forecasting.metrics import SMAPE
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from data_utils import split_data
-from loss_utils import calculate_trading_profit_torch, DEVICE, get_trading_profits_list, percent_movements_augment
+from loss_utils import calculate_trading_profit_torch, DEVICE, get_trading_profits_list, percent_movements_augment, \
+    TradingLossBinary, TradingLoss
 from model import GRU
 
 transformers.set_seed(42)
@@ -197,7 +198,7 @@ def make_predictions(input_data_path=None):
                 final_pred_to_predict = price.tail(1)
                 # price.drop(final_pred_to_predict.index, inplace=True)  # drop last row because of percent change augmentation
 
-                target_to_pred = ["y"]
+                target_to_pred = "y"
                 training = TimeSeriesDataSet(
                     price,
                     time_idx="id",
@@ -262,8 +263,9 @@ def make_predictions(input_data_path=None):
                     "attention_head_size": 1,
                     "dropout": 0.1,  # between 0.1 and 0.3 are good values
                     "hidden_continuous_size": 8,  # set to <= hidden_size
-                    "output_size": 7,  # 7 quantiles by default
-                    "loss": QuantileLoss(),
+                    "output_size": 1,  # 7 quantiles by default
+                    "loss": TradingLoss(),
+                    # "logging_metrics": TradingLossBinary(),
                     # reduce learning rate if no improvement in validation loss after x epochs
                     "reduce_on_plateau_patience": 4,
                 }
@@ -325,7 +327,7 @@ def make_predictions(input_data_path=None):
 
                 actual_list = [y[0] for x, y in iter(val_dataloader)]
 
-                actuals = torch.cat(actual_list[0])
+                actuals = torch.cat(actual_list)
                 predictions = best_tft.predict(val_dataloader)
                 mean_val_loss = (actuals[:, :-1] - predictions[:, :-1]).abs().mean()
 
@@ -497,7 +499,7 @@ def make_predictions(input_data_path=None):
 
             key_to_predict = "Close"
             for training_mode in [
-                "BuyOrSell",
+                # "BuyOrSell",
                 # "Leverage",
             ]:
                 print(f"training mode: {training_mode} {instrument_name}")
