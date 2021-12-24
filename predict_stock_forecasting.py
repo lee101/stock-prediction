@@ -123,6 +123,7 @@ def make_predictions(input_data_path=None):
     # criterion = torch.nn.L1Loss(reduction='mean')
     # optimiser = torch.optim.Adam(model.parameters(), lr=0.01)
     total_val_loss = 0
+    total_forecasted_profit = 0
     total_buy_val_loss = 0
     total_profit = 0
 
@@ -163,7 +164,6 @@ def make_predictions(input_data_path=None):
                 data = pre_process_data(data, "Open")
                 data = pre_process_data(data, "Close")
                 price = data[["Close", "High", "Low", "Open"]]
-                price.drop(price.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
 
                 # x_test = pre_process_data(x_test)
 
@@ -182,6 +182,10 @@ def make_predictions(input_data_path=None):
                 # rename date to time_idx
                 price = price.rename(columns={"Date": "time_idx"})
                 price['y'] = price[key_to_predict].shift(-1)
+                price['trade_weight'] = (price["y"] > 0) * 2 - 1
+
+                price.drop(price.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
+
                 # cuttoff max_prediction_length from price
                 # price = price.iloc[:-max_prediction_length]
                 # add ascending id to price dataframe
@@ -193,10 +197,11 @@ def make_predictions(input_data_path=None):
                 final_pred_to_predict = price.tail(1)
                 # price.drop(final_pred_to_predict.index, inplace=True)  # drop last row because of percent change augmentation
 
+                target_to_pred = ["y"]
                 training = TimeSeriesDataSet(
                     price,
                     time_idx="id",
-                    target="y",
+                    target=target_to_pred,
                     group_ids=['constant'],
                     min_encoder_length=max_encoder_length // 2,
                     # keep encoder length long (as it is in the validation set)
@@ -231,16 +236,16 @@ def make_predictions(input_data_path=None):
                                                           num_workers=0)
                 val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size * 10, pin_memory=True,
                                                           num_workers=0)
-                actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
-                baseline_predictions = Baseline().predict(val_dataloader)
-                print((actuals[:, :-1] - baseline_predictions[:, :-1]).abs().mean().item())
+                # actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
+                # baseline_predictions = Baseline().predict(val_dataloader)
+                # print((actuals[:, :-1] - baseline_predictions[:, :-1]).abs().mean().item())
 
-                trainer = pl.Trainer(
-                    gpus=0,
-                    # clipping gradients is a hyperparameter and important to prevent divergance
-                    # of the gradient for recurrent neural networks
-                    gradient_clip_val=0.1,
-                )
+                # trainer = pl.Trainer(
+                #     gpus=0,
+                #     # clipping gradients is a hyperparameter and important to prevent divergance
+                #     # of the gradient for recurrent neural networks
+                #     gradient_clip_val=0.1,
+                # )
 
                 # best hyperpramams look like:
                 # {'gradient_clip_val': 0.05690473137493243, 'hidden_size': 50, 'dropout': 0.23151352460442215,
@@ -263,6 +268,9 @@ def make_predictions(input_data_path=None):
                     "reduce_on_plateau_patience": 4,
                 }
                 added_params.update(added_best_params)
+                if type(added_params['output_size']) == int:
+                    if type(target_to_pred) == list:
+                        added_params['output_size'] = [added_params['output_size']] * len(target_to_pred)
                 gradient_clip_val = added_params.pop("gradient_clip_val") or 0.1
                 tft = TemporalFusionTransformer.from_dataset(
                     training,
@@ -297,7 +305,7 @@ def make_predictions(input_data_path=None):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                retrain = False
+                retrain = True # todo reenable
                 checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
                 checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 best_tft = tft
@@ -315,7 +323,9 @@ def make_predictions(input_data_path=None):
                     best_model_path = trainer.checkpoint_callback.best_model_path
                     best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
 
-                actuals = torch.cat([y[0] for x, y in iter(val_dataloader)])
+                actual_list = [y[0] for x, y in iter(val_dataloader)]
+
+                actuals = torch.cat(actual_list[0])
                 predictions = best_tft.predict(val_dataloader)
                 mean_val_loss = (actuals[:, :-1] - predictions[:, :-1]).abs().mean()
 
@@ -364,7 +374,8 @@ def make_predictions(input_data_path=None):
                 calculated_profit = calculate_trading_profit_torch(scaler, None, actuals[:, :-1], trading_preds).item()
                 trading_preds_buy_only = (predictions[:, :-1] > 0)
 
-                calculated_profit_buy_only = calculate_trading_profit_torch(scaler, None, actuals[:, :-1], trading_preds).item()
+                calculated_profit_buy_only = calculate_trading_profit_torch(scaler, None, actuals[:, :-1],
+                                                                            trading_preds).item()
                 # calculated_profit_values =
                 #
                 # x_train, y_train, x_test, y_test = split_data(price, lookback)
@@ -480,6 +491,7 @@ def make_predictions(input_data_path=None):
                 #     percent_movement - likely_percent_uncertainty
                 # )
                 total_val_loss += val_loss
+                total_forecasted_profit += calculated_profit
 
             ##### Now train other network to predict buy or sell leverage
 
@@ -816,6 +828,7 @@ def make_predictions(input_data_path=None):
                 # fig.show()
 
     print(f"val_loss: {total_val_loss / len(csv_files)}")
+    print(f"total_forecasted_profit: {total_forecasted_profit / len(csv_files)}")
     print(f"total_buy_val_loss: {total_buy_val_loss / len(csv_files)}")
     print(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
     # return csv file name
