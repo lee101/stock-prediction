@@ -65,7 +65,7 @@ def buy_stock(currentBuySymbol, row):
             if polls > 20:
                 print('polling for too long, exiting, market is probably closed')
                 break
-    notional_value = abs(account.cash) * 1.9 # trade with margin
+    notional_value = abs(float(account.cash)) * 1.9 # trade with margin
     result = alpaca_api.submit_order(
         currentBuySymbol,
         None,
