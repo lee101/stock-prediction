@@ -2,6 +2,7 @@
 data
 results
 env.py
+env_real.py
 logs
 lightning_logs
 
