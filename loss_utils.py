@@ -133,6 +133,40 @@ def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
     return current_profit
 
 
+def calculate_trading_profit_torch_buy_only(scaler, last_values, y_test, y_test_pred):
+    """
+    Calculate trading profits
+    :param last_values:
+    :param y_test:
+    :param y_test_pred:
+    :return:
+    """
+    # percent_movements = ((y_test - last_values) / last_values) + 1
+
+    # last_values_scaled = last_values # no scaling
+    # y_test_rescaled = y_test # no scaling
+    percent_movements_scaled = y_test  # not scientific
+    detached_y_test_pred = y_test_pred
+    bought_profits = torch.clip(detached_y_test_pred, 0, 10) * percent_movements_scaled
+    # sold_profits = torch.clip(y_test_pred, -10, 0) * percent_movements_scaled
+    # saved_money = torch.clamp(
+    #             1 - torch.abs(y_test_pred), 0, 500
+    #         )
+    current_profit = torch.sum(
+        # saved money
+        # saved_money
+        # +
+        # bought
+        bought_profits
+        # +
+        # # sold
+        # sold_profits
+        # fee
+        - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+    ) / len(detached_y_test_pred)
+    # todo random deprecation?
+    return current_profit
+
 class TradingLossBinary(MultiHorizonMetric):
     """
     trading loss for use with pytorch forecasting

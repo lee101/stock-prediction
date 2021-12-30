@@ -15,7 +15,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 from data_utils import split_data
 from loss_utils import calculate_trading_profit_torch, DEVICE, get_trading_profits_list, percent_movements_augment, \
-    TradingLossBinary, TradingLoss
+    TradingLossBinary, TradingLoss, calculate_trading_profit_torch_buy_only
 from model import GRU
 
 transformers.set_seed(42)
@@ -252,7 +252,12 @@ def make_predictions(input_data_path=None):
                 # {'gradient_clip_val': 0.05690473137493243, 'hidden_size': 50, 'dropout': 0.23151352460442215,
                 #  'hidden_continuous_size': 22, 'attention_head_size': 2, 'learning_rate': 0.0816548812864903}
                 best_hyperparams_save_file = f"data/test_study{instrument_name}.pkl"
-                params = pickle.load(open(best_hyperparams_save_file, "rb"))
+                params = None
+                try:
+                    params = pickle.load(open(best_hyperparams_save_file, "rb"))
+                except FileNotFoundError:
+                    # logger.info("No best hyperparams found, tuning")
+                    pass
                 added_best_params = {}
                 if params and params.best_trial.params:
                     added_best_params = params.best_trial.params
@@ -273,7 +278,7 @@ def make_predictions(input_data_path=None):
                 if type(added_params['output_size']) == int:
                     if type(target_to_pred) == list:
                         added_params['output_size'] = [added_params['output_size']] * len(target_to_pred)
-                gradient_clip_val = added_params.pop("gradient_clip_val") or 0.1
+                gradient_clip_val = added_params.pop("gradient_clip_val", 0.1)
                 tft = TemporalFusionTransformer.from_dataset(
                     training,
                     **added_params
@@ -376,7 +381,7 @@ def make_predictions(input_data_path=None):
                 calculated_profit = calculate_trading_profit_torch(scaler, None, actuals[:, :-1], trading_preds).item()
                 trading_preds_buy_only = (predictions[:, :-1] > 0)
 
-                calculated_profit_buy_only = calculate_trading_profit_torch(scaler, None, actuals[:, :-1],
+                calculated_profit_buy_only = calculate_trading_profit_torch_buy_only(scaler, None, actuals[:, :-1],
                                                                             trading_preds).item()
                 # calculated_profit_values =
                 #
