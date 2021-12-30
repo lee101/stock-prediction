@@ -397,3 +397,20 @@ total_forecasted_profit: 0.03423017275054008
 ======= now back to buy
 
 total_profit avg per symbol: 0.013748854537084298
+===============
+real run
+
+mean val loss:$0.016567695885896683
+val_loss: 0.014835413545370102
+
+
+instrument                                                                            TSLA
+close_last_price                                                               1086.189941
+close_predicted_price                                                             0.003828
+close_val_loss                                                                     0.01608
+closemin_loss_trading_profit                                                      0.030482
+
+
+
+total_forecasted_profit: 0.008346215248681031
+total_buy_val_loss: 0.0

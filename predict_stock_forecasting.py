@@ -1,4 +1,5 @@
 import csv
+import os
 import pickle
 from datetime import datetime
 from pathlib import Path
@@ -316,15 +317,22 @@ def make_predictions(input_data_path=None):
                 checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
                 checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 best_tft = tft
+
                 if checkpoint_files:
                     best_checkpoint_path = checkpoint_files[0]
-                    min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
-                    for file_name in checkpoint_files:
-                        current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
-                        if float(current_loss) < float(min_current_loss):
-                            min_current_loss = current_loss
-                            best_checkpoint_path = file_name
-                            # TODO invalidation for 30minute vs daily data
+                    # sort by most recent checkpoint_files
+                    checkpoint_files.sort(key=lambda x: os.path.getctime(x))
+                    # load the most recent
+                    best_checkpoint_path = checkpoint_files[-1]
+                    # find best checkpoint
+                    # min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
+                    # for file_name in checkpoint_files:
+                    #     current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
+                    #     if float(current_loss) < float(min_current_loss):
+                    #         min_current_loss = current_loss
+                    #         best_checkpoint_path = file_name
+                    #         # TODO invalidation for 30minute vs daily data
+
                     print(f"Loading best checkpoint from {best_checkpoint_path}")
                     best_tft = TemporalFusionTransformer.load_from_checkpoint(str(best_checkpoint_path))
 
