@@ -312,7 +312,7 @@ def make_predictions(input_data_path=None):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                retrain = False # todo reenable
+                retrain = True # todo reenable
                 checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
                 checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 best_tft = tft
