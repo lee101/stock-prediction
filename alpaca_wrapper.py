@@ -1,4 +1,6 @@
 from time import time, sleep
+
+from alpaca_trade_api.rest import APIError
 from loguru import logger
 from env import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT
 import alpaca_trade_api as tradeapi
@@ -66,13 +68,20 @@ def buy_stock(currentBuySymbol, row):
                 print('polling for too long, exiting, market is probably closed')
                 break
     notional_value = abs(float(account.cash)) * 1.9 # trade with margin
-    result = alpaca_api.submit_order(
-        currentBuySymbol,
-        None,
-        'buy',
-        'market',
-        'day',
-        notional=notional_value,
-    )
+    side = 'buy'
+    if row['close_predicted_price'] < 0:
+        side = 'sell'
+        notional_value = abs(float(account.cash)) * 1.2  # trade with margin but not too much on the sell side
+    try:
+        result = alpaca_api.submit_order(
+            currentBuySymbol,
+            None,
+            side,
+            'market',
+            'day',
+            notional=notional_value,
+        )
+    except APIError as e: # insufficient buying power if market closed
+        logger.error(e)
     print(result)
     return None

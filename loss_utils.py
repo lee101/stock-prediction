@@ -40,7 +40,7 @@ def calculate_trading_profit(scaler, x_test, y_test, y_test_pred):
         np.abs((np.clip(detached_y_test_pred, -1, 0) * percent_movements_scaled))
         # fee
         - (np.abs(detached_y_test_pred) * TRADING_FEE)
-    ) - len(detached_y_test_pred)
+    ) / len(detached_y_test_pred)
     # todo random deprecation?
     return current_profit
 
@@ -128,7 +128,7 @@ def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
         sold_profits
         # fee
         - (torch.abs(detached_y_test_pred) * TRADING_FEE)
-    ) / len(detached_y_test_pred)
+    ) / detached_y_test_pred.numel()
     # todo random deprecation?
     return current_profit
 
@@ -163,7 +163,7 @@ def calculate_trading_profit_torch_buy_only(scaler, last_values, y_test, y_test_
         # sold_profits
         # fee
         - (torch.abs(detached_y_test_pred) * TRADING_FEE)
-    ) / len(detached_y_test_pred)
+    ) / detached_y_test_pred.numel()
     # todo random deprecation?
     return current_profit
 
@@ -292,7 +292,7 @@ def calculate_takeprofit_torch(scaler, y_ndhalp_test, y_test, y_test_pred):
     hodl_prices = where_over * y_test
     current_profit = torch.sum(under_sold_prices)
     current_end_profits = torch.sum(hodl_prices) # we predicted to sell higher so we get the real end value
-    return (current_profit + current_end_profits) / len(y_test)
+    return (current_profit + current_end_profits) / y_test.numel()
     # percent_movements_scaled = y_test  # not scientific
     # detached_y_test_pred = y_test_pred
     # bought_profits = torch.clip(detached_y_test_pred, 0, 10) * percent_movements_scaled
@@ -330,7 +330,7 @@ def calculate_takeprofit_torch_sq(scaler, y_ndhalp_test, y_test, y_test_pred):
     under_sold_prices = y_test_pred * where_under
     hodl_prices = where_over * y_test
     all_profits_sq = (under_sold_prices + hodl_prices)
-    where_loosing = torch.sum((all_profits_sq < 0).float()) / len(y_test) # we want to minimize loosing money add this weighted rate in
+    where_loosing = torch.sum((all_profits_sq < 0).float()) / y_test.numel() # we want to minimize loosing money add this weighted rate in
     # current_profit = torch.sum(under_sold_prices)
     # current_end_profits = torch.sum(hodl_prices)  # we predicted to sell higher so we get the real end value
-    return (torch.sum(all_profits_sq) / len(y_test)) * where_loosing # mul by loosing rate
+    return (torch.sum(all_profits_sq) / y_test.numel()) * where_loosing # mul by loosing rate

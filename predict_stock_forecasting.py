@@ -312,12 +312,19 @@ def make_predictions(input_data_path=None):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                retrain = True # todo reenable
+                retrain = False # todo reenable
                 checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
                 checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 best_tft = tft
                 if checkpoint_files:
                     best_checkpoint_path = checkpoint_files[0]
+                    min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
+                    for file_name in checkpoint_files:
+                        current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
+                        if float(current_loss) < float(min_current_loss):
+                            min_current_loss = current_loss
+                            best_checkpoint_path = file_name
+                            # TODO invalidation for 30minute vs daily data
                     print(f"Loading best checkpoint from {best_checkpoint_path}")
                     best_tft = TemporalFusionTransformer.load_from_checkpoint(str(best_checkpoint_path))
 
@@ -383,7 +390,7 @@ def make_predictions(input_data_path=None):
 
                 calculated_profit_buy_only = calculate_trading_profit_torch_buy_only(scaler, None, actuals[:, :-1],
                                                                             trading_preds).item()
-                # calculated_profit_values =
+                calculated_profit_values = get_trading_profits_list(scaler, None, actuals[:, :-1], trading_preds)
                 #
                 # x_train, y_train, x_test, y_test = split_data(price, lookback)
                 #
@@ -490,6 +497,9 @@ def make_predictions(input_data_path=None):
                 last_preds[key_to_predict.lower() + "_val_loss"] = val_loss.item()
                 last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = calculated_profit
                 last_preds[key_to_predict.lower() + "min_loss_buy_only_trading_profit"] = calculated_profit_buy_only
+                last_preds[key_to_predict.lower() + "_calculated_profit_values"] = calculated_profit_values
+                last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds
+                last_preds[key_to_predict.lower() + "_predictions[:, :-1]"] = predictions[:, :-1]
                 # last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
                 # last_preds[
                 #     key_to_predict.lower() + "_likely_percent_uncertainty"

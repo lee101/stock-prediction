@@ -54,9 +54,9 @@ def download_daily_stock_data(path=None):
         # 'PFE',
         # 'MRNA',
     ]
-    save_path = base_dir / 'data' / 'min'
+    save_path = base_dir / 'data'
     if path:
-        save_path = base_dir / 'data' / 'min' / path
+        save_path = base_dir / 'data' / path
     save_path.mkdir(parents=True, exist_ok=True)
     for symbol in symbols:
         api = REST(secret_key=ALP_SECRET_KEY, key_id=ALP_KEY_ID, base_url=ALP_ENDPOINT)
@@ -68,7 +68,7 @@ def download_daily_stock_data(path=None):
         # end = pd.Timestamp('2020-08-28 16:00', tz=NY).isoformat()
         ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
 
-        minute_df = api.get_bars(symbol, TimeFrame(15, TimeFrameUnit.Minute), start, end,
+        minute_df = api.get_bars(symbol, TimeFrame(30, TimeFrameUnit.Minute), start, end,
                                  adjustment='raw').df
         if minute_df.empty:
             print(f"{symbol} has no data")
