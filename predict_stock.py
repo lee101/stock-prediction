@@ -315,8 +315,8 @@ def make_predictions(input_data_path=None):
                 # todo scaler for each, this messes up the scaler
                 data = pre_process_data(data, "Low")
                 data = pre_process_data(data, "Open")
-                data = pre_process_data(data, key_to_predict)
-                price = data[[key_to_predict, "High", "Low", "Open"]]
+                data = pre_process_data(data, "Close")
+                price = data[["Close", "High", "Low", "Open"]]
                 # if training_mode == "TakeProfit":
                 #     price['movementToHigh'] = percent_movements_augment_to(price["Open"], price['High'])
                 # close to high growth in change, a bit wierd

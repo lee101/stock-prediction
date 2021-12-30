@@ -389,3 +389,11 @@ total_forecasted_profit: 0.05131187697406858
 total_buy_val_loss: 0.0
 total_profit avg per symbol: 0.0
 Trade suggestion
+
+======== total forecasted profit bug fixed
+
+
+total_forecasted_profit: 0.03423017275054008
+======= now back to buy
+
+total_profit avg per symbol: 0.013748854537084298
