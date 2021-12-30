@@ -1,7 +1,7 @@
 from datetime import datetime
 
 import alpaca_wrapper
-from data_curate_minute import download_daily_stock_data
+from data_curate import download_daily_stock_data
 # from predict_stock import make_predictions
 from decorator_utils import timeit
 from predict_stock_forecasting import make_predictions
