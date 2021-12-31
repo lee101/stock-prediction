@@ -73,15 +73,27 @@ def buy_stock(currentBuySymbol, row):
         side = 'sell'
         notional_value = abs(float(account.cash)) * 1.2  # trade with margin but not too much on the sell side
     try:
-        result = alpaca_api.submit_order(
-            currentBuySymbol,
-            None,
-            side,
-            'market',
-            'day',
-            notional=notional_value,
-        )
+        current_price = row['close_last_price']
+        amount_to_trade = int(notional_value / current_price)
+        if side == 'sell':
+            result = alpaca_api.submit_order(
+                currentBuySymbol,
+                amount_to_trade,
+                side,
+                'market',
+                'day',
+            )
+        else:
+            result = alpaca_api.submit_order(
+                currentBuySymbol,
+                None,
+                side,
+                'market',
+                'day',
+                notional=notional_value,
+            )
+        print(result)
+
     except APIError as e: # insufficient buying power if market closed
         logger.error(e)
-    print(result)
     return None

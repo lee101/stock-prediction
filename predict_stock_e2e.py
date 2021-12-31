@@ -33,12 +33,15 @@ def buy_stock(row):
     currentBuySymbol = row['instrument']
     # close all positions that are not in this current held stock
     already_held_stock = False
+    new_position_side = 'short' if row['close_predicted_price'] < 0 else 'long'
     for position in positions:
         if position.symbol != currentBuySymbol:
             alpaca_wrapper.close_position(position)
-        else:
+        elif position.side == new_position_side:
             print("Already holding {}".format(currentBuySymbol))
             already_held_stock = True
+        else:
+            alpaca_wrapper.close_position(position)
 
     if not already_held_stock:
         print("Buying {}".format(currentBuySymbol))
