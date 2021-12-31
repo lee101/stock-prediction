@@ -76,21 +76,32 @@ def buy_stock(currentBuySymbol, row):
         current_price = row['close_last_price']
         amount_to_trade = int(notional_value / current_price)
         if side == 'sell':
+            take_profit_price = current_price - abs(current_price * float(row['close_predicted_price']))
             result = alpaca_api.submit_order(
                 currentBuySymbol,
                 amount_to_trade,
                 side,
-                'market',
+                'limit',
                 'day',
+                limit_price=current_price,
+                take_profit={
+                    "limit_price": take_profit_price
+                }
             )
         else:
+            take_profit_price = current_price + abs(current_price * float(row['close_predicted_price']))
+            # we could use a limit with limit price but then couldnt do a notional order
             result = alpaca_api.submit_order(
                 currentBuySymbol,
-                None,
+                amount_to_trade,
                 side,
-                'market',
+                'limit',
                 'day',
-                notional=notional_value,
+                limit_price=current_price,
+                # notional=notional_value,
+                take_profit={
+                    "limit_price": take_profit_price
+                }
             )
         print(result)
 
