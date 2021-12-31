@@ -6,6 +6,9 @@ from data_curate import download_daily_stock_data
 from decorator_utils import timeit
 from predict_stock_forecasting import make_predictions
 
+# read do_retrain argument from argparse
+# do_retrain = True
+
 
 @timeit
 def do_forecasting():
@@ -57,6 +60,7 @@ def make_trade_suggestions(predictions):
         print(row)
         # if row['close_predicted_price'] > 0:
         if row['closemin_loss_trading_profit'] > 0:
+            alpaca_wrapper.close_open_orders()
             buy_stock(row)
         # trade
 

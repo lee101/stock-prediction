@@ -108,3 +108,7 @@ def buy_stock(currentBuySymbol, row):
     except APIError as e: # insufficient buying power if market closed
         logger.error(e)
     return None
+
+
+def close_open_orders():
+    alpaca_api.cancel_all_orders()
