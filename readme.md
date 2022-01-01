@@ -422,3 +422,9 @@ jan1 - real data
 
 val_loss: 0.011861976236104965
 total_forecasted_profit: 0.006870789945913622
+
+===== more training epocs/aggressive currentBuySymbol
+
+mean val loss:$0.011818631552159786
+val_loss: 0.01087590865790844
+total_forecasted_profit: 0.007928587769408925
