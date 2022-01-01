@@ -397,3 +397,11 @@ total_forecasted_profit: 0.03423017275054008
 ======= now back to buy
 
 total_profit avg per symbol: 0.013748854537084298
+
+
+
+
+jan1 - real data
+
+val_loss: 0.011861976236104965
+total_forecasted_profit: 0.006870789945913622
