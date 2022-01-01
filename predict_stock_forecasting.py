@@ -287,7 +287,7 @@ def make_predictions(input_data_path=None):
 
                 print(f"Number of parameters in network: {tft.size() / 1e3:.1f}k")
 
-                early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=30, verbose=False,
+                early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=40, verbose=False,
                                                     mode="min")
                 model_checkpoint = ModelCheckpoint(
                     monitor="val_loss",
@@ -301,7 +301,7 @@ def make_predictions(input_data_path=None):
                 lr_logger = LearningRateMonitor()  # log the learning rate
                 logger = TensorBoardLogger(f"lightning_logs/{instrument_name}")  # logging results to a tensorboard
                 trainer = pl.Trainer(
-                    max_epochs=1000,
+                    max_epochs=10000,
                     gpus=1,
                     weights_summary="top",
                     gradient_clip_val=gradient_clip_val,
