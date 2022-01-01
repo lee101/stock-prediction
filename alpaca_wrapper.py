@@ -31,7 +31,7 @@ def close_position(position):
         if position.side == 'long':
             result = alpaca_api.submit_order(
                 position.symbol,
-                position.qty,
+                abs(float(position.qty)),
                 'sell',
                 'market',
                 'day')
@@ -39,7 +39,7 @@ def close_position(position):
         else:
             result = alpaca_api.submit_order(
                 position.symbol,
-                position.qty,
+                abs(float(position.qty)),
                 'buy',
                 'market',
                 'day')
