@@ -12,7 +12,7 @@ from predict_stock_forecasting import make_predictions
 
 @timeit
 def do_forecasting():
-    if True:
+    if False:
         current_time_formatted = '2021-12-05 18:20:29'
         current_time_formatted = '2021-12-09 12:16:26'  # new/ more data
         current_time_formatted = '2021-12-11 07:57:21-2'  # new/ less data tickers
@@ -54,6 +54,7 @@ def buy_stock(row):
 def make_trade_suggestions(predictions):
     # sort df by close predicted price
     # where closemin_loss_trading_profit is positive
+    # todo most absolute movement?
     predictions.sort_values(by=['closemin_loss_trading_profit'], ascending=False, inplace=True)
     for index, row in predictions.iterrows():
         print("Trade suggestion")

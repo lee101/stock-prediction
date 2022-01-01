@@ -1,4 +1,5 @@
 import csv
+import os
 import pickle
 from datetime import datetime
 from pathlib import Path
@@ -300,7 +301,7 @@ def make_predictions(input_data_path=None):
                 lr_logger = LearningRateMonitor()  # log the learning rate
                 logger = TensorBoardLogger(f"lightning_logs/{instrument_name}")  # logging results to a tensorboard
                 trainer = pl.Trainer(
-                    max_epochs=30,
+                    max_epochs=300,
                     gpus=1,
                     weights_summary="top",
                     gradient_clip_val=gradient_clip_val,
@@ -312,19 +313,26 @@ def make_predictions(input_data_path=None):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                retrain = False # todo reenable
+                retrain = True # todo reenable
                 checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
                 checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 best_tft = tft
                 if checkpoint_files:
+
                     best_checkpoint_path = checkpoint_files[0]
-                    min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
-                    for file_name in checkpoint_files:
-                        current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
-                        if float(current_loss) < float(min_current_loss):
-                            min_current_loss = current_loss
-                            best_checkpoint_path = file_name
-                            # TODO invalidation for 30minute vs daily data
+                    # sort by most recent checkpoint_files
+                    checkpoint_files.sort(key=lambda x: os.path.getctime(x))
+                    # load the most recent
+                    best_checkpoint_path = checkpoint_files[-1]
+                    # find best checkpoint
+                    # min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
+                    # for file_name in checkpoint_files:
+                    #     current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
+                    #     if float(current_loss) < float(min_current_loss):
+                    #         min_current_loss = current_loss
+                    #         best_checkpoint_path = file_name
+                    #         # TODO invalidation for 30minute vs daily data
+
                     print(f"Loading best checkpoint from {best_checkpoint_path}")
                     best_tft = TemporalFusionTransformer.load_from_checkpoint(str(best_checkpoint_path))
 
