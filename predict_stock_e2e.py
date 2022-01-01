@@ -1,3 +1,4 @@
+import random
 from datetime import datetime
 
 import alpaca_wrapper
@@ -39,22 +40,38 @@ def buy_stock(row):
     new_position_side = 'short' if row['close_predicted_price'] < 0 else 'long'
     for position in positions:
         if position.symbol != currentBuySymbol:
-            alpaca_wrapper.close_position(position)
+            ## dont trade until we made money
+            if float(position.unrealized_pl) < 0:
+                # skip closing bad positions, sometimes wait for a while before jumping between stock
+                if random.choice([True, False, False, False]):
+                    alpaca_wrapper.close_position(position)
+                    print(f"Closing bad position {position.symbol}")
+
+                else:
+                    already_held_stock = True
+                    print(f"Randomly Hodling bad position {position.symbol} instead of {new_position_side} {currentBuySymbol}")
+
+            else:
+                alpaca_wrapper.close_position(position)
         elif position.side == new_position_side:
             print("Already holding {}".format(currentBuySymbol))
             already_held_stock = True
         else:
             alpaca_wrapper.close_position(position)
+            print(f"changing stance on {currentBuySymbol} to {new_position_side}")
 
     if not already_held_stock:
-        print("Buying {}".format(currentBuySymbol))
+        print(f"{new_position_side} {currentBuySymbol}")
         alpaca_wrapper.buy_stock(currentBuySymbol, row)
 
 
 def make_trade_suggestions(predictions):
     # sort df by close predicted price
     # where closemin_loss_trading_profit is positive
-    predictions.sort_values(by=['closemin_loss_trading_profit'], ascending=False, inplace=True)
+    # add new absolute movement column
+    predictions['absolute_movement'] = abs(predictions['close_predicted_price'])
+    # sort by close_predicted_price absolute movement
+    predictions.sort_values(by=['absolute_movement'], ascending=False, inplace=True)
     for index, row in predictions.iterrows():
         print("Trade suggestion")
         print(row)

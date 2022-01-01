@@ -414,3 +414,11 @@ closemin_loss_trading_profit                                                    
 
 total_forecasted_profit: 0.008346215248681031
 total_buy_val_loss: 0.0
+
+
+
+
+jan1 - real data
+
+val_loss: 0.011861976236104965
+total_forecasted_profit: 0.006870789945913622
