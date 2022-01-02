@@ -56,7 +56,8 @@ def download_daily_stock_data(path=None):
     save_path.mkdir(parents=True, exist_ok=True)
     for symbol in symbols:
         # longer didnt help
-        start = datetime.datetime(2009, 1, 1)
+        # download less data for inference mode
+        start = datetime.datetime(2021, 6, 6)
         # start = datetime.datetime(2017, 1, 1)
         end = datetime.datetime.now()
         df = web.DataReader(symbol, 'yahoo', start, end)
