@@ -73,15 +73,16 @@ def make_trade_suggestions(predictions):
     # sort by close_predicted_price absolute movement
     predictions.sort_values(by=['absolute_movement'], ascending=False, inplace=True)
     for index, row in predictions.iterrows():
-        print("Trade suggestion")
-        print(row)
+
         # if row['close_predicted_price'] > 0:
         if row['closemin_loss_trading_profit'] > 0:
+            print("Trade suggestion")
+            print(row)
             alpaca_wrapper.close_open_orders()
             buy_stock(row)
-        # trade
+            break
 
-        break
+
 
 
 if __name__ == '__main__':
