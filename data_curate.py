@@ -20,35 +20,35 @@ MRNA
 def download_daily_stock_data(path=None):
     symbols = [
         # 'COUR',
-        'GOOG',
-        'TSLA',
-        'NVDA',
-        'AAPL',
-        # "GTLB", not quite enough daily data yet :(
-        "AMPL",
-        "U",
-        "ADSK",
-        "RBLX",
-        "CRWD",
-        "ADBE",
-        "NET",
-        'COIN',
+        # 'GOOG',
+        # 'TSLA',
+        # 'NVDA',
+        # 'AAPL',
+        # # "GTLB", not quite enough daily data yet :(
+        # "AMPL",
+        # "U",
+        # "ADSK",
+        # "RBLX",
+        # "CRWD",
+        # "ADBE",
+        # "NET",
+        # 'COIN',
         # 'QUBT',
         # 'ARQQ',
         # avoiding .6% buffer
-        # 'REA.AX',
-        # 'XRO.AX',
-        # 'SEK.AX',
-        # 'NXL.AX', # data anlytics
-        # 'APX.AX', # data collection for ml/labelling
-        # 'CDD.AX',
-        # 'NVX.AX',
-        # 'BRN.AX', # brainchip
-        # 'AV1.AX',
+        'REA.AX',
+        'XRO.AX',
+        'SEK.AX',
+        'NXL.AX', # data anlytics
+        'APX.AX', # data collection for ml/labelling
+        'CDD.AX',
+        'NVX.AX', # lion batteries
+        'BRN.AX', # brainchip
+        'AV1.AX',
         # 'TEAM',
         # 'PFE',
         # 'MRNA',
-        'MSFT',
+        # 'MSFT',
     ]
     save_path = base_dir / 'data'
     if path:

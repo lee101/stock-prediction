@@ -428,3 +428,6 @@ total_forecasted_profit: 0.006870789945913622
 mean val loss:$0.011818631552159786
 val_loss: 0.01087590865790844
 total_forecasted_profit: 0.007928587769408925
+
+
+
