@@ -80,7 +80,7 @@ pl.seed_everything(42)
 torch.autograd.set_detect_anomaly(True)
 
 
-def make_predictions(input_data_path=None):
+def make_predictions(input_data_path=None, pred_name=''):
     """
     Make predictions for all csv files in directory.
     """
@@ -143,9 +143,11 @@ def make_predictions(input_data_path=None):
             last_preds = {
                 "instrument": instrument_name,
             }
+            key_to_predict = "Close"
             training_mode = "predict"
-            for key_to_predict in [
-                "Close",
+            for training_mode in [
+                "predict",
+                # "15min"
                 # 'High',
                 # 'Low',
             ]:  # , 'TakeProfit', 'StopLoss']:
@@ -299,7 +301,7 @@ def make_predictions(input_data_path=None):
                     filename=instrument_name + "_{epoch}_{val_loss:.4f}",
                 )
                 lr_logger = LearningRateMonitor()  # log the learning rate
-                logger = TensorBoardLogger(f"lightning_logs/{instrument_name}")  # logging results to a tensorboard
+                logger = TensorBoardLogger(f"lightning_logs{pred_name}/{instrument_name}")  # logging results to a tensorboard
                 trainer = pl.Trainer(
                     max_epochs=30,
                     gpus=1,
@@ -313,8 +315,8 @@ def make_predictions(input_data_path=None):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                retrain = False # todo reenable - just picks best net
-                checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
+                retrain = False # todo reenable
+                checkpoints_dir = (base_dir / f'lightning_logs{pred_name}' / instrument_name)
                 checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 best_tft = tft
 
