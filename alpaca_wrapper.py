@@ -74,38 +74,44 @@ def buy_stock(currentBuySymbol, row):
                 print('polling for too long, exiting, market is probably closed')
                 break
     # notional_value = abs(float(account.cash)) * 1.9 # trade with margin
-    notional_value = total_buying_power - 600 # trade with margin
+    # notional_value = total_buying_power - 600 # trade with margin
+    notional_value = abs(float(account.cash)) * 1 # todo predict margin/price
+
     side = 'buy'
     if row['close_predicted_price'] < 0:
         side = 'sell'
-        notional_value = abs(float(account.cash)) * 1.2  # trade with margin but not too much on the sell side
+        notional_value = abs(float(account.cash)) * 1  # trade with margin but not too much on the sell side
+        # notional_value = total_buying_power - 2000
         # todo dont leave a short open over the weekend perhaps?
     try:
-        current_price = row['close_last_price']
+        current_price = row['close_last_price_minute']
         amount_to_trade = int(notional_value / current_price)
         if side == 'sell':
-            take_profit_price = current_price - abs(current_price * float(row['close_predicted_price']))
+            price_to_trade_at = current_price * 1.0003
+            take_profit_price = price_to_trade_at - abs(price_to_trade_at * (3*float(row['close_predicted_price_minute'])))
             result = alpaca_api.submit_order(
                 currentBuySymbol,
                 amount_to_trade,
                 side,
                 'limit',
                 'day',
-                limit_price=current_price,
+                limit_price=price_to_trade_at,  # .001 sell margin
                 take_profit={
                     "limit_price": take_profit_price
                 }
             )
         else:
-            take_profit_price = current_price + abs(current_price * float(row['close_predicted_price']))
-            # we could use a limit with limit price but then couldnt do a notional order
+            price_to_trade_at = current_price * .9997
+
+            take_profit_price = current_price + abs(current_price * (3*float(row['close_predicted_price_minute'])))
+            # we could use a limit with limit price but then couldn't do a notional order
             result = alpaca_api.submit_order(
                 currentBuySymbol,
                 amount_to_trade,
                 side,
                 'limit',
                 'day',
-                limit_price=current_price,
+                limit_price=price_to_trade_at,
                 # notional=notional_value,
                 take_profit={
                     "limit_price": take_profit_price
