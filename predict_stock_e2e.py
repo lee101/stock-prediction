@@ -47,7 +47,7 @@ def buy_stock(row, all_preds):
     for position in positions:
         if position.symbol != currentBuySymbol:
             ## dont trade until we made money
-            if float(position.unrealized_pl) < 0 and float(position.unrealized_plpc) < 0.001:
+            if float(position.unrealized_pl) < 0 and float(position.unrealized_plpc) < 0.005: # think more carefully about jumping off positions until we make good profit
                 # skip closing bad positions, sometimes wait for a while before jumping between stock
                 # if not at market open
                 current_time = datetime.now()
@@ -59,10 +59,10 @@ def buy_stock(row, all_preds):
                 is_worsening_position = False
                 for index, row in all_preds.iterrows():
                     if row['instrument'] == position.symbol:
-                        if row['close_predicted_price'] < 0 and position.side == 'long':
+                        if row['close_predicted_price'] < 0 and row['close_predicted_price_minute'] < 0 and position.side == 'long':
                             is_worsening_position = True
                             break
-                        if row['close_predicted_price'] > 0 and position.side == 'short':
+                        if row['close_predicted_price'] > 0 and row['close_predicted_price_minute'] > 0 and position.side == 'short':
                             is_worsening_position = True
                             break
                 # if random.choice([True, False, False, False, False, False, False, False, False, False, False, False, False, False, False]) or at_market_open:
@@ -89,18 +89,29 @@ def buy_stock(row, all_preds):
         alpaca_wrapper.buy_stock(currentBuySymbol, row)
 
 
-def make_trade_suggestions(predictions):
+def make_trade_suggestions(predictions, minute_predictions):
+    ### join predictions and minute predictions
+    # convert to ints to join
+
+    predictions = predictions.merge(minute_predictions, how='outer', on='instrument', suffixes=['', '_minute'])
+
+
     alpaca_wrapper.re_setup_vars()
+
     # sort df by close predicted price
     # where closemin_loss_trading_profit is positive
     # add new absolute movement column
-    predictions['absolute_movement'] = abs(predictions['close_predicted_price'])
+    predictions['absolute_movement'] = abs(predictions['close_predicted_price'] + predictions['close_predicted_price_minute'] * 3) # movement of both predictions
     # sort by close_predicted_price absolute movement
     predictions.sort_values(by=['absolute_movement'], ascending=False, inplace=True)
     for index, row in predictions.iterrows():
 
         # if row['close_predicted_price'] > 0:
-        if row['closemin_loss_trading_profit'] > 0:
+        # check that close_predicted_price and close_predicted_price_minute dont have opposite signs
+        if row['close_predicted_price'] * row['close_predicted_price_minute'] < 0:
+            print(f"conflicting preds {row['instrument']} {row['close_predicted_price']} {row['close_predicted_price_minute']}")
+            continue
+        if row['closemin_loss_trading_profit'] > 0 and row['closemin_loss_trading_profit_minute'] > 0:
             print("Trade suggestion")
             print(row)
             alpaca_wrapper.close_open_orders()

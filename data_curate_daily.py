@@ -61,7 +61,7 @@ def download_daily_stock_data(path=None):
     for symbol in symbols:
         api = REST(secret_key=ALP_SECRET_KEY, key_id=ALP_KEY_ID, base_url=ALP_ENDPOINT)
 
-        start = (datetime.datetime.now() - datetime.timedelta(days=365*2)).strftime('%Y-%m-%d')
+        start = (datetime.datetime.now() - datetime.timedelta(days=40)).strftime('%Y-%m-%d')
         # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
         end = (datetime.datetime.now()).strftime('%Y-%m-%d') # todo recent data
         # df = api.get_bars(symbol, TimeFrame.Minute, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'), adjustment='raw').df
