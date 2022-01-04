@@ -9,6 +9,7 @@ alpaca_api = tradeapi.REST(
     ALP_SECRET_KEY,
     ALP_ENDPOINT,
     'v2')
+
 positions = alpaca_api.list_positions()
 print(positions)
 account = alpaca_api.get_account()
@@ -73,11 +74,11 @@ def buy_stock(currentBuySymbol, row):
                 print('polling for too long, exiting, market is probably closed')
                 break
     # notional_value = abs(float(account.cash)) * 1.9 # trade with margin
-    notional_value = total_buying_power - 300 # trade with margin
+    notional_value = total_buying_power - 600 # trade with margin
     side = 'buy'
     if row['close_predicted_price'] < 0:
         side = 'sell'
-        # notional_value = abs(float(account.cash)) * 1.2  # trade with margin but not too much on the sell side
+        notional_value = abs(float(account.cash)) * 1.2  # trade with margin but not too much on the sell side
         # todo dont leave a short open over the weekend perhaps?
     try:
         current_price = row['close_last_price']
@@ -114,8 +115,32 @@ def buy_stock(currentBuySymbol, row):
 
     except APIError as e: # insufficient buying power if market closed
         logger.error(e)
-    return None
+        return False
+    return True
 
 
 def close_open_orders():
     alpaca_api.cancel_all_orders()
+
+
+def re_setup_vars():
+    global positions
+    global account
+    global alpaca_api
+    global alpaca_clock
+    global total_buying_power
+    global equity
+    global margin_multiplier
+    positions = alpaca_api.list_positions()
+    print(positions)
+    account = alpaca_api.get_account()
+    print(account)
+    # Figure out how much money we have to work with, accounting for margin
+    equity = float(account.equity)
+    margin_multiplier = float(account.multiplier)
+    total_buying_power = margin_multiplier * equity
+    print(f'Initial total buying power = {total_buying_power}')
+    alpaca_clock = alpaca_api.get_clock()
+    print(alpaca_clock)
+    if not alpaca_clock.is_open:
+        print('Market closed')

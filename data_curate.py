@@ -25,7 +25,7 @@ def download_daily_stock_data(path=None):
         'NVDA',
         'AAPL',
         # "GTLB", not quite enough daily data yet :(
-        "AMPL",
+        # "AMPL", # ampl cant be sold short for somereason or visualised
         "U",
         "ADSK",
         "RBLX",
