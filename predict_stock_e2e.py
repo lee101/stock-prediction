@@ -1,7 +1,8 @@
 from datetime import datetime
 
 import alpaca_wrapper
-from data_curate import download_daily_stock_data
+from data_curate_minute import download_minute_stock_data
+from data_curate_daily import download_daily_stock_data
 # from predict_stock import make_predictions
 from decorator_utils import timeit
 from predict_stock_forecasting import make_predictions
@@ -23,7 +24,11 @@ def do_forecasting():
         download_daily_stock_data(current_time_formatted)
     predictions = make_predictions(current_time_formatted)
 
-    make_trade_suggestions(predictions)
+    current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    download_minute_stock_data(current_time_formatted)
+    minute_predictions = make_predictions(current_time_formatted, pred_name='minute')
+
+    make_trade_suggestions(predictions, minute_predictions)
 
 
 def buy_stock(row):

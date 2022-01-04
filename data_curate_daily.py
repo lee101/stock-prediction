@@ -22,7 +22,7 @@ MRNA
 """
 
 
-def download_minute_stock_data(path=None):
+def download_daily_stock_data(path=None):
     symbols = [
         # 'COUR',
         'GOOG',
@@ -33,11 +33,11 @@ def download_minute_stock_data(path=None):
         # "AMPL",  no data
         "U",
         "ADSK",
-        # "RBLX",
+        # "RBLX", # unpredictable
         "CRWD",
         "ADBE",
         "NET",
-        # 'COIN',
+        # 'COIN', # unpredictable
         # 'QUBT',  no data
         # 'ARQQ',  no data
         # avoiding .6% buffer
@@ -69,7 +69,7 @@ def download_minute_stock_data(path=None):
         # end = pd.Timestamp('2020-08-28 16:00', tz=NY).isoformat()
         ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
 
-        minute_df = api.get_bars(symbol, TimeFrame(15, TimeFrameUnit.Minute), start, end,
+        minute_df = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end,
                                  adjustment='raw').df
         if minute_df.empty:
             print(f"{symbol} has no data")
@@ -97,5 +97,5 @@ def visualize_stock_data(df):
 
 
 if __name__ == '__main__':
-    df = download_minute_stock_data()
+    df = download_daily_stock_data()
     visualize_stock_data(df)
