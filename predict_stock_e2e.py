@@ -33,6 +33,14 @@ def do_forecasting():
 
     make_trade_suggestions(predictions, minute_predictions)
 
+def close_profitable_trades():
+    positions = alpaca_wrapper.list_positions()
+
+    for position in positions:
+        if float(position.unrealized_plpc) > 0.001 or float(position.unrealized_pl) > 50:
+            print(f"Closing good position")
+            alpaca_wrapper.close_position(position)
+
 def buy_stock(row, all_preds):
     """
     or sell stock
@@ -47,7 +55,7 @@ def buy_stock(row, all_preds):
     for position in positions:
         if position.symbol != currentBuySymbol:
             ## dont trade until we made money
-            if float(position.unrealized_pl) < 0 and float(position.unrealized_plpc) < 0.005: # think more carefully about jumping off positions until we make good profit
+            if float(position.unrealized_pl) < 0 and float(position.unrealized_plpc) < 0: # think more carefully about jumping off positions until we make good profit
                 # skip closing bad positions, sometimes wait for a while before jumping between stock
                 # if not at market open
                 current_time = datetime.now()
@@ -104,6 +112,8 @@ def make_trade_suggestions(predictions, minute_predictions):
     predictions['absolute_movement'] = abs(predictions['close_predicted_price'] + predictions['close_predicted_price_minute'] * 3) # movement of both predictions
     # sort by close_predicted_price absolute movement
     predictions.sort_values(by=['absolute_movement'], ascending=False, inplace=True)
+    do_trade = False
+
     for index, row in predictions.iterrows():
 
         # if row['close_predicted_price'] > 0:
@@ -116,7 +126,11 @@ def make_trade_suggestions(predictions, minute_predictions):
             print(row)
             alpaca_wrapper.close_open_orders()
             buy_stock(row, predictions)
+            do_trade = True
             break
+    close_profitable_trades()
+    if do_trade:
+        sleep(5)
 
 
 if __name__ == '__main__':

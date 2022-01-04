@@ -75,12 +75,12 @@ def buy_stock(currentBuySymbol, row):
                 break
     # notional_value = abs(float(account.cash)) * 1.9 # trade with margin
     # notional_value = total_buying_power - 600 # trade with margin
-    notional_value = abs(float(account.cash)) * 1 # todo predict margin/price
+    notional_value = abs(float(account.cash)) * 1.95 # todo predict margin/price
 
     side = 'buy'
     if row['close_predicted_price'] < 0:
         side = 'sell'
-        notional_value = abs(float(account.cash)) * 1  # trade with margin but not too much on the sell side
+        notional_value = abs(float(account.cash)) * 1.95  # trade with margin but not too much on the sell side
         # notional_value = total_buying_power - 2000
         # todo dont leave a short open over the weekend perhaps?
     try:
