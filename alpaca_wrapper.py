@@ -32,7 +32,7 @@ def cancel_all_orders():
     print(result)
 
 # alpaca_api.submit_order(short_stock, qty, side, "market", "day")
-def close_position(position):
+def close_position_violently(position):
     try:
         if position.side == 'long':
             result = alpaca_api.submit_order(
@@ -49,6 +49,34 @@ def close_position(position):
                 'buy',
                 'market',
                 'day')
+    except Exception as e:
+        logger.error(e)
+        # close all positions? perhaps not
+        return None
+    print(result)
+
+
+def close_position_at_current_price(position, row):
+    try:
+        if position.side == 'long':
+            result = alpaca_api.submit_order(
+                position.symbol,
+                abs(float(position.qty)),
+                'sell',
+                'limit',
+                'day',
+                limit_price=row['close_last_price_minute'],
+            )
+
+        else:
+            result = alpaca_api.submit_order(
+                position.symbol,
+                abs(float(position.qty)),
+                'buy',
+                'limit',
+                'day',
+                limit_price=row['close_last_price_minute'],
+            )
     except Exception as e:
         logger.error(e)
         # close all positions? perhaps not
@@ -86,8 +114,11 @@ def buy_stock(currentBuySymbol, row, margin_multiplier=1.95):
     try:
         current_price = row['close_last_price_minute']
         amount_to_trade = int(notional_value / current_price)
+        if amount_to_trade > 0:
+            amount_to_trade = 1
+
         if side == 'sell':
-            price_to_trade_at = current_price * 1.0003
+            price_to_trade_at = current_price
             take_profit_price = price_to_trade_at - abs(price_to_trade_at * (3*float(row['close_predicted_price_minute'])))
             result = alpaca_api.submit_order(
                 currentBuySymbol,
@@ -101,7 +132,7 @@ def buy_stock(currentBuySymbol, row, margin_multiplier=1.95):
                 }
             )
         else:
-            price_to_trade_at = current_price * .9997
+            price_to_trade_at = current_price
 
             take_profit_price = current_price + abs(current_price * (3*float(row['close_predicted_price_minute'])))
             # we could use a limit with limit price but then couldn't do a notional order
