@@ -62,13 +62,15 @@ def close_profitable_trades(all_preds):
                     print(f"Closing predicted to worsen position {position.symbol}")
 
                 else:
+                    pass
                     # instant close?
                     # if float(position.unrealized_plpc) > 0.004:  ## or float(position.unrealized_pl) > 50:
                     #     print(f"Closing good position")
                     #     alpaca_wrapper.close_position_violently(position)
-                    alpaca_wrapper.open_take_profit_position(position, row)
-                    print(
-                        f"keeping position {position.symbol} - predicted to get better - open takeprofit at {row['close_last_price_minute'] }")
+                    # todo test take profit?
+                    # alpaca_wrapper.open_take_profit_position(position, row)
+                    # print(
+                    #     f"keeping position {position.symbol} - predicted to get better - open takeprofit at {row['close_last_price_minute'] }")
 
 
 
@@ -197,6 +199,8 @@ if __name__ == '__main__':
     # in development, use the following line to avoid re downloading data
     while True:
         try:
+            # skip running logic if not us stock exchange ?
+
             do_forecasting()
         except Exception as e:
             print(e)

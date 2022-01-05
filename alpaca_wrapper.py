@@ -86,21 +86,22 @@ def close_position_at_current_price(position, row):
 def buy_stock(currentBuySymbol, row, margin_multiplier=1.95):
 
     # poll untill we have closed all our positions
-    polls = 0
-    while True:
-        positions = alpaca_api.list_positions()
-        if len(positions) == 0:
-            break
-        else:
-            print('waiting for positions to close')
-            sleep(.1)
-            polls += 1
-            if polls > 5:
-                print('polling for too long, closing all positions again')
-                # alpaca_api.close_all_positions() # todo respect manual orders
-            if polls > 20:
-                print('polling for too long, exiting, market is probably closed')
-                break
+    # why we would wait here?
+    # polls = 0
+    # while True:
+    #     positions = alpaca_api.list_positions()
+    #     if len(positions) == 0:
+    #         break
+    #     else:
+    #         print('waiting for positions to close')
+    #         sleep(.1)
+    #         polls += 1
+    #         if polls > 5:
+    #             print('polling for too long, closing all positions again')
+    #             # alpaca_api.close_all_positions() # todo respect manual orders
+    #         if polls > 20:
+    #             print('polling for too long, exiting, market is probably closed')
+    #             break
     # notional_value = abs(float(account.cash)) * 1.9 # trade with margin
     # notional_value = total_buying_power - 600 # trade with margin
     notional_value = abs(float(account.cash)) * margin_multiplier # todo predict margin/price
