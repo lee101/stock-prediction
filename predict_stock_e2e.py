@@ -37,9 +37,11 @@ def close_profitable_trades():
     positions = alpaca_wrapper.list_positions()
 
     for position in positions:
-        if float(position.unrealized_plpc) > 0.001 or float(position.unrealized_pl) > 50:
+        if float(position.unrealized_plpc) > 0.004:## or float(position.unrealized_pl) > 50:
             print(f"Closing good position")
             alpaca_wrapper.close_position(position)
+
+made_money_recently = False
 
 def buy_stock(row, all_preds):
     """
@@ -47,12 +49,19 @@ def buy_stock(row, all_preds):
     :param row:
     :return:
     """
+    global made_money_recently
     positions = alpaca_wrapper.list_positions()
+
     currentBuySymbol = row['instrument']
     # close all positions that are not in this current held stock
     already_held_stock = False
     new_position_side = 'short' if row['close_predicted_price'] < 0 else 'long'
+    has_traded = False
     for position in positions:
+        if float(position.unrealized_pl) < 0:
+            made_money_recently = False
+        else:
+            made_money_recently = True
         if position.symbol != currentBuySymbol:
             ## dont trade until we made money
             if float(position.unrealized_pl) < 0 and float(position.unrealized_plpc) < 0: # think more carefully about jumping off positions until we make good profit
@@ -76,6 +85,7 @@ def buy_stock(row, all_preds):
                 # if random.choice([True, False, False, False, False, False, False, False, False, False, False, False, False, False, False]) or at_market_open:
                 if is_worsening_position:
                     alpaca_wrapper.close_position(position)
+                    has_traded = True
                     print(f"Closing worsening bad position {position.symbol}")
 
                 else:
@@ -85,16 +95,24 @@ def buy_stock(row, all_preds):
 
             else:
                 alpaca_wrapper.close_position(position)
+                has_traded = True
+                print(f"Closing position {position.symbol}")
         elif position.side == new_position_side:
             print("Already holding {}".format(currentBuySymbol))
             already_held_stock = True
         else:
             alpaca_wrapper.close_position(position)
+            has_traded = True
             print(f"changing stance on {currentBuySymbol} to {new_position_side}")
 
     if not already_held_stock:
         print(f"{new_position_side} {currentBuySymbol}")
-        alpaca_wrapper.buy_stock(currentBuySymbol, row)
+        margin_multiplier = 1.95
+        if not made_money_recently:
+            margin_multiplier = .01
+        alpaca_wrapper.buy_stock(currentBuySymbol, row, margin_multiplier)
+        return True
+    return has_traded
 
 
 def make_trade_suggestions(predictions, minute_predictions):
@@ -125,10 +143,12 @@ def make_trade_suggestions(predictions, minute_predictions):
             print("Trade suggestion")
             print(row)
             alpaca_wrapper.close_open_orders()
-            buy_stock(row, predictions)
+            has_traded = buy_stock(row, predictions)
             do_trade = True
             break
-    close_profitable_trades()
+    if not has_traded:
+        print("No trade suggestions, trying to exit position")
+        close_profitable_trades()
     if do_trade:
         sleep(5)
 

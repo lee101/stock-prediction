@@ -55,8 +55,8 @@ def close_position(position):
         return None
     print(result)
 
+def buy_stock(currentBuySymbol, row, margin_multiplier=1.95):
 
-def buy_stock(currentBuySymbol, row):
     # poll untill we have closed all our positions
     polls = 0
     while True:
@@ -65,7 +65,7 @@ def buy_stock(currentBuySymbol, row):
             break
         else:
             print('waiting for positions to close')
-            sleep(1)
+            sleep(.1)
             polls += 1
             if polls > 10:
                 print('polling for too long, closing all positions again')
@@ -75,12 +75,12 @@ def buy_stock(currentBuySymbol, row):
                 break
     # notional_value = abs(float(account.cash)) * 1.9 # trade with margin
     # notional_value = total_buying_power - 600 # trade with margin
-    notional_value = abs(float(account.cash)) * 1.95 # todo predict margin/price
+    notional_value = abs(float(account.cash)) * margin_multiplier # todo predict margin/price
 
     side = 'buy'
     if row['close_predicted_price'] < 0:
         side = 'sell'
-        notional_value = abs(float(account.cash)) * 1.95  # trade with margin but not too much on the sell side
+        notional_value = abs(float(account.cash)) * margin_multiplier  # trade with margin but not too much on the sell side
         # notional_value = total_buying_power - 2000
         # todo dont leave a short open over the weekend perhaps?
     try:
