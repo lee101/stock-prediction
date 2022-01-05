@@ -72,7 +72,7 @@ def close_profitable_trades(all_preds):
 
 
 
-made_money_recently = False
+made_money_recently = True
 
 def buy_stock(row, all_preds):
     """
@@ -138,13 +138,13 @@ def buy_stock(row, all_preds):
             print("Already holding {}".format(currentBuySymbol))
             already_held_stock = True
         else:
-            alpaca_wrapper.close_position_at_current_price(position)
+            alpaca_wrapper.close_position_at_current_price(position, row)
             has_traded = True
             print(f"changing stance on {currentBuySymbol} to {new_position_side}")
 
     if not already_held_stock:
         print(f"{new_position_side} {currentBuySymbol}")
-        margin_multiplier = 1.95
+        margin_multiplier = 1.9
         if not made_money_recently:
             margin_multiplier = .03
         alpaca_wrapper.buy_stock(currentBuySymbol, row, margin_multiplier)
