@@ -67,7 +67,7 @@ def buy_stock(currentBuySymbol, row, margin_multiplier=1.95):
             print('waiting for positions to close')
             sleep(.1)
             polls += 1
-            if polls > 10:
+            if polls > 5:
                 print('polling for too long, closing all positions again')
                 # alpaca_api.close_all_positions() # todo respect manual orders
             if polls > 20:
@@ -150,3 +150,35 @@ def re_setup_vars():
     print(alpaca_clock)
     if not alpaca_clock.is_open:
         print('Market closed')
+
+
+def open_take_profit_position(position, row):
+    entry_price = float(position.avg_entry_price)
+    # current_price = row['close_last_price_minute']
+    # current_symbol = row['symbol']
+    try:
+        if position.side == 'long':
+            result = alpaca_api.submit_order(
+                position.symbol,
+                abs(float(position.qty)),
+                'sell',
+                'limit',
+                'day',
+                limit_price=str(entry_price * (1 + .004),)
+            )
+
+        else:
+            result = alpaca_api.submit_order(
+                position.symbol,
+                abs(float(position.qty)),
+                'buy',
+                'limit',
+                'day',
+                limit_price=str(entry_price * (1 - .004))
+            )
+    except Exception as e:
+        logger.error(e)
+        # close all positions? perhaps not
+        return None
+    print(result)
+    return True
