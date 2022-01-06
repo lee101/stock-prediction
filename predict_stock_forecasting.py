@@ -289,7 +289,7 @@ def make_predictions(input_data_path=None, pred_name=''):
 
                 print(f"Number of parameters in network: {tft.size() / 1e3:.1f}k")
 
-                early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=40, verbose=False,
+                early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=60, verbose=False,
                                                     mode="min")
                 model_checkpoint = ModelCheckpoint(
                     monitor="val_loss",
@@ -396,7 +396,6 @@ def make_predictions(input_data_path=None, pred_name=''):
                 trading_preds = (predictions[:, :-1] > 0) * 2 - 1
                 # last_values = x_test[:, -1, 0]
                 calculated_profit = calculate_trading_profit_torch(scaler, None, actuals[:, :-1], trading_preds).item()
-                trading_preds_buy_only = (predictions[:, :-1] > 0)
 
                 calculated_profit_buy_only = calculate_trading_profit_torch_buy_only(scaler, None, actuals[:, :-1],
                                                                             trading_preds).item()
