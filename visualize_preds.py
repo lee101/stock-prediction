@@ -20,7 +20,7 @@ current_dir = Path(__file__).resolve().parent
 results_path = current_dir / 'results'
 
 def visualize_preds():
-    csv_files = results_path.glob('predictions-2022-01-07*.csv')
+    csv_files = results_path.glob('predictions-2022-01-08*.csv')
 
     # sort csv files by creation date
     csv_files = sorted(csv_files, key=lambda x: x.stat().st_ctime)
