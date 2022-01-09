@@ -12,7 +12,7 @@ def split_data(stock, lookback):
         data.append(data_raw[index - lookback: index])
 
     data = np.array(data)
-    test_set_size = int(np.round(0.1 * data.shape[0]))
+    test_set_size = 2 # int(np.round(0.1 * data.shape[0]))
     train_set_size = data.shape[0] - (test_set_size)
 
     x_train = data[:train_set_size, :-1, :]
