@@ -53,6 +53,14 @@ def download_daily_stock_data(path=None):
         # 'TEAM',
         # 'PFE',
         # 'MRNA',
+        'MSFT',
+        'FB',
+        'CRM',
+        'NFLX',
+        'PYPL',
+        'SAP',
+        'AMD',
+        'SONY',
     ]
     save_path = base_dir / 'data'
     if path:
@@ -82,7 +90,7 @@ def download_daily_stock_data(path=None):
 
         # rename columns with upper case
         minute_df.rename(columns=lambda x: x.capitalize(), inplace=True)
-        print(minute_df)
+        # print(minute_df)
 
         file_save_path = (save_path / '{}-{}.csv'.format(symbol, end))
         minute_df.to_csv(file_save_path)
