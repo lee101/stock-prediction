@@ -16,7 +16,8 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 from data_utils import split_data
 from loss_utils import calculate_trading_profit_torch, DEVICE, get_trading_profits_list, percent_movements_augment, \
-    TradingLossBinary, TradingLoss, calculate_trading_profit_torch_buy_only
+    TradingLossBinary, TradingLoss, calculate_trading_profit_torch_buy_only, \
+    calculate_trading_profit_torch_with_buysell, calculate_trading_profit_torch_with_entry_buysell
 from model import GRU
 
 transformers.set_seed(42)
@@ -145,9 +146,9 @@ def make_predictions(input_data_path=None):
             }
             training_mode = "predict"
             for key_to_predict in [
+                'Low',
                 "Close",
-                # 'High',
-                # 'Low',
+                'High',
             ]:  # , 'TakeProfit', 'StopLoss']:
                 stock_data = load_stock_data_from_csv(csv_file)
                 stock_data = stock_data.dropna()
@@ -252,13 +253,18 @@ def make_predictions(input_data_path=None):
                 # best hyperpramams look like:
                 # {'gradient_clip_val': 0.05690473137493243, 'hidden_size': 50, 'dropout': 0.23151352460442215,
                 #  'hidden_continuous_size': 22, 'attention_head_size': 2, 'learning_rate': 0.0816548812864903}
-                best_hyperparams_save_file = f"data/test_study{instrument_name}.pkl"
+                best_hyperparams_save_file = f"data/test_study{key_to_predict}{instrument_name}.pkl"
                 params = None
                 try:
                     params = pickle.load(open(best_hyperparams_save_file, "rb"))
                 except FileNotFoundError:
                     # logger.info("No best hyperparams found, tuning")
-                    pass
+                    best_hyperparams_save_file = f"data/test_study{instrument_name}.pkl"
+                    try:
+                        params = pickle.load(open(best_hyperparams_save_file, "rb"))
+                    except FileNotFoundError:
+                        # logger.info("No best hyperparams found, tuning")
+                        pass
                 added_best_params = {}
                 if params and params.best_trial.params:
                     added_best_params = params.best_trial.params
@@ -299,7 +305,7 @@ def make_predictions(input_data_path=None):
                     filename=instrument_name + "_{epoch}_{val_loss:.4f}",
                 )
                 lr_logger = LearningRateMonitor()  # log the learning rate
-                logger = TensorBoardLogger(f"lightning_logs/{instrument_name}")  # logging results to a tensorboard
+                logger = TensorBoardLogger(f"lightning_logs/{key_to_predict}/{instrument_name}")  # logging results to a tensorboard
                 trainer = pl.Trainer(
                     max_epochs=10000,
                     gpus=1,
@@ -313,9 +319,15 @@ def make_predictions(input_data_path=None):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                retrain = True # todo reenable
-                checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
+                retrain = False # todo reenable
+                # try find specific hl net
+
+                checkpoints_dir = (base_dir / 'lightning_logs' / key_to_predict / instrument_name)
                 checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
+                if len(checkpoint_files) == 0:
+                    print("No open/low specific checkpoints found, training from other checkpoint")
+                    checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
+                    checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 best_tft = tft
                 if checkpoint_files:
 
@@ -502,12 +514,16 @@ def make_predictions(input_data_path=None):
                 last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[0,
                                                                                       -1
                 ].item()
+                last_preds[key_to_predict.lower() + "_predicted_price_value"] = last_close_price + (last_close_price * predictions[0,
+                                                                                      -1
+                ].item())
                 last_preds[key_to_predict.lower() + "_val_loss"] = val_loss.item()
                 last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = calculated_profit
                 last_preds[key_to_predict.lower() + "min_loss_buy_only_trading_profit"] = calculated_profit_buy_only
+                last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:, :-1]
                 last_preds[key_to_predict.lower() + "_calculated_profit_values"] = calculated_profit_values
                 last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds
-                last_preds[key_to_predict.lower() + "_predictions[:, :-1]"] = predictions[:, :-1]
+                last_preds[key_to_predict.lower() + "_predictions"] = predictions[:, :-1]
                 # last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
                 # last_preds[
                 #     key_to_predict.lower() + "_likely_percent_uncertainty"
@@ -769,6 +785,145 @@ def make_predictions(input_data_path=None):
                 total_buy_val_loss += val_loss
                 total_profit += best_current_profit
 
+            # # compute loss when
+            # calculate_trading_profit_torch_with_buysell()
+            #
+            # trading_preds = (predictions[:, :-1] > 0) * 2 - 1
+            # last_values = x_test[:, -1, 0]
+            # compute movement to high price
+
+            close_to_high = abs(1 - (last_preds['high_last_price'] / last_preds['close_last_price']))
+            close_to_low = abs(1 - (last_preds['low_last_price'] / last_preds['close_last_price']))
+            calculated_profit = calculate_trading_profit_torch_with_buysell(scaler, None, last_preds["close_actual_movement_values"],
+                                                                            last_preds["close_trade_values"],
+                                                                            last_preds[
+                                                                                "high_actual_movement_values"] + close_to_high,
+                                                                            last_preds[
+                                                                                "high_predictions"] + close_to_high,
+                                                                            last_preds["low_actual_movement_values"] - close_to_low,
+                                                                            last_preds["low_predictions"] - close_to_low,
+
+                                                                            ).item()
+            print(f"{instrument_name} calculated_profit: {calculated_profit}")
+            last_preds['takeprofit_profit'] = calculated_profit
+
+            # todo margin allocation tests
+            current_profit = calculated_profit
+            max_profit = float('-Inf')
+            for buy_take_profit_multiplier in np.linspace(-.05, .05, 500):
+                calculated_profit = calculate_trading_profit_torch_with_buysell(scaler, None,
+                                                                                last_preds["close_actual_movement_values"],
+                                                                                last_preds["close_trade_values"],
+                                                                                last_preds[
+                                                                                    "high_actual_movement_values"] + close_to_high,
+                                                                                last_preds[
+                                                                                    "high_predictions"] + close_to_high + buy_take_profit_multiplier,
+                                                                                last_preds["low_actual_movement_values"] - close_to_low,
+                                                                                last_preds["low_predictions"] - close_to_low,
+                                                                                ).item()
+                if calculated_profit > max_profit:
+                    max_profit = calculated_profit
+                    last_preds['takeprofit_profit_high_multiplier'] = buy_take_profit_multiplier
+                    last_preds['takeprofit_high_profit'] = max_profit
+                    print(f"{instrument_name} buy_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
+
+            max_profit = float('-Inf')
+            for low_take_profit_multiplier in np.linspace(-.05, .05, 500):
+                calculated_profit = calculate_trading_profit_torch_with_buysell(scaler, None,
+                                                                                last_preds["close_actual_movement_values"],
+                                                                                last_preds["close_trade_values"],
+                                                                                last_preds[
+                                                                                    "high_actual_movement_values"] + close_to_high,
+                                                                                last_preds[
+                                                                                    "high_predictions"] + close_to_high +
+                                                                                last_preds[
+                                                                                    'takeprofit_profit_high_multiplier'],
+                                                                                last_preds["low_actual_movement_values"] - close_to_low,
+                                                                                last_preds["low_predictions"] - close_to_low + low_take_profit_multiplier,
+                                                                                ).item()
+                if calculated_profit > max_profit:
+                    max_profit = calculated_profit
+                    last_preds['takeprofit_profit_low_multiplier'] = low_take_profit_multiplier
+                    last_preds['takeprofit_low_profit'] = max_profit
+                    print(f"{instrument_name} low_take_profit_multiplier: {low_take_profit_multiplier} calculated_profit: {calculated_profit}")
+
+
+            # with buysellentry:
+
+            calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
+                                                                            last_preds["close_actual_movement_values"],
+                                                                            last_preds["close_trade_values"],
+                                                                            last_preds[
+                                                                                "high_actual_movement_values"] + close_to_high,
+                                                                            last_preds[
+                                                                                "high_predictions"] + close_to_high,
+                                                                            last_preds[
+                                                                                "low_actual_movement_values"] - close_to_low,
+                                                                            last_preds[
+                                                                                "low_predictions"] - close_to_low,
+
+                                                                            ).item()
+            print(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
+            last_preds['entry_takeprofit_profit'] = calculated_profit
+
+            # todo margin allocation tests
+            current_profit = calculated_profit
+            max_profit = float('-Inf')
+            for buy_take_profit_multiplier in np.linspace(-.05, .05, 500):
+                calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
+                                                                                last_preds[
+                                                                                    "close_actual_movement_values"],
+                                                                                last_preds["close_trade_values"],
+                                                                                last_preds[
+                                                                                    "high_actual_movement_values"] + close_to_high,
+                                                                                last_preds[
+                                                                                    "high_predictions"] + close_to_high + buy_take_profit_multiplier,
+                                                                                last_preds[
+                                                                                    "low_actual_movement_values"] - close_to_low,
+                                                                                last_preds[
+                                                                                    "low_predictions"] - close_to_low,
+                                                                                ).item()
+                if calculated_profit > max_profit:
+                    max_profit = calculated_profit
+                    last_preds['entry_takeprofit_profit_high_multiplier'] = buy_take_profit_multiplier
+                    last_preds['entry_takeprofit_high_profit'] = max_profit
+                    print(
+                        f"{instrument_name} buy_entry_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
+
+            max_profit = float('-Inf')
+            for low_take_profit_multiplier in np.linspace(-.05, .05, 500):
+                calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
+                                                                                last_preds[
+                                                                                    "close_actual_movement_values"],
+                                                                                last_preds["close_trade_values"],
+                                                                                last_preds[
+                                                                                    "high_actual_movement_values"] + close_to_high,
+                                                                                last_preds[
+                                                                                    "high_predictions"] + close_to_high +
+                                                                                      last_preds[
+                                                                                          'entry_takeprofit_profit_high_multiplier'],
+                                                                                last_preds[
+                                                                                    "low_actual_movement_values"] - close_to_low,
+                                                                                last_preds[
+                                                                                    "low_predictions"] - close_to_low + low_take_profit_multiplier,
+                                                                                ).item()
+                if calculated_profit > max_profit:
+                    max_profit = calculated_profit
+                    last_preds['entry_takeprofit_profit_low_multiplier'] = low_take_profit_multiplier
+                    last_preds['entry_takeprofit_low_profit'] = max_profit
+                    print(
+                        f"{instrument_name} entry_low_take_profit_multiplier: {low_take_profit_multiplier} calculated_profit: {calculated_profit}")
+
+            last_preds['entry_takeprofit_low_price'] = last_preds['low_predicted_price_value'] * (1+ last_preds[
+                'entry_takeprofit_profit_low_multiplier'])
+            last_preds['entry_takeprofit_high_price'] = last_preds['high_predicted_price_value'] * (1+ last_preds[
+                'entry_takeprofit_profit_high_multiplier'])
+
+            last_preds['takeprofit_low_price'] = last_preds['low_predicted_price_value'] * (1+ last_preds[
+                'takeprofit_profit_low_multiplier'])
+            last_preds['takeprofit_high_price'] = last_preds['high_predicted_price_value'] * (1+ last_preds[
+                'takeprofit_profit_high_multiplier'])
+
             CSV_KEYS = list(last_preds.keys())
             if not headers_written:
                 with open(save_file_name, "a") as f:
@@ -852,11 +1007,11 @@ def make_predictions(input_data_path=None):
                 #
                 # fig.show()
 
+
     print(f"val_loss: {total_val_loss / len(csv_files)}")
     print(f"total_forecasted_profit: {total_forecasted_profit / len(csv_files)}")
     print(f"total_buy_val_loss: {total_buy_val_loss / len(csv_files)}")
     print(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
-    # return csv file name
     return pd.read_csv(save_file_name)
 
 
