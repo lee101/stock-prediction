@@ -49,6 +49,7 @@ def download_daily_stock_data(path=None):
         # 'PFE',
         # 'MRNA',
         'MSFT',
+        'AMD',
     ]
     save_path = base_dir / 'data'
     if path:

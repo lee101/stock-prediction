@@ -53,6 +53,7 @@ def download_minute_stock_data(path=None):
         # 'TEAM',
         # 'PFE',
         # 'MRNA',
+        'AMD',
     ]
     save_path = base_dir / 'data'
     if path:
