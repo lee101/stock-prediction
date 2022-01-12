@@ -146,8 +146,8 @@ def make_predictions(input_data_path=None):
             }
             training_mode = "predict"
             for key_to_predict in [
-                'Low',
                 "Close",
+                'Low',
                 'High',
             ]:  # , 'TakeProfit', 'StopLoss']:
                 stock_data = load_stock_data_from_csv(csv_file)
@@ -293,7 +293,7 @@ def make_predictions(input_data_path=None):
 
                 print(f"Number of parameters in network: {tft.size() / 1e3:.1f}k")
 
-                early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=40, verbose=False,
+                early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-5, patience=40, verbose=False,
                                                     mode="min")
                 model_checkpoint = ModelCheckpoint(
                     monitor="val_loss",
@@ -302,7 +302,7 @@ def make_predictions(input_data_path=None):
                     # incase one does great on other metrics than just val_loss
                     save_top_k=1,
                     verbose=True,
-                    filename=instrument_name + "_{epoch}_{val_loss:.4f}",
+                    filename=instrument_name + "_{epoch}_{val_loss:.8f}",
                 )
                 lr_logger = LearningRateMonitor()  # log the learning rate
                 logger = TensorBoardLogger(f"lightning_logs/{key_to_predict}/{instrument_name}")  # logging results to a tensorboard
@@ -373,7 +373,7 @@ def make_predictions(input_data_path=None):
                         val_dataloader,
                         model_path="optuna_test",
                         n_trials=100,
-                        max_epochs=1000,
+                        max_epochs=200,
                         gradient_clip_val_range=(0.01, 1.0),
                         hidden_size_range=(8, 128),
                         hidden_continuous_size_range=(8, 128),
