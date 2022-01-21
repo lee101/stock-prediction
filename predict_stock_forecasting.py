@@ -81,6 +81,10 @@ pl.seed_everything(42)
 torch.autograd.set_detect_anomaly(True)
 
 
+def series_to_tensor(series_pd):
+    return torch.tensor(series_pd.values, dtype=torch.float)#todo gpu, device=DEVICE)
+
+
 def make_predictions(input_data_path=None):
     """
     Make predictions for all csv files in directory.
@@ -161,7 +165,8 @@ def make_predictions(input_data_path=None):
 
                 # x_train, x_test = train_test_split(stock_data)
                 last_close_price = stock_data[key_to_predict].iloc[-1]
-                data = pre_process_data(stock_data, "High")
+                data = stock_data.copy()
+                data = pre_process_data(data, "High")
                 # todo scaler for each, this messes up the scaler
                 data = pre_process_data(data, "Low")
                 data = pre_process_data(data, "Open")
@@ -406,7 +411,6 @@ def make_predictions(input_data_path=None):
                 trading_preds = (predictions[:, :-1] > 0) * 2 - 1
                 # last_values = x_test[:, -1, 0]
                 calculated_profit = calculate_trading_profit_torch(scaler, None, actuals[:, :-1], trading_preds).item()
-                trading_preds_buy_only = (predictions[:, :-1] > 0)
 
                 calculated_profit_buy_only = calculate_trading_profit_torch_buy_only(scaler, None, actuals[:, :-1],
                                                                             trading_preds).item()
@@ -520,10 +524,10 @@ def make_predictions(input_data_path=None):
                 last_preds[key_to_predict.lower() + "_val_loss"] = val_loss.item()
                 last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = calculated_profit
                 last_preds[key_to_predict.lower() + "min_loss_buy_only_trading_profit"] = calculated_profit_buy_only
-                last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:, :-1]
-                last_preds[key_to_predict.lower() + "_calculated_profit_values"] = calculated_profit_values
-                last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds
-                last_preds[key_to_predict.lower() + "_predictions"] = predictions[:, :-1]
+                last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:, :-1].view(-1)
+                last_preds[key_to_predict.lower() + "_calculated_profit_values"] = calculated_profit_values.view(-1)
+                last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
+                last_preds[key_to_predict.lower() + "_predictions"] = predictions[:, :-1].view(-1)
                 # last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
                 # last_preds[
                 #     key_to_predict.lower() + "_likely_percent_uncertainty"
@@ -791,9 +795,13 @@ def make_predictions(input_data_path=None):
             # trading_preds = (predictions[:, :-1] > 0) * 2 - 1
             # last_values = x_test[:, -1, 0]
             # compute movement to high price
-
-            close_to_high = abs(1 - (last_preds['high_last_price'] / last_preds['close_last_price']))
-            close_to_low = abs(1 - (last_preds['low_last_price'] / last_preds['close_last_price']))
+            validation_size = last_preds[
+                "high_actual_movement_values"].numel()
+            close_to_high = series_to_tensor(abs(1 - (stock_data["High"].iloc[-validation_size -2:-2] / stock_data["Close"].iloc[
+                                                                                  -validation_size -2:-2])))
+            close_to_low = series_to_tensor(abs(1 - (stock_data["Low"].iloc[
+                                    -validation_size -2:-2] / stock_data["Close"].iloc[
+                                                         -validation_size -2:-2])))
             calculated_profit = calculate_trading_profit_torch_with_buysell(scaler, None, last_preds["close_actual_movement_values"],
                                                                             last_preds["close_trade_values"],
                                                                             last_preds[
@@ -846,6 +854,36 @@ def make_predictions(input_data_path=None):
                     last_preds['takeprofit_profit_low_multiplier'] = low_take_profit_multiplier
                     last_preds['takeprofit_low_profit'] = max_profit
                     print(f"{instrument_name} low_take_profit_multiplier: {low_take_profit_multiplier} calculated_profit: {calculated_profit}")
+
+
+
+            # with maxdiff low or high
+            high_diffs = torch.abs(last_preds[
+                             "high_predictions"] + close_to_high)
+            low_diffs = torch.abs(last_preds[
+                            "low_predictions"] - close_to_low)
+            maxdiff_trades = (high_diffs > low_diffs) * 2 - 1
+            calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
+                                                                                  last_preds[
+                                                                                      "close_actual_movement_values"],
+                                                                                  maxdiff_trades,
+                                                                                  last_preds[
+                                                                                      "high_actual_movement_values"] + close_to_high,
+                                                                                  last_preds[
+                                                                                      "high_predictions"] + close_to_high,
+                                                                                  last_preds[
+                                                                                      "low_actual_movement_values"] - close_to_low,
+                                                                                  last_preds[
+                                                                                      "low_predictions"] - close_to_low,
+
+                                                                                  ).item()
+            print(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
+            last_preds['maxdiffprofit_profit'] = calculated_profit
+            latest_close_to_low = abs(1 - (last_preds['low_predicted_price_value'] / last_preds['close_last_price']))
+            last_preds['latest_low_diff'] = latest_close_to_low
+
+            latest_close_to_high = abs(1 - (last_preds['high_predicted_price_value'] / last_preds['close_last_price']))
+            last_preds['latest_low_diff'] = latest_close_to_high
 
 
             # with buysellentry:
