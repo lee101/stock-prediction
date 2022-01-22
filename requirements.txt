@@ -7,3 +7,4 @@ torchvision==0.10.0+cu111
 pandas
 scipy
 alpaca_trade_api==1.4.2
+loguru

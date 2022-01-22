@@ -173,6 +173,7 @@ def make_trade_suggestions(predictions, minute_predictions):
     do_trade = False
     has_traded = False
     alpaca_wrapper.close_open_orders() # all orders cancelled/remade
+    # todo exec top entry_trading_profit
     for index, row in predictions.iterrows():
 
         # if row['close_predicted_price'] > 0:
