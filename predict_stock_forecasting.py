@@ -324,7 +324,7 @@ def make_predictions(input_data_path=None):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                retrain = False # todo reenable
+                retrain = True # todo reenable
                 # try find specific hl net
 
                 checkpoints_dir = (base_dir / 'lightning_logs' / key_to_predict / instrument_name)
@@ -883,7 +883,7 @@ def make_predictions(input_data_path=None):
             last_preds['latest_low_diff'] = latest_close_to_low
 
             latest_close_to_high = abs(1 - (last_preds['high_predicted_price_value'] / last_preds['close_last_price']))
-            last_preds['latest_low_diff'] = latest_close_to_high
+            last_preds['latest_high_diff'] = latest_close_to_high
 
 
             # with buysellentry:
