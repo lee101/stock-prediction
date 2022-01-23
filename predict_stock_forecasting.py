@@ -259,7 +259,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                 # best hyperpramams look like:
                 # {'gradient_clip_val': 0.05690473137493243, 'hidden_size': 50, 'dropout': 0.23151352460442215,
                 #  'hidden_continuous_size': 22, 'attention_head_size': 2, 'learning_rate': 0.0816548812864903}
-                best_hyperparams_save_file = f"data/test_study{key_to_predict}{instrument_name}.pkl"
+                best_hyperparams_save_file = f"data/test_study{pred_name}{key_to_predict}{instrument_name}.pkl"
                 params = None
                 try:
                     params = pickle.load(open(best_hyperparams_save_file, "rb"))
@@ -311,7 +311,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     filename=instrument_name + "_{epoch}_{val_loss:.8f}",
                 )
                 lr_logger = LearningRateMonitor()  # log the learning rate
-                logger = TensorBoardLogger(f"lightning_logs/{key_to_predict}/{instrument_name}")  # logging results to a tensorboard
+                logger = TensorBoardLogger(f"lightning_logs/{pred_name}/{key_to_predict}/{instrument_name}")  # logging results to a tensorboard
                 trainer = pl.Trainer(
                     max_epochs=10000,
                     gpus=1,
@@ -328,12 +328,16 @@ def make_predictions(input_data_path=None, pred_name=''):
                 retrain = True # todo reenable
                 # try find specific hl net
 
-                checkpoints_dir = (base_dir / 'lightning_logs' / key_to_predict / instrument_name)
+                checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / key_to_predict / instrument_name)
                 checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 if len(checkpoint_files) == 0:
-                    print("No open/low specific checkpoints found, training from other checkpoint")
-                    checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
+                    print("No min+open/low specific checkpoints found, training from other checkpoint")
+                    checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / instrument_name)
                     checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
+                    if len(checkpoint_files) == 0:
+                        print("No min specific checkpoints found, training from other checkpoint")
+                        checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
+                        checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 best_tft = tft
 
                 if checkpoint_files:

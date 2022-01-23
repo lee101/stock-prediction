@@ -1,5 +1,6 @@
 from time import time, sleep
 
+import requests.exceptions
 from alpaca_trade_api.rest import APIError
 from loguru import logger
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT
@@ -10,19 +11,26 @@ alpaca_api = tradeapi.REST(
     ALP_ENDPOINT,
     'v2')
 
-positions = alpaca_api.list_positions()
-print(positions)
-account = alpaca_api.get_account()
-print(account)
-# Figure out how much money we have to work with, accounting for margin
-equity = float(account.equity)
-margin_multiplier = float(account.multiplier)
-total_buying_power = margin_multiplier * equity
-print(f'Initial total buying power = {total_buying_power}')
-alpaca_clock = alpaca_api.get_clock()
-print(alpaca_clock)
-if not alpaca_clock.is_open:
-    print('Market closed')
+equity = 30000
+total_buying_power = 20000
+
+try:
+    positions = alpaca_api.list_positions()
+    print(positions)
+    account = alpaca_api.get_account()
+    print(account)
+    # Figure out how much money we have to work with, accounting for margin
+    equity = float(account.equity)
+    margin_multiplier = float(account.multiplier)
+    total_buying_power = margin_multiplier * equity
+    print(f'Initial total buying power = {total_buying_power}')
+    alpaca_clock = alpaca_api.get_clock()
+    print(alpaca_clock)
+    if not alpaca_clock.is_open:
+        print('Market closed')
+except requests.exceptions.ConnectionError as e:
+    logger.error('offline/connection error', e)
+
 
 def list_positions():
     return alpaca_api.list_positions()

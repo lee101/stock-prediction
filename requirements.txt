@@ -8,3 +8,6 @@ pandas
 scipy
 alpaca_trade_api==1.4.2
 loguru
+matplotlib
+pytorch-forecasting
+neuralprophet

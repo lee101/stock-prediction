@@ -1,5 +1,5 @@
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -7,13 +7,11 @@ import pandas as pd
 import torch
 import transformers
 
-from data_utils import split_data, drop_n_rows
-from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
-    calculate_trading_profit_no_scale, get_trading_profits_list, percent_movements_augment, \
+from data_utils import split_data
+from loss_utils import calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
+    get_trading_profits_list, percent_movements_augment, \
     percent_movements_augment_to, calculate_takeprofit_torch, calculate_takeprofit_torch_sq
-from model import GRU, GRU
-
-from neuralprophet import NeuralProphet
+from model import GRU
 
 transformers.set_seed(42)
 

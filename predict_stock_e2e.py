@@ -1,4 +1,5 @@
 import random
+from collections import defaultdict
 from datetime import datetime
 from time import sleep
 
@@ -14,24 +15,30 @@ from predict_stock_forecasting import make_predictions
 # do_retrain = True
 use_stale_data = True
 
+daily_predictions = None
 @timeit
 def do_forecasting():
-    if use_stale_data:
-        current_time_formatted = '2021-12-05 18:20:29'
-        current_time_formatted = '2021-12-09 12:16:26'  # new/ more data
-        current_time_formatted = '2021-12-11 07:57:21-2'  # new/ less data tickers
-        current_time_formatted = 'min' # new/ less data tickers
-        # current_time_formatted = '2021-12-30 20:11:47'  # new/ 30 minute data
-    else:
-        current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        download_daily_stock_data(current_time_formatted)
-    predictions = make_predictions(current_time_formatted)
+    global daily_predictions
+
+    if not daily_predictions:
+
+        if use_stale_data:
+            current_time_formatted = '2021-12-05 18:20:29'
+            current_time_formatted = '2021-12-09 12:16:26'  # new/ more data
+            current_time_formatted = '2021-12-11 07:57:21-2'  # new/ less data tickers
+            current_time_formatted = 'min' # new/ less data tickers
+            # current_time_formatted = '2021-12-30 20:11:47'  # new/ 30 minute data
+        else:
+            current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            download_daily_stock_data(current_time_formatted)
+        daily_predictions = make_predictions(current_time_formatted)
+
 
     current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     download_minute_stock_data(current_time_formatted)
     minute_predictions = make_predictions(current_time_formatted, pred_name='minute')
 
-    make_trade_suggestions(predictions, minute_predictions)
+    make_trade_suggestions(daily_predictions, minute_predictions)
 
 def close_profitable_trades(all_preds):
     positions = alpaca_wrapper.list_positions()
@@ -41,9 +48,9 @@ def close_profitable_trades(all_preds):
     has_traded = False
     for position in positions:
         if float(position.unrealized_pl) < 0:
-            made_money_recently = False
+            made_money_recently[position.symbol] = False
         else:
-            made_money_recently = True
+            made_money_recently[position.symbol] = True
 
         is_worsening_position = False
         for index, row in all_preds.iterrows():
@@ -74,7 +81,7 @@ def close_profitable_trades(all_preds):
 
 
 
-made_money_recently = True
+made_money_recently = defaultdict(bool)
 
 def buy_stock(row, all_preds):
     """
@@ -92,9 +99,9 @@ def buy_stock(row, all_preds):
     has_traded = False
     for position in positions:
         if float(position.unrealized_pl) < 0:
-            made_money_recently = False
+            made_money_recently[position.symbol] = False
         else:
-            made_money_recently = True
+            made_money_recently[position.symbol] = True
 
         if position.symbol != currentBuySymbol:
             ## dont trade until we made money
@@ -146,8 +153,8 @@ def buy_stock(row, all_preds):
 
     if not already_held_stock:
         print(f"{new_position_side} {currentBuySymbol}")
-        margin_multiplier = 1.9
-        if not made_money_recently:
+        margin_multiplier = 1 / 5
+        if not made_money_recently[currentBuySymbol]:
             margin_multiplier = .03
         alpaca_wrapper.buy_stock(currentBuySymbol, row, margin_multiplier)
         return True
@@ -167,13 +174,15 @@ def make_trade_suggestions(predictions, minute_predictions):
     # where closemin_loss_trading_profit is positive
     # add new absolute movement column
     # predictions['absolute_movement'] = abs(predictions['close_predicted_price'] + predictions['close_predicted_price_minute'] * 3) # movement of both predictions
-    predictions['absolute_movement'] = abs(predictions['close_predicted_price_minute']) # movement of both predictions
+    predictions['absolute_movement'] = abs(predictions['close_predicted_price_minute'])
     # sort by close_predicted_price absolute movement
-    predictions.sort_values(by=['absolute_movement'], ascending=False, inplace=True)
+    predictions.sort_values(by=['takeprofit_profit'], ascending=False, inplace=True)
     do_trade = False
     has_traded = False
     alpaca_wrapper.close_open_orders() # all orders cancelled/remade
     # todo exec top entry_trading_profit
+    # make top 5 trades
+    current_trade_count = 0
     for index, row in predictions.iterrows():
 
         # if row['close_predicted_price'] > 0:
@@ -187,8 +196,12 @@ def make_trade_suggestions(predictions, minute_predictions):
             print(row)
 
             has_traded = buy_stock(row, predictions)
+            if has_traded:
+                current_trade_count += 1
+            if current_trade_count >=5:
+                break
             do_trade = True
-            break
+            # break
     if not has_traded:
         print("No trade suggestions, trying to exit position")
         close_profitable_trades(predictions)
