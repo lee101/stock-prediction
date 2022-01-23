@@ -85,7 +85,7 @@ def series_to_tensor(series_pd):
     return torch.tensor(series_pd.values, dtype=torch.float)#todo gpu, device=DEVICE)
 
 
-def make_predictions(input_data_path=None):
+def make_predictions(input_data_path=None, pred_name=''):
     """
     Make predictions for all csv files in directory.
     """
