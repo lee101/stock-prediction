@@ -79,8 +79,8 @@ def close_profitable_trades(all_preds):
                     entry_price = float(position.avg_entry_price)
                     if position.side == 'long':
                         predicted_high = row['takeprofit_high_price_minute']
-                        if abs(row['takeprofit_profit_high_multiplier']) > .01: # tuned for minutely
-                            predicted_high = row['high_predicted_price_value']
+                        if abs(row['takeprofit_profit_high_multiplier_minute']) > .01: # tuned for minutely
+                            predicted_high = row['high_predicted_price_value_minute']
                         sell_price = predicted_high
                         if trade_entered_times[position.symbol] > datetime.now() - timedelta(minutes=25):
                             # close new orders at atleast a profit
@@ -90,8 +90,8 @@ def close_profitable_trades(all_preds):
                         alpaca_wrapper.open_take_profit_position(position, row, sell_price)
                     elif position.side == 'short':
                         predicted_low = row['takeprofit_low_price_minute']
-                        if abs(row['takeprofit_profit_low_multiplier']) > .01:
-                            predicted_low = row['low_predicted_price_value']
+                        if abs(row['takeprofit_profit_low_multiplier_minute']) > .01:
+                            predicted_low = row['low_predicted_price_value_minute']
                         sell_price = predicted_low
                         if trade_entered_times[position.symbol] > datetime.now() - timedelta(minutes=25):
                             # close new orders at atleast a profit
