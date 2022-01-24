@@ -839,7 +839,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     max_profit = calculated_profit
                     last_preds['takeprofit_profit_high_multiplier'] = buy_take_profit_multiplier
                     last_preds['takeprofit_high_profit'] = max_profit
-                    print(f"{instrument_name} buy_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
+                    # print(f"{instrument_name} buy_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
             max_profit = float('-Inf')
             for low_take_profit_multiplier in np.linspace(-.05, .05, 500):
@@ -859,7 +859,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     max_profit = calculated_profit
                     last_preds['takeprofit_profit_low_multiplier'] = low_take_profit_multiplier
                     last_preds['takeprofit_low_profit'] = max_profit
-                    print(f"{instrument_name} low_take_profit_multiplier: {low_take_profit_multiplier} calculated_profit: {calculated_profit}")
+                    # print(f"{instrument_name} low_take_profit_multiplier: {low_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
 
 
@@ -931,8 +931,8 @@ def make_predictions(input_data_path=None, pred_name=''):
                     max_profit = calculated_profit
                     last_preds['entry_takeprofit_profit_high_multiplier'] = buy_take_profit_multiplier
                     last_preds['entry_takeprofit_high_profit'] = max_profit
-                    print(
-                        f"{instrument_name} buy_entry_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
+                    # print(
+                    #     f"{instrument_name} buy_entry_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
             max_profit = float('-Inf')
             for low_take_profit_multiplier in np.linspace(-.05, .05, 500):
@@ -955,8 +955,8 @@ def make_predictions(input_data_path=None, pred_name=''):
                     max_profit = calculated_profit
                     last_preds['entry_takeprofit_profit_low_multiplier'] = low_take_profit_multiplier
                     last_preds['entry_takeprofit_low_profit'] = max_profit
-                    print(
-                        f"{instrument_name} entry_low_take_profit_multiplier: {low_take_profit_multiplier} calculated_profit: {calculated_profit}")
+                    # print(
+                    #     f"{instrument_name} entry_low_take_profit_multiplier: {low_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
             last_preds['entry_takeprofit_low_price'] = last_preds['low_predicted_price_value'] * (1+ last_preds[
                 'entry_takeprofit_profit_low_multiplier'])

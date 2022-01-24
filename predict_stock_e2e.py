@@ -27,7 +27,7 @@ def do_forecasting():
             current_time_formatted = '2021-12-09 12:16:26'  # new/ more data
             current_time_formatted = '2021-12-11 07:57:21-2'  # new/ less data tickers
             current_time_formatted = 'min' # new/ less data tickers
-            # current_time_formatted = '2021-12-30 20:11:47'  # new/ 30 minute data
+            current_time_formatted = '2021-12-30 20:11:47'  # new/ 30 minute data
         else:
             current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             download_daily_stock_data(current_time_formatted)
