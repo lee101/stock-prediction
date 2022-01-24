@@ -254,7 +254,7 @@ def make_trade_suggestions(predictions, minute_predictions):
     orders = alpaca_wrapper.get_open_orders()
     for order in orders:
         created_at = order.created_at
-        if created_at < datetime.now(created_at.tzinfo) - timedelta(minutes=30):
+        if created_at < datetime.now(created_at.tzinfo) - timedelta(minutes=15):
             alpaca_wrapper.cancel_order(order)
             # todo if amount changes then cancel order and re-place it
     # alpaca_wrapper.close_open_orders() # all orders cancelled/remade
