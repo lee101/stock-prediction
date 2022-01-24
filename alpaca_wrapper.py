@@ -94,7 +94,8 @@ def close_position_at_current_price(position, row):
         return None
     print(result)
 
-def buy_stock(currentBuySymbol, row, margin_multiplier=1.95):
+def buy_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side='long'):
+    side = 'buy' if side == 'long' else 'sell'
 
     # poll untill we have closed all our positions
     # why we would wait here?
@@ -117,20 +118,23 @@ def buy_stock(currentBuySymbol, row, margin_multiplier=1.95):
     # notional_value = total_buying_power - 600 # trade with margin
     notional_value = abs(float(account.cash)) * margin_multiplier # todo predict margin/price
 
-    side = 'buy'
+    # side = 'buy'
     if row['close_predicted_price'] < 0:
-        side = 'sell'
+        # side = 'sell'
         notional_value = abs(float(account.cash)) * margin_multiplier  # trade with margin but not too much on the sell side
         # notional_value = total_buying_power - 2000
         # todo dont leave a short open over the weekend perhaps?
+
+
     try:
         current_price = row['close_last_price_minute']
         amount_to_trade = int(notional_value / current_price)
         if amount_to_trade > 0:
             amount_to_trade = 1
 
-        if side == 'sell':
-            price_to_trade_at = current_price
+        if side == 'short':
+            price_to_trade_at = max(current_price, row['high_last_price_minute'])
+
             take_profit_price = price_to_trade_at - abs(price_to_trade_at * (3*float(row['close_predicted_price_minute'])))
             result = alpaca_api.submit_order(
                 currentBuySymbol,
@@ -138,13 +142,13 @@ def buy_stock(currentBuySymbol, row, margin_multiplier=1.95):
                 side,
                 'limit',
                 'gtc',
-                limit_price=price_to_trade_at,  # .001 sell margin
-                take_profit={
-                    "limit_price": take_profit_price
-                }
+                limit_price=price,  # .001 sell margin
+                # take_profit={
+                #     "limit_price": take_profit_price
+                # }
             )
         else:
-            price_to_trade_at = current_price
+            price_to_trade_at = min(current_price, row['low_last_price_minute'])
 
             take_profit_price = current_price + abs(current_price * (3*float(row['close_predicted_price_minute']))) # todo takeprofit doesn't really work
             # we could use a limit with limit price but then couldn't do a notional order
@@ -154,11 +158,11 @@ def buy_stock(currentBuySymbol, row, margin_multiplier=1.95):
                 side,
                 'limit',
                 'gtc',
-                limit_price=price_to_trade_at,
+                limit_price=price,
                 # notional=notional_value,
-                take_profit={
-                    "limit_price": take_profit_price
-                }
+                # take_profit={
+                #     "limit_price": take_profit_price
+                # }
             )
         print(result)
 
@@ -225,3 +229,19 @@ def open_take_profit_position(position, row, price):
         return None
     print(result)
     return True
+
+
+def cancel_order(order):
+    try:
+        order.cancel()
+    except Exception as e:
+        logger.error(e)
+
+
+def get_open_orders():
+    try:
+
+        return alpaca_api.list_orders()
+    except Exception as e:
+        logger.error(e)
+        return []
