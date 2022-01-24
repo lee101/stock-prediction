@@ -208,9 +208,9 @@ def calculate_trading_profit_torch_with_buysell(scaler, last_values, y_test, y_t
     # find points where y_test_high is greater than y_test_high_pred
     hit_high_points = y_test_high_pred * (y_test_high_pred <= y_test_high) * torch.clip(detached_y_test_pred, 0, 10)
     missed_high_points = bought_profits * (y_test_high_pred > y_test_high) # already calculated/betted on but not cutoff
-    print("profit before hit_high_points: ", bought_profits)
+    # print("profit before hit_high_points: ", bought_profits)
     bought_adjusted_profits = hit_high_points + missed_high_points
-    print("profit hit_high_points: ", bought_adjusted_profits)
+    # print("profit hit_high_points: ", bought_adjusted_profits)
 
     # bought_adjusted_profits = torch.max(hit_high_points * (bought_adjusted_profits > 0).float(), bought_adjusted_profits)
 
@@ -219,9 +219,9 @@ def calculate_trading_profit_torch_with_buysell(scaler, last_values, y_test, y_t
     hit_low_points = (y_test_low_pred * (y_test_low_pred >= y_test_low)) * torch.clip(y_test_pred, -10, 0)
 
     missed_points = sold_profits * (y_test_low_pred < y_test_low) # you are left with missed points/others already calculated
-    print("profit before hit_low_points: ", sold_profits)
+    # print("profit before hit_low_points: ", sold_profits)
     adjusted_profits = hit_low_points + missed_points
-    print("profit after hit_low_points: ", adjusted_profits)
+    # print("profit after hit_low_points: ", adjusted_profits)
     # sold_profits = torch.max(torch.abs(hit_low_points) * (sold_profits > 0).float(), sold_profits)
 
     current_profit = torch.sum(

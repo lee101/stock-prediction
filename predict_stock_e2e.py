@@ -1,7 +1,11 @@
 import random
+import traceback
 from collections import defaultdict
 from datetime import datetime, timedelta
 from time import sleep
+
+from loguru import logger
+from pandas import DataFrame
 
 import alpaca_wrapper
 from data_curate_minute import download_minute_stock_data
@@ -15,12 +19,12 @@ from predict_stock_forecasting import make_predictions
 # do_retrain = True
 use_stale_data = True
 
-daily_predictions = None
+daily_predictions = DataFrame()
 @timeit
 def do_forecasting():
     global daily_predictions
 
-    if not daily_predictions:
+    if not daily_predictions.empty:
 
         if use_stale_data:
             current_time_formatted = '2021-12-05 18:20:29'
@@ -253,6 +257,9 @@ if __name__ == '__main__':
 
             do_forecasting()
         except Exception as e:
+            traceback.print_exc()
+
+            logger.exception(e)
             print(e)
         # sleep for 1 minutes
         print("Sleeping for 5sec")

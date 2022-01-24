@@ -1,3 +1,4 @@
+import traceback
 from time import time, sleep
 
 import requests.exceptions
@@ -58,6 +59,8 @@ def close_position_violently(position):
                 'market',
                 'gtc')
     except Exception as e:
+        traceback.print_exc()
+
         logger.error(e)
         # close all positions? perhaps not
         return None
