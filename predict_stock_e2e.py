@@ -71,11 +71,17 @@ def close_profitable_trades(all_preds, orders):
                 #     alpaca_wrapper.close_position_at_current_price(position, row)
                 #     has_traded = True
                 #     print(f"Closing predicted to worsen position {position.symbol}")
-                if trade_entered_times[position.symbol] < datetime.now() - timedelta(minutes=60 * 1.5):
+                ordered_time = trade_entered_times.get(position.symbol)
+                if ordered_time and ordered_time < datetime.now() - timedelta(minutes=60 * 1.5):
+                    # close other orders for pair
+                    for order in orders:
+                        if order.symbol == position.symbol:
+                            alpaca_wrapper.cancel_order(order)
+                            # todo check if we have one open that is trying to close already?
                     #close old position, not been hitting out preditctions
                     alpaca_wrapper.close_position_at_current_price(position, row)
                     print(f"Closing bad position to reduce risk {position.symbol}")
-                    # close other orders for pair
+
                 else:
                     entry_price = float(position.avg_entry_price)
                     if position.side == 'long':
@@ -83,7 +89,7 @@ def close_profitable_trades(all_preds, orders):
                         if abs(row['entry_takeprofit_profit_high_multiplier_minute']) > .01: # tuned for minutely
                             predicted_high = row['high_predicted_price_value_minute']
                         sell_price = predicted_high
-                        if trade_entered_times[position.symbol] > datetime.now() - timedelta(minutes=25):
+                        if not ordered_time or ordered_time > datetime.now() - timedelta(minutes=25):
                             # close new orders at atleast a profit
                             margin_default_high = entry_price * (1 + .0015)
                             sell_price = max(predicted_high, margin_default_high)
@@ -99,7 +105,7 @@ def close_profitable_trades(all_preds, orders):
                         if abs(row['entry_takeprofit_profit_low_multiplier_minute']) > .01:
                             predicted_low = row['low_predicted_price_value_minute']
                         sell_price = predicted_low
-                        if trade_entered_times[position.symbol] > datetime.now() - timedelta(minutes=25):
+                        if not ordered_time or ordered_time > datetime.now() - timedelta(minutes=25):
                             # close new orders at atleast a profit
                             margin_default_low = entry_price * (1 - .0015)
                             sell_price = min(predicted_low, margin_default_low)
@@ -125,7 +131,7 @@ def close_profitable_trades(all_preds, orders):
 
 
 made_money_recently = defaultdict(bool)
-trade_entered_times = defaultdict(datetime)
+trade_entered_times = {}
 
 def buy_stock(row, all_preds, positions, orders):
     """
@@ -201,8 +207,8 @@ def buy_stock(row, all_preds, positions, orders):
     if not already_held_stock:
         print(f"{new_position_side} {currentInterestSymbol}")
         margin_multiplier = 1. / 5.0
-        if not made_money_recently[currentInterestSymbol]:
-            margin_multiplier = .03
+        # if not made_money_recently[currentInterestSymbol]:
+        #     margin_multiplier = .03
 
         trade_entered_times[currentInterestSymbol] = datetime.now()
         current_price = row['close_last_price_minute']

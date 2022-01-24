@@ -233,7 +233,7 @@ def open_take_profit_position(position, row, price):
 
 def cancel_order(order):
     try:
-        order.cancel()
+        alpaca_api.cancel_order(order.id)
     except Exception as e:
         logger.error(e)
 
