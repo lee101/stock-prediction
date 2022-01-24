@@ -88,7 +88,12 @@ def close_profitable_trades(all_preds, orders):
                             margin_default_high = entry_price * (1 + .0015)
                             sell_price = max(predicted_high, margin_default_high)
                         # only if no other orders already
-                        alpaca_wrapper.open_take_profit_position(position, row, sell_price)
+                        ordered_already = False
+                        for order in orders:
+                            if order.side == 'buy' and order.symbol == position.symbol:
+                                ordered_already = True
+                        if not ordered_already:
+                            alpaca_wrapper.open_take_profit_position(position, row, sell_price)
                     elif position.side == 'sell':
                         predicted_low = row['entry_takeprofit_low_price_minute']
                         if abs(row['entry_takeprofit_profit_low_multiplier_minute']) > .01:
@@ -99,8 +104,12 @@ def close_profitable_trades(all_preds, orders):
                             margin_default_low = entry_price * (1 - .0015)
                             sell_price = min(predicted_low, margin_default_low)
                         # only if no other orders already
-
-                        alpaca_wrapper.open_take_profit_position(position, row, sell_price)
+                        ordered_already = False
+                        for order in orders:
+                            if order.side == 'sell' and order.symbol == position.symbol:
+                                ordered_already = True
+                        if not ordered_already:
+                            alpaca_wrapper.open_take_profit_position(position, row, sell_price)
 
                 # else:
                 #     pass
@@ -126,7 +135,7 @@ def buy_stock(row, all_preds, positions, orders):
     """
     global made_money_recently
 
-    currentBuySymbol = row['instrument']
+    currentInterestSymbol = row['instrument']
     # close all positions that are not in this current held stock
     already_held_stock = False
     low_to_close_diff = abs(row['low_predicted_price_minute'] - row['close_predicted_price_minute'])
@@ -140,7 +149,7 @@ def buy_stock(row, all_preds, positions, orders):
         else:
             made_money_recently[position.symbol] = True
 
-        if position.symbol != currentBuySymbol:
+        if position.symbol != currentInterestSymbol:
             ## dont trade until we made money
             if float(position.unrealized_pl) < 0 and float(position.unrealized_plpc) < 0: # think more carefully about jumping off positions until we make good profit
                 # skip closing bad positions, sometimes wait for a while before jumping between stock
@@ -171,7 +180,7 @@ def buy_stock(row, all_preds, positions, orders):
                 # done later
                 # already_held_stock = True
                 # print(
-                #     f"hodling bad position {position.symbol} instead of {new_position_side} {currentBuySymbol} - predicted to get better")
+                #     f"hodling bad position {position.symbol} instead of {new_position_side} {currentInterestSymbol} - predicted to get better")
 
             else:
                 # alpaca_wrapper.close_position_violently(position)
@@ -181,21 +190,21 @@ def buy_stock(row, all_preds, positions, orders):
                 has_traded = False
                 print(f"Not jumping to buy other stock - ")
         elif position.side == new_position_side:
-            print("Already holding {}".format(currentBuySymbol))
+            print("Already holding {}".format(currentInterestSymbol))
             already_held_stock = True
         # may cause overtrading
         # else:
         #     alpaca_wrapper.close_position_at_current_price(position, row)
         #     has_traded = True
-        #     print(f"changing stance on {currentBuySymbol} to {new_position_side}")
+        #     print(f"changing stance on {currentInterestSymbol} to {new_position_side}")
 
     if not already_held_stock:
-        print(f"{new_position_side} {currentBuySymbol}")
+        print(f"{new_position_side} {currentInterestSymbol}")
         margin_multiplier = 1. / 5.0
-        if not made_money_recently[currentBuySymbol]:
+        if not made_money_recently[currentInterestSymbol]:
             margin_multiplier = .03
 
-        trade_entered_times[currentBuySymbol] = datetime.now()
+        trade_entered_times[currentInterestSymbol] = datetime.now()
         current_price = row['close_last_price_minute']
 
         price_to_trade_at = max(current_price, row['high_last_price_minute'])
@@ -211,9 +220,15 @@ def buy_stock(row, all_preds, positions, orders):
                 predicted_high = row['high_predicted_price_value_minute']
             price_to_trade_at = max(current_price, predicted_high)
         # ONLY trade if we aren't trading in that dir already
-        for orders
-        alpaca_wrapper.buy_stock(currentBuySymbol, row, price_to_trade_at, margin_multiplier, new_position_side)
-        return True
+        ordered_already = False
+
+        for order in orders:
+            position_side = 'buy' if new_position_side == 'long' else 'sell'
+            if order.side == position_side and order.symbol == currentInterestSymbol:
+                ordered_already = True
+        if not ordered_already:
+            alpaca_wrapper.buy_stock(currentInterestSymbol, row, price_to_trade_at, margin_multiplier, new_position_side)
+            return True
     return has_traded
 
 
