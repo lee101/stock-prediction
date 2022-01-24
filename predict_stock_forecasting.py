@@ -325,7 +325,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                retrain = True # todo reenable
+                retrain = False # todo reenable
                 # try find specific hl net
 
                 checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / key_to_predict / instrument_name)

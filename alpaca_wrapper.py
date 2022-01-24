@@ -39,7 +39,7 @@ def cancel_all_orders():
     result = alpaca_api.cancel_all_orders()
     print(result)
 
-# alpaca_api.submit_order(short_stock, qty, side, "market", "day")
+# alpaca_api.submit_order(short_stock, qty, side, "market", "gtc")
 def close_position_violently(position):
     try:
         if position.side == 'long':
@@ -48,7 +48,7 @@ def close_position_violently(position):
                 abs(float(position.qty)),
                 'sell',
                 'market',
-                'day')
+                'gtc')
 
         else:
             result = alpaca_api.submit_order(
@@ -56,7 +56,7 @@ def close_position_violently(position):
                 abs(float(position.qty)),
                 'buy',
                 'market',
-                'day')
+                'gtc')
     except Exception as e:
         logger.error(e)
         # close all positions? perhaps not
@@ -72,7 +72,7 @@ def close_position_at_current_price(position, row):
                 abs(float(position.qty)),
                 'sell',
                 'limit',
-                'day',
+                'gtc',
                 limit_price=row['close_last_price_minute'],
             )
 
@@ -82,7 +82,7 @@ def close_position_at_current_price(position, row):
                 abs(float(position.qty)),
                 'buy',
                 'limit',
-                'day',
+                'gtc',
                 limit_price=row['close_last_price_minute'],
             )
     except Exception as e:
@@ -134,7 +134,7 @@ def buy_stock(currentBuySymbol, row, margin_multiplier=1.95):
                 amount_to_trade,
                 side,
                 'limit',
-                'day',
+                'gtc',
                 limit_price=price_to_trade_at,  # .001 sell margin
                 take_profit={
                     "limit_price": take_profit_price
@@ -143,14 +143,14 @@ def buy_stock(currentBuySymbol, row, margin_multiplier=1.95):
         else:
             price_to_trade_at = current_price
 
-            take_profit_price = current_price + abs(current_price * (3*float(row['close_predicted_price_minute'])))
+            take_profit_price = current_price + abs(current_price * (3*float(row['close_predicted_price_minute']))) # todo takeprofit doesn't really work
             # we could use a limit with limit price but then couldn't do a notional order
             result = alpaca_api.submit_order(
                 currentBuySymbol,
                 amount_to_trade,
                 side,
                 'limit',
-                'day',
+                'gtc',
                 limit_price=price_to_trade_at,
                 # notional=notional_value,
                 take_profit={
@@ -192,8 +192,8 @@ def re_setup_vars():
         print('Market closed')
 
 
-def open_take_profit_position(position, row):
-    entry_price = float(position.avg_entry_price)
+def open_take_profit_position(position, row, price):
+    # entry_price = float(position.avg_entry_price)
     # current_price = row['close_last_price_minute']
     # current_symbol = row['symbol']
     try:
@@ -203,8 +203,8 @@ def open_take_profit_position(position, row):
                 abs(float(position.qty)),
                 'sell',
                 'limit',
-                'day',
-                limit_price=str(entry_price * (1 + .004),)
+                'gtc',
+                limit_price=str(price)#str(entry_price * (1 + .004),)
             )
 
         else:
@@ -213,8 +213,8 @@ def open_take_profit_position(position, row):
                 abs(float(position.qty)),
                 'buy',
                 'limit',
-                'day',
-                limit_price=str(entry_price * (1 - .004))
+                'gtc',
+                limit_price=str(price)
             )
     except Exception as e:
         logger.error(e)
