@@ -2,10 +2,12 @@ import random
 import traceback
 from collections import defaultdict
 from datetime import datetime, timedelta
+from pathlib import Path
 from time import sleep
 
 from loguru import logger
 from pandas import DataFrame
+from torch import clamp
 
 import alpaca_wrapper
 from data_curate_minute import download_minute_stock_data
@@ -13,7 +15,7 @@ from data_curate_daily import download_daily_stock_data
 # from predict_stock import make_predictions
 from decorator_utils import timeit
 from predict_stock_forecasting import make_predictions
-
+import shelve
 
 # read do_retrain argument from argparse
 # do_retrain = True
@@ -44,9 +46,9 @@ def do_forecasting():
 
     make_trade_suggestions(daily_predictions, minute_predictions)
 
-def close_profitable_trades(all_preds, orders):
-    positions = alpaca_wrapper.list_positions()
+def close_profitable_trades(all_preds, positions, orders):
     global made_money_recently
+
     # close all positions that are not in this current held stock
     already_held_stock = False
     has_traded = False
@@ -72,15 +74,16 @@ def close_profitable_trades(all_preds, orders):
                 #     has_traded = True
                 #     print(f"Closing predicted to worsen position {position.symbol}")
                 ordered_time = trade_entered_times.get(position.symbol)
-                if ordered_time and ordered_time < datetime.now() - timedelta(minutes=60 * 1.5):
+                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 1.):
                     # close other orders for pair
                     for order in orders:
                         if order.symbol == position.symbol:
                             alpaca_wrapper.cancel_order(order)
                             # todo check if we have one open that is trying to close already?
-                    #close old position, not been hitting out preditctions
+                    # close old position, not been hitting out preditctions
+                    # todo why cancel order if its still predicted to be successful?
                     alpaca_wrapper.close_position_at_current_price(position, row)
-                    print(f"Closing bad position to reduce risk {position.symbol}")
+                    print(f"Closing position to reduce risk {position.symbol}")
 
                 else:
                     entry_price = float(position.avg_entry_price)
@@ -100,7 +103,7 @@ def close_profitable_trades(all_preds, orders):
                                 ordered_already = True
                         if not ordered_already:
                             alpaca_wrapper.open_take_profit_position(position, row, sell_price)
-                    elif position.side == 'sell':
+                    elif position.side == 'short':
                         predicted_low = row['entry_takeprofit_low_price_minute']
                         if abs(row['entry_takeprofit_profit_low_multiplier_minute']) > .01:
                             predicted_low = row['low_predicted_price_value_minute']
@@ -116,7 +119,7 @@ def close_profitable_trades(all_preds, orders):
                                 ordered_already = True
                         if not ordered_already:
                             alpaca_wrapper.open_take_profit_position(position, row, sell_price)
-
+                break
                 # else:
                 #     pass
                     # instant close?
@@ -129,9 +132,10 @@ def close_profitable_trades(all_preds, orders):
                     #     f"keeping position {position.symbol} - predicted to get better - open takeprofit at {row['close_last_price_minute'] }")
 
 
-
+data_dir = Path(__file__).parent / 'data'
 made_money_recently = defaultdict(bool)
-trade_entered_times = {}
+trade_entered_times = shelve.open(str(data_dir / f"trade_entered_times.db"))
+# all_historical_orders = shelve.open(str(data_dir / f"all_historical_orders.db"))
 
 def buy_stock(row, all_preds, positions, orders):
     """
@@ -218,8 +222,7 @@ def buy_stock(row, all_preds, positions, orders):
             predicted_low = row['entry_takeprofit_low_price_minute']
             if abs(row['entry_takeprofit_profit_low_multiplier_minute']) > .01:
                 predicted_low = row['low_predicted_price_value_minute']
-            price_to_trade_at = min(current_price, predicted_low)
-            price_to_trade_at = min(current_price, row['low_last_price_minute'])
+            price_to_trade_at = min(current_price, predicted_low) #, row['low_last_price_minute'])
         elif new_position_side == 'sell':
             predicted_high = row['entry_takeprofit_high_price_minute']
             if abs(row['entry_takeprofit_profit_high_multiplier_minute']) > .01:  # tuned for minutely
@@ -258,10 +261,13 @@ def make_trade_suggestions(predictions, minute_predictions):
     has_traded = False
     # cancel any order open longer than 20 mins/recalculate it
     orders = alpaca_wrapper.get_open_orders()
+    leftover_live_orders = []
     for order in orders:
         created_at = order.created_at
         if created_at < datetime.now(created_at.tzinfo) - timedelta(minutes=15):
             alpaca_wrapper.cancel_order(order)
+        else:
+            leftover_live_orders.append(order)
             # todo if amount changes then cancel order and re-place it
     # alpaca_wrapper.close_open_orders() # all orders cancelled/remade
     # todo exec top entry_trading_profit
@@ -269,7 +275,14 @@ def make_trade_suggestions(predictions, minute_predictions):
     current_trade_count = 0
     positions = alpaca_wrapper.list_positions()
     max_concurrent_trades = 5
-    max_trades_available = max_concurrent_trades - len(positions)
+
+    ordered_or_positioned_instruments = set()
+    for position in positions:
+        ordered_or_positioned_instruments.add(position.symbol)
+    for order in leftover_live_orders:
+        ordered_or_positioned_instruments.add(order.symbol)
+    max_trades_available = max_concurrent_trades - len(ordered_or_positioned_instruments)
+
     for index, row in predictions.iterrows():
 
         # if row['close_predicted_price'] > 0:
@@ -293,7 +306,7 @@ def make_trade_suggestions(predictions, minute_predictions):
             # break
     # if not has_traded:
     #     print("No trade suggestions, trying to exit position")
-    close_profitable_trades(predictions, orders)
+    close_profitable_trades(predictions, positions, orders)
 
     sleep(5)
 
