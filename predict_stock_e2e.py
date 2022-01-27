@@ -7,7 +7,6 @@ from time import sleep
 
 from loguru import logger
 from pandas import DataFrame
-from torch import clamp
 
 import alpaca_wrapper
 from data_curate_minute import download_minute_stock_data
@@ -149,7 +148,7 @@ def buy_stock(row, all_preds, positions, orders):
     global made_money_recently_tmp
     global made_money_one_before_recently
 
-    currentInterestSymbol = row['instrument']
+    current_interest_symbol = row['instrument']
     # close all positions that are not in this current held stock
     already_held_stock = False
     low_to_close_diff = abs(row['low_predicted_price_minute'] - row['close_predicted_price_minute'])
@@ -161,7 +160,7 @@ def buy_stock(row, all_preds, positions, orders):
         made_money_recently[position.symbol] = float(position.unrealized_plpc)
         made_money_one_before_recently[position.symbol] = made_money_recently_tmp[position.symbol]
 
-        if position.symbol != currentInterestSymbol:
+        if position.symbol != current_interest_symbol:
             ## dont trade until we made money
             if float(position.unrealized_pl) < 0 and float(position.unrealized_plpc) < 0: # think more carefully about jumping off positions until we make good profit
                 # skip closing bad positions, sometimes wait for a while before jumping between stock
@@ -192,7 +191,7 @@ def buy_stock(row, all_preds, positions, orders):
                 # done later
                 # already_held_stock = True
                 # print(
-                #     f"hodling bad position {position.symbol} instead of {new_position_side} {currentInterestSymbol} - predicted to get better")
+                #     f"hodling bad position {position.symbol} instead of {new_position_side} {current_interest_symbol} - predicted to get better")
 
             else:
                 # alpaca_wrapper.close_position_violently(position)
@@ -202,23 +201,23 @@ def buy_stock(row, all_preds, positions, orders):
                 has_traded = False
                 print(f"Not jumping to buy other stock - ")
         elif position.side == new_position_side:
-            print("Already holding {}".format(currentInterestSymbol))
+            print("Already holding {}".format(current_interest_symbol))
             already_held_stock = True
         # may cause overtrading
         # else:
         #     alpaca_wrapper.close_position_at_current_price(position, row)
         #     has_traded = True
-        #     print(f"changing stance on {currentInterestSymbol} to {new_position_side}")
+        #     print(f"changing stance on {current_interest_symbol} to {new_position_side}")
 
     if not already_held_stock:
-        print(f"{new_position_side} {currentInterestSymbol}")
-        margin_multiplier = 1. / 5.0
-        if made_money_recently[currentInterestSymbol] + made_money_one_before_recently[currentInterestSymbol] < -0.000001:
+        print(f"{new_position_side} {current_interest_symbol}")
+        margin_multiplier = (1. / 10.0) * .8 # leave some room # TODO fix back to 1/5 given success
+        if made_money_recently[current_interest_symbol] + made_money_one_before_recently[current_interest_symbol] < -0.000001:
             # if loosing money over two trades, make a small trade /recalculate
             margin_multiplier = .03
-            logger.info(f"{currentInterestSymbol} is loosing money over two trades, making a small trade")
+            logger.info(f"{current_interest_symbol} is loosing money over two trades, making a small trade")
 
-        trade_entered_times[currentInterestSymbol] = datetime.now()
+        trade_entered_times[current_interest_symbol] = datetime.now()
         current_price = row['close_last_price_minute']
 
         price_to_trade_at = max(current_price, row['high_last_price_minute'])
@@ -237,11 +236,11 @@ def buy_stock(row, all_preds, positions, orders):
 
         for order in orders:
             position_side = 'buy' if new_position_side == 'long' else 'sell'
-            if order.side == position_side and order.symbol == currentInterestSymbol:
+            if order.side == position_side and order.symbol == current_interest_symbol:
                 ordered_already = True
         if not ordered_already:
             made_money_recently_tmp[position.symbol] = made_money_recently[position.symbol]
-            alpaca_wrapper.buy_stock(currentInterestSymbol, row, price_to_trade_at, margin_multiplier, new_position_side)
+            alpaca_wrapper.buy_stock(current_interest_symbol, row, price_to_trade_at, margin_multiplier, new_position_side)
             return True
     return has_traded
 
