@@ -53,10 +53,8 @@ def close_profitable_trades(all_preds, positions, orders):
     already_held_stock = False
     has_traded = False
     for position in positions:
-        if float(position.unrealized_pl) < 0:
-            made_money_recently[position.symbol] = False
-        else:
-            made_money_recently[position.symbol] = True
+        made_money_recently[position.symbol] = float(position.unrealized_plpc)
+        made_money_one_before_recently[position.symbol] = made_money_recently_tmp[position.symbol]
 
         is_worsening_position = False
         for index, row in all_preds.iterrows():
@@ -133,7 +131,11 @@ def close_profitable_trades(all_preds, positions, orders):
 
 
 data_dir = Path(__file__).parent / 'data'
-made_money_recently = defaultdict(bool)
+#
+made_money_recently = defaultdict(float)
+made_money_recently_tmp = defaultdict(float)
+made_money_one_before_recently = defaultdict(float)
+
 trade_entered_times = shelve.open(str(data_dir / f"trade_entered_times.db"))
 # all_historical_orders = shelve.open(str(data_dir / f"all_historical_orders.db"))
 
@@ -144,6 +146,8 @@ def buy_stock(row, all_preds, positions, orders):
     :return:
     """
     global made_money_recently
+    global made_money_recently_tmp
+    global made_money_one_before_recently
 
     currentInterestSymbol = row['instrument']
     # close all positions that are not in this current held stock
@@ -154,10 +158,8 @@ def buy_stock(row, all_preds, positions, orders):
     new_position_side = 'short' if low_to_close_diff > high_to_close_diff else 'long' # maxdiff max profit potential
     has_traded = False
     for position in positions:
-        if float(position.unrealized_pl) < 0:
-            made_money_recently[position.symbol] = False
-        else:
-            made_money_recently[position.symbol] = True
+        made_money_recently[position.symbol] = float(position.unrealized_plpc)
+        made_money_one_before_recently[position.symbol] = made_money_recently_tmp[position.symbol]
 
         if position.symbol != currentInterestSymbol:
             ## dont trade until we made money
@@ -211,8 +213,10 @@ def buy_stock(row, all_preds, positions, orders):
     if not already_held_stock:
         print(f"{new_position_side} {currentInterestSymbol}")
         margin_multiplier = 1. / 5.0
-        # if not made_money_recently[currentInterestSymbol]:
-        #     margin_multiplier = .03
+        if made_money_recently[currentInterestSymbol] + made_money_one_before_recently[currentInterestSymbol] < -0.000001:
+            # if loosing money over two trades, make a small trade /recalculate
+            margin_multiplier = .03
+            logger.info(f"{currentInterestSymbol} is loosing money over two trades, making a small trade")
 
         trade_entered_times[currentInterestSymbol] = datetime.now()
         current_price = row['close_last_price_minute']
@@ -236,6 +240,7 @@ def buy_stock(row, all_preds, positions, orders):
             if order.side == position_side and order.symbol == currentInterestSymbol:
                 ordered_already = True
         if not ordered_already:
+            made_money_recently_tmp[position.symbol] = made_money_recently[position.symbol]
             alpaca_wrapper.buy_stock(currentInterestSymbol, row, price_to_trade_at, margin_multiplier, new_position_side)
             return True
     return has_traded
@@ -299,14 +304,14 @@ def make_trade_suggestions(predictions, minute_predictions):
             if current_trade_count >= max_trades_available:
                 break
 
-            has_traded = buy_stock(row, predictions, positions, orders)
+            has_traded = buy_stock(row, predictions, positions, leftover_live_orders)
             if has_traded:
                 current_trade_count += 1
             do_trade = True
             # break
     # if not has_traded:
     #     print("No trade suggestions, trying to exit position")
-    close_profitable_trades(predictions, positions, orders)
+    close_profitable_trades(predictions, positions, leftover_live_orders)
 
     sleep(5)
 
