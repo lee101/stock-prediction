@@ -47,6 +47,8 @@ def do_forecasting():
 
 def close_profitable_trades(all_preds, positions, orders):
     global made_money_recently
+    global made_money_one_before_recently
+    global made_money_recently_tmp
 
     # close all positions that are not in this current held stock
     already_held_stock = False
@@ -211,7 +213,7 @@ def buy_stock(row, all_preds, positions, orders):
 
     if not already_held_stock:
         print(f"{new_position_side} {current_interest_symbol}")
-        margin_multiplier = (1. / 5.0) * .8 # leave some room
+        margin_multiplier = (1. / 10.0) * .8 # leave some room
         if made_money_recently[current_interest_symbol] + made_money_one_before_recently[current_interest_symbol] < -0.000001:
             # if loosing money over two trades, make a small trade /recalculate
             margin_multiplier = .03
