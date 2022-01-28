@@ -221,12 +221,12 @@ def buy_stock(row, all_preds, positions, orders):
         current_price = row['close_last_price_minute']
 
         price_to_trade_at = max(current_price, row['high_last_price_minute'])
-        if new_position_side == 'buy':
+        if new_position_side == 'buy' or new_position_side == 'long':
             predicted_low = row['entry_takeprofit_low_price_minute']
             if abs(row['entry_takeprofit_profit_low_multiplier_minute']) > .01:
                 predicted_low = row['low_predicted_price_value_minute']
             price_to_trade_at = min(current_price, predicted_low) #, row['low_last_price_minute'])
-        elif new_position_side == 'sell':
+        elif new_position_side == 'sell' or new_position_side == 'short':
             predicted_high = row['entry_takeprofit_high_price_minute']
             if abs(row['entry_takeprofit_profit_high_multiplier_minute']) > .01:  # tuned for minutely
                 predicted_high = row['high_predicted_price_value_minute']
@@ -239,7 +239,7 @@ def buy_stock(row, all_preds, positions, orders):
             if order.side == position_side and order.symbol == current_interest_symbol:
                 ordered_already = True
         if not ordered_already:
-            made_money_recently_tmp[position.symbol] = made_money_recently[position.symbol]
+            made_money_recently_tmp[current_interest_symbol] = made_money_recently[current_interest_symbol]
             alpaca_wrapper.buy_stock(current_interest_symbol, row, price_to_trade_at, margin_multiplier, new_position_side)
             return True
     return has_traded
