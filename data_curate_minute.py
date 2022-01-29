@@ -63,6 +63,12 @@ def download_minute_stock_data(path=None):
         'AMD',
         'SONY',
     ]
+    symbols = [
+        'BTCUSD',
+        'ETHUSD',
+        'LTCUSD',
+
+    ]
     save_path = base_dir / 'data'
     if path:
         save_path = base_dir / 'data' / path
