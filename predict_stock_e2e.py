@@ -75,7 +75,16 @@ def close_profitable_trades(all_preds, positions, orders):
                 ordered_time = trade_entered_times.get(position.symbol)
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 1.):
                     if float(position.unrealized_plpc) < 0:
-                        pass
+                        change_time = instrument_strategy_change_times.get(position.symbol)
+                        if not change_time or change_time < datetime.now() - timedelta(minutes=30 * 1.):
+                            instrument_strategy_change_times[position.symbol] = datetime.now()
+                            current_strategy = instrument_strategies.get(position.symbol, 'aggressive_buy')
+
+                            available_strategies = {'aggressive', 'aggressive_buy', 'aggressive_sell', 'entry'} - { current_strategy }
+                            new_strategy = random.choice(list(available_strategies))
+                            print(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
+                            instrument_strategies[position.symbol] = new_strategy
+
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 1.):
                     # close other orders for pair
                     for order in orders:
@@ -230,16 +239,25 @@ def buy_stock(row, all_preds, positions, orders):
         current_price = row['close_last_price_minute']
 
         price_to_trade_at = max(current_price, row['high_last_price_minute'])
-        if new_position_side == 'buy' or new_position_side == 'long':
+        current_strategy = instrument_strategies.get(current_interest_symbol, 'aggressive_buy')
+
+        if new_position_side == 'long':
             predicted_low = row['entry_takeprofit_low_price_minute']
             if abs(row['entry_takeprofit_profit_low_multiplier_minute']) > .01:
                 predicted_low = row['low_predicted_price_value_minute']
             price_to_trade_at = min(current_price, predicted_low) #, row['low_last_price_minute'])
-        elif new_position_side == 'sell' or new_position_side == 'short':
+        elif new_position_side == 'short':
             predicted_high = row['entry_takeprofit_high_price_minute']
             if abs(row['entry_takeprofit_profit_high_multiplier_minute']) > .01:  # tuned for minutely
                 predicted_high = row['high_predicted_price_value_minute']
             price_to_trade_at = max(current_price, predicted_high)
+
+        if current_strategy == 'aggressive':
+            price_to_trade_at = current_price
+        elif current_strategy == 'aggressive_buy' and new_position_side == 'long':
+            price_to_trade_at = current_price
+        elif current_strategy == 'aggressive_sell' and new_position_side == 'short':
+            price_to_trade_at = current_price
         # ONLY trade if we aren't trading in that dir already
         ordered_already = False
 
