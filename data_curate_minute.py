@@ -63,7 +63,7 @@ def download_minute_stock_data(path=None):
         'AMD',
         'SONY',
     ]
-    symbols += [
+    symbols = [
         'BTCUSD',
         'ETHUSD',
         'LTCUSD',
