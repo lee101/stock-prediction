@@ -65,7 +65,7 @@ def download_daily_stock_data(path=None):
         # 'PFE',
         # 'MRNA',
     ]
-    symbols = [
+    symbols += [
         'BTCUSD',
         'ETHUSD',
         'LTCUSD',
