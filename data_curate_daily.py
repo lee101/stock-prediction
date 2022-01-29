@@ -86,8 +86,7 @@ def download_daily_stock_data(path=None):
         # end = pd.Timestamp('2020-08-28 16:00', tz=NY).isoformat()
         ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
         if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD']:
-            minute_df = api.get_crypto_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end,
-                                     adjustment='raw').df
+            minute_df = api.get_crypto_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end).df
         else:
             minute_df = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end,
                                      adjustment='raw').df
