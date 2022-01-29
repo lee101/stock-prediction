@@ -65,6 +65,12 @@ def download_daily_stock_data(path=None):
         # 'PFE',
         # 'MRNA',
     ]
+    symbols = [
+        'BTCUSD',
+        'ETHUSD',
+        'LTCUSD',
+
+               ]
     save_path = base_dir / 'data'
     if path:
         save_path = base_dir / 'data' / path
