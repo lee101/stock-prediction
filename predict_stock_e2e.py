@@ -81,6 +81,8 @@ def close_profitable_trades(all_preds, positions, orders):
                             current_strategy = instrument_strategies.get(position.symbol, 'aggressive_buy')
 
                             available_strategies = {'aggressive', 'aggressive_buy', 'aggressive_sell', 'entry'} - { current_strategy }
+                            if current_strategy.startswith('aggressive'):
+                                available_strategies = available_strategies - {'aggressive'}
                             new_strategy = random.choice(list(available_strategies))
                             print(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
