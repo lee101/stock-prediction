@@ -178,7 +178,7 @@ def buy_stock(row, all_preds, positions, orders):
     has_traded = False
     for position in positions:
         made_money_recently[position.symbol] = float(position.unrealized_plpc)
-        made_money_one_before_recently[position.symbol] = made_money_recently_tmp[position.symbol]
+        made_money_one_before_recently[position.symbol] = made_money_recently_tmp.get(position.symbol, 0)
 
         if position.symbol != current_interest_symbol:
             ## dont trade until we made money
@@ -232,9 +232,9 @@ def buy_stock(row, all_preds, positions, orders):
     if not already_held_stock:
         print(f"{new_position_side} {current_interest_symbol}")
         margin_multiplier = (1. / 10.0) * .8 # leave some room
-        if made_money_recently.get(current_interest_symbol, 0) + made_money_one_before_recently.get(current_interest_symbol, 0) < -0.000001:
+        if (made_money_recently.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently.get(current_interest_symbol, 0) or 0) < -0.000001:
             # if loosing money over two trades, make a small trade /recalculate
-            margin_multiplier = .03
+            margin_multiplier = .001
             logger.info(f"{current_interest_symbol} is loosing money over two trades, making a small trade")
 
         trade_entered_times[current_interest_symbol] = datetime.now()
@@ -268,7 +268,7 @@ def buy_stock(row, all_preds, positions, orders):
             if order.side == position_side and order.symbol == current_interest_symbol:
                 ordered_already = True
         if not ordered_already:
-            made_money_recently_tmp[current_interest_symbol] = made_money_recently.get(current_interest_symbol, 0 )
+            made_money_recently_tmp[current_interest_symbol] = made_money_recently.get(current_interest_symbol, 0)
             alpaca_wrapper.buy_stock(current_interest_symbol, row, price_to_trade_at, margin_multiplier, new_position_side)
             return True
     return has_traded
@@ -317,7 +317,7 @@ def make_trade_suggestions(predictions, minute_predictions):
         ordered_or_positioned_instruments.add(position.symbol)
 
         made_money_recently[position.symbol] = float(position.unrealized_plpc)
-        made_money_one_before_recently[position.symbol] = made_money_recently_tmp.get(position.symbol)
+        made_money_one_before_recently[position.symbol] = made_money_recently_tmp.get(position.symbol, 0)
     for order in leftover_live_orders:
         ordered_or_positioned_instruments.add(order.symbol)
     max_trades_available = max_concurrent_trades - len(ordered_or_positioned_instruments)
