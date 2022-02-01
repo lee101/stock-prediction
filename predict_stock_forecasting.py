@@ -1002,11 +1002,15 @@ def make_predictions(input_data_path=None, pred_name=''):
                     last_preds['entry_takeprofit_low_profit'] = max_profit
                     # print(
                     #     f"{instrument_name} entry_low_take_profit_multiplier: {low_take_profit_multiplier} calculated_profit: {calculated_profit}")
-
+            # TODO break multipliers if we have no data on said side.
             last_preds['entry_takeprofit_low_price'] = last_preds['low_predicted_price_value'] * (1+ last_preds[
                 'entry_takeprofit_profit_low_multiplier'])
             last_preds['entry_takeprofit_high_price'] = last_preds['high_predicted_price_value'] * (1+ last_preds[
                 'entry_takeprofit_profit_high_multiplier'])
+            last_preds['maxdiffprofit_low_price'] = last_preds['low_predicted_price_value'] * (1+ last_preds[
+                'maxdiffprofit_profit_low_multiplier'])
+            last_preds['maxdiffprofit_high_price'] = last_preds['high_predicted_price_value'] * (1+ last_preds[
+                'maxdiffprofit_profit_high_multiplier'])
 
             last_preds['takeprofit_low_price'] = last_preds['low_predicted_price_value'] * (1+ last_preds[
                 'takeprofit_profit_low_multiplier'])
