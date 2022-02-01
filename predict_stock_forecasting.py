@@ -824,7 +824,7 @@ def make_predictions(input_data_path=None, pred_name=''):
             # todo margin allocation tests
             current_profit = calculated_profit
             max_profit = float('-Inf')
-            for buy_take_profit_multiplier in np.linspace(-.05, .05, 500):
+            for buy_take_profit_multiplier in np.linspace(-.03, .03, 500):
                 calculated_profit = calculate_trading_profit_torch_with_buysell(scaler, None,
                                                                                 last_preds["close_actual_movement_values"],
                                                                                 last_preds["close_trade_values"],
@@ -842,7 +842,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     # print(f"{instrument_name} buy_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
             max_profit = float('-Inf')
-            for low_take_profit_multiplier in np.linspace(-.05, .05, 500):
+            for low_take_profit_multiplier in np.linspace(-.03, .03, 500):
                 calculated_profit = calculate_trading_profit_torch_with_buysell(scaler, None,
                                                                                 last_preds["close_actual_movement_values"],
                                                                                 last_preds["close_trade_values"],
@@ -913,7 +913,7 @@ def make_predictions(input_data_path=None, pred_name=''):
             # todo margin allocation tests
             current_profit = calculated_profit
             max_profit = float('-Inf')
-            for buy_take_profit_multiplier in np.linspace(-.05, .05, 500):
+            for buy_take_profit_multiplier in np.linspace(-.03, .03, 500):
                 calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
                                                                                 last_preds[
                                                                                     "close_actual_movement_values"],
@@ -935,7 +935,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     #     f"{instrument_name} buy_entry_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
             max_profit = float('-Inf')
-            for low_take_profit_multiplier in np.linspace(-.05, .05, 500):
+            for low_take_profit_multiplier in np.linspace(-.03, .03, 500):
                 calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
                                                                                 last_preds[
                                                                                     "close_actual_movement_values"],
