@@ -86,7 +86,7 @@ def close_profitable_trades(all_preds, positions, orders):
                             new_strategy = random.choice(list(available_strategies))
                             print(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
-
+                # todo check time in market not overall time
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 1.):
                     # close other orders for pair
                     for order in orders:
