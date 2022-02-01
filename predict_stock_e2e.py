@@ -100,11 +100,20 @@ def close_profitable_trades(all_preds, positions, orders):
                     print(f"Closing position to reduce risk {position.symbol}")
 
                 else:
+                    exit_strategy = 'maxdiff' # TODO bug - should be based on what entry strategy should be
+                    # takeprofit_profit also a thing
+                    if float(row['maxdiffprofit_profit']) < float(row['entry_takeprofit_profit']):
+                        exit_strategy = 'entry'
+
                     entry_price = float(position.avg_entry_price)
                     if position.side == 'long':
                         predicted_high = row['entry_takeprofit_high_price_minute']
-                        if abs(row['entry_takeprofit_profit_high_multiplier_minute']) > .01: # tuned for minutely
-                            predicted_high = row['high_predicted_price_value_minute']
+                        if exit_strategy == 'entry':
+                            if abs(row['entry_takeprofit_profit_high_multiplier_minute']) > .01: # tuned for minutely
+                                predicted_high = row['high_predicted_price_value_minute']
+                        elif exit_strategy == 'maxdiff':
+                            if abs(row['maxdiffprofit_profit_high_multiplier_minute']) > .01: # tuned for minutely
+                                predicted_high = row['maxdiffprofit_high_price_minute']
                         sell_price = predicted_high
                         if not ordered_time or ordered_time > datetime.now() - timedelta(minutes=25):
                             # close new orders at atleast a profit
@@ -119,8 +128,12 @@ def close_profitable_trades(all_preds, positions, orders):
                             alpaca_wrapper.open_take_profit_position(position, row, sell_price)
                     elif position.side == 'short':
                         predicted_low = row['entry_takeprofit_low_price_minute']
-                        if abs(row['entry_takeprofit_profit_low_multiplier_minute']) > .01:
-                            predicted_low = row['low_predicted_price_value_minute']
+                        if exit_strategy == 'entry':
+                            if abs(row['entry_takeprofit_profit_low_multiplier_minute']) > .01:
+                                predicted_low = row['low_predicted_price_value_minute']
+                        elif exit_strategy == 'maxdiff':
+                            if abs(row['maxdiffprofit_profit_low_multiplier_minute']) > .01:
+                                predicted_low = row['maxdiffprofit_low_price_minute']
                         sell_price = predicted_low
                         if not ordered_time or ordered_time > datetime.now() - timedelta(minutes=25):
                             # close new orders at atleast a profit
@@ -171,10 +184,19 @@ def buy_stock(row, all_preds, positions, orders):
     current_interest_symbol = row['instrument']
     # close all positions that are not in this current held stock
     already_held_stock = False
-    low_to_close_diff = abs(row['low_predicted_price_minute'] - row['close_predicted_price_minute'])
-    high_to_close_diff = abs(row['high_predicted_price_minute'] - row['close_predicted_price_minute'])
+    entry_strategy = 'maxdiff'
+    # takeprofit_profit is also a thing
+    if float(row['maxdiffprofit_profit']) < float(row['entry_takeprofit_profit']):
+        entry_strategy = 'entry'
 
-    new_position_side = 'short' if low_to_close_diff > high_to_close_diff else 'long' # maxdiff max profit potential
+    if entry_strategy == 'maxdiff':
+        low_to_close_diff = abs(row['low_predicted_price_minute'] - row['close_predicted_price_minute'])
+        high_to_close_diff = abs(row['high_predicted_price_minute'] - row['close_predicted_price_minute'])
+
+        new_position_side = 'short' if low_to_close_diff > high_to_close_diff else 'long' # maxdiff max profit potential
+    elif entry_strategy == 'entry':
+        new_position_side = 'short' if row['close_predicted_price_minute'] < 0 else 'long' # just the end price 15min from now- dont worry about the extremes
+
     has_traded = False
     for position in positions:
         made_money_recently[position.symbol] = float(position.unrealized_plpc)
@@ -290,9 +312,10 @@ def make_trade_suggestions(predictions, minute_predictions):
     # where closemin_loss_trading_profit is positive
     # add new absolute movement column
     # predictions['absolute_movement'] = abs(predictions['close_predicted_price'] + predictions['close_predicted_price_minute'] * 3) # movement of both predictions
-    predictions['absolute_movement'] = abs(predictions['close_predicted_price_minute'])
+    predictions['either_profit_movement'] = abs(predictions['entry_takeprofit_profit_minute']) + abs(
+        predictions['maxdiffprofit_profit_minute'])
     # sort by close_predicted_price absolute movement
-    predictions.sort_values(by=['entry_takeprofit_profit_minute'], ascending=False, inplace=True)
+    predictions.sort_values(by=['either_profit_movement'], ascending=False, inplace=True)
     do_trade = False
     has_traded = False
     # cancel any order open longer than 20 mins/recalculate it
@@ -331,13 +354,13 @@ def make_trade_suggestions(predictions, minute_predictions):
         #     print(f"conflicting preds {row['instrument']} {row['close_predicted_price']} {row['close_predicted_price_minute']}")
         #     continue
         # both made profit also sued to use row['takeprofit_profit'] > 0 and
-        if row['entry_takeprofit_profit_minute'] > 0 and row['maxdiffprofit_profit'] > 0:
+        if row['entry_takeprofit_profit_minute'] > 0 or row['maxdiffprofit_profit_minute'] > 0:
             print("Trade suggestion")
             print(row)
 
             if current_trade_count >= max_trades_available:
                 break
-
+            # either most profitable strategy is picked
             has_traded = buy_stock(row, predictions, positions, leftover_live_orders)
             if has_traded:
                 current_trade_count += 1
