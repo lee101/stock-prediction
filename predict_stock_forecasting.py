@@ -891,6 +891,51 @@ def make_predictions(input_data_path=None, pred_name=''):
             latest_close_to_high = abs(1 - (last_preds['high_predicted_price_value'] / last_preds['close_last_price']))
             last_preds['latest_high_diff'] = latest_close_to_high
 
+            # todo margin allocation tests
+            current_profit = calculated_profit
+            max_profit = float('-Inf')
+            for buy_take_profit_multiplier in np.linspace(-.03, .03, 500):
+                calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
+                                                                                      last_preds[
+                                                                                          "close_actual_movement_values"],
+                                                                                      maxdiff_trades,
+                                                                                      last_preds[
+                                                                                          "high_actual_movement_values"] + close_to_high,
+                                                                                      last_preds[
+                                                                                          "high_predictions"] + close_to_high + buy_take_profit_multiplier,
+                                                                                      last_preds[
+                                                                                          "low_actual_movement_values"] - close_to_low,
+                                                                                      last_preds[
+                                                                                          "low_predictions"] - close_to_low,
+
+                                                                                      ).item()
+                if calculated_profit > max_profit:
+                    max_profit = calculated_profit
+                    last_preds['maxdiffprofit_profit_high_multiplier'] = buy_take_profit_multiplier
+                    last_preds['maxdiffprofit_high_profit'] = max_profit
+
+            max_profit = float('-Inf')
+            for low_take_profit_multiplier in np.linspace(-.03, .03, 500):
+                calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
+                                                                                      last_preds[
+                                                                                          "close_actual_movement_values"],
+                                                                                      maxdiff_trades,
+                                                                                      last_preds[
+                                                                                          "high_actual_movement_values"] + close_to_high,
+                                                                                      last_preds[
+                                                                                          "high_predictions"] + close_to_high +
+                                                                                      last_preds[
+                                                                                          'maxdiffprofit_profit_high_multiplier'],
+                                                                                      last_preds[
+                                                                                          "low_actual_movement_values"] - close_to_low,
+                                                                                      last_preds[
+                                                                                          "low_predictions"] - close_to_low + low_take_profit_multiplier,
+
+                                                                                      ).item()
+                if calculated_profit > max_profit:
+                    max_profit = calculated_profit
+                    last_preds['maxdiffprofit_profit_low_multiplier'] = low_take_profit_multiplier
+                    last_preds['maxdiffprofit_low_profit'] = max_profit
 
             # with buysellentry:
 
