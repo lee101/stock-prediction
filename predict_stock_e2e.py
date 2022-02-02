@@ -272,12 +272,12 @@ def buy_stock(row, all_preds, positions, orders):
         print(f"{new_position_side} {current_interest_symbol}")
         margin_multiplier = (1. / 10.0) * .8 # leave some room
         if new_position_side == 'long':
-            if (made_money_recently.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently.get(current_interest_symbol, 0) or 0) < -0.000001:
+            if (made_money_recently.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently.get(current_interest_symbol, 0) or 0) <= 0:
                 # if loosing money over two trades, make a small trade /recalculate
                 margin_multiplier = .001
                 logger.info(f"{current_interest_symbol} is loosing money over two trades, making a small trade")
         else:
-            if (made_money_recently_shorting.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently_shorting.get(current_interest_symbol, 0) or 0) < -0.000001:
+            if (made_money_recently_shorting.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently_shorting.get(current_interest_symbol, 0) or 0) <= 0:
                 # if loosing money over two trades, make a small trade /recalculate
                 margin_multiplier = .001
                 logger.info(f"{current_interest_symbol} is loosing money over two trades via shorting, making a small trade")
