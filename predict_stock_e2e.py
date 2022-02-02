@@ -253,7 +253,6 @@ def buy_stock(row, all_preds, positions, orders):
                 #     f"hodling bad position {position.symbol} instead of {new_position_side} {current_interest_symbol} - predicted to get better")
 
             else:
-                # alpaca_wrapper.close_position_violently(position)
                 # has_traded = True
                 # print(f"Closing position {position.symbol}")
                 # alpaca_wrapper.close_position_violently(position)
