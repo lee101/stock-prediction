@@ -133,9 +133,9 @@ def buy_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side='long')
             amount_to_trade = 1
 
         if side == 'short':
-            price_to_trade_at = max(current_price, row['high_last_price_minute'])
-
-            take_profit_price = price_to_trade_at - abs(price_to_trade_at * (3*float(row['close_predicted_price_minute'])))
+            # price_to_trade_at = max(current_price, row['high_last_price_minute'])
+            #
+            # take_profit_price = price_to_trade_at - abs(price_to_trade_at * (3*float(row['close_predicted_price_minute'])))
             result = alpaca_api.submit_order(
                 currentBuySymbol,
                 amount_to_trade,
@@ -148,9 +148,9 @@ def buy_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side='long')
                 # }
             )
         else:
-            price_to_trade_at = min(current_price, row['low_last_price_minute'])
-
-            take_profit_price = current_price + abs(current_price * (3*float(row['close_predicted_price_minute']))) # todo takeprofit doesn't really work
+            # price_to_trade_at = min(current_price, row['low_last_price_minute'])
+            #
+            # take_profit_price = current_price + abs(current_price * (3*float(row['close_predicted_price_minute']))) # todo takeprofit doesn't really work
             # we could use a limit with limit price but then couldn't do a notional order
             result = alpaca_api.submit_order(
                 currentBuySymbol,

@@ -54,8 +54,6 @@ def close_profitable_trades(all_preds, positions, orders):
     already_held_stock = False
     has_traded = False
     for position in positions:
-        made_money_recently[position.symbol] = float(position.unrealized_plpc)
-        made_money_one_before_recently[position.symbol] = made_money_recently_tmp.get(position.symbol, 0)
 
         is_worsening_position = False
         for index, row in all_preds.iterrows():
@@ -87,17 +85,25 @@ def close_profitable_trades(all_preds, positions, orders):
                             print(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
                 # todo check time in market not overall time
-                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 1.):
-                    # close other orders for pair
-                    for order in orders:
-                        if order.symbol == position.symbol:
-                            alpaca_wrapper.cancel_order(order)
-                            # todo check if we have one open that is trying to close already?
-                    # close old position, not been hitting out predictions
-                    # todo why cancel order if its still predicted to be successful?
+                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=30 * 1.):
+                    current_time = datetime.now()
+                    at_market_open = False
+                    if current_time.hour == 3 and current_time.minute < 45:
+                        at_market_open = True  # TODO this only works for NZ time
+                        # todo properly test if we can close positions at market open
+                        # for now we wont violently close our positions untill 15mins after open
 
-                    alpaca_wrapper.close_position_at_current_price(position, row)
-                    print(f"Closing position to reduce risk {position.symbol}")
+                    if not at_market_open:
+                        # close other orders for pair
+                        for order in orders:
+                            if order.symbol == position.symbol:
+                                alpaca_wrapper.cancel_order(order)
+                                # todo check if we have one open that is trying to close already?
+                        # close old position, not been hitting our predictions
+                        # todo why cancel order if its still predicted to be successful?
+
+                        alpaca_wrapper.close_position_at_current_price(position, row)
+                        print(f"Closing position to reduce risk {position.symbol}")
 
                 else:
                     exit_strategy = 'maxdiff' # TODO bug - should be based on what entry strategy should be
@@ -160,10 +166,14 @@ def close_profitable_trades(all_preds, positions, orders):
 
 
 data_dir = Path(__file__).parent / 'data'
-#
+
 made_money_recently = shelve.open(str(data_dir / f"made_money_recently.db"))
 made_money_recently_tmp = shelve.open(str(data_dir / f"made_money_recently_tmp.db"))
 made_money_one_before_recently = shelve.open(str(data_dir / f"made_money_one_before_recently.db"))
+
+made_money_recently_shorting = shelve.open(str(data_dir / f"made_money_recently_shorting.db"))
+made_money_recently_tmp_shorting = shelve.open(str(data_dir / f"made_money_recently_tmp_shorting.db"))
+made_money_one_before_recently_shorting = shelve.open(str(data_dir / f"made_money_one_before_recently_shorting.db"))
 
 trade_entered_times = shelve.open(str(data_dir / f"trade_entered_times.db"))
 # all_historical_orders = shelve.open(str(data_dir / f"all_historical_orders.db"))
@@ -180,6 +190,9 @@ def buy_stock(row, all_preds, positions, orders):
     global made_money_recently
     global made_money_recently_tmp
     global made_money_one_before_recently
+    global made_money_recently_shorting
+    global made_money_recently_tmp_shorting
+    global made_money_one_before_recently_shorting
 
     current_interest_symbol = row['instrument']
     # close all positions that are not in this current held stock
@@ -197,20 +210,22 @@ def buy_stock(row, all_preds, positions, orders):
     elif entry_strategy == 'entry':
         new_position_side = 'short' if row['close_predicted_price_minute'] < 0 else 'long' # just the end price 15min from now- dont worry about the extremes
 
+
     has_traded = False
     for position in positions:
-        made_money_recently[position.symbol] = float(position.unrealized_plpc)
-        made_money_one_before_recently[position.symbol] = made_money_recently_tmp.get(position.symbol, 0)
+        if position.side == 'long':
+            made_money_recently[position.symbol] = float(position.unrealized_plpc)
+            made_money_one_before_recently[position.symbol] = made_money_recently_tmp.get(position.symbol, 0)
+        else:
+            made_money_recently_shorting[position.symbol] = float(position.unrealized_plpc)
+            made_money_one_before_recently_shorting[position.symbol] = made_money_recently_tmp_shorting.get(position.symbol, 0)
 
         if position.symbol != current_interest_symbol:
             ## dont trade until we made money
             if float(position.unrealized_pl) < 0 and float(position.unrealized_plpc) < 0: # think more carefully about jumping off positions until we make good profit
                 # skip closing bad positions, sometimes wait for a while before jumping between stock
                 # if not at market open
-                current_time = datetime.now()
-                at_market_open = False
-                # if current_time.hour == 1:
-                #     at_market_open = True
+
                 # find stance on current position
                 # can close if we predict it to get worse
                 # is_worsening_position = False
@@ -254,10 +269,16 @@ def buy_stock(row, all_preds, positions, orders):
     if not already_held_stock:
         print(f"{new_position_side} {current_interest_symbol}")
         margin_multiplier = (1. / 10.0) * .8 # leave some room
-        if (made_money_recently.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently.get(current_interest_symbol, 0) or 0) < -0.000001:
-            # if loosing money over two trades, make a small trade /recalculate
-            margin_multiplier = .001
-            logger.info(f"{current_interest_symbol} is loosing money over two trades, making a small trade")
+        if new_position_side == 'long':
+            if (made_money_recently.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently.get(current_interest_symbol, 0) or 0) < -0.000001:
+                # if loosing money over two trades, make a small trade /recalculate
+                margin_multiplier = .001
+                logger.info(f"{current_interest_symbol} is loosing money over two trades, making a small trade")
+        else:
+            if (made_money_recently_shorting.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently_shorting.get(current_interest_symbol, 0) or 0) < -0.000001:
+                # if loosing money over two trades, make a small trade /recalculate
+                margin_multiplier = .001
+                logger.info(f"{current_interest_symbol} is loosing money over two trades via shorting, making a small trade")
 
         trade_entered_times[current_interest_symbol] = datetime.now()
         current_price = row['close_last_price_minute']
@@ -290,7 +311,11 @@ def buy_stock(row, all_preds, positions, orders):
             if order.side == position_side and order.symbol == current_interest_symbol:
                 ordered_already = True
         if not ordered_already:
-            made_money_recently_tmp[current_interest_symbol] = made_money_recently.get(current_interest_symbol, 0)
+            if new_position_side == 'long':
+                made_money_recently_tmp[current_interest_symbol] = made_money_recently.get(current_interest_symbol, 0)
+            else:
+                made_money_recently_tmp_shorting[current_interest_symbol] = made_money_recently_shorting.get(current_interest_symbol, 0)
+
             alpaca_wrapper.buy_stock(current_interest_symbol, row, price_to_trade_at, margin_multiplier, new_position_side)
             return True
     return has_traded
@@ -302,6 +327,9 @@ def make_trade_suggestions(predictions, minute_predictions):
     global made_money_recently
     global made_money_recently_tmp
     global made_money_one_before_recently
+    global made_money_recently_shorting
+    global made_money_recently_tmp_shorting
+    global made_money_one_before_recently_shorting
 
     predictions = predictions.merge(minute_predictions, how='outer', on='instrument', suffixes=['', '_minute'])
 
@@ -339,8 +367,12 @@ def make_trade_suggestions(predictions, minute_predictions):
     for position in positions:
         ordered_or_positioned_instruments.add(position.symbol)
 
-        made_money_recently[position.symbol] = float(position.unrealized_plpc)
-        made_money_one_before_recently[position.symbol] = made_money_recently_tmp.get(position.symbol, 0)
+        if position.side == 'long':
+            made_money_recently[position.symbol] = float(position.unrealized_plpc)
+            made_money_one_before_recently[position.symbol] = made_money_recently_tmp.get(position.symbol, 0)
+        else:
+            made_money_recently_shorting[position.symbol] = float(position.unrealized_plpc)
+            made_money_one_before_recently_shorting[position.symbol] = made_money_recently_tmp_shorting.get(position.symbol, 0)
     for order in leftover_live_orders:
         ordered_or_positioned_instruments.add(order.symbol)
     max_trades_available = max_concurrent_trades - len(ordered_or_positioned_instruments)
