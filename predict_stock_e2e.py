@@ -222,7 +222,9 @@ def buy_stock(row, all_preds, positions, orders):
 
         if position.symbol != current_interest_symbol:
             ## dont trade until we made money
-            if float(position.unrealized_pl) < 0 and float(position.unrealized_plpc) < 0: # think more carefully about jumping off positions until we make good profit
+            if float(position.unrealized_pl) < 0 and float(position.unrealized_plpc) < 0:
+                pass
+                # think more carefully about jumping off positions until we make good profit
                 # skip closing bad positions, sometimes wait for a while before jumping between stock
                 # if not at market open
 
@@ -361,7 +363,7 @@ def make_trade_suggestions(predictions, minute_predictions):
     # make top 5 trades
     current_trade_count = 0
     positions = alpaca_wrapper.list_positions()
-    max_concurrent_trades = 5
+    max_concurrent_trades = 6
 
     ordered_or_positioned_instruments = set()
     for position in positions:
