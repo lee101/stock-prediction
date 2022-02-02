@@ -31,6 +31,10 @@ try:
         print('Market closed')
 except requests.exceptions.ConnectionError as e:
     logger.error('offline/connection error', e)
+except APIError as e:
+    logger.error('alpaca error', e)
+except Exception as e:
+    logger.error('exception', e)
 
 
 def list_positions():
