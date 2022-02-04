@@ -1,5 +1,14 @@
+
+
+
+## readme
+
 npm install -g selenium-side-runner
 npm install -g chromedriver   
+
+sudo apt-get install libsqlite3-dev -y
+
+
 
 
 unceirt + predicted next? - seems bad
