@@ -70,7 +70,7 @@ def close_profitable_trades(all_preds, positions, orders):
                 # if is_worsening_position:
                 #     alpaca_wrapper.close_position_at_current_price(position, row)
                 #     has_traded = True
-                #     print(f"Closing predicted to worsen position {position.symbol}")
+                #     logger.info(f"Closing predicted to worsen position {position.symbol}")
                 ordered_time = trade_entered_times.get(position.symbol)
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 16):
                     if float(position.unrealized_plpc) < 0:
@@ -83,7 +83,7 @@ def close_profitable_trades(all_preds, positions, orders):
                             if current_strategy.startswith('aggressive'):
                                 available_strategies = available_strategies - {'aggressive'}
                             new_strategy = random.choice(list(available_strategies))
-                            print(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
+                            logger.info(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
                 # todo check time in market not overall time
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 24):
@@ -105,7 +105,7 @@ def close_profitable_trades(all_preds, positions, orders):
                         # todo why cancel order if its still predicted to be successful?
 
                         alpaca_wrapper.close_position_at_current_price(position, row)
-                        print(f"Closing position to reduce risk {position.symbol}")
+                        logger.info(f"Closing position to reduce risk {position.symbol}")
 
                 else:
                     exit_strategy = 'maxdiff' # TODO bug - should be based on what entry strategy should be
@@ -159,11 +159,11 @@ def close_profitable_trades(all_preds, positions, orders):
                 #     pass
                     # instant close?
                     # if float(position.unrealized_plpc) > 0.004:  ## or float(position.unrealized_pl) > 50:
-                    #     print(f"Closing good position")
+                    #     logger.info(f"Closing good position")
                     #     alpaca_wrapper.close_position_violently(position)
                     # todo test take profit?
                     # alpaca_wrapper.open_take_profit_position(position, row)
-                    # print(
+                    # logger.info(
                     #     f"keeping position {position.symbol} - predicted to get better - open takeprofit at {row['close_last_price_minute'] }")
 
 
@@ -250,32 +250,34 @@ def buy_stock(row, all_preds, positions, orders):
                 # if is_worsening_position:
                 #     alpaca_wrapper.close_position_violently(position)
                 #     has_traded = True
-                #     print(f"Closing worsening bad position {position.symbol}")
+                #     logger.info(f"Closing worsening bad position {position.symbol}")
                 #
                 # else:
                 # done later
                 # already_held_stock = True
-                # print(
+                # logger.info(
                 #     f"hodling bad position {position.symbol} instead of {new_position_side} {current_interest_symbol} - predicted to get better")
 
             else:
                 # has_traded = True
-                # print(f"Closing position {position.symbol}")
+                # logger.info(f"Closing position {position.symbol}")
                 # alpaca_wrapper.close_position_violently(position)
                 has_traded = False
-                print(f"Not jumping to buy other stock - ")
+                logger.info(f"Not jumping to buy other stock - ")
         elif position.side == new_position_side: # todo could this prevent you from margining upward? should we clear all positions first?
-            print("Already holding {}".format(current_interest_symbol))
+            logger.info("Already holding {}".format(current_interest_symbol))
             already_held_stock = True
             already_held_amount = position.qty
         # may cause overtrading
         # else:
         #     alpaca_wrapper.close_position_at_current_price(position, row)
         #     has_traded = True
-        #     print(f"changing stance on {current_interest_symbol} to {new_position_side}")
+        #     logger.info(f"changing stance on {current_interest_symbol} to {new_position_side}")
 
     if not already_held_stock:
-        print(f"{new_position_side} {current_interest_symbol}")
+        logger.info(f"{new_position_side} {current_interest_symbol}")
+        margin_multiplier = (1. / 17.0) * .8  # leave some room
+
         if new_position_side == 'long':
             if (made_money_recently.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently.get(current_interest_symbol, 0) or 0) <= 0:
                 # if loosing money over two trades, make a small trade /recalculate
@@ -286,7 +288,6 @@ def buy_stock(row, all_preds, positions, orders):
                 # if loosing money over two trades, make a small trade /recalculate
                 margin_multiplier = .001
                 logger.info(f"{current_interest_symbol} is loosing money over two trades via shorting, making a small trade")
-        margin_multiplier = (1. / 17.0) * .8 # leave some room
 
         trade_entered_times[current_interest_symbol] = datetime.now()
         current_price = row['close_last_price_minute']
@@ -396,13 +397,13 @@ def make_trade_suggestions(predictions, minute_predictions):
         # check that close_predicted_price and close_predicted_price_minute dont have opposite signs
         #
         # if row['close_predicted_price'] * row['close_predicted_price_minute'] < 0:
-        #     print(f"conflicting preds {row['instrument']} {row['close_predicted_price']} {row['close_predicted_price_minute']}")
+        #     logger.info(f"conflicting preds {row['instrument']} {row['close_predicted_price']} {row['close_predicted_price_minute']}")
         #     continue
         # both made profit also sued to use row['takeprofit_profit'] > 0 and
         if (row['entry_takeprofit_profit'] > 0 and row['entry_takeprofit_profit_minute'] > 0) or (
                 row['maxdiffprofit_profit'] > 0 and row['maxdiffprofit_profit_minute'] > 0):
-            print("Trade suggestion")
-            print(row)
+            logger.info("Trade suggestion")
+            logger.info(row)
 
             if current_trade_count >= max_trades_available:
                 break
@@ -413,7 +414,7 @@ def make_trade_suggestions(predictions, minute_predictions):
             do_trade = True
             # break
     # if not has_traded:
-    #     print("No trade suggestions, trying to exit position")
+    #     logger.info("No trade suggestions, trying to exit position")
     close_profitable_trades(predictions, positions, leftover_live_orders)
 
     sleep(5)
@@ -430,9 +431,9 @@ if __name__ == '__main__':
             traceback.print_exc()
 
             logger.exception(e)
-            print(e)
+            logger.info(e)
         # sleep for 1 minutes
-        print("Sleeping for 5sec")
+        logger.info("Sleeping for 5sec")
         sleep(5)
 
     # make_trade_suggestions(pd.read_csv('/home/lee/code/stock/results/predictions-2021-12-23_23-04-07.csv'))

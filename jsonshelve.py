@@ -63,9 +63,11 @@ class MemoryShelf(JSONShelf):
 
     def __setitem__(self, key, value):
         self.data[key] = value
+        self.save()
 
     def __delitem__(self, key):
         del self.data[key]
+        self.save()
 
     def __iter__(self):
         return iter(self.data)

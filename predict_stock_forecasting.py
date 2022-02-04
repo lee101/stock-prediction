@@ -23,9 +23,10 @@ from model import GRU
 transformers.set_seed(42)
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+from loguru import logger as loguru_logger
 
 base_dir = Path(__file__).parent
-print(base_dir)
+loguru_logger.info(base_dir)
 from sklearn.preprocessing import MinMaxScaler
 
 from torch.utils.tensorboard import SummaryWriter
@@ -158,7 +159,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                 stock_data = load_stock_data_from_csv(csv_file)
                 stock_data = stock_data.dropna()
                 if stock_data.empty:
-                    print(f"Empty data for {instrument_name}")
+                    loguru_logger.info(f"Empty data for {instrument_name}")
                     continue
                 # drop last days_to_drop rows
                 if days_to_drop:
@@ -247,7 +248,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                                                           num_workers=0)
                 # actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
                 # baseline_predictions = Baseline().predict(val_dataloader)
-                # print((actuals[:, :-1] - baseline_predictions[:, :-1]).abs().mean().item())
+                # loguru_logger.info((actuals[:, :-1] - baseline_predictions[:, :-1]).abs().mean().item())
 
                 # trainer = pl.Trainer(
                 #     gpus=0,
@@ -297,7 +298,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     **added_params
                 )
 
-                print(f"Number of parameters in network: {tft.size() / 1e3:.1f}k")
+                loguru_logger.info(f"Number of parameters in network: {tft.size() / 1e3:.1f}k")
 
                 early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-5, patience=40, verbose=False,
                                                     mode="min")
@@ -331,11 +332,11 @@ def make_predictions(input_data_path=None, pred_name=''):
                 checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / key_to_predict / instrument_name)
                 checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 if len(checkpoint_files) == 0:
-                    print("No min+open/low specific checkpoints found, training from other checkpoint")
+                    loguru_logger.info("No min+open/low specific checkpoints found, training from other checkpoint")
                     checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / instrument_name)
                     checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                     if len(checkpoint_files) == 0:
-                        print("No min specific checkpoints found, training from other checkpoint")
+                        loguru_logger.info("No min specific checkpoints found, training from other checkpoint")
                         checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
                         checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 best_tft = tft
@@ -356,7 +357,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     #         best_checkpoint_path = file_name
                     #         # TODO invalidation for 30minute vs daily data
 
-                    print(f"Loading best checkpoint from {best_checkpoint_path}")
+                    loguru_logger.info(f"Loading best checkpoint from {best_checkpoint_path}")
                     best_tft = TemporalFusionTransformer.load_from_checkpoint(str(best_checkpoint_path))
 
                 if retrain:
@@ -402,9 +403,9 @@ def make_predictions(input_data_path=None, pred_name=''):
                         pickle.dump(study, fout)
 
                     # show best hyperparameters
-                    print(study.best_trial.params)
+                    loguru_logger.info(study.best_trial.params)
 
-                print(f"mean val loss:${mean_val_loss}")
+                loguru_logger.info(f"mean val loss:${mean_val_loss}")
 
                 raw_predictions, x = best_tft.predict(val_dataloader, mode="raw", return_x=True)
                 # for idx in range(1):  # plot 10 examples
@@ -462,7 +463,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                 #     y_train_pred = model(augmented)
                 #
                 #     loss = criterion(y_train_pred, y_train)
-                #     print("Epoch ", epoc_idx, "MSE: ", loss.item())
+                #     loguru_logger.info("Epoch ", epoc_idx, "MSE: ", loss.item())
                 #     tb_writer.add_scalar(f"{key_to_predict}/Loss/{instrument_name}/train", loss.item(), epoc_idx)
                 #     hist[epoc_idx] = loss.item()
                 #
@@ -477,11 +478,11 @@ def make_predictions(input_data_path=None, pred_name=''):
                 #     y_test_pred_inverted = torch_inverse_transform(scaler, y_test_pred)
                 #     # y_train_pred_inverted = torch_inverse_transform(scaler, y_train_pred)
                 #
-                #     # print(y_test_pred_inverted)
+                #     # loguru_logger.info(y_test_pred_inverted)
                 #     loss = criterion(y_test_pred, y_test)
-                #     print(f"val loss: {loss}")
+                #     loguru_logger.info(f"val loss: {loss}")
                 #     tb_writer.add_scalar(f"{key_to_predict}/Loss/{instrument_name}/val", loss.item(), epoc_idx)
-                #     print(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
+                #     loguru_logger.info(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
                 #     tb_writer.add_scalar(f"{key_to_predict}/Prediction/{instrument_name}last_pred", y_test_pred_inverted[-1], epoc_idx)
                 #
                 #     # detached_y_test = y_test.detach().cpu().numpy()
@@ -490,7 +491,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                 #     trading_preds = (y_test_pred > last_values) * 2 - 1
                 #     last_values = x_test[:, -1, 0]
                 #     calculated_profit = calculate_trading_profit_torch(scaler, last_values, y_test[:, 0], trading_preds[:, 0]).item()
-                #     print(f"{instrument_name}: {key_to_predict} calculated_profit: {calculated_profit}")
+                #     loguru_logger.info(f"{instrument_name}: {key_to_predict} calculated_profit: {calculated_profit}")
                 #     tb_writer.add_scalar(f"{key_to_predict}/Profit/{instrument_name}:  calculated_profit", calculated_profit, epoc_idx)
                 #     if loss < min_val_loss:
                 #         min_val_loss = loss
@@ -509,11 +510,11 @@ def make_predictions(input_data_path=None, pred_name=''):
                 #
                 #
                 # training_time = datetime.now() - start_time
-                # print("Training time: {}".format(training_time))
+                # loguru_logger.info("Training time: {}".format(training_time))
                 # tb_writer.add_scalar("Time/epoc", training_time.total_seconds(), timing_idx)
                 # timing_idx += 1
 
-                # print(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
+                # loguru_logger.info(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
                 # tb_writer.add_scalar("Prediction/train", y_train_pred_inverted[-1], 0)
 
                 val_loss = mean_val_loss
@@ -551,11 +552,11 @@ def make_predictions(input_data_path=None, pred_name=''):
                 # "BuyOrSell",
                 # "Leverage",
             ]:
-                print(f"training mode: {training_mode} {instrument_name}")
+                loguru_logger.info(f"training mode: {training_mode} {instrument_name}")
                 stock_data = load_stock_data_from_csv(csv_file)
                 stock_data = stock_data.dropna()
                 if stock_data.empty:
-                    print(f"Empty data for {instrument_name}")
+                    loguru_logger.info(f"Empty data for {instrument_name}")
                     continue
                 # use a quarter of 15min data / hours data
                 # drop_n_rows(stock_data, 2)
@@ -647,10 +648,10 @@ def make_predictions(input_data_path=None, pred_name=''):
 
                         ## log if loss is nan
                         if np.isnan(loss.item()):
-                            print(f"{instrument_name} loss is nan")
-                            print(f"{last_values} last_values")
-                            print(f"{y_train} last_values")
-                            print(f"{y_train_pred} last_values")
+                            loguru_logger.info(f"{instrument_name} loss is nan")
+                            loguru_logger.info(f"{last_values} last_values")
+                            loguru_logger.info(f"{y_train} last_values")
+                            loguru_logger.info(f"{y_train_pred} last_values")
                             continue
 
                         # add depreciation loss
@@ -659,7 +660,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                         # current_profit [:, 0]= calculate_trading_profit(scaler, x_train, y_train.detach().cpu().numpy()[:, 0],
                         #                                           y_train_pred.detach().cpu().numpy())
 
-                        print(f"{training_mode} current_profit: {-loss}")
+                        loguru_logger.info(f"{training_mode} current_profit: {-loss}")
                         tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/train", -loss, epoc_idx)
                     # elif "Leverage" == training_mode:
                     #     # sigmoid = torch.nn.Sigmoid()
@@ -685,9 +686,9 @@ def make_predictions(input_data_path=None, pred_name=''):
                     #     current_profit = np.product(
                     #         y_train_pred.detach().cpu().numpy() * percent_movements_scaled
                     #     )
-                    #     print(f"current_profit: {current_profit}")
+                    #     loguru_logger.info(f"current_profit: {current_profit}")
                     #     tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/test", current_profit, epoc_idx)
-                    print("Epoch ", epoc_idx, "MSE: ", loss.item())
+                    loguru_logger.info("Epoch ", epoc_idx, "MSE: ", loss.item())
                     tb_writer.add_scalar(f"{instrument_name}/{training_mode}/loss", loss.item(), epoc_idx)
                     hist[epoc_idx] = loss.item()
 
@@ -705,7 +706,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     # y_test_pred_inverted = y_test_pred.detach().cpu().numpy()
                     # y_train_pred_inverted = y_train_pred.detach().cpu().numpy()
 
-                    # print(y_test_pred_inverted)
+                    # loguru_logger.info(y_test_pred_inverted)
                     # loss = criterion(y_test_pred, y_test)
                     if "BuyOrSell" == training_mode:
                         # sigmoid = torch.nn.Sigmoid()
@@ -726,7 +727,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                         # loss -= len(y_test) * (.001 / 365)
 
                         # current_profit [:, 0]= calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy()[:, 0])
-                        print(f"{training_mode} current_profit validation: {-loss}")
+                        loguru_logger.info(f"{training_mode} current_profit validation: {-loss}")
                         tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss,
                                              epoc_idx)
                     # if "Leverage" == training_mode:
@@ -754,10 +755,10 @@ def make_predictions(input_data_path=None, pred_name=''):
                     #     current_profit = np.product(
                     #         y_test_pred.detach().cpu().numpy() * percent_movements_scaled
                     #     )
-                    #     print(f"{training_mode} current_profit validation: {current_profit}")
+                    #     loguru_logger.info(f"{training_mode} current_profit validation: {current_profit}")
                     #     tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", current_profit, t)
-                    print(f"{training_mode} val loss: {loss}")
-                    print(
+                    loguru_logger.info(f"{training_mode} val loss: {loss}")
+                    loguru_logger.info(
                         f"{training_mode} Last prediction: y_test_pred[-1] = {y_test_pred[-1]}"
                     )
                     if loss < min_val_loss:
@@ -777,14 +778,14 @@ def make_predictions(input_data_path=None, pred_name=''):
                         number_of_unsuccessful_epochs += 1
 
                     if number_of_unsuccessful_epochs > 40:
-                        print(f"{instrument_name}/{training_mode} Early stopping")
+                        loguru_logger.info(f"{instrument_name}/{training_mode} Early stopping")
                         break
                 training_time = datetime.now() - start_time
-                print("Training time: {}".format(training_time))
-                print("Best val loss: {}".format(min_val_loss))
-                print("Best current profit: {}".format(best_current_profit))
+                loguru_logger.info("Training time: {}".format(training_time))
+                loguru_logger.info("Best val loss: {}".format(min_val_loss))
+                loguru_logger.info("Best current profit: {}".format(best_current_profit))
 
-                # print(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
+                # loguru_logger.info(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
 
                 val_loss = loss.item()
                 last_preds[training_mode.lower() + "_buy_no_or_sell"] = best_y_test_pred[
@@ -818,7 +819,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                                                                             last_preds["low_predictions"] - close_to_low,
 
                                                                             ).item()
-            print(f"{instrument_name} calculated_profit: {calculated_profit}")
+            loguru_logger.info(f"{instrument_name} calculated_profit: {calculated_profit}")
             last_preds['takeprofit_profit'] = calculated_profit
 
             # todo margin allocation tests
@@ -839,7 +840,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     max_profit = calculated_profit
                     last_preds['takeprofit_profit_high_multiplier'] = buy_take_profit_multiplier
                     last_preds['takeprofit_high_profit'] = max_profit
-                    # print(f"{instrument_name} buy_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
+                    # loguru_logger.info(f"{instrument_name} buy_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
             max_profit = float('-Inf')
             for low_take_profit_multiplier in np.linspace(-.03, .03, 500):
@@ -859,7 +860,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     max_profit = calculated_profit
                     last_preds['takeprofit_profit_low_multiplier'] = low_take_profit_multiplier
                     last_preds['takeprofit_low_profit'] = max_profit
-                    # print(f"{instrument_name} low_take_profit_multiplier: {low_take_profit_multiplier} calculated_profit: {calculated_profit}")
+                    # loguru_logger.info(f"{instrument_name} low_take_profit_multiplier: {low_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
 
 
@@ -883,7 +884,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                                                                                       "low_predictions"] - close_to_low,
 
                                                                                   ).item()
-            print(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
+            loguru_logger.info(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
             last_preds['maxdiffprofit_profit'] = calculated_profit
             latest_close_to_low = abs(1 - (last_preds['low_predicted_price_value'] / last_preds['close_last_price']))
             last_preds['latest_low_diff'] = latest_close_to_low
@@ -952,7 +953,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                                                                                 "low_predictions"] - close_to_low,
 
                                                                             ).item()
-            print(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
+            loguru_logger.info(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
             last_preds['entry_takeprofit_profit'] = calculated_profit
 
             # todo margin allocation tests
@@ -976,7 +977,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     max_profit = calculated_profit
                     last_preds['entry_takeprofit_profit_high_multiplier'] = buy_take_profit_multiplier
                     last_preds['entry_takeprofit_high_profit'] = max_profit
-                    # print(
+                    # loguru_logger.info(
                     #     f"{instrument_name} buy_entry_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
             max_profit = float('-Inf')
@@ -1000,7 +1001,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     max_profit = calculated_profit
                     last_preds['entry_takeprofit_profit_low_multiplier'] = low_take_profit_multiplier
                     last_preds['entry_takeprofit_low_profit'] = max_profit
-                    # print(
+                    # loguru_logger.info(
                     #     f"{instrument_name} entry_low_take_profit_multiplier: {low_take_profit_multiplier} calculated_profit: {calculated_profit}")
             # TODO break multipliers if we have no data on said side.
             last_preds['entry_takeprofit_low_price'] = last_preds['low_predicted_price_value'] * (1+ last_preds[
@@ -1101,10 +1102,10 @@ def make_predictions(input_data_path=None, pred_name=''):
                 # fig.show()
 
 
-    print(f"val_loss: {total_val_loss / len(csv_files)}")
-    print(f"total_forecasted_profit: {total_forecasted_profit / len(csv_files)}")
-    print(f"total_buy_val_loss: {total_buy_val_loss / len(csv_files)}")
-    print(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
+    loguru_logger.info(f"val_loss: {total_val_loss / len(csv_files)}")
+    loguru_logger.info(f"total_forecasted_profit: {total_forecasted_profit / len(csv_files)}")
+    loguru_logger.info(f"total_buy_val_loss: {total_buy_val_loss / len(csv_files)}")
+    loguru_logger.info(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
     return pd.read_csv(save_file_name)
 
 
