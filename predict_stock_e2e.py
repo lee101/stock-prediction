@@ -72,10 +72,10 @@ def close_profitable_trades(all_preds, positions, orders):
                 #     has_traded = True
                 #     print(f"Closing predicted to worsen position {position.symbol}")
                 ordered_time = trade_entered_times.get(position.symbol)
-                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 1.):
+                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 16):
                     if float(position.unrealized_plpc) < 0:
                         change_time = instrument_strategy_change_times.get(position.symbol)
-                        if not change_time or change_time < datetime.now() - timedelta(minutes=30 * 1.):
+                        if not change_time or change_time < datetime.now() - timedelta(minutes=30 * 16.):
                             instrument_strategy_change_times[position.symbol] = datetime.now()
                             current_strategy = instrument_strategies.get(position.symbol, 'aggressive_buy')
 
@@ -86,13 +86,14 @@ def close_profitable_trades(all_preds, positions, orders):
                             print(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
                 # todo check time in market not overall time
-                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=30 * 1.):
+                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 24):
                     current_time = datetime.now()
                     at_market_open = False
-                    if current_time.hour == 3 and current_time.minute < 45:
-                        at_market_open = True  # TODO this only works for NZ time
-                        # todo properly test if we can close positions at market open
-                        # for now we wont violently close our positions untill 15mins after open
+                    # hourly can close positions at the market open? really?
+                    # if current_time.hour == 3 and current_time.minute < 45:
+                    #     at_market_open = True  # TODO this only works for NZ time
+                    #     # todo properly test if we can close positions at market open
+                    #     # for now we wont violently close our positions untill 15mins after open
 
                     if not at_market_open:
                         # close other orders for pair
