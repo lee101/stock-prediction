@@ -13,6 +13,7 @@ from data_curate_minute import download_minute_stock_data
 from data_curate_daily import download_daily_stock_data
 # from predict_stock import make_predictions
 from decorator_utils import timeit
+from jsonshelve import FlatShelf
 from predict_stock_forecasting import make_predictions
 import shelve
 
@@ -69,7 +70,7 @@ def close_profitable_trades(all_preds, positions, orders):
                 # if is_worsening_position:
                 #     alpaca_wrapper.close_position_at_current_price(position, row)
                 #     has_traded = True
-                #     print(f"Closing predicted to worsen position {position.symbol}")
+                #     logger.info(f"Closing predicted to worsen position {position.symbol}")
                 ordered_time = trade_entered_times.get(position.symbol)
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 1.):
                     if float(position.unrealized_plpc) < 0:
@@ -82,7 +83,7 @@ def close_profitable_trades(all_preds, positions, orders):
                             if current_strategy.startswith('aggressive'):
                                 available_strategies = available_strategies - {'aggressive'}
                             new_strategy = random.choice(list(available_strategies))
-                            print(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
+                            logger.info(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
                 # todo check time in market not overall time
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=30 * 1.):
@@ -103,7 +104,7 @@ def close_profitable_trades(all_preds, positions, orders):
                         # todo why cancel order if its still predicted to be successful?
 
                         alpaca_wrapper.close_position_at_current_price(position, row)
-                        print(f"Closing position to reduce risk {position.symbol}")
+                        logger.info(f"Closing position to reduce risk {position.symbol}")
 
                 else:
                     exit_strategy = 'maxdiff' # TODO bug - should be based on what entry strategy should be
@@ -157,29 +158,29 @@ def close_profitable_trades(all_preds, positions, orders):
                 #     pass
                     # instant close?
                     # if float(position.unrealized_plpc) > 0.004:  ## or float(position.unrealized_pl) > 50:
-                    #     print(f"Closing good position")
+                    #     logger.info(f"Closing good position")
                     #     alpaca_wrapper.close_position_violently(position)
                     # todo test take profit?
                     # alpaca_wrapper.open_take_profit_position(position, row)
-                    # print(
+                    # logger.info(
                     #     f"keeping position {position.symbol} - predicted to get better - open takeprofit at {row['close_last_price_minute'] }")
 
 
 data_dir = Path(__file__).parent / 'data'
 
-made_money_recently = shelve.open(str(data_dir / f"made_money_recently.db"))
-made_money_recently_tmp = shelve.open(str(data_dir / f"made_money_recently_tmp.db"))
-made_money_one_before_recently = shelve.open(str(data_dir / f"made_money_one_before_recently.db"))
+made_money_recently = FlatShelf(str(data_dir / f"made_money_recently.minute.db.json"))
+made_money_recently_tmp = FlatShelf(str(data_dir / f"made_money_recently_tmp.minute.db.json"))
+made_money_one_before_recently = FlatShelf(str(data_dir / f"made_money_one_before_recently.minute.db.json"))
 
-made_money_recently_shorting = shelve.open(str(data_dir / f"made_money_recently_shorting.db"))
-made_money_recently_tmp_shorting = shelve.open(str(data_dir / f"made_money_recently_tmp_shorting.db"))
-made_money_one_before_recently_shorting = shelve.open(str(data_dir / f"made_money_one_before_recently_shorting.db"))
+made_money_recently_shorting = FlatShelf(str(data_dir / f"made_money_recently_shorting.minute.db.json"))
+made_money_recently_tmp_shorting = FlatShelf(str(data_dir / f"made_money_recently_tmp_shorting.minute.db.json"))
+made_money_one_before_recently_shorting = FlatShelf(str(data_dir / f"made_money_one_before_recently_shorting.minute.db.json"))
 
 trade_entered_times = shelve.open(str(data_dir / f"trade_entered_times.db"))
 # all_historical_orders = shelve.open(str(data_dir / f"all_historical_orders.db"))
 
-instrument_strategies = shelve.open(str(data_dir / f"instrument_strategies.db"))
-instrument_strategy_change_times = shelve.open(str(data_dir / f"instrument_strategy_change_times.db"))
+instrument_strategies = FlatShelf(str(data_dir / f"instrument_strategies.minute.db.json"))
+instrument_strategy_change_times = shelve.open(str(data_dir / f"instrument_strategy_change_times.minute.db.json"))
 
 def buy_stock(row, all_preds, positions, orders):
     """
@@ -199,16 +200,20 @@ def buy_stock(row, all_preds, positions, orders):
     already_held_stock = False
     entry_strategy = 'maxdiff'
     # takeprofit_profit is also a thing
-    if float(row['maxdiffprofit_profit']) < float(row['entry_takeprofit_profit']):
+    if float(row['maxdiffprofit_profit']) + float(row['maxdiffprofit_profit_minute']) < float(row['entry_takeprofit_profit']) + float(row['entry_takeprofit_profit_minute']):
         entry_strategy = 'entry'
+        logger.info(f"using entry strategy for {current_interest_symbol}")
 
     if entry_strategy == 'maxdiff':
-        low_to_close_diff = abs(row['low_predicted_price_minute'] - row['close_predicted_price_minute'])
-        high_to_close_diff = abs(row['high_predicted_price_minute'] - row['close_predicted_price_minute'])
+        # maxdiff based side similar to simulation
+        # already calculated for the minute, but use current price for old low/high
+        low_to_close_diff = abs(1 - (row['low_predicted_price_value'] / row['close_last_price_minute'])) + abs(row['latest_low_diff_minute'])
+        high_to_close_diff = abs(1 - (row['high_predicted_price_value'] / row['close_last_price_minute'])) + abs(row['latest_high_diff_minute'])
 
         new_position_side = 'short' if low_to_close_diff > high_to_close_diff else 'long' # maxdiff max profit potential
     elif entry_strategy == 'entry':
-        new_position_side = 'short' if row['close_predicted_price_minute'] < 0 else 'long' # just the end price 15min from now- dont worry about the extremes
+        now_to_old_pred = 1 - (row['close_predicted_price_value'] / row['close_last_price_minute'])
+        new_position_side = 'short' if now_to_old_pred + row['close_predicted_price_minute'] < 0 else 'long' # just the end price 15min from now- dont worry about the extremes
 
 
     has_traded = False
@@ -244,31 +249,34 @@ def buy_stock(row, all_preds, positions, orders):
                 # if is_worsening_position:
                 #     alpaca_wrapper.close_position_violently(position)
                 #     has_traded = True
-                #     print(f"Closing worsening bad position {position.symbol}")
+                #     logger.info(f"Closing worsening bad position {position.symbol}")
                 #
                 # else:
                 # done later
                 # already_held_stock = True
-                # print(
+                # logger.info(
                 #     f"hodling bad position {position.symbol} instead of {new_position_side} {current_interest_symbol} - predicted to get better")
 
             else:
                 # has_traded = True
-                # print(f"Closing position {position.symbol}")
+                # logger.info(f"Closing position {position.symbol}")
                 # alpaca_wrapper.close_position_violently(position)
                 has_traded = False
-                print(f"Not jumping to buy other stock - ")
-        elif position.side == new_position_side:
-            print("Already holding {}".format(current_interest_symbol))
+                logger.info(f"Not jumping to buy other stock - ")
+        elif position.side == new_position_side: # todo could this prevent you from margining upward? should we clear all positions first?
+            logger.info("Already holding {}".format(current_interest_symbol))
             already_held_stock = True
+            already_held_amount = position.qty
         # may cause overtrading
         # else:
         #     alpaca_wrapper.close_position_at_current_price(position, row)
         #     has_traded = True
-        #     print(f"changing stance on {current_interest_symbol} to {new_position_side}")
+        #     logger.info(f"changing stance on {current_interest_symbol} to {new_position_side}")
 
     if not already_held_stock:
-        print(f"{new_position_side} {current_interest_symbol}")
+        logger.info(f"{new_position_side} {current_interest_symbol}")
+        margin_multiplier = (1. / 17.0) * .8  # leave some room
+
         if new_position_side == 'long':
             if (made_money_recently.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently.get(current_interest_symbol, 0) or 0) <= 0:
                 # if loosing money over two trades, make a small trade /recalculate
@@ -279,7 +287,6 @@ def buy_stock(row, all_preds, positions, orders):
                 # if loosing money over two trades, make a small trade /recalculate
                 margin_multiplier = .001
                 logger.info(f"{current_interest_symbol} is loosing money over two trades via shorting, making a small trade")
-        margin_multiplier = (1. / 17.0) * .8 # leave some room
 
         trade_entered_times[current_interest_symbol] = datetime.now()
         current_price = row['close_last_price_minute']
@@ -342,7 +349,10 @@ def make_trade_suggestions(predictions, minute_predictions):
     # add new absolute movement column
     # predictions['absolute_movement'] = abs(predictions['close_predicted_price'] + predictions['close_predicted_price_minute'] * 3) # movement of both predictions
     predictions['either_profit_movement'] = abs(predictions['entry_takeprofit_profit_minute']) + abs(
-        predictions['maxdiffprofit_profit_minute'])
+        predictions['maxdiffprofit_profit_minute']) + abs(
+        predictions['takeprofit_profit_minute']) + abs(predictions['entry_takeprofit_profit']) + abs(
+        predictions['maxdiffprofit_profit']) + abs(
+        predictions['takeprofit_profit'])
     # sort by close_predicted_price absolute movement
     predictions.sort_values(by=['either_profit_movement'], ascending=False, inplace=True)
     do_trade = False
@@ -386,12 +396,13 @@ def make_trade_suggestions(predictions, minute_predictions):
         # check that close_predicted_price and close_predicted_price_minute dont have opposite signs
         #
         # if row['close_predicted_price'] * row['close_predicted_price_minute'] < 0:
-        #     print(f"conflicting preds {row['instrument']} {row['close_predicted_price']} {row['close_predicted_price_minute']}")
+        #     logger.info(f"conflicting preds {row['instrument']} {row['close_predicted_price']} {row['close_predicted_price_minute']}")
         #     continue
         # both made profit also sued to use row['takeprofit_profit'] > 0 and
-        if row['entry_takeprofit_profit_minute'] > 0 or row['maxdiffprofit_profit_minute'] > 0:
-            print("Trade suggestion")
-            print(row)
+        if (row['entry_takeprofit_profit'] > 0 and row['entry_takeprofit_profit_minute'] > 0) or (
+                row['maxdiffprofit_profit'] > 0 and row['maxdiffprofit_profit_minute'] > 0):
+            logger.info("Trade suggestion")
+            logger.info(row)
 
             if current_trade_count >= max_trades_available:
                 break
@@ -402,7 +413,7 @@ def make_trade_suggestions(predictions, minute_predictions):
             do_trade = True
             # break
     # if not has_traded:
-    #     print("No trade suggestions, trying to exit position")
+    #     logger.info("No trade suggestions, trying to exit position")
     close_profitable_trades(predictions, positions, leftover_live_orders)
 
     sleep(5)
@@ -419,9 +430,9 @@ if __name__ == '__main__':
             traceback.print_exc()
 
             logger.exception(e)
-            print(e)
+            logger.info(e)
         # sleep for 1 minutes
-        print("Sleeping for 5sec")
+        logger.info("Sleeping for 5sec")
         sleep(5)
 
     # make_trade_suggestions(pd.read_csv('/home/lee/code/stock/results/predictions-2021-12-23_23-04-07.csv'))

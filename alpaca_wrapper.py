@@ -98,6 +98,34 @@ def close_position_at_current_price(position, row):
         return None
     print(result)
 
+
+def close_position_at_almost_current_price(position, row):
+    try:
+        if position.side == 'long':
+            result = alpaca_api.submit_order(
+                position.symbol,
+                abs(float(position.qty)),
+                'sell',
+                'limit',
+                'gtc',
+                limit_price=row['close_last_price_minute'] * 1.0003,
+            )
+
+        else:
+            result = alpaca_api.submit_order(
+                position.symbol,
+                abs(float(position.qty)),
+                'buy',
+                'limit',
+                'gtc',
+                limit_price=row['close_last_price_minute'] * (1 - .0003),
+            )
+    except Exception as e:
+        logger.error(e)
+        # close all positions? perhaps not
+        return None
+    print(result)
+
 def buy_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side='long'):
     side = 'buy' if side == 'long' else 'sell'
 
