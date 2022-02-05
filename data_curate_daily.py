@@ -65,6 +65,12 @@ def download_daily_stock_data(path=None):
         # 'PFE',
         # 'MRNA',
     ]
+    symbols = [
+        'BTCUSD',
+        'ETHUSD',
+        'LTCUSD',
+
+               ]
     save_path = base_dir / 'data'
     if path:
         save_path = base_dir / 'data' / path
@@ -79,9 +85,11 @@ def download_daily_stock_data(path=None):
         # start = pd.Timestamp('2020-08-28 9:30', tz=NY).isoformat()
         # end = pd.Timestamp('2020-08-28 16:00', tz=NY).isoformat()
         ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
-
-        minute_df = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end,
-                                 adjustment='raw').df
+        if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD']:
+            minute_df = api.get_crypto_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end).df
+        else:
+            minute_df = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end,
+                                     adjustment='raw').df
         if minute_df.empty:
             print(f"{symbol} has no data")
             continue

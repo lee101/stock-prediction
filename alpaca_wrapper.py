@@ -13,6 +13,7 @@ alpaca_api = tradeapi.REST(
     'v2')
 
 equity = 30000
+cash = 30000
 total_buying_power = 20000
 
 try:
@@ -22,6 +23,7 @@ try:
     print(account)
     # Figure out how much money we have to work with, accounting for margin
     equity = float(account.equity)
+    cash = max(float(account.cash), 0)
     margin_multiplier = float(account.multiplier)
     total_buying_power = margin_multiplier * equity
     print(f'Initial total buying power = {total_buying_power}')
@@ -148,7 +150,12 @@ def buy_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side='long')
     #             break
     # notional_value = total_buying_power * 1.9 # trade with margin
     # notional_value = total_buying_power - 600 # trade with margin
-    notional_value = total_buying_power * margin_multiplier # todo predict margin/price
+    # non marginable
+    if currentBuySymbol in ["BTCUSD", "ETHUSD", "LTCUSD"]:
+        margin_multiplier = min(margin_multiplier, 1)
+        notional_value = cash * margin_multiplier  # todo predict margin/price
+    else:
+        notional_value = total_buying_power * margin_multiplier # todo predict margin/price
 
     # side = 'buy'
     if row['close_predicted_price'] < 0:
@@ -215,6 +222,7 @@ def re_setup_vars():
     global alpaca_clock
     global total_buying_power
     global equity
+    global cash
     global margin_multiplier
     positions = alpaca_api.list_positions()
     print(positions)
@@ -222,6 +230,7 @@ def re_setup_vars():
     print(account)
     # Figure out how much money we have to work with, accounting for margin
     equity = float(account.equity)
+    cash = max(float(account.cash), 0)
     margin_multiplier = float(account.multiplier)
     total_buying_power = margin_multiplier * equity
     print(f'Initial total buying power = {total_buying_power}')
