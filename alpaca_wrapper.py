@@ -168,11 +168,12 @@ def buy_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side='long')
     try:
         current_price = row['close_last_price_minute']
         amount_to_trade = int(notional_value / current_price)
-            if currentBuySymbol in ["BTCUSD", "ETHUSD", "LTCUSD"]:
-                if amount_to_trade < .001:
-                    amount_to_trade = .001
-            elif amount_to_trade < 1:
-                amount_to_trade = 1
+        if currentBuySymbol in ["BTCUSD", "ETHUSD", "LTCUSD"]:
+            if amount_to_trade < .001:
+                amount_to_trade = .001
+
+        elif amount_to_trade < 1:
+            amount_to_trade = 1
 
         if side == 'short':
             # price_to_trade_at = max(current_price, row['high_last_price_minute'])
