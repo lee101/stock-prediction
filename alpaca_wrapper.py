@@ -167,13 +167,20 @@ def buy_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side='long')
 
     try:
         current_price = row['close_last_price_minute']
-        amount_to_trade = int(notional_value / current_price)
-        if currentBuySymbol in ["BTCUSD", "ETHUSD", "LTCUSD"]:
+
+        amount_to_trade = notional_value / current_price
+        if currentBuySymbol in ["BTCUSD"]:
             if amount_to_trade < .001:
                 amount_to_trade = .001
-
+        elif currentBuySymbol in ["ETHUSD", "LTCUSD"]:
+            if amount_to_trade < .01:
+                amount_to_trade = .01
         elif amount_to_trade < 1:
             amount_to_trade = 1
+
+        if currentBuySymbol not in ["BTCUSD", "ETHUSD", "LTCUSD"]:
+            # fractional orders are okay for crypto.
+            amount_to_trade = int(amount_to_trade)
 
         if side == 'short':
             # price_to_trade_at = max(current_price, row['high_last_price_minute'])
