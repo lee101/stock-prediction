@@ -62,19 +62,29 @@ def download_minute_stock_data(path=None):
         'SAP',
         'AMD',
         'SONY',
-    ]
-    symbols = [
+    # ]
+    # symbols = [
         'BTCUSD',
         'ETHUSD',
         'LTCUSD',
 
     ]
+    api = REST(secret_key=ALP_SECRET_KEY, key_id=ALP_KEY_ID, base_url=ALP_ENDPOINT)
+
+    alpaca_clock = api.get_clock()
+    if not alpaca_clock.is_open:
+        print("Market is closed")
+        # can trade crypto out of hours
+        symbols = [
+            'BTCUSD',
+            'ETHUSD',
+            'LTCUSD',
+        ]
     save_path = base_dir / 'data'
     if path:
         save_path = base_dir / 'data' / path
     save_path.mkdir(parents=True, exist_ok=True)
     for symbol in symbols:
-        api = REST(secret_key=ALP_SECRET_KEY, key_id=ALP_KEY_ID, base_url=ALP_ENDPOINT)
 
         start = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
         # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
