@@ -133,7 +133,7 @@ def close_profitable_trades(all_preds, positions, orders):
                             if order.side == 'buy' and order.symbol == position.symbol:
                                 ordered_already = True
                         if not ordered_already:
-                            alpaca_wrapper.open_take_profit_position(position, row, sell_price)
+                            alpaca_wrapper.open_take_profit_position(position, row, sell_price, position.qty)
                     elif position.side == 'short':
                         predicted_low = row['entry_takeprofit_low_price']
                         if exit_strategy == 'entry':
@@ -152,8 +152,15 @@ def close_profitable_trades(all_preds, positions, orders):
                         for order in orders:
                             if order.side == 'sell' and order.symbol == position.symbol:
                                 ordered_already = True
+                                amount_order_is_closing = order.qty
+                                # close the full qty of order
+                                if amount_order_is_closing != position.qty:
+                                    # cancel order
+                                    alpaca_wrapper.cancel_order(order)
+                                    alpaca_wrapper.open_take_profit_position(position, row, sell_price, position.qty)
+
                         if not ordered_already:
-                            alpaca_wrapper.open_take_profit_position(position, row, sell_price)
+                            alpaca_wrapper.open_take_profit_position(position, row, sell_price, position.qty)
                 break
                 # else:
                 #     pass

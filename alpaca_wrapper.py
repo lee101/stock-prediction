@@ -251,7 +251,7 @@ def re_setup_vars():
         print('Market closed')
 
 
-def open_take_profit_position(position, row, price):
+def open_take_profit_position(position, row, price, qty):
     # entry_price = float(position.avg_entry_price)
     # current_price = row['close_last_price_minute']
     # current_symbol = row['symbol']
@@ -259,7 +259,7 @@ def open_take_profit_position(position, row, price):
         if position.side == 'long':
             result = alpaca_api.submit_order(
                 position.symbol,
-                abs(float(position.qty)),
+                abs(float(qty)),
                 'sell',
                 'limit',
                 'gtc',
@@ -269,7 +269,7 @@ def open_take_profit_position(position, row, price):
         else:
             result = alpaca_api.submit_order(
                 position.symbol,
-                abs(float(position.qty)),
+                abs(float(qty)),
                 'buy',
                 'limit',
                 'gtc',
