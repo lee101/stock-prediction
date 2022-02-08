@@ -86,7 +86,7 @@ def close_profitable_trades(all_preds, positions, orders):
                             logger.info(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
                 # todo check time in market not overall time
-                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 24):
+                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 23 + 40):
                     current_time = datetime.now()
                     at_market_open = False
                     # hourly can close positions at the market open? really?
@@ -125,13 +125,19 @@ def close_profitable_trades(all_preds, positions, orders):
                         sell_price = predicted_high
                         if not ordered_time or ordered_time > datetime.now() - timedelta(minutes=3*60):
                             # close new orders at atleast a profit
-                            margin_default_high = entry_price * (1 + .001)
+                            margin_default_high = entry_price * (1 + .005)
                             sell_price = max(predicted_high, margin_default_high)
                         # only if no other orders already
                         ordered_already = False
                         for order in orders:
-                            if order.side == 'buy' and order.symbol == position.symbol:
+                            if order.side == 'sell' and order.symbol == position.symbol:
                                 ordered_already = True
+                                amount_order_is_closing = order.qty
+                                # close the full qty of order
+                                if amount_order_is_closing != position.qty:
+                                    # cancel order
+                                    alpaca_wrapper.cancel_order(order)
+                                    alpaca_wrapper.open_take_profit_position(position, row, sell_price, position.qty)
                         if not ordered_already:
                             alpaca_wrapper.open_take_profit_position(position, row, sell_price, position.qty)
                     elif position.side == 'short':
@@ -145,12 +151,12 @@ def close_profitable_trades(all_preds, positions, orders):
                         sell_price = predicted_low
                         if not ordered_time or ordered_time > datetime.now() - timedelta(minutes=3*60):
                             # close new orders at atleast a profit
-                            margin_default_low = entry_price * (1 - .001)
+                            margin_default_low = entry_price * (1 - .005)
                             sell_price = min(predicted_low, margin_default_low)
                         # only if no other orders already
                         ordered_already = False
                         for order in orders:
-                            if order.side == 'sell' and order.symbol == position.symbol:
+                            if order.side == 'long' and order.symbol == position.symbol:
                                 ordered_already = True
                                 amount_order_is_closing = order.qty
                                 # close the full qty of order
@@ -283,7 +289,7 @@ def buy_stock(row, all_preds, positions, orders):
 
     if not already_held_stock:
         logger.info(f"{new_position_side} {current_interest_symbol}")
-        margin_multiplier = (1. / 17.0) * .8  # leave some room
+        margin_multiplier = (1. / 10.0) * .8  # leave some room
 
         if new_position_side == 'long':
             if (made_money_recently.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently.get(current_interest_symbol, 0) or 0) <= 0:
@@ -382,7 +388,7 @@ def make_trade_suggestions(predictions, minute_predictions):
     positions = alpaca_wrapper.list_positions()
     # # filter out crypto positions manually managed
     # positions = [position for position in positions if position.symbol not in ['BTCUSD', 'ETHUSD', 'LTCUSD', 'BCHUSD']]
-    max_concurrent_trades = 6
+    max_concurrent_trades = 8
 
     ordered_or_positioned_instruments = set()
     for position in positions:

@@ -369,7 +369,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     best_model_path = trainer.checkpoint_callback.best_model_path
                     best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
 
-                actual_list = [y[0] for x, y in iter(val_dataloader)]
+                actual_list = [y[0] for x, y in iter(val_dataloader)] # TODO check this y center transfor prints feature neamses warning
 
                 actuals = torch.cat(actual_list)
                 predictions = best_tft.predict(val_dataloader)

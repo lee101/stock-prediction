@@ -50,8 +50,8 @@ def download_daily_stock_data(path=None):
         # 'MRNA',
         'MSFT',
         'AMD',
-    ]
-    symbols = [
+    # ]
+    # symbols = [
         'BTCUSD',
         'ETHUSD',
         'LTCUSD',
