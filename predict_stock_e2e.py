@@ -125,7 +125,7 @@ def close_profitable_trades(all_preds, positions, orders):
                         sell_price = predicted_high
                         if not ordered_time or ordered_time > datetime.now() - timedelta(minutes=3*60):
                             # close new orders at atleast a profit
-                            margin_default_high = entry_price * (1 + .005)
+                            margin_default_high = entry_price * (1 + .003)
                             sell_price = max(predicted_high, margin_default_high)
                         # only if no other orders already
                         ordered_already = False
@@ -151,7 +151,7 @@ def close_profitable_trades(all_preds, positions, orders):
                         sell_price = predicted_low
                         if not ordered_time or ordered_time > datetime.now() - timedelta(minutes=3*60):
                             # close new orders at atleast a profit
-                            margin_default_low = entry_price * (1 - .005)
+                            margin_default_low = entry_price * (1 - .003)
                             sell_price = min(predicted_low, margin_default_low)
                         # only if no other orders already
                         ordered_already = False
