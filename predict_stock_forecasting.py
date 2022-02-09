@@ -314,7 +314,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                 lr_logger = LearningRateMonitor()  # log the learning rate
                 logger = TensorBoardLogger(f"lightning_logs/{pred_name}/{key_to_predict}/{instrument_name}")  # logging results to a tensorboard
                 trainer = pl.Trainer(
-                    max_epochs=10000,
+                    max_epochs=1000,
                     gpus=1,
                     weights_summary="top",
                     gradient_clip_val=gradient_clip_val,
@@ -326,7 +326,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                retrain = False # todo reenable
+                retrain = True # todo reenable
                 # try find specific hl net
 
                 checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / key_to_predict / instrument_name)
