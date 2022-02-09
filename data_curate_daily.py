@@ -22,7 +22,7 @@ MRNA
 """
 
 
-def download_daily_stock_data(path=None):
+def download_daily_stock_data(path=None, all_data_force=False):
     symbols = [
         # 'COUR',
         'GOOG',
@@ -74,7 +74,7 @@ def download_daily_stock_data(path=None):
     api = REST(secret_key=ALP_SECRET_KEY, key_id=ALP_KEY_ID, base_url=ALP_ENDPOINT)
 
     alpaca_clock = api.get_clock()
-    if not alpaca_clock.is_open:
+    if not alpaca_clock.is_open and not all_data_force:
         print("Market is closed")
         # can trade crypto out of hours
         symbols = [

@@ -22,12 +22,14 @@ import shelve
 use_stale_data = False
 
 daily_predictions = DataFrame()
+daily_predictions_time = None
 @timeit
 def do_forecasting():
     global daily_predictions
+    global daily_predictions_time
 
-    if daily_predictions.empty:
-
+    if daily_predictions.empty and (daily_predictions is None or daily_predictions_time < datetime.now() - timedelta(days=1)):
+        daily_predictions_time = datetime.now()
         if use_stale_data:
             current_time_formatted = '2021-12-05 18:20:29'
             current_time_formatted = '2021-12-09 12:16:26'  # new/ more data
@@ -36,7 +38,7 @@ def do_forecasting():
             current_time_formatted = '2021-12-30 20:11:47'  # new/ 30 minute data
         else:
             current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            download_daily_stock_data(current_time_formatted)
+            download_daily_stock_data(current_time_formatted, True)
         daily_predictions = make_predictions(current_time_formatted)
 
 
