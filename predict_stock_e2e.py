@@ -28,7 +28,7 @@ def do_forecasting():
     global daily_predictions
     global daily_predictions_time
 
-    if daily_predictions.empty and (daily_predictions is None or daily_predictions_time < datetime.now() - timedelta(days=1)):
+    if daily_predictions.empty and (daily_predictions_time is None or daily_predictions_time < datetime.now() - timedelta(days=1)):
         daily_predictions_time = datetime.now()
         if use_stale_data:
             current_time_formatted = '2021-12-05 18:20:29'
