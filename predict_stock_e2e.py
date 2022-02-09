@@ -432,7 +432,7 @@ def make_trade_suggestions(predictions, minute_predictions):
     #     logger.info("No trade suggestions, trying to exit position")
     close_profitable_trades(predictions, positions, leftover_live_orders)
 
-    sleep(5)
+    sleep(20)
 
 
 if __name__ == '__main__':
