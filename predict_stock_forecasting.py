@@ -209,7 +209,7 @@ def make_predictions(input_data_path=None, pred_name=''):
 
                 target_to_pred = "y"
                 training = TimeSeriesDataSet(
-                    price,
+                    price[:-7],
                     time_idx="id",
                     target=target_to_pred,
                     group_ids=['constant'],
@@ -238,7 +238,7 @@ def make_predictions(input_data_path=None, pred_name=''):
                     add_target_scales=True,
                     add_encoder_length=True,
                 )
-                validation = TimeSeriesDataSet.from_dataset(training, price, predict=True, stop_randomization=True)
+                validation = TimeSeriesDataSet.from_dataset(training, price, min_prediction_idx=training.index.time.max() + 1, predict=True, stop_randomization=True)
 
                 # create dataloaders for model
                 batch_size = 128  # set this between 32 to 128
