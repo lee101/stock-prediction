@@ -390,7 +390,7 @@ def make_trade_suggestions(predictions, minute_predictions):
     positions = alpaca_wrapper.list_positions()
     # # filter out crypto positions manually managed
     # positions = [position for position in positions if position.symbol not in ['BTCUSD', 'ETHUSD', 'LTCUSD', 'BCHUSD']]
-    max_concurrent_trades = 8
+    max_concurrent_trades = 13
 
     ordered_or_positioned_instruments = set()
     for position in positions:

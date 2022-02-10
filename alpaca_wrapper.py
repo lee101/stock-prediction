@@ -96,6 +96,8 @@ def close_position_at_current_price(position, row):
             )
     except Exception as e:
         logger.error(e)
+        # Out of range float values are not JSON compliant
+        # could be because theres no minute data /trying to close at when market isn't open (might as well err/do nothing)
         # close all positions? perhaps not
         return None
     print(result)
