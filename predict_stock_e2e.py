@@ -41,7 +41,7 @@ def do_forecasting():
         else:
             current_time_formatted = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
             download_daily_stock_data(current_time_formatted, True)
-        daily_predictions = make_predictions(current_time_formatted)
+        daily_predictions = make_predictions(current_time_formatted, retrain=True)
 
 
     current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

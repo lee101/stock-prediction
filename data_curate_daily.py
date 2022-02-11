@@ -106,12 +106,6 @@ def download_daily_stock_data(path=None, all_data_force=False):
         if minute_df.empty:
             print(f"{symbol} has no data")
             continue
-        try:
-            minute_df.drop(['volume', 'trade_count', 'vwap'], axis=1, inplace=True)
-        except KeyError:
-            print(f"{symbol} has no volume or something")
-            continue
-
 
         # rename columns with upper case
         minute_df.rename(columns=lambda x: x.capitalize(), inplace=True)
@@ -147,10 +141,19 @@ def download_exchange_latest_data(api, symbol):
 def download_stock_data_between_times(api, end, start, symbol):
     if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD']:
         minute_df = api.get_crypto_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end, exchanges=['FTXU']).df
+        try:
+            minute_df.drop(['exchange'], axis=1, inplace=True)
+        except KeyError:
+            print(f"{symbol} has no exchange key")
+        return minute_df
     else:
         minute_df = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end,
                                  adjustment='raw').df
-    return minute_df
+        try:
+            minute_df.drop(['volume', 'trade_count', 'vwap'], axis=1, inplace=True)
+        except KeyError:
+            print(f"{symbol} has no volume or something")
+        return minute_df
 
 
 def visualize_stock_data(df):
