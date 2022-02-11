@@ -1,7 +1,9 @@
 import datetime
+from functools import cache
 
 import matplotlib.pyplot as plt
 import pandas_datareader.data as web
+from cachetools import cache, TTLCache
 from pandas.plotting import register_matplotlib_converters
 
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT
@@ -95,12 +97,11 @@ def download_daily_stock_data(path=None, all_data_force=False):
         # df = api.get_bars(symbol, TimeFrame.Minute, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'), adjustment='raw').df
         # start = pd.Timestamp('2020-08-28 9:30', tz=NY).isoformat()
         # end = pd.Timestamp('2020-08-28 16:00', tz=NY).isoformat()
-        ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
-        if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD']:
-            minute_df = api.get_crypto_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end, exchanges=['FTXU']).df
-        else:
-            minute_df = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end,
-                                     adjustment='raw').df
+        minute_df = download_exchange_historical_data(api, symbol)
+        minute_df_last = download_exchange_latest_data(api, symbol)
+        # replace the last element of minute_df with last
+        minute_df.iloc[-1] = minute_df_last.iloc[-1]
+
         if minute_df.empty:
             print(f"{symbol} has no data")
             continue
@@ -117,6 +118,37 @@ def download_daily_stock_data(path=None, all_data_force=False):
 
         file_save_path = (save_path / '{}-{}.csv'.format(symbol, end))
         minute_df.to_csv(file_save_path)
+    return minute_df
+
+# cache for 4 hours
+data_cache = TTLCache(maxsize=100, ttl=14400)
+def download_exchange_historical_data(api, symbol):
+    cached_result = data_cache.get(symbol)
+    if cached_result:
+        return cached_result
+    start = (datetime.datetime.now() - datetime.timedelta(days=365 * 4)).strftime('%Y-%m-%d')
+    # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
+    end = (datetime.datetime.now()).strftime('%Y-%m-%d')  # todo recent data
+    ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
+    results = download_stock_data_between_times(api, end, start, symbol)
+    if not results.empty:
+        data_cache[symbol] = results
+    return results
+
+
+def download_exchange_latest_data(api, symbol):
+    start = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d')
+    # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
+    end = (datetime.datetime.now()).strftime('%Y-%m-%d')  # todo recent data
+    ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
+    return download_stock_data_between_times(api, end, start, symbol)
+
+def download_stock_data_between_times(api, end, start, symbol):
+    if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD']:
+        minute_df = api.get_crypto_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end, exchanges=['FTXU']).df
+    else:
+        minute_df = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end,
+                                 adjustment='raw').df
     return minute_df
 
 
