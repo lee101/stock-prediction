@@ -448,3 +448,4 @@ neural networks
 - select set of trades to make
 - margin
 - takeprofit
+- roughly at eod only to close stock positions violently

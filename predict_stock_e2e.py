@@ -88,26 +88,27 @@ def close_profitable_trades(all_preds, positions, orders):
                             logger.info(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
                 # todo check time in market not overall time
-                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 23 + 40):
+                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 23 + 20):
                     current_time = datetime.now()
-                    at_market_open = False
+                    # at_market_open = False
                     # hourly can close positions at the market open? really?
                     # if current_time.hour == 3 and current_time.minute < 45:
                     #     at_market_open = True  # TODO this only works for NZ time
                     #     # todo properly test if we can close positions at market open
                     #     # for now we wont violently close our positions untill 15mins after open
 
-                    if not at_market_open:
-                        # close other orders for pair
-                        for order in orders:
-                            if order.symbol == position.symbol:
-                                alpaca_wrapper.cancel_order(order)
-                                # todo check if we have one open that is trying to close already?
-                        # close old position, not been hitting our predictions
-                        # todo why cancel order if its still predicted to be successful?
+                    # if not at_market_open:
 
-                        alpaca_wrapper.close_position_at_current_price(position, row)
-                        logger.info(f"Closing position to reduce risk {position.symbol}")
+                    # close other orders for pair
+                    for order in orders:
+                        if order.symbol == position.symbol:
+                            alpaca_wrapper.cancel_order(order)
+                            # todo check if we have one open that is trying to close already?
+                    # close old position, not been hitting our predictions
+                    # todo why cancel order if its still predicted to be successful?
+
+                    alpaca_wrapper.close_position_at_current_price(position, row)
+                    logger.info(f"Closing position to reduce risk {position.symbol}")
 
                 else:
                     exit_strategy = 'maxdiff' # TODO bug - should be based on what entry strategy should be
