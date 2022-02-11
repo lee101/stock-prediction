@@ -4,6 +4,7 @@ from functools import cache
 import matplotlib.pyplot as plt
 import pandas_datareader.data as web
 from cachetools import cache, TTLCache
+from pandas import DataFrame
 from pandas.plotting import register_matplotlib_converters
 
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT
@@ -123,8 +124,8 @@ def download_daily_stock_data(path=None, all_data_force=False):
 # cache for 4 hours
 data_cache = TTLCache(maxsize=100, ttl=14400)
 def download_exchange_historical_data(api, symbol):
-    cached_result = data_cache.get(symbol)
-    if cached_result:
+    cached_result = data_cache.get(symbol, DataFrame())
+    if not cached_result.empty:
         return cached_result
     start = (datetime.datetime.now() - datetime.timedelta(days=365 * 4)).strftime('%Y-%m-%d')
     # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
