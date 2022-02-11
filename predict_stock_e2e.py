@@ -458,6 +458,6 @@ if __name__ == '__main__':
             logger.info(e)
         # sleep for 1 minutes
         logger.info("Sleeping for 5sec")
-        sleep(5)
+        sleep(60*3)
 
     # make_trade_suggestions(pd.read_csv('/home/lee/code/stock/results/predictions-2021-12-23_23-04-07.csv'))
