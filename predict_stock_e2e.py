@@ -19,6 +19,8 @@ import shelve
 
 # read do_retrain argument from argparse
 # do_retrain = True
+from src.fixtures import crypto_symbols
+
 use_stale_data = False
 
 daily_predictions = DataFrame()
@@ -74,6 +76,12 @@ def close_profitable_trades(all_preds, positions, orders):
                 #     has_traded = True
                 #     logger.info(f"Closing predicted to worsen position {position.symbol}")
                 ordered_time = trade_entered_times.get(position.symbol)
+                is_crypto = position.symbol in crypto_symbols
+                is_trading_day_ending = False
+                if is_crypto:
+                    is_trading_day_ending = datetime.now().hour == 16 # TODO nzdt specific code here
+                else:
+                    is_trading_day_ending = datetime.now().hour == 11 # last 30 mins
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 16):
                     if float(position.unrealized_plpc) < 0:
                         change_time = instrument_strategy_change_times.get(position.symbol)
@@ -88,7 +96,7 @@ def close_profitable_trades(all_preds, positions, orders):
                             logger.info(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
                 # todo check time in market not overall time
-                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 23 + 20):
+                if (not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 23 + 20)) and is_trading_day_ending:
                     current_time = datetime.now()
                     # at_market_open = False
                     # hourly can close positions at the market open? really?
