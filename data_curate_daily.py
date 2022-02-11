@@ -89,7 +89,7 @@ def download_daily_stock_data(path=None, all_data_force=False):
     save_path.mkdir(parents=True, exist_ok=True)
     for symbol in symbols:
 
-        start = (datetime.datetime.now() - datetime.timedelta(days=90)).strftime('%Y-%m-%d')
+        start = (datetime.datetime.now() - datetime.timedelta(days=365*4)).strftime('%Y-%m-%d')
         # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
         end = (datetime.datetime.now()).strftime('%Y-%m-%d') # todo recent data
         # df = api.get_bars(symbol, TimeFrame.Minute, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'), adjustment='raw').df
@@ -97,7 +97,7 @@ def download_daily_stock_data(path=None, all_data_force=False):
         # end = pd.Timestamp('2020-08-28 16:00', tz=NY).isoformat()
         ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
         if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD']:
-            minute_df = api.get_crypto_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end).df
+            minute_df = api.get_crypto_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end, exchanges=['FTXU']).df
         else:
             minute_df = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end,
                                      adjustment='raw').df
