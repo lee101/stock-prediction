@@ -1,10 +1,12 @@
 import random
 import traceback
+from ast import literal_eval
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import sleep
 
+import numpy as np
 import torch
 from loguru import logger
 from pandas import DataFrame
@@ -42,7 +44,7 @@ def do_forecasting():
         else:
             current_time_formatted = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
             download_daily_stock_data(current_time_formatted, True)
-        daily_predictions = make_predictions(current_time_formatted, retrain=True)
+        daily_predictions = make_predictions(current_time_formatted, retrain=True) # TODO
 
 
     current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -78,11 +80,11 @@ def close_profitable_trades(all_preds, positions, orders):
                 #     logger.info(f"Closing predicted to worsen position {position.symbol}")
                 ordered_time = trade_entered_times.get(position.symbol)
                 is_crypto = position.symbol in crypto_symbols
-                is_trading_day_ending = False
+                is_trading_day_ending = False # todo investigate reenabling this logic
                 if is_crypto:
-                    is_trading_day_ending = datetime.now().hour == 16 # TODO nzdt specific code here
+                    is_trading_day_ending = datetime.now().hour in [11, 12, 13] # TODO nzdt specific code here
                 else:
-                    is_trading_day_ending = datetime.now().hour == 11 # last 30 mins
+                    is_trading_day_ending = datetime.now().hour in [9,10,11,12] # last 30 mins
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 16):
                     if float(position.unrealized_plpc) < 0:
                         change_time = instrument_strategy_change_times.get(position.symbol)
@@ -242,7 +244,7 @@ def buy_stock(row, all_preds, positions, orders):
         new_position_side = 'short' if now_to_old_pred + row['close_predicted_price_minute'] < 0 else 'long' # just the end price 15min from now- dont worry about the extremes
     # also try the minmax or takeprofit strategy that doesn't trade at said price
     entry_price_strategy = 'minmax' # at predicted low/high
-    if float(row['takeprofit_profit_profit']) + float(row['takeprofit_profit_minute']) < float(
+    if float(row['takeprofit_profit']) + float(row['takeprofit_profit_minute']) < float(
             row['entry_takeprofit_profit']) + float(row['entry_takeprofit_profit_minute']):
         entry_price_strategy = 'entry' # at current market price
 
@@ -319,14 +321,14 @@ def buy_stock(row, all_preds, positions, orders):
                 logger.info(f"{current_interest_symbol} is loosing money over two trades via shorting, making a small trade")
 
         if entry_price_strategy == 'entry':
-            if torch.sum(row['entry_takeprofit_profit_values'][:-2]) <= 0:
+            if sum(literal_eval(row['entry_takeprofit_profit_values'])[:-2]) <= 0:
                 margin_multiplier = .001 # last trade values are loosing
         else:
-            if torch.sum(row['takeprofit_profit_values'][:-2]) <= 0:
+            if sum(literal_eval(row['takeprofit_profit_values'])[:-2]) <= 0:
                 margin_multiplier = .001  # last trade values are loosing
 
         if entry_strategy == 'maxdiff':
-            if torch.sum(row['maxdiffprofit_profit_values'][:-2]) <= 0:
+            if sum(literal_eval(row['maxdiffprofit_profit_values'])[:-2]) <= 0:
                 margin_multiplier = .001  # last trade values are loosing
 
         trade_entered_times[current_interest_symbol] = datetime.now()
@@ -417,9 +419,9 @@ def make_trade_suggestions(predictions, minute_predictions):
     # filter out crypto positions under .01 for eth - this too low amount cannot be traded/is an anomaly
     positions = []
     for position in all_positions:
-        if position.symbol in ['ETHUSD', 'LTCUSD'] and position.qty >= .01:
+        if position.symbol in ['ETHUSD', 'LTCUSD'] and float(position.qty) >= .01:
             positions.append(position)
-        elif position.symbol in ['BTCUSD',] and position.qty >= .001:
+        elif position.symbol in ['BTCUSD'] and float(position.qty) >= .001:
             positions.append(position)
         elif position.symbol not in crypto_symbols:
             positions.append(position)
@@ -484,6 +486,6 @@ if __name__ == '__main__':
             logger.info(e)
         # sleep for 1 minutes
         logger.info("Sleeping for 5sec")
-        sleep(60*3)
+        sleep(60*5)
 
     # make_trade_suggestions(pd.read_csv('/home/lee/code/stock/results/predictions-2021-12-23_23-04-07.csv'))
