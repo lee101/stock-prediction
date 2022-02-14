@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from time import sleep
 
+import torch
 from loguru import logger
 from pandas import DataFrame
 
@@ -239,7 +240,11 @@ def buy_stock(row, all_preds, positions, orders):
     elif entry_strategy == 'entry':
         now_to_old_pred = 1 - (row['close_predicted_price_value_minute'] / row['close_last_price_minute'])
         new_position_side = 'short' if now_to_old_pred + row['close_predicted_price_minute'] < 0 else 'long' # just the end price 15min from now- dont worry about the extremes
-
+    # also try the minmax or takeprofit strategy that doesn't trade at said price
+    entry_price_strategy = 'minmax' # at predicted low/high
+    if float(row['takeprofit_profit_profit']) + float(row['takeprofit_profit_minute']) < float(
+            row['entry_takeprofit_profit']) + float(row['entry_takeprofit_profit_minute']):
+        entry_price_strategy = 'entry' # at current market price
 
     has_traded = False
     for position in positions:
@@ -313,6 +318,17 @@ def buy_stock(row, all_preds, positions, orders):
                 margin_multiplier = .001
                 logger.info(f"{current_interest_symbol} is loosing money over two trades via shorting, making a small trade")
 
+        if entry_price_strategy == 'entry':
+            if torch.sum(row['entry_takeprofit_profit_values'][:-2]) <= 0:
+                margin_multiplier = .001 # last trade values are loosing
+        else:
+            if torch.sum(row['takeprofit_profit_values'][:-2]) <= 0:
+                margin_multiplier = .001  # last trade values are loosing
+
+        if entry_strategy == 'maxdiff':
+            if torch.sum(row['maxdiffprofit_profit_values'][:-2]) <= 0:
+                margin_multiplier = .001  # last trade values are loosing
+
         trade_entered_times[current_interest_symbol] = datetime.now()
         current_price = row['close_last_price_minute']
 
@@ -320,22 +336,23 @@ def buy_stock(row, all_preds, positions, orders):
         current_strategy = instrument_strategies.get(current_interest_symbol, 'aggressive_buy')
 
         if new_position_side == 'long':
-            predicted_low = row['entry_takeprofit_low_price_minute']
-            if abs(row['entry_takeprofit_profit_low_multiplier_minute']) > .01:
+            predicted_low = row['takeprofit_low_price_minute']
+            if abs(row['takeprofit_profit_low_multiplier_minute']) > .04:
                 predicted_low = row['low_predicted_price_value_minute']
             price_to_trade_at = min(current_price, predicted_low) #, row['low_last_price_minute'])
         elif new_position_side == 'short':
-            predicted_high = row['entry_takeprofit_high_price_minute']
-            if abs(row['entry_takeprofit_profit_high_multiplier_minute']) > .01:  # tuned for minutely
+            predicted_high = row['takeprofit_high_price_minute']
+            if abs(row['takeprofit_profit_high_multiplier_minute']) > .04:  # tuned for minutely
                 predicted_high = row['high_predicted_price_value_minute']
             price_to_trade_at = max(current_price, predicted_high)
 
-        if current_strategy == 'aggressive':
-            price_to_trade_at = current_price
-        elif current_strategy == 'aggressive_buy' and new_position_side == 'long':
-            price_to_trade_at = current_price
-        elif current_strategy == 'aggressive_sell' and new_position_side == 'short':
-            price_to_trade_at = current_price
+        if entry_price_strategy == 'entry':
+            if current_strategy == 'aggressive':
+                price_to_trade_at = current_price
+            elif current_strategy == 'aggressive_buy' and new_position_side == 'long':
+                price_to_trade_at = current_price
+            elif current_strategy == 'aggressive_sell' and new_position_side == 'short':
+                price_to_trade_at = current_price
         # ONLY trade if we aren't trading in that dir already
         ordered_already = False
 
@@ -396,7 +413,16 @@ def make_trade_suggestions(predictions, minute_predictions):
     # todo exec top entry_trading_profit
     # make top 5 trades
     current_trade_count = 0
-    positions = alpaca_wrapper.list_positions()
+    all_positions = alpaca_wrapper.list_positions()
+    # filter out crypto positions under .01 for eth - this too low amount cannot be traded/is an anomaly
+    positions = []
+    for position in all_positions:
+        if position.symbol in ['ETHUSD', 'LTCUSD'] and position.qty >= .01:
+            positions.append(position)
+        elif position.symbol in ['BTCUSD',] and position.qty >= .001:
+            positions.append(position)
+        elif position.symbol not in crypto_symbols:
+            positions.append(position)
     # # filter out crypto positions manually managed
     # positions = [position for position in positions if position.symbol not in ['BTCUSD', 'ETHUSD', 'LTCUSD', 'BCHUSD']]
     max_concurrent_trades = 13

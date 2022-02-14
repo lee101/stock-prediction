@@ -168,7 +168,7 @@ def buy_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side='long')
 
 
     try:
-        current_price = row['close_last_price_minute']
+        current_price = float(row['close_last_price_minute'])
 
         amount_to_trade = notional_value / current_price
         if currentBuySymbol in ["BTCUSD"]:
@@ -188,6 +188,7 @@ def buy_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side='long')
             # price_to_trade_at = max(current_price, row['high_last_price_minute'])
             #
             # take_profit_price = price_to_trade_at - abs(price_to_trade_at * (3*float(row['close_predicted_price_minute'])))
+            logger.info(f'{currentBuySymbol} shorting {amount_to_trade} at {current_price}')
             result = alpaca_api.submit_order(
                 currentBuySymbol,
                 amount_to_trade,
@@ -204,6 +205,7 @@ def buy_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side='long')
             #
             # take_profit_price = current_price + abs(current_price * (3*float(row['close_predicted_price_minute']))) # todo takeprofit doesn't really work
             # we could use a limit with limit price but then couldn't do a notional order
+            logger.info(f'{currentBuySymbol} buying {amount_to_trade} at {current_price}')
             result = alpaca_api.submit_order(
                 currentBuySymbol,
                 amount_to_trade,

@@ -17,7 +17,8 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from data_utils import split_data
 from loss_utils import calculate_trading_profit_torch, DEVICE, get_trading_profits_list, percent_movements_augment, \
     TradingLossBinary, TradingLoss, calculate_trading_profit_torch_buy_only, \
-    calculate_trading_profit_torch_with_buysell, calculate_trading_profit_torch_with_entry_buysell
+    calculate_trading_profit_torch_with_buysell, calculate_trading_profit_torch_with_entry_buysell, \
+    calculate_trading_profit_torch_with_buysell_profit_values, calculate_profit_torch_with_entry_buysell_profit_values
 from model import GRU
 
 transformers.set_seed(42)
@@ -86,7 +87,7 @@ def series_to_tensor(series_pd):
     return torch.tensor(series_pd.values, dtype=torch.float)#todo gpu, device=DEVICE)
 
 
-def make_predictions(input_data_path=None, pred_name='', retrain=False):
+def make_predictions(input_data_path=None, pred_name='', retrain=True):
     """
     Make predictions for all csv files in directory.
     """
@@ -300,7 +301,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
 
                 loguru_logger.info(f"Number of parameters in network: {tft.size() / 1e3:.1f}k")
 
-                early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-5, patience=40, verbose=False,
+                early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-5, patience=4, verbose=False,
                                                     mode="min")
                 model_checkpoint = ModelCheckpoint(
                     monitor="val_loss",
@@ -314,7 +315,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 lr_logger = LearningRateMonitor()  # log the learning rate
                 logger = TensorBoardLogger(f"lightning_logs/{pred_name}/{key_to_predict}/{instrument_name}")  # logging results to a tensorboard
                 trainer = pl.Trainer(
-                    max_epochs=100,
+                    max_epochs=10,
                     gpus=1,
                     weights_summary="top",
                     gradient_clip_val=gradient_clip_val,
@@ -821,6 +822,21 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                                                                             ).item()
             loguru_logger.info(f"{instrument_name} calculated_profit: {calculated_profit}")
             last_preds['takeprofit_profit'] = calculated_profit
+            last_preds['takeprofit_profit_values'] = calculate_trading_profit_torch_with_buysell_profit_values(
+                                                                                                 last_preds[
+                                                                                                     "close_actual_movement_values"],
+                                                                                                 last_preds[
+                                                                                                     "close_trade_values"],
+                                                                                                 last_preds[
+                                                                                                     "high_actual_movement_values"] + close_to_high,
+                                                                                                 last_preds[
+                                                                                                     "high_predictions"] + close_to_high,
+                                                                                                 last_preds[
+                                                                                                     "low_actual_movement_values"] - close_to_low,
+                                                                                                 last_preds[
+                                                                                                     "low_predictions"] - close_to_low,
+
+                                                                                                 )
 
             # todo margin allocation tests
             current_profit = calculated_profit
@@ -886,6 +902,20 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                                                                                   ).item()
             loguru_logger.info(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
             last_preds['maxdiffprofit_profit'] = calculated_profit
+            last_preds['maxdiffprofit_profit_values'] = calculate_profit_torch_with_entry_buysell_profit_values(
+                                                                                                          last_preds[
+                                                                                                              "close_actual_movement_values"],
+                                                                                                          maxdiff_trades,
+                                                                                                          last_preds[
+                                                                                                              "high_actual_movement_values"] + close_to_high,
+                                                                                                          last_preds[
+                                                                                                              "high_predictions"] + close_to_high,
+                                                                                                          last_preds[
+                                                                                                              "low_actual_movement_values"] - close_to_low,
+                                                                                                          last_preds[
+                                                                                                              "low_predictions"] - close_to_low,
+
+                                                                                                          )
             latest_close_to_low = abs(1 - (last_preds['low_predicted_price_value'] / last_preds['close_last_price']))
             last_preds['latest_low_diff'] = latest_close_to_low
 
@@ -955,6 +985,19 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                                                                             ).item()
             loguru_logger.info(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
             last_preds['entry_takeprofit_profit'] = calculated_profit
+            last_preds['entry_takeprofit_profit_values'] = calculate_profit_torch_with_entry_buysell_profit_values(
+                last_preds["close_actual_movement_values"],
+                last_preds["close_trade_values"],
+                last_preds[
+                    "high_actual_movement_values"] + close_to_high,
+                last_preds[
+                    "high_predictions"] + close_to_high,
+                last_preds[
+                    "low_actual_movement_values"] - close_to_low,
+                last_preds[
+                    "low_predictions"] - close_to_low,
+
+                )
 
             # todo margin allocation tests
             current_profit = calculated_profit
