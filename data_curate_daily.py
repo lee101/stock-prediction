@@ -6,6 +6,7 @@ import pandas_datareader.data as web
 from cachetools import cache, TTLCache
 from pandas import DataFrame
 from pandas.plotting import register_matplotlib_converters
+from loguru import logger
 
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT
 from predict_stock import base_dir
@@ -78,7 +79,7 @@ def download_daily_stock_data(path=None, all_data_force=False):
 
     alpaca_clock = api.get_clock()
     if not alpaca_clock.is_open and not all_data_force:
-        print("Market is closed")
+        logger.info("Market is closed")
         # can trade crypto out of hours
         symbols = [
            'BTCUSD',
@@ -101,15 +102,17 @@ def download_daily_stock_data(path=None, all_data_force=False):
         minute_df = download_exchange_historical_data(api, symbol)
         minute_df_last = download_exchange_latest_data(api, symbol)
         # replace the last element of minute_df with last
-        minute_df.iloc[-1] = minute_df_last.iloc[-1]
+        if not minute_df_last.empty:
+            # can be empty as it could be closed for two days so can skipp getting latest data
+            minute_df.iloc[-1] = minute_df_last.iloc[-1]
 
         if minute_df.empty:
-            print(f"{symbol} has no data")
+            logger.info(f"{symbol} has no data")
             continue
 
         # rename columns with upper case
         minute_df.rename(columns=lambda x: x.capitalize(), inplace=True)
-        # print(minute_df)
+        # logger.info(minute_df)
 
         file_save_path = (save_path / '{}-{}.csv'.format(symbol, end))
         minute_df.to_csv(file_save_path)
@@ -124,7 +127,7 @@ def download_exchange_historical_data(api, symbol):
     start = (datetime.datetime.now() - datetime.timedelta(days=365 * 4)).strftime('%Y-%m-%d')
     # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
     end = (datetime.datetime.now()).strftime('%Y-%m-%d')  # todo recent data
-    ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
+    ## logger.info(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
     results = download_stock_data_between_times(api, end, start, symbol)
     if not results.empty:
         data_cache[symbol] = results
@@ -135,7 +138,7 @@ def download_exchange_latest_data(api, symbol):
     start = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d')
     # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
     end = (datetime.datetime.now()).strftime('%Y-%m-%d')  # todo recent data
-    ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
+    ## logger.info(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
     return download_stock_data_between_times(api, end, start, symbol)
 
 def download_stock_data_between_times(api, end, start, symbol):
@@ -144,7 +147,7 @@ def download_stock_data_between_times(api, end, start, symbol):
         try:
             minute_df.drop(['exchange'], axis=1, inplace=True)
         except KeyError:
-            print(f"{symbol} has no exchange key")
+            logger.info(f"{symbol} has no exchange key")
         return minute_df
     else:
         minute_df = api.get_bars(symbol, TimeFrame(1, TimeFrameUnit.Day), start, end,
@@ -152,7 +155,7 @@ def download_stock_data_between_times(api, end, start, symbol):
         try:
             minute_df.drop(['volume', 'trade_count', 'vwap'], axis=1, inplace=True)
         except KeyError:
-            print(f"{symbol} has no volume or something")
+            logger.info(f"{symbol} has no volume or something")
         return minute_df
 
 
