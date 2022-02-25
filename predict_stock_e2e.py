@@ -309,6 +309,25 @@ def buy_stock(row, all_preds, positions, orders):
         logger.info(f"{new_position_side} {current_interest_symbol}")
         margin_multiplier = (1. / 10.0) * .8  # leave some room
 
+        if entry_price_strategy == 'entry':
+            if sum(literal_eval(row['entry_takeprofit_profit_values'])[:-2]) <= 0:
+                logger.info(
+                    f"{current_interest_symbol} is loosing money over two days via entry takeprofit, making a small trade")
+
+                margin_multiplier = (1. / 10.0) * .3 # last trade values are loosing half trade
+        else:
+            if sum(literal_eval(row['takeprofit_profit_values'])[:-2]) <= 0:
+                logger.info(
+                    f"{current_interest_symbol} is loosing money over two days via takeprofit, making a small trade")
+                margin_multiplier = (1. / 10.0) * .3 # last trade values are loosing half trade
+
+        if entry_strategy == 'maxdiff':
+            if sum(literal_eval(row['maxdiffprofit_profit_values'])[:-2]) <= 0:
+                logger.info(
+                    f"{current_interest_symbol} is loosing money over two days via maxdiff, making a small trade")
+                margin_multiplier = (1. / 10.0) * .3 # last trade values are loosing half trade
+
+
         if new_position_side == 'long':
             if (made_money_recently.get(current_interest_symbol, 0) or 0) + (made_money_one_before_recently.get(current_interest_symbol, 0) or 0) <= 0:
                 # if loosing money over two trades, make a small trade /recalculate
@@ -320,16 +339,7 @@ def buy_stock(row, all_preds, positions, orders):
                 margin_multiplier = .001
                 logger.info(f"{current_interest_symbol} is loosing money over two trades via shorting, making a small trade")
 
-        if entry_price_strategy == 'entry':
-            if sum(literal_eval(row['entry_takeprofit_profit_values'])[:-2]) <= 0:
-                margin_multiplier = .001 # last trade values are loosing
-        else:
-            if sum(literal_eval(row['takeprofit_profit_values'])[:-2]) <= 0:
-                margin_multiplier = .001  # last trade values are loosing
 
-        if entry_strategy == 'maxdiff':
-            if sum(literal_eval(row['maxdiffprofit_profit_values'])[:-2]) <= 0:
-                margin_multiplier = .001  # last trade values are loosing
 
         trade_entered_times[current_interest_symbol] = datetime.now()
         current_price = row['close_last_price_minute']
