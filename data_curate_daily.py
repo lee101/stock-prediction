@@ -28,7 +28,7 @@ MRNA
 
 def download_daily_stock_data(path=None, all_data_force=False):
     symbols = [
-        # 'COUR',
+        'COUR',
         'GOOG',
         'TSLA',
         'NVDA',

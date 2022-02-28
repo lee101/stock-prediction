@@ -315,7 +315,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 lr_logger = LearningRateMonitor()  # log the learning rate
                 logger = TensorBoardLogger(f"lightning_logs/{pred_name}/{key_to_predict}/{instrument_name}")  # logging results to a tensorboard
                 trainer = pl.Trainer(
-                    max_epochs=10,
+                    max_epochs=300,
                     gpus=1,
                     weights_summary="top",
                     gradient_clip_val=gradient_clip_val,

@@ -99,7 +99,7 @@ def close_profitable_trades(all_preds, positions, orders):
                             logger.info(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
                 # todo check time in market not overall time
-                if (not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 23 + 20)) and is_trading_day_ending:
+                if (not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 22)) and is_trading_day_ending:
                     current_time = datetime.now()
                     # at_market_open = False
                     # hourly can close positions at the market open? really?
