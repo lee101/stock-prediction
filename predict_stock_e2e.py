@@ -44,7 +44,8 @@ def do_forecasting():
         else:
             current_time_formatted = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
             download_daily_stock_data(current_time_formatted, True)
-        daily_predictions = make_predictions(current_time_formatted, retrain=True) # TODO
+        # daily_predictions = make_predictions(current_time_formatted, retrain=True) # TODO
+        daily_predictions = make_predictions(current_time_formatted) # TODO
 
 
     current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -84,7 +85,8 @@ def close_profitable_trades(all_preds, positions, orders):
                 if is_crypto:
                     is_trading_day_ending = datetime.now().hour in [11, 12, 13] # TODO nzdt specific code here
                 else:
-                    is_trading_day_ending = datetime.now().hour in [9,10,11,12] # last 30 mins
+                    is_trading_day_ending = datetime.now().hour in [9,10,11,12] # last
+
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 16):
                     if float(position.unrealized_plpc) < 0:
                         change_time = instrument_strategy_change_times.get(position.symbol)
@@ -99,7 +101,12 @@ def close_profitable_trades(all_preds, positions, orders):
                             logger.info(f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
                 # todo check time in market not overall time
-                if (not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 22)) and is_trading_day_ending:
+                trade_length_before_close = timedelta(minutes=60 * 22)
+                if abs(float(position.market_value)) < 3000:
+                    # closing test positions sooner TODO simulate stuff like this instead of really doing it
+                    trade_length_before_close = timedelta(minutes=60 * 6)
+                    is_trading_day_ending = True
+                if (not ordered_time or ordered_time < datetime.now() - trade_length_before_close) and is_trading_day_ending:
                     current_time = datetime.now()
                     # at_market_open = False
                     # hourly can close positions at the market open? really?
@@ -257,45 +264,8 @@ def buy_stock(row, all_preds, positions, orders):
             made_money_recently_shorting[position.symbol] = float(position.unrealized_plpc)
             made_money_one_before_recently_shorting[position.symbol] = made_money_recently_tmp_shorting.get(position.symbol, 0)
 
-        if position.symbol != current_interest_symbol:
-            ## dont trade until we made money
-            if float(position.unrealized_pl) < 0 and float(position.unrealized_plpc) < 0:
-                pass
-                # think more carefully about jumping off positions until we make good profit
-                # skip closing bad positions, sometimes wait for a while before jumping between stock
-                # if not at market open
-
-                # find stance on current position
-                # can close if we predict it to get worse
-                # is_worsening_position = False
-                # for index, row in all_preds.iterrows():
-                #     if row['instrument'] == position.symbol:
-                #         # make it reasonably easy to back out of bad trades
-                #         if (row['close_predicted_price_minute'] < 0) and position.side == 'long':
-                #             is_worsening_position = True
-                #             break
-                #         if (row['close_predicted_price_minute'] > 0) and position.side == 'short':
-                #             is_worsening_position = True
-                #             break
-                # if random.choice([True, False, False, False, False, False, False, False, False, False, False, False, False, False, False]) or at_market_open:
-                # if is_worsening_position:
-                #     alpaca_wrapper.close_position_violently(position)
-                #     has_traded = True
-                #     logger.info(f"Closing worsening bad position {position.symbol}")
-                #
-                # else:
-                # done later
-                # already_held_stock = True
-                # logger.info(
-                #     f"hodling bad position {position.symbol} instead of {new_position_side} {current_interest_symbol} - predicted to get better")
-
-            else:
-                # has_traded = True
-                # logger.info(f"Closing position {position.symbol}")
-                # alpaca_wrapper.close_position_violently(position)
-                has_traded = False
-                logger.info(f"Not jumping to buy other stock - ")
-        elif position.side == new_position_side: # todo could this prevent you from margining upward? should we clear all positions first?
+        if position.symbol == current_interest_symbol:
+            # todo could this prevent you from margining upward? should we clear all positions first?
             logger.info("Already holding {}".format(current_interest_symbol))
             already_held_stock = True
             already_held_amount = position.qty
@@ -341,8 +311,6 @@ def buy_stock(row, all_preds, positions, orders):
                 logger.info(f"{current_interest_symbol} is loosing money over two trades via shorting, making a small trade")
 
 
-
-        trade_entered_times[current_interest_symbol] = datetime.now()
         current_price = row['close_last_price_minute']
 
         price_to_trade_at = max(current_price, row['high_last_price_minute'])
@@ -370,10 +338,13 @@ def buy_stock(row, all_preds, positions, orders):
         ordered_already = False
 
         for order in orders:
-            position_side = 'buy' if new_position_side == 'long' else 'sell'
-            if order.side == position_side and order.symbol == current_interest_symbol:
+            # position_side = 'buy' if new_position_side == 'long' else 'sell'
+            # only trade if we arent in that market already, let the close positions logic do it otherwise
+            if order.symbol == current_interest_symbol:
                 ordered_already = True
         if not ordered_already:
+            trade_entered_times[current_interest_symbol] = datetime.now()
+
             if new_position_side == 'long':
                 made_money_recently_tmp[current_interest_symbol] = made_money_recently.get(current_interest_symbol, 0)
             else:
@@ -381,7 +352,7 @@ def buy_stock(row, all_preds, positions, orders):
 
             alpaca_wrapper.buy_stock(current_interest_symbol, row, price_to_trade_at, margin_multiplier, new_position_side)
             return True
-    return has_traded
+    return False
 
 
 def make_trade_suggestions(predictions, minute_predictions):
@@ -430,7 +401,9 @@ def make_trade_suggestions(predictions, minute_predictions):
     # filter out crypto positions under .01 for eth - this too low amount cannot be traded/is an anomaly
     positions = []
     for position in all_positions:
-        if position.symbol in ['ETHUSD', 'LTCUSD'] and float(position.qty) >= .01:
+        if position.symbol in ['LTCUSD'] and float(position.qty) >= .1:
+            positions.append(position)
+        elif position.symbol in ['ETHUSD'] and float(position.qty) >= .01:
             positions.append(position)
         elif position.symbol in ['BTCUSD'] and float(position.qty) >= .001:
             positions.append(position)

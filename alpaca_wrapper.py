@@ -174,9 +174,12 @@ def buy_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side='long')
         if currentBuySymbol in ["BTCUSD"]:
             if amount_to_trade < .001:
                 amount_to_trade = .001
-        elif currentBuySymbol in ["ETHUSD", "LTCUSD"]:
+        elif currentBuySymbol in ["ETHUSD"]:
             if amount_to_trade < .01:
                 amount_to_trade = .01
+        elif currentBuySymbol in ["LTCUSD"]:
+            if amount_to_trade < .1:
+                amount_to_trade = .1
         elif amount_to_trade < 1:
             amount_to_trade = 1
 
