@@ -282,22 +282,25 @@ def buy_stock(row, all_preds, positions, orders):
         if current_interest_symbol not in crypto_symbols:
             # cant short crypto so turned off for crypto
             if entry_price_strategy == 'entry':
-                if sum(literal_eval(row['entry_takeprofit_profit_values'])[:-2]) <= 0:
+                entry_takeprofit_profit_over_two_trades = sum(literal_eval(row['entry_takeprofit_profit_values'])[:-2])
+                if entry_takeprofit_profit_over_two_trades <= 0:
                     logger.info(
-                        f"{current_interest_symbol} is loosing money over two days via entry takeprofit, making a small trade")
+                        f"{current_interest_symbol} is loosing money over two days via entry takeprofit, making a small trade {row['entry_takeprofit_profit_values']} {entry_takeprofit_profit_over_two_trades}")
 
-                    margin_multiplier = (1. / 10.0) * .3 # last trade values are loosing half trade
+                    margin_multiplier = .001 #(1. / 10.0) * .3 # last trade values are loosing half trade
             else:
-                if sum(literal_eval(row['takeprofit_profit_values'])[:-2]) <= 0:
+                take_profit_profit_over_two_trades = sum(literal_eval(row['takeprofit_profit_values'])[:-2])
+                if take_profit_profit_over_two_trades <= 0:
                     logger.info(
-                        f"{current_interest_symbol} is loosing money over two days via takeprofit, making a small trade")
-                    margin_multiplier = (1. / 10.0) * .3 # last trade values are loosing half trade
+                        f"{current_interest_symbol} is loosing money over two days via takeprofit, making a small trade {row['takeprofit_profit_values']} {take_profit_profit_over_two_trades}")
+                    margin_multiplier = .001 #(1. / 10.0) * .3 # last trade values are loosing half trade
 
             if entry_strategy == 'maxdiff':
-                if sum(literal_eval(row['maxdiffprofit_profit_values'])[:-2]) <= 0:
+                max_diff_profit_over_two_trades = sum(literal_eval(row['maxdiffprofit_profit_values'])[:-2])
+                if max_diff_profit_over_two_trades <= 0:
                     logger.info(
-                        f"{current_interest_symbol} is loosing money over two days via maxdiff, making a small trade")
-                    margin_multiplier = (1. / 10.0) * .3 # last trade values are loosing half trade
+                        f"{current_interest_symbol} is loosing money over two days via maxdiff, making a small trade {row['maxdiffprofit_profit_values']} {max_diff_profit_over_two_trades}")
+                    margin_multiplier = .001 #(1. / 10.0) * .3 # last trade values are loosing half trade
 
 
         if new_position_side == 'long':
