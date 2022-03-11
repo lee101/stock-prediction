@@ -44,8 +44,8 @@ def do_forecasting():
         else:
             current_time_formatted = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
             download_daily_stock_data(current_time_formatted, True)
-        # daily_predictions = make_predictions(current_time_formatted, retrain=True) # TODO
-        daily_predictions = make_predictions(current_time_formatted) # TODO
+        daily_predictions = make_predictions(current_time_formatted, retrain=True) # TODO
+        # daily_predictions = make_predictions(current_time_formatted) # TODO
 
 
     current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -203,6 +203,7 @@ def close_profitable_trades(all_preds, positions, orders):
 
 data_dir = Path(__file__).parent / 'data'
 
+current_flags = FlatShelf(str(data_dir / f"current_flags.db.json"))
 made_money_recently = FlatShelf(str(data_dir / f"made_money_recently.db.json"))
 made_money_recently_tmp = FlatShelf(str(data_dir / f"made_money_recently_tmp.db.json"))
 made_money_one_before_recently = FlatShelf(str(data_dir / f"made_money_one_before_recently.db.json"))
@@ -364,7 +365,7 @@ def make_trade_suggestions(predictions, minute_predictions):
     global made_money_recently_shorting
     global made_money_recently_tmp_shorting
     global made_money_one_before_recently_shorting
-
+    global current_flags
     predictions = predictions.merge(minute_predictions, how='outer', on='instrument', suffixes=['', '_minute'])
 
 
@@ -427,6 +428,24 @@ def make_trade_suggestions(predictions, minute_predictions):
         ordered_or_positioned_instruments.add(order.symbol)
     max_trades_available = max_concurrent_trades - len(ordered_or_positioned_instruments)
 
+    ## if all predictions (but not crypto) make over 230 then cancel all trades and close positions for the day
+
+    total_money_made = 0
+    for position in positions:
+        if position.symbol not in crypto_symbols:
+            total_money_made += float(position.unrealized_pl)
+    if total_money_made > 200:
+        total_money_made = total_money_made * -1
+        current_flags['trading_today'] = False
+        alpaca_wrapper.close_open_orders()
+        alpaca_wrapper.backout_all_non_crypto_positions(positions, predictions)
+
+    if datetime.now().hour == 12:
+        current_flags['trading_today'] = True
+
+    if current_flags.get('trading_today', True) == False:
+        logger.info('not trading today, already made money ')
+        return
     for index, row in predictions.iterrows():
 
         # if row['close_predicted_price'] > 0:
@@ -453,7 +472,7 @@ def make_trade_suggestions(predictions, minute_predictions):
     #     logger.info("No trade suggestions, trying to exit position")
     close_profitable_trades(predictions, positions, leftover_live_orders)
 
-    sleep(20)
+    sleep(60)
 
 
 if __name__ == '__main__':

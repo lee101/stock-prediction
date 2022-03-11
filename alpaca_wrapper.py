@@ -6,6 +6,9 @@ from alpaca_trade_api.rest import APIError
 from loguru import logger
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT
 import alpaca_trade_api as tradeapi
+
+from src.fixtures import crypto_symbols
+
 alpaca_api = tradeapi.REST(
     ALP_KEY_ID,
     ALP_SECRET_KEY,
@@ -101,6 +104,40 @@ def close_position_at_current_price(position, row):
         # close all positions? perhaps not
         return None
     print(result)
+
+def backout_all_non_crypto_positions(positions, predictions):
+    for position in positions:
+        if position.symbol in crypto_symbols:
+            continue
+        current_row = None
+        for pred in predictions:
+            if pred['symbol'] == position.symbol:
+                current_row = pred
+                break
+        logger.info(f'backing out {position.symbol}')
+        close_position_at_almost_current_price(position, current_row)
+    sleep(60*2)
+
+    cancel_all_orders()
+    for position in positions:
+        if position.symbol in crypto_symbols:
+            continue
+        current_row = None
+        for pred in predictions:
+            if pred['symbol'] == position.symbol:
+                current_row = pred
+                break
+        logger.info(f'backing out at market {position.symbol}')
+
+        close_position_at_current_price(position, current_row)
+    sleep(60*2)
+
+    cancel_all_orders()
+    for position in positions:
+        if position.symbol in crypto_symbols:
+            continue
+        logger.info(f'violently backing out {position.symbol}')
+        close_position_violently(position)
 
 
 def close_position_at_almost_current_price(position, row):
