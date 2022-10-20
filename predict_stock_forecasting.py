@@ -11,6 +11,7 @@ import torch
 import transformers
 from pytorch_forecasting import Baseline, TemporalFusionTransformer, TimeSeriesDataSet
 from pytorch_forecasting.metrics import SMAPE
+from pytorch_forecasting.models import NHiTS
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
@@ -188,7 +189,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 #     lookback = 180
                 # if len(price) > 300:
                 #     lookback = 280
-                max_prediction_length = 6
+                max_prediction_length = 1
                 max_encoder_length = 24
                 # rename date to time_idx
                 price = price.rename(columns={"Date": "time_idx"})
@@ -214,7 +215,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                     time_idx="id",
                     target=target_to_pred,
                     group_ids=['constant'],
-                    min_encoder_length=max_encoder_length // 2,
+                    min_encoder_length=max_encoder_length, # used to be // 2 has to be eq for nhits
                     # keep encoder length long (as it is in the validation set)
                     max_encoder_length=max_encoder_length,
                     min_prediction_length=1,
@@ -261,13 +262,13 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 # best hyperpramams look like:
                 # {'gradient_clip_val': 0.05690473137493243, 'hidden_size': 50, 'dropout': 0.23151352460442215,
                 #  'hidden_continuous_size': 22, 'attention_head_size': 2, 'learning_rate': 0.0816548812864903}
-                best_hyperparams_save_file = f"data/test_study{pred_name}{key_to_predict}{instrument_name}.pkl"
+                best_hyperparams_save_file = f"data/test_study{pred_name}{key_to_predict}{instrument_name}nhits.pkl"
                 params = None
                 try:
                     params = pickle.load(open(best_hyperparams_save_file, "rb"))
                 except FileNotFoundError:
                     # logger.info("No best hyperparams found, tuning")
-                    best_hyperparams_save_file = f"data/test_study{instrument_name}.pkl"
+                    best_hyperparams_save_file = f"data/test_study{instrument_name}nhits.pkl"
                     try:
                         params = pickle.load(open(best_hyperparams_save_file, "rb"))
                     except FileNotFoundError:
@@ -278,23 +279,26 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                     added_best_params = params.best_trial.params
                 added_params = {  # not meaningful for finding the learning rate but otherwise very important
                     "learning_rate": 0.03,
-                    "hidden_size": 16,  # most important hyperparameter apart from learning rate
-                    # number of attention heads. Set to up to 4 for large datasets
-                    "attention_head_size": 1,
-                    "dropout": 0.1,  # between 0.1 and 0.3 are good values
-                    "hidden_continuous_size": 8,  # set to <= hidden_size
+                    "hidden_size": 64,  # most important hyperparameter apart from learning rate
+                    # number of attention heads. Set to up to 4 for large datasets (for TFT)
+                    # "attention_head_size": 1,
+                    "backcast_loss_ratio": 0.0,
+                    # "dropout": 0.1,  # between 0.1 and 0.3 are good values
+                    # "hidden_continuous_size": 8,  # set to <= hidden_size (for TFT)
                     "output_size": 1,  # 7 quantiles by default
                     "loss": TradingLoss(),
                     # "logging_metrics": TradingLossBinary(),
                     # reduce learning rate if no improvement in validation loss after x epochs
                     "reduce_on_plateau_patience": 4,
+                    "downsample_frequencies": [1,1,1],
+                    "pooling_sizes": [1,1,1]
                 }
                 added_params.update(added_best_params)
                 if type(added_params['output_size']) == int:
                     if type(target_to_pred) == list:
                         added_params['output_size'] = [added_params['output_size']] * len(target_to_pred)
                 gradient_clip_val = added_params.pop("gradient_clip_val", 0.1)
-                tft = TemporalFusionTransformer.from_dataset(
+                tft = NHiTS.from_dataset(
                     training,
                     **added_params
                 )
@@ -322,7 +326,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                     # track_grad_norm=2,
                     # auto_lr_find=True,
                     # auto_scale_batch_size='binsearch',
-                    limit_train_batches=30,  # coment in for training, running valiation every 30 batches
+                    limit_train_batches=30,  # comment in for training, running validation every 30 batches
                     # fast_dev_run=True,  # comment in to check that networkor dataset has no serious bugs
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
@@ -342,24 +346,24 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                         checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 best_tft = tft
 
-                if checkpoint_files:
-
-                    best_checkpoint_path = checkpoint_files[0]
-                    # sort by most recent checkpoint_files
-                    checkpoint_files.sort(key=lambda x: os.path.getctime(x))
-                    # load the most recent
-                    best_checkpoint_path = checkpoint_files[-1]
-                    # find best checkpoint
-                    # min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
-                    # for file_name in checkpoint_files:
-                    #     current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
-                    #     if float(current_loss) < float(min_current_loss):
-                    #         min_current_loss = current_loss
-                    #         best_checkpoint_path = file_name
-                    #         # TODO invalidation for 30minute vs daily data
-
-                    loguru_logger.info(f"Loading best checkpoint from {best_checkpoint_path}")
-                    best_tft = TemporalFusionTransformer.load_from_checkpoint(str(best_checkpoint_path))
+                # if checkpoint_files: TODO TMP REENABLE
+                #
+                #     best_checkpoint_path = checkpoint_files[0]
+                #     # sort by most recent checkpoint_files
+                #     checkpoint_files.sort(key=lambda x: os.path.getctime(x))
+                #     # load the most recent
+                #     best_checkpoint_path = checkpoint_files[-1]
+                #     # find best checkpoint
+                #     # min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
+                #     # for file_name in checkpoint_files:
+                #     #     current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
+                #     #     if float(current_loss) < float(min_current_loss):
+                #     #         min_current_loss = current_loss
+                #     #         best_checkpoint_path = file_name
+                #     #         # TODO invalidation for 30minute vs daily data
+                #
+                #     loguru_logger.info(f"Loading best checkpoint from {best_checkpoint_path}")
+                #     best_tft = NHiTS.load_from_checkpoint(str(best_checkpoint_path))
 
                 if retrain:
                     trainer.fit(
@@ -368,7 +372,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                         val_dataloaders=val_dataloader,
                     )
                     best_model_path = trainer.checkpoint_callback.best_model_path
-                    best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
+                    best_tft = NHiTS.load_from_checkpoint(best_model_path)
 
                 actual_list = [y[0] for x, y in iter(val_dataloader)] # TODO check this y center transfor prints feature neamses warning
 

@@ -24,7 +24,7 @@ import shelve
 # do_retrain = True
 from src.fixtures import crypto_symbols
 
-use_stale_data = False
+use_stale_data = True
 
 daily_predictions = DataFrame()
 daily_predictions_time = None
@@ -83,7 +83,7 @@ def close_profitable_trades(all_preds, positions, orders):
                 is_crypto = position.symbol in crypto_symbols
                 is_trading_day_ending = False # todo investigate reenabling this logic
                 if is_crypto:
-                    is_trading_day_ending = datetime.now().hour in [11, 12, 13] # TODO nzdt specific code here
+                    is_trading_day_ending = datetime.now().hour in [11, 12, 13] # TODO fix nzdt specific code here
                 else:
                     is_trading_day_ending = datetime.now().hour in [9,10,11,12] # last
 
