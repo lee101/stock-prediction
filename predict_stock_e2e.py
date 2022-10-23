@@ -24,7 +24,7 @@ import shelve
 # do_retrain = True
 from src.fixtures import crypto_symbols
 
-use_stale_data = False
+use_stale_data = True
 
 daily_predictions = DataFrame()
 daily_predictions_time = None
@@ -42,7 +42,7 @@ def do_forecasting():
             current_time_formatted = 'min' # new/ less data tickers
             current_time_formatted = '2021-12-30 20:11:47'  # new/ 30 minute data
         else:
-            current_time_formatted = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
+            current_time_formatted = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S') # but cant be 15 mins?
             download_daily_stock_data(current_time_formatted, True)
         daily_predictions = make_predictions(current_time_formatted, retrain=True) # TODO
         # daily_predictions = make_predictions(current_time_formatted) # TODO
@@ -401,7 +401,7 @@ def make_trade_suggestions(predictions, minute_predictions):
     # todo exec top entry_trading_profit
     # make top 5 trades
     current_trade_count = 0
-    all_positions = alpaca_wrapper.list_positions()
+    all_positions = alpaca_wrapper.get_all_positions()
     # filter out crypto positions under .01 for eth - this too low amount cannot be traded/is an anomaly
     positions = []
     for position in all_positions:
@@ -479,7 +479,6 @@ def make_trade_suggestions(predictions, minute_predictions):
 
 
 if __name__ == '__main__':
-    # in development, use the following line to avoid re downloading data
     while True:
         try:
             # skip running logic if not us stock exchange ?
@@ -491,7 +490,7 @@ if __name__ == '__main__':
             logger.exception(e)
             logger.info(e)
         # sleep for 1 minutes
-        logger.info("Sleeping for 5sec")
+        logger.info("Sleeping for 5min")
         sleep(60*5)
 
     # make_trade_suggestions(pd.read_csv('/home/lee/code/stock/results/predictions-2021-12-23_23-04-07.csv'))

@@ -699,5 +699,6 @@ def make_predictions(input_data_path=None):
 
 def df_to_torch(df):
     return torch.tensor(df.values, dtype=torch.float)
+
 if __name__ == "__main__":
     make_predictions()

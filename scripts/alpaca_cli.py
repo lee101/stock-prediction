@@ -28,7 +28,7 @@ def main(command: str):
 
 
 def close_all_positions():
-    positions = alpaca_wrapper.list_positions()
+    positions = alpaca_wrapper.get_all_positions()
 
     for position in positions:
         if position.side == 'long':
@@ -36,7 +36,7 @@ def close_all_positions():
 
 
 def violently_close_all_positions():
-    positions = alpaca_wrapper.list_positions()
+    positions = alpaca_wrapper.get_all_positions()
     for position in positions:
         alpaca_wrapper.close_position_violently(position)
 

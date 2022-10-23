@@ -441,7 +441,7 @@ total_forecasted_profit: 0.007928587769408925
 
 
 
-- proper datastores  refreshed data
+- proper datastores refreshed data
 - dynamic config
 
 neural networks

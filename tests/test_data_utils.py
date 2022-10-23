@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pandas as pd
 import torch
 
@@ -126,3 +128,6 @@ def test_entry_takeprofits():
                                                                 # low lowpreds
                                                                 )
     assert (profits - (.1+ .59)) < .002 # TODO take away non trades from trading loss
+
+def get_time():
+    return datetime.now()

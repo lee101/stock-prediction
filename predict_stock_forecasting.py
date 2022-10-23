@@ -24,7 +24,7 @@ from model import GRU
 transformers.set_seed(42)
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-from loguru import logger as loguru_logger
+from loguru import logger as loguru_logger, logger
 
 base_dir = Path(__file__).parent
 loguru_logger.info(base_dir)
@@ -142,6 +142,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
         input_data_files = base_dir / "data" / input_data_path
     else:
         input_data_files = base_dir / "data"
+    loguru_logger.info(f"input_data_files {input_data_files}")
+
     csv_files = list(input_data_files.glob("*.csv"))
 
     for days_to_drop in [0]:  # [1,2,3,4,5,6,7,8,9,10,11]:
@@ -327,7 +329,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                # retrain = True # todo reenable
+                retrain = False # todo reenable
                 # try find specific hl net
 
                 checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / key_to_predict / instrument_name)
