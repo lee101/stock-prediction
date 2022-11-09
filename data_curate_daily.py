@@ -15,7 +15,9 @@ from loguru import logger
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
 
-from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, PAPER, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
+from alpaca_wrapper import latest_data
+from stc.stock_utils import remap_symbols
+from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, PAPER, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
 from predict_stock import base_dir
 
 import pandas as pd
@@ -67,20 +69,20 @@ def download_daily_stock_data(path=None, all_data_force=False):
         # 'MRNA',
         'AMD',
         'MSFT',
-        'FB',
+        'META',
         'CRM',
         'NFLX',
         'PYPL',
         'SAP',
-        'AMD',  # tmp consider disabling/felt its model was a bit negative for now
+        # 'AMD',  # tmp consider disabling/felt its model was a bit negative for now
         'SONY',
         # 'PFE',
         # 'MRNA',
         # ]
         # symbols = [
-        'BTC/USD',
-        'ETH/USD',
-        'LTC/USD',
+        'BTCUSD',
+        'ETHUSD',
+        'LTCUSD',
 
     ]
     # client = StockHistoricalDataClient(ALP_KEY_ID, ALP_SECRET_KEY, url_override="https://data.sandbox.alpaca.markets/v2")
@@ -96,9 +98,9 @@ def download_daily_stock_data(path=None, all_data_force=False):
         logger.info("Market is closed")
         # can trade crypto out of hours
         symbols = [
-            'BTC/USD',
-            'ETH/USD',
-            'LTC/USD',
+            'BTCUSD',
+            'ETHUSD',
+            'LTCUSD',
         ]
 
     save_path = base_dir / 'data'
@@ -113,7 +115,7 @@ def download_daily_stock_data(path=None, all_data_force=False):
         # df = api.get_bars(symbol, TimeFrame.Minute, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'), adjustment='raw').df
         # start = pd.Timestamp('2020-08-28 9:30', tz=NY).isoformat()
         # end = pd.Timestamp('2020-08-28 16:00', tz=NY).isoformat()
-        minute_df = download_exchange_historical_data(client, symbol)
+        daily_df = download_exchange_historical_data(client, symbol)
         try:
             minute_df_last = download_exchange_latest_data(client, symbol)
         except Exception as e:
@@ -121,23 +123,23 @@ def download_daily_stock_data(path=None, all_data_force=False):
             logger.error(e)
             print(f"empty new data frame for {symbol}")
             minute_df_last = DataFrame() # weird issue with empty fb data frame
-        # replace the last element of minute_df with last
+        # replace the last element of daily_df with last
         if not minute_df_last.empty:
             # can be empty as it could be closed for two days so can skipp getting latest data
-            minute_df.iloc[-1] = minute_df_last.iloc[-1]
+            daily_df.iloc[-1] = minute_df_last.iloc[-1]
 
-        if minute_df.empty:
+        if daily_df.empty:
             logger.info(f"{symbol} has no data")
             continue
 
         # rename columns with upper case
-        minute_df.rename(columns=lambda x: x.capitalize(), inplace=True)
-        # logger.info(minute_df)
+        daily_df.rename(columns=lambda x: x.capitalize(), inplace=True)
+        # logger.info(daily_df)
 
         file_save_path = (save_path / '{}-{}.csv'.format(symbol.replace("/", "-"), end))
         file_save_path.parent.mkdir(parents=True, exist_ok=True)
-        minute_df.to_csv(file_save_path)
-    return minute_df
+        daily_df.to_csv(file_save_path)
+    return daily_df
 
 
 # cache for 4 hours
@@ -159,32 +161,46 @@ def download_exchange_historical_data(api, symbol):
 
 
 def download_exchange_latest_data(api, symbol):
+    global spreads
     start = (datetime.datetime.now(tz=pytz.utc) - datetime.timedelta(days=10))
     # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
     end = (datetime.datetime.now(tz=pytz.utc)) - datetime.timedelta(minutes=16)  # todo recent data
     ## logger.info(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
-    return download_stock_data_between_times(api, end, start, symbol)
+    latest_data_dl = download_stock_data_between_times(api, end, start, symbol)
 
+    if ADD_LATEST: # collect very latest close times, todo extend bars?
+        very_latest_data = latest_data(symbol)
+        # check if market closed
+        if float(very_latest_data.bid_price) != 0 and float(very_latest_data.ask_price) != 0:
+            latest_data_dl["close"] = (float(very_latest_data.bid_price) + float(very_latest_data.ask_price)) / 2.
+            spread = float(very_latest_data.ask_price) / float(very_latest_data.bid_price)
+            logger.info(f"{symbol} spread {spread}")
+            spreads[symbol] = spread
+    return latest_data_dl
+
+spreads = {}
+def get_spread(symbol):
+    return 1 - spreads.get(symbol, 1.05)
 
 def download_stock_data_between_times(api, end, start, symbol):
-    if symbol in ['BTC/USD', 'ETH/USD', 'LTC/USD']:
-        minute_df = crypto_client.get_crypto_bars(
-            CryptoBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame(1, TimeFrameUnit.Day), start=start, end=end,
+    if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD']:
+        daily_df = crypto_client.get_crypto_bars(
+            CryptoBarsRequest(symbol_or_symbols=remap_symbols(symbol), timeframe=TimeFrame(1, TimeFrameUnit.Day), start=start, end=end,
                               exchanges=['FTXU'])).df
         try:
-            minute_df.drop(['exchange'], axis=1, inplace=True)
+            daily_df.drop(['exchange'], axis=1, inplace=True)
         except KeyError:
             logger.info(f"{symbol} has no exchange key - this is okay")
-        return minute_df
+        return daily_df
     else:
-        minute_df = api.get_stock_bars(
+        daily_df = api.get_stock_bars(
             StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame(1, TimeFrameUnit.Day), start=start, end=end,
                              adjustment='raw')).df
         try:
-            minute_df.drop(['volume', 'trade_count', 'vwap'], axis=1, inplace=True)
+            daily_df.drop(['volume', 'trade_count', 'vwap'], axis=1, inplace=True)
         except KeyError:
             logger.info(f"{symbol} has no volume or something")
-        return minute_df
+        return daily_df
 
 
 def visualize_stock_data(df):

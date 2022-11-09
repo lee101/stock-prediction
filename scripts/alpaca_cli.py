@@ -32,7 +32,7 @@ def close_all_positions():
 
     for position in positions:
         if position.side == 'long':
-            alpaca_wrapper.buy_stock(position.symbol, position.qty)
+            alpaca_wrapper.alpaca_order_stock(position.symbol, position.qty)
 
 
 def violently_close_all_positions():

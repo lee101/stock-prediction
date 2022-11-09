@@ -55,7 +55,7 @@ def download_minute_stock_data(path=None):
         # 'MRNA',
         'AMD',
         'MSFT',
-        'FB',
+        'META',
         'CRM',
         'NFLX',
         'PYPL',

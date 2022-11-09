@@ -449,3 +449,7 @@ neural networks
 - margin
 - takeprofit
 - roughly at eod only to close stock positions violently
+
+
+
+check if numbers are flipped and if so do something?

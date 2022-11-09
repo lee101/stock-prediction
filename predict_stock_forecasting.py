@@ -329,7 +329,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
                     logger=logger,
                 )
-                retrain = False # todo reenable
+                # retrain = False # todo reenable
                 # try find specific hl net
 
                 checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / key_to_predict / instrument_name)
@@ -386,7 +386,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                     study = optimize_hyperparameters(
                         train_dataloader,
                         val_dataloader,
-                        model_path="optuna_test",
+                        model_path="optuna_test", # saves over the same place for all models to avoid memory issues
                         n_trials=100,
                         max_epochs=200,
                         gradient_clip_val_range=(0.01, 1.0),
@@ -410,7 +410,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
 
                 loguru_logger.info(f"mean val loss:${mean_val_loss}")
 
-                raw_predictions, x = best_tft.predict(val_dataloader, mode="raw", return_x=True)
+                # raw_predictions, x = best_tft.predict(val_dataloader, mode="raw", return_x=True)
                 # for idx in range(1):  # plot 10 examples
                 #     plot = best_tft.plot_prediction(x, raw_predictions, idx=idx, add_loss_to_title=True)
                 ## display plot

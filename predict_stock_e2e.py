@@ -13,10 +13,11 @@ from pandas import DataFrame
 
 import alpaca_wrapper
 from data_curate_minute import download_minute_stock_data
-from data_curate_daily import download_daily_stock_data
+from data_curate_daily import download_daily_stock_data, get_spread
 # from predict_stock import make_predictions
 from decorator_utils import timeit
 from jsonshelve import FlatShelf
+from loss_utils import CRYPTO_TRADING_FEE
 from predict_stock_forecasting import make_predictions
 import shelve
 
@@ -24,7 +25,7 @@ import shelve
 # do_retrain = True
 from src.fixtures import crypto_symbols
 
-use_stale_data = True
+use_stale_data = False
 
 daily_predictions = DataFrame()
 daily_predictions_time = None
@@ -40,7 +41,7 @@ def do_forecasting():
             current_time_formatted = '2021-12-09 12:16:26'  # new/ more data
             current_time_formatted = '2021-12-11 07:57:21-2'  # new/ less data tickers
             current_time_formatted = 'min' # new/ less data tickers
-            current_time_formatted = '2021-12-30 20:11:47'  # new/ 30 minute data
+            current_time_formatted = '2021-12-30 20:11:47'  # new/ 30 minute data # '2022-10-14 09:58:20'
         else:
             current_time_formatted = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S') # but cant be 15 mins?
             download_daily_stock_data(current_time_formatted, True)
@@ -79,6 +80,7 @@ def close_profitable_trades(all_preds, positions, orders):
                 #     alpaca_wrapper.close_position_at_current_price(position, row)
                 #     has_traded = True
                 #     logger.info(f"Closing predicted to worsen position {position.symbol}")
+                # TODO note this is not the real ordered time for manual orders!
                 ordered_time = trade_entered_times.get(position.symbol)
                 is_crypto = position.symbol in crypto_symbols
                 is_trading_day_ending = False # todo investigate reenabling this logic
@@ -145,8 +147,8 @@ def close_profitable_trades(all_preds, positions, orders):
                                 predicted_high = row['maxdiffprofit_high_price']
                         sell_price = predicted_high
                         if not ordered_time or ordered_time > datetime.now() - timedelta(minutes=3*60):
-                            # close new orders at atleast a profit
-                            margin_default_high = entry_price * (1 + .003)
+                            # close new orders at atleast a profit - crypto needs higher margins to be profitable
+                            margin_default_high = entry_price * (1 + .006)
                             sell_price = max(predicted_high, margin_default_high)
                         # only if no other orders already
                         ordered_already = False
@@ -354,8 +356,7 @@ def buy_stock(row, all_preds, positions, orders):
             else:
                 made_money_recently_tmp_shorting[current_interest_symbol] = made_money_recently_shorting.get(current_interest_symbol, 0)
 
-            alpaca_wrapper.buy_stock(current_interest_symbol, row, price_to_trade_at, margin_multiplier, new_position_side)
-            return True
+            return alpaca_wrapper.alpaca_order_stock(current_interest_symbol, row, price_to_trade_at, margin_multiplier, new_position_side)
     return False
 
 
@@ -458,18 +459,39 @@ def make_trade_suggestions(predictions, minute_predictions):
         #     logger.info(f"conflicting preds {row['instrument']} {row['close_predicted_price']} {row['close_predicted_price_minute']}")
         #     continue
         # both made profit also sued to use row['takeprofit_profit'] > 0 and
-        if (row['entry_takeprofit_profit'] > 0 and row['entry_takeprofit_profit_minute'] > 0) or (
-                row['maxdiffprofit_profit'] > 0 and row['maxdiffprofit_profit_minute'] > 0):
-            logger.info("Trade suggestion")
-            logger.info(row)
+        # extra profit check for buying crypto which has higher fees
+        # todo try not to aggressive trade on high spreads
+        # todo order at market price meaning the bid price is buying not the ask price
+        spread = get_spread(row['instrument'])
+        if row['instrument'] not in crypto_symbols and not (
+                (row['entry_takeprofit_profit'] - spread > 0 and
+                                                         row[
+                                                             'entry_takeprofit_profit_minute'] - spread > 0) or (
+                                                                row['maxdiffprofit_profit'] - spread > 0 and
+                                                                row[
+                                                                    'maxdiffprofit_profit_minute'] - spread > 0)):
+            continue
 
-            if current_trade_count >= max_trades_available:
-                break
-            # either most profitable strategy is picked
-            has_traded = buy_stock(row, predictions, positions, leftover_live_orders)
-            if has_traded:
-                current_trade_count += 1
-            do_trade = True
+        if row['instrument'] in crypto_symbols and not (
+                (row['entry_takeprofit_profit'] - (CRYPTO_TRADING_FEE * 2 + spread) > 0 and
+                                                         row[
+                                                             'entry_takeprofit_profit_minute'] - (CRYPTO_TRADING_FEE * 2+ spread) > 0) or (
+                                                                row['maxdiffprofit_profit'] - (CRYPTO_TRADING_FEE * 2+ spread) > 0 and
+                                                                row[
+                                                                    'maxdiffprofit_profit_minute'] - (CRYPTO_TRADING_FEE * 2+ spread) > 0)):
+            continue
+
+
+        logger.info("Trade suggestion")
+        logger.info(row)
+
+        if current_trade_count >= max_trades_available:
+            break
+        # either most profitable strategy is picked
+        has_traded = buy_stock(row, predictions, positions, leftover_live_orders)
+        if has_traded:
+            current_trade_count += 1
+        do_trade = True
             # break
     # if not has_traded:
     #     logger.info("No trade suggestions, trying to exit position")
