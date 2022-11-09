@@ -91,7 +91,7 @@ def download_daily_stock_data(path=None, all_data_force=False):
         ALP_KEY_ID,
         ALP_SECRET_KEY,
         # ALP_ENDPOINT,
-        paper=True
+        paper=ALP_ENDPOINT != "https://api.alpaca.markets",
     )
     alpaca_clock = api.get_clock()
     if not alpaca_clock.is_open and not all_data_force:

@@ -12,7 +12,7 @@ from alpaca.data import (
 from alpaca.trading import OrderType, LimitOrderRequest
 from alpaca_trade_api.rest import APIError
 from loguru import logger
-from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
+from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide
@@ -24,7 +24,7 @@ alpaca_api = TradingClient(
     ALP_KEY_ID,
     ALP_SECRET_KEY,
     # ALP_ENDPOINT,
-    paper=True,
+    paper=ALP_ENDPOINT != "https://api.alpaca.markets",
 )  # todo
 
 data_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
