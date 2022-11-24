@@ -171,16 +171,33 @@ def download_exchange_latest_data(api, symbol):
     if ADD_LATEST: # collect very latest close times, todo extend bars?
         very_latest_data = latest_data(symbol)
         # check if market closed
-        if float(very_latest_data.bid_price) != 0 and float(very_latest_data.ask_price) != 0:
-            latest_data_dl["close"] = (float(very_latest_data.bid_price) + float(very_latest_data.ask_price)) / 2.
-            spread = float(very_latest_data.ask_price) / float(very_latest_data.bid_price)
+        ask_price = float(very_latest_data.ask_price)
+        bid_price = float(very_latest_data.bid_price)
+        if bid_price != 0 and ask_price != 0:
+            latest_data_dl["close"] = (bid_price + ask_price) / 2.
+            spread = ask_price / bid_price
             logger.info(f"{symbol} spread {spread}")
             spreads[symbol] = spread
+            bids[symbol] = bid_price
+            asks[symbol] = ask_price
     return latest_data_dl
-
+asks = {}
+bids = {}
 spreads = {}
 def get_spread(symbol):
     return 1 - spreads.get(symbol, 1.05)
+
+def get_ask(symbol):
+    ask = asks.get(symbol)
+    if not ask:
+        logger.error("error getting ask price")
+    return ask
+
+def get_bid(symbol):
+    bid = bids.get(symbol)
+    if not bid:
+        logger.error("error getting bid price")
+    return bid
 
 def download_stock_data_between_times(api, end, start, symbol):
     if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD']:

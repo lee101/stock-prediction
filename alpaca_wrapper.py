@@ -210,8 +210,13 @@ def close_position_at_almost_current_price(position, row):
     print(result)
 
 
-def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side="long"):
+def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side="long", bid=None, ask=None):
+    # trading at market to add more safety in high spread situations
     side = "buy" if side == "long" else "sell"
+    if side == "buy" and bid:
+        price = min(price, bid)
+    else:
+        price = max(price, ask)
 
     # poll untill we have closed all our positions
     # why we would wait here?
