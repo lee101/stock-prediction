@@ -96,3 +96,6 @@ loguru
 pytorch-forecasting==0.10.3
 pytorch-lightning==1.5.4
 alpaca-py==0.6.1
+fastapi
+gunicorn==20.1.0
+uvicorn==0.20.0

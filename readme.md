@@ -453,3 +453,7 @@ neural networks
 
 
 check if numbers are flipped and if so do something?
+
+### crypto issues
+crypto can be only traded non margin for some time so this server should be used that loops/does market orders:
+ ./.env/bin/gunicorn -k uvicorn.workers.UvicornWorker -b :5050 src.crypto_loop.crypto_order_loop_server:app --timeout 1800 --workers 1    

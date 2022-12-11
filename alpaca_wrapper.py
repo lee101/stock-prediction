@@ -17,6 +17,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide
 
+from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols
 from stc.stock_utils import remap_symbols
 
@@ -81,6 +82,7 @@ def open_market_order_violently(symbol, qty, side):
         logger.error(e)
         return None
     print(result)
+
 def close_position_violently(position):
     try:
         if position.side == "long":
@@ -120,27 +122,51 @@ def close_position_at_current_price(position, row):
         return False
     try:
         if position.side == "long":
-            result = alpaca_api.submit_order(
-                order_data=LimitOrderRequest(
-                    symbol=remap_symbols(position.symbol),
-                    qty=abs(math.floor(float(position.qty)*1000)/1000.0), # qty rounded down to 3dp
-                    side="sell",
-                    type=OrderType.LIMIT,
-                    time_in_force="gtc",
-                    limit_price=str(math.ceil(float(row["close_last_price_minute"]))), #rounded up to whole number as theres an error limit price increment must be \u003e 1
+            if position.symbol in crypto_symbols:
+                result = crypto_alpaca_looper_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(position.symbol),
+                        qty=abs(float(position.qty)),
+                        side=OrderSide.SELL,
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=row["close_last_price_minute"],
+                    )
                 )
-            )
+            else:
+                result = alpaca_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(position.symbol),
+                        qty=abs(math.floor(float(position.qty)*1000)/1000.0), # qty rounded down to 3dp
+                        side="sell",
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(math.ceil(float(row["close_last_price_minute"]))), #rounded up to whole number as theres an error limit price increment must be \u003e 1
+                    )
+                )
         else:
-            result = alpaca_api.submit_order(
-                order_data=LimitOrderRequest(
-                    symbol=remap_symbols(position.symbol),
-                    qty=abs(math.floor(float(position.qty)*1000)/1000.0),
-                    side="buy",
-                    type=OrderType.LIMIT,
-                    time_in_force="gtc",
-                    limit_price=str(math.floor(float(row["close_last_price_minute"]))),
+            if position.symbol in crypto_symbols:
+                result = crypto_alpaca_looper_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(position.symbol),
+                        qty=abs(math.floor(float(position.qty)*1000)/1000.0),
+                        side=OrderSide.BUY,
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(math.floor(float(row["close_last_price_minute"]))),
+                    )
                 )
-            )
+            else:
+                result = alpaca_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(position.symbol),
+                        qty=abs(math.floor(float(position.qty)*1000)/1000.0),
+                        side="buy",
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(math.floor(float(row["close_last_price_minute"]))),
+                    )
+                )
     except Exception as e:
         logger.error(e) # cant convert nan to integer because market is closed for stocks
         # Out of range float values are not JSON compliant
@@ -197,27 +223,51 @@ def backout_all_non_crypto_positions(positions, predictions):
 def close_position_at_almost_current_price(position, row):
     try:
         if position.side == "long":
-            result = alpaca_api.submit_order(
-                order_data=LimitOrderRequest(
-                    symbol=remap_symbols(position.symbol),
-                    qty=abs(math.floor(float(position.qty)*1000)/1000.0), # down to 3dp rounding up sometimes makes it cost too much when closing positions
-                    side="sell",
-                    type=OrderType.LIMIT,
-                    time_in_force="gtc",
-                    limit_price=str(round(row["close_last_price_minute"] * 1.0003, 1)),
+            if position.symbol in crypto_symbols:
+                result = crypto_alpaca_looper_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(position.symbol),
+                        qty=abs(math.floor(float(position.qty)*1000)/1000.0), # down to 3dp rounding up sometimes makes it cost too much when closing positions
+                        side="sell",
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(round(row["close_last_price_minute"] * 1.0003, 1)),
+                    )
                 )
-            )
+            else:
+                result = alpaca_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(position.symbol),
+                        qty=abs(math.floor(float(position.qty)*1000)/1000.0), # down to 3dp rounding up sometimes makes it cost too much when closing positions
+                        side="sell",
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(round(row["close_last_price_minute"] * 1.0003, 1)),
+                    )
+                )
         else:
-            result = alpaca_api.submit_order(
-                order_data=LimitOrderRequest(
-                    symbol=remap_symbols(position.symbol),
-                    qty=abs(math.floor(float(position.qty)*1000)/1000.0),
-                    side="buy",
-                    type=OrderType.LIMIT,
-                    time_in_force="gtc",
-                    limit_price=str(round(row["close_last_price_minute"] * (1 - 0.0003), 1)),
+            if position.symbol in crypto_symbols:
+                result = crypto_alpaca_looper_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(position.symbol),
+                        qty=abs(math.floor(float(position.qty)*1000)/1000.0),
+                        side="buy",
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(round(row["close_last_price_minute"] * (1 - 0.0003), 1)),
+                    )
                 )
-            )
+            else:
+                result = alpaca_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(position.symbol),
+                        qty=abs(math.floor(float(position.qty)*1000)/1000.0),
+                        side="buy",
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(round(row["close_last_price_minute"] * (1 - 0.0003), 1)),
+                    )
+                )
     except Exception as e:
         logger.error(e)
         # close all positions? perhaps not
@@ -321,20 +371,36 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
             # we could use a limit with limit price but then couldn't do a notional order
             logger.info(f"{currentBuySymbol} buying {amount_to_trade} at {current_price}")
             # todo if crypto use loop
-            result = alpaca_api.submit_order(
-                order_data=LimitOrderRequest(
-                    symbol=remap_symbols(currentBuySymbol),
-                    qty=amount_to_trade,
-                    side=side,
-                    type=OrderType.LIMIT,
-                    time_in_force="gtc",
-                    limit_price=str(math.floor(price)), # aggressive rounding because btc gave errors for now "limit price increment must be \u003e 1"
-                    # notional=notional_value,
-                    # take_profit={
-                    #     "limit_price": take_profit_price
-                    # }
+            if currentBuySymbol in crypto_symbols:
+                result = crypto_alpaca_looper_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(currentBuySymbol),
+                        qty=amount_to_trade,
+                        side=side,
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(math.floor(price)), # aggressive rounding because btc gave errors for now "limit price increment must be \u003e 1"
+                        # notional=notional_value,
+                        # take_profit={
+                        #     "limit_price": take_profit_price
+                        # }
+                    )
                 )
-            )
+            else:
+                result = alpaca_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(currentBuySymbol),
+                        qty=amount_to_trade,
+                        side=side,
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(math.floor(price)), # aggressive rounding because btc gave errors for now "limit price increment must be \u003e 1"
+                        # notional=notional_value,
+                        # take_profit={
+                        #     "limit_price": take_profit_price
+                        # }
+                    )
+                )
             print(result)
 
     except APIError as e:  # insufficient buying power if market closed
@@ -378,19 +444,31 @@ def open_take_profit_position(position, row, price, qty):
     # current_symbol = row['symbol']
     try:
         if position.side == "long":
-            result = alpaca_api.submit_order(
-                order_data=LimitOrderRequest(
-                    symbol=remap_symbols(position.symbol),
-                    qty=abs(math.floor(float(qty)*1000)/1000.0), # todo? round 3 didnt work?
-                    side="sell",
-                    type=OrderType.LIMIT,
-                    time_in_force="gtc",
-                    limit_price=str(math.ceil(price)),  # str(entry_price * (1 + .004),)
+            if position.symbol in crypto_symbols:
+                result = crypto_alpaca_looper_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(position.symbol),
+                        qty=abs(math.floor(float(qty)*1000)/1000.0), # todo? round 3 didnt work?
+                        side="sell",
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(math.ceil(price)),  # str(entry_price * (1 + .004),)
+                    )
                 )
-            )
+            else:
+                result = alpaca_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(position.symbol),
+                        qty=abs(math.floor(float(qty)*1000)/1000.0), # todo? round 3 didnt work?
+                        side="sell",
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(math.ceil(price)),  # str(entry_price * (1 + .004),)
+                    )
+                )
         else:
-            result = alpaca_api.submit_order(
-                order_data=LimitOrderRequest(
+            if position.symbol in crypto_symbols:
+                result = crypto_alpaca_looper_api.submit_order(order_data=LimitOrderRequest(
                     symbol=remap_symbols(position.symbol),
                     qty=abs(math.floor(float(qty)*1000)/1000.0),
                     side="buy",
@@ -399,6 +477,17 @@ def open_take_profit_position(position, row, price, qty):
                     limit_price=str(math.floor(price)),
                 )
             )
+            else:
+                result = alpaca_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(position.symbol),
+                        qty=abs(math.floor(float(qty)*1000)/1000.0),
+                        side="buy",
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(math.floor(price)),
+                    )
+                )
     except Exception as e:
         logger.error(e) # can be because theres a sell order already which is still relevant
         # close all positions? perhaps not
@@ -416,7 +505,7 @@ def cancel_order(order):
 
 def get_open_orders():
     try:
-        return alpaca_api.get_orders()
+        return alpaca_api.get_orders() + crypto_alpaca_looper_api.get_orders()
     except Exception as e:
         logger.error(e)
         return []

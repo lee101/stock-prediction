@@ -8,62 +8,95 @@ cancelling an order
 getting the current orders
 
 """
-
-
-from loguru import logger
-
-import datetime
-import pytz
+from datetime import datetime
+import json
 import time
-import traceback
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from threading import Thread
 
-import threading
+from fastapi import FastAPI
+from loguru import logger
+from starlette.responses import JSONResponse
+from pydantic import BaseModel
 
-from alpaca_wrapper import latest_data
-from src.crypto_loop import crypto_order_loop
+from alpaca_wrapper import latest_data, open_market_order_violently
+from stc.stock_utils import unmap_symbols
 
-crypto_symbol_to_orders = {
-
-}
+crypto_symbol_to_order = {}
 app = FastAPI()
 
 symbols = [
-    'BTCUSD',
-    'ETHUSD',
-    'LTCUSD',
+    "BTCUSD",
+    "ETHUSD",
+    "LTCUSD",
 ]
+
+
 def crypto_order_loop():
     while True:
         try:
             # get all data for symbols
             for symbol in symbols:
                 very_latest_data = latest_data(symbol)
-                order = crypto_symbol_to_orders.get(symbol)
+                order = crypto_symbol_to_order.get(symbol)
                 if order:
-                    if order.side == "buy":
-                        if float(very_latest_data.ask_price) < order.price:
-                            logger.info(f"buying {symbol} at {order.price}")
-
-            # check if market closed
-            ask_price = float(very_latest_data.ask_price)
-            bid_price = float(very_latest_data.bid_price)
-            if bid_price != 0 and ask_price != 0:
-                latest_data_dl["close"] = (bid_price + ask_price) / 2.
-                spread = ask_price / bid_price
-                logger.info(f"{symbol} spread {spread}")
-                spreads[symbol] = spread
-                bids[symbol] = bid_price
-                asks[symbol] = ask_price
-            for symbol, orders in crypto_symbol_to_orders.items():
-                for order in orders:
-                    order.check_order()
+                    logger.info(f"order {order}")
+                    if order['side'] == "buy":
+                        if float(very_latest_data.ask_price) < order['price']:
+                            logger.info(f"buying {symbol} at {order['price']}")
+                            open_market_order_violently(symbol, order['qty'], "buy")
+                            crypto_symbol_to_order[symbol] = None
+                    elif order['side'] == "sell":
+                        if float(very_latest_data.bid_price) > order['price']:
+                            logger.info(f"selling {symbol} at {order['price']}")
+                            open_market_order_violently(symbol, order['qty'], "sell")
+                            crypto_symbol_to_order[symbol] = None
+                    else:
+                        logger.error(f"unknown side {order['side']}")
+                        logger.error(f"order {order}")
         except Exception as e:
             logger.error(e)
-        time.sleep(20)
+        time.sleep(10)
 
-threading.daemon = True
-threading.start_new_thread(crypto_order_loop, ())
-@route("/api/v1/stock_order", methods=["POST"])
-def stock_order():
+
+thread_loop = Thread(target=crypto_order_loop).start()
+
+
+class OrderRequest(BaseModel):
+    symbol: str
+    side: str
+    price: float
+    qty: float
+
+@app.post("/api/v1/stock_order")
+def stock_order(order: OrderRequest):
+    symbol = unmap_symbols(order.symbol)
+    crypto_symbol_to_order[symbol] = {
+        "symbol": symbol,
+        "side": order.side,
+        "price": order.price,
+        "qty": order.qty,
+        "created_at": datetime.now().isoformat(),
+    }
+
+
+@app.get("/api/v1/stock_orders")
+def stock_orders():
+    return JSONResponse(crypto_symbol_to_order)
+
+
+@app.get("/api/v1/stock_order/{symbol}")
+def stock_order(symbol: str):
+    symbol = unmap_symbols(symbol)
+    return JSONResponse(crypto_symbol_to_order.get(symbol))
+
+
+@app.delete("/api/v1/stock_order/{symbol}")
+def delete_stock_order(symbol: str):
+    symbol = unmap_symbols(symbol)
+    crypto_symbol_to_order[symbol] = None
+
+
+@app.get("/api/v1/stock_order/cancel_all")
+def delete_stock_orders():
+    for symbol in crypto_symbol_to_order:
+        crypto_symbol_to_order[symbol] = None
