@@ -66,6 +66,21 @@ def cancel_all_orders():
 
 
 # alpaca_api.submit_order(short_stock, qty, side, "market", "gtc")
+def open_market_order_violently(symbol, qty, side):
+    try:
+        result = alpaca_api.submit_order(
+            order_data=MarketOrderRequest(
+                symbol=remap_symbols(symbol),
+                qty=qty,
+                side=side,
+                type=OrderType.MARKET,
+                time_in_force="gtc",
+            )
+        )
+    except Exception as e:
+        logger.error(e)
+        return None
+    print(result)
 def close_position_violently(position):
     try:
         if position.side == "long":
@@ -112,7 +127,7 @@ def close_position_at_current_price(position, row):
                     side="sell",
                     type=OrderType.LIMIT,
                     time_in_force="gtc",
-                    limit_price=str(math.ceil(float(row["close_last_price_minute"]))), #rounded up to whole number as theres an error  limit price increment must be \u003e 1
+                    limit_price=str(math.ceil(float(row["close_last_price_minute"]))), #rounded up to whole number as theres an error limit price increment must be \u003e 1
                 )
             )
         else:
@@ -305,6 +320,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
             # take_profit_price = current_price + abs(current_price * (3*float(row['close_predicted_price_minute']))) # todo takeprofit doesn't really work
             # we could use a limit with limit price but then couldn't do a notional order
             logger.info(f"{currentBuySymbol} buying {amount_to_trade} at {current_price}")
+            # todo if crypto use loop
             result = alpaca_api.submit_order(
                 order_data=LimitOrderRequest(
                     symbol=remap_symbols(currentBuySymbol),

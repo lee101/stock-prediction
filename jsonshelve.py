@@ -6,6 +6,8 @@ import datetime
 import json
 import collections
 import os
+from collections.abc import MutableMapping
+
 # import sqlite3
 
 try:
@@ -14,7 +16,7 @@ except ImportError:
     import pickle
 
 
-class JSONShelf(collections.MutableMapping):
+class JSONShelf(MutableMapping):
     # Object lifetime.
 
     def save(self):
