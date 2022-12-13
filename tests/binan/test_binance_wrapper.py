@@ -26,8 +26,8 @@ def test_cancel_all_orders():
 #     assert len(orders) == 0
 
 def test_create_all_in_order():
-    # order = create_all_in_order('BTCUSDT', 'SELL', 18000) # buying usdt with btc
-    order = create_all_in_order('BTCUSDT', 'BUY', 15000) # buying btc with usdt
+    order = create_all_in_order('BTCUSDT', 'SELL', 18000) # buying usdt with btc
+    # order = create_all_in_order('BTCUSDT', 'BUY', 15000) # buying btc with usdt
     # assert order['status'] == 'NEW'
     orders = get_all_orders('BTCUSDT')
     assert len(orders) == 0
