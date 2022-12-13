@@ -11,6 +11,7 @@ getting the current orders
 from datetime import datetime
 import json
 import time
+from pathlib import Path
 from threading import Thread
 
 from fastapi import FastAPI
@@ -19,9 +20,18 @@ from starlette.responses import JSONResponse
 from pydantic import BaseModel
 
 from alpaca_wrapper import latest_data, open_market_order_violently
+from jsonshelve import FlatShelf
+from src.binan.binance_wrapper import create_all_in_order, cancel_all_orders
 from stc.stock_utils import unmap_symbols
 
-crypto_symbol_to_order = {}
+
+data_dir = Path(__file__).parent.parent / 'data'
+
+dynamic_config_ = data_dir / "dynamic_config"
+dynamic_config_.mkdir(exist_ok=True, parents=True)
+
+crypto_symbol_to_order = FlatShelf(str(dynamic_config_ / f"crypto_symbol_to_order.db.json"))
+
 app = FastAPI()
 
 symbols = [
@@ -77,6 +87,13 @@ def stock_order(order: OrderRequest):
         "qty": order.qty,
         "created_at": datetime.now().isoformat(),
     }
+    # convert to USDT - assume crypto
+    usdt_symbol = symbol[:3] + "USDT"
+    # order all on binance
+    if order.qty > 0.03 and symbol == "BTCUSD": # going all in on a bitcoin side
+        cancel_all_orders()
+        # replicate order to binance account for free trading on btc
+        create_all_in_order(usdt_symbol, order.side.upper(), order.price)
 
 
 @app.get("/api/v1/stock_orders")
