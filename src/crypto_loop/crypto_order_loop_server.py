@@ -98,7 +98,7 @@ def stock_order(order: OrderRequest):
 
 @app.get("/api/v1/stock_orders")
 def stock_orders():
-    return JSONResponse(crypto_symbol_to_order)
+    return JSONResponse(crypto_symbol_to_order.__dict__)
 
 
 @app.get("/api/v1/stock_order/{symbol}")

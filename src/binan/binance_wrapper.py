@@ -1,3 +1,5 @@
+import math
+
 from binance import Client, ThreadedWebsocketManager, ThreadedDepthCacheManager
 from loguru import logger
 
@@ -34,27 +36,34 @@ def create_all_in_order(symbol, side, price=None):
     if side == "SELL":
         quantity = balance_sell
     elif side == "BUY":
-        quantity = balance_sell # both are in btc so not #balance_buy / price
-
+        quantity = balance_buy / price # both are in btc so not #balance_buy / price
     else:
         raise Exception("Invalid side")
     # round down to 3dp (for btc)
-    quantity = int(quantity * 1000) / 1000
-    order = client.create_order(
-        symbol=symbol,
-        side=side,
-        type=Client.ORDER_TYPE_LIMIT,
-        timeInForce=Client.TIME_IN_FORCE_GTC,
-        quantity=quantity,
-        price=price,
-    )
+    quantity = math.floor(quantity * 1000) / 1000
+    try:
+        order = client.create_order(
+            symbol=symbol,
+            side=side,
+            type=Client.ORDER_TYPE_LIMIT,
+            timeInForce=Client.TIME_IN_FORCE_GTC,
+            quantity=quantity,
+            price=price,
+        )
+    except Exception as e:
+        logger.error(e)
+        logger.error(f"symbol {symbol}")
+        logger.error(f"side {side}")
+        logger.error(f"quantity {quantity}")
+        logger.error(f"price {price}")
+        raise e
 
 
 def cancel_all_orders():
     for symbol in crypto_symbols:
         orders = get_all_orders(symbol)
         for order in orders:
-            if order["status"] == "CANCELLED":
+            if order["status"] == "CANCELED" or order["status"] == "FILLED":
                 continue
             try:
                 client.cancel_order(symbol=order["symbol"], orderId=order["orderId"])
