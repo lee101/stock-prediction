@@ -41,7 +41,7 @@ class FakeOrder:
 
 def get_orders():
     response = stock_orders()
-    json = response.json()
+    json = response.json()['data']
     orders = []
     for result in json.keys():
         o = FakeOrder()

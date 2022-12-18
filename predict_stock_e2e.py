@@ -25,7 +25,7 @@ import shelve
 # do_retrain = True
 from src.fixtures import crypto_symbols
 
-use_stale_data = False
+use_stale_data = True#False
 
 daily_predictions = DataFrame()
 daily_predictions_time = None
@@ -504,6 +504,9 @@ def make_trade_suggestions(predictions, minute_predictions):
         if current_trade_count >= max_trades_available:
             break
         # either most profitable strategy is picked
+        if use_stale_data:
+            logger.info('using stale data so, not actually trading')
+            continue
         has_traded = buy_stock(row, predictions, positions, leftover_live_orders)
         if has_traded:
             current_trade_count += 1

@@ -505,7 +505,7 @@ def cancel_order(order):
 
 def get_open_orders():
     try:
-        return alpaca_api.get_orders() + crypto_alpaca_looper_api.get_orders()
+        return alpaca_api.get_orders() #+ crypto_alpaca_looper_api.get_orders()
     except Exception as e:
         logger.error(e)
         return []

@@ -456,4 +456,12 @@ check if numbers are flipped and if so do something?
 
 ### crypto issues
 crypto can be only traded non margin for some time so this server should be used that loops/does market orders:
+
  ./.env/bin/gunicorn -k uvicorn.workers.UvicornWorker -b :5050 src.crypto_loop.crypto_order_loop_server:app --timeout 1800 --workers 1    
+
+
+0.0293
+0.078062862157821
+ETHUSD calculated_profit entry_: 0.09252144396305084
+2022-12-19 11:28:32.964 | INFO     | predict_stock_forecasting:make_predictions:988 - ETHUSD calculated_profit entry_: 0.13798114657402039
+0.02253859738 total forecasted profit
