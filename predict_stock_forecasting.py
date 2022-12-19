@@ -9,6 +9,8 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import transformers
+from neuralforecast import NeuralForecast
+from neuralforecast.models import NBEATS, NHITS
 from pytorch_forecasting import Baseline, TemporalFusionTransformer, TimeSeriesDataSet
 from pytorch_forecasting.metrics import SMAPE
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
@@ -86,6 +88,8 @@ torch.autograd.set_detect_anomaly(True)
 def series_to_tensor(series_pd):
     return torch.tensor(series_pd.values, dtype=torch.float)#todo gpu, device=DEVICE)
 
+def series_to_df(series_pd):
+    return pd.DataFrame(series_pd.values, columns=series_pd.columns)
 
 def make_predictions(input_data_path=None, pred_name='', retrain=False):
     """
@@ -194,6 +198,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 max_encoder_length = 24
                 # rename date to time_idx
                 price = price.rename(columns={"Date": "time_idx"})
+                # not actually important what date it thinks as long as its daily i think
+                price["ds"] = pd.date_range(start="1949-01-01", periods=len(price), freq="D").values
                 price['y'] = price[key_to_predict].shift(-1)
                 price['trade_weight'] = (price["y"] > 0) * 2 - 1
 
@@ -203,149 +209,44 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 # price = price.iloc[:-max_prediction_length]
                 # add ascending id to price dataframe
                 price['id'] = price.index
-                # add constant column to price dataframe
-                price['constant'] = 1
+                # add unique_id column to price dataframe (is actually constant so not unique :/ )
+                price['unique_id'] = 1
                 # drop nan values
                 price = price.dropna()
                 final_pred_to_predict = price.tail(1)
                 # price.drop(final_pred_to_predict.index, inplace=True)  # drop last row because of percent change augmentation
 
                 target_to_pred = "y"
-                training = TimeSeriesDataSet(
-                    price[:-7],
-                    time_idx="id",
-                    target=target_to_pred,
-                    group_ids=['constant'],
-                    min_encoder_length=max_encoder_length // 2,
-                    # keep encoder length long (as it is in the validation set)
-                    max_encoder_length=max_encoder_length,
-                    min_prediction_length=1,
-                    max_prediction_length=max_prediction_length,
-                    # static_categoricals=["agency", "sku"],
-                    # static_reals=["avg_population_2017", "avg_yearly_household_income_2017"],
-                    # time_varying_known_categoricals=["special_days", "month"],
-                    # variable_groups={"special_days": []},
-                    # group of categorical variables can be treated as one variable
-                    # time_varying_known_reals=["time_idx", "price_regular", "discount_in_percent"],
-                    time_varying_unknown_categoricals=[],
-                    time_varying_known_reals=[
-                        "Open",
-                        "High",
-                        "Low",
-                        "Close",
-                    ],
-                    # target_normalizer=GroupNormalizer(
-                    #     groups=["agency", "sku"], transformation="softplus"
-                    # ),  # use softplus and normalize by group
-                    # add_relative_time_idx=True,
-                    add_target_scales=True,
-                    add_encoder_length=True,
-                )
-                validation = TimeSeriesDataSet.from_dataset(training, price, min_prediction_idx=training.index.time.max() + 1, predict=True, stop_randomization=True)
+                training = price[:-7]
+                validation = price[-7:]
+                Y_train_df = training
+                Y_test_df = validation
 
                 # create dataloaders for model
                 batch_size = 128  # set this between 32 to 128
-                train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, pin_memory=True,
-                                                          num_workers=0)
-                val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size * 10, pin_memory=True,
-                                                          num_workers=0)
-                # actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
-                # baseline_predictions = Baseline().predict(val_dataloader)
-                # loguru_logger.info((actuals[:, :-1] - baseline_predictions[:, :-1]).abs().mean().item())
+                # compatibitiy
 
-                # trainer = pl.Trainer(
-                #     gpus=0,
-                #     # clipping gradients is a hyperparameter and important to prevent divergance
-                #     # of the gradient for recurrent neural networks
-                #     gradient_clip_val=0.1,
-                # )
 
-                # best hyperpramams look like:
-                # {'gradient_clip_val': 0.05690473137493243, 'hidden_size': 50, 'dropout': 0.23151352460442215,
-                #  'hidden_continuous_size': 22, 'attention_head_size': 2, 'learning_rate': 0.0816548812864903}
-                best_hyperparams_save_file = f"data/test_study{pred_name}{key_to_predict}{instrument_name}.pkl"
-                params = None
-                try:
-                    params = pickle.load(open(best_hyperparams_save_file, "rb"))
-                except FileNotFoundError:
-                    # logger.info("No best hyperparams found, tuning")
-                    best_hyperparams_save_file = f"data/test_study{instrument_name}.pkl"
-                    try:
-                        params = pickle.load(open(best_hyperparams_save_file, "rb"))
-                    except FileNotFoundError:
-                        # logger.info("No best hyperparams found, tuning")
-                        pass
-                added_best_params = {}
-                if params and params.best_trial.params:
-                    added_best_params = params.best_trial.params
-                added_params = {  # not meaningful for finding the learning rate but otherwise very important
-                    "learning_rate": 0.03,
-                    "hidden_size": 16,  # most important hyperparameter apart from learning rate
-                    # number of attention heads. Set to up to 4 for large datasets
-                    "attention_head_size": 1,
-                    "dropout": 0.1,  # between 0.1 and 0.3 are good values
-                    "hidden_continuous_size": 8,  # set to <= hidden_size
-                    "output_size": 1,  # 7 quantiles by default
-                    "loss": TradingLoss(),
-                    # "logging_metrics": TradingLossBinary(),
-                    # reduce learning rate if no improvement in validation loss after x epochs
-                    "reduce_on_plateau_patience": 4,
-                }
-                added_params.update(added_best_params)
-                if type(added_params['output_size']) == int:
-                    if type(target_to_pred) == list:
-                        added_params['output_size'] = [added_params['output_size']] * len(target_to_pred)
-                gradient_clip_val = added_params.pop("gradient_clip_val", 0.1)
-                tft = TemporalFusionTransformer.from_dataset(
-                    training,
-                    **added_params
-                )
+                horizon = len(Y_test_df) + 1
 
-                loguru_logger.info(f"Number of parameters in network: {tft.size() / 1e3:.1f}k")
-
-                early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-5, patience=4, verbose=False,
-                                                    mode="min")
-                model_checkpoint = ModelCheckpoint(
-                    monitor="val_loss",
-                    mode="min",
-                    # save a few of the top models
-                    # incase one does great on other metrics than just val_loss
-                    save_top_k=1,
-                    verbose=True,
-                    filename=instrument_name + "_{epoch}_{val_loss:.8f}",
-                )
-                lr_logger = LearningRateMonitor()  # log the learning rate
-                logger = TensorBoardLogger(f"lightning_logs/{pred_name}/{key_to_predict}/{instrument_name}")  # logging results to a tensorboard
-                trainer = pl.Trainer(
-                    max_epochs=100,
-                    gpus=1,
-                    weights_summary="top",
-                    gradient_clip_val=gradient_clip_val,
-                    # track_grad_norm=2,
-                    # auto_lr_find=True,
-                    # auto_scale_batch_size='binsearch',
-                    limit_train_batches=30,  # coment in for training, running valiation every 30 batches
-                    # fast_dev_run=True,  # comment in to check that networkor dataset has no serious bugs
-                    callbacks=[lr_logger, early_stop_callback, model_checkpoint],
-                    logger=logger,
-                )
-                # retrain = False # todo reenable
-                # try find specific hl net
-
-                checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / key_to_predict / instrument_name)
+                models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=700),
+                          NHITS(input_size=2 * horizon, h=horizon, max_epochs=700),
+                          ]
+                nforecast = NeuralForecast(models=models, freq='D')
+                ### Load Checkpoint
+                checkpoints_dir = (base_dir / 'lightning_logs_nforecast' / pred_name / key_to_predict / instrument_name)
+                checkpoints_dir.mkdir(parents=True, exist_ok=True)
                 checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
-                if len(checkpoint_files) == 0:
-                    loguru_logger.info("No min+open/low specific checkpoints found, training from other checkpoint")
-                    checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / instrument_name)
-                    checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
-                    if len(checkpoint_files) == 0:
-                        loguru_logger.info("No min specific checkpoints found, training from other checkpoint")
-                        checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
-                        checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
-                best_tft = tft
+                # if len(checkpoint_files) == 0:
+                #     loguru_logger.info("No min+open/low specific checkpoints found, training from other checkpoint")
+                #     checkpoints_dir = (base_dir / 'lightning_logs_nforecast' / pred_name / instrument_name)
+                #     checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
+                #     if len(checkpoint_files) == 0:
+                #         loguru_logger.info("No min specific checkpoints found, training from other checkpoint")
+                #         checkpoints_dir = (base_dir / 'lightning_logs_nforecast' / instrument_name)
+                #         checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
 
                 if checkpoint_files:
-
                     best_checkpoint_path = checkpoint_files[0]
                     # sort by most recent checkpoint_files
                     checkpoint_files.sort(key=lambda x: os.path.getctime(x))
@@ -361,52 +262,189 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                     #         # TODO invalidation for 30minute vs daily data
 
                     loguru_logger.info(f"Loading best checkpoint from {best_checkpoint_path}")
-                    best_tft = TemporalFusionTransformer.load_from_checkpoint(str(best_checkpoint_path))
-
+                    nforecast.load(checkpoints_dir)
+                if Y_train_df.empty:
+                    loguru_logger.info(f"No training data for {instrument_name}")
+                    continue
                 if retrain:
-                    trainer.fit(
-                        best_tft,
-                        train_dataloader=train_dataloader,
-                        val_dataloaders=val_dataloader,
-                    )
-                    best_model_path = trainer.checkpoint_callback.best_model_path
-                    best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
+                    nforecast.fit(df=Y_train_df)
+                    # todo save only best during training
+                    nforecast.save(str(checkpoints_dir), save_dataset=False, overwrite=True)
+                    Y_hat_df = nforecast.predict().reset_index()
+                else:
+                    Y_hat_df = nforecast.predict(df=Y_train_df).reset_index()
+                Y_hat_df = Y_test_df.merge(Y_hat_df, how='left', on=['unique_id', 'ds'])
 
-                actual_list = [y[0] for x, y in iter(val_dataloader)] # TODO check this y center transfor prints feature neamses warning
+                # actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
+                # baseline_predictions = Baseline().predict(val_dataloader)
+                # loguru_logger.info((actuals[:-1] - baseline_predictions[:-1]).abs().mean().item())
 
-                actuals = torch.cat(actual_list)
-                predictions = best_tft.predict(val_dataloader)
-                mean_val_loss = (actuals[:, :-1] - predictions[:, :-1]).abs().mean()
+                # trainer = pl.Trainer(
+                #     gpus=0,
+                #     # clipping gradients is a hyperparameter and important to prevent divergance
+                #     # of the gradient for recurrent neural networks
+                #     gradient_clip_val=0.1,
+                # )
 
-                if not added_best_params:
-                    # find best hyperparams
-                    from pytorch_forecasting.models.temporal_fusion_transformer.tuning import optimize_hyperparameters
+                # best hyperpramams look like:
+                # {'gradient_clip_val': 0.05690473137493243, 'hidden_size': 50, 'dropout': 0.23151352460442215,
+                #  'hidden_continuous_size': 22, 'attention_head_size': 2, 'learning_rate': 0.0816548812864903}
+                # best_hyperparams_save_file = f"data/test_study{pred_name}{key_to_predict}{instrument_name}.pkl"
+                # params = None
+                # try:
+                #     params = pickle.load(open(best_hyperparams_save_file, "rb"))
+                # except FileNotFoundError:
+                #     # logger.info("No best hyperparams found, tuning")
+                #     best_hyperparams_save_file = f"data/test_study{instrument_name}.pkl"
+                #     try:
+                #         params = pickle.load(open(best_hyperparams_save_file, "rb"))
+                #     except FileNotFoundError:
+                #         # logger.info("No best hyperparams found, tuning")
+                #         pass
+                # added_best_params = {}
+                # if params and params.best_trial.params:
+                #     added_best_params = params.best_trial.params
+                # added_params = {  # not meaningful for finding the learning rate but otherwise very important
+                #     "learning_rate": 0.03,
+                #     "hidden_size": 16,  # most important hyperparameter apart from learning rate
+                #     # number of attention heads. Set to up to 4 for large datasets
+                #     "attention_head_size": 1,
+                #     "dropout": 0.1,  # between 0.1 and 0.3 are good values
+                #     "hidden_continuous_size": 8,  # set to <= hidden_size
+                #     "output_size": 1,  # 7 quantiles by default
+                #     "loss": TradingLoss(),
+                #     # "logging_metrics": TradingLossBinary(),
+                #     # reduce learning rate if no improvement in validation loss after x epochs
+                #     "reduce_on_plateau_patience": 4,
+                # }
+                # added_params.update(added_best_params)
+                # if type(added_params['output_size']) == int:
+                #     if type(target_to_pred) == list:
+                #         added_params['output_size'] = [added_params['output_size']] * len(target_to_pred)
+                # gradient_clip_val = added_params.pop("gradient_clip_val", 0.1)
+                # tft = TemporalFusionTransformer.from_dataset(
+                #     training,
+                #     **added_params
+                # )
+                #
+                # loguru_logger.info(f"Number of parameters in network: {tft.size() / 1e3:.1f}k")
+                #
+                # early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-5, patience=4, verbose=False,
+                #                                     mode="min")
+                # model_checkpoint = ModelCheckpoint(
+                #     monitor="val_loss",
+                #     mode="min",
+                #     # save a few of the top models
+                #     # incase one does great on other metrics than just val_loss
+                #     save_top_k=1,
+                #     verbose=True,
+                #     filename=instrument_name + "_{epoch}_{val_loss:.8f}",
+                # )
+                # lr_logger = LearningRateMonitor()  # log the learning rate
+                # logger = TensorBoardLogger(f"lightning_logs/{pred_name}/{key_to_predict}/{instrument_name}")  # logging results to a tensorboard
+                # trainer = pl.Trainer(
+                #     max_epochs=100,
+                #     gpus=1,
+                #     weights_summary="top",
+                #     gradient_clip_val=gradient_clip_val,
+                #     # track_grad_norm=2,
+                #     # auto_lr_find=True,
+                #     # auto_scale_batch_size='binsearch',
+                #     limit_train_batches=30,  # coment in for training, running valiation every 30 batches
+                #     # fast_dev_run=True,  # comment in to check that networkor dataset has no serious bugs
+                #     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
+                #     logger=logger,
+                # )
+                # # retrain = False # todo reenable
+                # # try find specific hl net
+                #
+                # checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / key_to_predict / instrument_name)
+                # checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
+                # if len(checkpoint_files) == 0:
+                #     loguru_logger.info("No min+open/low specific checkpoints found, training from other checkpoint")
+                #     checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / instrument_name)
+                #     checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
+                #     if len(checkpoint_files) == 0:
+                #         loguru_logger.info("No min specific checkpoints found, training from other checkpoint")
+                #         checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
+                #         checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
+                # best_tft = tft
+                #
+                # if checkpoint_files:
+                #
+                #     best_checkpoint_path = checkpoint_files[0]
+                #     # sort by most recent checkpoint_files
+                #     checkpoint_files.sort(key=lambda x: os.path.getctime(x))
+                #     # load the most recent
+                #     best_checkpoint_path = checkpoint_files[-1]
+                #     # find best checkpoint
+                #     # min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
+                #     # for file_name in checkpoint_files:
+                #     #     current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
+                #     #     if float(current_loss) < float(min_current_loss):
+                #     #         min_current_loss = current_loss
+                #     #         best_checkpoint_path = file_name
+                #     #         # TODO invalidation for 30minute vs daily data
+                #
+                #     loguru_logger.info(f"Loading best checkpoint from {best_checkpoint_path}")
+                #     best_tft = TemporalFusionTransformer.load_from_checkpoint(str(best_checkpoint_path))
+                #
+                # if retrain:
+                #     trainer.fit(
+                #         best_tft,
+                #         train_dataloader=train_dataloader,
+                #         val_dataloaders=val_dataloader,
+                #     )
+                #     best_model_path = trainer.checkpoint_callback.best_model_path
+                #     best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
+                # Y_hat_df = nforecast.predict().reset_index()
 
-                    # create study
-                    study = optimize_hyperparameters(
-                        train_dataloader,
-                        val_dataloader,
-                        model_path="optuna_test", # saves over the same place for all models to avoid memory issues
-                        n_trials=100,
-                        max_epochs=200,
-                        gradient_clip_val_range=(0.01, 1.0),
-                        hidden_size_range=(8, 128),
-                        hidden_continuous_size_range=(8, 128),
-                        attention_head_size_range=(1, 4),
-                        learning_rate_range=(0.001, 0.1),
-                        dropout_range=(0.1, 0.3),
-                        trainer_kwargs=dict(limit_train_batches=30),
-                        reduce_on_plateau_patience=4,
-                        use_learning_rate_finder=False,
-                        # use Optuna to find ideal learning rate or use in-built learning rate finder
-                    )
+                actual_list = Y_hat_df['y'] # TODO check this y center transfor prints feature neamses warning
 
-                    # save study results - also we can resume tuning at a later point in time
-                    with open(best_hyperparams_save_file, "wb") as fout:
-                        pickle.dump(study, fout)
+                error_nhits = Y_hat_df['y'] - Y_hat_df['NHITS']
+                error_nbeats = Y_hat_df['y'] - Y_hat_df['NBEATS']
+                lowest_error = None
+                if error_nhits.abs().sum() < error_nbeats.abs().sum():
+                    lowest_error = 'NHITS'
+                    loguru_logger.info(f"Using {lowest_error} as lowest error from nhits")
+                else:
+                    lowest_error = 'NBEATS'
+                    loguru_logger.info(f"Using {lowest_error} as lowest error from nbeats")
+                Y_hat_df['error'] = Y_hat_df['y'] - Y_hat_df[lowest_error]
 
-                    # show best hyperparameters
-                    loguru_logger.info(study.best_trial.params)
+                actuals = Y_hat_df["y"]
+                predictions = Y_hat_df[lowest_error]
+                mean_val_loss = (Y_hat_df['error']).abs().mean()
+
+                # if not added_best_params:
+                #     # find best hyperparams
+                #     from pytorch_forecasting.models.temporal_fusion_transformer.tuning import optimize_hyperparameters
+                #
+                #     # create study
+                #     study = optimize_hyperparameters(
+                #         train_dataloader,
+                #         val_dataloader,
+                #         model_path="optuna_test", # saves over the same place for all models to avoid memory issues
+                #         n_trials=100,
+                #         max_epochs=200,
+                #         gradient_clip_val_range=(0.01, 1.0),
+                #         hidden_size_range=(8, 128),
+                #         hidden_continuous_size_range=(8, 128),
+                #         attention_head_size_range=(1, 4),
+                #         learning_rate_range=(0.001, 0.1),
+                #         dropout_range=(0.1, 0.3),
+                #         trainer_kwargs=dict(limit_train_batches=30),
+                #         reduce_on_plateau_patience=4,
+                #         use_learning_rate_finder=False,
+                #         # use Optuna to find ideal learning rate or use in-built learning rate finder
+                #     )
+                #
+                #     # save study results - also we can resume tuning at a later point in time
+                #     with open(best_hyperparams_save_file, "wb") as fout:
+                #         pickle.dump(study, fout)
+                #
+                #     # show best hyperparameters
+                #     loguru_logger.info(study.best_trial.params)
 
                 loguru_logger.info(f"mean val loss:${mean_val_loss}")
 
@@ -416,15 +454,16 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 ## display plot
                 # note last one at zero actual movement is not true
                 # plot.show()
-
+                predictions = series_to_tensor(predictions)
+                actuals = series_to_tensor(actuals)
                 # predict trade if last value is above the prediction
-                trading_preds = (predictions[:, :-1] > 0) * 2 - 1
+                trading_preds = (predictions[:-1] > 0) * 2 - 1
                 # last_values = x_test[:, -1, 0]
-                calculated_profit = calculate_trading_profit_torch(scaler, None, actuals[:, :-1], trading_preds).item()
+                calculated_profit = calculate_trading_profit_torch(scaler, None, actuals[:-1], trading_preds).item()
 
-                calculated_profit_buy_only = calculate_trading_profit_torch_buy_only(scaler, None, actuals[:, :-1],
+                calculated_profit_buy_only = calculate_trading_profit_torch_buy_only(scaler, None, actuals[:-1],
                                                                             trading_preds).item()
-                calculated_profit_values = get_trading_profits_list(scaler, None, actuals[:, :-1], trading_preds)
+                calculated_profit_values = get_trading_profits_list(scaler, None, actuals[:-1], trading_preds)
                 #
                 # x_train, y_train, x_test, y_test = split_data(price, lookback)
                 #
@@ -525,19 +564,19 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 #     predictions[-1].item() - last_close_price
                 # ) / last_close_price
                 last_preds[key_to_predict.lower() + "_last_price"] = last_close_price
-                last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[0,
+                last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[
                                                                                       -1
                 ].item()
-                last_preds[key_to_predict.lower() + "_predicted_price_value"] = last_close_price + (last_close_price * predictions[0,
+                last_preds[key_to_predict.lower() + "_predicted_price_value"] = last_close_price + (last_close_price * predictions[
                                                                                       -1
                 ].item())
                 last_preds[key_to_predict.lower() + "_val_loss"] = val_loss.item()
                 last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = calculated_profit
                 last_preds[key_to_predict.lower() + "min_loss_buy_only_trading_profit"] = calculated_profit_buy_only
-                last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:, :-1].view(-1)
+                last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:-1].view(-1)
                 last_preds[key_to_predict.lower() + "_calculated_profit_values"] = list(calculated_profit_values.view(-1).detach().cpu().numpy())
                 last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
-                last_preds[key_to_predict.lower() + "_predictions"] = predictions[:, :-1].view(-1)
+                last_preds[key_to_predict.lower() + "_predictions"] = predictions[:-1].view(-1)
                 # last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
                 # last_preds[
                 #     key_to_predict.lower() + "_likely_percent_uncertainty"
@@ -802,7 +841,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
             # # compute loss when
             # calculate_trading_profit_torch_with_buysell()
             #
-            # trading_preds = (predictions[:, :-1] > 0) * 2 - 1
+            # trading_preds = (predictions[:-1] > 0) * 2 - 1
             # last_values = x_test[:, -1, 0]
             # compute movement to high price
             validation_size = last_preds[

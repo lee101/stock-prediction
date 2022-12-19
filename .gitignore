@@ -5,6 +5,7 @@ env.py
 env_real.py
 logs
 lightning_logs
+lightning_logs*
 lightning_logsminute
 
 
