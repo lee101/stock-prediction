@@ -78,9 +78,9 @@ def download_daily_stock_data(path=None, all_data_force=False):
         'SONY',
         # 'PFE',
         # 'MRNA',
-    ]
-    # only crypto for now TODO change this
-    symbols = [
+    # ]
+    # # only crypto for now TODO change this
+    # symbols = [
         'BTCUSD',
         'ETHUSD',
         'LTCUSD',

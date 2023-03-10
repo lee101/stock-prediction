@@ -1,5 +1,6 @@
 import random
 import traceback
+import uuid
 from ast import literal_eval
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -8,6 +9,7 @@ from time import sleep
 
 import numpy as np
 import torch
+from alpaca.trading import Position
 from loguru import logger
 from pandas import DataFrame
 
@@ -25,7 +27,7 @@ import shelve
 # do_retrain = True
 from src.fixtures import crypto_symbols
 
-use_stale_data = True#False
+use_stale_data = False
 
 daily_predictions = DataFrame()
 daily_predictions_time = None
@@ -59,10 +61,10 @@ def do_forecasting():
     make_trade_suggestions(daily_predictions, minute_predictions)
 
 
-def close_profitable_trades(all_preds, positions, orders):
-    global made_money_recently
-    global made_money_one_before_recently
-    global made_money_recently_tmp
+def close_profitable_trades(all_preds, positions, orders, change_settings=True):
+    # global made_money_recently
+    # global made_money_one_before_recently
+    # global made_money_recently_tmp
 
     # close all positions that are not in this current held stock
     already_held_stock = False
@@ -94,7 +96,7 @@ def close_profitable_trades(all_preds, positions, orders):
                     is_trading_day_ending = datetime.now().hour in [9, 10, 11, 12]  # last
 
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 16):
-                    if float(position.unrealized_plpc) < 0:
+                    if float(position.unrealized_plpc) < 0 and change_settings:
                         change_time = instrument_strategy_change_times.get(position.symbol)
                         if not change_time or change_time < datetime.now() - timedelta(minutes=30 * 16.):
                             instrument_strategy_change_times[position.symbol] = datetime.now()
@@ -115,7 +117,7 @@ def close_profitable_trades(all_preds, positions, orders):
                     trade_length_before_close = timedelta(minutes=60 * 6)
                     is_trading_day_ending = True
                 if (
-                        not ordered_time or ordered_time < datetime.now() - trade_length_before_close) and is_trading_day_ending:
+                        not ordered_time or ordered_time < datetime.now() - trade_length_before_close) and is_trading_day_ending and change_settings:
                     current_time = datetime.now()
                     # at_market_open = False
                     # hourly can close positions at the market open? really?
@@ -410,6 +412,7 @@ def make_trade_suggestions(predictions, minute_predictions):
     for order in orders:
         created_at = order.created_at
         if created_at < datetime.now(created_at.tzinfo) - timedelta(minutes=60 * 7):
+
             alpaca_wrapper.cancel_order(order)
         else:
             leftover_live_orders.append(order)
@@ -515,7 +518,22 @@ def make_trade_suggestions(predictions, minute_predictions):
     # if not has_traded:
     #     logger.info("No trade suggestions, trying to exit position")
     close_profitable_trades(predictions, positions, leftover_live_orders)
-
+    # fake position to close any btc in binance smartly
+    # TODO remove this hack
+    # not going to go through in alpaca is it's a huge order
+    # btc_position = Position(symbol='BTCUSD', qty=1000, side='long', avg_entry_price=18000, unrealized_plpc=0.1,
+    #                         unrealized_pl=0.1, market_value=5000,
+    #                         asset_id=uuid.uuid4(),
+    #                         exchange='FTXU',
+    #                         asset_class='crypto',
+    #                         cost_basis=1,
+    #                         unrealized_intraday_pl=1,
+    #                         unrealized_intraday_plpc=1,
+    #                         current_price=100000,
+    #                         lastday_price=1,
+    #                         change_today=1,
+    #                         )
+    # close_profitable_trades(predictions, [btc_position], leftover_live_orders, False)
     sleep(60)
 
 

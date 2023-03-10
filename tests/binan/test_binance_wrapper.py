@@ -14,6 +14,8 @@ def test_get_all_orders():
 
 def test_get_orders():
     get_orders()
+
+
 def test_cancel_all_orders():
     cancel_all_orders()
 

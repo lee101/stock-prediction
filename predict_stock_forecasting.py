@@ -228,10 +228,24 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
 
 
                 horizon = len(Y_test_df) + 1
-
+                stacks = 3
                 models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=700),
-                          NHITS(input_size=2 * horizon, h=horizon, max_epochs=700),
-                          ]
+                    NHITS(
+                        input_size=2 * horizon,
+                        h=horizon,
+                        stack_types=stacks * ['identity'],
+                        n_blocks=stacks * [1],
+                        mlp_units=[[256, 256] for _ in range(stacks)],
+                        n_pool_kernel_size=stacks * [1],
+                        batch_size=32,
+                        scaler_type='standard',
+                        n_freq_downsample=[12, 4, 1],
+                        # loss=TradingLoss(), # TODO fix TradingLoss' object has no attribute 'outputsize_multiplier'
+                        max_epochs=700
+                    )]
+                # models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=700),
+                #           NHITS(input_size=2 * horizon, h=horizon, max_epochs=700),
+                #           ]
                 nforecast = NeuralForecast(models=models, freq='D')
                 ### Load Checkpoint
                 checkpoints_dir = (base_dir / 'lightning_logs_nforecast' / pred_name / key_to_predict / instrument_name)

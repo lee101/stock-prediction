@@ -443,11 +443,12 @@ def open_take_profit_position(position, row, price, qty):
     # current_price = row['close_last_price_minute']
     # current_symbol = row['symbol']
     try:
+        mapped_symbol = remap_symbols(position.symbol)
         if position.side == "long":
             if position.symbol in crypto_symbols:
                 result = crypto_alpaca_looper_api.submit_order(
                     order_data=LimitOrderRequest(
-                        symbol=remap_symbols(position.symbol),
+                        symbol=mapped_symbol,
                         qty=abs(math.floor(float(qty)*1000)/1000.0), # todo? round 3 didnt work?
                         side="sell",
                         type=OrderType.LIMIT,
@@ -458,7 +459,7 @@ def open_take_profit_position(position, row, price, qty):
             else:
                 result = alpaca_api.submit_order(
                     order_data=LimitOrderRequest(
-                        symbol=remap_symbols(position.symbol),
+                        symbol=mapped_symbol,
                         qty=abs(math.floor(float(qty)*1000)/1000.0), # todo? round 3 didnt work?
                         side="sell",
                         type=OrderType.LIMIT,
@@ -469,7 +470,7 @@ def open_take_profit_position(position, row, price, qty):
         else:
             if position.symbol in crypto_symbols:
                 result = crypto_alpaca_looper_api.submit_order(order_data=LimitOrderRequest(
-                    symbol=remap_symbols(position.symbol),
+                    symbol=mapped_symbol,
                     qty=abs(math.floor(float(qty)*1000)/1000.0),
                     side="buy",
                     type=OrderType.LIMIT,
@@ -480,7 +481,7 @@ def open_take_profit_position(position, row, price, qty):
             else:
                 result = alpaca_api.submit_order(
                     order_data=LimitOrderRequest(
-                        symbol=remap_symbols(position.symbol),
+                        symbol=mapped_symbol,
                         qty=abs(math.floor(float(qty)*1000)/1000.0),
                         side="buy",
                         type=OrderType.LIMIT,
@@ -501,13 +502,24 @@ def cancel_order(order):
         alpaca_api.cancel_order_by_id(order.id)
     except Exception as e:
         logger.error(e)
+        # traceback
+        traceback.print_exc()
 
 
 def get_open_orders():
+    # try:
+    #     crypto_orders = crypto_alpaca_looper_api.get_orders()
+    # except Exception as e:
+    #     logger.error(e)
+    #     crypto_orders = []
+    #     traceback.print_exc()
+
+
     try:
-        return alpaca_api.get_orders() #+ crypto_alpaca_looper_api.get_orders()
+        return alpaca_api.get_orders() #+ crypto_orders
     except Exception as e:
         logger.error(e)
+        traceback.print_exc()
         return []
 
 
