@@ -476,8 +476,8 @@ def open_take_profit_position(position, row, price, qty):
                     type=OrderType.LIMIT,
                     time_in_force="gtc",
                     limit_price=str(math.floor(price)),
-                )
-            )
+                ))
+
             else:
                 result = alpaca_api.submit_order(
                     order_data=LimitOrderRequest(

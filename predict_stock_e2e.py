@@ -23,6 +23,7 @@ from loss_utils import CRYPTO_TRADING_FEE
 from predict_stock_forecasting import make_predictions
 import shelve
 
+from src.binan import binance_wrapper
 # read do_retrain argument from argparse
 # do_retrain = True
 from src.fixtures import crypto_symbols
@@ -211,6 +212,159 @@ def close_profitable_trades(all_preds, positions, orders, change_settings=True):
                 # logger.info(
                 #     f"keeping position {position.symbol} - predicted to get better - open takeprofit at {row['close_last_price_minute'] }")
 
+
+
+def close_profitable_crypto_binance_trades(all_preds, positions, orders, change_settings=True):
+    # global made_money_recently
+    # global made_money_one_before_recently
+    # global made_money_recently_tmp
+
+    # close all positions that are not in this current held stock
+    already_held_stock = False
+    has_traded = False
+    balances = binance_wrapper.get_account_balances()
+    # {'asset': 'BTC', 'free': '0.02332178',
+    # get btc balance
+    btc_balance = 0
+    for balance in balances:
+        if balance['asset'] == 'BTC':
+            btc_balance = float(balance['free'])
+            break
+    side = 'long'
+    if btc_balance > 0.01:
+        side = 'short'
+        # need to sell btc on binance
+    # otheerwise need to buy btc on binance
+
+
+    for position in positions:
+
+        is_worsening_position = False
+        for index, row in all_preds.iterrows():
+            if row['instrument'] == position.symbol:
+                # make it reasonably easy to back out of bad trades
+                # if (row['close_predicted_price_minute'] < 0) and position.side == 'long':
+                #     is_worsening_position = True
+                #
+                # if (row['close_predicted_price_minute'] > 0) and position.side == 'short':
+                #     is_worsening_position = True
+                #
+                # # if random.choice([True, False, False, False, False, False, False, False, False, False, False, False, False, False, False]) or at_market_open:
+                # if is_worsening_position:
+                #     alpaca_wrapper.close_position_at_current_price(position, row)
+                #     has_traded = True
+                #     logger.info(f"Closing predicted to worsen position {position.symbol}")
+                # TODO note this is not the real ordered time for manual orders!
+                ordered_time = trade_entered_times.get(position.symbol)
+                is_crypto = position.symbol in crypto_symbols
+                is_trading_day_ending = False  # todo investigate reenabling this logic
+                if is_crypto:
+                    is_trading_day_ending = datetime.now().hour in [11, 12, 13]  # TODO nzdt specific code here
+                else:
+                    is_trading_day_ending = datetime.now().hour in [9, 10, 11, 12]  # last
+
+                if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 16):
+                    if float(position.unrealized_plpc) < 0 and change_settings:
+                        change_time = instrument_strategy_change_times.get(position.symbol)
+                        if not change_time or change_time < datetime.now() - timedelta(minutes=30 * 16.):
+                            instrument_strategy_change_times[position.symbol] = datetime.now()
+                            current_strategy = instrument_strategies.get(position.symbol, 'aggressive_buy')
+
+                            available_strategies = {'aggressive', 'aggressive_buy', 'aggressive_sell', 'entry'} - {
+                                current_strategy}
+                            if current_strategy.startswith('aggressive'):
+                                available_strategies = available_strategies - {'aggressive'}
+                            new_strategy = random.choice(list(available_strategies))
+                            logger.info(
+                                f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
+                            instrument_strategies[position.symbol] = new_strategy
+                # todo check time in market not overall time
+                trade_length_before_close = timedelta(minutes=60 * 22)
+                if abs(float(position.market_value)) < 3000:
+                    # closing test positions sooner TODO simulate stuff like this instead of really doing it
+                    trade_length_before_close = timedelta(minutes=60 * 6)
+                    is_trading_day_ending = True
+                if (
+                        not ordered_time or ordered_time < datetime.now() - trade_length_before_close) and is_trading_day_ending and change_settings:
+                    current_time = datetime.now()
+                    # at_market_open = False
+                    # hourly can close positions at the market open? really?
+                    # if current_time.hour == 3 and current_time.minute < 45:
+                    #     at_market_open = True  # TODO this only works for NZ time
+                    #     # todo properly test if we can close positions at market open
+                    #     # for now we wont violently close our positions untill 15mins after open
+
+                    # if not at_market_open:
+
+                    # close other orders for pair on binance?
+                    # for order in orders:
+                    #     if order.symbol == position.symbol:
+                    #         alpaca_wrapper.cancel_order(order)
+                            # todo check if we have one open that is trying to close already?
+                    # close old position, not been hitting our predictions
+                    # todo why cancel order if its still predicted to be successful?
+
+                    binance_wrapper.close_position_at_current_price(position, row)
+                    logger.info(f"Closing position to reduce risk on binance {position.symbol}")
+
+                else:
+                    exit_strategy = 'maxdiff'  # TODO bug - should be based on what entry strategy should be
+                    # takeprofit_profit also a thing
+                    if float(row['maxdiffprofit_profit']) < float(row['entry_takeprofit_profit']):
+                        exit_strategy = 'entry'
+
+                    entry_price = float(position.avg_entry_price)
+                    if position.side == 'long':
+                        predicted_high = row['entry_takeprofit_high_price']
+                        if exit_strategy == 'entry':
+                            if abs(row['entry_takeprofit_profit_high_multiplier']) > .01:  # tuned for minutely
+                                predicted_high = row['high_predicted_price_value']
+                        elif exit_strategy == 'maxdiff':
+                            if abs(row['maxdiffprofit_profit_high_multiplier']) > .01:  # tuned for minutely
+                                predicted_high = row['maxdiffprofit_high_price']
+                        sell_price = predicted_high
+                        if not ordered_time or ordered_time > datetime.now() - timedelta(minutes=3 * 60):
+                            # close new orders at atleast a profit - crypto needs higher margins to be profitable
+                            margin_default_high = entry_price * (1 + .006)
+                            sell_price = max(predicted_high, margin_default_high)
+                        # only if no other orders already
+                        ordered_already = False
+                        for order in orders:
+                            if order.side == 'sell' and order.symbol == position.symbol:
+                                ordered_already = True
+                                amount_order_is_closing = order.qty
+                                # close the full qty of order
+                                if amount_order_is_closing != position.qty:
+                                    # cancel order
+                                    binance_wrapper.open_take_profit_position(position, row, sell_price, position.qty)
+                        if not ordered_already:
+                            binance_wrapper.open_take_profit_position(position, row, sell_price, position.qty)
+                    elif position.side == 'short':
+                        predicted_low = row['entry_takeprofit_low_price']
+                        if exit_strategy == 'entry':
+                            if abs(row['entry_takeprofit_profit_low_multiplier']) > .01:
+                                predicted_low = row['low_predicted_price_value']
+                        elif exit_strategy == 'maxdiff':
+                            if abs(row['maxdiffprofit_profit_low_multiplier']) > .01:
+                                predicted_low = row['maxdiffprofit_low_price']
+                        sell_price = predicted_low
+                        if not ordered_time or ordered_time > datetime.now() - timedelta(minutes=3 * 60):
+                            # close new orders at atleast a profit
+                            margin_default_low = entry_price * (1 - .003)
+                            sell_price = min(predicted_low, margin_default_low)
+                        # only if no other orders already
+                        ordered_already = False
+                        for order in orders:
+                            if order.side == 'long' and order.symbol == position.symbol:
+                                ordered_already = True
+                                amount_order_is_closing = order.qty
+                                # close the full qty of order
+                                if amount_order_is_closing != position.qty:
+                                    binance_wrapper.open_take_profit_position(position, row, sell_price, position.qty)
+
+                        if not ordered_already:
+                            alpaca_wrapper.open_take_profit_position(position, row, sell_price, position.qty)
+                break
 
 data_dir = Path(__file__).parent / 'data'
 
@@ -521,19 +675,21 @@ def make_trade_suggestions(predictions, minute_predictions):
     # fake position to close any btc in binance smartly
     # TODO remove this hack
     # not going to go through in alpaca is it's a huge order
-    # btc_position = Position(symbol='BTCUSD', qty=1000, side='long', avg_entry_price=18000, unrealized_plpc=0.1,
-    #                         unrealized_pl=0.1, market_value=5000,
-    #                         asset_id=uuid.uuid4(),
-    #                         exchange='FTXU',
-    #                         asset_class='crypto',
-    #                         cost_basis=1,
-    #                         unrealized_intraday_pl=1,
-    #                         unrealized_intraday_plpc=1,
-    #                         current_price=100000,
-    #                         lastday_price=1,
-    #                         change_today=1,
-    #                         )
+    btc_position = Position(symbol='BTCUSD', qty=1000, side='long', avg_entry_price=18000, unrealized_plpc=0.1,
+                            unrealized_pl=0.1, market_value=5000,
+                            asset_id=uuid.uuid4(),
+                            exchange='FTXU',
+                            asset_class='crypto',
+                            cost_basis=1,
+                            unrealized_intraday_pl=1,
+                            unrealized_intraday_plpc=1,
+                            current_price=100000,
+                            lastday_price=1,
+                            change_today=1,
+                            )
     # close_profitable_trades(predictions, [btc_position], leftover_live_orders, False)
+    close_profitable_crypto_binance_trades(predictions, [btc_position], leftover_live_orders, False)
+
     sleep(60)
 
 
