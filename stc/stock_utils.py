@@ -20,3 +20,13 @@ def unmap_symbols(symbol):
     if symbol in crypto_remap:
         return crypto_remap[symbol]
     return symbol
+
+def binance_remap_symbols(symbol):
+    crypto_remap = {
+        "ETHUSD": "ETHUSDT",
+        "LTCUSD": "LTCUSDT",
+        "BTCUSD": "BTCUSDT",
+    }
+    if symbol in crypto_symbols:
+        return crypto_remap[symbol]
+    return symbol

@@ -19,7 +19,7 @@ from loguru import logger
 from starlette.responses import JSONResponse
 from pydantic import BaseModel
 
-from alpaca_wrapper import latest_data, open_market_order_violently
+from alpaca_wrapper import latest_data, open_market_order_violently, open_order_at_price
 from jsonshelve import FlatShelf
 from src.binan.binance_wrapper import create_all_in_order, cancel_all_orders
 from stc.stock_utils import unmap_symbols
@@ -51,15 +51,17 @@ def crypto_order_loop():
                 if order:
                     logger.info(f"order {order}")
                     if order['side'] == "buy":
-                        if float(very_latest_data.ask_price) < order['price']:
-                            logger.info(f"buying {symbol} at {order['price']}")
-                            open_market_order_violently(symbol, order['qty'], "buy")
-                            crypto_symbol_to_order[symbol] = None
+                        # if float(very_latest_data.ask_price) < order['price']:
+                        logger.info(f"buying {symbol} at {order['price']}")
+                        open_order_at_price(symbol, order['qty'], "buy", order['price'])
+                        crypto_symbol_to_order[symbol] = None
+                        del crypto_symbol_to_order[symbol]
                     elif order['side'] == "sell":
-                        if float(very_latest_data.bid_price) > order['price']:
-                            logger.info(f"selling {symbol} at {order['price']}")
-                            open_market_order_violently(symbol, order['qty'], "sell")
-                            crypto_symbol_to_order[symbol] = None
+                        # if float(very_latest_data.bid_price) > order['price']:
+                        logger.info(f"selling {symbol} at {order['price']}")
+                        open_order_at_price(symbol, order['qty'], "sell", order['price'])
+                        crypto_symbol_to_order[symbol] = None
+                        del crypto_symbol_to_order[symbol]
                     else:
                         logger.error(f"unknown side {order['side']}")
                         logger.error(f"order {order}")

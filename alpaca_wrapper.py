@@ -82,6 +82,31 @@ def open_market_order_violently(symbol, qty, side):
         logger.error(e)
         return None
     print(result)
+#er_stock:372 - LTCUSD buying 116.104 at 83.755
+
+def open_order_at_price(symbol, qty, side, price):
+    # todo: check if order is already open
+    # cancel all other orders on this symbol
+    current_open_orders = alpaca_api.get_orders()
+    for order in current_open_orders:
+        if order.symbol == symbol:
+            cancel_order(order)
+    try:
+        result = alpaca_api.submit_order(
+            order_data=LimitOrderRequest(
+                symbol=remap_symbols(symbol),
+                qty=qty,
+                side=side,
+                type=OrderType.LIMIT,
+                time_in_force="gtc",
+                limit_price=price,
+            )
+        )
+    except Exception as e:
+        logger.error(e)
+        return None
+    print(result)
+
 
 def close_position_violently(position):
     try:
@@ -369,7 +394,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
             #
             # take_profit_price = current_price + abs(current_price * (3*float(row['close_predicted_price_minute']))) # todo takeprofit doesn't really work
             # we could use a limit with limit price but then couldn't do a notional order
-            logger.info(f"{currentBuySymbol} buying {amount_to_trade} at {current_price}")
+            logger.info(f"{currentBuySymbol} buying {amount_to_trade} at {str(math.floor(price))}: current price {current_price}")
             # todo if crypto use loop
             if currentBuySymbol in crypto_symbols:
                 result = crypto_alpaca_looper_api.submit_order(

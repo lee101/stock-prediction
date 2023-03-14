@@ -4,7 +4,7 @@ from binance import Client, ThreadedWebsocketManager, ThreadedDepthCacheManager
 from loguru import logger
 
 from env_real import BINANCE_API_KEY, BINANCE_SECRET
-from stc.stock_utils import remap_symbols
+from stc.stock_utils import binance_remap_symbols
 
 client = Client(BINANCE_API_KEY, BINANCE_SECRET)
 
@@ -68,7 +68,7 @@ def open_take_profit_position(position, row, price, qty):
     # current_price = row['close_last_price_minute']
     # current_symbol = row['symbol']
     try:
-        mapped_symbol = remap_symbols(position.symbol)
+        mapped_symbol = binance_remap_symbols(position.symbol)
         if position.side == "long":
             create_all_in_order(mapped_symbol, "SELL", str(math.ceil(price)))
         else:
@@ -85,10 +85,10 @@ def close_position_at_current_price(position, row):
         return False
     try:
         if position.side == "long":
-            create_all_in_order(remap_symbols(position.symbol), "SELL", row["close_last_price_minute"])
+            create_all_in_order(binance_remap_symbols(position.symbol), "SELL", row["close_last_price_minute"])
 
         else:
-            create_all_in_order(remap_symbols(position.symbol), "BUY", str(math.floor(float(row["close_last_price_minute"]))))
+            create_all_in_order(binance_remap_symbols(position.symbol), "BUY", str(math.floor(float(row["close_last_price_minute"]))))
     except Exception as e:
         logger.error(e) # cant convert nan to integer because market is closed for stocks
         # Out of range float values are not JSON compliant
