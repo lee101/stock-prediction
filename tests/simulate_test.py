@@ -20,5 +20,6 @@ def test_foo():
         # assert get_time() == 12345
         assert datetime.now() == datetime(2012, 1, 14)
 
+
 SIMULATE = True
 ADD_LATEST = False

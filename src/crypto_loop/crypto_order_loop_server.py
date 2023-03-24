@@ -46,22 +46,22 @@ def crypto_order_loop():
         try:
             # get all data for symbols
             for symbol in symbols:
-                very_latest_data = latest_data(symbol)
+                # very_latest_data = latest_data(symbol)
                 order = crypto_symbol_to_order.get(symbol)
                 if order:
                     logger.info(f"order {order}")
                     if order['side'] == "buy":
                         # if float(very_latest_data.ask_price) < order['price']:
                         logger.info(f"buying {symbol} at {order['price']}")
-                        open_order_at_price(symbol, order['qty'], "buy", order['price'])
                         crypto_symbol_to_order[symbol] = None
                         del crypto_symbol_to_order[symbol]
+                        open_order_at_price(symbol, order['qty'], "buy", order['price'])
                     elif order['side'] == "sell":
                         # if float(very_latest_data.bid_price) > order['price']:
                         logger.info(f"selling {symbol} at {order['price']}")
-                        open_order_at_price(symbol, order['qty'], "sell", order['price'])
                         crypto_symbol_to_order[symbol] = None
                         del crypto_symbol_to_order[symbol]
+                        open_order_at_price(symbol, order['qty'], "sell", order['price'])
                     else:
                         logger.error(f"unknown side {order['side']}")
                         logger.error(f"order {order}")

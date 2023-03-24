@@ -10,3 +10,7 @@ lightning_logsminute
 
 
 optuna_test
+.pytest_cache
+
+__pycache__
+__pycache__*
