@@ -16,14 +16,21 @@ crypto_symbols = [
 
 
 def create_order(symbol, side, quantity, price=None):
-    order = client.create_order(
-        symbol=symbol,
-        side=side,
-        type=Client.ORDER_TYPE_LIMIT,
-        timeInForce=Client.TIME_IN_FORCE_GTC,
-        quantity=quantity,
-        price=price,
-    )
+    try:
+        order = client.create_order(
+            symbol=symbol,
+            side=side,
+            type=Client.ORDER_TYPE_LIMIT,
+            timeInForce=Client.TIME_IN_FORCE_GTC,
+            quantity=quantity,
+            price=price,
+        )
+    except Exception as e:
+        logger.error(e)
+        logger.error(f"symbol {symbol}")
+        logger.error(f"side {side}")
+        logger.error(f"quantity {quantity}")
+        logger.error(f"price {price}")
     return order
 
 
@@ -110,10 +117,17 @@ def cancel_all_orders():
 
 
 def get_all_orders(symbol):
-    orders = client.get_all_orders(symbol=symbol)
+    try:
+        orders = client.get_all_orders(symbol=symbol)
+    except Exception as e:
+        logger.error(e)
+        return []
     return orders
 
-
 def get_account_balances():
-    balances = client.get_account()["balances"]
+    try:
+        balances = client.get_account()["balances"]
+    except Exception as e:
+        logger.error(e)
+        return []
     return balances
