@@ -428,6 +428,12 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
             logger.info(
                 f"{currentBuySymbol} buying {amount_to_trade} at {str(math.floor(price))}: current price {current_price}")
             # todo if crypto use loop
+            # stop trying to trade too much - cancel current orders on same symbol
+            current_orders = alpaca_api.get_orders() # also cancel binance orders?
+            # cancel all orders on this symbol
+            for order in current_orders:
+                if order.symbol == currentBuySymbol:
+                    alpaca_api.cancel_ordgster_by_id(order.id)
             if currentBuySymbol in crypto_symbols:
                 result = crypto_alpaca_looper_api.submit_order(
                     order_data=LimitOrderRequest(
