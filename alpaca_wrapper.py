@@ -55,6 +55,7 @@ except APIError as e:
     logger.error("alpaca error", e)
 except Exception as e:
     logger.error("exception", e)
+    traceback.print_exc()
 
 
 def get_all_positions():
@@ -223,6 +224,7 @@ def close_position_at_current_price(position, row):
                 )
     except Exception as e:
         logger.error(e)  # cant convert nan to integer because market is closed for stocks
+        traceback.print_exc()
         # Out of range float values are not JSON compliant
         # could be because theres no minute data /trying to close at when market isn't open (might as well err/do nothing)
         # close all positions? perhaps not
