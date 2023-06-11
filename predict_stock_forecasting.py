@@ -21,6 +21,10 @@ from loss_utils import calculate_trading_profit_torch, DEVICE, get_trading_profi
     TradingLossBinary, TradingLoss, calculate_trading_profit_torch_buy_only, \
     calculate_trading_profit_torch_with_buysell, calculate_trading_profit_torch_with_entry_buysell, \
     calculate_trading_profit_torch_with_buysell_profit_values, calculate_profit_torch_with_entry_buysell_profit_values
+
+from ray.tune.search.hyperopt import HyperOptSearch
+from neuralforecast.losses.pytorch import MAE
+from ray import tune
 from model import GRU
 
 transformers.set_seed(42)
@@ -226,9 +230,31 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 batch_size = 128  # set this between 32 to 128
                 # compatibitiy
 
-
+                nhits_config = {
+                    "max_steps": 100,  # Number of SGD steps
+                    "input_size": 24,  # Size of input window
+                    "learning_rate": tune.loguniform(1e-5, 1e-1),  # Initial Learning rate
+                    "n_pool_kernel_size": tune.choice([[2, 2, 2], [16, 8, 1]]),  # MaxPool's Kernelsize
+                    "n_freq_downsample": tune.choice([[168, 24, 1], [24, 12, 1], [1, 1, 1]]),
+                    # Interpolation expressivity ratios
+                    "val_check_steps": 50,  # Compute validation every 50 steps
+                    "random_seed": tune.randint(1, 10),  # Random seed
+                }
                 horizon = len(Y_test_df) + 1
                 stacks = 3
+                nhits_config.update(dict(
+                    input_size=2 * horizon,
+                    max_steps=700,
+                    stack_types=stacks * ['identity'],
+                    n_blocks=stacks * [1],
+                    mlp_units=[[256, 256] for _ in range(stacks)],
+                    n_pool_kernel_size=stacks * [1],
+                    batch_size=32,
+                    scaler_type='standard',
+                    n_freq_downsample=[12, 4, 1],
+                    max_epochs=700,
+                    val_check_steps=5,
+                ))
                 models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=700),
                     NHITS(
                         input_size=2 * horizon,
@@ -241,7 +267,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                         scaler_type='standard',
                         n_freq_downsample=[12, 4, 1],
                         # loss=TradingLoss(), # TODO fix TradingLoss' object has no attribute 'outputsize_multiplier'
-                        max_epochs=700
+                        max_epochs=5000
                     )]
                 # models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=700),
                 #           NHITS(input_size=2 * horizon, h=horizon, max_epochs=700),

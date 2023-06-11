@@ -1,6 +1,19 @@
 from src.fixtures import crypto_symbols
+# USD currencies
+#AAVE, BAT, BCH, BTC, DAI, ETH, GRT, LINK, LTC, MATIC, MKR, NEAR, PAXG, SHIB, SOL, UNI, USDT
 
-
+# supported
+supported_cryptos = [
+    'BTC',
+    'ETH',
+    'GRT',
+    'MATIC',
+    'PAXG',
+    'MKR',
+    'UNI',
+    'NEAR',
+    'MKR',
+]
 def remap_symbols(symbol):
     crypto_remap = {
         "ETHUSD": "ETH/USD",

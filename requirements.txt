@@ -1,7 +1,7 @@
 pandas_datareader
 numpy==1.22.1
---find-links https://download.pytorch.org/whl/torch_stable.html
-torch==1.11.0+cu113
+#--find-links https://download.pytorch.org/whl/torch_stable.html
+#torch==1.11.0+cu113
 # torch==1.13.0 breaks due to _posthooks
 #torchvision==0.10.0+cu111
 pandas
@@ -10,6 +10,8 @@ alpaca_trade_api==1.4.2
 loguru==0.5.3
 matplotlib==3.5.1
 pytorch-forecasting
+neuralforecast
+hyperopt
 #neuralprophet
 alpaca-trade-api==1.4.2
 

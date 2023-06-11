@@ -435,7 +435,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
             # cancel all orders on this symbol
             for order in current_orders:
                 if order.symbol == currentBuySymbol:
-                    alpaca_api.cancel_ordgster_by_id(order.id)
+                    alpaca_api.cancel_order_by_id(order.id)
             if currentBuySymbol in crypto_symbols:
                 result = crypto_alpaca_looper_api.submit_order(
                     order_data=LimitOrderRequest(
