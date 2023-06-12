@@ -11,6 +11,7 @@ loguru==0.5.3
 matplotlib==3.5.1
 pytorch-forecasting
 neuralforecast
+retry==0.9.2
 hyperopt
 #neuralprophet
 alpaca-trade-api==1.4.2
@@ -21,7 +22,6 @@ py==1.10.0
 future==0.18.2
 Pillow==9.0.0
 ipython==7.26.0
-pytest==6.2.4
 pbr==5.8.0
 setuptools==59.5.0
 six==1.16.0
@@ -97,7 +97,7 @@ loguru
 #pytorch-forecasting==0.9.2
 pytorch-forecasting==0.10.3
 pytorch-lightning==1.5.4
-alpaca-py==0.6.1
+alpaca-py==0.8.2
 fastapi
 gunicorn==20.1.0
 uvicorn==0.20.0

@@ -2,6 +2,7 @@ import math
 import traceback
 from time import sleep
 
+import cachetools
 import requests.exceptions
 from alpaca.data import (
     StockLatestQuoteRequest,
@@ -12,6 +13,8 @@ from alpaca.data import (
 from alpaca.trading import OrderType, LimitOrderRequest
 from alpaca_trade_api.rest import APIError
 from loguru import logger
+from retry import retry
+
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
@@ -30,45 +33,50 @@ alpaca_api = TradingClient(
 
 data_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
 
-equity = 30000
-cash = 30000
-total_buying_power = 20000
-
-try:
-    positions = alpaca_api.get_all_positions()
-    print(positions)
-    account = alpaca_api.get_account()
-    print(account)
-    # Figure out how much money we have to work with, accounting for margin
-    equity = float(account.equity)
-    cash = max(float(account.cash), 0)
-    margin_multiplier = float(account.multiplier)
-    total_buying_power = margin_multiplier * equity
-    print(f"Initial total buying power = {total_buying_power}")
-    alpaca_clock = alpaca_api.get_clock()
-    print(alpaca_clock)
-    if not alpaca_clock.is_open:
-        print("Market closed")
-except requests.exceptions.ConnectionError as e:
-    logger.error("offline/connection error", e)
-except APIError as e:
-    logger.error("alpaca error", e)
-except Exception as e:
-    logger.error("exception", e)
-    traceback.print_exc()
+@cachetools.cached(cache=cachetools.TTLCache(maxsize=100, ttl=60 * 5))
+def get_clock(retries=3):
+    return get_clock_internal(retries)
+def get_clock_internal(retries=3):
+    try:
+        return alpaca_api.get_clock()
+    except Exception as e:
+        logger.error(e)
+        if retries > 0:
+            sleep(.1)
+            logger.error("retrying get clock")
+            return get_clock_internal(retries - 1)
+        raise e
+def get_all_positions(retries=3):
+    try:
+        return alpaca_api.get_all_positions()
+    except Exception as e:
+        logger.error(e)
+        if retries > 0:
+            sleep(.1)
+            logger.error("retrying get all positions")
+            return get_all_positions(retries - 1)
+        raise e
 
 
-def get_all_positions():
-    return alpaca_api.get_all_positions()
+def cancel_all_orders(retries=3):
+    try:
+        result = alpaca_api.cancel_orders()
+        logger.info("canceled orders")
+        logger.info(result)
+    except Exception as e:
+        logger.error(e)
 
+        if retries > 0:
+            sleep(.1)
+            logger.error("retrying cancel all orders")
+            return cancel_all_orders(retries - 1)
+        logger.error("failed to cancel all orders")
 
-def cancel_all_orders():
-    result = alpaca_api.cancel_orders()
-    print(result)
+        return None # raise?
 
 
 # alpaca_api.submit_order(short_stock, qty, side, "market", "gtc")
-def open_market_order_violently(symbol, qty, side):
+def open_market_order_violently(symbol, qty, side, retries=3):
     try:
         result = alpaca_api.submit_order(
             order_data=MarketOrderRequest(
@@ -80,6 +88,8 @@ def open_market_order_violently(symbol, qty, side):
             )
         )
     except Exception as e:
+        if retries > 0:
+            return open_market_order_violently(symbol, qty, side, retries - 1)
         logger.error(e)
         return None
     print(result)
@@ -93,7 +103,15 @@ def has_current_open_position(symbol: str, side: str) -> bool:
         side = "buy"
     if side == "short":
         side = "sell"
-    current_positions = alpaca_api.get_all_positions()
+    current_positions = []
+    for i in range(3):
+        try:
+            current_positions = get_all_positions()
+            break
+        except Exception as e:
+            traceback.print_exc()
+            logger.error(e)
+            # sleep(.1)
     for position in current_positions:
         # if market value is significant
         if float(position.market_value) < 4:
@@ -111,7 +129,7 @@ def has_current_open_position(symbol: str, side: str) -> bool:
 def open_order_at_price(symbol, qty, side, price):
     # todo: check if order is already open
     # cancel all other orders on this symbol
-    current_open_orders = alpaca_api.get_orders()
+    current_open_orders = get_orders()
     for order in current_open_orders:
         if order.symbol == symbol:
             cancel_order(order)
@@ -332,20 +350,23 @@ def close_position_at_almost_current_price(position, row):
         return None
     print(result)
 
+@retry(delay=.1, tries=3)
+def get_orders():
+    return alpaca_api.get_orders()
 
 def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side="long", bid=None, ask=None):
     # trading at market to add more safety in high spread situations
     side = "buy" if side == "long" else "sell"
     if side == "buy" and bid:
-        price = min(price, bid)
+        price = min(price, bid or price)
     else:
-        price = max(price, ask)
+        price = max(price, ask or price)
 
     # poll untill we have closed all our positions
     # why we would wait here?
     # polls = 0
     # while True:
-    #     positions = alpaca_api.get_all_positions()
+    #     positions = get_all_positions()
     #     if len(positions) == 0:
     #         break
     #     else:
@@ -431,7 +452,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
                 f"{currentBuySymbol} buying {amount_to_trade} at {str(math.floor(price))}: current price {current_price}")
             # todo if crypto use loop
             # stop trying to trade too much - cancel current orders on same symbol
-            current_orders = alpaca_api.get_orders() # also cancel binance orders?
+            current_orders = get_orders() # also cancel binance orders?
             # cancel all orders on this symbol
             for order in current_orders:
                 if order.symbol == currentBuySymbol:
@@ -479,7 +500,6 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
 def close_open_orders():
     alpaca_api.cancel_orders()
 
-
 def re_setup_vars():
     global positions
     global account
@@ -489,9 +509,9 @@ def re_setup_vars():
     global equity
     global cash
     global margin_multiplier
-    positions = alpaca_api.get_all_positions()
+    positions = get_all_positions()
     print(positions)
-    account = alpaca_api.get_account()
+    account = get_account()
     print(account)
     # Figure out how much money we have to work with, accounting for margin
     equity = float(account.equity)
@@ -499,7 +519,7 @@ def re_setup_vars():
     margin_multiplier = float(account.multiplier)
     total_buying_power = margin_multiplier * equity
     print(f"Initial total buying power = {total_buying_power}")
-    alpaca_clock = alpaca_api.get_clock()
+    alpaca_clock = get_clock()
     print(alpaca_clock)
     if not alpaca_clock.is_open:
         print("Market closed")
@@ -582,7 +602,7 @@ def get_open_orders():
     #     traceback.print_exc()
 
     try:
-        return alpaca_api.get_orders()  # + crypto_orders
+        return get_orders()  # + crypto_orders
     except Exception as e:
         logger.error(e)
         traceback.print_exc()
@@ -604,3 +624,34 @@ def latest_data(symbol):
     latest_multisymbol_quotes = data_client.get_stock_latest_quote(multisymbol_request_params)
 
     return latest_multisymbol_quotes[symbol]
+
+@retry(delay=.1, tries=3)
+def get_account():
+    return alpaca_api.get_account()
+
+equity = 30000
+cash = 30000
+total_buying_power = 20000
+
+try:
+    positions = get_all_positions()
+    print(positions)
+    account = get_account()
+    print(account)
+    # Figure out how much money we have to work with, accounting for margin
+    equity = float(account.equity)
+    cash = max(float(account.cash), 0)
+    margin_multiplier = float(account.multiplier)
+    total_buying_power = margin_multiplier * equity
+    print(f"Initial total buying power = {total_buying_power}")
+    alpaca_clock = get_clock()
+    print(alpaca_clock)
+    if not alpaca_clock.is_open:
+        print("Market closed")
+except requests.exceptions.ConnectionError as e:
+    logger.error("offline/connection error", e)
+except APIError as e:
+    logger.error("alpaca error", e)
+except Exception as e:
+    logger.error("exception", e)
+    traceback.print_exc()

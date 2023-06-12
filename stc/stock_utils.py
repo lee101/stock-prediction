@@ -14,6 +14,7 @@ supported_cryptos = [
     'NEAR',
     'MKR',
 ]
+# add paxg and mkr to get resiliency from crypto
 def remap_symbols(symbol):
     crypto_remap = {
         "ETHUSD": "ETH/USD",

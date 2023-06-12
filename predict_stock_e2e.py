@@ -29,6 +29,11 @@ from src.binan import binance_wrapper
 from src.fixtures import crypto_symbols
 
 use_stale_data = False
+retrain = True
+# dev:
+# use_stale_data = True
+retrain = False
+
 
 daily_predictions = DataFrame()
 daily_predictions_time = None
@@ -52,7 +57,7 @@ def do_forecasting():
             current_time_formatted = (datetime.now() - timedelta(days=10)).strftime(
                 '%Y-%m-%d %H:%M:%S')  # but cant be 15 mins?
             download_daily_stock_data(current_time_formatted, True)
-        daily_predictions = make_predictions(current_time_formatted, retrain=True)  # TODO
+        daily_predictions = make_predictions(current_time_formatted, retrain=retrain)  # TODO
         # daily_predictions = make_predictions(current_time_formatted) # TODO
 
     current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

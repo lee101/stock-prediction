@@ -8,22 +8,20 @@ cancelling an order
 getting the current orders
 
 """
-from datetime import datetime
-import json
 import time
+from datetime import datetime
 from pathlib import Path
 from threading import Thread
 
 from fastapi import FastAPI
 from loguru import logger
-from starlette.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.responses import JSONResponse
 
-from alpaca_wrapper import latest_data, open_market_order_violently, open_order_at_price
+from alpaca_wrapper import open_order_at_price
 from jsonshelve import FlatShelf
-from src.binan.binance_wrapper import create_all_in_order, cancel_all_orders
+from src.binan import binance_wrapper
 from stc.stock_utils import unmap_symbols
-
 
 data_dir = Path(__file__).parent.parent / 'data'
 
@@ -79,6 +77,7 @@ class OrderRequest(BaseModel):
     price: float
     qty: float
 
+
 @app.post("/api/v1/stock_order")
 def stock_order(order: OrderRequest):
     symbol = unmap_symbols(order.symbol)
@@ -92,10 +91,10 @@ def stock_order(order: OrderRequest):
     # convert to USDT - assume crypto
     usdt_symbol = symbol[:3] + "USDT"
     # order all on binance
-    if order.qty > 0.03 and symbol == "BTCUSD": # going all in on a bitcoin side
-        cancel_all_orders()
+    if order.qty > 0.03 and symbol == "BTCUSD":  # going all in on a bitcoin side
+        binance_wrapper.cancel_all_orders()  # why cancel all crypto?
         # replicate order to binance account for free trading on btc
-        create_all_in_order(usdt_symbol, order.side.upper(), order.price)
+        binance_wrapper.create_all_in_order(usdt_symbol, order.side.upper(), order.price)
 
 
 @app.get("/api/v1/stock_orders")

@@ -16,6 +16,8 @@ from pytorch_forecasting.metrics import SMAPE
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
+import alpaca_wrapper
+from alpaca_wrapper import alpaca_api
 from data_utils import split_data
 from loss_utils import calculate_trading_profit_torch, DEVICE, get_trading_profits_list, percent_movements_augment, \
     TradingLossBinary, TradingLoss, calculate_trading_profit_torch_buy_only, \
@@ -26,6 +28,7 @@ from ray.tune.search.hyperopt import HyperOptSearch
 from neuralforecast.losses.pytorch import MAE
 from ray import tune
 from model import GRU
+from src.fixtures import crypto_symbols
 
 transformers.set_seed(42)
 
@@ -153,10 +156,15 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
     loguru_logger.info(f"input_data_files {input_data_files}")
 
     csv_files = list(input_data_files.glob("*.csv"))
-
+    alpaca_clock = alpaca_wrapper.get_clock()
     for days_to_drop in [0]:  # [1,2,3,4,5,6,7,8,9,10,11]:
         for csv_file in csv_files:
             instrument_name = csv_file.stem.split('-')[0]
+            # only trade crypto or stocks currently being traded - dont bother forecasting things that cant be traded.
+            if not alpaca_clock.is_open:
+                # remove all stock pairs but not crypto
+                if instrument_name not in crypto_symbols:
+                    continue
             last_preds = {
                 "instrument": instrument_name,
             }
@@ -230,32 +238,36 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 batch_size = 128  # set this between 32 to 128
                 # compatibitiy
 
-                nhits_config = {
-                    "max_steps": 100,  # Number of SGD steps
-                    "input_size": 24,  # Size of input window
-                    "learning_rate": tune.loguniform(1e-5, 1e-1),  # Initial Learning rate
-                    "n_pool_kernel_size": tune.choice([[2, 2, 2], [16, 8, 1]]),  # MaxPool's Kernelsize
-                    "n_freq_downsample": tune.choice([[168, 24, 1], [24, 12, 1], [1, 1, 1]]),
-                    # Interpolation expressivity ratios
-                    "val_check_steps": 50,  # Compute validation every 50 steps
-                    "random_seed": tune.randint(1, 10),  # Random seed
-                }
+                # nhits_config = {
+                #     "max_steps": 100,  # Number of SGD steps
+                #     "input_size": 24,  # Size of input window
+                #     "learning_rate": tune.loguniform(1e-5, 1e-1),  # Initial Learning rate
+                #     "n_pool_kernel_size": tune.choice([[2, 2, 2], [16, 8, 1]]),  # MaxPool's Kernelsize
+                #     "n_freq_downsample": tune.choice([[168, 24, 1], [24, 12, 1], [1, 1, 1]]),
+                #     # Interpolation expressivity ratios
+                #     "val_check_steps": 50,  # Compute validation every 50 steps
+                #     "random_seed": tune.randint(1, 10),  # Random seed
+                # }
                 horizon = len(Y_test_df) + 1
                 stacks = 3
-                nhits_config.update(dict(
-                    input_size=2 * horizon,
-                    max_steps=700,
-                    stack_types=stacks * ['identity'],
-                    n_blocks=stacks * [1],
-                    mlp_units=[[256, 256] for _ in range(stacks)],
-                    n_pool_kernel_size=stacks * [1],
-                    batch_size=32,
-                    scaler_type='standard',
-                    n_freq_downsample=[12, 4, 1],
-                    max_epochs=700,
-                    val_check_steps=5,
-                ))
-                models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=700),
+                # nhits_config.update(dict(
+                #     input_size=2 * horizon,
+                #     max_steps=700,
+                #     stack_types=stacks * ['identity'],
+                #     n_blocks=stacks * [1],
+                #     mlp_units=[[256, 256] for _ in range(stacks)],
+                #     n_pool_kernel_size=stacks * [1],
+                #     batch_size=32,
+                #     scaler_type='standard',
+                #     n_freq_downsample=[12, 4, 1],
+                #     max_epochs=5000,
+                #     val_check_steps=5,
+                # ))
+                # fit
+                # with much less epocs like 10 or something
+                # epocs = 50
+                epocs = 20 if not retrain else 700
+                models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=epocs),
                     NHITS(
                         input_size=2 * horizon,
                         h=horizon,
@@ -267,7 +279,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                         scaler_type='standard',
                         n_freq_downsample=[12, 4, 1],
                         # loss=TradingLoss(), # TODO fix TradingLoss' object has no attribute 'outputsize_multiplier'
-                        max_epochs=5000
+                        max_epochs=epocs
                     )]
                 # models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=700),
                 #           NHITS(input_size=2 * horizon, h=horizon, max_epochs=700),
@@ -312,6 +324,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                     nforecast.save(str(checkpoints_dir), save_dataset=False, overwrite=True)
                     Y_hat_df = nforecast.predict().reset_index()
                 else:
+                    # fit with much less epocs like 10 or something
                     Y_hat_df = nforecast.predict(df=Y_train_df).reset_index()
                 Y_hat_df = Y_test_df.merge(Y_hat_df, how='left', on=['unique_id', 'ds'])
 

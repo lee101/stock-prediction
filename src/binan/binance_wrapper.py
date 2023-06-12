@@ -36,12 +36,17 @@ def create_order(symbol, side, quantity, price=None):
 
 def create_all_in_order(symbol, side, price=None):
     # get balance for SELL SIDE
+    balance_sell = None
+    balance_buy = None
     balances = get_account_balances()
     for balance in balances:
         if balance["asset"] == symbol[:3]:
             balance_sell = float(balance["free"])
         if balance["asset"] == symbol[3:]:
             balance_buy = float(balance["free"])
+    if balance_sell is None or balance_buy is None:
+        logger.error("cant get binance data properly")
+
     if side == "SELL":
         quantity = balance_sell
     elif side == "BUY":
