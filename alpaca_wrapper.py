@@ -11,15 +11,14 @@ from alpaca.data import (
     CryptoLatestQuoteRequest,
 )
 from alpaca.trading import OrderType, LimitOrderRequest
+from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import OrderSide
+from alpaca.trading.requests import MarketOrderRequest
 from alpaca_trade_api.rest import APIError
 from loguru import logger
 from retry import retry
 
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.enums import OrderSide
-
 from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols
 from stc.stock_utils import remap_symbols

@@ -1,7 +1,5 @@
 import numpy as np
 
-from loss_utils import calculate_takeprofit_torch
-
 
 def split_data(stock, lookback):
     data_raw = stock.to_numpy()  # convert to numpy array

@@ -1,15 +1,13 @@
 import datetime
 
 import matplotlib.pyplot as plt
-import pandas_datareader.data as web
+from alpaca_trade_api.rest import REST, TimeFrame
+from alpaca_trade_api.rest import TimeFrameUnit
 from pandas.plotting import register_matplotlib_converters
 
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT
 from predict_stock import base_dir
-from alpaca_trade_api.rest import REST, TimeFrame
-from alpaca_trade_api.rest import TimeFrameUnit
 
-import pandas as pd
 NY = 'America/New_York'
 """
 Downloads daily stock data from nasdaq

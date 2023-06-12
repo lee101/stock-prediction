@@ -1,27 +1,21 @@
 import datetime
 import traceback
-from functools import cache
-from traceback import print_tb
 
 import matplotlib.pyplot as plt
-import pandas_datareader.data as web
 import pytz
 from alpaca.data import CryptoBarsRequest, TimeFrame, StockBarsRequest, TimeFrameUnit, CryptoHistoricalDataClient
+from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.trading import TradingClient
-from cachetools import cache, TTLCache
+from cachetools import TTLCache
+from loguru import logger
 from pandas import DataFrame
 from pandas.plotting import register_matplotlib_converters
-from loguru import logger
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestQuoteRequest
 
 from alpaca_wrapper import latest_data
-from stc.stock_utils import remap_symbols
-from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, PAPER, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
+from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
 from predict_stock import base_dir
+from stc.stock_utils import remap_symbols
 
-import pandas as pd
-import os
 # work in UTC
 # os.environ['TZ'] = 'UTC'
 NY = 'America/New_York'
