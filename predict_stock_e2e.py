@@ -32,7 +32,7 @@ use_stale_data = False
 retrain = True
 # dev:
 # use_stale_data = True
-retrain = False
+# retrain = False
 
 
 daily_predictions = DataFrame()

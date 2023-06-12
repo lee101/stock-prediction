@@ -266,7 +266,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 # fit
                 # with much less epocs like 10 or something
                 # epocs = 50
-                epocs = 20 if not retrain else 700
+                # epocs = 20 if not retrain else 700
+                epocs = 50 if not retrain else 1500
                 models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=epocs),
                     NHITS(
                         input_size=2 * horizon,
