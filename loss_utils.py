@@ -4,8 +4,8 @@ import numpy as np
 
 # TRADING_FEE = 0.0007 # fee actually changes for small trades - this is for 100k
 # TRADING_FEE = 0.003  # fee actually changes for small trades
-CRYPTO_TRADING_FEE = .0025
-from pytorch_forecasting import MultiHorizonMetric
+CRYPTO_TRADING_FEE = .0015 # maker fee taker is .0025
+# from pytorch_forecasting import MultiHorizonMetric
 
 TRADING_FEE = 0.0005
 
@@ -333,30 +333,30 @@ def calculate_profit_torch_with_entry_buysell_profit_values(y_test, y_test_high,
     return calculated_profit_values
 
 
-class TradingLossBinary(MultiHorizonMetric):
-    """
-    trading loss for use with pytorch forecasting
-    """
+# class TradingLossBinary(MultiHorizonMetric):
+#     """
+#     trading loss for use with pytorch forecasting
+#     """
+#
+#     def loss(self, y_pred, target):
+#         y_pred = self.to_prediction(y_pred)
+#         loss = calculate_trading_profit_torch(None, None, target, (y_pred > 0).float() * 2 - 1)
+#         return -loss
 
-    def loss(self, y_pred, target):
-        y_pred = self.to_prediction(y_pred)
-        loss = calculate_trading_profit_torch(None, None, target, (y_pred > 0).float() * 2 - 1)
-        return -loss
 
-
-class TradingLoss(MultiHorizonMetric):
-    """
-    trading loss for use with pytorch forecasting
-    """
-    _load_state_dict_post_hooks = OrderedDict()
-    def loss(self, y_pred, target):
-        y_pred = self.to_prediction(y_pred)
-        loss = calculate_trading_profit_torch(None, None, target, y_pred)
-        return -loss
-
-    # @property
-    # def _load_state_dict_post_hooks(self):
-    #     return {} # seems required now in new torch
+# class TradingLoss(MultiHorizonMetric):
+#     """
+#     trading loss for use with pytorch forecasting
+#     """
+#     _load_state_dict_post_hooks = OrderedDict()
+#     def loss(self, y_pred, target):
+#         y_pred = self.to_prediction(y_pred)
+#         loss = calculate_trading_profit_torch(None, None, target, y_pred)
+#         return -loss
+#
+#     # @property
+#     # def _load_state_dict_post_hooks(self):
+#     #     return {} # seems required now in new torch
 def calculate_trading_profit_no_scale(last_values, y_test, y_test_pred):
     """
     Calculate trading profits

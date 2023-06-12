@@ -1,8 +1,10 @@
 import alpaca_trade_api as tradeapi
 import typer
+from alpaca.data import StockHistoricalDataClient
 
 import alpaca_wrapper
-from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT
+from data_curate_daily import download_exchange_latest_data, get_bid, get_ask
+from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 
 alpaca_api = tradeapi.REST(
     ALP_KEY_ID,
@@ -26,13 +28,31 @@ def main(command: str):
     elif command == 'cancel_all_orders':
         alpaca_wrapper.cancel_all_orders()
 
+client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
 
 def close_all_positions():
     positions = alpaca_wrapper.get_all_positions()
 
     for position in positions:
-        if position.side == 'long':
-            alpaca_wrapper.alpaca_order_stock(position.symbol, position.qty)
+        symbol = position.symbol
+
+        # get latest data then bid/ask
+        download_exchange_latest_data(client, symbol)
+        bid = get_bid(symbol)
+        ask = get_ask(symbol)
+
+
+        current_price = ask if position.side == 'long' else bid
+        # close a long with the ask price
+        # close a short with the bid price
+        # get bid/ask
+        # get current price
+        alpaca_wrapper.close_position_at_almost_current_price(
+            position, {
+                'close_last_price_minute': current_price
+            }
+        )
+            # alpaca_order_stock(position.symbol, position.qty)
 
 
 def violently_close_all_positions():
@@ -42,4 +62,5 @@ def violently_close_all_positions():
 
 
 if __name__ == "__main__":
-    typer.run(main)
+    # typer.run(main)
+    close_all_positions()

@@ -10,6 +10,7 @@ from cachetools import TTLCache
 from loguru import logger
 from pandas import DataFrame
 from pandas.plotting import register_matplotlib_converters
+from retry import retry
 
 from alpaca_wrapper import latest_data
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
@@ -196,23 +197,33 @@ def get_bid(symbol):
 
 def download_stock_data_between_times(api, end, start, symbol):
     if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD']:
-        daily_df = crypto_client.get_crypto_bars(
-            CryptoBarsRequest(symbol_or_symbols=remap_symbols(symbol), timeframe=TimeFrame(1, TimeFrameUnit.Day), start=start, end=end,
-                              exchanges=['FTXU'])).df
+        daily_df = crypto_get_bars(end, start, symbol)
         try:
             daily_df.drop(['exchange'], axis=1, inplace=True)
         except KeyError:
             logger.info(f"{symbol} has no exchange key - this is okay")
         return daily_df
     else:
-        daily_df = api.get_stock_bars(
-            StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame(1, TimeFrameUnit.Day), start=start, end=end,
-                             adjustment='raw')).df
+        daily_df = get_bars(api, end, start, symbol)
         try:
             daily_df.drop(['volume', 'trade_count', 'vwap'], axis=1, inplace=True)
         except KeyError:
             logger.info(f"{symbol} has no volume or something")
         return daily_df
+
+@retry(delay=.1, tries=5)
+def get_bars(api, end, start, symbol):
+    return api.get_stock_bars(
+        StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame(1, TimeFrameUnit.Day), start=start, end=end,
+                         adjustment='raw')).df
+
+
+@retry(delay=.1, tries=5)
+def crypto_get_bars(end, start, symbol):
+    return crypto_client.get_crypto_bars(
+        CryptoBarsRequest(symbol_or_symbols=remap_symbols(symbol), timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                          start=start, end=end,
+                          exchanges=['FTXU'])).df
 
 
 def visualize_stock_data(df):
