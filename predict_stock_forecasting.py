@@ -39,6 +39,15 @@ from torch.utils.tensorboard import SummaryWriter
 current_date_formatted = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 
+pipeline = None
+def load_pipeline():
+    global pipeline
+    if pipeline is None:
+        pipeline = ChronosPipeline.from_pretrained(
+            "amazon/chronos-t5-large",
+            device_map="cuda",  # use "cpu" for CPU inference and "mps" for Apple Silicon
+            torch_dtype=torch.bfloat16,
+        )
 
 def load_stock_data_from_csv(csv_file_path: Path):
     """
@@ -264,29 +273,29 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 # with much less epocs like 10 or something
                 # epocs = 50
                 # epocs = 20 if not retrain else 700
-                epocs = 50 if not retrain else 2000
-                models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=epocs),
-                          NHITS(
-                              input_size=2 * horizon,
-                              h=horizon,
-                              stack_types=stacks * ['identity'],
-                              n_blocks=stacks * [1],
-                              mlp_units=[[256, 256] for _ in range(stacks)],
-                              n_pool_kernel_size=stacks * [1],
-                              batch_size=32,
-                              scaler_type='standard',
-                              n_freq_downsample=[12, 4, 1],
-                              # loss=TradingLoss(), # TODO fix TradingLoss' object has no attribute 'outputsize_multiplier'
-                              max_epochs=epocs
-                          )]
-                # models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=700),
-                #           NHITS(input_size=2 * horizon, h=horizon, max_epochs=700),
-                #           ]
-                nforecast = NeuralForecast(models=models, freq='D')
-                ### Load Checkpoint
-                checkpoints_dir = (base_dir / 'lightning_logs_nforecast' / pred_name / key_to_predict / instrument_name)
-                checkpoints_dir.mkdir(parents=True, exist_ok=True)
-                checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
+                # epocs = 50 if not retrain else 2000
+                # models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=epocs),
+                #           NHITS(
+                #               input_size=2 * horizon,
+                #               h=horizon,
+                #               stack_types=stacks * ['identity'],
+                #               n_blocks=stacks * [1],
+                #               mlp_units=[[256, 256] for _ in range(stacks)],
+                #               n_pool_kernel_size=stacks * [1],
+                #               batch_size=32,
+                #               scaler_type='standard',
+                #               n_freq_downsample=[12, 4, 1],
+                #               # loss=TradingLoss(), # TODO fix TradingLoss' object has no attribute 'outputsize_multiplier'
+                #               max_epochs=epocs
+                #           )]
+                # # models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=700),
+                # #           NHITS(input_size=2 * horizon, h=horizon, max_epochs=700),
+                # #           ]
+                # nforecast = NeuralForecast(models=models, freq='D')
+                # ### Load Checkpoint
+                # checkpoints_dir = (base_dir / 'lightning_logs_nforecast' / pred_name / key_to_predict / instrument_name)
+                # checkpoints_dir.mkdir(parents=True, exist_ok=True)
+                # checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
                 # if len(checkpoint_files) == 0:
                 #     loguru_logger.info("No min+open/low specific checkpoints found, training from other checkpoint")
                 #     checkpoints_dir = (base_dir / 'lightning_logs_nforecast' / pred_name / instrument_name)
@@ -296,34 +305,35 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 #         checkpoints_dir = (base_dir / 'lightning_logs_nforecast' / instrument_name)
                 #         checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
 
-                if checkpoint_files:
-                    best_checkpoint_path = checkpoint_files[0]
-                    # sort by most recent checkpoint_files
-                    checkpoint_files.sort(key=lambda x: os.path.getctime(x))
-                    # load the most recent
-                    best_checkpoint_path = checkpoint_files[-1]
-                    # find best checkpoint
-                    # min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
-                    # for file_name in checkpoint_files:
-                    #     current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
-                    #     if float(current_loss) < float(min_current_loss):
-                    #         min_current_loss = current_loss
-                    #         best_checkpoint_path = file_name
-                    #         # TODO invalidation for 30minute vs daily data
+                # if checkpoint_files:
+                #     best_checkpoint_path = checkpoint_files[0]
+                #     # sort by most recent checkpoint_files
+                #     checkpoint_files.sort(key=lambda x: os.path.getctime(x))
+                #     # load the most recent
+                #     best_checkpoint_path = checkpoint_files[-1]
+                #     # find best checkpoint
+                #     # min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
+                #     # for file_name in checkpoint_files:
+                #     #     current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
+                #     #     if float(current_loss) < float(min_current_loss):
+                #     #         min_current_loss = current_loss
+                #     #         best_checkpoint_path = file_name
+                #     #         # TODO invalidation for 30minute vs daily data
 
-                    loguru_logger.info(f"Loading best checkpoint from {best_checkpoint_path}")
-                    nforecast.load(checkpoints_dir)
+                #     loguru_logger.info(f"Loading best checkpoint from {best_checkpoint_path}")
+                #     nforecast.load(checkpoints_dir)
                 if Y_train_df.empty:
                     loguru_logger.info(f"No training data for {instrument_name}")
                     continue
-                if retrain:
-                    nforecast.fit(df=Y_train_df)
-                    # todo save only best during training
-                    nforecast.save(str(checkpoints_dir), save_dataset=False, overwrite=True)
-                    Y_hat_df = nforecast.predict().reset_index()
-                else:
-                    # fit with much less epocs like 10 or something
-                    Y_hat_df = nforecast.predict(df=Y_train_df).reset_index()
+                # if retrain:
+                #     nforecast.fit(df=Y_train_df)
+                #     # todo save only best during training
+                #     nforecast.save(str(checkpoints_dir), save_dataset=False, overwrite=True)
+                #     Y_hat_df = nforecast.predict().reset_index()
+                # else:
+                #     # fit with much less epocs like 10 or something
+                #     Y_hat_df = nforecast.predict(df=Y_train_df).reset_index()
+
                 Y_hat_df = Y_test_df.merge(Y_hat_df, how='left', on=['unique_id', 'ds'])
 
                 # actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
@@ -450,7 +460,24 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 #     best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
                 # Y_hat_df = nforecast.predict().reset_index()
 
-                actual_list = Y_hat_df['y']  # TODO check this y center transfor prints feature neamses warning
+
+                load_pipeline()
+                context = torch.tensor(Y_train_df["y"].values, dtype=torch.float).unsqueeze(1)
+
+                prediction_length = 1
+                forecast = pipeline.predict(
+                    context,
+                    prediction_length,
+                    num_samples=20,
+                    temperature=1.0,
+                    top_k=50,
+                    top_p=1.0,
+                )
+                low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
+
+                Y_hat_df = median
+                # new prediction based on model
+                actual_list = Y_hat_df['y']  # TODO check this y center transform prints feature neamses warning
 
                 error_nhits = Y_hat_df['y'] - Y_hat_df['NHITS']
                 error_nbeats = Y_hat_df['y'] - Y_hat_df['NBEATS']
