@@ -47,3 +47,19 @@ fees though
 use binance for crypto try not trade it on alpaca?
 
  ./.env/bin/gunicorn -k uvicorn.workers.UvicornWorker -b :5050 src.crypto_loop.crypto_order_loop_server:app --timeout 1800 --workers 1
+
+
+### install requirements
+
+with a pip cache local dir
+
+```
+pip install --cache_dir=/media/lee/crucial/pipcache -r requirements.txt
+```
+
+
+add these lines for cache
+vi ~/.config/pip/pip.conf
+[global]
+cache-dir = /media/lee/crucial/pipcache
+no-cache-dir = false
