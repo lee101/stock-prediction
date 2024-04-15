@@ -13,7 +13,6 @@ pandas
 # scipy
 loguru
 matplotlib
-pytorch-forecasting
 neuralforecast
 retry
 hyperopt
@@ -104,3 +103,6 @@ alpaca-py
 fastapi
 gunicorn
 uvicorn
+git+https://github.com/amazon-science/chronos-forecasting.git
+
+python-binance

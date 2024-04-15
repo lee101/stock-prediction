@@ -433,3 +433,5 @@ total_forecasted_profit: 0.007928587769408925
 ETHUSD calculated_profit entry_: 0.09252144396305084
 2022-12-19 11:28:32.964 | INFO     | predict_stock_forecasting:make_predictions:988 - ETHUSD calculated_profit entry_: 0.13798114657402039
 0.02253859738 total forecasted profit
+
+mean val loss?

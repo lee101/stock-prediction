@@ -32,7 +32,7 @@ from src.utils import log_time
 use_stale_data = False
 retrain = True
 # dev:
-# use_stale_data = True
+use_stale_data = True
 # retrain = False
 
 
@@ -49,19 +49,20 @@ def do_forecasting():
             daily_predictions_time is None or daily_predictions_time < datetime.now() - timedelta(days=1)):
         daily_predictions_time = datetime.now()
         if use_stale_data:
-            current_time_formatted = '2021-12-05 18:20:29'
-            current_time_formatted = '2021-12-09 12:16:26'  # new/ more data
-            current_time_formatted = '2021-12-11 07:57:21-2'  # new/ less data tickers
+            current_time_formatted = '2021-12-05 18-20-29'
+            current_time_formatted = '2021-12-09 12-16-26'  # new/ more data
+            current_time_formatted = '2021-12-11 07-57-21-2'  # new/ less data tickers
             current_time_formatted = 'min'  # new/ less data tickers
-            current_time_formatted = '2021-12-30 20:11:47'  # new/ 30 minute data # '2022-10-14 09:58:20'
+            current_time_formatted = '2021-12-30--20-11-47'  # new/ 30 minute data # '2022-10-14 09-58-20'
+            current_time_formatted = '2024-04-04--20-41-41'  # new/ 30 minute data # '2022-10-14 09-58-20'
         else:
             current_time_formatted = (datetime.now() - timedelta(days=10)).strftime(
-                '%Y-%m-%d %H:%M:%S')  # but cant be 15 mins?
+                '%Y-%m-%d--%H-%M-%S')  # but cant be 15 mins?
             download_daily_stock_data(current_time_formatted, True)
         daily_predictions = make_predictions(current_time_formatted, retrain=retrain)  # TODO
         # daily_predictions = make_predictions(current_time_formatted) # TODO
 
-    current_time_formatted = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
     download_daily_stock_data(current_time_formatted)
     minute_predictions = make_predictions(current_time_formatted)
 
@@ -383,11 +384,11 @@ made_money_recently_shorting = FlatShelf(str(data_dir / f"made_money_recently_sh
 made_money_recently_tmp_shorting = FlatShelf(str(data_dir / f"made_money_recently_tmp_shorting.db.json"))
 made_money_one_before_recently_shorting = FlatShelf(str(data_dir / f"made_money_one_before_recently_shorting.db.json"))
 
-trade_entered_times = shelve.open(str(data_dir / f"trade_entered_times.db"))
-# all_historical_orders = shelve.open(str(data_dir / f"all_historical_orders.db"))
+trade_entered_times = FlatShelf(str(data_dir / f"trade_entered_times.db.json"))
+# all_historical_orders = FlatShelf(str(data_dir / f"all_historical_orders.db"))
 
 instrument_strategies = FlatShelf(str(data_dir / f"instrument_strategies.db.json"))
-instrument_strategy_change_times = shelve.open(str(data_dir / f"instrument_strategy_change_times.db.json"))
+instrument_strategy_change_times = FlatShelf(str(data_dir / f"instrument_strategy_change_times_.db.json"))
 
 
 def buy_stock(row, all_preds, positions, orders):

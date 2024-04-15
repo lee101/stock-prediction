@@ -25,8 +25,8 @@ from sklearn.preprocessing import MinMaxScaler
 
 from torch.utils.tensorboard import SummaryWriter
 
-current_date_formatted = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
+current_date_formatted = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+tb_writer = SummaryWriter(log_dir=Path("./logs/{current_date_formatted}"))
 
 def load_stock_data_from_csv(csv_file_path: Path):
     """

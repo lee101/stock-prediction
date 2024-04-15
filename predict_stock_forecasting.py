@@ -20,10 +20,6 @@ from loss_utils import calculate_trading_profit_torch, DEVICE, get_trading_profi
 from model import GRU
 from src.fixtures import crypto_symbols
 
-# from pytorch_forecasting import Baseline, TemporalFusionTransformer, TimeSeriesDataSet
-# from pytorch_forecasting.metrics import SMAPE
-# from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
-# from pytorch_lightning.loggers import TensorBoardLogger
 
 transformers.set_seed(42)
 
@@ -36,7 +32,9 @@ from sklearn.preprocessing import MinMaxScaler
 
 from torch.utils.tensorboard import SummaryWriter
 
-current_date_formatted = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+from chronos import ChronosPipeline
+
+current_date_formatted = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 
 pipeline = None
@@ -334,8 +332,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 #     # fit with much less epocs like 10 or something
                 #     Y_hat_df = nforecast.predict(df=Y_train_df).reset_index()
 
-                Y_hat_df = Y_test_df.merge(Y_hat_df, how='left', on=['unique_id', 'ds'])
-
+                
+                # Y_hat_df = Y_test_df.merge(Y_hat_df, how='left', on=['unique_id', 'ds'])
                 # actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
                 # baseline_predictions = Baseline().predict(val_dataloader)
                 # loguru_logger.info((actuals[:-1] - baseline_predictions[:-1]).abs().mean().item())
@@ -462,38 +460,49 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
 
 
                 load_pipeline()
-                context = torch.tensor(Y_train_df["y"].values, dtype=torch.float).unsqueeze(1)
+                predictions = []
+                # make 7 predictions
+                for pred_idx in reversed(range(1, 8)):
+                    
+                    current_context = price[:-pred_idx]
+                    context = torch.tensor(current_context["y"].values, dtype=torch.float).unsqueeze(1)
 
-                prediction_length = 1
-                forecast = pipeline.predict(
-                    context,
-                    prediction_length,
-                    num_samples=20,
-                    temperature=1.0,
-                    top_k=50,
-                    top_p=1.0,
-                )
-                low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
+                    prediction_length = 1
+                    forecast = pipeline.predict(
+                        context,
+                        prediction_length,
+                        num_samples=20,
+                        temperature=1.0,
+                        top_k=50,
+                        top_p=1.0,
+                    )
+                    low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
+                    predictions.append(median.item())
+                Y_hat_df = pd.DataFrame({'y': predictions})
 
-                Y_hat_df = median
+                # Y_hat_df = Y_test_df.merge(Y_hat_df, how='left', on=['unique_id', 'ds'])
+                # actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
+                # baseline_predictions = Baseline().predict(val_dataloader)
+                # loguru_logger.info((actuals[:-1] - baseline_predictions[:-1]).abs().mean().item())
+
                 # new prediction based on model
-                actual_list = Y_hat_df['y']  # TODO check this y center transform prints feature neamses warning
+                # actual_list = Y_hat_df['y']  # TODO check this y center transform prints feature neamses warning
 
-                error_nhits = Y_hat_df['y'] - Y_hat_df['NHITS']
-                error_nbeats = Y_hat_df['y'] - Y_hat_df['NBEATS']
-                lowest_error = None
-                if error_nhits.abs().sum() < error_nbeats.abs().sum():
-                    lowest_error = 'NHITS'
-                    loguru_logger.info(f"Using {lowest_error} as lowest error from nhits")
-                else:
-                    lowest_error = 'NBEATS'
-                    loguru_logger.info(f"Using {lowest_error} as lowest error from nbeats")
-                Y_hat_df['error'] = Y_hat_df['y'] - Y_hat_df[lowest_error]
+                # error_nhits = Y_hat_df['y'] - Y_hat_df['NHITS']
+                # error_nbeats = Y_hat_df['y'] - Y_hat_df['NBEATS']
+                # lowest_error = None
+                # if error_nhits.abs().sum() < error_nbeats.abs().sum():
+                #     lowest_error = 'NHITS'
+                #     loguru_logger.info(f"Using {lowest_error} as lowest error from nhits")
+                # else:
+                #     lowest_error = 'NBEATS'
+                #     loguru_logger.info(f"Using {lowest_error} as lowest error from nbeats")
+                # Y_hat_df['error'] = Y_hat_df['y'] - Y_hat_df[lowest_error]
 
-                actuals = Y_hat_df["y"]
-                predictions = Y_hat_df[lowest_error]
-                mean_val_loss = (Y_hat_df['error']).abs().mean()
-
+                predictions = Y_hat_df["y"]
+                error = validation["y"] - Y_hat_df["y"]
+                mean_val_loss = error.abs().mean()
+                loguru_logger.info(f"Using {mean_val_loss} as lowest error from chronos")
                 # if not added_best_params:
                 #     # find best hyperparams
                 #     from pytorch_forecasting.models.temporal_fusion_transformer.tuning import optimize_hyperparameters
@@ -524,7 +533,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 #     # show best hyperparameters
                 #     loguru_logger.info(study.best_trial.params)
 
-                loguru_logger.info(f"mean val loss:${mean_val_loss}")
+                # loguru_logger.info(f"mean val loss:${mean_val_loss}")
 
                 # raw_predictions, x = best_tft.predict(val_dataloader, mode="raw", return_x=True)
                 # for idx in range(1):  # plot 10 examples
@@ -532,8 +541,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 ## display plot
                 # note last one at zero actual movement is not true
                 # plot.show()
-                predictions = series_to_tensor(predictions)
-                actuals = series_to_tensor(actuals)
+                predictions = torch.tensor(predictions)
+                actuals = series_to_tensor(validation["y"])
                 # predict trade if last value is above the prediction
                 trading_preds = (predictions[:-1] > 0) * 2 - 1
                 # last_values = x_test[:, -1, 0]
@@ -543,99 +552,6 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                                                                                      trading_preds).item()
                 calculated_profit_values = get_trading_profits_list(scaler, None, actuals[:-1], trading_preds)
                 #
-                # x_train, y_train, x_test, y_test = split_data(price, lookback)
-                #
-                # x_train = torch.from_numpy(x_train).type(torch.Tensor).to(DEVICE)
-                # x_test = torch.from_numpy(x_test).type(torch.Tensor).to(DEVICE)
-                # y_train = torch.from_numpy(y_train).type(torch.Tensor).to(DEVICE)
-                # y_test = torch.from_numpy(y_test).type(torch.Tensor).to(DEVICE)
-                #
-                # input_dim = 4
-                # hidden_dim = 32
-                # num_layers = 6
-                # output_dim = 1
-                # # TODO use pytorch forecasting
-                # # from pytorch_forecasting import Baseline, TemporalFusionTransformer
-                # model = GRU(
-                #     input_dim=input_dim,
-                #     hidden_dim=hidden_dim,
-                #     output_dim=output_dim,
-                #     num_layers=num_layers,
-                # )
-                # model.to(DEVICE)
-                # model.train()
-                # criterion = torch.nn.L1Loss(reduction="mean")
-                # optimiser = torch.optim.AdamW(model.parameters(), lr=0.01)
-                #
-                # start_time = datetime.now()
-                #
-                # num_epochs = 100
-                # hist = np.zeros(num_epochs)
-                # y_train_pred = None
-                # min_val_loss = np.inf
-                # best_y_test_pred_inverted = []
-                #
-                # # Number of steps to unroll
-                # for epoc_idx in range(num_epochs):
-                #     model.train()
-                #     random_aug = torch.rand(x_train.shape) * .0002 - .0001
-                #     augmented = x_train + random_aug.to(DEVICE)
-                #     y_train_pred = model(augmented)
-                #
-                #     loss = criterion(y_train_pred, y_train)
-                #     loguru_logger.info("Epoch ", epoc_idx, "MSE: ", loss.item())
-                #     tb_writer.add_scalar(f"{key_to_predict}/Loss/{instrument_name}/train", loss.item(), epoc_idx)
-                #     hist[epoc_idx] = loss.item()
-                #
-                #     loss.backward()
-                #     optimiser.step()
-                #     optimiser.zero_grad()
-                #     ## test
-                #     model.eval()
-                #
-                #     y_test_pred = model(x_test)
-                #     # invert predictions
-                #     y_test_pred_inverted = torch_inverse_transform(scaler, y_test_pred)
-                #     # y_train_pred_inverted = torch_inverse_transform(scaler, y_train_pred)
-                #
-                #     # loguru_logger.info(y_test_pred_inverted)
-                #     loss = criterion(y_test_pred, y_test)
-                #     loguru_logger.info(f"val loss: {loss}")
-                #     tb_writer.add_scalar(f"{key_to_predict}/Loss/{instrument_name}/val", loss.item(), epoc_idx)
-                #     loguru_logger.info(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
-                #     tb_writer.add_scalar(f"{key_to_predict}/Prediction/{instrument_name}last_pred", y_test_pred_inverted[-1], epoc_idx)
-                #
-                #     # detached_y_test = y_test.detach().cpu().numpy()
-                #     last_values = x_test[:, -1, 0]
-                #     # predict trade if last value is above the prediction
-                #     trading_preds = (y_test_pred > last_values) * 2 - 1
-                #     last_values = x_test[:, -1, 0]
-                #     calculated_profit = calculate_trading_profit_torch(scaler, last_values, y_test[:, 0], trading_preds[:, 0]).item()
-                #     loguru_logger.info(f"{instrument_name}: {key_to_predict} calculated_profit: {calculated_profit}")
-                #     tb_writer.add_scalar(f"{key_to_predict}/Profit/{instrument_name}:  calculated_profit", calculated_profit, epoc_idx)
-                #     if loss < min_val_loss:
-                #         min_val_loss = loss
-                #         torch.save(model.state_dict(), "data/model.pth")
-                #         best_y_test_pred_inverted = y_test_pred_inverted
-                #         best_y_test_pred = y_test_pred
-                #         best_y_train_pred = y_train_pred
-                #         # percent estimate
-                #         y_test_end_scaled_loss = torch_inverse_transform(scaler, torch.add(y_test_pred, loss))
-                #
-                #         likely_percent_uncertainty = (
-                #             (y_test_end_scaled_loss[-1] - y_test_pred_inverted[-1])
-                #             / y_test_pred_inverted[-1]
-                #         ).item()
-                #         min_loss_trading_profit = calculated_profit
-                #
-                #
-                # training_time = datetime.now() - start_time
-                # loguru_logger.info("Training time: {}".format(training_time))
-                # tb_writer.add_scalar("Time/epoc", training_time.total_seconds(), timing_idx)
-                # timing_idx += 1
-
-                # loguru_logger.info(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
-                # tb_writer.add_scalar("Prediction/train", y_train_pred_inverted[-1], 0)
 
                 val_loss = mean_val_loss
                 # percent_movement = (
