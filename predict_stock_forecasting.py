@@ -18,6 +18,7 @@ from loss_utils import calculate_trading_profit_torch, DEVICE, get_trading_profi
     calculate_trading_profit_torch_with_buysell, calculate_trading_profit_torch_with_entry_buysell, \
     calculate_trading_profit_torch_with_buysell_profit_values, calculate_profit_torch_with_entry_buysell_profit_values
 from model import GRU
+from src.conversion_utils import unwrap_tensor
 from src.fixtures import crypto_symbols
 
 
@@ -560,13 +561,13 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 #     predictions[-1].item() - last_close_price
                 # ) / last_close_price
                 last_preds[key_to_predict.lower() + "_last_price"] = last_close_price
-                last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[
+                last_preds[key_to_predict.lower() + "_predicted_price"] = unwrap_tensor(predictions[
                     -1
-                ]
-                last_preds[key_to_predict.lower() + "_predicted_price_value"] = last_close_price + (
+                ])
+                last_preds[key_to_predict.lower() + "_predicted_price_value"] = unwrap_tensor(last_close_price + (
                             last_close_price * predictions[
                         -1
-                    ])
+                    ]))
                 last_preds[key_to_predict.lower() + "_val_loss"] = val_loss
                 last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = calculated_profit
                 last_preds[key_to_predict.lower() + "min_loss_buy_only_trading_profit"] = calculated_profit_buy_only
