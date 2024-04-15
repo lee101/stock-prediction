@@ -32,7 +32,7 @@ from src.utils import log_time
 use_stale_data = False
 retrain = True
 # dev:
-use_stale_data = True
+# use_stale_data = True
 # retrain = False
 
 
@@ -81,6 +81,37 @@ def close_profitable_trades(all_preds, positions, orders, change_settings=True):
 
         is_worsening_position = False
         for index, row in all_preds.iterrows():
+            # hack convert to tensor. todo fix this earlier
+            if isinstance(row['instrument'], torch.Tensor) and row['instrument'].dim() == 0:
+                row['instrument'] = float(row['instrument'])
+            if isinstance(row['close_predicted_price_minute'], torch.Tensor) and row['close_predicted_price_minute'].dim() == 0:
+                row['close_predicted_price_minute'] = float(row['close_predicted_price_minute'])
+            if isinstance(row['high_predicted_price_value'], torch.Tensor) and row['high_predicted_price_value'].dim() == 0:
+                row['high_predicted_price_value'] = float(row['high_predicted_price_value'])
+            if isinstance(row['maxdiffprofit_profit'], torch.Tensor) and row['maxdiffprofit_profit'].dim() == 0:
+                row['maxdiffprofit_profit'] = float(row['maxdiffprofit_profit'])
+            if isinstance(row['entry_takeprofit_profit'], torch.Tensor) and row['entry_takeprofit_profit'].dim() == 0:
+                row['entry_takeprofit_profit'] = float(row['entry_takeprofit_profit'])
+            if isinstance(row['entry_takeprofit_high_price'], torch.Tensor) and row['entry_takeprofit_high_price'].dim() == 0:
+                row['entry_takeprofit_high_price'] = float(row['entry_takeprofit_high_price'])
+            if isinstance(row['maxdiffprofit_high_price'], torch.Tensor) and row['maxdiffprofit_high_price'].dim() == 0:
+                row['maxdiffprofit_high_price'] = float(row['maxdiffprofit_high_price'])
+            if isinstance(row['entry_takeprofit_profit_high_multiplier'], torch.Tensor) and row['entry_takeprofit_profit_high_multiplier'].dim() == 0:
+                row['entry_takeprofit_profit_high_multiplier'] = float(row['entry_takeprofit_profit_high_multiplier'])
+            if isinstance(row['maxdiffprofit_profit_high_multiplier'], torch.Tensor) and row['maxdiffprofit_profit_high_multiplier'].dim() == 0:
+                row['maxdiffprofit_profit_high_multiplier'] = float(row['maxdiffprofit_profit_high_multiplier'])
+            if isinstance(row['entry_takeprofit_low_price'], torch.Tensor) and row['entry_takeprofit_low_price'].dim() == 0:
+                row['entry_takeprofit_low_price'] = float(row['entry_takeprofit_low_price'])
+            if isinstance(row['low_predicted_price_value'], torch.Tensor) and row['low_predicted_price_value'].dim() == 0:
+                row['low_predicted_price_value'] = float(row['low_predicted_price_value'])
+            if isinstance(row['maxdiffprofit_low_price'], torch.Tensor) and row['maxdiffprofit_low_price'].dim() == 0:
+                row['maxdiffprofit_low_price'] = float(row['maxdiffprofit_low_price'])
+            if isinstance(row['entry_takeprofit_profit_low_multiplier'], torch.Tensor) and row['entry_takeprofit_profit_low_multiplier'].dim() == 0:
+                row['entry_takeprofit_profit_low_multiplier'] = float(row['entry_takeprofit_profit_low_multiplier'])
+            if isinstance(row['maxdiffprofit_profit_low_multiplier'], torch.Tensor) and row['maxdiffprofit_profit_low_multiplier'].dim() == 0:
+                row['maxdiffprofit_profit_low_multiplier'] = float(row['maxdiffprofit_profit_low_multiplier'])
+
+
             if row['instrument'] == position.symbol:
                 # make it reasonably easy to back out of bad trades
                 # if (row['close_predicted_price_minute'] < 0) and position.side == 'long':

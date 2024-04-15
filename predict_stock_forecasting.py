@@ -499,9 +499,11 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 #     loguru_logger.info(f"Using {lowest_error} as lowest error from nbeats")
                 # Y_hat_df['error'] = Y_hat_df['y'] - Y_hat_df[lowest_error]
 
-                predictions = Y_hat_df["y"]
-                error = validation["y"] - Y_hat_df["y"]
-                mean_val_loss = error.abs().mean()
+                # predictions = Y_hat_df["y"]
+                error = np.array(validation["y"][:-1].values) - np.array(predictions[:-1]) # last one is not predicted to be anything so not the loss
+                mean_val_loss = np.abs(error).mean()
+                # loguru_logger.info(f"predictions {predictions} ")
+                # loguru_logger.info(f"actuals {validation["y"][:-1]}")
                 loguru_logger.info(f"Using {mean_val_loss} as lowest error from chronos")
                 # if not added_best_params:
                 #     # find best hyperparams
@@ -560,12 +562,12 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 last_preds[key_to_predict.lower() + "_last_price"] = last_close_price
                 last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[
                     -1
-                ].item()
+                ]
                 last_preds[key_to_predict.lower() + "_predicted_price_value"] = last_close_price + (
                             last_close_price * predictions[
                         -1
-                    ].item())
-                last_preds[key_to_predict.lower() + "_val_loss"] = val_loss.item()
+                    ])
+                last_preds[key_to_predict.lower() + "_val_loss"] = val_loss
                 last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = calculated_profit
                 last_preds[key_to_predict.lower() + "min_loss_buy_only_trading_profit"] = calculated_profit_buy_only
                 last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:-1].view(-1)
