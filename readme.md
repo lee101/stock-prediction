@@ -43,7 +43,8 @@ check if numbers are flipped and if so do something?
 crypto can be only traded non margin for some time so this server should be used that loops/does market orders:
 
 now they do?
-fees though
+
+fees though so
 use binance for crypto try not trade it on alpaca?
 
  ./.env/bin/gunicorn -k uvicorn.workers.UvicornWorker -b :5050 src.crypto_loop.crypto_order_loop_server:app --timeout 1800 --workers 1

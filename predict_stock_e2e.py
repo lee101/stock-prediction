@@ -421,7 +421,15 @@ trade_entered_times = FlatShelf(str(data_dir / f"trade_entered_times.db.json"))
 instrument_strategies = FlatShelf(str(data_dir / f"instrument_strategies.db.json"))
 instrument_strategy_change_times = FlatShelf(str(data_dir / f"instrument_strategy_change_times_.db.json"))
 
+# all keys in _times are stored e.g. 2024-04-16T19:53:01.577838
 
+#convert all to strings
+for key in list(instrument_strategy_change_times.keys()):
+    instrument_strategy_change_times[str(key)] = instrument_strategy_change_times.pop(key)
+
+for key in list(trade_entered_times.keys()):
+    trade_entered_times[str(key)] = trade_entered_times.pop(key)
+    
 def buy_stock(row, all_preds, positions, orders):
     """
     or sell stock
