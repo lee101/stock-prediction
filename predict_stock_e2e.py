@@ -26,6 +26,7 @@ import shelve
 from src.binan import binance_wrapper
 # read do_retrain argument from argparse
 # do_retrain = True
+from src.conversion_utils import convert_string_to_datetime
 from src.fixtures import crypto_symbols
 from src.utils import log_time
 
@@ -425,11 +426,11 @@ instrument_strategy_change_times = FlatShelf(str(data_dir / f"instrument_strateg
 
 #convert all to strings
 for key in list(instrument_strategy_change_times.keys()):
-    instrument_strategy_change_times[str(key)] = instrument_strategy_change_times.pop(key)
+    instrument_strategy_change_times[str(key)] = convert_string_to_datetime(instrument_strategy_change_times.pop(key))
 
 for key in list(trade_entered_times.keys()):
-    trade_entered_times[str(key)] = trade_entered_times.pop(key)
-    
+    trade_entered_times[str(key)] = convert_string_to_datetime(trade_entered_times.pop(key))
+
 def buy_stock(row, all_preds, positions, orders):
     """
     or sell stock
@@ -735,17 +736,17 @@ def make_trade_suggestions(predictions, minute_predictions):
     # fake position to close any btc in binance smartly
     # TODO remove this hack
     # not going to go through in alpaca is it's a huge order
-    btc_position = Position(symbol='BTCUSD', qty=1000, side='long', avg_entry_price=18000, unrealized_plpc=0.1,
-                            unrealized_pl=0.1, market_value=5000,
+    btc_position = Position(symbol='BTCUSD', qty='1000', side='long', avg_entry_price='18000', unrealized_plpc='0.1',
+                            unrealized_pl='0.1', market_value='5000',
                             asset_id=uuid.uuid4(),
                             exchange='FTXU',
                             asset_class='crypto',
-                            cost_basis=1,
-                            unrealized_intraday_pl=1,
-                            unrealized_intraday_plpc=1,
-                            current_price=100000,
-                            lastday_price=1,
-                            change_today=1,
+                            cost_basis='1',
+                            unrealized_intraday_pl='1',
+                            unrealized_intraday_plpc='1',
+                            current_price='100000',
+                            lastday_price='1',
+                            change_today='1',
                             )
     # close_profitable_trades(predictions, [btc_position], leftover_live_orders, False)
     close_profitable_crypto_binance_trades(predictions, [btc_position], leftover_live_orders, False)
