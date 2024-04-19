@@ -391,7 +391,8 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
     # notional_value = total_buying_power * 1.9 # trade with margin
     # notional_value = total_buying_power - 600 # trade with margin
     # non marginable
-    if currentBuySymbol in ["BTCUSD", "ETHUSD", "LTCUSD"]:
+    if currentBuySymbol in ["BTCUSD", "ETHUSD", "LTCUSD", "PAXGUSD", "UNIUSD"]:
+
         margin_multiplier = min(margin_multiplier, 1)
         notional_value = cash * margin_multiplier  # todo predict margin/price
     else:
@@ -419,10 +420,11 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
         elif currentBuySymbol in ["LTCUSD"]:
             if amount_to_trade < 0.1:
                 amount_to_trade = 0.1
+                # too work out "PAXGUSD", "UNIUSD"
         elif amount_to_trade < 1:
             amount_to_trade = 1
 
-        if currentBuySymbol not in ["BTCUSD", "ETHUSD", "LTCUSD"]:
+        if currentBuySymbol not in ["BTCUSD", "ETHUSD", "LTCUSD", "PAXGUSD", "UNIUSD"]:
             # fractional orders are okay for crypto.
             amount_to_trade = int(amount_to_trade)
         else:

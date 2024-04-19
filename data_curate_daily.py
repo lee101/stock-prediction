@@ -79,6 +79,7 @@ def download_daily_stock_data(path=None, all_data_force=False):
         'BTCUSD',
         'ETHUSD',
         'LTCUSD',
+        "PAXGUSD", "UNIUSD"
 
     ]
     # client = StockHistoricalDataClient(ALP_KEY_ID, ALP_SECRET_KEY, url_override="https://data.sandbox.alpaca.markets/v2")
@@ -97,6 +98,7 @@ def download_daily_stock_data(path=None, all_data_force=False):
             'BTCUSD',
             'ETHUSD',
             'LTCUSD',
+            "PAXGUSD", "UNIUSD"
         ]
 
     save_path = base_dir / 'data'
@@ -196,7 +198,7 @@ def get_bid(symbol):
     return bid
 
 def download_stock_data_between_times(api, end, start, symbol):
-    if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD']:
+    if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD', "PAXGUSD", "UNIUSD"]:
         daily_df = crypto_get_bars(end, start, symbol)
         try:
             daily_df.drop(['exchange'], axis=1, inplace=True)

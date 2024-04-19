@@ -55,6 +55,7 @@ def download_daily_stock_data(path=None):
         'BTCUSD',
         'ETHUSD',
         'LTCUSD',
+        "PAXGUSD", "UNIUSD"
 
     ]
     save_path = base_dir / 'data'

@@ -651,6 +651,8 @@ def make_trade_suggestions(predictions, minute_predictions):
             positions.append(position)
         elif position.symbol in ['BTCUSD'] and float(position.qty) >= .001:
             positions.append(position)
+        elif position.symbol in ["PAXGUSD", "UNIUSD"]:
+            positions.append(position) # todo workout reslution for these
         elif position.symbol not in crypto_symbols:
             positions.append(position)
     # # filter out crypto positions manually managed
