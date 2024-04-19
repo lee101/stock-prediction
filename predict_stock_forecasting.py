@@ -112,48 +112,12 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
     results_dir.mkdir(exist_ok=True)
     time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     save_file_name = results_dir / f"predictions-{time}.csv"
-    # CSV_KEYS = [
-    #     'instrument',
-    #     'close_last_price',
-    #     'close_predicted_price',
-    #     'close_val_loss',
-    #     'close_percent_movement',
-    #     "close_likely_percent_uncertainty",
-    #     "close_minus_uncertainty",
-    #     'high_last_price',
-    #     'high_predicted_price',
-    #     'high_val_loss',
-    #     'high_percent_movement',
-    #     "high_likely_percent_uncertainty",
-    #     "high_minus_uncertainty",
-    #     'low_last_price',
-    #     'low_predicted_price',
-    #     'low_val_loss',
-    #     'low_percent_movement',
-    #     "low_likely_percent_uncertainty",
-    #     "low_minus_uncertainty",
-    #
-    # ]
+    
 
     headers_written = False
-    # experiment with shared weights roughly a failure
-    # input_dim = 4
-    # hidden_dim = 32
-    # num_layers = 2
-    # output_dim = 1
-    #
-    # model = GRU(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, num_layers=num_layers)
-    # model.to(device)
-    # model.load_state_dict(torch.load(base_dir / "data/model.pth"))
 
-    # criterion = torch.nn.L1Loss(reduction='mean')
-    # optimiser = torch.optim.Adam(model.parameters(), lr=0.01)
     total_val_loss = 0
     total_forecasted_profit = 0
-    total_buy_val_loss = 0
-    total_profit = 0
-
-    timing_idx = 0
 
     if input_data_path:
         input_data_files = base_dir / "data" / input_data_path
@@ -200,21 +164,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                 data = pre_process_data(data, "Close")
                 price = data[["Close", "High", "Low", "Open"]]
 
-                # x_test = pre_process_data(x_test)
-
-                # lookback = 20  # choose sequence length , GTLB only has been open for 27days cant go over that :O
-                # if len(price) > 40:
-                #     lookback = 30
-                # longer didnt help
-                # if len(price) > 100:
-                #     lookback = 90
-                # if len(price) > 200:
-                #     lookback = 180
-                # if len(price) > 300:
-                #     lookback = 280
-                # max_prediction_length = 6
-                # max_encoder_length = 24
-                # rename date to time_idx
+                
                 price = price.rename(columns={"Date": "time_idx"})
                 # not actually important what date it thinks as long as its daily i think
                 price["ds"] = pd.date_range(start="1949-01-01", periods=len(price), freq="D").values
@@ -223,9 +173,6 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
 
                 price.drop(price.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
 
-                # cuttoff max_prediction_length from price
-                # price = price.iloc[:-max_prediction_length]
-                # add ascending id to price dataframe
                 price['id'] = price.index
                 # add unique_id column to price dataframe (is actually constant so not unique :/ )
                 price['unique_id'] = 1
@@ -240,227 +187,10 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                 Y_train_df = training
                 Y_test_df = validation
 
-                # create dataloaders for model
-                # batch_size = 128  # set this between 32 to 128
-                # compatibitiy
-
-                # nhits_config = {
-                #     "max_steps": 100,  # Number of SGD steps
-                #     "input_size": 24,  # Size of input window
-                #     "learning_rate": tune.loguniform(1e-5, 1e-1),  # Initial Learning rate
-                #     "n_pool_kernel_size": tune.choice([[2, 2, 2], [16, 8, 1]]),  # MaxPool's Kernelsize
-                #     "n_freq_downsample": tune.choice([[168, 24, 1], [24, 12, 1], [1, 1, 1]]),
-                #     # Interpolation expressivity ratios
-                #     "val_check_steps": 50,  # Compute validation every 50 steps
-                #     "random_seed": tune.randint(1, 10),  # Random seed
-                # }
-                # horizon = len(Y_test_df) + 1
-                # stacks = 3
-                # nhits_config.update(dict(
-                #     input_size=2 * horizon,
-                #     max_steps=700,
-                #     stack_types=stacks * ['identity'],
-                #     n_blocks=stacks * [1],
-                #     mlp_units=[[256, 256] for _ in range(stacks)],
-                #     n_pool_kernel_size=stacks * [1],
-                #     batch_size=32,
-                #     scaler_type='standard',
-                #     n_freq_downsample=[12, 4, 1],
-                #     max_epochs=5000,
-                #     val_check_steps=5,
-                # ))
-                # fit
-                # with much less epocs like 10 or something
-                # epocs = 50
-                # epocs = 20 if not retrain else 700
-                # epocs = 50 if not retrain else 2000
-                # models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=epocs),
-                #           NHITS(
-                #               input_size=2 * horizon,
-                #               h=horizon,
-                #               stack_types=stacks * ['identity'],
-                #               n_blocks=stacks * [1],
-                #               mlp_units=[[256, 256] for _ in range(stacks)],
-                #               n_pool_kernel_size=stacks * [1],
-                #               batch_size=32,
-                #               scaler_type='standard',
-                #               n_freq_downsample=[12, 4, 1],
-                #               # loss=TradingLoss(), # TODO fix TradingLoss' object has no attribute 'outputsize_multiplier'
-                #               max_epochs=epocs
-                #           )]
-                # # models = [NBEATS(input_size=2 * horizon, h=horizon, max_epochs=700),
-                # #           NHITS(input_size=2 * horizon, h=horizon, max_epochs=700),
-                # #           ]
-                # nforecast = NeuralForecast(models=models, freq='D')
-                # ### Load Checkpoint
-                # checkpoints_dir = (base_dir / 'lightning_logs_nforecast' / pred_name / key_to_predict / instrument_name)
-                # checkpoints_dir.mkdir(parents=True, exist_ok=True)
-                # checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
-                # if len(checkpoint_files) == 0:
-                #     loguru_logger.info("No min+open/low specific checkpoints found, training from other checkpoint")
-                #     checkpoints_dir = (base_dir / 'lightning_logs_nforecast' / pred_name / instrument_name)
-                #     checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
-                #     if len(checkpoint_files) == 0:
-                #         loguru_logger.info("No min specific checkpoints found, training from other checkpoint")
-                #         checkpoints_dir = (base_dir / 'lightning_logs_nforecast' / instrument_name)
-                #         checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
-
-                # if checkpoint_files:
-                #     best_checkpoint_path = checkpoint_files[0]
-                #     # sort by most recent checkpoint_files
-                #     checkpoint_files.sort(key=lambda x: os.path.getctime(x))
-                #     # load the most recent
-                #     best_checkpoint_path = checkpoint_files[-1]
-                #     # find best checkpoint
-                #     # min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
-                #     # for file_name in checkpoint_files:
-                #     #     current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
-                #     #     if float(current_loss) < float(min_current_loss):
-                #     #         min_current_loss = current_loss
-                #     #         best_checkpoint_path = file_name
-                #     #         # TODO invalidation for 30minute vs daily data
-
-                #     loguru_logger.info(f"Loading best checkpoint from {best_checkpoint_path}")
-                #     nforecast.load(checkpoints_dir)
                 if Y_train_df.empty:
                     loguru_logger.info(f"No training data for {instrument_name}")
                     continue
-                # if retrain:
-                #     nforecast.fit(df=Y_train_df)
-                #     # todo save only best during training
-                #     nforecast.save(str(checkpoints_dir), save_dataset=False, overwrite=True)
-                #     Y_hat_df = nforecast.predict().reset_index()
-                # else:
-                #     # fit with much less epocs like 10 or something
-                #     Y_hat_df = nforecast.predict(df=Y_train_df).reset_index()
-
-                
-                # Y_hat_df = Y_test_df.merge(Y_hat_df, how='left', on=['unique_id', 'ds'])
-                # actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])
-                # baseline_predictions = Baseline().predict(val_dataloader)
-                # loguru_logger.info((actuals[:-1] - baseline_predictions[:-1]).abs().mean().item())
-
-                # trainer = pl.Trainer(
-                #     gpus=0,
-                #     # clipping gradients is a hyperparameter and important to prevent divergance
-                #     # of the gradient for recurrent neural networks
-                #     gradient_clip_val=0.1,
-                # )
-
-                # best hyperpramams look like:
-                # {'gradient_clip_val': 0.05690473137493243, 'hidden_size': 50, 'dropout': 0.23151352460442215,
-                #  'hidden_continuous_size': 22, 'attention_head_size': 2, 'learning_rate': 0.0816548812864903}
-                # best_hyperparams_save_file = f"data/test_study{pred_name}{key_to_predict}{instrument_name}.pkl"
-                # params = None
-                # try:
-                #     params = pickle.load(open(best_hyperparams_save_file, "rb"))
-                # except FileNotFoundError:
-                #     # logger.info("No best hyperparams found, tuning")
-                #     best_hyperparams_save_file = f"data/test_study{instrument_name}.pkl"
-                #     try:
-                #         params = pickle.load(open(best_hyperparams_save_file, "rb"))
-                #     except FileNotFoundError:
-                #         # logger.info("No best hyperparams found, tuning")
-                #         pass
-                # added_best_params = {}
-                # if params and params.best_trial.params:
-                #     added_best_params = params.best_trial.params
-                # added_params = {  # not meaningful for finding the learning rate but otherwise very important
-                #     "learning_rate": 0.03,
-                #     "hidden_size": 16,  # most important hyperparameter apart from learning rate
-                #     # number of attention heads. Set to up to 4 for large datasets
-                #     "attention_head_size": 1,
-                #     "dropout": 0.1,  # between 0.1 and 0.3 are good values
-                #     "hidden_continuous_size": 8,  # set to <= hidden_size
-                #     "output_size": 1,  # 7 quantiles by default
-                #     "loss": TradingLoss(),
-                #     # "logging_metrics": TradingLossBinary(),
-                #     # reduce learning rate if no improvement in validation loss after x epochs
-                #     "reduce_on_plateau_patience": 4,
-                # }
-                # added_params.update(added_best_params)
-                # if type(added_params['output_size']) == int:
-                #     if type(target_to_pred) == list:
-                #         added_params['output_size'] = [added_params['output_size']] * len(target_to_pred)
-                # gradient_clip_val = added_params.pop("gradient_clip_val", 0.1)
-                # tft = TemporalFusionTransformer.from_dataset(
-                #     training,
-                #     **added_params
-                # )
-                #
-                # loguru_logger.info(f"Number of parameters in network: {tft.size() / 1e3:.1f}k")
-                #
-                # early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-5, patience=4, verbose=False,
-                #                                     mode="min")
-                # model_checkpoint = ModelCheckpoint(
-                #     monitor="val_loss",
-                #     mode="min",
-                #     # save a few of the top models
-                #     # incase one does great on other metrics than just val_loss
-                #     save_top_k=1,
-                #     verbose=True,
-                #     filename=instrument_name + "_{epoch}_{val_loss:.8f}",
-                # )
-                # lr_logger = LearningRateMonitor()  # log the learning rate
-                # logger = TensorBoardLogger(f"lightning_logs/{pred_name}/{key_to_predict}/{instrument_name}")  # logging results to a tensorboard
-                # trainer = pl.Trainer(
-                #     max_epochs=100,
-                #     gpus=1,
-                #     weights_summary="top",
-                #     gradient_clip_val=gradient_clip_val,
-                #     # track_grad_norm=2,
-                #     # auto_lr_find=True,
-                #     # auto_scale_batch_size='binsearch',
-                #     limit_train_batches=30,  # coment in for training, running valiation every 30 batches
-                #     # fast_dev_run=True,  # comment in to check that networkor dataset has no serious bugs
-                #     callbacks=[lr_logger, early_stop_callback, model_checkpoint],
-                #     logger=logger,
-                # )
-                # # retrain = False # todo reenable
-                # # try find specific hl net
-                #
-                # checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / key_to_predict / instrument_name)
-                # checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
-                # if len(checkpoint_files) == 0:
-                #     loguru_logger.info("No min+open/low specific checkpoints found, training from other checkpoint")
-                #     checkpoints_dir = (base_dir / 'lightning_logs' / pred_name / instrument_name)
-                #     checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
-                #     if len(checkpoint_files) == 0:
-                #         loguru_logger.info("No min specific checkpoints found, training from other checkpoint")
-                #         checkpoints_dir = (base_dir / 'lightning_logs' / instrument_name)
-                #         checkpoint_files = list(checkpoints_dir.glob(f"**/*.ckpt"))
-                # best_tft = tft
-                #
-                # if checkpoint_files:
-                #
-                #     best_checkpoint_path = checkpoint_files[0]
-                #     # sort by most recent checkpoint_files
-                #     checkpoint_files.sort(key=lambda x: os.path.getctime(x))
-                #     # load the most recent
-                #     best_checkpoint_path = checkpoint_files[-1]
-                #     # find best checkpoint
-                #     # min_current_loss = str(checkpoint_files[0]).split("=")[-1][0:len('.ckpt')]
-                #     # for file_name in checkpoint_files:
-                #     #     current_loss = str(file_name).split("=")[-1][0:len('.ckpt')]
-                #     #     if float(current_loss) < float(min_current_loss):
-                #     #         min_current_loss = current_loss
-                #     #         best_checkpoint_path = file_name
-                #     #         # TODO invalidation for 30minute vs daily data
-                #
-                #     loguru_logger.info(f"Loading best checkpoint from {best_checkpoint_path}")
-                #     best_tft = TemporalFusionTransformer.load_from_checkpoint(str(best_checkpoint_path))
-                #
-                # if retrain:
-                #     trainer.fit(
-                #         best_tft,
-                #         train_dataloader=train_dataloader,
-                #         val_dataloaders=val_dataloader,
-                #     )
-                #     best_model_path = trainer.checkpoint_callback.best_model_path
-                #     best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
-                # Y_hat_df = nforecast.predict().reset_index()
-
-
+               
                 load_pipeline()
                 predictions = []
                 # make 7 predictions - todo can batch this all in 1 go
@@ -469,13 +199,13 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                     current_context = price[:-pred_idx]
                     context = torch.tensor(current_context["y"].values, dtype=torch.float).unsqueeze(1)
 
-                    prediction_length = 1
+                    prediction_length = 10
                     forecast = pipeline.predict(
                         context,
                         prediction_length,
-                        num_samples=1,
+                        num_samples=10,
                         temperature=1.0,
-                        top_k=1,
+                        top_k=4000,
                         top_p=1.0,
                     )
                     low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0) # todo use spread?
@@ -951,8 +681,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
 
     loguru_logger.info(f"val_loss: {total_val_loss / len(csv_files)}")
     loguru_logger.info(f"total_forecasted_profit: {total_forecasted_profit / len(csv_files)}")
-    loguru_logger.info(f"total_buy_val_loss: {total_buy_val_loss / len(csv_files)}")
-    loguru_logger.info(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
+    loguru_logger.info(f"total_val_loss oer symbol: {total_val_loss / len(csv_files)}")
+    loguru_logger.info(f"total_forecasted_profit avg per symbol: {total_forecasted_profit / len(csv_files)}")
     return pd.read_csv(save_file_name)
 
 
@@ -961,4 +691,4 @@ def df_to_torch(df):
 
 
 if __name__ == "__main__":
-    make_predictions()
+    make_predictions("2024-04-18--06-14-26")
