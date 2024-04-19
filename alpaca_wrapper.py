@@ -32,9 +32,19 @@ alpaca_api = TradingClient(
 
 data_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
 
+force_open_the_clock = False
+
 @cachetools.cached(cache=cachetools.TTLCache(maxsize=100, ttl=60 * 5))
 def get_clock(retries=3):
-    return get_clock_internal(retries)
+    clock = get_clock_internal(retries)
+    if not clock.is_open and force_open_the_clock:
+        clock.is_open = True
+    return clock
+
+def force_open_the_clock():
+    global force_open_the_clock
+    force_open_the_clock = True
+
 def get_clock_internal(retries=3):
     try:
         return alpaca_api.get_clock()

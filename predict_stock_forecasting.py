@@ -104,7 +104,7 @@ def series_to_df(series_pd):
     return pd.DataFrame(series_pd.values, columns=series_pd.columns)
 
 
-def make_predictions(input_data_path=None, pred_name='', retrain=False):
+def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_wrapper=None):
     """
     Make predictions for all csv files in directory.
     """

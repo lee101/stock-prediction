@@ -37,6 +37,9 @@ use_stale_data = True
 # retrain = False
 # backtesting_simulation = True
 
+if use_stale_data:
+    alpaca_wrapper.force_open_the_clock = True
+    
 daily_predictions = DataFrame()
 daily_predictions_time = None
 
@@ -62,13 +65,13 @@ def do_forecasting():
                 '%Y-%m-%d--%H-%M-%S')  # but cant be 15 mins?
             if not use_stale_data:
                 download_daily_stock_data(current_time_formatted, True)
-        daily_predictions = make_predictions(current_time_formatted, retrain=retrain)  # TODO
+        daily_predictions = make_predictions(current_time_formatted, retrain=retrain, alpaca_wrapper=alpaca_wrapper)  # TODO
         # daily_predictions = make_predictions(current_time_formatted) # TODO
 
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
     if not use_stale_data: # why are these different?
         download_daily_stock_data(current_time_formatted)
-        minute_predictions = make_predictions(current_time_formatted)
+        minute_predictions = make_predictions(current_time_formatted, alpaca_wrapper=alpaca_wrapper)
     else:
         minute_predictions = daily_predictions # todo fix this
 
