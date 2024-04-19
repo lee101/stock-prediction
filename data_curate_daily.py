@@ -79,7 +79,8 @@ def download_daily_stock_data(path=None, all_data_force=False):
         'BTCUSD',
         'ETHUSD',
         'LTCUSD',
-        "PAXGUSD", "UNIUSD"
+        "PAXGUSD", 
+        "UNIUSD",
 
     ]
     # client = StockHistoricalDataClient(ALP_KEY_ID, ALP_SECRET_KEY, url_override="https://data.sandbox.alpaca.markets/v2")
@@ -188,13 +189,15 @@ def get_spread(symbol):
 def get_ask(symbol):
     ask = asks.get(symbol)
     if not ask:
-        logger.error("error getting ask price")
+        logger.error(f"error getting ask price for {symbol}")
+        logger.info(asks)
     return ask
 
 def get_bid(symbol):
     bid = bids.get(symbol)
     if not bid:
-        logger.error("error getting bid price")
+        logger.error(f"error getting bid price for {symbol}")
+        logger.info(bids)
     return bid
 
 def download_stock_data_between_times(api, end, start, symbol):

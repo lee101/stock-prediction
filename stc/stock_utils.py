@@ -20,7 +20,7 @@ def remap_symbols(symbol):
         "ETHUSD": "ETH/USD",
         "LTCUSD": "LTC/USD",
         "BTCUSD": "BTC/USD",
-        "PAXGUSD": "PAX/USD",
+        "PAXGUSD": "PAXG/USD",
         "UNIUSD": "UNI/USD",
     }
     if symbol in crypto_symbols:
@@ -32,7 +32,7 @@ def unmap_symbols(symbol):
         "ETH/USD": "ETHUSD",
         "LTC/USD": "LTCUSD",
         "BTC/USD": "BTCUSD",
-        "PAX/USD": "PAXGUSD",
+        "PAXG/USD": "PAXGUSD",
         "UNI/USD": "UNIUSD",
     }
     if symbol in crypto_remap:
