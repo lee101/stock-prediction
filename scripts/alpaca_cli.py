@@ -62,5 +62,5 @@ def violently_close_all_positions():
 
 
 if __name__ == "__main__":
-    # typer.run(main)
-    close_all_positions()
+    typer.run(main)
+    # close_all_positions()

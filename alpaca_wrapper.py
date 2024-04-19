@@ -41,7 +41,7 @@ def get_clock(retries=3):
         clock.is_open = True
     return clock
 
-def force_open_the_clock():
+def force_open_the_clock_func():
     global force_open_the_clock
     force_open_the_clock = True
 

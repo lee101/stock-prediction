@@ -106,3 +106,4 @@ uvicorn
 git+https://github.com/amazon-science/chronos-forecasting.git
 
 python-binance
+typer
