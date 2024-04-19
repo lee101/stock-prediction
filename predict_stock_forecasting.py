@@ -197,9 +197,9 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                 for pred_idx in reversed(range(1, 8)):
                     
                     current_context = price[:-pred_idx]
-                    context = torch.tensor(current_context["y"].values, dtype=torch.float).unsqueeze(1)
+                    context = torch.tensor(current_context["y"].values, dtype=torch.float)
 
-                    prediction_length = 10
+                    prediction_length = 1
                     forecast = pipeline.predict(
                         context,
                         prediction_length,

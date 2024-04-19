@@ -33,12 +33,12 @@ from src.utils import log_time
 use_stale_data = False
 retrain = True
 # dev:
-use_stale_data = True
+# use_stale_data = True
 # retrain = False
 # backtesting_simulation = True
 
-if use_stale_data:
-    alpaca_wrapper.force_open_the_clock = True
+# if use_stale_data:
+#     alpaca_wrapper.force_open_the_clock = True
     
 daily_predictions = DataFrame()
 daily_predictions_time = None
@@ -48,9 +48,9 @@ daily_predictions_time = None
 def do_forecasting():
     global daily_predictions
     global daily_predictions_time
-
+    alpaca_clock = alpaca_wrapper.get_clock()
     if daily_predictions.empty and (
-            daily_predictions_time is None or daily_predictions_time < datetime.now() - timedelta(days=1)):
+            daily_predictions_time is None or daily_predictions_time < datetime.now() - timedelta(days=1)) or ('SAP' not in daily_predictions['instrument'].unique() and alpaca_clock.is_open): # or if we dont have stocks like SAP in there?
         daily_predictions_time = datetime.now()
         if use_stale_data:
             current_time_formatted = '2021-12-05 18-20-29'
@@ -65,6 +65,7 @@ def do_forecasting():
                 '%Y-%m-%d--%H-%M-%S')  # but cant be 15 mins?
             if not use_stale_data:
                 download_daily_stock_data(current_time_formatted, True)
+        # error where daily where downloaded at the wrong time?
         daily_predictions = make_predictions(current_time_formatted, retrain=retrain, alpaca_wrapper=alpaca_wrapper)  # TODO
         # daily_predictions = make_predictions(current_time_formatted) # TODO
 
@@ -622,7 +623,7 @@ def make_trade_suggestions(predictions, minute_predictions):
         predictions['takeprofit_profit'])
     # sort by close_predicted_price absolute movement
     predictions.sort_values(by=['either_profit_movement'], ascending=False, inplace=True)
-    do_trade = False
+    # do_trade = False
     has_traded = False
     # cancel any order open longer than 20 mins/recalculate it
     orders = alpaca_wrapper.get_open_orders()
@@ -678,12 +679,12 @@ def make_trade_suggestions(predictions, minute_predictions):
     for position in positions:
         if position.symbol not in crypto_symbols:
             total_money_made += float(position.unrealized_pl)
-    if total_money_made > 500:
-        logger.info("total made today is over 500, closing all positions and not trading anymore today")
-        total_money_made = total_money_made * -1
-        current_flags['trading_today'] = False
-        alpaca_wrapper.close_open_orders()
-        alpaca_wrapper.backout_all_non_crypto_positions(positions, predictions)
+    # if total_money_made > 500: # todo reevaluate if we need this?
+    #     logger.info("total made today is over 500, closing all positions and not trading anymore today")
+    #     total_money_made = total_money_made * -1
+    #     current_flags['trading_today'] = False
+    #     alpaca_wrapper.close_open_orders()
+    #     alpaca_wrapper.backout_all_non_crypto_positions(positions, predictions)
 
     if datetime.now().hour == 12:
         current_flags['trading_today'] = True
