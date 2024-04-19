@@ -5,8 +5,12 @@ from loguru import logger
 
 from env_real import BINANCE_API_KEY, BINANCE_SECRET
 from stc.stock_utils import binance_remap_symbols
-
-client = Client(BINANCE_API_KEY, BINANCE_SECRET)
+try:
+    client = Client(BINANCE_API_KEY, BINANCE_SECRET)
+except Exception as e:
+    logger.error(e)
+    logger.info("Maybe you are offline - no connection to binance!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    client = None
 
 crypto_symbols = [
     "BTCUSDT",

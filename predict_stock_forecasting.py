@@ -43,7 +43,8 @@ def load_pipeline():
     global pipeline
     if pipeline is None:
         pipeline = ChronosPipeline.from_pretrained(
-            "amazon/chronos-t5-large",
+            # "amazon/chronos-t5-large",
+            "amazon/chronos-t5-tiny",
             device_map="cuda",  # use "cpu" for CPU inference and "mps" for Apple Silicon
             torch_dtype=torch.bfloat16,
         )
@@ -201,9 +202,9 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
 
                 # x_test = pre_process_data(x_test)
 
-                lookback = 20  # choose sequence length , GTLB only has been open for 27days cant go over that :O
-                if len(price) > 40:
-                    lookback = 30
+                # lookback = 20  # choose sequence length , GTLB only has been open for 27days cant go over that :O
+                # if len(price) > 40:
+                #     lookback = 30
                 # longer didnt help
                 # if len(price) > 100:
                 #     lookback = 90
@@ -211,8 +212,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 #     lookback = 180
                 # if len(price) > 300:
                 #     lookback = 280
-                max_prediction_length = 6
-                max_encoder_length = 24
+                # max_prediction_length = 6
+                # max_encoder_length = 24
                 # rename date to time_idx
                 price = price.rename(columns={"Date": "time_idx"})
                 # not actually important what date it thinks as long as its daily i think
@@ -230,17 +231,17 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 price['unique_id'] = 1
                 # drop nan values
                 price = price.dropna()
-                final_pred_to_predict = price.tail(1)
+                # final_pred_to_predict = price.tail(1)
                 # price.drop(final_pred_to_predict.index, inplace=True)  # drop last row because of percent change augmentation
 
-                target_to_pred = "y"
+                # target_to_pred = "y"
                 training = price[:-7]
                 validation = price[-7:]
                 Y_train_df = training
                 Y_test_df = validation
 
                 # create dataloaders for model
-                batch_size = 128  # set this between 32 to 128
+                # batch_size = 128  # set this between 32 to 128
                 # compatibitiy
 
                 # nhits_config = {
@@ -253,8 +254,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 #     "val_check_steps": 50,  # Compute validation every 50 steps
                 #     "random_seed": tune.randint(1, 10),  # Random seed
                 # }
-                horizon = len(Y_test_df) + 1
-                stacks = 3
+                # horizon = len(Y_test_df) + 1
+                # stacks = 3
                 # nhits_config.update(dict(
                 #     input_size=2 * horizon,
                 #     max_steps=700,
@@ -462,7 +463,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
 
                 load_pipeline()
                 predictions = []
-                # make 7 predictions
+                # make 7 predictions - todo can batch this all in 1 go
                 for pred_idx in reversed(range(1, 8)):
                     
                     current_context = price[:-pred_idx]
@@ -472,12 +473,12 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                     forecast = pipeline.predict(
                         context,
                         prediction_length,
-                        num_samples=20,
+                        num_samples=1,
                         temperature=1.0,
-                        top_k=50,
+                        top_k=1,
                         top_p=1.0,
                     )
-                    low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
+                    low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0) # todo use spread?
                     predictions.append(median.item())
                 Y_hat_df = pd.DataFrame({'y': predictions})
 
@@ -589,7 +590,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
             ##### Now train other network to predict buy or sell leverage
             # todo use the same zero shot forecaster for this - also for other stuff
 
-            key_to_predict = "Close"
+            # key_to_predict = "Close"
             
 
             # # compute loss when
@@ -657,7 +658,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False):
                 if calculated_profit > max_profit:
                     max_profit = calculated_profit
                     last_preds['takeprofit_profit_high_multiplier'] = buy_take_profit_multiplier
-                    last_preds['takeprofit_high_profit'] = max_profit
+                    last_preds['takeprofit_high_profit'] = max_profit # high profit cant be trusted because of training the multiplier on valid data
                     # loguru_logger.info(f"{instrument_name} buy_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
             max_profit = float('-Inf')

@@ -33,9 +33,9 @@ from src.utils import log_time
 use_stale_data = False
 retrain = True
 # dev:
-# use_stale_data = True
+use_stale_data = True
 # retrain = False
-
+# backtesting_simulation = True
 
 daily_predictions = DataFrame()
 daily_predictions_time = None
@@ -56,16 +56,21 @@ def do_forecasting():
             current_time_formatted = 'min'  # new/ less data tickers
             current_time_formatted = '2021-12-30--20-11-47'  # new/ 30 minute data # '2022-10-14 09-58-20'
             current_time_formatted = '2024-04-04--20-41-41'  # new/ 30 minute data # '2022-10-14 09-58-20'
+            current_time_formatted = '2024-04-18--06-14-26'  # new/ 30 minute data # '2022-10-14 09-58-20'
         else:
             current_time_formatted = (datetime.now() - timedelta(days=10)).strftime(
                 '%Y-%m-%d--%H-%M-%S')  # but cant be 15 mins?
-            download_daily_stock_data(current_time_formatted, True)
+            if not use_stale_data:
+                download_daily_stock_data(current_time_formatted, True)
         daily_predictions = make_predictions(current_time_formatted, retrain=retrain)  # TODO
         # daily_predictions = make_predictions(current_time_formatted) # TODO
 
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
-    download_daily_stock_data(current_time_formatted)
-    minute_predictions = make_predictions(current_time_formatted)
+    if not use_stale_data: # why are these different?
+        download_daily_stock_data(current_time_formatted)
+        minute_predictions = make_predictions(current_time_formatted)
+    else:
+        minute_predictions = daily_predictions # todo fix this
 
     make_trade_suggestions(daily_predictions, minute_predictions)
 
@@ -670,8 +675,8 @@ def make_trade_suggestions(predictions, minute_predictions):
     for position in positions:
         if position.symbol not in crypto_symbols:
             total_money_made += float(position.unrealized_pl)
-    if total_money_made > 200:
-        logger.info("total made today is over 200, closing all positions and not trading anymore today")
+    if total_money_made > 500:
+        logger.info("total made today is over 500, closing all positions and not trading anymore today")
         total_money_made = total_money_made * -1
         current_flags['trading_today'] = False
         alpaca_wrapper.close_open_orders()
@@ -695,7 +700,7 @@ def make_trade_suggestions(predictions, minute_predictions):
         # extra profit check for buying crypto which has higher fees
         # todo try not to aggressive trade on high spreads
         # todo order at market price meaning the bid price is buying not the ask price
-        spread = get_spread(row['instrument'])
+        spread = get_spread(row['instrument']) # todo high spread fast trading to take advantage of high spread?
         if row['instrument'] not in crypto_symbols and not (
                 (row['entry_takeprofit_profit'] > 0 and
                  row[
