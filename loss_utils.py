@@ -1,10 +1,8 @@
-from collections import OrderedDict
-
 import numpy as np
 
 # TRADING_FEE = 0.0007 # fee actually changes for small trades - this is for 100k
 # TRADING_FEE = 0.003  # fee actually changes for small trades
-CRYPTO_TRADING_FEE = .0015 # maker fee taker is .0025
+CRYPTO_TRADING_FEE = .0015  # maker fee taker is .0025
 # from pytorch_forecasting import MultiHorizonMetric
 
 TRADING_FEE = 0.0005
@@ -27,8 +25,8 @@ def calculate_trading_profit(scaler, x_test, y_test, y_test_pred):
     # those where not scaled properly, scale properly for logging purposes
     last_values_scaled = scaler.inverse_transform(last_values)
     percent_movements_scaled = (
-        (scaler.inverse_transform(y_test) - last_values_scaled) / last_values_scaled
-    ) + 1
+                                       (scaler.inverse_transform(y_test) - last_values_scaled) / last_values_scaled
+                               ) + 1
     detached_y_test_pred = y_test_pred
     bought_profits = np.clip(detached_y_test_pred, 0, 1) * percent_movements_scaled
     saved_money = 1 - np.abs(detached_y_test_pred)
@@ -136,7 +134,6 @@ def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
     return current_profit
 
 
-
 def calculate_trading_profit_torch_buy_only(scaler, last_values, y_test, y_test_pred):
     """
     Calculate trading profits
@@ -194,7 +191,7 @@ def calculate_trading_profit_torch_with_buysell(scaler, last_values, y_test, y_t
         # saved_money
         # +
         # bought
-            calculated_profit_values
+        calculated_profit_values
     )
 
     # todo random deprecation?
@@ -225,7 +222,7 @@ def calculate_trading_profit_torch_with_buysell_profit_values(y_test, y_test_hig
     # find points where y_test_high is greater than y_test_high_pred
     hit_high_points = y_test_high_pred * (y_test_high_pred <= y_test_high) * torch.clip(detached_y_test_pred, 0, 10)
     missed_high_points = bought_profits * (
-                y_test_high_pred > y_test_high)  # already calculated/betted on but not cutoff
+            y_test_high_pred > y_test_high)  # already calculated/betted on but not cutoff
     # print("profit before hit_high_points: ", bought_profits)
     bought_adjusted_profits = hit_high_points + missed_high_points
     # print("profit hit_high_points: ", bought_adjusted_profits)
@@ -233,7 +230,7 @@ def calculate_trading_profit_torch_with_buysell_profit_values(y_test, y_test_hig
     # find points where y_test_low is less than y_test_low_pred
     hit_low_points = (y_test_low_pred * (y_test_low_pred >= y_test_low)) * torch.clip(y_test_pred, -10, 0)
     missed_points = sold_profits * (
-                y_test_low_pred < y_test_low)  # you are left with missed points/others already calculated
+            y_test_low_pred < y_test_low)  # you are left with missed points/others already calculated
     # print("profit before hit_low_points: ", sold_profits)
     adjusted_profits = hit_low_points + missed_points
     # print("profit after hit_low_points: ", adjusted_profits)
@@ -248,8 +245,8 @@ def calculate_trading_profit_torch_with_buysell_profit_values(y_test, y_test_hig
 
 
 def calculate_trading_profit_torch_with_entry_buysell(scaler, last_values, y_test, y_test_pred,
-                                                y_test_high, y_test_high_pred,
-                                                y_test_low, y_test_low_pred):
+                                                      y_test_high, y_test_high_pred,
+                                                      y_test_low, y_test_low_pred):
     """
     Calculate trading profits
     :param y_test_low_pred:
@@ -261,9 +258,10 @@ def calculate_trading_profit_torch_with_entry_buysell(scaler, last_values, y_tes
     :param y_test_pred:
     :return:
     """
-    calculated_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(y_test, y_test_high, y_test_high_pred,
-                                                                                y_test_low, y_test_low_pred,
-                                                                                y_test_pred)
+    calculated_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(y_test, y_test_high,
+                                                                                       y_test_high_pred,
+                                                                                       y_test_low, y_test_low_pred,
+                                                                                       y_test_pred)
 
     current_profit = torch.sum(
         # saved money
@@ -277,8 +275,9 @@ def calculate_trading_profit_torch_with_entry_buysell(scaler, last_values, y_tes
     return current_profit
 
 
-def calculate_profit_torch_with_entry_buysell_profit_values(y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred,
-                                                     y_test_pred):
+def calculate_profit_torch_with_entry_buysell_profit_values(y_test, y_test_high, y_test_high_pred, y_test_low,
+                                                            y_test_low_pred,
+                                                            y_test_pred):
     # reshape all args to 1d
     y_test = y_test.view(-1)
     y_test_pred = y_test_pred.view(-1)
@@ -397,7 +396,6 @@ def calculate_trading_profit_no_scale(last_values, y_test, y_test_pred):
     # return current_profit
 
 
-
 def get_trading_profits_list(scaler, last_values, y_test, y_test_pred):
     """
     Calculate trading profits
@@ -420,12 +418,12 @@ def get_trading_profits_list(scaler, last_values, y_test, y_test_pred):
         # saved_money
         # +
         # bought
-        bought_profits
-        +
-        # sold
-        sold_profits
-        # fee
-        - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+            bought_profits
+            +
+            # sold
+            sold_profits
+            # fee
+            - (torch.abs(detached_y_test_pred) * TRADING_FEE)
     )
 
     # todo random deprecation?
@@ -438,6 +436,7 @@ def percent_movements_augment(to_scale_tensor):
     to_scale_tensor[-1] = 0
     return to_scale_tensor
     # return (to_scale_tensor - to_scale_tensor.shift(1)) / to_scale_tensor.shift(1)
+
 
 def percent_movements_augment_to(to_scale_tensor, movement_to_tensor):
     """ percent changes moving from to scale to movement to"""
@@ -459,7 +458,7 @@ def calculate_takeprofit_torch(scaler, y_ndhalp_test, y_test, y_test_pred):
     under_sold_prices = y_test_pred * where_under
     hodl_prices = where_over * y_test
     current_profit = torch.sum(under_sold_prices)
-    current_end_profits = torch.sum(hodl_prices) # we predicted to sell higher so we get the real end value
+    current_end_profits = torch.sum(hodl_prices)  # we predicted to sell higher so we get the real end value
     return (current_profit + current_end_profits) / y_test.numel()
     # percent_movements_scaled = y_test  # not scientific
     # detached_y_test_pred = y_test_pred
@@ -498,7 +497,8 @@ def calculate_takeprofit_torch_sq(scaler, y_ndhalp_test, y_test, y_test_pred):
     under_sold_prices = y_test_pred * where_under
     hodl_prices = where_over * y_test
     all_profits_sq = (under_sold_prices + hodl_prices)
-    where_loosing = torch.sum((all_profits_sq < 0).float()) / y_test.numel() # we want to minimize loosing money add this weighted rate in
+    where_loosing = torch.sum(
+        (all_profits_sq < 0).float()) / y_test.numel()  # we want to minimize loosing money add this weighted rate in
     # current_profit = torch.sum(under_sold_prices)
     # current_end_profits = torch.sum(hodl_prices)  # we predicted to sell higher so we get the real end value
-    return (torch.sum(all_profits_sq) / y_test.numel()) * where_loosing # mul by loosing rate
+    return (torch.sum(all_profits_sq) / y_test.numel()) * where_loosing  # mul by loosing rate

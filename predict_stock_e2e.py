@@ -2,27 +2,22 @@ import random
 import traceback
 import uuid
 from ast import literal_eval
-from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import sleep
 
-import numpy as np
 import torch
 from alpaca.trading import Position
 from loguru import logger
 from pandas import DataFrame
 
 import alpaca_wrapper
-from data_curate_minute import download_minute_stock_data
 from data_curate_daily import download_daily_stock_data, get_spread, get_bid, get_ask
 # from predict_stock import make_predictions
 from decorator_utils import timeit
 from jsonshelve import FlatShelf
 from loss_utils import CRYPTO_TRADING_FEE
 from predict_stock_forecasting import make_predictions
-import shelve
-
 from src.binan import binance_wrapper
 # read do_retrain argument from argparse
 # do_retrain = True
@@ -39,7 +34,7 @@ retrain = True
 
 # if use_stale_data:
 #     alpaca_wrapper.force_open_the_clock = True
-    
+
 daily_predictions = DataFrame()
 daily_predictions_time = None
 
@@ -50,7 +45,9 @@ def do_forecasting():
     global daily_predictions_time
     alpaca_clock = alpaca_wrapper.get_clock()
     if daily_predictions.empty and (
-            daily_predictions_time is None or daily_predictions_time < datetime.now() - timedelta(days=1)) or ('SAP' not in daily_predictions['instrument'].unique() and alpaca_clock.is_open): # or if we dont have stocks like SAP in there?
+            daily_predictions_time is None or daily_predictions_time < datetime.now() - timedelta(days=1)) or (
+            'SAP' not in daily_predictions[
+        'instrument'].unique() and alpaca_clock.is_open):  # or if we dont have stocks like SAP in there?
         daily_predictions_time = datetime.now()
         if use_stale_data:
             current_time_formatted = '2021-12-05 18-20-29'
@@ -66,15 +63,16 @@ def do_forecasting():
             if not use_stale_data:
                 download_daily_stock_data(current_time_formatted, True)
         # error where daily where downloaded at the wrong time?
-        daily_predictions = make_predictions(current_time_formatted, retrain=retrain, alpaca_wrapper=alpaca_wrapper)  # TODO
+        daily_predictions = make_predictions(current_time_formatted, retrain=retrain,
+                                             alpaca_wrapper=alpaca_wrapper)  # TODO
         # daily_predictions = make_predictions(current_time_formatted) # TODO
 
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
-    if not use_stale_data: # why are these different?
+    if not use_stale_data:  # why are these different?
         download_daily_stock_data(current_time_formatted)
         minute_predictions = make_predictions(current_time_formatted, alpaca_wrapper=alpaca_wrapper)
     else:
-        minute_predictions = daily_predictions # todo fix this
+        minute_predictions = daily_predictions  # todo fix this
 
     make_trade_suggestions(daily_predictions, minute_predictions)
 
@@ -94,33 +92,41 @@ def close_profitable_trades(all_preds, positions, orders, change_settings=True):
             # hack convert to tensor. todo fix this earlier
             if isinstance(row['instrument'], torch.Tensor) and row['instrument'].dim() == 0:
                 row['instrument'] = float(row['instrument'])
-            if isinstance(row['close_predicted_price_minute'], torch.Tensor) and row['close_predicted_price_minute'].dim() == 0:
+            if isinstance(row['close_predicted_price_minute'], torch.Tensor) and row[
+                'close_predicted_price_minute'].dim() == 0:
                 row['close_predicted_price_minute'] = float(row['close_predicted_price_minute'])
-            if isinstance(row['high_predicted_price_value'], torch.Tensor) and row['high_predicted_price_value'].dim() == 0:
+            if isinstance(row['high_predicted_price_value'], torch.Tensor) and row[
+                'high_predicted_price_value'].dim() == 0:
                 row['high_predicted_price_value'] = float(row['high_predicted_price_value'])
             if isinstance(row['maxdiffprofit_profit'], torch.Tensor) and row['maxdiffprofit_profit'].dim() == 0:
                 row['maxdiffprofit_profit'] = float(row['maxdiffprofit_profit'])
             if isinstance(row['entry_takeprofit_profit'], torch.Tensor) and row['entry_takeprofit_profit'].dim() == 0:
                 row['entry_takeprofit_profit'] = float(row['entry_takeprofit_profit'])
-            if isinstance(row['entry_takeprofit_high_price'], torch.Tensor) and row['entry_takeprofit_high_price'].dim() == 0:
+            if isinstance(row['entry_takeprofit_high_price'], torch.Tensor) and row[
+                'entry_takeprofit_high_price'].dim() == 0:
                 row['entry_takeprofit_high_price'] = float(row['entry_takeprofit_high_price'])
             if isinstance(row['maxdiffprofit_high_price'], torch.Tensor) and row['maxdiffprofit_high_price'].dim() == 0:
                 row['maxdiffprofit_high_price'] = float(row['maxdiffprofit_high_price'])
-            if isinstance(row['entry_takeprofit_profit_high_multiplier'], torch.Tensor) and row['entry_takeprofit_profit_high_multiplier'].dim() == 0:
+            if isinstance(row['entry_takeprofit_profit_high_multiplier'], torch.Tensor) and row[
+                'entry_takeprofit_profit_high_multiplier'].dim() == 0:
                 row['entry_takeprofit_profit_high_multiplier'] = float(row['entry_takeprofit_profit_high_multiplier'])
-            if isinstance(row['maxdiffprofit_profit_high_multiplier'], torch.Tensor) and row['maxdiffprofit_profit_high_multiplier'].dim() == 0:
+            if isinstance(row['maxdiffprofit_profit_high_multiplier'], torch.Tensor) and row[
+                'maxdiffprofit_profit_high_multiplier'].dim() == 0:
                 row['maxdiffprofit_profit_high_multiplier'] = float(row['maxdiffprofit_profit_high_multiplier'])
-            if isinstance(row['entry_takeprofit_low_price'], torch.Tensor) and row['entry_takeprofit_low_price'].dim() == 0:
+            if isinstance(row['entry_takeprofit_low_price'], torch.Tensor) and row[
+                'entry_takeprofit_low_price'].dim() == 0:
                 row['entry_takeprofit_low_price'] = float(row['entry_takeprofit_low_price'])
-            if isinstance(row['low_predicted_price_value'], torch.Tensor) and row['low_predicted_price_value'].dim() == 0:
+            if isinstance(row['low_predicted_price_value'], torch.Tensor) and row[
+                'low_predicted_price_value'].dim() == 0:
                 row['low_predicted_price_value'] = float(row['low_predicted_price_value'])
             if isinstance(row['maxdiffprofit_low_price'], torch.Tensor) and row['maxdiffprofit_low_price'].dim() == 0:
                 row['maxdiffprofit_low_price'] = float(row['maxdiffprofit_low_price'])
-            if isinstance(row['entry_takeprofit_profit_low_multiplier'], torch.Tensor) and row['entry_takeprofit_profit_low_multiplier'].dim() == 0:
+            if isinstance(row['entry_takeprofit_profit_low_multiplier'], torch.Tensor) and row[
+                'entry_takeprofit_profit_low_multiplier'].dim() == 0:
                 row['entry_takeprofit_profit_low_multiplier'] = float(row['entry_takeprofit_profit_low_multiplier'])
-            if isinstance(row['maxdiffprofit_profit_low_multiplier'], torch.Tensor) and row['maxdiffprofit_profit_low_multiplier'].dim() == 0:
+            if isinstance(row['maxdiffprofit_profit_low_multiplier'], torch.Tensor) and row[
+                'maxdiffprofit_profit_low_multiplier'].dim() == 0:
                 row['maxdiffprofit_profit_low_multiplier'] = float(row['maxdiffprofit_profit_low_multiplier'])
-
 
             if row['instrument'] == position.symbol:
                 # make it reasonably easy to back out of bad trades
@@ -261,7 +267,6 @@ def close_profitable_trades(all_preds, positions, orders, change_settings=True):
                 #     f"keeping position {position.symbol} - predicted to get better - open takeprofit at {row['close_last_price_minute'] }")
 
 
-
 def close_profitable_crypto_binance_trades(all_preds, positions, orders, change_settings=True):
     # global made_money_recently
     # global made_money_one_before_recently
@@ -283,7 +288,6 @@ def close_profitable_crypto_binance_trades(all_preds, positions, orders, change_
         side = 'short'
         # need to sell btc on binance
     # otheerwise need to buy btc on binance
-
 
     for position in positions:
 
@@ -348,7 +352,7 @@ def close_profitable_crypto_binance_trades(all_preds, positions, orders, change_
                     # for order in orders:
                     #     if order.symbol == position.symbol:
                     #         alpaca_wrapper.cancel_order(order)
-                            # todo check if we have one open that is trying to close already?
+                    # todo check if we have one open that is trying to close already?
                     # close old position, not been hitting our predictions
                     # todo why cancel order if its still predicted to be successful?
 
@@ -414,6 +418,7 @@ def close_profitable_crypto_binance_trades(all_preds, positions, orders, change_
                             alpaca_wrapper.open_take_profit_position(position, row, sell_price, position.qty)
                 break
 
+
 data_dir = Path(__file__).parent / 'data'
 
 current_flags = FlatShelf(str(data_dir / f"current_flags.db.json"))
@@ -433,12 +438,13 @@ instrument_strategy_change_times = FlatShelf(str(data_dir / f"instrument_strateg
 
 # all keys in _times are stored e.g. 2024-04-16T19:53:01.577838
 
-#convert all to strings
+# convert all to strings
 for key in list(instrument_strategy_change_times.keys()):
     instrument_strategy_change_times[str(key)] = convert_string_to_datetime(instrument_strategy_change_times.pop(key))
 
 for key in list(trade_entered_times.keys()):
     trade_entered_times[str(key)] = convert_string_to_datetime(trade_entered_times.pop(key))
+
 
 def buy_stock(row, all_preds, positions, orders):
     """
@@ -504,7 +510,7 @@ def buy_stock(row, all_preds, positions, orders):
         #     logger.info(f"changing stance on {current_interest_symbol} to {new_position_side}")
 
     if not already_held_stock:
-        logger.info(f"{new_position_side} {current_interest_symbol}") # todo log the previous gains
+        logger.info(f"{new_position_side} {current_interest_symbol}")  # todo log the previous gains
         margin_multiplier = (1. / 10.0) * .8  # leave some room
         if current_interest_symbol not in crypto_symbols:
             # cant short crypto so turned off for crypto
@@ -536,15 +542,18 @@ def buy_stock(row, all_preds, positions, orders):
         made_money_recently_pnl = made_money_recently.get(current_interest_symbol, 0)
         if new_position_side == 'long':
             made_money_one_before_recently_pnl = made_money_one_before_recently.get(current_interest_symbol, 0)
-            logger.info(f"made_money_recently_pnl {made_money_recently_pnl} made_money_one_before_recently_pnl {made_money_one_before_recently_pnl}")
+            logger.info(
+                f"made_money_recently_pnl {made_money_recently_pnl} made_money_one_before_recently_pnl {made_money_one_before_recently_pnl}")
             if (made_money_recently_pnl or 0) + (
                     made_money_one_before_recently_pnl or 0) <= 0:
                 # if loosing money over two trades, make a small trade /recalculate
                 margin_multiplier = .001
                 logger.info(f"{current_interest_symbol} is loosing money over two days, making a small trade")
         else:
-            made_money_one_before_recently_shorting_pnl = made_money_one_before_recently_shorting.get(current_interest_symbol, 0)
-            logger.info(f"made_money_recently_shorting_pnl {made_money_recently_shorting_pnl} made_money_one_before_recently_shorting_pnl {made_money_one_before_recently_shorting_pnl}")
+            made_money_one_before_recently_shorting_pnl = made_money_one_before_recently_shorting.get(
+                current_interest_symbol, 0)
+            logger.info(
+                f"made_money_recently_shorting_pnl {made_money_recently_shorting_pnl} made_money_one_before_recently_shorting_pnl {made_money_one_before_recently_shorting_pnl}")
             if (made_money_recently_shorting_pnl or 0) + (
                     made_money_one_before_recently_shorting_pnl or 0) <= 0:
                 # if loosing money over two trades, make a small trade /recalculate
@@ -583,6 +592,7 @@ def buy_stock(row, all_preds, positions, orders):
             # only trade if we arent in that market already, let the close positions logic do it otherwise
             if order.symbol == current_interest_symbol:
                 ordered_already = True
+
         if not ordered_already:
             trade_entered_times[current_interest_symbol] = datetime.now()
 
@@ -630,8 +640,9 @@ def make_trade_suggestions(predictions, minute_predictions):
     leftover_live_orders = []
     for order in orders:
         created_at = order.created_at
-        if created_at < datetime.now(created_at.tzinfo) - timedelta(minutes=60 * 7): # hr ?
-            logger.info(f"canceling order open a long time {order.symbol} {order.side} {order.qty} {order.type} {order.time_in_force}")
+        if created_at < datetime.now(created_at.tzinfo) - timedelta(minutes=60 * 7):  # hr ?
+            logger.info(
+                f"canceling order open a long time {order.symbol} {order.side} {order.qty} {order.type} {order.time_in_force}")
             alpaca_wrapper.cancel_order(order)
         else:
             leftover_live_orders.append(order)
@@ -652,7 +663,7 @@ def make_trade_suggestions(predictions, minute_predictions):
         elif position.symbol in ['BTCUSD'] and float(position.qty) >= .001:
             positions.append(position)
         elif position.symbol in ["PAXGUSD", "UNIUSD"]:
-            positions.append(position) # todo workout reslution for these
+            positions.append(position)  # todo workout reslution for these
         elif position.symbol not in crypto_symbols:
             positions.append(position)
     # # filter out crypto positions manually managed
@@ -706,7 +717,7 @@ def make_trade_suggestions(predictions, minute_predictions):
         # extra profit check for buying crypto which has higher fees
         # todo try not to aggressive trade on high spreads
         # todo order at market price meaning the bid price is buying not the ask price
-        spread = get_spread(row['instrument']) # todo high spread fast trading to take advantage of high spread?
+        spread = get_spread(row['instrument'])  # todo high spread fast trading to take advantage of high spread?
         if row['instrument'] not in crypto_symbols and not (
                 (row['entry_takeprofit_profit'] > 0 and
                  row[
@@ -714,7 +725,8 @@ def make_trade_suggestions(predictions, minute_predictions):
                         row['maxdiffprofit_profit'] > 0 and
                         row[
                             'maxdiffprofit_profit_minute'] > 0)):
-            logger.info(f"not trading {row['instrument']} takeprofit {row['entry_takeprofit_profit']} takeprofitminute {row['entry_takeprofit_profit_minute']}")
+            logger.info(
+                f"not trading {row['instrument']} takeprofit {row['entry_takeprofit_profit']} takeprofitminute {row['entry_takeprofit_profit_minute']}")
             continue
 
         if row['instrument'] in crypto_symbols and not (
@@ -724,7 +736,8 @@ def make_trade_suggestions(predictions, minute_predictions):
                         row['maxdiffprofit_profit'] - (CRYPTO_TRADING_FEE * 2) > 0 and
                         row[
                             'maxdiffprofit_profit_minute'] - (CRYPTO_TRADING_FEE * 2) > 0)):
-            logger.info(f"not trading {row['instrument']} takeprofit {row['entry_takeprofit_profit']} takeprofitminute {row['entry_takeprofit_profit_minute']}")
+            logger.info(
+                f"not trading {row['instrument']} takeprofit {row['entry_takeprofit_profit']} takeprofitminute {row['entry_takeprofit_profit_minute']}")
             continue
 
         logger.info("Trade suggestion")

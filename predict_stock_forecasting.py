@@ -1,5 +1,4 @@
 import csv
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -8,19 +7,13 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import transformers
-from neuralforecast import NeuralForecast
-from neuralforecast.models import NBEATS, NHITS
 
-import alpaca_wrapper
-from data_utils import split_data
-from loss_utils import calculate_trading_profit_torch, DEVICE, get_trading_profits_list, percent_movements_augment, \
+from loss_utils import calculate_trading_profit_torch, get_trading_profits_list, percent_movements_augment, \
     calculate_trading_profit_torch_buy_only, \
     calculate_trading_profit_torch_with_buysell, calculate_trading_profit_torch_with_entry_buysell, \
     calculate_trading_profit_torch_with_buysell_profit_values, calculate_profit_torch_with_entry_buysell_profit_values
-from model import GRU
 from src.conversion_utils import unwrap_tensor
 from src.fixtures import crypto_symbols
-
 
 transformers.set_seed(42)
 
@@ -39,6 +32,8 @@ current_date_formatted = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 
 pipeline = None
+
+
 def load_pipeline():
     global pipeline
     if pipeline is None:
@@ -48,6 +43,7 @@ def load_pipeline():
             device_map="cuda",  # use "cpu" for CPU inference and "mps" for Apple Silicon
             torch_dtype=torch.bfloat16,
         )
+
 
 def load_stock_data_from_csv(csv_file_path: Path):
     """
@@ -112,7 +108,6 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
     results_dir.mkdir(exist_ok=True)
     time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     save_file_name = results_dir / f"predictions-{time}.csv"
-    
 
     headers_written = False
 
@@ -164,7 +159,6 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                 data = pre_process_data(data, "Close")
                 price = data[["Close", "High", "Low", "Open"]]
 
-                
                 price = price.rename(columns={"Date": "time_idx"})
                 # not actually important what date it thinks as long as its daily i think
                 price["ds"] = pd.date_range(start="1949-01-01", periods=len(price), freq="D").values
@@ -190,12 +184,11 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                 if Y_train_df.empty:
                     loguru_logger.info(f"No training data for {instrument_name}")
                     continue
-               
+
                 load_pipeline()
                 predictions = []
                 # make 7 predictions - todo can batch this all in 1 go
                 for pred_idx in reversed(range(1, 8)):
-                    
                     current_context = price[:-pred_idx]
                     context = torch.tensor(current_context["y"].values, dtype=torch.float)
 
@@ -208,7 +201,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                         top_k=4000,
                         top_p=1.0,
                     )
-                    low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0) # todo use spread?
+                    low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)  # todo use spread?
                     predictions.append(median.item())
                 Y_hat_df = pd.DataFrame({'y': predictions})
 
@@ -232,7 +225,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                 # Y_hat_df['error'] = Y_hat_df['y'] - Y_hat_df[lowest_error]
 
                 # predictions = Y_hat_df["y"]
-                error = np.array(validation["y"][:-1].values) - np.array(predictions[:-1]) # last one is not predicted to be anything so not the loss
+                error = np.array(validation["y"][:-1].values) - np.array(
+                    predictions[:-1])  # last one is not predicted to be anything so not the loss
                 mean_val_loss = np.abs(error).mean()
                 # loguru_logger.info(f"predictions {predictions} ")
                 # loguru_logger.info(f"actuals {validation["y"][:-1]}")
@@ -293,12 +287,12 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                 # ) / last_close_price
                 last_preds[key_to_predict.lower() + "_last_price"] = last_close_price
                 last_preds[key_to_predict.lower() + "_predicted_price"] = unwrap_tensor(predictions[
-                    -1
-                ])
+                                                                                            -1
+                                                                                        ])
                 last_preds[key_to_predict.lower() + "_predicted_price_value"] = unwrap_tensor(last_close_price + (
-                            last_close_price * predictions[
-                        -1
-                    ]))
+                        last_close_price * predictions[
+                    -1
+                ]))
                 last_preds[key_to_predict.lower() + "_val_loss"] = val_loss
                 last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = calculated_profit
                 last_preds[key_to_predict.lower() + "min_loss_buy_only_trading_profit"] = calculated_profit_buy_only
@@ -321,7 +315,6 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
             # todo use the same zero shot forecaster for this - also for other stuff
 
             # key_to_predict = "Close"
-            
 
             # # compute loss when
             # calculate_trading_profit_torch_with_buysell()
@@ -388,7 +381,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                 if calculated_profit > max_profit:
                     max_profit = calculated_profit
                     last_preds['takeprofit_profit_high_multiplier'] = buy_take_profit_multiplier
-                    last_preds['takeprofit_high_profit'] = max_profit # high profit cant be trusted because of training the multiplier on valid data
+                    last_preds[
+                        'takeprofit_high_profit'] = max_profit  # high profit cant be trusted because of training the multiplier on valid data
                     # loguru_logger.info(f"{instrument_name} buy_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
             max_profit = float('-Inf')
@@ -676,7 +670,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                 #                                   color='white'),
                 #                         showarrow=False))
                 # fig.update_layout(annotations=annotations)
-                # 
+                #
                 # fig.show()
 
     loguru_logger.info(f"val_loss: {total_val_loss / len(csv_files)}")
