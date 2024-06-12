@@ -8,6 +8,7 @@ import pytorch_lightning as pl
 import torch
 import transformers
 
+from env_real import PAPER
 from loss_utils import calculate_trading_profit_torch, get_trading_profits_list, percent_movements_augment, \
     calculate_trading_profit_torch_buy_only, \
     calculate_trading_profit_torch_with_buysell, calculate_trading_profit_torch_with_entry_buysell, \
@@ -38,11 +39,13 @@ def load_pipeline():
     global pipeline
     if pipeline is None:
         pipeline = ChronosPipeline.from_pretrained(
-            # "amazon/chronos-t5-large",
-            "amazon/chronos-t5-tiny",
+            "amazon/chronos-t5-large" if not PAPER else "amazon/chronos-t5-tiny",
+            # "amazon/chronos-t5-tiny",
             device_map="cuda",  # use "cpu" for CPU inference and "mps" for Apple Silicon
             torch_dtype=torch.bfloat16,
         )
+        pipeline.model = pipeline.model.eval()
+        # pipeline.model = torch.compile(pipeline.model)
 
 
 def load_stock_data_from_csv(csv_file_path: Path):
