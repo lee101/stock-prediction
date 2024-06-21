@@ -5,5 +5,12 @@ env.py
 env_real.py
 logs
 lightning_logs
+lightning_logs*
+lightning_logsminute
+
 
 optuna_test
+.pytest_cache
+
+__pycache__
+__pycache__*

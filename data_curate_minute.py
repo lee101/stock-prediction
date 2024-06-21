@@ -1,15 +1,13 @@
 import datetime
 
 import matplotlib.pyplot as plt
-import pandas_datareader.data as web
+from alpaca_trade_api.rest import REST, TimeFrame
+from alpaca_trade_api.rest import TimeFrameUnit
 from pandas.plotting import register_matplotlib_converters
 
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT
 from predict_stock import base_dir
-from alpaca_trade_api.rest import REST, TimeFrame
-from alpaca_trade_api.rest import TimeFrameUnit
 
-import pandas as pd
 NY = 'America/New_York'
 """
 Downloads daily stock data from nasdaq
@@ -22,7 +20,7 @@ MRNA
 """
 
 
-def download_daily_stock_data(path=None):
+def download_minute_stock_data(path=None):
     symbols = [
         # 'COUR',
         'GOOG',
@@ -53,23 +51,53 @@ def download_daily_stock_data(path=None):
         # 'TEAM',
         # 'PFE',
         # 'MRNA',
+        'AMD',
+        'MSFT',
+        'META',
+        'CRM',
+        'NFLX',
+        'PYPL',
+        'SAP',
+        'AMD',
+        'SONY',
+    # ]
+    # symbols = [
+        'BTCUSD',
+        'ETHUSD',
+        'LTCUSD',
+        "PAXGUSD", "UNIUSD"
+
     ]
+    api = REST(secret_key=ALP_SECRET_KEY, key_id=ALP_KEY_ID, base_url=ALP_ENDPOINT)
+
+    alpaca_clock = api.get_clock()
+    if not alpaca_clock.is_open:
+        print("Market is closed")
+        # can trade crypto out of hours
+        symbols = [
+            'BTCUSD',
+            'ETHUSD',
+            'LTCUSD',
+            "PAXGUSD", "UNIUSD"
+        ]
     save_path = base_dir / 'data'
     if path:
         save_path = base_dir / 'data' / path
     save_path.mkdir(parents=True, exist_ok=True)
     for symbol in symbols:
-        api = REST(secret_key=ALP_SECRET_KEY, key_id=ALP_KEY_ID, base_url=ALP_ENDPOINT)
 
-        start = (datetime.datetime.now() - datetime.timedelta(days=365*2)).strftime('%Y-%m-%d')
-        end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
+        start = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
+        # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
+        end = (datetime.datetime.now()).strftime('%Y-%m-%d') # todo recent data
         # df = api.get_bars(symbol, TimeFrame.Minute, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'), adjustment='raw').df
         # start = pd.Timestamp('2020-08-28 9:30', tz=NY).isoformat()
         # end = pd.Timestamp('2020-08-28 16:00', tz=NY).isoformat()
         ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
-
-        minute_df = api.get_bars(symbol, TimeFrame(30, TimeFrameUnit.Minute), start, end,
-                                 adjustment='raw').df
+        if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD', "PAXGUSD", "UNIUSD"]:
+            minute_df = api.get_crypto_bars(symbol, TimeFrame(15, TimeFrameUnit.Minute), start, end).df
+        else:
+            minute_df = api.get_bars(symbol, TimeFrame(15, TimeFrameUnit.Minute), start, end,
+                                     adjustment='raw').df
         if minute_df.empty:
             print(f"{symbol} has no data")
             continue
@@ -82,7 +110,7 @@ def download_daily_stock_data(path=None):
 
         # rename columns with upper case
         minute_df.rename(columns=lambda x: x.capitalize(), inplace=True)
-        print(minute_df)
+        # print(minute_df)
 
         file_save_path = (save_path / '{}-{}.csv'.format(symbol, end))
         minute_df.to_csv(file_save_path)
@@ -96,5 +124,5 @@ def visualize_stock_data(df):
 
 
 if __name__ == '__main__':
-    df = download_daily_stock_data()
+    df = download_minute_stock_data()
     visualize_stock_data(df)

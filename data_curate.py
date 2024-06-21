@@ -36,19 +36,27 @@ def download_daily_stock_data(path=None):
         # 'QUBT',
         # 'ARQQ',
         # avoiding .6% buffer
-        # 'REA.AX',
-        # 'XRO.AX',
-        # 'SEK.AX',
-        # 'NXL.AX', # data anlytics
-        # 'APX.AX', # data collection for ml/labelling
-        # 'CDD.AX',
-        # 'NVX.AX',
-        # 'BRN.AX', # brainchip
-        # 'AV1.AX',
+        'REA.AX',
+        'XRO.AX',
+        'SEK.AX',
+        'NXL.AX', # data analytics
+        'APX.AX', # data collection for ml/labelling
+        'CDD.AX',
+        'NVX.AX',
+        'BRN.AX', # brainchip
+        'AV1.AX',
         # 'TEAM',
         # 'PFE',
         # 'MRNA',
         'MSFT',
+        'AMD',
+    # ]
+    # symbols = [
+        'BTCUSD',
+        'ETHUSD',
+        'LTCUSD',
+        "PAXGUSD", "UNIUSD"
+
     ]
     save_path = base_dir / 'data'
     if path:
