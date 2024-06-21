@@ -1,9 +1,109 @@
+# first pip install numpy scipy scikit-learn all seperately
+
+
 pandas_datareader
-numpy
+# numpy
+#--find-links https://download.pytorch.org/whl/torch_stable.html
+#torch==1.11.0+cu113
+# torch==1.13.0 breaks due to _posthooks
 torch
---find-links https://download.pytorch.org/whl/torch_stable.html
-torch==1.9.0+cu111
-torchvision==0.10.0+cu111
+#torchvision==0.10.0+cu111
+
 pandas
-scipy
-alpaca_trade_api==1.4.2
+# scipy
+loguru
+matplotlib
+neuralforecast
+retry
+hyperopt
+#neuralprophet
+alpaca-trade-api
+
+SQLAlchemy
+websocket-client
+py
+future
+Pillow
+ipython
+pbr
+setuptools
+six
+wheel
+pip
+tqdm
+optuna
+# scikit-learn
+filelock
+transformers
+click
+requests
+joblib
+aiohttp
+tensorboard
+msgpack
+urllib3
+rsa
+pyasn1
+attrs
+wcwidth
+cmd2
+pyperclip
+fsspec
+packaging
+parso
+jedi
+lxml
+Mako
+MarkupSafe
+pytz
+toml
+idna
+multidict
+cliff
+stevedore
+autopage
+prettytable
+certifi
+patsy
+regex
+cachetools
+python-dateutil
+cmaes
+alembic
+colorlog
+traitlets
+decorator
+backcall
+pickleshare
+pluggy
+iniconfig
+yarl
+chardet
+threadpoolctl
+greenlet
+Markdown
+oauthlib
+Werkzeug
+fonttools
+pyparsing
+websockets
+statsmodels
+# cycler
+# kiwisolver
+# sacremoses
+tokenizers
+# torchmetrics
+# zipp
+# typer
+loguru
+#pytorch-forecasting
+# pytorch-forecasting
+#pytorch-lightning
+alpaca-py
+fastapi
+gunicorn
+uvicorn
+git+https://github.com/amazon-science/chronos-forecasting.git
+
+python-binance
+typer

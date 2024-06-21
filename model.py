@@ -1,10 +1,11 @@
-from torch import nn
 import torch
+from torch import nn
 
 from SCINet.models import SCINet
 from SCINet.models.SCINet import SCINet
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
 
 class GRU(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_layers, output_dim):
@@ -27,7 +28,7 @@ def get_model(input_len, input_dim=9, hidden_dim=1, num_stacks=1, output_dim=1):
     model = SCINet(output_len=output_dim, input_len=input_len, input_dim=input_dim, hid_size=hidden_dim, num_stacks=1,
                    num_levels=3, concat_len=0, groups=1, kernel=3, dropout=.5,
                    single_step_output_One=0, positionalE=True, modified=True,
-                   RIN=False, # todo try rin
+                   RIN=False,  # todo try rin
                    )
     model.to(DEVICE)
     return model

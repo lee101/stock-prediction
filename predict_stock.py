@@ -1,33 +1,32 @@
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
 import transformers
+from loguru import logger
 
-from data_utils import split_data, drop_n_rows
-from loss_utils import calculate_trading_profit, calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
-    calculate_trading_profit_no_scale, get_trading_profits_list, percent_movements_augment, \
+from data_utils import split_data
+from loss_utils import calculate_trading_profit_torch, DEVICE, torch_inverse_transform, \
+    get_trading_profits_list, percent_movements_augment, \
     percent_movements_augment_to, calculate_takeprofit_torch, calculate_takeprofit_torch_sq
-from model import GRU, GRU
-
-from neuralprophet import NeuralProphet
+from model import GRU
 
 transformers.set_seed(42)
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 base_dir = Path(__file__).parent
-print(base_dir)
+logger.info(base_dir)
 from sklearn.preprocessing import MinMaxScaler
-
 
 from torch.utils.tensorboard import SummaryWriter
 
-current_date_formatted = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
+current_date_formatted = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+tb_writer = SummaryWriter(log_dir=Path("./logs/{current_date_formatted}"))
+
 
 def load_stock_data_from_csv(csv_file_path: Path):
     """
@@ -48,6 +47,8 @@ def train_test_split(stock_data: pd.DataFrame, test_size=50):
 
 scaler = MinMaxScaler(feature_range=(-1, 1))
 scaler.fit_transform([[-1, 1]])
+
+
 def pre_process_data(x_train, key_to_predict):
     # drop useless data
     # x_train = x_train.drop(columns=["Volume",
@@ -68,6 +69,7 @@ def pre_process_data(x_train, key_to_predict):
 
 
 torch.autograd.set_detect_anomaly(True)
+
 
 def make_predictions(input_data_path=None):
     """
@@ -205,13 +207,13 @@ def make_predictions(input_data_path=None):
                     y_train_pred = model(augmented)
 
                     loss = criterion(y_train_pred, y_train)
-                    print("Epoch ", epoc_idx, "MSE: ", loss.item())
+                    logger.info("Epoch ", epoc_idx, "MSE: ", loss.item())
                     tb_writer.add_scalar(f"{key_to_predict}/Loss/{instrument_name}/train", loss.item(), epoc_idx)
                     hist[epoc_idx] = loss.item()
 
                     loss.backward()
 
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0) # nans caused by overflow in linear la
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)  # nans caused by overflow in linear la
                     optimiser.step()
                     optimiser.zero_grad()
                     ## test
@@ -222,21 +224,24 @@ def make_predictions(input_data_path=None):
                     y_test_pred_inverted = torch_inverse_transform(scaler, y_test_pred)
                     # y_train_pred_inverted = torch_inverse_transform(scaler, y_train_pred)
 
-                    # print(y_test_pred_inverted)
+                    # logger.info(y_test_pred_inverted)
                     loss = criterion(y_test_pred, y_test)
-                    print(f"val loss: {loss}")
+                    logger.info(f"val loss: {loss}")
                     tb_writer.add_scalar(f"{key_to_predict}/Loss/{instrument_name}/val", loss.item(), epoc_idx)
-                    print(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
-                    tb_writer.add_scalar(f"{key_to_predict}/Prediction/{instrument_name}last_pred", y_test_pred_inverted[-1], epoc_idx)
+                    logger.info(f"Last prediction: y_test_pred_inverted[-1] = {y_test_pred_inverted[-1]}")
+                    tb_writer.add_scalar(f"{key_to_predict}/Prediction/{instrument_name}last_pred",
+                                         y_test_pred_inverted[-1], epoc_idx)
 
                     # detached_y_test = y_test.detach().cpu().numpy()
                     last_values = x_test[:, -1, 0]
                     # predict trade if last value is above the prediction
                     trading_preds = (y_test_pred > last_values) * 2 - 1
                     last_values = x_test[:, -1, 0]
-                    calculated_profit = calculate_trading_profit_torch(scaler, last_values, y_test[:, 0], trading_preds[:, 0]).item()
-                    print(f"{instrument_name}: {key_to_predict} calculated_profit: {calculated_profit}")
-                    tb_writer.add_scalar(f"{key_to_predict}/Profit/{instrument_name}:  calculated_profit", calculated_profit, epoc_idx)
+                    calculated_profit = calculate_trading_profit_torch(scaler, last_values, y_test[:, 0],
+                                                                       trading_preds[:, 0]).item()
+                    logger.info(f"{instrument_name}: {key_to_predict} calculated_profit: {calculated_profit}")
+                    tb_writer.add_scalar(f"{key_to_predict}/Profit/{instrument_name}:  calculated_profit",
+                                         calculated_profit, epoc_idx)
                     if loss < min_val_loss:
                         min_val_loss = loss
                         torch.save(model.state_dict(), "data/model.pth")
@@ -247,18 +252,17 @@ def make_predictions(input_data_path=None):
                         y_test_end_scaled_loss = torch_inverse_transform(scaler, torch.add(y_test_pred, loss))
 
                         likely_percent_uncertainty = (
-                            (y_test_end_scaled_loss[-1] - y_test_pred_inverted[-1])
-                            / y_test_pred_inverted[-1]
+                                (y_test_end_scaled_loss[-1] - y_test_pred_inverted[-1])
+                                / y_test_pred_inverted[-1]
                         ).item()
                         min_loss_trading_profit = calculated_profit
 
-
                 training_time = datetime.now() - start_time
-                print("Training time: {}".format(training_time))
+                logger.info("Training time: {}".format(training_time))
                 tb_writer.add_scalar("Time/epoc", training_time.total_seconds(), timing_idx)
                 timing_idx += 1
 
-                # print(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
+                # logger.info(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
                 # tb_writer.add_scalar("Prediction/train", y_train_pred_inverted[-1], 0)
 
                 val_loss = loss.item()
@@ -280,7 +284,6 @@ def make_predictions(input_data_path=None):
                 # )
                 total_val_loss += val_loss
 
-
             ##### Now train other network to predict buy or sell leverage
 
             key_to_predict = "Close"
@@ -289,18 +292,17 @@ def make_predictions(input_data_path=None):
                 "TakeProfit",
                 # "StopLoss",
             ]:
-                print(f"training mode: {training_mode} {instrument_name}")
+                logger.info(f"training mode: {training_mode} {instrument_name}")
                 stock_data = load_stock_data_from_csv(csv_file)
                 stock_data = stock_data.dropna()
                 if stock_data.empty:
-                    print(f"Empty data for {instrument_name}")
+                    logger.info(f"Empty data for {instrument_name}")
                     continue
                 # use a quarter of 15min data / hours data
                 # drop_n_rows(stock_data, 2)
                 # stock_data.reset_index(drop=True, inplace=True)
                 # drop_n_rows(stock_data, 2)
                 # stock_data.reset_index(drop=True, inplace=True)
-
 
                 # drop last days_to_drop rows
                 if days_to_drop:
@@ -309,7 +311,8 @@ def make_predictions(input_data_path=None):
                 # x_train, x_test = train_test_split(stock_data)
                 last_close_price = stock_data[key_to_predict].iloc[-1]
                 next_day_high_percents = percent_movements_augment_to(stock_data["Open"], stock_data['High'])
-                next_day_high_percents.drop(next_day_high_percents.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
+                next_day_high_percents.drop(next_day_high_percents.tail(1).index,
+                                            inplace=True)  # drop last row because of percent change augmentation
 
                 data = pre_process_data(stock_data, "High")
                 # todo scaler for each, this messes up the scaler
@@ -320,7 +323,7 @@ def make_predictions(input_data_path=None):
                 # if training_mode == "TakeProfit":
                 #     price['movementToHigh'] = percent_movements_augment_to(price["Open"], price['High'])
                 # close to high growth in change, a bit wierd
-                price.drop(price.tail(1).index, inplace=True) # drop last row because of percent change augmentation
+                price.drop(price.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
                 # x_test = pre_process_data(x_test)
 
                 lookback = 16  # choose sequence length , GTLB only has been open for 27days cant go over that :O
@@ -370,7 +373,7 @@ def make_predictions(input_data_path=None):
 
                 start_time = datetime.now()
 
-                num_epochs = 1000 #100000 TODO more is better
+                num_epochs = 1000  # 100000 TODO more is better
                 hist = np.zeros(num_epochs)
                 y_train_pred = None
                 min_val_loss = np.inf
@@ -403,10 +406,10 @@ def make_predictions(input_data_path=None):
 
                         ## log if loss is nan
                         if np.isnan(loss.item()):
-                            print(f"{instrument_name} loss is nan")
-                            print(f"{last_values} last_values")
-                            print(f"{y_train} last_values")
-                            print(f"{y_train_pred} last_values")
+                            logger.info(f"{instrument_name} loss is nan")
+                            logger.info(f"{last_values} last_values")
+                            logger.info(f"{y_train} last_values")
+                            logger.info(f"{y_train_pred} last_values")
                             continue
 
                         # add depreciation loss
@@ -415,7 +418,7 @@ def make_predictions(input_data_path=None):
                         # current_profit [:, 0]= calculate_trading_profit(scaler, x_train, y_train.detach().cpu().numpy()[:, 0],
                         #                                           y_train_pred.detach().cpu().numpy())
 
-                        print(f"{training_mode} current_profit: {-loss}")
+                        logger.info(f"{training_mode} current_profit: {-loss}")
                         tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/train", -loss, epoc_idx)
                     elif "TakeProfit" == training_mode:
                         # sigmoid = torch.nn.Sigmoid()
@@ -431,14 +434,14 @@ def make_predictions(input_data_path=None):
                         # loss = -calculate_takeprofit_torch(scaler, y_ndhp_train[:, 0], y_train[:, 0],
                         #                                        y_train_pred[:, 0])
                         loss = -calculate_takeprofit_torch_sq(scaler, y_ndhp_train[:, 0], y_train[:, 0],
-                                                               y_train_pred[:, 0])
+                                                              y_train_pred[:, 0])
 
                         ## log if loss is nan
                         if np.isnan(loss.item()):
-                            print(f"{instrument_name} loss is nan")
-                            print(f"{last_values} last_values")
-                            print(f"{y_train} last_values")
-                            print(f"{y_train_pred} last_values")
+                            logger.info(f"{instrument_name} loss is nan")
+                            logger.info(f"{last_values} last_values")
+                            logger.info(f"{y_train} last_values")
+                            logger.info(f"{y_train_pred} last_values")
                             continue
 
                         # add depreciation loss
@@ -447,7 +450,7 @@ def make_predictions(input_data_path=None):
                         # current_profit [:, 0]= calculate_trading_profit(scaler, x_train, y_train.detach().cpu().numpy()[:, 0],
                         #                                           y_train_pred.detach().cpu().numpy())
 
-                        print(f"{training_mode} current_profit: {-loss}")
+                        logger.info(f"{training_mode} current_profit: {-loss}")
                         tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/train", -loss,
                                              epoc_idx)
 
@@ -475,17 +478,16 @@ def make_predictions(input_data_path=None):
                     #     current_profit = np.product(
                     #         y_train_pred.detach().cpu().numpy() * percent_movements_scaled
                     #     )
-                    #     print(f"current_profit: {current_profit}")
+                    #     logger.info(f"current_profit: {current_profit}")
                     #     tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/test", current_profit, epoc_idx)
-                    print("Epoch ", epoc_idx, "MSE: ", loss.item())
+                    logger.info("Epoch ", epoc_idx, "MSE: ", loss.item())
                     tb_writer.add_scalar(f"{instrument_name}/{training_mode}/loss", loss.item(), epoc_idx)
                     hist[epoc_idx] = loss.item()
 
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0) # nans caused by overflow in linear la
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)  # nans caused by overflow in linear la
                     optimiser.step()
                     optimiser.zero_grad()
-
 
                     ## test
                     model.eval()
@@ -497,7 +499,7 @@ def make_predictions(input_data_path=None):
                     # y_test_pred_inverted = y_test_pred.detach().cpu().numpy()
                     # y_train_pred_inverted = y_train_pred.detach().cpu().numpy()
 
-                    # print(y_test_pred_inverted)
+                    # logger.info(y_test_pred_inverted)
                     # loss = criterion(y_test_pred, y_test)
                     if "BuyOrSell" == training_mode:
                         # sigmoid = torch.nn.Sigmoid()
@@ -520,11 +522,12 @@ def make_predictions(input_data_path=None):
                         # loss -= len(y_test) * (.001 / 365)
 
                         # current_profit [:, 0]= calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy()[:, 0])
-                        print(f"{training_mode} current_profit validation: {-loss}")
-                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss, epoc_idx)
+                        logger.info(f"{training_mode} current_profit validation: {-loss}")
+                        tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss,
+                                             epoc_idx)
                     if "TakeProfit" == training_mode:
                         ssign = torch.nn.Softsign()
-                        y_test_pred = ssign(y_test_pred) * .1 # max 10% added for sell
+                        y_test_pred = ssign(y_test_pred) * .1  # max 10% added for sell
                         ## map to three trinary predictions -1 0 and 1
                         # y_test_pred = torch.round(y_test_pred)  # turn off rounding because ruins gradient
                         # y_test_pred = torch.clamp(y_test_pred, -4, 4)  # 4x leverage
@@ -542,7 +545,7 @@ def make_predictions(input_data_path=None):
                         # loss -= len(y_test) * (.001 / 365)
 
                         # current_profit [:, 0]= calculate_trading_profit(scaler, x_test, y_test.detach().cpu().numpy(), y_test_pred.detach().cpu().numpy()[:, 0])
-                        print(f"{training_mode} current_profit validation: {-loss}")
+                        logger.info(f"{training_mode} current_profit validation: {-loss}")
                         tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", -loss,
                                              epoc_idx)
 
@@ -571,10 +574,10 @@ def make_predictions(input_data_path=None):
                     #     current_profit = np.product(
                     #         y_test_pred.detach().cpu().numpy() * percent_movements_scaled
                     #     )
-                    #     print(f"{training_mode} current_profit validation: {current_profit}")
+                    #     logger.info(f"{training_mode} current_profit validation: {current_profit}")
                     #     tb_writer.add_scalar(f"{instrument_name}/{training_mode}/current_profit/validation", current_profit, t)
-                    print(f"{training_mode} val loss: {loss}")
-                    print(
+                    logger.info(f"{training_mode} val loss: {loss}")
+                    logger.info(
                         f"{training_mode} Last prediction: y_test_pred[-1] = {y_test_pred[-1]}"
                     )
                     if loss < min_val_loss:
@@ -593,14 +596,14 @@ def make_predictions(input_data_path=None):
                         number_of_unsuccessful_epochs += 1
 
                     if number_of_unsuccessful_epochs > 40:
-                        print(f"{instrument_name}/{training_mode} Early stopping")
+                        logger.info(f"{instrument_name}/{training_mode} Early stopping")
                         break
                 training_time = datetime.now() - start_time
-                print("Training time: {}".format(training_time))
-                print("Best val loss: {}".format(min_val_loss))
-                print("Best current profit: {}".format(best_current_profit))
+                logger.info("Training time: {}".format(training_time))
+                logger.info("Best val loss: {}".format(min_val_loss))
+                logger.info("Best current profit: {}".format(best_current_profit))
 
-                # print(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
+                # logger.info(scaler.inverse_transform(y_train_pred.detach().cpu().numpy()))
 
                 val_loss = loss.item()
                 last_preds[training_mode.lower() + "_buy_no_or_sell"] = best_y_test_pred[
@@ -694,11 +697,14 @@ def make_predictions(input_data_path=None):
                 #
                 # fig.show()
 
-    print(f"val_loss: {total_val_loss / len(csv_files)}")
-    print(f"total_buy_val_loss: {total_buy_val_loss / len(csv_files)}")
-    print(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
+    logger.info(f"val_loss: {total_val_loss / len(csv_files)}")
+    logger.info(f"total_buy_val_loss: {total_buy_val_loss / len(csv_files)}")
+    logger.info(f"total_profit avg per symbol: {total_profit / len(csv_files)}")
+
 
 def df_to_torch(df):
     return torch.tensor(df.values, dtype=torch.float)
+
+
 if __name__ == "__main__":
     make_predictions()
