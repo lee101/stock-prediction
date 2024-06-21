@@ -46,7 +46,7 @@ def download_daily_stock_data(path=None, all_data_force=False):
         "CRWD",
         "ADBE",
         "NET",
-        # 'COIN', # unpredictable
+        'COIN', # unpredictable
         # 'QUBT',  no data
         # 'ARQQ',  no data
         # avoiding .6% buffer
@@ -79,7 +79,7 @@ def download_daily_stock_data(path=None, all_data_force=False):
         'BTCUSD',
         'ETHUSD',
         'LTCUSD',
-        "PAXGUSD", 
+        "PAXGUSD",
         "UNIUSD",
 
     ]

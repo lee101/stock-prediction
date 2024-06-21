@@ -39,10 +39,11 @@ def load_pipeline():
     global pipeline
     if pipeline is None:
         pipeline = ChronosPipeline.from_pretrained(
-            "amazon/chronos-t5-large" if not PAPER else "amazon/chronos-t5-tiny",
+            # "amazon/chronos-t5-large" if not PAPER else "amazon/chronos-t5-tiny",
             # "amazon/chronos-t5-tiny",
+            "amazon/chronos-t5-large",
             device_map="cuda",  # use "cpu" for CPU inference and "mps" for Apple Silicon
-            torch_dtype=torch.bfloat16,
+            # torch_dtype=torch.bfloat16,
         )
         pipeline.model = pipeline.model.eval()
         # pipeline.model = torch.compile(pipeline.model)
@@ -199,7 +200,7 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                     forecast = pipeline.predict(
                         context,
                         prediction_length,
-                        num_samples=10,
+                        num_samples=20,
                         temperature=1.0,
                         top_k=4000,
                         top_p=1.0,

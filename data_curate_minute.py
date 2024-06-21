@@ -35,7 +35,7 @@ def download_minute_stock_data(path=None):
         "CRWD",
         "ADBE",
         "NET",
-        # 'COIN',
+        'COIN',
         # 'QUBT',  no data
         # 'ARQQ',  no data
         # avoiding .6% buffer
