@@ -23,6 +23,8 @@ from src.binan import binance_wrapper
 # do_retrain = True
 from src.conversion_utils import convert_string_to_datetime
 from src.fixtures import crypto_symbols
+from src.process_utils import backout_near_market
+from src.trading_obj_utils import filter_to_realistic_positions
 from src.utils import log_time
 
 use_stale_data = False
@@ -192,7 +194,16 @@ def close_profitable_trades(all_preds, positions, orders, change_settings=True):
                     # todo why cancel order if its still predicted to be successful?
 
                     logger.info(f"Closing position to reduce risk {position.symbol}")
-                    alpaca_wrapper.close_position_at_current_price(position, row)
+                    # use bash to run command
+                    # python
+                    # scripts/alpaca_cli.py
+                    # backout_near_market
+                    # LTCUSD
+                    # todo stop creating lots of
+                    # ensure its really closed
+                    # alpaca_wrapper.close_position_at_current_price(position, row)
+                    backout_near_market(position.symbol)
+
 
                 else:
                     exit_strategy = 'maxdiff'  # TODO bug - should be based on what entry strategy should be
@@ -654,18 +665,7 @@ def make_trade_suggestions(predictions, minute_predictions):
     with log_time("get positions"):
         all_positions = alpaca_wrapper.get_all_positions()
     # filter out crypto positions under .01 for eth - this too low amount cannot be traded/is an anomaly
-    positions = []
-    for position in all_positions:
-        if position.symbol in ['LTCUSD'] and float(position.qty) >= .1:
-            positions.append(position)
-        elif position.symbol in ['ETHUSD'] and float(position.qty) >= .01:
-            positions.append(position)
-        elif position.symbol in ['BTCUSD'] and float(position.qty) >= .001:
-            positions.append(position)
-        elif position.symbol in ["PAXGUSD", "UNIUSD"]:
-            positions.append(position)  # todo workout reslution for these
-        elif position.symbol not in crypto_symbols:
-            positions.append(position)
+    positions = filter_to_realistic_positions(all_positions)
     # # filter out crypto positions manually managed
     # positions = [position for position in positions if position.symbol not in ['BTCUSD', 'ETHUSD', 'LTCUSD', 'BCHUSD']]
     max_concurrent_trades = 13
