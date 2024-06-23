@@ -1,10 +1,16 @@
+from datetime import datetime
+from time import sleep
+from typing import Optional
+
 import alpaca_trade_api as tradeapi
 import typer
 from alpaca.data import StockHistoricalDataClient
+from loguru import logger
 
 import alpaca_wrapper
 from data_curate_daily import download_exchange_latest_data, get_bid, get_ask
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
+from src.trading_obj_utils import filter_to_realistic_positions
 
 alpaca_api = tradeapi.REST(
     ALP_KEY_ID,
@@ -13,11 +19,13 @@ alpaca_api = tradeapi.REST(
     'v2')
 
 
-def main(command: str):
+def main(command: str, pair: Optional[str]):
     """
     cancel_all_orders - cancel all orders
     close_all_positions - close all positions at near market price
     close_position_violently - close position violently
+    backout_near_market BTCUSD backout of usd locking to market sell price
+    :param pair: e.g. BTCUSD
     :param command:
     :return:
     """
@@ -27,8 +35,61 @@ def main(command: str):
         violently_close_all_positions()
     elif command == 'cancel_all_orders':
         alpaca_wrapper.cancel_all_orders()
+    elif command == "backout_near_market":
+        # loop around until the order is closed at market
+        now = datetime.now()
+        backout_near_market(pair, start_time=now)
+
+
 
 client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+
+def backout_near_market(pair, start_time=None):
+    """
+    backout at market - linear .01pct above to market price within 20min
+    """
+
+    while True:
+        all_positions = alpaca_wrapper.get_all_positions()
+        # check if there are any all_positions open
+        if len(all_positions) == 0:
+            break
+        positions = filter_to_realistic_positions(all_positions)
+
+        # cancel all orders of pair as we are locking to sell at the market
+
+        orders = alpaca_wrapper.get_open_orders()
+
+        for order in orders:
+            if order.symbol == pair:
+                alpaca_wrapper.cancel_order(order)
+
+                break
+        found_position = False
+        for position in positions:
+            if position.symbol == pair:
+                pct_above_market = 0.02
+                linear_ramp  = 20
+                minutes_since_start = (datetime.now() - start_time).seconds // 60
+                if minutes_since_start >= linear_ramp:
+                    pct_above_market = 0.00
+                else:
+                    pct_above_market = pct_above_market - (pct_above_market * minutes_since_start / linear_ramp)
+
+                logger.info(f"pct_above_market: {pct_above_market}")
+                succeeded = alpaca_wrapper.close_position_near_market(position, pct_above_market=pct_above_market)
+                found_position = True
+                if not succeeded:
+                    ## todo wait untill other time when market is open again to cancel.
+                    return False
+        if not found_position:
+            logger.info(f"no position found for {pair}")
+            return True
+
+        # cancel all order for produce
+        # alpaca_wrapper.cancel_order_at_market(pair)
+        sleep(1)
+
 
 def close_all_positions():
     positions = alpaca_wrapper.get_all_positions()

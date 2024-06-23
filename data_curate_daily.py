@@ -78,9 +78,9 @@ def download_daily_stock_data(path=None, all_data_force=False):
     # symbols = [
         'BTCUSD',
         'ETHUSD',
-        'LTCUSD',
-        "PAXGUSD",
-        "UNIUSD",
+        # 'LTCUSD',
+        # "PAXGUSD",
+        # "UNIUSD",
 
     ]
     # client = StockHistoricalDataClient(ALP_KEY_ID, ALP_SECRET_KEY, url_override="https://data.sandbox.alpaca.markets/v2")
@@ -98,8 +98,8 @@ def download_daily_stock_data(path=None, all_data_force=False):
         symbols = [
             'BTCUSD',
             'ETHUSD',
-            'LTCUSD',
-            "PAXGUSD", "UNIUSD"
+            # 'LTCUSD',
+            # "PAXGUSD", "UNIUSD"
         ]
 
     save_path = base_dir / 'data'

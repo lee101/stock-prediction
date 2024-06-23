@@ -1,5 +1,6 @@
 import math
 import traceback
+from datetime import datetime
 from time import sleep
 
 import cachetools
@@ -666,3 +667,60 @@ except APIError as e:
 except Exception as e:
     logger.error("exception", e)
     traceback.print_exc()
+
+
+def close_position_near_market(position, pct_above_market=0.0):
+    bids = {}
+    asks = {}
+    symbol = position.symbol
+    very_latest_data = latest_data(position.symbol)
+    # check if market closed
+    ask_price = float(very_latest_data.ask_price)
+    bid_price = float(very_latest_data.bid_price)
+    if bid_price != 0 and ask_price != 0:
+        bids[symbol] = bid_price
+        asks[symbol] = ask_price
+
+    ask_price = asks.get(position.symbol)
+    bid_price = bids.get(position.symbol)
+
+    if not ask_price or not bid_price:
+        logger.error(f"error getting ask/bid price for {position.symbol}")
+        return False
+
+    if position.side == "long":
+        price = ask_price
+    else:
+        price = bid_price
+    try:
+        if position.side == "long":
+            sell_price = price * (1 + pct_above_market)
+            logger.info(f"selling {position.symbol} at {sell_price}")
+            result = alpaca_api.submit_order(
+                order_data=MarketOrderRequest(
+                    symbol=remap_symbols(position.symbol),
+                    qty=abs(float(position.qty)),
+                    side=OrderSide.SELL,
+                    type=OrderType.LIMIT,
+                    time_in_force="gtc",
+                    limit_price=sell_price, # todo fix float issues
+                )
+            )
+        else:
+            buy_price = price * (1 - pct_above_market)
+            logger.info(f"buying {position.symbol} at {buy_price}")
+            result = alpaca_api.submit_order(
+                order_data=MarketOrderRequest(
+                    symbol=remap_symbols(position.symbol),
+                    qty=abs(float(position.qty)),
+                    side=OrderSide.BUY,
+                    type=OrderType.LIMIT,
+                    time_in_force="gtc",
+                    limit_price=buy_price,
+                )
+            )
+
+    except Exception as e:
+        logger.error(e)
+        traceback.print_exc()
+
