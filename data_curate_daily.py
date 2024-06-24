@@ -15,7 +15,7 @@ from retry import retry
 from alpaca_wrapper import latest_data
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
 from predict_stock import base_dir
-from stc.stock_utils import remap_symbols
+from src.stock_utils import remap_symbols
 
 # work in UTC
 # os.environ['TZ'] = 'UTC'

@@ -21,7 +21,7 @@ from starlette.responses import JSONResponse
 from alpaca_wrapper import open_order_at_price
 from jsonshelve import FlatShelf
 from src.binan import binance_wrapper
-from stc.stock_utils import unmap_symbols
+from src.stock_utils import unmap_symbols
 
 data_dir = Path(__file__).parent.parent / 'data'
 

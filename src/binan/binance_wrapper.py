@@ -1,10 +1,10 @@
 import math
 
-from binance import Client, ThreadedWebsocketManager, ThreadedDepthCacheManager
+from binance import Client
 from loguru import logger
 
 from env_real import BINANCE_API_KEY, BINANCE_SECRET
-from stc.stock_utils import binance_remap_symbols
+from src.stock_utils import binance_remap_symbols
 try:
     client = Client(BINANCE_API_KEY, BINANCE_SECRET)
 except Exception as e:
