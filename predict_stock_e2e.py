@@ -22,6 +22,7 @@ from src.binan import binance_wrapper
 # read do_retrain argument from argparse
 # do_retrain = True
 from src.conversion_utils import convert_string_to_datetime
+from src.date_utils import is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols
 from src.process_utils import backout_near_market
 from src.trading_obj_utils import filter_to_realistic_positions
@@ -150,7 +151,7 @@ def close_profitable_trades(all_preds, positions, orders, change_settings=True):
                 if is_crypto:
                     is_trading_day_ending = datetime.now().hour in [11, 12, 13]  # TODO nzdt specific code here
                 else:
-                    is_trading_day_ending = datetime.now().hour in [9, 10, 11, 12]  # last
+                    is_trading_day_ending = is_nyse_trading_day_ending()
 
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 16):
                     if float(position.unrealized_plpc) < 0 and change_settings:
@@ -168,13 +169,25 @@ def close_profitable_trades(all_preds, positions, orders, change_settings=True):
                                 f"Changing strategy for {position.symbol} from {current_strategy} to {new_strategy}")
                             instrument_strategies[position.symbol] = new_strategy
                 # todo check time in market not overall time
-                trade_length_before_close = timedelta(minutes=60 * 22)
+                trade_length_before_close = timedelta(minutes=60 * 4)
+                max_trade_order_length = timedelta(minutes=60 * 30)
+                min_trade_order_length = timedelta(minutes=60 * 1)
+
+                if position.symbol in crypto_symbols:
+                    trade_length_before_close = timedelta(minutes=60 * 20)
+
                 if abs(float(position.market_value)) < 3000:
                     # closing test positions sooner TODO simulate stuff like this instead of really doing it
-                    trade_length_before_close = timedelta(minutes=60 * 6)
+                    trade_length_before_close = timedelta(minutes=60 * 4)
                     is_trading_day_ending = True
-                if (
-                        not ordered_time or ordered_time < datetime.now() - trade_length_before_close) and is_trading_day_ending and change_settings:
+
+                close_all_because_of_day_end = is_trading_day_ending and position.symbol not in crypto_symbols
+                longer_than_max_order_length = not ordered_time or ordered_time < datetime.now() - max_trade_order_length
+                more_recent_than_min_order_length = not ordered_time or ordered_time > datetime.now() - min_trade_order_length
+                if ((
+                        not ordered_time or ordered_time < datetime.now() - trade_length_before_close) and is_trading_day_ending and change_settings) \
+                    or close_all_because_of_day_end \
+                    or (longer_than_max_order_length and not more_recent_than_min_order_length):
                     current_time = datetime.now()
                     # at_market_open = False
                     # hourly can close positions at the market open? really?
@@ -324,7 +337,7 @@ def close_profitable_crypto_binance_trades(all_preds, positions, orders, change_
                 if is_crypto:
                     is_trading_day_ending = datetime.now().hour in [11, 12, 13]  # TODO nzdt specific code here
                 else:
-                    is_trading_day_ending = datetime.now().hour in [9, 10, 11, 12]  # last
+                    is_trading_day_ending = is_nyse_trading_day_ending()
 
                 if not ordered_time or ordered_time < datetime.now() - timedelta(minutes=60 * 16):
                     if float(position.unrealized_plpc) < 0 and change_settings:

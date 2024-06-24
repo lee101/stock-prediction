@@ -19,9 +19,11 @@ clear out positions at bid/ask (much more cost effective than market orders)
 
 PYTHONPATH=$(pwd) python ./scripts/alpaca_cli.py close_all_positions
 
-order canceller that cancels duplicate orders
+##### cancel an order with a linear ramp
 
-### cancel any duplicate orders/bugs
+PYTHONPATH=$(pwd) python scripts/alpaca_cli.py backout_near_market BTCUSD
+
+##### cancel any duplicate orders/bugs
 
 PYTHONPATH=$(pwd) python ./scripts/cancel_multi_orders.py
 

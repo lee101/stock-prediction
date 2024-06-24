@@ -1,6 +1,5 @@
 import math
 import traceback
-from datetime import datetime
 from time import sleep
 
 import cachetools
@@ -22,7 +21,7 @@ from retry import retry
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT
 from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols
-from stc.stock_utils import remap_symbols
+from src.stock_utils import remap_symbols
 
 alpaca_api = TradingClient(
     ALP_KEY_ID,

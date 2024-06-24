@@ -1,11 +1,3 @@
-import math
-
-from alpaca.trading import LimitOrderRequest
-
-from src.crypto_loop import crypto_alpaca_looper_api
-from stc.stock_utils import remap_symbols
-
-
 def test_submit_order():
     """ test that we can submit an order, warning dont do this in live mode """
     price = 17176.675000000003
