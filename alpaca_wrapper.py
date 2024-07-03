@@ -148,6 +148,7 @@ def open_order_at_price(symbol, qty, side, price):
         logger.info(f"position {symbol} already open")
         return
     try:
+        price = str(round(price, 2))
         result = alpaca_api.submit_order(
             order_data=LimitOrderRequest(
                 symbol=remap_symbols(symbol),
@@ -211,7 +212,7 @@ def close_position_at_current_price(position, row):
                         side=OrderSide.SELL,
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
-                        limit_price=row["close_last_price_minute"],
+                        limit_price=str(round(float(row["close_last_price_minute"]), 2)),
                     )
                 )
             else:
@@ -694,6 +695,7 @@ def close_position_near_market(position, pct_above_market=0.0):
     try:
         if position.side == "long":
             sell_price = price * (1 + pct_above_market)
+            sell_price = str(round(sell_price, 2))
             logger.info(f"selling {position.symbol} at {sell_price}")
             result = alpaca_api.submit_order(
                 order_data=LimitOrderRequest(
@@ -707,6 +709,7 @@ def close_position_near_market(position, pct_above_market=0.0):
             )
         else:
             buy_price = price * (1 - pct_above_market)
+            buy_price = str(round(buy_price, 2))
             logger.info(f"buying {position.symbol} at {buy_price}")
             result = alpaca_api.submit_order(
                 order_data=LimitOrderRequest(
@@ -722,4 +725,4 @@ def close_position_near_market(position, pct_above_market=0.0):
     except Exception as e:
         logger.error(e)
         traceback.print_exc()
-
+    return result
