@@ -22,9 +22,13 @@ alpaca_api = tradeapi.REST(
 def main(command: str, pair: Optional[str]):
     """
     cancel_all_orders - cancel all orders
+
     close_all_positions - close all positions at near market price
+
     close_position_violently - close position violently
+
     backout_near_market BTCUSD backout of usd locking to market sell price
+
     :param pair: e.g. BTCUSD
     :param command:
     :return:
@@ -53,6 +57,7 @@ def backout_near_market(pair, start_time=None):
         all_positions = alpaca_wrapper.get_all_positions()
         # check if there are any all_positions open
         if len(all_positions) == 0:
+            logger.info("no positions found, exiting")
             break
         positions = filter_to_realistic_positions(all_positions)
 
@@ -82,6 +87,7 @@ def backout_near_market(pair, start_time=None):
                 found_position = True
                 if not succeeded:
                     ## todo wait untill other time when market is open again to cancel.
+                    logger.info("failed to close a position, stopping as we are potentially at market close?")
                     return False
         if not found_position:
             logger.info(f"no position found for {pair}")

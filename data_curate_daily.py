@@ -1,4 +1,5 @@
 import datetime
+from pathlib import Path
 import traceback
 
 import matplotlib.pyplot as plt
@@ -14,8 +15,10 @@ from retry import retry
 
 from alpaca_wrapper import latest_data
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
-from predict_stock import base_dir
+
 from src.stock_utils import remap_symbols
+
+base_dir = Path(__file__).parent
 
 # work in UTC
 # os.environ['TZ'] = 'UTC'
