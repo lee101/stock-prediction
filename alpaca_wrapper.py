@@ -13,7 +13,7 @@ from alpaca.data import (
 from alpaca.trading import OrderType, LimitOrderRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.requests import LimitOrderRequest
 from alpaca_trade_api.rest import APIError
 from loguru import logger
 from retry import retry
@@ -696,7 +696,7 @@ def close_position_near_market(position, pct_above_market=0.0):
             sell_price = price * (1 + pct_above_market)
             logger.info(f"selling {position.symbol} at {sell_price}")
             result = alpaca_api.submit_order(
-                order_data=MarketOrderRequest(
+                order_data=LimitOrderRequest(
                     symbol=remap_symbols(position.symbol),
                     qty=abs(float(position.qty)),
                     side=OrderSide.SELL,
@@ -709,7 +709,7 @@ def close_position_near_market(position, pct_above_market=0.0):
             buy_price = price * (1 - pct_above_market)
             logger.info(f"buying {position.symbol} at {buy_price}")
             result = alpaca_api.submit_order(
-                order_data=MarketOrderRequest(
+                order_data=LimitOrderRequest(
                     symbol=remap_symbols(position.symbol),
                     qty=abs(float(position.qty)),
                     side=OrderSide.BUY,
