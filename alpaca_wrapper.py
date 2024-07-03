@@ -13,7 +13,7 @@ from alpaca.data import (
 from alpaca.trading import OrderType, LimitOrderRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide
-from alpaca.trading.requests import LimitOrderRequest
+from alpaca.trading.requests import MarketOrderRequest
 from alpaca_trade_api.rest import APIError
 from loguru import logger
 from retry import retry
