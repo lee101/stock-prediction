@@ -73,14 +73,13 @@ def backout_near_market(pair, start_time=None):
         found_position = False
         for position in positions:
             if position.symbol == pair:
-                pct_above_market = 0.026
+                pct_above_market = 0.02
                 linear_ramp  = 60
                 minutes_since_start = (datetime.now() - start_time).seconds // 60
                 if minutes_since_start >= linear_ramp:
-                    pct_above_market = 0.00
+                    pct_above_market = -0.02
                 else:
-                    pct_above_market = pct_above_market - (pct_above_market * minutes_since_start / linear_ramp)
-                pct_above_market -= .01 # from .016 to -.006 to ensure orders close
+                    pct_above_market = pct_above_market - (0.04 * minutes_since_start / linear_ramp)
 
                 logger.info(f"pct_above_market: {pct_above_market}")
                 succeeded = alpaca_wrapper.close_position_near_market(position, pct_above_market=pct_above_market)
