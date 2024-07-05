@@ -9,6 +9,9 @@ from src.utils import debounce
 def backout_near_market(symbol):
     command = f"PYTHONPATH=/media/lee/crucial/code/stock python scripts/alpaca_cli.py backout_near_market {symbol}"
     logger.info(f"Running command {command}")
-    subprocess.run(
+    subprocess.Popen(
         command,
-        shell=True)
+        shell=True,
+        # stdout=subprocess.DEVNULL,
+        # stderr=subprocess.DEVNULL
+        )
