@@ -41,21 +41,24 @@ retrain = True
 daily_predictions = DataFrame()
 daily_predictions_time = None
 
-# Configure loguru to also print the EDT time
+# Configure loguru to print both UTC and EDT time, and write to both stdout and a log file
 from loguru import logger
 from datetime import datetime
 import pytz
+import sys
 
 class EDTFormatter:
     def __init__(self):
         self.local_tz = pytz.timezone('US/Eastern')
 
     def __call__(self, record):
+        utc_time = record["time"].strftime('%Y-%m-%d %H:%M:%S %Z')
         local_time = datetime.now(self.local_tz).strftime('%Y-%m-%d %H:%M:%S %Z')
-        return f"{record['time'].strftime('%Y-%m-%d %H:%M:%S %Z')} | {local_time} | {record['level'].name} | {record['message']}"
+        return f"{utc_time} | {local_time} | {record['level'].name} | {record['message']}\n"
 
 logger.remove()
-logger.add(lambda msg: print(msg, end=''), format=EDTFormatter())
+logger.add(sys.stdout, format=EDTFormatter())
+logger.add("logfile.log", format=EDTFormatter())
 
 @timeit
 def do_forecasting():
