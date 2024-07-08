@@ -54,7 +54,16 @@ class EDTFormatter:
     def __call__(self, record):
         utc_time = record["time"].strftime('%Y-%m-%d %H:%M:%S %Z')
         local_time = datetime.now(self.local_tz).strftime('%Y-%m-%d %H:%M:%S %Z')
-        return f"{utc_time} | {local_time} | {record['level'].name} | {record['message']}\n"
+        level_colors = {
+            "DEBUG": "\033[36m",  # Cyan
+            "INFO": "\033[32m",   # Green
+            "WARNING": "\033[33m", # Yellow
+            "ERROR": "\033[31m",  # Red
+            "CRITICAL": "\033[35m" # Magenta
+        }
+        reset_color = "\033[0m"
+        level_color = level_colors.get(record['level'].name, "")
+        return f"{utc_time} | {local_time} | {level_color}{record['level'].name}{reset_color} | {record['message']}\n"
 
 logger.remove()
 logger.add(sys.stdout, format=EDTFormatter())
@@ -330,7 +339,7 @@ def close_profitable_crypto_binance_trades(all_preds, positions, orders, change_
         side = 'short'
         # need to sell btc on binance
     # otheerwise need to buy btc on binance
-
+    positions = filter_to_realistic_positions(positions)
     for position in positions:
 
         is_worsening_position = False
@@ -531,6 +540,8 @@ def buy_stock(row, all_preds, positions, orders):
         entry_price_strategy = 'entry'  # at current market price
 
     has_traded = False
+    # filter out crypto positions under .01 for eth - this too low amount cannot be traded/is an anomaly
+    positions = filter_to_realistic_positions(positions)
     for position in positions:
         if position.side == 'long':
             made_money_recently[position.symbol] = float(position.unrealized_plpc)
