@@ -6,7 +6,7 @@ CRYPTO_TRADING_FEE = .0015  # maker fee taker is .0025
 # from pytorch_forecasting import MultiHorizonMetric
 
 TRADING_FEE = 0.0005
-
+# equities .0000278
 import torch
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

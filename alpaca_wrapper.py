@@ -374,6 +374,12 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
     else:
         price = max(price, ask or price)
 
+    #skip crypto for now as its high fee
+    if currentBuySymbol in crypto_symbols and side == "buy":
+        logger.info(f"Skipping Buying Alpaca crypto order for {currentBuySymbol}")
+        logger.info(f"TMp measure as fees are too high IMO move to binance")
+        return False
+
     # poll untill we have closed all our positions
     # why we would wait here?
     # polls = 0
