@@ -22,7 +22,7 @@ from src.binan import binance_wrapper
 # read do_retrain argument from argparse
 # do_retrain = True
 from src.conversion_utils import convert_string_to_datetime
-from src.date_utils import is_nyse_trading_day_ending
+from src.date_utils import is_nyse_trading_day_ending, is_nyse_trading_day_now
 from src.fixtures import crypto_symbols
 from src.process_utils import backout_near_market
 from src.trading_obj_utils import filter_to_realistic_positions
@@ -180,7 +180,7 @@ def close_profitable_trades(all_preds, positions, orders, change_settings=True):
                 if ordered_time and current_time - ordered_time < COOLDOWN_PERIOD:
                     logger.info(f"Skipping close for {position.symbol} due to cooldown period")
                     continue
-                
+
                 is_crypto = position.symbol in crypto_symbols
                 is_trading_day_ending = False  # todo investigate reenabling this logic
                 if is_crypto:
@@ -250,6 +250,18 @@ def close_profitable_trades(all_preds, positions, orders, change_settings=True):
                     # todo stop creating lots of
                     # ensure its really closed
                     # alpaca_wrapper.close_position_at_current_price(position, row)
+                    # Check if it's a normal stock and if the market is open
+                    if position.symbol not in crypto_symbols:
+                        
+                        is_market_open = is_nyse_trading_day_now()
+                        
+                        if is_market_open:
+                            backout_near_market(position.symbol)
+                        else:
+                            logger.info(f"Not backing out {position.symbol} as market is closed for regular stocks")
+                    else:
+                        # For crypto, we can backout anytime
+                        backout_near_market(position.symbol)
                     backout_near_market(position.symbol)
 
 
