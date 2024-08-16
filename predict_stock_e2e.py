@@ -106,6 +106,7 @@ def do_forecasting():
 
     make_trade_suggestions(daily_predictions, minute_predictions)
 
+COOLDOWN_PERIOD = timedelta(minutes=60)  # Adjust this value as needed
 
 def close_profitable_trades(all_preds, positions, orders, change_settings=True):
     # global made_money_recently
@@ -173,6 +174,13 @@ def close_profitable_trades(all_preds, positions, orders, change_settings=True):
                 #     logger.info(f"Closing predicted to worsen position {position.symbol}")
                 # TODO note this is not the real ordered time for manual orders!
                 ordered_time = trade_entered_times.get(position.symbol)
+
+                current_time = datetime.now()
+
+                if ordered_time and current_time - ordered_time < COOLDOWN_PERIOD:
+                    logger.info(f"Skipping close for {position.symbol} due to cooldown period")
+                    continue
+                
                 is_crypto = position.symbol in crypto_symbols
                 is_trading_day_ending = False  # todo investigate reenabling this logic
                 if is_crypto:
