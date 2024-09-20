@@ -105,5 +105,7 @@ gunicorn
 uvicorn
 git+https://github.com/amazon-science/chronos-forecasting.git
 
+scikit-learn
+
 python-binance
 typer
