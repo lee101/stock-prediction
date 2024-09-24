@@ -4,8 +4,6 @@ import pandas as pd
 from loguru import logger
 from datetime import datetime, timedelta
 import alpaca_wrapper
-
-
 from predict_stock_forecasting import make_predictions, load_stock_data_from_csv
 from data_curate_daily import download_daily_stock_data
 
@@ -19,7 +17,7 @@ def show_forecasts(symbol):
     download_daily_stock_data(current_time_formatted)
 
     # Make predictions
-    predictions = make_predictions(current_time_formatted)
+    predictions = make_predictions(current_time_formatted, alpaca_wrapper=alpaca_wrapper)
 
     # Filter predictions for the given symbol
     symbol_predictions = predictions[predictions['instrument'] == symbol]

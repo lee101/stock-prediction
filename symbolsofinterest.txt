@@ -1,0 +1,49 @@
+symbols = [
+        'COUR',
+        'GOOG',
+        'TSLA',
+        'NVDA',
+        'AAPL',
+        # "GTLB", no data
+        # "AMPL",  no data
+        "U",
+        "ADSK",
+        # "RBLX", # unpredictable
+        "CRWD",
+        "ADBE",
+        "NET",
+        'COIN', # unpredictable
+        # 'QUBT',  no data
+        # 'ARQQ',  no data
+        # avoiding .6% buffer
+        # 'REA.AX',
+        # 'XRO.AX',
+        # 'SEK.AX',
+        # 'NXL.AX',  # data anlytics
+        # 'APX.AX',  # data collection for ml/labelling
+        # 'CDD.AX',
+        # 'NVX.AX',
+        # 'BRN.AX',  # brainchip
+        # 'AV1.AX',
+        # 'TEAM',
+        # 'PFE',
+        # 'MRNA',
+        # 'AMD',
+        'MSFT',
+        # 'META',
+        # 'CRM',
+        'NFLX',
+        'PYPL',
+        'SAP',
+        # 'AMD',  # tmp consider disabling/felt its model was a bit negative for now
+        'SONY',
+        # 'PFE',
+        # 'MRNA',
+    # ]
+
+     symbols = [
+        'BTCUSD',
+        'ETHUSD',
+        # 'LTCUSD',
+        # "PAXGUSD",
+        # "UNIUSD",

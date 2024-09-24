@@ -34,89 +34,32 @@ MRNA
 """
 crypto_client = CryptoHistoricalDataClient()
 
-def download_daily_stock_data(path=None, all_data_force=False):
-    symbols = [
-        'COUR',
-        'GOOG',
-        'TSLA',
-        'NVDA',
-        'AAPL',
-        # "GTLB", no data
-        # "AMPL",  no data
-        "U",
-        "ADSK",
-        # "RBLX", # unpredictable
-        "CRWD",
-        "ADBE",
-        "NET",
-        'COIN', # unpredictable
-        # 'QUBT',  no data
-        # 'ARQQ',  no data
-        # avoiding .6% buffer
-        # 'REA.AX',
-        # 'XRO.AX',
-        # 'SEK.AX',
-        # 'NXL.AX',  # data anlytics
-        # 'APX.AX',  # data collection for ml/labelling
-        # 'CDD.AX',
-        # 'NVX.AX',
-        # 'BRN.AX',  # brainchip
-        # 'AV1.AX',
-        # 'TEAM',
-        # 'PFE',
-        # 'MRNA',
-        # 'AMD',
-        'MSFT',
-        # 'META',
-        # 'CRM',
-        'NFLX',
-        'PYPL',
-        'SAP',
-        # 'AMD',  # tmp consider disabling/felt its model was a bit negative for now
-        'SONY',
-        # 'PFE',
-        # 'MRNA',
-    # ]
-    # # only crypto for now TODO change this
-    # symbols = [
-        'BTCUSD',
-        'ETHUSD',
-        # 'LTCUSD',
-        # "PAXGUSD",
-        # "UNIUSD",
-
-    ]
-    # client = StockHistoricalDataClient(ALP_KEY_ID, ALP_SECRET_KEY, url_override="https://data.sandbox.alpaca.markets/v2")
+def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
+    if symbols is None:
+        symbols = [
+            'COUR', 'GOOG', 'TSLA', 'NVDA', 'AAPL', "U", "ADSK", "CRWD", "ADBE", "NET",
+            'COIN', 'MSFT', 'NFLX', 'PYPL', 'SAP', 'SONY', 'BTCUSD', 'ETHUSD',
+        ]
+    
     client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
     api = TradingClient(
         ALP_KEY_ID,
         ALP_SECRET_KEY,
-        # ALP_ENDPOINT,
         paper=ALP_ENDPOINT != "https://api.alpaca.markets",
     )
     alpaca_clock = api.get_clock()
     if not alpaca_clock.is_open and not all_data_force:
         logger.info("Market is closed")
-        # can trade crypto out of hours
-        symbols = [
-            'BTCUSD',
-            'ETHUSD',
-            # 'LTCUSD',
-            # "PAXGUSD", "UNIUSD"
-        ]
+        symbols = [symbol for symbol in symbols if symbol in ['BTCUSD', 'ETHUSD']]
 
     save_path = base_dir / 'data'
     if path:
         save_path = base_dir / 'data' / path
     save_path.mkdir(parents=True, exist_ok=True)
+    
     for symbol in symbols:
-
         start = (datetime.datetime.now() - datetime.timedelta(days=365 * 4)).strftime('%Y-%m-%d')
-        # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
-        end = (datetime.datetime.now()).strftime('%Y-%m-%d')  # todo recent data
-        # df = api.get_bars(symbol, TimeFrame.Minute, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'), adjustment='raw').df
-        # start = pd.Timestamp('2020-08-28 9:30', tz=NY).isoformat()
-        # end = pd.Timestamp('2020-08-28 16:00', tz=NY).isoformat()
+        end = (datetime.datetime.now()).strftime('%Y-%m-%d')
         daily_df = download_exchange_historical_data(client, symbol)
         try:
             minute_df_last = download_exchange_latest_data(client, symbol)
@@ -124,19 +67,16 @@ def download_daily_stock_data(path=None, all_data_force=False):
             traceback.print_exc()
             logger.error(e)
             print(f"empty new data frame for {symbol}")
-            minute_df_last = DataFrame() # weird issue with empty fb data frame
-        # replace the last element of daily_df with last
+            minute_df_last = DataFrame()
+        
         if not minute_df_last.empty:
-            # can be empty as it could be closed for two days so can skipp getting latest data
             daily_df.iloc[-1] = minute_df_last.iloc[-1]
 
         if daily_df.empty:
             logger.info(f"{symbol} has no data")
             continue
 
-        # rename columns with upper case
         daily_df.rename(columns=lambda x: x.capitalize(), inplace=True)
-        # logger.info(daily_df)
 
         file_save_path = (save_path / '{}-{}.csv'.format(symbol.replace("/", "-"), end))
         file_save_path.parent.mkdir(parents=True, exist_ok=True)
