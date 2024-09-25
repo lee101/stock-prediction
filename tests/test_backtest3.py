@@ -47,7 +47,8 @@ def test_backtest_forecasts(mock_pipeline_class, mock_download_data, mock_stock_
     # Check if the buy and hold strategy is calculated correctly
     for i in range(num_simulations):
         actual_returns = mock_stock_data['Close'].pct_change().iloc[-(7+i):-i] if i > 0 else mock_stock_data['Close'].pct_change().iloc[-7:]
-        expected_buy_hold_return = (1 + actual_returns).prod() - 1
+        buy_hold_signals = buy_hold_strategy(torch.ones(len(actual_returns)))
+        expected_buy_hold_return, _ = evaluate_strategy(buy_hold_signals, actual_returns)
         assert pytest.approx(results['buy_hold_return'].iloc[i], rel=1e-4) == expected_buy_hold_return
 
     # Add a check to ensure buy_hold_signals are all ones
@@ -86,7 +87,7 @@ def test_evaluate_strategy_with_fees():
     # Calculate expected return manually
     expected_returns = [0.02, 0.01, -0.01, -0.02, 0.03]
     expected_fees = [CRYPTO_TRADING_FEE, 0, CRYPTO_TRADING_FEE, 0, CRYPTO_TRADING_FEE]
-    expected_strategy_returns = [r - f for r, f in zip(expected_returns, expected_fees)]
+    expected_strategy_returns = [(r * s) - f for r, s, f in zip(expected_returns, strategy_signals, expected_fees)]
     expected_total_return = (1 + pd.Series(expected_strategy_returns)).prod() - 1
     
     assert pytest.approx(total_return, rel=1e-4) == expected_total_return, f"Expected total return {expected_total_return}, but got {total_return}"
