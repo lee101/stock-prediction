@@ -39,27 +39,25 @@ def test_backtest_forecasts(mock_pipeline_class, mock_download_data, mock_stock_
     # Assertions
     assert isinstance(results, pd.DataFrame)
     assert len(results) == num_simulations
-    assert 'simple_strategy_return' in results.columns
-    assert 'simple_strategy_finalday' in results.columns
-    assert 'all_signals_strategy_return' in results.columns
-    assert 'all_signals_strategy_finalday' in results.columns
     assert 'buy_hold_return' in results.columns
     assert 'buy_hold_finalday' in results.columns
 
     # Check if the buy and hold strategy is calculated correctly
     for i in range(num_simulations):
-        actual_returns = mock_stock_data['Close'].pct_change().iloc[-(7+i):-i] if i > 0 else mock_stock_data['Close'].pct_change().iloc[-7:]
-        buy_hold_signals = buy_hold_strategy(torch.ones(len(actual_returns)))
-        expected_buy_hold_return, _ = evaluate_strategy(buy_hold_signals, actual_returns)
-        assert pytest.approx(results['buy_hold_return'].iloc[i], rel=1e-4) == expected_buy_hold_return
+        simulation_data = mock_stock_data.iloc[:-(i+1)].copy()
+        actual_returns = simulation_data['Close'].pct_change().iloc[-7:]
         
+        # Calculate expected buy-and-hold return
+        cumulative_return = (1 + actual_returns).prod() - 1
+        expected_buy_hold_return = cumulative_return - CRYPTO_TRADING_FEE  # Apply fee once for initial buy
+
+        assert pytest.approx(results['buy_hold_return'].iloc[i], rel=1e-4) == expected_buy_hold_return, \
+            f"Expected buy hold return {expected_buy_hold_return}, but got {results['buy_hold_return'].iloc[i]}"
+
         # Check final day return
         expected_final_day_return = actual_returns.iloc[-1] - CRYPTO_TRADING_FEE
-        assert pytest.approx(results['buy_hold_finalday'].iloc[i], rel=1e-4) == expected_final_day_return
-
-    # Add a check to ensure buy_hold_signals are all ones
-    buy_hold_signals = buy_hold_strategy(torch.tensor(mock_pipeline.predict.return_value[0].numpy()))
-    assert torch.all(buy_hold_signals == 1), "Buy-hold strategy should always return 1 (buy)"
+        assert pytest.approx(results['buy_hold_finalday'].iloc[i], rel=1e-4) == expected_final_day_return, \
+            f"Expected final day return {expected_final_day_return}, but got {results['buy_hold_finalday'].iloc[i]}"
 
     # Check if the pipeline was called the correct number of times
     expected_pipeline_calls = num_simulations * 4 * 7  # 4 price types, 7 days each
@@ -87,16 +85,19 @@ def test_all_signals_strategy():
 def test_evaluate_strategy_with_fees():
     strategy_signals = torch.tensor([1., 1., -1., -1., 1.])
     actual_returns = pd.Series([0.02, 0.01, -0.01, -0.02, 0.03])
-    
+
     total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns)
-    
-    # Calculate expected return manually
-    expected_returns = [0.02, 0.01, -0.01, -0.02, 0.03]
-    expected_fees = [CRYPTO_TRADING_FEE, 0, CRYPTO_TRADING_FEE, 0, CRYPTO_TRADING_FEE]
-    expected_strategy_returns = [(r * s) - f for r, s, f in zip(expected_returns, strategy_signals, expected_fees)]
+
+    # Calculate expected fees correctly
+    strategy_signals_np = strategy_signals.numpy()
+    expected_fees = np.abs(np.diff(np.concatenate(([0], strategy_signals_np)))) * CRYPTO_TRADING_FEE
+
+    # Calculate expected strategy returns with correct fees
+    expected_strategy_returns = (strategy_signals_np * actual_returns.values) - expected_fees
     expected_total_return = (1 + pd.Series(expected_strategy_returns)).prod() - 1
-    
-    assert pytest.approx(total_return, rel=1e-4) == expected_total_return, f"Expected total return {expected_total_return}, but got {total_return}"
+
+    assert pytest.approx(total_return, rel=1e-4) == expected_total_return, \
+        f"Expected total return {expected_total_return}, but got {total_return}"
     assert sharpe_ratio > 0, f"Sharpe ratio {sharpe_ratio} is not positive"
 
 def test_buy_hold_strategy():

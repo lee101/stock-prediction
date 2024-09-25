@@ -23,6 +23,10 @@ PYTHONPATH=$(pwd) python ./scripts/alpaca_cli.py close_all_positions
 
 PYTHONPATH=$(pwd) python scripts/alpaca_cli.py backout_near_market BTCUSD
 
+##### ramp into a position
+
+PYTHONPATH=$(pwd) python scripts/alpaca_cli.py ramp_into_position ETHUSD
+
 ##### cancel any duplicate orders/bugs
 
 PYTHONPATH=$(pwd) python ./scripts/cancel_multi_orders.py

@@ -1,4 +1,5 @@
 from datetime import datetime
+import math
 from time import sleep
 from typing import Optional
 
@@ -19,7 +20,7 @@ alpaca_api = tradeapi.REST(
     'v2')
 
 
-def main(command: str, pair: Optional[str]):
+def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
     """
     cancel_all_orders - cancel all orders
 
@@ -29,8 +30,11 @@ def main(command: str, pair: Optional[str]):
 
     backout_near_market BTCUSD backout of usd locking to market sell price
 
+    ramp_into_position BTCUSD buy - ramp into a position over time
+
     :param pair: e.g. BTCUSD
     :param command:
+    :param side: buy or sell (default: buy)
     :return:
     """
     if command == 'close_all_positions':
@@ -43,6 +47,9 @@ def main(command: str, pair: Optional[str]):
         # loop around until the order is closed at market
         now = datetime.now()
         backout_near_market(pair, start_time=now)
+    elif command == "ramp_into_position":
+        now = datetime.now()
+        ramp_into_position(pair, side, start_time=now)
 
 
 
@@ -127,6 +134,64 @@ def violently_close_all_positions():
     for position in positions:
         alpaca_wrapper.close_position_violently(position)
 
+
+def ramp_into_position(pair, side, start_time=None):
+    """
+    Ramp into a position - linear .01pct below to market price within 60min
+    """
+    if start_time is None:
+        start_time = datetime.now()
+
+    while True:
+        all_positions = alpaca_wrapper.get_all_positions()
+        positions = filter_to_realistic_positions(all_positions)
+
+        # Cancel all orders of pair as we are ramping into the position
+        orders = alpaca_wrapper.get_open_orders()
+        for order in orders:
+            if order.symbol == pair:
+                alpaca_wrapper.cancel_order(order)
+                break
+
+        found_position = False
+        for position in positions:
+            if position.symbol == pair:
+                found_position = True
+                logger.info(f"Position already exists for {pair}")
+                return True
+
+        if not found_position:
+            pct_from_market = 0.02
+            linear_ramp = 60
+            minutes_since_start = (datetime.now() - start_time).seconds // 60
+            if minutes_since_start >= linear_ramp:
+                pct_from_market = 0.0
+            else:
+                pct_from_market = pct_from_market - (0.02 * minutes_since_start / linear_ramp)
+
+            logger.info(f"pct_from_market: {pct_from_market}")
+            
+            # Get current market price
+            download_exchange_latest_data(client, pair)
+            current_price = get_bid(pair) if side == "buy" else get_ask(pair)
+            
+            # Calculate the price to place the order
+            order_price = current_price * (1 - pct_from_market) if side == "buy" else current_price * (1 + pct_from_market)
+
+            # Calculate the qty based on 35% of buying power
+            buying_power = alpaca_wrapper.cash
+            qty = 0.5 * buying_power / order_price
+            qty = math.floor(qty * 1000) / 1000.0  # Round down to 3 decimal places
+            logger.info(f"qty: {qty}")
+            logger.info(f"order_price: {order_price}")
+            
+            # Place the order
+            succeeded = alpaca_wrapper.open_order_at_price(pair, qty, side, order_price)  # Using quantity of 1 as an example
+            if not succeeded:
+                logger.info("Failed to open a position, stopping as we are potentially at market close?")
+                # return False
+
+        sleep(60 * 3)  # retry every 3 mins
 
 if __name__ == "__main__":
     typer.run(main)
