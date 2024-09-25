@@ -10,10 +10,9 @@ import torch
 import alpaca_wrapper
 from predict_stock_forecasting import load_pipeline, make_predictions, load_stock_data_from_csv, pre_process_data, series_to_tensor
 from data_curate_daily import download_daily_stock_data
-from loss_utils import calculate_trading_profit_torch_with_buysell, calculate_trading_profit_torch_with_entry_buysell
-from src.conversion_utils import unwrap_tensor
 
 ETH_SPREAD = 1.0008711461252937
+CRYPTO_TRADING_FEE = 0.0015  # 0.15% fee
 
 
 from chronos import ChronosPipeline
@@ -38,12 +37,44 @@ def load_pipeline():
         # pipeline.model = torch.compile(pipeline.model)
 
 
+def simple_buy_sell_strategy(predictions):
+    """Buy if predicted close is up, sell if down."""
+    return (predictions > 0).float() * 2 - 1
+
+def all_signals_strategy(close_pred, high_pred, low_pred, open_pred):
+    """Buy if all signals are up, sell if all are down, hold otherwise."""
+    buy_signal = (close_pred > 0) & (high_pred > 0) & (low_pred > 0) & (open_pred > 0)
+    sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0) & (open_pred < 0)
+    return buy_signal.float() - sell_signal.float()
+
+def evaluate_strategy(strategy_signals, actual_returns):
+    """Evaluate the performance of a strategy, factoring in trading fees."""
+    strategy_signals = strategy_signals.numpy()  # Convert to numpy array
+    
+    # Calculate fees: apply fee for each trade (both buy and sell)
+    fees = np.abs(np.diff(np.concatenate(([0], strategy_signals)))) * CRYPTO_TRADING_FEE
+    
+    # Apply fees to the strategy returns
+    strategy_returns = strategy_signals * actual_returns - fees
+    
+    cumulative_returns = (1 + strategy_returns).cumprod() - 1
+    total_return = cumulative_returns.iloc[-1]
+    sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)  # Assuming daily data
+    return total_return, sharpe_ratio
+
+def buy_hold_strategy(predictions):
+    """Always buy and hold strategy."""
+    return torch.ones_like(predictions)
+
 def backtest_forecasts(symbol, num_simulations=20):
     logger.remove()
     logger.add(sys.stdout, format="{time} | {level} | {message}")
 
     # Download the latest data
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
+    # use this for testing dataset
+    current_time_formatted = '2024-04-18--06-14-26'  # new/ 30 minute data # '2022-10-14 09-58-20'
+
     stock_data = download_daily_stock_data(current_time_formatted, symbols=[symbol])
 
     base_dir = Path(__file__).parent
@@ -114,62 +145,33 @@ def backtest_forecasts(symbol, num_simulations=20):
             mean_val_loss = np.abs(error).mean()
 
             last_preds[key_to_predict.lower() + "_last_price"] = simulation_data[key_to_predict].iloc[-1]
-            last_preds[key_to_predict.lower() + "_predicted_price"] = unwrap_tensor(predictions[-1])
-            last_preds[key_to_predict.lower() + "_predicted_price_value"] = unwrap_tensor(last_preds[key_to_predict.lower() + "_last_price"] + (
-                    last_preds[key_to_predict.lower() + "_last_price"] * predictions[-1]))
+            last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[-1]
+            last_preds[key_to_predict.lower() + "_predicted_price_value"] = last_preds[key_to_predict.lower() + "_last_price"] + (
+                    last_preds[key_to_predict.lower() + "_last_price"] * predictions[-1])
             last_preds[key_to_predict.lower() + "_val_loss"] = mean_val_loss
             last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:-1].view(-1)
             last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
             last_preds[key_to_predict.lower() + "_predictions"] = predictions[:-1].view(-1)
 
-        validation_size = last_preds["high_actual_movement_values"].numel()
-        close_to_high = series_to_tensor(
-            abs(1 - (simulation_data["High"].iloc[-validation_size - 2:-2] / simulation_data["Close"].iloc[-validation_size - 2:-2])))
-        close_to_low = series_to_tensor(abs(1 - (simulation_data["Low"].iloc[-validation_size - 2:-2] / simulation_data["Close"].iloc[-validation_size - 2:-2])))
+        # Calculate actual returns
+        actual_returns = pd.Series(last_preds["close_actual_movement_values"].numpy())
 
-        calculated_profit = calculate_trading_profit_torch_with_buysell(None, None,
-                                                                        last_preds["close_actual_movement_values"],
-                                                                        last_preds["close_trade_values"],
-                                                                        last_preds["high_actual_movement_values"] + close_to_high,
-                                                                        last_preds["high_predictions"] + close_to_high,
-                                                                        last_preds["low_actual_movement_values"] - close_to_low,
-                                                                        last_preds["low_predictions"] - close_to_low).item()
-        last_preds['takeprofit_profit'] = calculated_profit
+        # Simple buy/sell strategy
+        simple_signals = simple_buy_sell_strategy(torch.tensor(last_preds["close_predictions"]))
+        simple_total_return, simple_sharpe = evaluate_strategy(simple_signals, actual_returns)
 
-        calculated_profit = calculate_trading_profit_torch_with_entry_buysell(None, None,
-                                                                              last_preds["close_actual_movement_values"],
-                                                                              last_preds["close_trade_values"],
-                                                                              last_preds["high_actual_movement_values"] + close_to_high,
-                                                                              last_preds["high_predictions"] + close_to_high,
-                                                                              last_preds["low_actual_movement_values"] - close_to_low,
-                                                                              last_preds["low_predictions"] - close_to_low).item()
-        last_preds['entry_takeprofit_profit'] = calculated_profit
+        # All signals strategy
+        all_signals = all_signals_strategy(
+            torch.tensor(last_preds["close_predictions"]),
+            torch.tensor(last_preds["high_predictions"]),
+            torch.tensor(last_preds["low_predictions"]),
+            torch.tensor(last_preds["open_predictions"])
+        )
+        all_signals_total_return, all_signals_sharpe = evaluate_strategy(all_signals, actual_returns)
 
-        high_diffs = torch.abs(last_preds["high_predictions"] + close_to_high)
-        low_diffs = torch.abs(last_preds["low_predictions"] - close_to_low)
-        maxdiff_trades = (high_diffs > low_diffs) * 2 - 1
-        calculated_profit = calculate_trading_profit_torch_with_entry_buysell(None, None,
-                                                                              last_preds["close_actual_movement_values"],
-                                                                              maxdiff_trades,
-                                                                              last_preds["high_actual_movement_values"] + close_to_high,
-                                                                              last_preds["high_predictions"] + close_to_high,
-                                                                              last_preds["low_actual_movement_values"] - close_to_low,
-                                                                              last_preds["low_predictions"] - close_to_low).item()
-        last_preds['maxdiffprofit_profit'] = calculated_profit
-
-        open_price = simulation_data['Open'].iloc[-1]
-        close_price = simulation_data['Close'].iloc[-1]
-        predicted_close = last_preds['close_predicted_price_value']
-
-        if pd.notna(predicted_close) and pd.notna(open_price) and pd.notna(close_price):
-            if predicted_close > open_price:
-                entry_hold_profit = (close_price - open_price) / open_price
-            else:
-                entry_hold_profit = 0
-        else:
-            entry_hold_profit = 0
-
-        last_preds['entry_hold_profit'] = entry_hold_profit
+        # Buy and hold strategy
+        buy_hold_signals = buy_hold_strategy(torch.tensor(last_preds["close_predictions"]))
+        buy_hold_return, buy_hold_sharpe = evaluate_strategy(buy_hold_signals, actual_returns)
 
         result = {
             'date': simulation_data.index[-1],
@@ -177,10 +179,12 @@ def backtest_forecasts(symbol, num_simulations=20):
             'predicted_close': last_preds['close_predicted_price_value'],
             'predicted_high': last_preds['high_predicted_price_value'],
             'predicted_low': last_preds['low_predicted_price_value'],
-            'entry_takeprofit_profit': last_preds['entry_takeprofit_profit'],
-            'maxdiffprofit_profit': last_preds['maxdiffprofit_profit'],
-            'takeprofit_profit': last_preds['takeprofit_profit'],
-            'entry_hold_profit': last_preds['entry_hold_profit']
+            'simple_strategy_return': simple_total_return,
+            'simple_strategy_sharpe': simple_sharpe,
+            'all_signals_strategy_return': all_signals_total_return,
+            'all_signals_strategy_sharpe': all_signals_sharpe,
+            'buy_hold_return': buy_hold_return,
+            'buy_hold_sharpe': buy_hold_sharpe
         }
         results.append(result)
         print("Result:")
@@ -189,12 +193,11 @@ def backtest_forecasts(symbol, num_simulations=20):
     results_df = pd.DataFrame(results)
 
     logger.info(f"\nBacktest results for {symbol} over {num_simulations} simulations:")
-    logger.info(f"Average Entry TakeProfit: {results_df['entry_takeprofit_profit'].mean():.4f}")
-    logger.info(f"Average MaxDiff Profit: {results_df['maxdiffprofit_profit'].mean():.4f}")
-    logger.info(f"Average TakeProfit: {results_df['takeprofit_profit'].mean():.4f}")
-
-    # logger.info("\nPrediction accuracy:")
-    # logger.info(f"Close price RMSE: {np.sqrt(((results_df['close'] - results_df['predicted_close'])**2).mean()):.2f}")
+    logger.info(f"Average Simple Strategy Return: {results_df['simple_strategy_return'].mean():.4f}")
+    logger.info(f"Average Simple Strategy Sharpe: {results_df['simple_strategy_sharpe'].mean():.4f}")
+    logger.info(f"Average All Signals Strategy Return: {results_df['all_signals_strategy_return'].mean():.4f}")
+    logger.info(f"Average All Signals Strategy Sharpe: {results_df['all_signals_strategy_sharpe'].mean():.4f}")
+    logger.info(f"Average Buy and Hold Return: {results_df['buy_hold_return'].mean():.4f}")
 
     return results_df
 
