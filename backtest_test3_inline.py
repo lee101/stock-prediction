@@ -39,13 +39,19 @@ def load_pipeline():
 
 def simple_buy_sell_strategy(predictions):
     """Buy if predicted close is up, sell if down."""
+    predictions = torch.as_tensor(predictions)
     return (predictions > 0).float() * 2 - 1
 
 def all_signals_strategy(close_pred, high_pred, low_pred, open_pred):
     """Buy if all signals are up, sell if all are down, hold otherwise."""
+    close_pred, high_pred, low_pred, open_pred = map(torch.as_tensor, (close_pred, high_pred, low_pred, open_pred))
     buy_signal = (close_pred > 0) & (high_pred > 0) & (low_pred > 0) & (open_pred > 0)
     sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0) & (open_pred < 0)
     return buy_signal.float() - sell_signal.float()
+
+def buy_hold_strategy(predictions):
+    """Always buy and hold strategy."""
+    return torch.ones_like(torch.as_tensor(predictions))
 
 def evaluate_strategy(strategy_signals, actual_returns):
     """Evaluate the performance of a strategy, factoring in trading fees."""
@@ -61,10 +67,6 @@ def evaluate_strategy(strategy_signals, actual_returns):
     total_return = cumulative_returns.iloc[-1]
     sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)  # Assuming daily data
     return total_return, sharpe_ratio
-
-def buy_hold_strategy(predictions):
-    """Always buy and hold strategy."""
-    return torch.ones_like(predictions)
 
 def backtest_forecasts(symbol, num_simulations=20):
     logger.remove()
@@ -157,40 +159,40 @@ def backtest_forecasts(symbol, num_simulations=20):
         actual_returns = pd.Series(last_preds["close_actual_movement_values"].numpy())
 
         # Simple buy/sell strategy
-        simple_signals = simple_buy_sell_strategy(torch.tensor(last_preds["close_predictions"]))
+        simple_signals = simple_buy_sell_strategy(last_preds["close_predictions"])
         simple_total_return, simple_sharpe = evaluate_strategy(simple_signals, actual_returns)
-        simple_finalday_return = (simple_signals[-1] * actual_returns.iloc[-1]) - CRYPTO_TRADING_FEE
+        simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - CRYPTO_TRADING_FEE
 
         # All signals strategy
         all_signals = all_signals_strategy(
-            torch.tensor(last_preds["close_predictions"]),
-            torch.tensor(last_preds["high_predictions"]),
-            torch.tensor(last_preds["low_predictions"]),
-            torch.tensor(last_preds["open_predictions"])
+            last_preds["close_predictions"],
+            last_preds["high_predictions"],
+            last_preds["low_predictions"],
+            last_preds["open_predictions"]
         )
         all_signals_total_return, all_signals_sharpe = evaluate_strategy(all_signals, actual_returns)
-        all_signals_finalday_return = (all_signals[-1] * actual_returns.iloc[-1]) - CRYPTO_TRADING_FEE
+        all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - CRYPTO_TRADING_FEE
 
         # Buy and hold strategy
-        buy_hold_signals = buy_hold_strategy(torch.tensor(last_preds["close_predictions"]))
+        buy_hold_signals = buy_hold_strategy(last_preds["close_predictions"])
         buy_hold_return, buy_hold_sharpe = evaluate_strategy(buy_hold_signals, actual_returns)
         buy_hold_finalday_return = actual_returns.iloc[-1] - CRYPTO_TRADING_FEE
 
         result = {
             'date': simulation_data.index[-1],
-            'close': last_preds['close_last_price'],
-            'predicted_close': last_preds['close_predicted_price_value'],
-            'predicted_high': last_preds['high_predicted_price_value'],
-            'predicted_low': last_preds['low_predicted_price_value'],
-            'simple_strategy_return': simple_total_return,
-            'simple_strategy_sharpe': simple_sharpe,
-            'simple_strategy_finalday': simple_finalday_return,
-            'all_signals_strategy_return': all_signals_total_return,
-            'all_signals_strategy_sharpe': all_signals_sharpe,
-            'all_signals_strategy_finalday': all_signals_finalday_return,
-            'buy_hold_return': buy_hold_return,
-            'buy_hold_sharpe': buy_hold_sharpe,
-            'buy_hold_finalday': buy_hold_finalday_return
+            'close': float(last_preds['close_last_price']),
+            'predicted_close': float(last_preds['close_predicted_price_value']),
+            'predicted_high': float(last_preds['high_predicted_price_value']),
+            'predicted_low': float(last_preds['low_predicted_price_value']),
+            'simple_strategy_return': float(simple_total_return),
+            'simple_strategy_sharpe': float(simple_sharpe),
+            'simple_strategy_finalday': float(simple_finalday_return),
+            'all_signals_strategy_return': float(all_signals_total_return),
+            'all_signals_strategy_sharpe': float(all_signals_sharpe),
+            'all_signals_strategy_finalday': float(all_signals_finalday_return),
+            'buy_hold_return': float(buy_hold_return),
+            'buy_hold_sharpe': float(buy_hold_sharpe),
+            'buy_hold_finalday': float(buy_hold_finalday_return)
         }
         results.append(result)
         print("Result:")
