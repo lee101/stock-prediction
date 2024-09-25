@@ -69,7 +69,7 @@ def backout_near_market(pair, start_time=None):
         positions = filter_to_realistic_positions(all_positions)
 
         # cancel all orders of pair as we are locking to sell at the market
-
+        
         orders = alpaca_wrapper.get_open_orders()
 
         for order in orders:
@@ -147,7 +147,17 @@ def ramp_into_position(pair, side, start_time=None):
         positions = filter_to_realistic_positions(all_positions)
 
         # Cancel all orders of pair as we are ramping into the position
+        # couldnt find another way so only supports buying one at a time rn
+        logger.info("cancelling all orders")
+        success = alpaca_wrapper.cancel_all_orders()
+        if not success:
+            logger.info("failed to cancel all orders, stopping as we are potentially at market close?")
+
+
         orders = alpaca_wrapper.get_open_orders()
+        # print all order symbols
+        for order in orders:
+            logger.info(f"order: {order.symbol}")
         for order in orders:
             if order.symbol == pair:
                 alpaca_wrapper.cancel_order(order)
@@ -161,13 +171,13 @@ def ramp_into_position(pair, side, start_time=None):
                 return True
 
         if not found_position:
-            pct_from_market = 0.02
+            pct_from_market = 0.003
             linear_ramp = 60
             minutes_since_start = (datetime.now() - start_time).seconds // 60
             if minutes_since_start >= linear_ramp:
                 pct_from_market = 0.0
             else:
-                pct_from_market = pct_from_market - (0.02 * minutes_since_start / linear_ramp)
+                pct_from_market = pct_from_market - (0.003 * minutes_since_start / linear_ramp)
 
             logger.info(f"pct_from_market: {pct_from_market}")
             
@@ -191,7 +201,7 @@ def ramp_into_position(pair, side, start_time=None):
                 logger.info("Failed to open a position, stopping as we are potentially at market close?")
                 # return False
 
-        sleep(60 * 3)  # retry every 3 mins
+        sleep(60 * 2)
 
 if __name__ == "__main__":
     typer.run(main)
