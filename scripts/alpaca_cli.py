@@ -171,32 +171,41 @@ def ramp_into_position(pair, side, start_time=None):
                 return True
 
         if not found_position:
-            pct_from_market = 0.003
             linear_ramp = 60
             minutes_since_start = (datetime.now() - start_time).seconds // 60
-            if minutes_since_start >= linear_ramp:
-                pct_from_market = 0.0
-            else:
-                pct_from_market = pct_from_market - (0.003 * minutes_since_start / linear_ramp)
 
-            logger.info(f"pct_from_market: {pct_from_market}")
-            
-            # Get current market price
+            # Get current market prices
             download_exchange_latest_data(client, pair)
-            current_price = get_bid(pair) if side == "buy" else get_ask(pair)
-            
-            # Calculate the price to place the order
-            order_price = current_price * (1 - pct_from_market) if side == "buy" else current_price * (1 + pct_from_market)
+            bid_price = get_bid(pair)
+            ask_price = get_ask(pair)
 
-            # Calculate the qty based on 35% of buying power
+            if bid_price is None or ask_price is None:
+                logger.error(f"Failed to get bid/ask prices for {pair}")
+                return False
+
+            # Calculate the price to place the order
+            if side == "buy":
+                start_price, end_price = bid_price, ask_price
+            else:
+                start_price, end_price = ask_price, bid_price
+
+            if minutes_since_start >= linear_ramp:
+                order_price = end_price
+            else:
+                price_range = end_price - start_price
+                progress = minutes_since_start / linear_ramp
+                order_price = start_price + (price_range * progress)
+
+            # Calculate the qty based on 50% of buying power
             buying_power = alpaca_wrapper.cash
             qty = 0.5 * buying_power / order_price
             qty = math.floor(qty * 1000) / 1000.0  # Round down to 3 decimal places
+
             logger.info(f"qty: {qty}")
             logger.info(f"order_price: {order_price}")
             
             # Place the order
-            succeeded = alpaca_wrapper.open_order_at_price(pair, qty, side, order_price)  # Using quantity of 1 as an example
+            succeeded = alpaca_wrapper.open_order_at_price(pair, qty, side, order_price)
             if not succeeded:
                 logger.info("Failed to open a position, stopping as we are potentially at market close?")
                 # return False
