@@ -9,7 +9,13 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "python": "${workspaceFolder}/.env/bin/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.env/lib/python3.11/site-packages:${env:PYTHONPATH}"
+            },
+            "envFile": "${workspaceFolder}/.env",
+            "cwd": "${workspaceFolder}"
         }
     ]
 }
