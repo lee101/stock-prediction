@@ -40,9 +40,11 @@ def test_backtest_forecasts(mock_pipeline_class, mock_download_data, mock_stock_
     assert isinstance(results, pd.DataFrame)
     assert len(results) == num_simulations
     assert 'simple_strategy_return' in results.columns
+    assert 'simple_strategy_finalday' in results.columns
     assert 'all_signals_strategy_return' in results.columns
+    assert 'all_signals_strategy_finalday' in results.columns
     assert 'buy_hold_return' in results.columns
-    assert 'buy_hold_sharpe' in results.columns
+    assert 'buy_hold_finalday' in results.columns
 
     # Check if the buy and hold strategy is calculated correctly
     for i in range(num_simulations):
@@ -50,6 +52,10 @@ def test_backtest_forecasts(mock_pipeline_class, mock_download_data, mock_stock_
         buy_hold_signals = buy_hold_strategy(torch.ones(len(actual_returns)))
         expected_buy_hold_return, _ = evaluate_strategy(buy_hold_signals, actual_returns)
         assert pytest.approx(results['buy_hold_return'].iloc[i], rel=1e-4) == expected_buy_hold_return
+        
+        # Check final day return
+        expected_final_day_return = actual_returns.iloc[-1] - CRYPTO_TRADING_FEE
+        assert pytest.approx(results['buy_hold_finalday'].iloc[i], rel=1e-4) == expected_final_day_return
 
     # Add a check to ensure buy_hold_signals are all ones
     buy_hold_signals = buy_hold_strategy(torch.tensor(mock_pipeline.predict.return_value[0].numpy()))
