@@ -14,7 +14,7 @@ def show_forecasts(symbol):
 
     # Download the latest data
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
-    download_daily_stock_data(current_time_formatted)
+    data_df = download_daily_stock_data(current_time_formatted)
 
     # Make predictions
     predictions = make_predictions(current_time_formatted, alpaca_wrapper=alpaca_wrapper)
@@ -36,6 +36,28 @@ def show_forecasts(symbol):
     logger.info(f"Entry TakeProfit: {symbol_predictions['entry_takeprofit_profit'].values[0]:.4f}")
     logger.info(f"MaxDiff Profit: {symbol_predictions['maxdiffprofit_profit'].values[0]:.4f}")
     logger.info(f"TakeProfit: {symbol_predictions['takeprofit_profit'].values[0]:.4f}")
+
+    # Log all data in symbol_predictions
+    logger.info("\nAll prediction data:")
+    for key, value in symbol_predictions.iloc[0].to_dict().items():
+        if isinstance(value, float):
+            logger.info(f"{key}: {value:.6f}")
+        elif isinstance(value, list):
+            logger.info(f"{key}: {value}")
+        else:
+            logger.info(f"{key}: {value}")
+
+    # print last "timestamp" field from data_df
+    last_timestamp = data_df.index[-1]['timestamp']
+
+    logger.info(f"Last timestamp: {last_timestamp}")
+    last_timestamp_datetime = datetime.fromisoformat(last_timestamp)
+    logger.info(f"Last timestamp datetime: {last_timestamp_datetime}")
+    # print in nzdt 
+    logger.info(f"Last timestamp nzdt: {last_timestamp_datetime.astimezone(pytz.timezone('NZDT'))}")
+    # add one day and print 
+    last_timestamp_datetime_plus_one = last_timestamp_datetime + timedelta(days=1)
+    logger.info(f"Last timestamp nzdt plus one day: {last_timestamp_datetime_plus_one.astimezone(pytz.timezone('NZDT'))}")
 
     # Display historical data
     base_dir = Path(__file__).parent
