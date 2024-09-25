@@ -159,6 +159,7 @@ def backtest_forecasts(symbol, num_simulations=20):
         # Simple buy/sell strategy
         simple_signals = simple_buy_sell_strategy(torch.tensor(last_preds["close_predictions"]))
         simple_total_return, simple_sharpe = evaluate_strategy(simple_signals, actual_returns)
+        simple_finalday_return = (simple_signals[-1] * actual_returns.iloc[-1]) - CRYPTO_TRADING_FEE
 
         # All signals strategy
         all_signals = all_signals_strategy(
@@ -168,10 +169,12 @@ def backtest_forecasts(symbol, num_simulations=20):
             torch.tensor(last_preds["open_predictions"])
         )
         all_signals_total_return, all_signals_sharpe = evaluate_strategy(all_signals, actual_returns)
+        all_signals_finalday_return = (all_signals[-1] * actual_returns.iloc[-1]) - CRYPTO_TRADING_FEE
 
         # Buy and hold strategy
         buy_hold_signals = buy_hold_strategy(torch.tensor(last_preds["close_predictions"]))
         buy_hold_return, buy_hold_sharpe = evaluate_strategy(buy_hold_signals, actual_returns)
+        buy_hold_finalday_return = actual_returns.iloc[-1] - CRYPTO_TRADING_FEE
 
         result = {
             'date': simulation_data.index[-1],
@@ -181,10 +184,13 @@ def backtest_forecasts(symbol, num_simulations=20):
             'predicted_low': last_preds['low_predicted_price_value'],
             'simple_strategy_return': simple_total_return,
             'simple_strategy_sharpe': simple_sharpe,
+            'simple_strategy_finalday': simple_finalday_return,
             'all_signals_strategy_return': all_signals_total_return,
             'all_signals_strategy_sharpe': all_signals_sharpe,
+            'all_signals_strategy_finalday': all_signals_finalday_return,
             'buy_hold_return': buy_hold_return,
-            'buy_hold_sharpe': buy_hold_sharpe
+            'buy_hold_sharpe': buy_hold_sharpe,
+            'buy_hold_finalday': buy_hold_finalday_return
         }
         results.append(result)
         print("Result:")
@@ -195,9 +201,13 @@ def backtest_forecasts(symbol, num_simulations=20):
     logger.info(f"\nBacktest results for {symbol} over {num_simulations} simulations:")
     logger.info(f"Average Simple Strategy Return: {results_df['simple_strategy_return'].mean():.4f}")
     logger.info(f"Average Simple Strategy Sharpe: {results_df['simple_strategy_sharpe'].mean():.4f}")
+    logger.info(f"Average Simple Strategy Final Day Return: {results_df['simple_strategy_finalday'].mean():.4f}")
     logger.info(f"Average All Signals Strategy Return: {results_df['all_signals_strategy_return'].mean():.4f}")
     logger.info(f"Average All Signals Strategy Sharpe: {results_df['all_signals_strategy_sharpe'].mean():.4f}")
+    logger.info(f"Average All Signals Strategy Final Day Return: {results_df['all_signals_strategy_finalday'].mean():.4f}")
     logger.info(f"Average Buy and Hold Return: {results_df['buy_hold_return'].mean():.4f}")
+    logger.info(f"Average Buy and Hold Sharpe: {results_df['buy_hold_sharpe'].mean():.4f}")
+    logger.info(f"Average Buy and Hold Final Day Return: {results_df['buy_hold_finalday'].mean():.4f}")
 
     return results_df
 
