@@ -56,6 +56,8 @@ def get_clock_internal(retries=3):
             logger.error("retrying get clock")
             return get_clock_internal(retries - 1)
         raise e
+    
+    
 def get_all_positions(retries=3):
     try:
         return alpaca_api.get_all_positions()
@@ -83,6 +85,7 @@ def cancel_all_orders(retries=3):
         logger.error("failed to cancel all orders")
 
         return None # raise?
+    return result
 
 
 # alpaca_api.submit_order(short_stock, qty, side, "market", "gtc")
@@ -103,6 +106,7 @@ def open_market_order_violently(symbol, qty, side, retries=3):
         logger.error(e)
         return None
     print(result)
+    return result
 
 
 # er_stock:372 - LTCUSD buying 116.104 at 83.755
@@ -161,6 +165,7 @@ def open_order_at_price(symbol, qty, side, price):
                 limit_price=price,
             )
         )
+        return result
     except Exception as e:
         logger.error(e)
         return None
@@ -191,6 +196,7 @@ def close_position_violently(position):
                     time_in_force="gtc",
                 )
             )
+        return result
     except Exception as e:
         traceback.print_exc()
 
@@ -260,7 +266,7 @@ def close_position_at_current_price(position, row):
         # close all positions? perhaps not
         return None
     print(result)
-
+    return result
 
 def backout_all_non_crypto_positions(positions, predictions):
     for position in positions:
