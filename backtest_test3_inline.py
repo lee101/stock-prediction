@@ -127,7 +127,11 @@ def evaluate_strategy(strategy_signals, actual_returns):
     # Calculate fees: apply fee for each trade (both buy and sell)
     # fees = np.abs(np.diff(np.concatenate(([0], strategy_signals)))) * (2 * CRYPTO_TRADING_FEE + (ETH_SPREAD * ETH_SPREAD))
     fees = np.abs(np.diff(np.concatenate(([0], strategy_signals)))) * (2 * CRYPTO_TRADING_FEE)
-    logger.info(f'fees: {fees}')
+    # logger.info(f'fees: {fees}')
+    # Adjust fees: only apply when position changes
+    position_changes = np.diff(np.concatenate(([0], strategy_signals)))
+    fees = np.abs(position_changes) * (2 * CRYPTO_TRADING_FEE)
+    logger.info(f'adjusted fees: {fees}')
     # Apply fees to the strategy returns
     strategy_returns = strategy_signals * actual_returns - fees
 

@@ -75,7 +75,8 @@ def test_backtest_forecasts(mock_pipeline_class, mock_download_data, mock_stock_
 def test_simple_buy_sell_strategy():
     predictions = torch.tensor([-0.1, 0.2, 0, -0.3, 0.5])
     expected_output = torch.tensor([-1., 1., -1., -1., 1.])
-    assert torch.all(simple_buy_sell_strategy(predictions).eq(expected_output))
+    result = simple_buy_sell_strategy(predictions)
+    assert torch.all(result.eq(expected_output)), f"Expected {expected_output}, but got {result}"
 
 
 def test_all_signals_strategy():
@@ -85,11 +86,7 @@ def test_all_signals_strategy():
     open_pred = torch.tensor([0.4, -0.4, 0.1, -0.1])
     result = all_signals_strategy(close_pred, high_pred, low_pred, open_pred)
 
-    # Calculate expected output based on the actual implementation
-    buy_signal = (close_pred > 0) & (high_pred > 0) & (low_pred > 0) & (open_pred > 0)
-    sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0) & (open_pred < 0)
-    expected_output = buy_signal.float() - sell_signal.float()
-
+    expected_output = torch.tensor([1., -1., 0., -1.])
     assert torch.all(result.eq(expected_output)), f"Expected {expected_output}, but got {result}"
 
 
@@ -106,9 +103,10 @@ def test_evaluate_strategy_with_fees():
                       1.02 - (2 * CRYPTO_TRADING_FEE),
                       1.03 - (2 * CRYPTO_TRADING_FEE)]
     actual_gain = 1
-    for i in range(len(expected_gains)):
-        actual_gain *= expected_gains[i]
-    actual_gain -=1
+    for gain in expected_gains:
+        actual_gain *= gain
+    actual_gain -= 1
+
     assert pytest.approx(total_return, rel=1e-4) == actual_gain, \
         f"Expected total return {actual_gain}, but got {total_return}"
     assert sharpe_ratio > 0, f"Sharpe ratio {sharpe_ratio} is not positive"
@@ -116,7 +114,7 @@ def test_evaluate_strategy_with_fees():
 
 def test_buy_hold_strategy():
     predictions = torch.tensor([-0.1, 0.2, 0, -0.3, 0.5])
-    expected_output = torch.tensor([0, 1., 0, 0, 1.])
+    expected_output = torch.tensor([0., 1., 0., 0., 1.])
     result = buy_hold_strategy(predictions)
     assert torch.all(result.eq(expected_output)), f"Expected {expected_output}, but got {result}"
 
@@ -127,6 +125,52 @@ def test_unprofit_shutdown_buy_hold():
     result = unprofit_shutdown_buy_hold(predictions, actual_returns)
     expected_output = torch.tensor([1., 1., 1., 0., 0.])
     assert torch.all(result.eq(expected_output)), f"Expected {expected_output}, but got {result}"
+
+
+def test_evaluate_buy_hold_strategy():
+    predictions = torch.tensor([0.1, -0.2, 0.3, -0.4, 0.5])
+    actual_returns = pd.Series([0.02, -0.01, 0.03, -0.02, 0.04])
+    
+    strategy_signals = buy_hold_strategy(predictions)
+    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns)
+    
+    # Manual calculation
+    expected_gains = [1.02 - (2 * CRYPTO_TRADING_FEE),
+                      1.00,  # No trade
+                      1.03 - (2 * CRYPTO_TRADING_FEE),
+                      1.00,  # No trade
+                      1.04 - (2 * CRYPTO_TRADING_FEE)]
+    actual_gain = 1
+    for gain in expected_gains:
+        actual_gain *= gain
+    actual_gain -= 1
+    
+    assert pytest.approx(total_return, rel=1e-4) == actual_gain, \
+        f"Expected total return {actual_gain}, but got {total_return}"
+    assert sharpe_ratio > 0, f"Sharpe ratio {sharpe_ratio} is not positive"
+
+
+def test_evaluate_unprofit_shutdown_buy_hold():
+    predictions = torch.tensor([0.1, 0.2, -0.1, 0.3, 0.5])
+    actual_returns = pd.Series([0.02, 0.01, -0.01, 0.02, 0.03])
+    
+    strategy_signals = unprofit_shutdown_buy_hold(predictions, actual_returns)
+    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns)
+    
+    # Manual calculation
+    expected_gains = [1.02 - (2 * CRYPTO_TRADING_FEE),
+                      1.01 - (2 * CRYPTO_TRADING_FEE),
+                      0.99 - (2 * CRYPTO_TRADING_FEE),
+                      1.00,  # No trade after shutdown
+                      1.00]  # No trade after shutdown
+    actual_gain = 1
+    for gain in expected_gains:
+        actual_gain *= gain
+    actual_gain -= 1
+    
+    assert pytest.approx(total_return, rel=1e-4) == actual_gain, \
+        f"Expected total return {actual_gain}, but got {total_return}"
+    assert sharpe_ratio > 0, f"Sharpe ratio {sharpe_ratio} is not positive"
 
 
 @patch('backtest_test3_inline.download_daily_stock_data')
