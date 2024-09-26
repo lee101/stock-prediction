@@ -25,7 +25,7 @@ def disk_cache(func):
         # Check if we're in testing mode
         if os.environ.get('TESTING') == 'True':
             return func(*args, **kwargs)
-            
+
         # Create a unique key based on the function arguments
         key_parts = []
         for arg in args:
@@ -38,7 +38,7 @@ def disk_cache(func):
                 key_parts.append(f"{k}:{hashlib.md5(v.numpy().tobytes()).hexdigest()}")
             else:
                 key_parts.append(f"{k}:{v}")
-        
+
         key = hashlib.md5(":".join(key_parts).encode()).hexdigest()
         cache_dir = os.path.join(os.path.dirname(__file__), '.cache')
         os.makedirs(cache_dir, exist_ok=True)
@@ -107,8 +107,9 @@ def all_signals_strategy(close_pred, high_pred, low_pred, open_pred):
     return buy_signal.float() - sell_signal.float()
 
 def buy_hold_strategy(predictions):
-    """Always buy and hold strategy."""
-    return torch.ones_like(torch.as_tensor(predictions))
+    """Buy when prediction is positive, hold otherwise."""
+    predictions = torch.as_tensor(predictions)
+    return (predictions > 0).float()
 
 def unprofit_shutdown_buy_hold(predictions, actual_returns):
     """Buy and hold strategy that shuts down if the previous trade would have been unprofitable."""
@@ -122,19 +123,20 @@ def unprofit_shutdown_buy_hold(predictions, actual_returns):
 def evaluate_strategy(strategy_signals, actual_returns):
     """Evaluate the performance of a strategy, factoring in trading fees."""
     strategy_signals = strategy_signals.numpy()  # Convert to numpy array
-    
+
     # Calculate fees: apply fee for each trade (both buy and sell)
-    fees = np.abs(np.diff(np.concatenate(([0], strategy_signals)))) * (2 * CRYPTO_TRADING_FEE * ETH_SPREAD)
-    
+    # fees = np.abs(np.diff(np.concatenate(([0], strategy_signals)))) * (2 * CRYPTO_TRADING_FEE + (ETH_SPREAD * ETH_SPREAD))
+    fees = np.abs(np.diff(np.concatenate(([0], strategy_signals)))) * (2 * CRYPTO_TRADING_FEE)
+    logger.info(f'fees: {fees}')
     # Apply fees to the strategy returns
     strategy_returns = strategy_signals * actual_returns - fees
-    
+
     cumulative_returns = (1 + strategy_returns).cumprod() - 1
     total_return = cumulative_returns.iloc[-1]
     sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)  # Assuming daily data
     return total_return, sharpe_ratio
 
-def backtest_forecasts(symbol, num_simulations=20):
+def backtest_forecasts(symbol, num_simulations=200):
     logger.remove()
     logger.add(sys.stdout, format="{time} | {level} | {message}")
 
