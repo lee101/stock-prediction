@@ -22,6 +22,10 @@ CRYPTO_TRADING_FEE = 0.0015  # 0.15% fee
 def disk_cache(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        # Check if we're in testing mode
+        if os.environ.get('TESTING') == 'True':
+            return func(*args, **kwargs)
+            
         # Create a unique key based on the function arguments
         key_parts = []
         for arg in args:
