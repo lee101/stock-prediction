@@ -1,3 +1,7 @@
+import functools
+import hashlib
+import os
+import pickle
 import sys
 from pathlib import Path
 import pandas as pd
@@ -14,6 +18,55 @@ from data_curate_daily import download_daily_stock_data
 ETH_SPREAD = 1.0008711461252937
 CRYPTO_TRADING_FEE = 0.0015  # 0.15% fee
 
+
+def disk_cache(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        # Create a unique key based on the function arguments
+        key_parts = []
+        for arg in args:
+            if isinstance(arg, torch.Tensor):
+                key_parts.append(hashlib.md5(arg.numpy().tobytes()).hexdigest())
+            else:
+                key_parts.append(str(arg))
+        for k, v in kwargs.items():
+            if isinstance(v, torch.Tensor):
+                key_parts.append(f"{k}:{hashlib.md5(v.numpy().tobytes()).hexdigest()}")
+            else:
+                key_parts.append(f"{k}:{v}")
+        
+        key = hashlib.md5(":".join(key_parts).encode()).hexdigest()
+        cache_dir = os.path.join(os.path.dirname(__file__), '.cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_file = os.path.join(cache_dir, f'{func.__name__}_{key}.pkl')
+
+        # Check if the result is already cached
+        if os.path.exists(cache_file):
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)
+
+        # If not cached, call the function and cache the result
+        result = func(*args, **kwargs)
+        with open(cache_file, 'wb') as f:
+            pickle.dump(result, f)
+
+        return result
+    return wrapper
+
+
+@disk_cache
+def cached_predict(context, prediction_length, num_samples, temperature, top_k, top_p):
+    global pipeline
+    if pipeline is None:
+        load_pipeline()
+    return pipeline.predict(
+        context,
+        prediction_length,
+        num_samples=num_samples,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+    )
 
 from chronos import ChronosPipeline
 
@@ -52,6 +105,15 @@ def all_signals_strategy(close_pred, high_pred, low_pred, open_pred):
 def buy_hold_strategy(predictions):
     """Always buy and hold strategy."""
     return torch.ones_like(torch.as_tensor(predictions))
+
+def unprofit_shutdown_buy_hold(predictions, actual_returns):
+    """Buy and hold strategy that shuts down if the previous trade would have been unprofitable."""
+    signals = torch.ones_like(torch.as_tensor(predictions))
+    for i in range(1, len(signals)):
+        if actual_returns[i-1] <= 0:
+            signals[i:] = 0
+            break
+    return signals
 
 def evaluate_strategy(strategy_signals, actual_returns):
     """Evaluate the performance of a strategy, factoring in trading fees."""
@@ -128,7 +190,7 @@ def backtest_forecasts(symbol, num_simulations=20):
                 context = torch.tensor(current_context["y"].values, dtype=torch.float)
 
                 prediction_length = 1
-                forecast = pipeline.predict(
+                forecast = cached_predict(
                     context,
                     prediction_length,
                     num_samples=20,
@@ -178,6 +240,11 @@ def backtest_forecasts(symbol, num_simulations=20):
         buy_hold_return, buy_hold_sharpe = evaluate_strategy(buy_hold_signals, actual_returns)
         buy_hold_finalday_return = actual_returns.iloc[-1] - CRYPTO_TRADING_FEE
 
+        # Unprofit shutdown buy and hold strategy
+        unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns)
+        unprofit_shutdown_return, unprofit_shutdown_sharpe = evaluate_strategy(unprofit_shutdown_signals, actual_returns)
+        unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (CRYPTO_TRADING_FEE if unprofit_shutdown_signals[-1].item() != 0 else 0)
+
         result = {
             'date': simulation_data.index[-1],
             'close': float(last_preds['close_last_price']),
@@ -192,7 +259,10 @@ def backtest_forecasts(symbol, num_simulations=20):
             'all_signals_strategy_finalday': float(all_signals_finalday_return),
             'buy_hold_return': float(buy_hold_return),
             'buy_hold_sharpe': float(buy_hold_sharpe),
-            'buy_hold_finalday': float(buy_hold_finalday_return)
+            'buy_hold_finalday': float(buy_hold_finalday_return),
+            'unprofit_shutdown_return': float(unprofit_shutdown_return),
+            'unprofit_shutdown_sharpe': float(unprofit_shutdown_sharpe),
+            'unprofit_shutdown_finalday': float(unprofit_shutdown_finalday_return)
         }
         results.append(result)
         print("Result:")
@@ -210,6 +280,9 @@ def backtest_forecasts(symbol, num_simulations=20):
     logger.info(f"Average Buy and Hold Return: {results_df['buy_hold_return'].mean():.4f}")
     logger.info(f"Average Buy and Hold Sharpe: {results_df['buy_hold_sharpe'].mean():.4f}")
     logger.info(f"Average Buy and Hold Final Day Return: {results_df['buy_hold_finalday'].mean():.4f}")
+    logger.info(f"Average Unprofit Shutdown Buy and Hold Return: {results_df['unprofit_shutdown_return'].mean():.4f}")
+    logger.info(f"Average Unprofit Shutdown Buy and Hold Sharpe: {results_df['unprofit_shutdown_sharpe'].mean():.4f}")
+    logger.info(f"Average Unprofit Shutdown Buy and Hold Final Day Return: {results_df['unprofit_shutdown_finalday'].mean():.4f}")
 
     return results_df
 

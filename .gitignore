@@ -1,4 +1,5 @@
 .env
+.cache
 data
 results
 env.py
