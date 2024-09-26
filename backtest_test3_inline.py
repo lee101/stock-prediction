@@ -124,7 +124,7 @@ def evaluate_strategy(strategy_signals, actual_returns):
     strategy_signals = strategy_signals.numpy()  # Convert to numpy array
     
     # Calculate fees: apply fee for each trade (both buy and sell)
-    fees = np.abs(np.diff(np.concatenate(([0], strategy_signals)))) * CRYPTO_TRADING_FEE
+    fees = np.abs(np.diff(np.concatenate(([0], strategy_signals)))) * (2 * CRYPTO_TRADING_FEE * ETH_SPREAD)
     
     # Apply fees to the strategy returns
     strategy_returns = strategy_signals * actual_returns - fees
@@ -227,7 +227,7 @@ def backtest_forecasts(symbol, num_simulations=20):
         # Simple buy/sell strategy
         simple_signals = simple_buy_sell_strategy(last_preds["close_predictions"])
         simple_total_return, simple_sharpe = evaluate_strategy(simple_signals, actual_returns)
-        simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - CRYPTO_TRADING_FEE
+        simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * ETH_SPREAD)
 
         # All signals strategy
         all_signals = all_signals_strategy(
@@ -237,17 +237,17 @@ def backtest_forecasts(symbol, num_simulations=20):
             last_preds["open_predictions"]
         )
         all_signals_total_return, all_signals_sharpe = evaluate_strategy(all_signals, actual_returns)
-        all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - CRYPTO_TRADING_FEE
+        all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * ETH_SPREAD)
 
         # Buy and hold strategy
         buy_hold_signals = buy_hold_strategy(last_preds["close_predictions"])
         buy_hold_return, buy_hold_sharpe = evaluate_strategy(buy_hold_signals, actual_returns)
-        buy_hold_finalday_return = actual_returns.iloc[-1] - CRYPTO_TRADING_FEE
+        buy_hold_finalday_return = actual_returns.iloc[-1] - (2 * CRYPTO_TRADING_FEE * ETH_SPREAD)
 
         # Unprofit shutdown buy and hold strategy
         unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns)
         unprofit_shutdown_return, unprofit_shutdown_sharpe = evaluate_strategy(unprofit_shutdown_signals, actual_returns)
-        unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (CRYPTO_TRADING_FEE if unprofit_shutdown_signals[-1].item() != 0 else 0)
+        unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * ETH_SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
 
         result = {
             'date': simulation_data.index[-1],

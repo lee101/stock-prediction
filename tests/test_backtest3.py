@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 os.environ['TESTING'] = 'True'
 
 # Import the function to test
-from backtest_test3_inline import backtest_forecasts, ChronosPipeline, simple_buy_sell_strategy, all_signals_strategy, evaluate_strategy, buy_hold_strategy, unprofit_shutdown_buy_hold, CRYPTO_TRADING_FEE
+from backtest_test3_inline import backtest_forecasts, ChronosPipeline, simple_buy_sell_strategy, all_signals_strategy, evaluate_strategy, buy_hold_strategy, unprofit_shutdown_buy_hold, CRYPTO_TRADING_FEE, ETH_SPREAD
 
 @pytest.fixture
 def mock_stock_data():
@@ -94,7 +94,7 @@ def test_evaluate_strategy_with_fees():
 
     # Calculate expected fees correctly
     strategy_signals_np = strategy_signals.numpy()
-    expected_fees = np.abs(np.diff(np.concatenate(([0], strategy_signals_np)))) * CRYPTO_TRADING_FEE
+    expected_fees = np.abs(np.diff(np.concatenate(([0], strategy_signals_np)))) * (2 * CRYPTO_TRADING_FEE * ETH_SPREAD)
 
     # Calculate expected strategy returns with correct fees
     expected_strategy_returns = (strategy_signals_np * actual_returns.values) - expected_fees
@@ -145,13 +145,13 @@ def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_dow
             signals.append(1)
         
         signals = np.array(signals)
-        strategy_returns = signals * actual_returns.values - (np.abs(np.diff(np.concatenate(([0], signals)))) * CRYPTO_TRADING_FEE)
+        strategy_returns = signals * actual_returns.values - (np.abs(np.diff(np.concatenate(([0], signals)))) * (2 * CRYPTO_TRADING_FEE * ETH_SPREAD))
         expected_unprofit_shutdown_return = (1 + pd.Series(strategy_returns)).prod() - 1
 
         assert pytest.approx(results['unprofit_shutdown_return'].iloc[i], rel=1e-4) == expected_unprofit_shutdown_return, \
             f"Expected unprofit shutdown return {expected_unprofit_shutdown_return}, but got {results['unprofit_shutdown_return'].iloc[i]}"
 
         # Check final day return
-        expected_final_day_return = signals[-1] * actual_returns.iloc[-1] - (CRYPTO_TRADING_FEE if signals[-1] != 0 else 0)
+        expected_final_day_return = signals[-1] * actual_returns.iloc[-1] - (2 * CRYPTO_TRADING_FEE * ETH_SPREAD if signals[-1] != 0 else 0)
         assert pytest.approx(results['unprofit_shutdown_finalday'].iloc[i], rel=1e-4) == expected_final_day_return, \
             f"Expected final day return {expected_final_day_return}, but got {results['unprofit_shutdown_finalday'].iloc[i]}"
