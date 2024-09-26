@@ -14,48 +14,10 @@ import torch
 import alpaca_wrapper
 from predict_stock_forecasting import load_pipeline, make_predictions, load_stock_data_from_csv, pre_process_data, series_to_tensor
 from data_curate_daily import download_daily_stock_data
+from disk_cache import disk_cache
 
 ETH_SPREAD = 1.0008711461252937
 CRYPTO_TRADING_FEE = 0.0015  # 0.15% fee
-
-
-def disk_cache(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        # Check if we're in testing mode
-        if os.environ.get('TESTING') == 'True':
-            return func(*args, **kwargs)
-
-        # Create a unique key based on the function arguments
-        key_parts = []
-        for arg in args:
-            if isinstance(arg, torch.Tensor):
-                key_parts.append(hashlib.md5(arg.numpy().tobytes()).hexdigest())
-            else:
-                key_parts.append(str(arg))
-        for k, v in kwargs.items():
-            if isinstance(v, torch.Tensor):
-                key_parts.append(f"{k}:{hashlib.md5(v.numpy().tobytes()).hexdigest()}")
-            else:
-                key_parts.append(f"{k}:{v}")
-
-        key = hashlib.md5(":".join(key_parts).encode()).hexdigest()
-        cache_dir = os.path.join(os.path.dirname(__file__), '.cache')
-        os.makedirs(cache_dir, exist_ok=True)
-        cache_file = os.path.join(cache_dir, f'{func.__name__}_{key}.pkl')
-
-        # Check if the result is already cached
-        if os.path.exists(cache_file):
-            with open(cache_file, 'rb') as f:
-                return pickle.load(f)
-
-        # If not cached, call the function and cache the result
-        result = func(*args, **kwargs)
-        with open(cache_file, 'wb') as f:
-            pickle.dump(result, f)
-
-        return result
-    return wrapper
 
 
 @disk_cache
@@ -115,9 +77,11 @@ def unprofit_shutdown_buy_hold(predictions, actual_returns):
     """Buy and hold strategy that shuts down if the previous trade would have been unprofitable."""
     signals = torch.ones_like(torch.as_tensor(predictions))
     for i in range(1, len(signals)):
-        if actual_returns[i-1] <= 0:
-            signals[i:] = 0
-            break
+        #if you get the sign right
+        if actual_returns[i-1] > 0 and predictions[i-1] > 0 or actual_returns[i-1] < 0 and predictions[i-1] < 0:
+            pass
+        else:
+            signals[i] = 0
     return signals
 
 def evaluate_strategy(strategy_signals, actual_returns):
@@ -125,13 +89,18 @@ def evaluate_strategy(strategy_signals, actual_returns):
     strategy_signals = strategy_signals.numpy()  # Convert to numpy array
 
     # Calculate fees: apply fee for each trade (both buy and sell)
-    # fees = np.abs(np.diff(np.concatenate(([0], strategy_signals)))) * (2 * CRYPTO_TRADING_FEE + (ETH_SPREAD * ETH_SPREAD))
-    fees = np.abs(np.diff(np.concatenate(([0], strategy_signals)))) * (2 * CRYPTO_TRADING_FEE)
-    # logger.info(f'fees: {fees}')
     # Adjust fees: only apply when position changes
     position_changes = np.diff(np.concatenate(([0], strategy_signals)))
-    fees = np.abs(position_changes) * (2 * CRYPTO_TRADING_FEE)
-    logger.info(f'adjusted fees: {fees}')
+    fees = np.abs(position_changes) * (2 * CRYPTO_TRADING_FEE * ETH_SPREAD)
+    # logger.info(f'adjusted fees: {fees}')
+
+    # Adjust fees: only apply when position changes
+    for i in range(1, len(fees)):
+        if strategy_signals[i] == strategy_signals[i-1]:
+            fees[i] = 0
+
+    logger.info(f'fees after adjustment: {fees}')
+
     # Apply fees to the strategy returns
     strategy_returns = strategy_signals * actual_returns - fees
 
@@ -140,7 +109,7 @@ def evaluate_strategy(strategy_signals, actual_returns):
     sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)  # Assuming daily data
     return total_return, sharpe_ratio
 
-def backtest_forecasts(symbol, num_simulations=200):
+def backtest_forecasts(symbol, num_simulations=10):
     logger.remove()
     logger.add(sys.stdout, format="{time} | {level} | {message}")
 
