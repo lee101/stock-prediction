@@ -1,9 +1,13 @@
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 import pandas as pd
 import numpy as np
 import torch
 from datetime import datetime, timedelta
+
+# Set the environment variable for testing
+os.environ['TESTING'] = 'True'
 
 # Import the function to test
 from backtest_test3_inline import backtest_forecasts, ChronosPipeline, simple_buy_sell_strategy, all_signals_strategy, evaluate_strategy, buy_hold_strategy, unprofit_shutdown_buy_hold, CRYPTO_TRADING_FEE
