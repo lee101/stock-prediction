@@ -1,25 +1,19 @@
-import functools
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+from loguru import logger
+
+from data_curate_daily import fetch_spread
+from disk_cache import disk_cache
+from predict_stock_forecasting import load_pipeline, pre_process_data, \
+    series_to_tensor
 from src.fixtures import crypto_symbols
 
-import hashlib
-import os
-import pickle
-import sys
-from pathlib import Path
-import pandas as pd
-import numpy as np
-from loguru import logger
-from datetime import datetime, timedelta
-
-
-import torch
-import alpaca_wrapper
-from predict_stock_forecasting import load_pipeline, make_predictions, load_stock_data_from_csv, pre_process_data, series_to_tensor
-from data_curate_daily import download_daily_stock_data, fetch_spread
-from disk_cache import disk_cache
-
 SPREAD = 1.0008711461252937
-CRYPTO_TRADING_FEE = 0.0015  # 0.15% fee
 
 
 @disk_cache
@@ -35,6 +29,7 @@ def cached_predict(context, prediction_length, num_samples, temperature, top_k, 
         top_k=top_k,
         top_p=top_p,
     )
+
 
 from chronos import ChronosPipeline
 
@@ -63,6 +58,7 @@ def simple_buy_sell_strategy(predictions):
     predictions = torch.as_tensor(predictions)
     return (predictions > 0).float() * 2 - 1
 
+
 def all_signals_strategy(close_pred, high_pred, low_pred, open_pred):
     """Buy if all signals are up, sell if all are down, hold otherwise."""
     close_pred, high_pred, low_pred, open_pred = map(torch.as_tensor, (close_pred, high_pred, low_pred, open_pred))
@@ -70,23 +66,26 @@ def all_signals_strategy(close_pred, high_pred, low_pred, open_pred):
     sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0) & (open_pred < 0)
     return buy_signal.float() - sell_signal.float()
 
+
 def buy_hold_strategy(predictions):
     """Buy when prediction is positive, hold otherwise."""
     predictions = torch.as_tensor(predictions)
     return (predictions > 0).float()
 
+
 def unprofit_shutdown_buy_hold(predictions, actual_returns):
     """Buy and hold strategy that shuts down if the previous trade would have been unprofitable."""
     signals = torch.ones_like(torch.as_tensor(predictions))
     for i in range(1, len(signals)):
-        #if you get the sign right
-        if actual_returns[i-1] > 0 and predictions[i-1] > 0 or actual_returns[i-1] < 0 and predictions[i-1] < 0:
+        # if you get the sign right
+        if actual_returns[i - 1] > 0 and predictions[i - 1] > 0 or actual_returns[i - 1] < 0 and predictions[i - 1] < 0:
             pass
         else:
             signals[i] = 0
     return signals
 
-def evaluate_strategy(strategy_signals, actual_returns):
+
+def evaluate_strategy(strategy_signals, actual_returns, trading_fee):
     global SPREAD
     """Evaluate the performance of a strategy, factoring in trading fees."""
     strategy_signals = strategy_signals.numpy()  # Convert to numpy array
@@ -97,12 +96,12 @@ def evaluate_strategy(strategy_signals, actual_returns):
     # Trading fee is the sum of the spread cost and any additional trading fee
 
     # this is wrong but todo make it better?
-    fees = np.abs(position_changes) * (2 * SPREAD * CRYPTO_TRADING_FEE)
+    fees = np.abs(position_changes) * (2 * SPREAD * trading_fee)
     # logger.info(f'adjusted fees: {fees}')
 
     # Adjust fees: only apply when position changes
     for i in range(1, len(fees)):
-        if strategy_signals[i] == strategy_signals[i-1]:
+        if strategy_signals[i] == strategy_signals[i - 1]:
             fees[i] = 0
 
     logger.info(f'fees after adjustment: {fees}')
@@ -114,6 +113,7 @@ def evaluate_strategy(strategy_signals, actual_returns):
     total_return = cumulative_returns.iloc[-1]
     sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)  # Assuming daily data
     return total_return, sharpe_ratio
+
 
 def backtest_forecasts(symbol, num_simulations=100):
     logger.remove()
@@ -130,7 +130,13 @@ def backtest_forecasts(symbol, num_simulations=100):
     # current_time_formatted = "2024-10-18--06-05-32"
     symbol = 'NET'
     if symbol not in crypto_symbols:
-        CRYPTO_TRADING_FEE = 0.00 # near no fee on non crypto
+        trading_fee = 0.0002  # near no fee on non crypto? 0.003 per share idk how to calc that though
+    #     .0000278 per share plus firna 000166 https://files.alpaca.markets/disclosures/library/BrokFeeSched.pdf
+    else:
+        trading_fee = 0.0015  # 0.15% fee
+
+    # 8% margin lending
+
     # stock_data = download_daily_stock_data(current_time_formatted, symbols=symbols)
     stock_data = pd.read_csv(f"./data/{current_time_formatted}/{symbol}-{current_day_formatted}.csv")
 
@@ -139,22 +145,23 @@ def backtest_forecasts(symbol, num_simulations=100):
 
     spread = fetch_spread(symbol)
     logger.info(f"spread: {spread}")
-    SPREAD = spread #
+    SPREAD = spread  #
 
     # stock_data = load_stock_data_from_csv(csv_file)
 
     if len(stock_data) < num_simulations:
-        logger.warning(f"Not enough historical data for {num_simulations} simulations. Using {len(stock_data)} instead.")
+        logger.warning(
+            f"Not enough historical data for {num_simulations} simulations. Using {len(stock_data)} instead.")
         num_simulations = len(stock_data)
 
     results = []
 
     for i in range(num_simulations):
         # Take one day off each iteration
-        simulation_data = stock_data.iloc[:-(i+1)].copy()
+        simulation_data = stock_data.iloc[:-(i + 1)].copy()
 
         if simulation_data.empty:
-            logger.warning(f"No data left for simulation {i+1}")
+            logger.warning(f"No data left for simulation {i + 1}")
             continue
 
         last_preds = {
@@ -206,8 +213,11 @@ def backtest_forecasts(symbol, num_simulations=100):
 
             last_preds[key_to_predict.lower() + "_last_price"] = simulation_data[key_to_predict].iloc[-1]
             last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[-1]
-            last_preds[key_to_predict.lower() + "_predicted_price_value"] = last_preds[key_to_predict.lower() + "_last_price"] + (
-                    last_preds[key_to_predict.lower() + "_last_price"] * predictions[-1])
+            last_preds[key_to_predict.lower() + "_predicted_price_value"] = last_preds[
+                                                                                key_to_predict.lower() + "_last_price"] + (
+                                                                                    last_preds[
+                                                                                        key_to_predict.lower() + "_last_price"] *
+                                                                                    predictions[-1])
             last_preds[key_to_predict.lower() + "_val_loss"] = mean_val_loss
             last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:-1].view(-1)
             last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
@@ -218,8 +228,8 @@ def backtest_forecasts(symbol, num_simulations=100):
 
         # Simple buy/sell strategy
         simple_signals = simple_buy_sell_strategy(last_preds["close_predictions"])
-        simple_total_return, simple_sharpe = evaluate_strategy(simple_signals, actual_returns)
-        simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * SPREAD)
+        simple_total_return, simple_sharpe = evaluate_strategy(simple_signals, actual_returns, trading_fee)
+        simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
         # All signals strategy
         all_signals = all_signals_strategy(
@@ -228,18 +238,20 @@ def backtest_forecasts(symbol, num_simulations=100):
             last_preds["low_predictions"],
             last_preds["open_predictions"]
         )
-        all_signals_total_return, all_signals_sharpe = evaluate_strategy(all_signals, actual_returns)
-        all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * SPREAD)
+        all_signals_total_return, all_signals_sharpe = evaluate_strategy(all_signals, actual_returns, trading_fee)
+        all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
         # Buy and hold strategy
         buy_hold_signals = buy_hold_strategy(last_preds["close_predictions"])
-        buy_hold_return, buy_hold_sharpe = evaluate_strategy(buy_hold_signals, actual_returns)
-        buy_hold_finalday_return = actual_returns.iloc[-1] - (2 * CRYPTO_TRADING_FEE * SPREAD)
+        buy_hold_return, buy_hold_sharpe = evaluate_strategy(buy_hold_signals, actual_returns, trading_fee)
+        buy_hold_finalday_return = actual_returns.iloc[-1] - (2 * trading_fee * SPREAD)
 
         # Unprofit shutdown buy and hold strategy
         unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns)
-        unprofit_shutdown_return, unprofit_shutdown_sharpe = evaluate_strategy(unprofit_shutdown_signals, actual_returns)
-        unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
+        unprofit_shutdown_return, unprofit_shutdown_sharpe = evaluate_strategy(unprofit_shutdown_signals,
+                                                                               actual_returns, trading_fee)
+        unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (
+            2 * trading_fee * SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
         print(last_preds)
         result = {
             'date': simulation_data.index[-1],
@@ -271,15 +283,18 @@ def backtest_forecasts(symbol, num_simulations=100):
     logger.info(f"Average Simple Strategy Final Day Return: {results_df['simple_strategy_finalday'].mean():.4f}")
     logger.info(f"Average All Signals Strategy Return: {results_df['all_signals_strategy_return'].mean():.4f}")
     logger.info(f"Average All Signals Strategy Sharpe: {results_df['all_signals_strategy_sharpe'].mean():.4f}")
-    logger.info(f"Average All Signals Strategy Final Day Return: {results_df['all_signals_strategy_finalday'].mean():.4f}")
+    logger.info(
+        f"Average All Signals Strategy Final Day Return: {results_df['all_signals_strategy_finalday'].mean():.4f}")
     logger.info(f"Average Buy and Hold Return: {results_df['buy_hold_return'].mean():.4f}")
     logger.info(f"Average Buy and Hold Sharpe: {results_df['buy_hold_sharpe'].mean():.4f}")
     logger.info(f"Average Buy and Hold Final Day Return: {results_df['buy_hold_finalday'].mean():.4f}")
     logger.info(f"Average Unprofit Shutdown Buy and Hold Return: {results_df['unprofit_shutdown_return'].mean():.4f}")
     logger.info(f"Average Unprofit Shutdown Buy and Hold Sharpe: {results_df['unprofit_shutdown_sharpe'].mean():.4f}")
-    logger.info(f"Average Unprofit Shutdown Buy and Hold Final Day Return: {results_df['unprofit_shutdown_finalday'].mean():.4f}")
+    logger.info(
+        f"Average Unprofit Shutdown Buy and Hold Final Day Return: {results_df['unprofit_shutdown_finalday'].mean():.4f}")
 
     return results_df
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
