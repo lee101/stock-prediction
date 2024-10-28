@@ -86,8 +86,8 @@ def pre_process_data(x_train, key_to_predict):
     #                                 "Adj.Close",
     #                                 "Adj.Volume",
     #                                 ])
-    newdata = x_train.copy()
-    newdata[key_to_predict] = percent_movements_augment(x_train[key_to_predict].values.reshape(-1, 1))
+    newdata = x_train.copy(deep=True)  # Use deep copy to avoid modifying original
+    newdata[key_to_predict] = percent_movements_augment(newdata[key_to_predict].values.reshape(-1, 1))
 
     return newdata
 

@@ -18,7 +18,7 @@ from predict_stock_forecasting import load_pipeline, make_predictions, load_stoc
 from data_curate_daily import download_daily_stock_data, fetch_spread
 from disk_cache import disk_cache
 
-ETH_SPREAD = 1.0008711461252937
+SPREAD = 1.0008711461252937
 CRYPTO_TRADING_FEE = 0.0015  # 0.15% fee
 
 
@@ -87,6 +87,7 @@ def unprofit_shutdown_buy_hold(predictions, actual_returns):
     return signals
 
 def evaluate_strategy(strategy_signals, actual_returns):
+    global SPREAD
     """Evaluate the performance of a strategy, factoring in trading fees."""
     strategy_signals = strategy_signals.numpy()  # Convert to numpy array
 
@@ -94,7 +95,9 @@ def evaluate_strategy(strategy_signals, actual_returns):
     # Adjust fees: only apply when position changes
     position_changes = np.diff(np.concatenate(([0], strategy_signals)))
     # Trading fee is the sum of the spread cost and any additional trading fee
-    fees = np.abs(position_changes) * (2 * ETH_SPREAD + 2 * CRYPTO_TRADING_FEE)
+
+    # this is wrong but todo make it better?
+    fees = np.abs(position_changes) * (2 * SPREAD * CRYPTO_TRADING_FEE)
     # logger.info(f'adjusted fees: {fees}')
 
     # Adjust fees: only apply when position changes
@@ -125,7 +128,7 @@ def backtest_forecasts(symbol, num_simulations=100):
     # stock_data = download_daily_stock_data(current_time_formatted, symbols=[symbol])
     # hardcode repeatable time for testing
     # current_time_formatted = "2024-10-18--06-05-32"
-    symbol = 'MSFT'
+    symbol = 'NET'
     if symbol not in crypto_symbols:
         CRYPTO_TRADING_FEE = 0.00 # near no fee on non crypto
     # stock_data = download_daily_stock_data(current_time_formatted, symbols=symbols)
@@ -136,7 +139,7 @@ def backtest_forecasts(symbol, num_simulations=100):
 
     spread = fetch_spread(symbol)
     logger.info(f"spread: {spread}")
-    SPREAD = spread # 
+    SPREAD = spread #
 
     # stock_data = load_stock_data_from_csv(csv_file)
 
@@ -237,7 +240,7 @@ def backtest_forecasts(symbol, num_simulations=100):
         unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns)
         unprofit_shutdown_return, unprofit_shutdown_sharpe = evaluate_strategy(unprofit_shutdown_signals, actual_returns)
         unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
-
+        print(last_preds)
         result = {
             'date': simulation_data.index[-1],
             'close': float(last_preds['close_last_price']),
@@ -258,8 +261,7 @@ def backtest_forecasts(symbol, num_simulations=100):
             'unprofit_shutdown_finalday': float(unprofit_shutdown_finalday_return)
         }
         results.append(result)
-        print("Result:")
-        print(result)
+        print(f"Result: {result}")
 
     results_df = pd.DataFrame(results)
 
