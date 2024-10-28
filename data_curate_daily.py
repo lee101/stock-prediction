@@ -130,6 +130,13 @@ spreads = {}
 def get_spread(symbol):
     return 1 - spreads.get(symbol, 1.05)
 
+def fetch_spread(symbol):
+    client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+    minute_df_last = download_exchange_latest_data(client, symbol)
+    return spreads.get(symbol, 1.05)
+
+
+
 def get_ask(symbol):
     ask = asks.get(symbol)
     if not ask:

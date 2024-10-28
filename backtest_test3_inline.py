@@ -1,4 +1,6 @@
 import functools
+from src.fixtures import crypto_symbols
+
 import hashlib
 import os
 import pickle
@@ -13,7 +15,7 @@ from datetime import datetime, timedelta
 import torch
 import alpaca_wrapper
 from predict_stock_forecasting import load_pipeline, make_predictions, load_stock_data_from_csv, pre_process_data, series_to_tensor
-from data_curate_daily import download_daily_stock_data
+from data_curate_daily import download_daily_stock_data, fetch_spread
 from disk_cache import disk_cache
 
 ETH_SPREAD = 1.0008711461252937
@@ -91,7 +93,8 @@ def evaluate_strategy(strategy_signals, actual_returns):
     # Calculate fees: apply fee for each trade (both buy and sell)
     # Adjust fees: only apply when position changes
     position_changes = np.diff(np.concatenate(([0], strategy_signals)))
-    fees = np.abs(position_changes) * (2 * CRYPTO_TRADING_FEE * ETH_SPREAD)
+    # Trading fee is the sum of the spread cost and any additional trading fee
+    fees = np.abs(position_changes) * (2 * ETH_SPREAD + 2 * CRYPTO_TRADING_FEE)
     # logger.info(f'adjusted fees: {fees}')
 
     # Adjust fees: only apply when position changes
@@ -123,12 +126,17 @@ def backtest_forecasts(symbol, num_simulations=100):
     # hardcode repeatable time for testing
     # current_time_formatted = "2024-10-18--06-05-32"
     symbol = 'MSFT'
+    if symbol not in crypto_symbols:
+        CRYPTO_TRADING_FEE = 0.00 # near no fee on non crypto
     # stock_data = download_daily_stock_data(current_time_formatted, symbols=symbols)
     stock_data = pd.read_csv(f"./data/{current_time_formatted}/{symbol}-{current_day_formatted}.csv")
 
     base_dir = Path(__file__).parent
     data_dir = base_dir / "data" / current_time_formatted
 
+    spread = fetch_spread(symbol)
+    logger.info(f"spread: {spread}")
+    SPREAD = spread # 
 
     # stock_data = load_stock_data_from_csv(csv_file)
 
@@ -208,7 +216,7 @@ def backtest_forecasts(symbol, num_simulations=100):
         # Simple buy/sell strategy
         simple_signals = simple_buy_sell_strategy(last_preds["close_predictions"])
         simple_total_return, simple_sharpe = evaluate_strategy(simple_signals, actual_returns)
-        simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * ETH_SPREAD)
+        simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * SPREAD)
 
         # All signals strategy
         all_signals = all_signals_strategy(
@@ -218,17 +226,17 @@ def backtest_forecasts(symbol, num_simulations=100):
             last_preds["open_predictions"]
         )
         all_signals_total_return, all_signals_sharpe = evaluate_strategy(all_signals, actual_returns)
-        all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * ETH_SPREAD)
+        all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * SPREAD)
 
         # Buy and hold strategy
         buy_hold_signals = buy_hold_strategy(last_preds["close_predictions"])
         buy_hold_return, buy_hold_sharpe = evaluate_strategy(buy_hold_signals, actual_returns)
-        buy_hold_finalday_return = actual_returns.iloc[-1] - (2 * CRYPTO_TRADING_FEE * ETH_SPREAD)
+        buy_hold_finalday_return = actual_returns.iloc[-1] - (2 * CRYPTO_TRADING_FEE * SPREAD)
 
         # Unprofit shutdown buy and hold strategy
         unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns)
         unprofit_shutdown_return, unprofit_shutdown_sharpe = evaluate_strategy(unprofit_shutdown_signals, actual_returns)
-        unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * ETH_SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
+        unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (2 * CRYPTO_TRADING_FEE * SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
 
         result = {
             'date': simulation_data.index[-1],
