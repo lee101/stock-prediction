@@ -13,6 +13,8 @@ from data_curate_daily import download_exchange_latest_data, get_bid, get_ask
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from src.trading_obj_utils import filter_to_realistic_positions
 
+from src.fixtures import crypto_symbols
+
 alpaca_api = tradeapi.REST(
     ALP_KEY_ID,
     ALP_SECRET_KEY,
@@ -200,6 +202,12 @@ def ramp_into_position(pair, side, start_time=None):
             buying_power = alpaca_wrapper.cash
             qty = 0.5 * buying_power / order_price
             qty = math.floor(qty * 1000) / 1000.0  # Round down to 3 decimal places
+
+            # {"code":40310000,"message":"fractional trading is disabled for this account"}
+            # round down for now to no dp
+            if pair not in crypto_symbols:
+                qty = math.floor(qty)
+
 
             logger.info(f"qty: {qty}")
             logger.info(f"order_price: {order_price}")

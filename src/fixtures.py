@@ -1,1 +1,1 @@
-crypto_symbols = ['BTCUSD', 'ETHUSD', 'LTCUSD', 'PAXGUSD', 'UNIUSD']
+crypto_symbols = ['BTCUSD', 'ETHUSD', 'LTCUSD', 'PAXGUSD', 'UNIUSD', ]

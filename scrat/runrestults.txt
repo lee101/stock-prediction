@@ -1,0 +1,28 @@
+Backtest results for UNIUSD over 100 simulations:
+2024-09-27T11:44:16.681036+1200 | INFO | Average Simple Strategy Return: -0.0154
+2024-09-27T11:44:16.681190+1200 | INFO | Average Simple Strategy Sharpe: -1.0065
+2024-09-27T11:44:16.681334+1200 | INFO | Average Simple Strategy Final Day Return: -0.0017
+2024-09-27T11:44:16.681474+1200 | INFO | Average All Signals Strategy Return: -0.0166
+2024-09-27T11:44:16.681618+1200 | INFO | Average All Signals Strategy Sharpe: -3.1626
+2024-09-27T11:44:16.681756+1200 | INFO | Average All Signals Strategy Final Day Return: -0.0054
+2024-09-27T11:44:16.681908+1200 | INFO | Average Buy and Hold Return: -0.0172
+2024-09-27T11:44:16.682053+1200 | INFO | Average Buy and Hold Sharpe: -1.7732
+2024-09-27T11:44:16.682204+1200 | INFO | Average Buy and Hold Final Day Return: -0.0058
+2024-09-27T11:44:16.682341+1200 | INFO | Average Unprofit Shutdown Buy and Hold Return: -0.0289
+2024-09-27T11:44:16.682480+1200 | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -2.6291
+2024-09-27T11:44:16.682619+1200 | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0046
+
+
+Backtest results for LTCUSD over 100 simulations:
+2024-09-27T14:06:57.036792+1200 | INFO | Average Simple Strategy Return: -0.0262
+2024-09-27T14:06:57.037012+1200 | INFO | Average Simple Strategy Sharpe: -3.1379
+2024-09-27T14:06:57.037174+1200 | INFO | Average Simple Strategy Final Day Return: -0.0036
+2024-09-27T14:06:57.037342+1200 | INFO | Average All Signals Strategy Return: -0.0072
+2024-09-27T14:06:57.037515+1200 | INFO | Average All Signals Strategy Sharpe: -1.2599
+2024-09-27T14:06:57.037657+1200 | INFO | Average All Signals Strategy Final Day Return: -0.0036
+2024-09-27T14:06:57.037793+1200 | INFO | Average Buy and Hold Return: -0.0162
+2024-09-27T14:06:57.037925+1200 | INFO | Average Buy and Hold Sharpe: -1.2953
+2024-09-27T14:06:57.038058+1200 | INFO | Average Buy and Hold Final Day Return: -0.0035
+2024-09-27T14:06:57.038190+1200 | INFO | Average Unprofit Shutdown Buy and Hold Return: -0.0196
+2024-09-27T14:06:57.038326+1200 | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -0.9212
+2024-09-27T14:06:57.038479+1200 | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0027

@@ -109,7 +109,7 @@ def evaluate_strategy(strategy_signals, actual_returns):
     sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)  # Assuming daily data
     return total_return, sharpe_ratio
 
-def backtest_forecasts(symbol, num_simulations=10):
+def backtest_forecasts(symbol, num_simulations=100):
     logger.remove()
     logger.add(sys.stdout, format="{time} | {level} | {message}")
 
@@ -117,8 +117,14 @@ def backtest_forecasts(symbol, num_simulations=10):
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
     # use this for testing dataset
     current_time_formatted = '2024-04-18--06-14-26'  # new/ 30 minute data # '2022-10-14 09-58-20'
+    current_day_formatted = '2024-04-18'  # new/ 30 minute data # '2022-10-14 09-58-20'
 
-    stock_data = download_daily_stock_data(current_time_formatted, symbols=[symbol])
+    # stock_data = download_daily_stock_data(current_time_formatted, symbols=[symbol])
+    # hardcode repeatable time for testing
+    # current_time_formatted = "2024-10-18--06-05-32"
+    symbol = 'MSFT'
+    # stock_data = download_daily_stock_data(current_time_formatted, symbols=symbols)
+    stock_data = pd.read_csv(f"./data/{current_time_formatted}/{symbol}-{current_day_formatted}.csv")
 
     base_dir = Path(__file__).parent
     data_dir = base_dir / "data" / current_time_formatted
