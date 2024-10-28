@@ -47,3 +47,5 @@ symbols = [
         # 'LTCUSD',
         # "PAXGUSD",
         # "UNIUSD",
+
+        

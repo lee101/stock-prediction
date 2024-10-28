@@ -27,6 +27,23 @@ PYTHONPATH=$(pwd) python scripts/alpaca_cli.py backout_near_market BTCUSD
 
 PYTHONPATH=$(pwd) python scripts/alpaca_cli.py ramp_into_position ETHUSD
 
+# at a time e.g. sudo apt install at
+
+using linux command at
+
+```
+echo "PYTHONPATH=$(pwd) python ./scripts/alpaca_cli.py ramp_into_position TSLA" | at 3:30
+```
+
+show/cancel jobs with atq
+
+(.env) (base) lee@lee-top:/media/lee/crucial1/code/stock$ atq
+1       Fri Oct 18 03:00:00 2024 a lee
+2       Fri Oct 18 03:30:00 2024 a lee
+(.env) (base) lee@lee-top:/media/lee/crucial1/code/stock$ atrm 1
+(.env) (base) lee@lee-top:/media/lee/crucial1/code/stock$ atq
+2       Fri Oct 18 03:30:00 2024 a lee
+
 ##### cancel any duplicate orders/bugs
 
 PYTHONPATH=$(pwd) python ./scripts/cancel_multi_orders.py

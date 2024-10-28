@@ -15,6 +15,7 @@ from retry import retry
 
 from alpaca_wrapper import latest_data
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
+from src.fixtures import crypto_symbols
 
 from src.stock_utils import remap_symbols
 
@@ -40,7 +41,7 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
             'COUR', 'GOOG', 'TSLA', 'NVDA', 'AAPL', "U", "ADSK", "CRWD", "ADBE", "NET",
             'COIN', 'MSFT', 'NFLX', 'PYPL', 'SAP', 'SONY', 'BTCUSD', 'ETHUSD',
         ]
-    
+
     client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
     api = TradingClient(
         ALP_KEY_ID,
@@ -50,13 +51,13 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
     alpaca_clock = api.get_clock()
     if not alpaca_clock.is_open and not all_data_force:
         logger.info("Market is closed")
-        symbols = [symbol for symbol in symbols if symbol in ['BTCUSD', 'ETHUSD']]
+        symbols = [symbol for symbol in symbols if symbol in crypto_symbols]
 
     save_path = base_dir / 'data'
     if path:
         save_path = base_dir / 'data' / path
     save_path.mkdir(parents=True, exist_ok=True)
-    
+
     for symbol in symbols:
         start = (datetime.datetime.now() - datetime.timedelta(days=365 * 4)).strftime('%Y-%m-%d')
         end = (datetime.datetime.now()).strftime('%Y-%m-%d')
@@ -68,7 +69,7 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
             logger.error(e)
             print(f"empty new data frame for {symbol}")
             minute_df_last = DataFrame()
-        
+
         if not minute_df_last.empty:
             daily_df.iloc[-1] = minute_df_last.iloc[-1]
 

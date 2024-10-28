@@ -44,7 +44,13 @@ def backtest_forecasts(symbol, num_simulations=20):
 
     # Download the latest data
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
-    stock_data = download_daily_stock_data(current_time_formatted, symbols=[symbol])
+    # hardcode repeatable time for testing
+    current_time_formatted = "2024-10-18--06-05-32"
+    symbols = [symbol]
+    symbols = ['MSFT']
+
+    # stock_data = download_daily_stock_data(current_time_formatted, symbols=symbols)
+    stock_data = pd.read_csv(f"./data/{current_time_formatted}/{symbol}-{current_time_formatted}.csv")
 
     base_dir = Path(__file__).parent
     data_dir = base_dir / "data" / current_time_formatted
