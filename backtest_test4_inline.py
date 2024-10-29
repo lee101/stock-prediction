@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 from loguru import logger
 
-from data_curate_daily import download_daily_stock_data, fetch_spread
+from data_curate_daily import fetch_spread
 from disk_cache import disk_cache
 from predict_stock_forecasting import load_pipeline, pre_process_data, \
     series_to_tensor
@@ -111,12 +111,7 @@ def evaluate_strategy(strategy_signals, actual_returns, trading_fee):
 
     cumulative_returns = (1 + strategy_returns).cumprod() - 1
     total_return = cumulative_returns.iloc[-1]
-    
-    if strategy_returns.std() == 0 or np.isnan(strategy_returns.std()):
-        sharpe_ratio = 0  # or some other default value
-    else:
-        sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
-
+    sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)  # Assuming daily data
     return total_return, sharpe_ratio
 
 
@@ -127,12 +122,13 @@ def backtest_forecasts(symbol, num_simulations=10):
     # Download the latest data
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
     # use this for testing dataset
-    # current_time_formatted = '2024-04-18--06-14-26'  # new/ 30 minute data # '2022-10-14 09-58-20'
-    # current_day_formatted = '2024-04-18'  # new/ 30 minute data # '2022-10-14 09-58-20'
+    current_time_formatted = '2024-04-18--06-14-26'  # new/ 30 minute data # '2022-10-14 09-58-20'
+    current_day_formatted = '2024-04-18'  # new/ 30 minute data # '2022-10-14 09-58-20'
 
-    stock_data = download_daily_stock_data(current_time_formatted, symbols=[symbol])
+    # stock_data = download_daily_stock_data(current_time_formatted, symbols=[symbol])
     # hardcode repeatable time for testing
     # current_time_formatted = "2024-10-18--06-05-32"
+    symbol = 'NET'
     if symbol not in crypto_symbols:
         trading_fee = 0.0002  # near no fee on non crypto? 0.003 per share idk how to calc that though
     #     .0000278 per share plus firna 000166 https://files.alpaca.markets/disclosures/library/BrokFeeSched.pdf
@@ -142,7 +138,7 @@ def backtest_forecasts(symbol, num_simulations=10):
     # 8% margin lending
 
     # stock_data = download_daily_stock_data(current_time_formatted, symbols=symbols)
-    # stock_data = pd.read_csv(f"./data/{current_time_formatted}/{symbol}-{current_day_formatted}.csv")
+    stock_data = pd.read_csv(f"./data/{current_time_formatted}/{symbol}-{current_day_formatted}.csv")
 
     base_dir = Path(__file__).parent
     data_dir = base_dir / "data" / current_time_formatted
