@@ -22,7 +22,6 @@ def test_data():
                 'sharpe': 1.5,
                 'side': 'buy',
                 'predicted_movement': 0.02,
-                'p_value': 0.01,
                 'predictions': pd.DataFrame()
             }
         }
@@ -59,7 +58,6 @@ def test_analyze_symbols(mock_backtest, test_data):
     first_symbol = list(results.keys())[0]
     assert 'sharpe' in results[first_symbol]
     assert 'side' in results[first_symbol]
-    assert 'p_value' in results[first_symbol]
     assert 'predicted_movement' in results[first_symbol]
 
 @patch('trade_stock_e2e.logger')
@@ -123,21 +121,18 @@ def test_manage_positions_only_closes_on_opposite_forecast(mock_logger, mock_get
             'side': 'buy',
             'sharpe': 1.5,
             'predicted_movement': 0.02,
-            'p_value': 0.01,
             'predictions': pd.DataFrame()
         },
         'GOOG': {
             'side': 'sell',
             'sharpe': 1.2,
             'predicted_movement': -0.02,
-            'p_value': 0.01,
             'predictions': pd.DataFrame()
         },
         'TSLA': {
             'side': 'sell',
             'sharpe': 1.1,
             'predicted_movement': -0.01,
-            'p_value': 0.01,
             'predictions': pd.DataFrame()
         }
     }

@@ -49,14 +49,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     """Run backtest analysis on symbols and return results sorted by Sharpe ratio."""
     results = {}
     
-    # Calculate Bonferroni-corrected significance level
-    base_significance = 0.05  # Standard significance level
-    n_tests = len(symbols)  # Number of symbols being tested
-    bonferroni_significance = base_significance / n_tests
-    
-    logger.info(f"Using Bonferroni-corrected significance level: {bonferroni_significance:.4f} "
-                f"({n_tests} tests)")
-    
     for symbol in symbols:
         try:
             logger.info(f"Analyzing {symbol}")
@@ -67,12 +59,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             # Get average metrics
             avg_sharpe = backtest_df['simple_strategy_sharpe'].mean()
             
-            # Calculate p-value for the Sharpe ratio
-            n_days = num_simulations
-            sharpe_std_error = 1 / np.sqrt(n_days)
-            t_stat = avg_sharpe / sharpe_std_error
-            p_value = 2 * (1 - stats.t.cdf(abs(t_stat), n_days - 1))
-            
             # Determine position side based on predicted price movement
             last_prediction = backtest_df.iloc[-1]
             predicted_movement = last_prediction['predicted_close'] - last_prediction['close']
@@ -80,14 +66,12 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             
             results[symbol] = {
                 'sharpe': avg_sharpe,
-                'p_value': p_value,
                 'predictions': backtest_df,
                 'side': position_side,
                 'predicted_movement': predicted_movement
             }
             
-            logger.info(f"Analysis complete for {symbol}: Sharpe={avg_sharpe:.3f}, "
-                       f"p-value={p_value:.4f}, side={position_side}")
+            logger.info(f"Analysis complete for {symbol}: Sharpe={avg_sharpe:.3f}, side={position_side}")
             
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {str(e)}")
@@ -105,7 +89,6 @@ def log_trading_plan(picks: Dict[str, Dict], action: str):
 Symbol: {symbol}
 Direction: {data['side']}
 Sharpe Ratio: {data['sharpe']:.3f}
-P-value: {data['p_value']:.4f}
 Predicted Movement: {data['predicted_movement']:.3f}
 {'='*30}""")
 
@@ -274,7 +257,7 @@ def main():
                 sleep(3600)  # Sleep 1 hour after open analysis
                 
             # Market close analysis - use real trading
-            elif now.hour == market_close.hour - 1 and now.minute >= market_close.minute + 30 and not market_close_done:
+            elif now.hour == market_close.hour - 1 and now.minute >= market_close.minute + 45 and not market_close_done:
                 logger.info("\nMARKET CLOSE ANALYSIS STARTING...")
                 all_analyzed_results = analyze_symbols(symbols)
                 previous_picks = manage_market_close(symbols, previous_picks, all_analyzed_results)  # Real trading at market close
