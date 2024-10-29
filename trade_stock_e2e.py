@@ -72,6 +72,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             }
             
             logger.info(f"Analysis complete for {symbol}: Avg Return={avg_return:.3f}, side={position_side}")
+            logger.info(f"Predicted movement: {predicted_movement:.3f}")
+            logger.info(f"Current close: {last_prediction['close']:.3f}")
+            logger.info(f"Predicted close: {last_prediction['predicted_close']:.3f}")
             
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {str(e)}")
@@ -237,6 +240,8 @@ def main():
                 }
                 log_trading_plan(current_picks, "INITIAL PLAN")
                 dry_run_manage_positions(current_picks, previous_picks)
+                manage_positions(current_picks, previous_picks, all_analyzed_results)
+
                 previous_picks = current_picks
                 initial_analysis_done = True
                 market_open_done = False

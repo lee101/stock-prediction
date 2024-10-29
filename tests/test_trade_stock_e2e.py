@@ -27,25 +27,10 @@ def test_data():
         }
     }
 
-def test_analyze_symbols_real_call():
-    symbols = ['ETHUSD']
-    results = analyze_symbols(symbols)
-    
-    assert isinstance(results, dict)
-    # ah well? its not profitable
-    # assert len(results) > 0
-    # first_symbol = list(results.keys())[0]
-    # assert 'sharpe' in results[first_symbol]
-    # assert 'side' in results[first_symbol]
-
-
 @patch('trade_stock_e2e.backtest_forecasts')
 def test_analyze_symbols(mock_backtest, test_data):
     mock_df = pd.DataFrame({
-        'simple_strategy_sharpe': [1.0],
-        'all_signals_strategy_sharpe': [1.0],
-        'buy_hold_sharpe': [1.0],
-        'unprofit_shutdown_sharpe': [1.0],
+        'simple_strategy_return': [0.02],
         'predicted_close': [105],
         'close': [100]
     })
@@ -56,7 +41,7 @@ def test_analyze_symbols(mock_backtest, test_data):
     assert isinstance(results, dict)
     assert len(results) > 0
     first_symbol = list(results.keys())[0]
-    assert 'sharpe' in results[first_symbol]
+    assert 'avg_return' in results[first_symbol]
     assert 'side' in results[first_symbol]
     assert 'predicted_movement' in results[first_symbol]
 

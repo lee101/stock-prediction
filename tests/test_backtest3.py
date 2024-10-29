@@ -11,8 +11,9 @@ os.environ['TESTING'] = 'True'
 
 # Import the function to test
 from backtest_test3_inline import backtest_forecasts, simple_buy_sell_strategy, all_signals_strategy, \
-    evaluate_strategy, buy_hold_strategy, unprofit_shutdown_buy_hold, CRYPTO_TRADING_FEE, ETH_SPREAD
+    evaluate_strategy, buy_hold_strategy, unprofit_shutdown_buy_hold, SPREAD
 
+trading_fee = 0.0025
 
 @pytest.fixture
 def mock_stock_data():
@@ -33,7 +34,7 @@ def mock_pipeline():
     mock_pipeline_instance.predict.return_value = [mock_forecast]
     return mock_pipeline_instance
 
-
+trading_fee = 0.0025
 @patch('backtest_test3_inline.download_daily_stock_data')
 @patch('backtest_test3_inline.ChronosPipeline.from_pretrained')
 def test_backtest_forecasts(mock_pipeline_class, mock_download_data, mock_stock_data, mock_pipeline):
@@ -57,13 +58,13 @@ def test_backtest_forecasts(mock_pipeline_class, mock_download_data, mock_stock_
 
         # Calculate expected buy-and-hold return
         cumulative_return = (1 + actual_returns).prod() - 1
-        expected_buy_hold_return = cumulative_return - CRYPTO_TRADING_FEE  # Apply fee once for initial buy
+        expected_buy_hold_return = cumulative_return - trading_fee  # Apply fee once for initial buy
 
         assert pytest.approx(results['buy_hold_return'].iloc[i], rel=1e-4) == expected_buy_hold_return, \
             f"Expected buy hold return {expected_buy_hold_return}, but got {results['buy_hold_return'].iloc[i]}"
 
         # Check final day return
-        expected_final_day_return = actual_returns.iloc[-1] - CRYPTO_TRADING_FEE
+        expected_final_day_return = actual_returns.iloc[-1] - trading_fee
         assert pytest.approx(results['buy_hold_finalday'].iloc[i], rel=1e-4) == expected_final_day_return, \
             f"Expected final day return {expected_final_day_return}, but got {results['buy_hold_finalday'].iloc[i]}"
 
@@ -94,14 +95,14 @@ def test_evaluate_strategy_with_fees():
     strategy_signals = torch.tensor([1., 1., -1., -1., 1.])
     actual_returns = pd.Series([0.02, 0.01, -0.01, -0.02, 0.03])
 
-    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns)
+    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
 
     # Calculate expected fees correctly
-    expected_gains = [1.02 - (2 * CRYPTO_TRADING_FEE),
-                      1.01 - (2 * CRYPTO_TRADING_FEE),
-                      1.01 - (2 * CRYPTO_TRADING_FEE),
-                      1.02 - (2 * CRYPTO_TRADING_FEE),
-                      1.03 - (2 * CRYPTO_TRADING_FEE)]
+    expected_gains = [1.02 - (2 * trading_fee),
+                      1.01 - (2 * trading_fee),
+                      1.01 - (2 * trading_fee),
+                      1.02 - (2 * trading_fee),
+                      1.03 - (2 * trading_fee)]
     actual_gain = 1
     for gain in expected_gains:
         actual_gain *= gain
@@ -133,14 +134,14 @@ def test_evaluate_buy_hold_strategy():
     actual_returns = pd.Series([0.02, -0.01, 0.03, -0.02, 0.04])
 
     strategy_signals = buy_hold_strategy(predictions)
-    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns)
+    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
 
     # Manual calculation
-    expected_gains = [1.02 - (2 * CRYPTO_TRADING_FEE),
+    expected_gains = [1.02 - (2 * trading_fee),
                       1.00,  # No trade
-                      1.03 - (2 * CRYPTO_TRADING_FEE),
+                      1.03 - (2 * trading_fee),
                       1.00,  # No trade
-                      1.04 - (2 * CRYPTO_TRADING_FEE)]
+                      1.04 - (2 * trading_fee)]
     actual_gain = 1
     for gain in expected_gains:
         actual_gain *= gain
@@ -156,15 +157,16 @@ def test_evaluate_unprofit_shutdown_buy_hold():
     actual_returns = pd.Series([0.02, 0.01, -0.01, 0.02, 0.03])
 
     strategy_signals = unprofit_shutdown_buy_hold(predictions, actual_returns)
-    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns)
+    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
 
     # Manual calculation
-    expected_gains = [1.02 - (2 * CRYPTO_TRADING_FEE),
-                      1.01, #- (2 * CRYPTO_TRADING_FEE),
-                      0.99, #- (2 * CRYPTO_TRADING_FEE),
-                      1.00,  # No trade after shutdown
-                      1.03 - (2 * CRYPTO_TRADING_FEE)
-                      ]
+    expected_gains = [
+        1.02 - ((1-SPREAD) + 2 * trading_fee),  # Initial buy
+        1.01,  # Holding
+        0.99,  # Holding
+        1.00,  # No trade (shutdown)
+        1.03 - ((1-SPREAD) + 2 * trading_fee)   # New position
+    ]
     actual_gain = 1
     for gain in expected_gains:
         actual_gain *= gain
@@ -195,25 +197,37 @@ def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_dow
         simulation_data = mock_stock_data.iloc[:-(i + 1)].copy()
         actual_returns = simulation_data['Close'].pct_change().iloc[-7:]
 
-        # Calculate expected unprofit shutdown return
-        signals = [1]
+        # Calculate expected unprofit shutdown return using simple manual logic
+        expected_gains = []
+        signals = [1]  # Start with position
         for j in range(1, len(actual_returns)):
-            if actual_returns.iloc[j - 1] <= 0:
+            if actual_returns.iloc[j-1] <= 0:
                 signals.extend([0] * (len(actual_returns) - j))
                 break
             signals.append(1)
+            
+        for j in range(len(signals)):
+            if j == 0:
+                # Initial position
+                expected_gains.append(1 + actual_returns.iloc[j] - ((1-SPREAD) + 2 * trading_fee))
+            elif signals[j] != signals[j-1]:
+                # Position change
+                expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]) - ((1-SPREAD) + 2 * trading_fee))
+            else:
+                # Holding position
+                expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]))
 
-        signals = np.array(signals)
-        strategy_returns = signals * actual_returns.values - (
-                np.abs(np.diff(np.concatenate(([0], signals)))) * (2 * CRYPTO_TRADING_FEE * ETH_SPREAD))
-        expected_unprofit_shutdown_return = (1 + pd.Series(strategy_returns)).prod() - 1
+        actual_gain = 1
+        for gain in expected_gains:
+            actual_gain *= gain
+        expected_unprofit_shutdown_return = actual_gain - 1
 
-        assert pytest.approx(results['unprofit_shutdown_return'].iloc[i],
-                             rel=1e-4) == expected_unprofit_shutdown_return, \
+        assert pytest.approx(results['unprofit_shutdown_return'].iloc[i], rel=1e-4) == expected_unprofit_shutdown_return, \
             f"Expected unprofit shutdown return {expected_unprofit_shutdown_return}, but got {results['unprofit_shutdown_return'].iloc[i]}"
 
-        # Check final day return
-        expected_final_day_return = signals[-1] * actual_returns.iloc[-1] - (
-            2 * CRYPTO_TRADING_FEE * ETH_SPREAD if signals[-1] != 0 else 0)
+        # Check final day return with simple logic
+        final_day_fee = ((1-SPREAD) + 2 * trading_fee) if signals[-1] != signals[-2] else 0
+        expected_final_day_return = signals[-1] * actual_returns.iloc[-1] - final_day_fee
+        
         assert pytest.approx(results['unprofit_shutdown_finalday'].iloc[i], rel=1e-4) == expected_final_day_return, \
             f"Expected final day return {expected_final_day_return}, but got {results['unprofit_shutdown_finalday'].iloc[i]}"
