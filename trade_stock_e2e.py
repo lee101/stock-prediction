@@ -95,6 +95,29 @@ Avg Return: {data['avg_return']:.3f}
 Predicted Movement: {data['predicted_movement']:.3f}
 {'='*30}""")
 
+def is_same_side(side1: str, side2: str) -> bool:
+    """
+    Compare position sides accounting for different nomenclature.
+    Handles 'buy'/'long' and 'sell'/'short' equivalence.
+    
+    Args:
+        side1: First position side
+        side2: Second position side
+    Returns:
+        bool: True if sides are equivalent
+    """
+    buy_variants = {'buy', 'long'}
+    sell_variants = {'sell', 'short'}
+    
+    side1 = side1.lower()
+    side2 = side2.lower()
+    
+    if side1 in buy_variants and side2 in buy_variants:
+        return True
+    if side1 in sell_variants and side2 in sell_variants:
+        return True
+    return False
+
 def manage_positions(current_picks: Dict[str, Dict], previous_picks: Dict[str, Dict], all_analyzed_results: Dict[str, Dict]):
     """Execute actual position management."""
     positions = alpaca_wrapper.get_all_positions()
@@ -114,10 +137,9 @@ def manage_positions(current_picks: Dict[str, Dict], previous_picks: Dict[str, D
         symbol = position.symbol
         should_close = False
         
-        # Only close if we have a new analysis showing opposite direction
         if symbol in all_analyzed_results:
             new_forecast = all_analyzed_results[symbol]
-            if new_forecast['side'] != position.side:
+            if not is_same_side(new_forecast['side'], position.side):
                 logger.info(f"Closing position for {symbol} due to direction change from {position.side} to {new_forecast['side']}")
                 logger.info(f"Predicted movement: {new_forecast['predicted_movement']:.3f}")
                 should_close = True
@@ -161,10 +183,9 @@ def manage_market_close(symbols: List[str], previous_picks: Dict[str, Dict], all
         symbol = position.symbol
         should_close = False
         
-        # Only close if we have a new analysis showing opposite direction
         if symbol in all_analyzed_results:
             next_forecast = all_analyzed_results[symbol]
-            if next_forecast['side'] != position.side:
+            if not is_same_side(next_forecast['side'], position.side):
                 logger.info(f"Closing position for {symbol} due to predicted direction change from {position.side} to {next_forecast['side']} tomorrow")
                 logger.info(f"Predicted movement: {next_forecast['predicted_movement']:.3f}")
                 should_close = True
