@@ -46,7 +46,7 @@ def get_market_hours() -> tuple:
     return market_open, market_close
 
 def analyze_symbols(symbols: List[str]) -> Dict:
-    """Run backtest analysis on symbols and return results sorted by Sharpe ratio and determine position side."""
+    """Run backtest analysis on symbols and return results sorted by Sharpe ratio."""
     results = {}
     
     # Calculate Bonferroni-corrected significance level
@@ -68,22 +68,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             avg_sharpe = backtest_df['simple_strategy_sharpe'].mean()
             
             # Calculate p-value for the Sharpe ratio
-            # Assuming daily returns, n = number of days in backtest
             n_days = num_simulations
-            sharpe_std_error = 1 / np.sqrt(n_days)  # Standard error of Sharpe ratio
+            sharpe_std_error = 1 / np.sqrt(n_days)
             t_stat = avg_sharpe / sharpe_std_error
-            p_value = 2 * (1 - stats.t.cdf(abs(t_stat), n_days - 1))  # Two-tailed test
+            p_value = 2 * (1 - stats.t.cdf(abs(t_stat), n_days - 1))
             
-            # Only include if statistically significant under Bonferroni correction
-            # and Sharpe ratio is positive
-            if avg_sharpe <= 0:
-                logger.info(f"Rejecting {symbol}: Sharpe ratio is not positive")
-                continue
-            # if p_value > bonferroni_significance or avg_sharpe <= 0:
-            #     logger.info(f"Rejecting {symbol}: p-value {p_value:.4f} > "
-            #               f"corrected significance {bonferroni_significance:.4f}")
-            #     continue
-
             # Determine position side based on predicted price movement
             last_prediction = backtest_df.iloc[-1]
             predicted_movement = last_prediction['predicted_close'] - last_prediction['close']
@@ -96,14 +85,15 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 'side': position_side,
                 'predicted_movement': predicted_movement
             }
-            logger.info(f"Accepting {symbol}: p-value {p_value:.4f} < "
-                       f"corrected significance {bonferroni_significance:.4f}")
+            
+            logger.info(f"Analysis complete for {symbol}: Sharpe={avg_sharpe:.3f}, "
+                       f"p-value={p_value:.4f}, side={position_side}")
             
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {str(e)}")
             continue
             
-    # Sort by Sharpe ratio (already filtered for positive and significant only)
+    # Sort by Sharpe ratio but include all results
     return dict(sorted(results.items(), key=lambda x: x[1]['sharpe'], reverse=True))
 
 def log_trading_plan(picks: Dict[str, Dict], action: str):
@@ -125,22 +115,26 @@ def manage_positions(current_picks: Dict[str, Dict], previous_picks: Dict[str, D
     
     logger.info("\nEXECUTING POSITION CHANGES:")
     
-    # Close positions that are no longer needed
+    # Get all analyzed symbols, not just the top picks
+    all_analyzed_results = analyze_symbols([p.symbol for p in positions])
+    
+    # Close positions only when forecast shows opposite direction
     for position in positions:
         symbol = position.symbol
         should_close = False
         
-        if symbol not in current_picks:
-            logger.info(f"Closing position for {symbol} as it's no longer in top picks")
-            should_close = True
-        elif symbol in current_picks and current_picks[symbol]['side'] != position.side:
-            logger.info(f"Closing position for {symbol} to switch direction from {position.side} to {current_picks[symbol]['side']}")
-            should_close = True
+        # Only close if we have a new analysis showing opposite direction
+        if symbol in all_analyzed_results:
+            new_forecast = all_analyzed_results[symbol]
+            if new_forecast['side'] != position.side:
+                logger.info(f"Closing position for {symbol} due to direction change from {position.side} to {new_forecast['side']}")
+                logger.info(f"Predicted movement: {new_forecast['predicted_movement']:.3f}")
+                should_close = True
             
         if should_close:
             backout_near_market(symbol)
             
-    # Enter new positions
+    # Enter new positions from current picks
     for symbol, data in current_picks.items():
         position_exists = any(p.symbol == symbol for p in positions)
         correct_side = any(p.symbol == symbol and p.side == data['side'] for p in positions)
@@ -154,29 +148,28 @@ def manage_market_close(symbols: List[str], previous_picks: Dict[str, Dict]):
     logger.info("Managing positions for market close")
     
     # Get next day's analysis before closing positions
-    next_day_picks = {
-        symbol: data for symbol, data in list(analyze_next_day_positions(symbols).items())[:4]
-        if abs(data['sharpe']) > 0.5
-    }
-    
+    next_day_picks = analyze_next_day_positions(symbols)
     positions = alpaca_wrapper.get_all_positions()
     
-    # Close positions that won't be needed tomorrow
+    # Close positions only when next day forecast shows opposite direction
     for position in positions:
         symbol = position.symbol
         should_close = False
         
-        if symbol not in next_day_picks:
-            logger.info(f"Closing position for {symbol} as it's not in next day's picks")
-            should_close = True
-        elif symbol in next_day_picks and next_day_picks[symbol]['side'] != position.side:
-            logger.info(f"Closing position for {symbol} to switch direction from {position.side} to {next_day_picks[symbol]['side']} tomorrow")
-            should_close = True
+        # Only close if we have a new analysis showing opposite direction
+        if symbol in next_day_picks:
+            next_forecast = next_day_picks[symbol]
+            if next_forecast['side'] != position.side:
+                logger.info(f"Closing position for {symbol} due to predicted direction change from {position.side} to {next_forecast['side']} tomorrow")
+                logger.info(f"Predicted movement: {next_forecast['predicted_movement']:.3f}")
+                should_close = True
             
         if should_close:
             backout_near_market(symbol)
             
-    return next_day_picks
+    # Return top picks for next day
+    return {symbol: data for symbol, data in list(next_day_picks.items())[:4] 
+            if data['sharpe'] > 0}
 
 def analyze_next_day_positions(symbols: List[str]) -> Dict:
     """Analyze symbols for next day's trading session."""
@@ -224,9 +217,11 @@ def main():
         try:
             market_open, market_close = get_market_hours()
             now = datetime.now(pytz.timezone('US/Eastern'))
+
+            
             
             # Initial analysis when program starts - using dry run
-            if not initial_analysis_done:
+            if not initial_analysis_done and now.hour == 22 and now.minute >= 0 and now.minute < 30:
                 logger.info("\nINITIAL ANALYSIS STARTING...")
                 results = analyze_symbols(symbols)
                 current_picks = {
@@ -239,7 +234,6 @@ def main():
                 initial_analysis_done = True
                 market_open_done = False
                 market_close_done = False
-                
             # Market open analysis - use real trading
             elif (now.hour == market_open.hour and 
                   now.minute >= market_open.minute and 
@@ -255,13 +249,15 @@ def main():
                 manage_positions(current_picks, previous_picks)  # Real trading at market open
                 previous_picks = current_picks
                 market_open_done = True
+                sleep(3600)  # Sleep 1 hour after open analysis
+
                 
             # Market close analysis - use real trading
-            elif is_nyse_trading_day_ending() and not market_close_done:
+            elif now.hour == market_close.hour - 1 and now.minute >= market_close.minute + 30 and not market_close_done:
                 logger.info("\nMARKET CLOSE ANALYSIS STARTING...")
                 previous_picks = manage_market_close(symbols, previous_picks)  # Real trading at market close
                 market_close_done = True
-                sleep(300)  # Sleep 5 minutes after close analysis
+                sleep(3600)  # Sleep 1 hour after close analysis
                     
             sleep(60)  # Check every minute
             
