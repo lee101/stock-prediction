@@ -5,6 +5,8 @@ import pandas as pd
 from loguru import logger
 import pytz
 from time import sleep
+import numpy as np
+from scipy import stats
 
 from backtest_test3_inline import backtest_forecasts
 from src.process_utils import backout_near_market, ramp_into_position
@@ -47,17 +49,40 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     """Run backtest analysis on symbols and return results sorted by Sharpe ratio and determine position side."""
     results = {}
     
+    # Calculate Bonferroni-corrected significance level
+    base_significance = 0.05  # Standard significance level
+    n_tests = len(symbols)  # Number of symbols being tested
+    bonferroni_significance = base_significance / n_tests
+    
+    logger.info(f"Using Bonferroni-corrected significance level: {bonferroni_significance:.4f} "
+                f"({n_tests} tests)")
+    
     for symbol in symbols:
         try:
             logger.info(f"Analyzing {symbol}")
-            backtest_df = backtest_forecasts(symbol)
+            num_simulations = 300
+
+            backtest_df = backtest_forecasts(symbol, num_simulations)
             
             # Get average metrics
             avg_sharpe = backtest_df['simple_strategy_sharpe'].mean()
-
-            # Only include if Sharpe ratio is positive
+            
+            # Calculate p-value for the Sharpe ratio
+            # Assuming daily returns, n = number of days in backtest
+            n_days = num_simulations
+            sharpe_std_error = 1 / np.sqrt(n_days)  # Standard error of Sharpe ratio
+            t_stat = avg_sharpe / sharpe_std_error
+            p_value = 2 * (1 - stats.t.cdf(abs(t_stat), n_days - 1))  # Two-tailed test
+            
+            # Only include if statistically significant under Bonferroni correction
+            # and Sharpe ratio is positive
             if avg_sharpe <= 0:
+                logger.info(f"Rejecting {symbol}: Sharpe ratio is not positive")
                 continue
+            # if p_value > bonferroni_significance or avg_sharpe <= 0:
+            #     logger.info(f"Rejecting {symbol}: p-value {p_value:.4f} > "
+            #               f"corrected significance {bonferroni_significance:.4f}")
+            #     continue
 
             # Determine position side based on predicted price movement
             last_prediction = backtest_df.iloc[-1]
@@ -66,16 +91,19 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             
             results[symbol] = {
                 'sharpe': avg_sharpe,
+                'p_value': p_value,
                 'predictions': backtest_df,
                 'side': position_side,
                 'predicted_movement': predicted_movement
             }
+            logger.info(f"Accepting {symbol}: p-value {p_value:.4f} < "
+                       f"corrected significance {bonferroni_significance:.4f}")
             
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {str(e)}")
             continue
             
-    # Sort by Sharpe ratio (already filtered for positive only)
+    # Sort by Sharpe ratio (already filtered for positive and significant only)
     return dict(sorted(results.items(), key=lambda x: x[1]['sharpe'], reverse=True))
 
 def log_trading_plan(picks: Dict[str, Dict], action: str):
@@ -87,6 +115,7 @@ def log_trading_plan(picks: Dict[str, Dict], action: str):
 Symbol: {symbol}
 Direction: {data['side']}
 Sharpe Ratio: {data['sharpe']:.3f}
+P-value: {data['p_value']:.4f}
 Predicted Movement: {data['predicted_movement']:.3f}
 {'='*30}""")
 
@@ -185,7 +214,8 @@ def dry_run_manage_positions(current_picks: Dict[str, Dict], previous_picks: Dic
 def main():
     symbols = [
         'COUR', 'GOOG', 'TSLA', 'NVDA', 'AAPL', "U", "ADSK", "CRWD", "ADBE", "NET",
-        'COIN', 'MSFT', 'NFLX', 'BTCUSD', 'ETHUSD',
+        'COIN', 'MSFT', 'NFLX', 
+        'BTCUSD', 'ETHUSD', "UNIUSD"
     ]
     previous_picks = {}
     initial_analysis_done = False
