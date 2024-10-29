@@ -18,3 +18,5 @@ INITIAL ANALYSIS STARTING...
 2024-10-29 21:41:56 NZDT | 2024-10-29 04:41:56 EDT | [32mINFO[0m | Analyzing COUR
 2024-10-29 22:10:05 NZDT | 2024-10-29 05:10:05 EDT | [32mINFO[0m | Using Bonferroni-corrected significance level: 0.0500 (1 tests)
 2024-10-29 22:10:05 NZDT | 2024-10-29 05:10:05 EDT | [32mINFO[0m | Analyzing ETHUSD
+2024-10-29 22:12:24 NZDT | 2024-10-29 05:12:24 EDT | [32mINFO[0m | Running command PYTHONPATH=/media/lee/crucial/code/stock python scripts/alpaca_cli.py ramp_into_position GOOG sell
+2024-10-29 22:13:35 NZDT | 2024-10-29 05:13:35 EDT | [32mINFO[0m | Running command PYTHONPATH=/media/lee/crucial/code/stock python scripts/alpaca_cli.py ramp_into_position GOOG sell
