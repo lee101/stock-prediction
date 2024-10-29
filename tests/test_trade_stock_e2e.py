@@ -8,7 +8,6 @@ from trade_stock_e2e import (
     analyze_symbols,
     log_trading_plan,
     dry_run_manage_positions,
-    dry_run_market_close,
     analyze_next_day_positions,
     manage_market_close,
     get_market_hours
@@ -23,6 +22,7 @@ def test_data():
                 'sharpe': 1.5,
                 'side': 'buy',
                 'predicted_movement': 0.02,
+                'p_value': 0.01,
                 'predictions': pd.DataFrame()
             }
         }
@@ -59,6 +59,8 @@ def test_analyze_symbols(mock_backtest, test_data):
     first_symbol = list(results.keys())[0]
     assert 'sharpe' in results[first_symbol]
     assert 'side' in results[first_symbol]
+    assert 'p_value' in results[first_symbol]
+    assert 'predicted_movement' in results[first_symbol]
 
 @patch('trade_stock_e2e.logger')
 def test_log_trading_plan(mock_logger, test_data):
@@ -89,14 +91,13 @@ def test_get_market_hours():
 @patch('trade_stock_e2e.analyze_next_day_positions')
 @patch('trade_stock_e2e.alpaca_wrapper.get_all_positions')
 @patch('trade_stock_e2e.logger')
-def test_dry_run_market_close(mock_logger, mock_get_positions, mock_analyze, test_data):
+def test_manage_market_close(mock_logger, mock_get_positions, mock_analyze, test_data):
     mock_position = MagicMock()
     mock_position.symbol = 'MSFT'
     mock_position.side = 'buy'
     mock_get_positions.return_value = [mock_position]
     mock_analyze.return_value = test_data['mock_picks']
     
-    result = dry_run_market_close(test_data['symbols'], {})
+    result = manage_market_close(test_data['symbols'], {}, test_data['mock_picks'])
     assert isinstance(result, dict)
     mock_logger.info.assert_called()
-
