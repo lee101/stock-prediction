@@ -101,3 +101,63 @@ def test_manage_market_close(mock_logger, mock_get_positions, mock_analyze, test
     result = manage_market_close(test_data['symbols'], {}, test_data['mock_picks'])
     assert isinstance(result, dict)
     mock_logger.info.assert_called()
+
+@patch('trade_stock_e2e.backout_near_market')
+@patch('trade_stock_e2e.alpaca_wrapper.get_all_positions')
+@patch('trade_stock_e2e.logger')
+def test_manage_positions_only_closes_on_opposite_forecast(mock_logger, mock_get_positions, mock_backout, test_data):
+    """Test that positions are only closed when there's an opposite forecast."""
+    
+    # Setup test positions
+    mock_positions = [
+        MagicMock(symbol='AAPL', side='buy'),   # Should stay open - no forecast
+        MagicMock(symbol='MSFT', side='buy'),   # Should stay open - matching forecast
+        MagicMock(symbol='GOOG', side='buy'),   # Should close - opposite forecast
+        MagicMock(symbol='TSLA', side='sell'),  # Should stay open - matching forecast
+    ]
+    mock_get_positions.return_value = mock_positions
+    
+    # Setup analysis results
+    all_analyzed_results = {
+        'MSFT': {
+            'side': 'buy',
+            'sharpe': 1.5,
+            'predicted_movement': 0.02,
+            'p_value': 0.01,
+            'predictions': pd.DataFrame()
+        },
+        'GOOG': {
+            'side': 'sell',
+            'sharpe': 1.2,
+            'predicted_movement': -0.02,
+            'p_value': 0.01,
+            'predictions': pd.DataFrame()
+        },
+        'TSLA': {
+            'side': 'sell',
+            'sharpe': 1.1,
+            'predicted_movement': -0.01,
+            'p_value': 0.01,
+            'predictions': pd.DataFrame()
+        }
+    }
+    
+    current_picks = {k: v for k, v in all_analyzed_results.items() if v['sharpe'] > 0}
+    
+    from trade_stock_e2e import manage_positions
+    manage_positions(current_picks, {}, all_analyzed_results)
+    
+    # Verify that backout was only called once for GOOG
+    assert mock_backout.call_count == 1
+    mock_backout.assert_called_once_with('GOOG')
+    
+    # Verify appropriate log messages
+    log_calls = [call[0][0] for call in mock_logger.info.call_args_list]
+    warning_calls = [call[0][0] for call in mock_logger.warning.call_args_list]
+    
+    assert any('Keeping MSFT position as forecast matches current buy direction' in call for call in log_calls)
+    assert any('Keeping TSLA position as forecast matches current sell direction' in call for call in log_calls)
+    assert any('No analysis data for AAPL - keeping position' in call for call in warning_calls)
+    assert any('Closing position for GOOG due to direction change from buy to sell' in call for call in log_calls)
+
+
