@@ -95,8 +95,8 @@ def evaluate_strategy(strategy_signals, actual_returns, trading_fee):
     position_changes = np.diff(np.concatenate(([0], strategy_signals)))
     # Trading fee is the sum of the spread cost and any additional trading fee
 
-    # this is wrong but todo make it better?
-    fees = np.abs(position_changes) * (2 * SPREAD * trading_fee)
+    # Pay spread once and trading fee twice per position change
+    fees = np.abs(position_changes) * ((1-SPREAD) + 2 * trading_fee)
     # logger.info(f'adjusted fees: {fees}')
 
     # Adjust fees: only apply when position changes
