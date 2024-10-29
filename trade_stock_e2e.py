@@ -46,7 +46,7 @@ def get_market_hours() -> tuple:
     return market_open, market_close
 
 def analyze_symbols(symbols: List[str]) -> Dict:
-    """Run backtest analysis on symbols and return results sorted by Sharpe ratio."""
+    """Run backtest analysis on symbols and return results sorted by average return."""
     results = {}
     
     for symbol in symbols:
@@ -56,8 +56,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             backtest_df = backtest_forecasts(symbol, num_simulations)
             
-            # Get average metrics
-            avg_sharpe = backtest_df['simple_strategy_sharpe'].mean()
+            # Get average return instead of Sharpe
+            avg_return = backtest_df['simple_strategy_return'].mean()
             
             # Determine position side based on predicted price movement
             last_prediction = backtest_df.iloc[-1]
@@ -65,20 +65,20 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             position_side = 'buy' if predicted_movement > 0 else 'sell'
             
             results[symbol] = {
-                'sharpe': avg_sharpe,
+                'avg_return': avg_return,
                 'predictions': backtest_df,
                 'side': position_side,
                 'predicted_movement': predicted_movement
             }
             
-            logger.info(f"Analysis complete for {symbol}: Sharpe={avg_sharpe:.3f}, side={position_side}")
+            logger.info(f"Analysis complete for {symbol}: Avg Return={avg_return:.3f}, side={position_side}")
             
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {str(e)}")
             continue
             
-    # Sort by Sharpe ratio but include all results
-    return dict(sorted(results.items(), key=lambda x: x[1]['sharpe'], reverse=True))
+    # Sort by average return instead of Sharpe
+    return dict(sorted(results.items(), key=lambda x: x[1]['avg_return'], reverse=True))
 
 def log_trading_plan(picks: Dict[str, Dict], action: str):
     """Log the trading plan without executing trades."""
@@ -88,7 +88,7 @@ def log_trading_plan(picks: Dict[str, Dict], action: str):
         logger.info(f"""
 Symbol: {symbol}
 Direction: {data['side']}
-Sharpe Ratio: {data['sharpe']:.3f}
+Avg Return: {data['avg_return']:.3f}
 Predicted Movement: {data['predicted_movement']:.3f}
 {'='*30}""")
 
@@ -151,7 +151,7 @@ def manage_market_close(symbols: List[str], previous_picks: Dict[str, Dict], all
     if not positions:
         logger.info("No positions to manage for market close")
         return {symbol: data for symbol, data in list(all_analyzed_results.items())[:4] 
-                if data['sharpe'] > 0}
+                if data['avg_return'] > 0}
     
     # Close positions only when forecast shows opposite direction
     for position in positions:
@@ -175,7 +175,7 @@ def manage_market_close(symbols: List[str], previous_picks: Dict[str, Dict], all
             
     # Return top picks for next day
     return {symbol: data for symbol, data in list(all_analyzed_results.items())[:4] 
-            if data['sharpe'] > 0}
+            if data['avg_return'] > 0}
 
 def analyze_next_day_positions(symbols: List[str]) -> Dict:
     """Analyze symbols for next day's trading session."""
@@ -218,26 +218,30 @@ def main():
     ]
     previous_picks = {}
     initial_analysis_done = False
-    
+    market_open_done = False
+    market_close_done = False
+    first_run = True
+
     while True:
         try:
             market_open, market_close = get_market_hours()
             now = datetime.now(pytz.timezone('US/Eastern'))
             
             # Initial analysis when program starts - using dry run
-            if not initial_analysis_done and now.hour == 22 and now.minute >= 0 and now.minute < 30:
+            if (not initial_analysis_done and (now.hour == 22 and now.minute >= 0 and now.minute < 30)) or first_run:
                 logger.info("\nINITIAL ANALYSIS STARTING...")
                 all_analyzed_results = analyze_symbols(symbols)
                 current_picks = {
                     symbol: data for symbol, data in list(all_analyzed_results.items())[:4] 
-                    if data['sharpe'] > 0  # Only positive Sharpe ratios
+                    if data['avg_return'] > 0  # Only positive returns
                 }
                 log_trading_plan(current_picks, "INITIAL PLAN")
-                dry_run_manage_positions(current_picks, previous_picks)  # Keep dry run here
+                dry_run_manage_positions(current_picks, previous_picks)
                 previous_picks = current_picks
                 initial_analysis_done = True
                 market_open_done = False
                 market_close_done = False
+                first_run = False
                 
             # Market open analysis - use real trading
             elif (now.hour == market_open.hour and 
@@ -248,23 +252,23 @@ def main():
                 all_analyzed_results = analyze_symbols(symbols)
                 current_picks = {
                     symbol: data for symbol, data in list(all_analyzed_results.items())[:4] 
-                    if data['sharpe'] > 0  # Only positive Sharpe ratios
+                    if data['avg_return'] > 0  # Only positive returns
                 }
                 log_trading_plan(current_picks, "MARKET OPEN PLAN")
-                manage_positions(current_picks, previous_picks, all_analyzed_results)  # Real trading at market open
+                manage_positions(current_picks, previous_picks, all_analyzed_results)
                 previous_picks = current_picks
                 market_open_done = True
-                sleep(3600)  # Sleep 1 hour after open analysis
+                sleep(3600)
                 
             # Market close analysis - use real trading
             elif now.hour == market_close.hour - 1 and now.minute >= market_close.minute + 45 and not market_close_done:
                 logger.info("\nMARKET CLOSE ANALYSIS STARTING...")
                 all_analyzed_results = analyze_symbols(symbols)
-                previous_picks = manage_market_close(symbols, previous_picks, all_analyzed_results)  # Real trading at market close
+                previous_picks = manage_market_close(symbols, previous_picks, all_analyzed_results)
                 market_close_done = True
-                sleep(3600)  # Sleep 1 hour after close analysis
+                sleep(3600)
                     
-            sleep(60)  # Check every minute
+            sleep(60)
             
         except Exception as e:
             logger.exception(f"Error in main loop: {str(e)}")
