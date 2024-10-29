@@ -1,6 +1,8 @@
+from ast import List
 import math
 import traceback
 from time import sleep
+from typing import Any, Dict
 
 import cachetools
 import requests.exceptions
@@ -23,6 +25,10 @@ from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols
 from src.stock_utils import remap_symbols
 from src.trading_obj_utils import filter_to_realistic_positions
+from alpaca.trading.models import (
+    Order,
+    Position,
+)  
 
 alpaca_api = TradingClient(
     ALP_KEY_ID,
