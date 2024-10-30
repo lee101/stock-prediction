@@ -57,14 +57,18 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             backtest_df = backtest_forecasts(symbol, num_simulations)
             
-            # Get average return instead of Sharpe
-            avg_return = backtest_df['simple_strategy_return'].mean()
-            
-            # Determine position side based on predicted price movement
+            # Use different strategies for crypto vs stocks
+            if symbol in crypto_symbols:
+                # For crypto, only use buy and hold return and only allow long positions
+                avg_return = backtest_df['buy_hold_return'].mean()
+            else:
+                # For stocks, continue using simple strategy return and allow both directions
+                avg_return = backtest_df['simple_strategy_return'].mean()
             last_prediction = backtest_df.iloc[-1]
             predicted_movement = last_prediction['predicted_close'] - last_prediction['close']
             position_side = 'buy' if predicted_movement > 0 else 'sell'
             
+            # Only add to results if we have a valid position side
             results[symbol] = {
                 'avg_return': avg_return,
                 'predictions': backtest_df,
@@ -81,7 +85,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             logger.error(f"Error analyzing {symbol}: {str(e)}")
             continue
             
-    # Sort by average return instead of Sharpe
     return dict(sorted(results.items(), key=lambda x: x[1]['avg_return'], reverse=True))
 
 def log_trading_plan(picks: Dict[str, Dict], action: str):
@@ -110,7 +113,7 @@ def manage_positions(current_picks: Dict[str, Dict], previous_picks: Dict[str, D
         logger.warning("No analysis results available - skipping position closure checks")
         return
     
-    # Close positions only when forecast shows opposite direction
+    # Handle position closures
     for position in positions:
         symbol = position.symbol
         should_close = False
@@ -121,8 +124,6 @@ def manage_positions(current_picks: Dict[str, Dict], previous_picks: Dict[str, D
                 logger.info(f"Closing position for {symbol} due to direction change from {position.side} to {new_forecast['side']}")
                 logger.info(f"Predicted movement: {new_forecast['predicted_movement']:.3f}")
                 should_close = True
-            else:
-                logger.info(f"Keeping {symbol} position as forecast matches current {position.side} direction")
         else:
             logger.warning(f"No analysis data for {symbol} - keeping position")
             
@@ -136,9 +137,15 @@ def manage_positions(current_picks: Dict[str, Dict], previous_picks: Dict[str, D
         
     for symbol, data in current_picks.items():
         position_exists = any(p.symbol == symbol for p in positions)
+        # For crypto, only check if position exists since we only do long positions
         correct_side = any(p.symbol == symbol and p.side == data['side'] for p in positions)
+
+        if symbol in crypto_symbols:
+            should_enter = not position_exists and data['side'] == 'buy'
+        else:
+            should_enter = not position_exists
         
-        if not position_exists or not correct_side:
+        if should_enter or not correct_side:
             logger.info(f"Entering new {data['side']} position for {symbol}")
             ramp_into_position(symbol, data['side'])
 
