@@ -137,7 +137,7 @@ def backtest_forecasts(symbol, num_simulations=10):
         trading_fee = 0.0002  # near no fee on non crypto? 0.003 per share idk how to calc that though
     #     .0000278 per share plus firna 000166 https://files.alpaca.markets/disclosures/library/BrokFeeSched.pdf
     else:
-        trading_fee = 0.0015  # 0.15% fee
+        trading_fee = 0.0023  # 0.15% fee maker but also .25 taker so avg lets say .23 if we are too aggressive
 
     # 8% margin lending
 
