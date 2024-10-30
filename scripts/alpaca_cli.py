@@ -75,13 +75,12 @@ def backout_near_market(pair, start_time=None):
         orders = alpaca_wrapper.get_open_orders()
 
         for order in orders:
-            if order.symbol == pair:
+            if hasattr(order, 'symbol') and order.symbol == pair:
                 alpaca_wrapper.cancel_order(order)
-
                 break
         found_position = False
         for position in positions:
-            if position.symbol == pair:
+            if hasattr(position, 'symbol') and position.symbol == pair:
                 pct_above_market = 0.02
                 linear_ramp  = 60
                 minutes_since_start = (datetime.now() - start_time).seconds // 60
@@ -110,6 +109,9 @@ def close_all_positions():
     positions = alpaca_wrapper.get_all_positions()
 
     for position in positions:
+        if not hasattr(position, 'symbol'):
+            continue
+            
         symbol = position.symbol
 
         # get latest data then bid/ask
@@ -118,7 +120,7 @@ def close_all_positions():
         ask = get_ask(symbol)
 
 
-        current_price = ask if position.side == 'long' else bid
+        current_price = ask if hasattr(position, 'side') and position.side == 'long' else bid
         # close a long with the ask price
         # close a short with the bid price
         # get bid/ask
@@ -139,11 +141,20 @@ def violently_close_all_positions():
 
 def ramp_into_position(pair, side, start_time=None):
     """
-    Ramp into a position - linear .01pct below to market price within 60min
+    Ramp into a position with different strategies for crypto vs stocks:
+    - Crypto: Longer ramp (4 hours) with smaller price adjustments to ensure maker orders
+    - Stocks: Original 60min ramp with more aggressive pricing
     """
+    if pair in crypto_symbols and side.lower() == "sell":
+        logger.error(f"Cannot short crypto {pair}")
+        return False
+
     if start_time is None:
         start_time = datetime.now()
 
+    # Use longer ramp period for crypto to ensure maker orders
+    linear_ramp = 240 if pair in crypto_symbols else 60  # 4 hours for crypto, 1 hour for stocks
+    
     while True:
         all_positions = alpaca_wrapper.get_all_positions()
         positions = filter_to_realistic_positions(all_positions)
@@ -161,19 +172,18 @@ def ramp_into_position(pair, side, start_time=None):
         for order in orders:
             logger.info(f"order: {order.symbol}")
         for order in orders:
-            if order.symbol == pair:
+            if hasattr(order, 'symbol') and order.symbol == pair:
                 alpaca_wrapper.cancel_order(order)
                 break
 
         found_position = False
         for position in positions:
-            if position.symbol == pair:
+            if hasattr(position, 'symbol') and position.symbol == pair:
                 found_position = True
                 logger.info(f"Position already exists for {pair}")
                 return True
 
         if not found_position:
-            linear_ramp = 60
             minutes_since_start = (datetime.now() - start_time).seconds // 60
 
             # Get current market prices
@@ -196,6 +206,18 @@ def ramp_into_position(pair, side, start_time=None):
             else:
                 price_range = end_price - start_price
                 progress = minutes_since_start / linear_ramp
+                
+                # Less aggressive price adjustment for crypto to ensure maker orders
+                if pair in crypto_symbols:
+                    # For crypto, stay closer to the maker side
+                    if side == "buy":
+                        # When buying, stay closer to bid
+                        max_progress = 0.3  # Only move 30% of the way to the ask
+                    else:
+                        # When selling, stay closer to ask
+                        max_progress = 0.3  # Only move 30% of the way to the bid
+                    progress = progress * max_progress
+                
                 order_price = start_price + (price_range * progress)
 
             # Calculate the qty based on 50% of buying power
@@ -218,7 +240,9 @@ def ramp_into_position(pair, side, start_time=None):
                 logger.info("Failed to open a position, stopping as we are potentially at market close?")
                 # return False
 
-        sleep(60 * 2)
+        # Longer sleep for crypto to reduce API calls
+        sleep_time = 5 * 60 if pair in crypto_symbols else 2 * 60  # 5 mins for crypto, 2 mins for stocks
+        sleep(sleep_time)
 
 if __name__ == "__main__":
     typer.run(main)
