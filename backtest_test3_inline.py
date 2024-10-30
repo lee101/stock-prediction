@@ -104,7 +104,7 @@ def evaluate_strategy(strategy_signals, actual_returns, trading_fee):
         if strategy_signals[i] == strategy_signals[i - 1]:
             fees[i] = 0
 
-    logger.info(f'fees after adjustment: {fees}')
+    # logger.info(f'fees after adjustment: {fees}')
 
     # Apply fees to the strategy returns
     strategy_returns = strategy_signals * actual_returns - fees
@@ -256,7 +256,7 @@ def backtest_forecasts(symbol, num_simulations=10):
                                                                                actual_returns, trading_fee)
         unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (
             2 * trading_fee * SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
-        print(last_preds)
+        # print(last_preds)
         result = {
             'date': simulation_data.index[-1],
             'close': float(last_preds['close_last_price']),
@@ -277,7 +277,7 @@ def backtest_forecasts(symbol, num_simulations=10):
             'unprofit_shutdown_finalday': float(unprofit_shutdown_finalday_return)
         }
         results.append(result)
-        print(f"Result: {result}")
+        # print(f"Result: {result}")
 
     results_df = pd.DataFrame(results)
 
