@@ -6,7 +6,7 @@ from typing import Optional
 import alpaca_trade_api as tradeapi
 import typer
 from alpaca.data import StockHistoricalDataClient
-from loguru import logger
+from src.logging_utils import setup_logging
 
 import alpaca_wrapper
 from data_curate_daily import download_exchange_latest_data, get_bid, get_ask
@@ -15,12 +15,14 @@ from src.trading_obj_utils import filter_to_realistic_positions
 
 from src.fixtures import crypto_symbols
 
+
 alpaca_api = tradeapi.REST(
     ALP_KEY_ID,
     ALP_SECRET_KEY,
     ALP_ENDPOINT,
     'v2')
 
+logger = setup_logging("alpaca_cli.log")
 
 def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
     """
@@ -67,17 +69,29 @@ def backout_near_market(pair, start_time=None):
     while True:
         try:
             all_positions = alpaca_wrapper.get_all_positions()
+            logger.info(f"Retrieved {len(all_positions)} total positions")
+            # Log raw positions data
+            for pos in all_positions:
+                logger.info(f"Raw position data: {pos.__dict__ if hasattr(pos, '__dict__') else pos}")
+            
             # check if there are any all_positions open
             if len(all_positions) == 0:
                 logger.info("no positions found, exiting")
                 break
+                
             positions = filter_to_realistic_positions(all_positions)
+            logger.info(f"After filtering, {len(positions)} positions remain")
+            # Log filtered positions
+            for pos in positions:
+                logger.info(f"Filtered position: {pos.__dict__ if hasattr(pos, '__dict__') else pos}")
 
             # cancel all orders of pair as we are locking to sell at the market
             orders = alpaca_wrapper.get_open_orders()
+            logger.info(f"Found {len(orders)} open orders")
 
             for order in orders:
                 if hasattr(order, 'symbol') and order.symbol == pair:
+                    logger.info(f"Cancelling order for {pair}")
                     alpaca_wrapper.cancel_order(order)
                     # Add small delay after canceling to let it propagate
                     sleep(1)
@@ -85,7 +99,9 @@ def backout_near_market(pair, start_time=None):
 
             found_position = False
             for position in positions:
+                logger.info(f"Checking position: {position.__dict__ if hasattr(position, '__dict__') else position}")
                 if hasattr(position, 'symbol') and position.symbol == pair:
+                    logger.info(f"Found matching position for {pair}")
                     pct_above_market = 0.02
                     linear_ramp = 60
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
@@ -169,8 +185,8 @@ def violently_close_all_positions():
 def ramp_into_position(pair, side, start_time=None):
     """
     Ramp into a position with different strategies for crypto vs stocks:
-    - Crypto: Longer ramp (4 hours) with smaller price adjustments to ensure maker orders
-    - Stocks: Original 60min ramp with more aggressive pricing
+    - Crypto: Start slightly worse than market price, ramp to opposite side over 1 hour
+    - Stocks: More aggressive pricing starting at market, ramp over 1 hour
     """
     if pair in crypto_symbols and side.lower() == "sell":
         logger.error(f"Cannot short crypto {pair}")
@@ -181,7 +197,7 @@ def ramp_into_position(pair, side, start_time=None):
 
     retries = 0
     max_retries = 5
-    linear_ramp = 240 if pair in crypto_symbols else 60  # 4 hours for crypto, 1 hour for stocks
+    linear_ramp = 60  # 1 hour ramp for both crypto and stocks
     
     while True:
         try:
@@ -254,30 +270,46 @@ def ramp_into_position(pair, side, start_time=None):
                     sleep(30)
                     continue
 
-                # Calculate the price to place the order
-                if side == "buy":
-                    start_price, end_price = bid_price, ask_price
-                else:
-                    start_price, end_price = ask_price, bid_price
-
                 minutes_since_start = (datetime.now() - start_time).seconds // 60
                 
-                if minutes_since_start >= linear_ramp:
-                    order_price = end_price
-                else:
-                    price_range = end_price - start_price
-                    progress = minutes_since_start / linear_ramp
-                    
-                    # Less aggressive price adjustment for crypto to ensure maker orders
-                    if pair in crypto_symbols:
-                        # For crypto, stay closer to the maker side
-                        if side == "buy":
-                            max_progress = 0.3  # Only move 30% of the way to the ask
+                # Calculate the price to place the order
+                if pair in crypto_symbols:
+                    # For crypto, start slightly worse than market and slowly move to other side
+                    offset = 0.0004  # 0.04% initial offset from market
+                    if side == "buy":
+                        if minutes_since_start >= linear_ramp:
+                            order_price = ask_price  # End at ask
                         else:
-                            max_progress = 0.3  # Only move 30% of the way to the bid
-                        progress = progress * max_progress
-                    
-                    order_price = start_price + (price_range * progress)
+                            # Start slightly below bid, move to ask
+                            progress = minutes_since_start / linear_ramp
+                            start_price = bid_price * (1 - offset)  # Start worse than bid
+                            price_range = ask_price - start_price
+                            order_price = start_price + (price_range * progress)
+                    else:  # sell
+                        if minutes_since_start >= linear_ramp:
+                            order_price = bid_price  # End at bid
+                        else:
+                            # Start slightly above ask, move to bid
+                            progress = minutes_since_start / linear_ramp
+                            start_price = ask_price * (1 + offset)  # Start worse than ask
+                            price_range = bid_price - start_price
+                            order_price = start_price + (price_range * progress)
+
+                    logger.info(f"Crypto order: Starting at {'below bid' if side == 'buy' else 'above ask'}, "
+                              f"progress {progress:.2%}, price {order_price:.2f}")
+                else:
+                    # For stocks, be more aggressive
+                    if minutes_since_start >= linear_ramp:
+                        order_price = ask_price if side == "buy" else bid_price
+                    else:
+                        # Start at market and move slightly away
+                        progress = minutes_since_start / linear_ramp
+                        if side == "buy":
+                            price_range = ask_price - bid_price
+                            order_price = bid_price + (price_range * progress)
+                        else:
+                            price_range = ask_price - bid_price
+                            order_price = ask_price - (price_range * progress)
 
                 # Calculate position size
                 buying_power = alpaca_wrapper.cash
