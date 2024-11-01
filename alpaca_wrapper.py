@@ -77,6 +77,7 @@ def get_all_positions(retries=3):
 
 
 def cancel_all_orders(retries=3):
+    result = None
     try:
         result = alpaca_api.cancel_orders()
         logger.info("canceled orders")
@@ -89,13 +90,13 @@ def cancel_all_orders(retries=3):
             logger.error("retrying cancel all orders")
             return cancel_all_orders(retries - 1)
         logger.error("failed to cancel all orders")
-
-        return None # raise?
+        return None
     return result
 
 
 # alpaca_api.submit_order(short_stock, qty, side, "market", "gtc")
 def open_market_order_violently(symbol, qty, side, retries=3):
+    result = None
     try:
         result = alpaca_api.submit_order(
             order_data=MarketOrderRequest(
@@ -148,6 +149,7 @@ def has_current_open_position(symbol: str, side: str) -> bool:
 
 
 def open_order_at_price(symbol, qty, side, price):
+    result = None
     # todo: check if order is already open
     # cancel all other orders on this symbol
     current_open_orders = get_orders()
@@ -158,7 +160,7 @@ def open_order_at_price(symbol, qty, side, price):
     has_current_position = has_current_open_position(symbol, side)
     if has_current_position:
         logger.info(f"position {symbol} already open")
-        return
+        return None
     try:
         price = str(round(price, 2))
         result = alpaca_api.submit_order(
@@ -171,17 +173,17 @@ def open_order_at_price(symbol, qty, side, price):
                 limit_price=price,
             )
         )
-        return result
     except Exception as e:
         logger.error(e)
         return None
     print(result)
+    return result
 
 
 def close_position_violently(position):
+    result = None
     try:
         if position.side == "long":
-
             result = alpaca_api.submit_order(
                 order_data=MarketOrderRequest(
                     symbol=remap_symbols(position.symbol),
@@ -191,7 +193,6 @@ def close_position_violently(position):
                     time_in_force="gtc",
                 )
             )
-
         else:
             result = alpaca_api.submit_order(
                 order_data=MarketOrderRequest(
@@ -202,20 +203,19 @@ def close_position_violently(position):
                     time_in_force="gtc",
                 )
             )
-        return result
     except Exception as e:
         traceback.print_exc()
-
         logger.error(e)
-        # close all positions? perhaps not
         return None
     print(result)
+    return result
 
 
 def close_position_at_current_price(position, row):
     if not row["close_last_price_minute"]:
         logger.info(f"nan price - for {position.symbol} market likely closed")
         return False
+    result = None
     try:
         if position.side == "long":
             if position.symbol in crypto_symbols:
@@ -233,12 +233,11 @@ def close_position_at_current_price(position, row):
                 result = alpaca_api.submit_order(
                     order_data=LimitOrderRequest(
                         symbol=remap_symbols(position.symbol),
-                        qty=abs(math.floor(float(position.qty) * 1000) / 1000.0),  # qty rounded down to 3dp
+                        qty=abs(math.floor(float(position.qty) * 1000) / 1000.0),
                         side="sell",
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
                         limit_price=str(math.ceil(float(row["close_last_price_minute"]))),
-                        # rounded up to whole number as theres an error limit price increment must be \u003e 1
                     )
                 )
         else:
@@ -265,11 +264,8 @@ def close_position_at_current_price(position, row):
                     )
                 )
     except Exception as e:
-        logger.error(e)  # cant convert nan to integer because market is closed for stocks
+        logger.error(e)
         traceback.print_exc()
-        # Out of range float values are not JSON compliant
-        # could be because theres no minute data /trying to close at when market isn't open (might as well err/do nothing)
-        # close all positions? perhaps not
         return None
     print(result)
     return result
@@ -319,6 +315,7 @@ def backout_all_non_crypto_positions(positions, predictions):
 
 
 def close_position_at_almost_current_price(position, row):
+    result = None
     try:
         if position.side == "long":
             if position.symbol in crypto_symbols:
@@ -326,7 +323,6 @@ def close_position_at_almost_current_price(position, row):
                     order_data=LimitOrderRequest(
                         symbol=remap_symbols(position.symbol),
                         qty=abs(math.floor(float(position.qty) * 1000) / 1000.0),
-                        # down to 3dp rounding up sometimes makes it cost too much when closing positions
                         side="sell",
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
@@ -338,7 +334,6 @@ def close_position_at_almost_current_price(position, row):
                     order_data=LimitOrderRequest(
                         symbol=remap_symbols(position.symbol),
                         qty=abs(math.floor(float(position.qty) * 1000) / 1000.0),
-                        # down to 3dp rounding up sometimes makes it cost too much when closing positions
                         side="sell",
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
@@ -370,15 +365,16 @@ def close_position_at_almost_current_price(position, row):
                 )
     except Exception as e:
         logger.error(e)
-        # close all positions? perhaps not
         return None
     print(result)
+    return result
 
 @retry(delay=.1, tries=3)
 def get_orders():
     return alpaca_api.get_orders()
 
 def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side="long", bid=None, ask=None):
+    result = None
     # trading at market to add more safety in high spread situations
     side = "buy" if side == "long" else "sell"
     if side == "buy" and bid:
@@ -451,15 +447,25 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
         else:
             amount_to_trade = abs(math.floor(float(amount_to_trade) * 1000) / 1000.0)
 
-        if side == "sell":
-            # price_to_trade_at = max(current_price, row['high_last_price_minute'])
-            #
-            # take_profit_price = price_to_trade_at - abs(price_to_trade_at * (3*float(row['close_predicted_price_minute'])))
-            logger.info(f"{currentBuySymbol} shorting {amount_to_trade} at {current_price}")
-            if currentBuySymbol in crypto_symbols:
-                # todo sure we can't sell?
-                logger.info(f"cant short crypto {currentBuySymbol} - {amount_to_trade} for {price}")
-                return False
+        # Cancel existing orders for this symbol
+        current_orders = get_orders()
+        for order in current_orders:
+            if order.symbol == currentBuySymbol:
+                alpaca_api.cancel_order_by_id(order.id)
+
+        # Submit the order
+        if currentBuySymbol in crypto_symbols:
+            result = crypto_alpaca_looper_api.submit_order(
+                order_data=LimitOrderRequest(
+                    symbol=remap_symbols(currentBuySymbol),
+                    qty=amount_to_trade,
+                    side=side,
+                    type=OrderType.LIMIT,
+                    time_in_force="gtc",
+                    limit_price=str(math.floor(price) if side == "buy" else math.ceil(price)),
+                )
+            )
+        else:
             result = alpaca_api.submit_order(
                 order_data=LimitOrderRequest(
                     symbol=remap_symbols(currentBuySymbol),
@@ -467,66 +473,18 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
                     side=side,
                     type=OrderType.LIMIT,
                     time_in_force="gtc",
-                    limit_price=str(math.ceil(price)),  # .001 sell margin
-                    # take_profit={
-                    #     "limit_price": take_profit_price
-                    # }
+                    limit_price=str(math.floor(price) if side == "buy" else math.ceil(price)),
                 )
             )
-            print(result)
+        print(result)
+        return True
 
-        else:
-            # price_to_trade_at = min(current_price, row['low_last_price_minute'])
-            #
-            # take_profit_price = current_price + abs(current_price * (3*float(row['close_predicted_price_minute']))) # todo takeprofit doesn't really work
-            # we could use a limit with limit price but then couldn't do a notional order
-            logger.info(
-                f"{currentBuySymbol} buying {amount_to_trade} at {str(math.floor(price))}: current price {current_price}")
-            # todo if crypto use loop
-            # stop trying to trade too much - cancel current orders on same symbol
-            current_orders = get_orders() # also cancel binance orders?
-            # cancel all orders on this symbol
-            for order in current_orders:
-                if order.symbol == currentBuySymbol:
-                    alpaca_api.cancel_order_by_id(order.id)
-            if currentBuySymbol in crypto_symbols:
-                result = crypto_alpaca_looper_api.submit_order(
-                    order_data=LimitOrderRequest(
-                        symbol=remap_symbols(currentBuySymbol),
-                        qty=amount_to_trade,
-                        side=side,
-                        type=OrderType.LIMIT,
-                        time_in_force="gtc",
-                        limit_price=str(math.floor(price)),
-                        # aggressive rounding because btc gave errors for now "limit price increment must be \u003e 1"
-                        # notional=notional_value,
-                        # take_profit={
-                        #     "limit_price": take_profit_price
-                        # }
-                    )
-                )
-            else:
-                result = alpaca_api.submit_order(
-                    order_data=LimitOrderRequest(
-                        symbol=remap_symbols(currentBuySymbol),
-                        qty=amount_to_trade,
-                        side=side,
-                        type=OrderType.LIMIT,
-                        time_in_force="gtc",
-                        limit_price=str(math.floor(price)),
-                        # aggressive rounding because btc gave errors for now "limit price increment must be \u003e 1"
-                        # notional=notional_value,
-                        # take_profit={
-                        #     "limit_price": take_profit_price
-                        # }
-                    )
-                )
-            print(result)
-
-    except APIError as e:  # insufficient buying power if market closed
+    except APIError as e:
         logger.error(e)
         return False
-    return True
+    except Exception as e:
+        logger.error(e)
+        return False
 
 
 def close_open_orders():
@@ -558,9 +516,7 @@ def re_setup_vars():
 
 
 def open_take_profit_position(position, row, price, qty):
-    # entry_price = float(position.avg_entry_price)
-    # current_price = row['close_last_price_minute']
-    # current_symbol = row['symbol']
+    result = None
     try:
         mapped_symbol = remap_symbols(position.symbol)
         if position.side == "long":
@@ -568,35 +524,36 @@ def open_take_profit_position(position, row, price, qty):
                 result = crypto_alpaca_looper_api.submit_order(
                     order_data=LimitOrderRequest(
                         symbol=mapped_symbol,
-                        qty=abs(math.floor(float(qty) * 1000) / 1000.0),  # todo? round 3 didnt work?
+                        qty=abs(math.floor(float(qty) * 1000) / 1000.0),
                         side="sell",
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
-                        limit_price=str(math.ceil(price)),  # str(entry_price * (1 + .004),)
+                        limit_price=str(math.ceil(price)),
                     )
                 )
             else:
                 result = alpaca_api.submit_order(
                     order_data=LimitOrderRequest(
                         symbol=mapped_symbol,
-                        qty=abs(math.floor(float(qty) * 1000) / 1000.0),  # todo? round 3 didnt work?
+                        qty=abs(math.floor(float(qty) * 1000) / 1000.0),
                         side="sell",
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
-                        limit_price=str(math.ceil(price)),  # str(entry_price * (1 + .004),)
+                        limit_price=str(math.ceil(price)),
                     )
                 )
         else:
             if position.symbol in crypto_symbols:
-                result = crypto_alpaca_looper_api.submit_order(order_data=LimitOrderRequest(
-                    symbol=mapped_symbol,
-                    qty=abs(math.floor(float(qty) * 1000) / 1000.0),
-                    side="buy",
-                    type=OrderType.LIMIT,
-                    time_in_force="gtc",
-                    limit_price=str(math.floor(price)),
-                ))
-
+                result = crypto_alpaca_looper_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=mapped_symbol,
+                        qty=abs(math.floor(float(qty) * 1000) / 1000.0),
+                        side="buy",
+                        type=OrderType.LIMIT,
+                        time_in_force="gtc",
+                        limit_price=str(math.floor(price)),
+                    )
+                )
             else:
                 result = alpaca_api.submit_order(
                     order_data=LimitOrderRequest(
@@ -609,11 +566,10 @@ def open_take_profit_position(position, row, price, qty):
                     )
                 )
     except Exception as e:
-        logger.error(e)  # can be because theres a sell order already which is still relevant
-        # close all positions? perhaps not
+        logger.error(e)
+        traceback.print_exc()
         return None
-    print(result)
-    return True
+    return result
 
 
 def cancel_order(order):

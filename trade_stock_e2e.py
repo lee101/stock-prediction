@@ -15,28 +15,10 @@ import alpaca_wrapper
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.comparisons import is_same_side
 
+from src.logging_utils import setup_logging
+
 # Configure logging
-class EDTFormatter:
-    def __init__(self):
-        self.local_tz = pytz.timezone('US/Eastern')
-
-    def __call__(self, record):
-        utc_time = record["time"].strftime('%Y-%m-%d %H:%M:%S %Z')
-        local_time = datetime.now(self.local_tz).strftime('%Y-%m-%d %H:%M:%S %Z')
-        level_colors = {
-            "DEBUG": "\033[36m",
-            "INFO": "\033[32m",
-            "WARNING": "\033[33m",
-            "ERROR": "\033[31m",
-            "CRITICAL": "\033[35m"
-        }
-        reset_color = "\033[0m"
-        level_color = level_colors.get(record['level'].name, "")
-        return f"{utc_time} | {local_time} | {level_color}{record['level'].name}{reset_color} | {record['message']}\n"
-
-logger.remove()
-logger.add(sys.stdout, format=EDTFormatter())
-logger.add("trade_stock_e2e.log", format=EDTFormatter())
+logger = setup_logging("trade_stock_e2e.log")
 
 def get_market_hours() -> tuple:
     """Get market open and close times in EST."""
