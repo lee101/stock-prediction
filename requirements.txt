@@ -91,11 +91,10 @@ statsmodels
 # cycler
 # kiwisolver
 # sacremoses
-tokenizers
+tokenizers #==0.15.2 --only-binary=:all:
 # torchmetrics
 # zipp
 # typer
-loguru
 #pytorch-forecasting
 # pytorch-forecasting
 #pytorch-lightning
