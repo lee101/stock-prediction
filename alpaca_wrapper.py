@@ -29,6 +29,9 @@ from alpaca.trading.models import (
     Order,
     Position,
 )  
+from src.logging_utils import setup_logging
+
+logger = setup_logging("stock.log")
 
 alpaca_api = TradingClient(
     ALP_KEY_ID,
@@ -668,6 +671,8 @@ def close_position_near_market(position, pct_above_market=0.0):
         price = ask_price
     else:
         price = bid_price
+        
+    result = None
     try:
         if position.side == "long":
             sell_price = price * (1 + pct_above_market)
@@ -680,7 +685,7 @@ def close_position_near_market(position, pct_above_market=0.0):
                     side=OrderSide.SELL,
                     type=OrderType.LIMIT,
                     time_in_force="gtc",
-                    limit_price=sell_price, # todo fix float issues
+                    limit_price=sell_price,
                 )
             )
         else:
@@ -701,4 +706,6 @@ def close_position_near_market(position, pct_above_market=0.0):
     except Exception as e:
         logger.error(e)
         traceback.print_exc()
+        return False
+        
     return result

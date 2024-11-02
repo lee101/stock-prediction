@@ -132,7 +132,7 @@ def backout_near_market(pair, start_time=None):
                         continue
 
             if not found_position:
-                logger.info(f"no position found for {pair}")
+                logger.info(f"no position found or error closing for {pair}")
                 return True
 
             # Reset retries on successful iteration
