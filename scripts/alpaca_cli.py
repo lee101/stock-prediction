@@ -61,7 +61,9 @@ client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
 
 def backout_near_market(pair, start_time=None):
     """
-    backout at market - linear .01pct above to market price within 20min
+    backout at market - linear ramp towards market price within 30min
+    For long positions: Sell at progressively lower prices (start above bid, ramp down)
+    For short positions: Buy at progressively higher prices (start below ask, ramp up)
     """
     retries = 0
     max_retries = 5
@@ -70,22 +72,15 @@ def backout_near_market(pair, start_time=None):
         try:
             all_positions = alpaca_wrapper.get_all_positions()
             logger.info(f"Retrieved {len(all_positions)} total positions")
-            # Log raw positions data
-            for pos in all_positions:
-                logger.info(f"Raw position data: {pos.__dict__ if hasattr(pos, '__dict__') else pos}")
             
-            # check if there are any all_positions open
             if len(all_positions) == 0:
                 logger.info("no positions found, exiting")
                 break
                 
             positions = filter_to_realistic_positions(all_positions)
             logger.info(f"After filtering, {len(positions)} positions remain")
-            # Log filtered positions
-            for pos in positions:
-                logger.info(f"Filtered position: {pos.__dict__ if hasattr(pos, '__dict__') else pos}")
 
-            # cancel all orders of pair as we are locking to sell at the market
+            # cancel all orders of pair
             orders = alpaca_wrapper.get_open_orders()
             logger.info(f"Found {len(orders)} open orders")
 
@@ -93,34 +88,43 @@ def backout_near_market(pair, start_time=None):
                 if hasattr(order, 'symbol') and order.symbol == pair:
                     logger.info(f"Cancelling order for {pair}")
                     alpaca_wrapper.cancel_order(order)
-                    # Add small delay after canceling to let it propagate
                     sleep(1)
                     break
 
             found_position = False
             for position in positions:
-                logger.info(f"Checking position: {position.__dict__ if hasattr(position, '__dict__') else position}")
                 if hasattr(position, 'symbol') and position.symbol == pair:
                     logger.info(f"Found matching position for {pair}")
-                    pct_above_market = 0.02
-                    linear_ramp = 60
+                    is_long = hasattr(position, 'side') and position.side == 'long'
+                    
+                    # Initial offset from market (0.015 = 1.5%)
+                    pct_offset = 0.010
+                    linear_ramp = 30  # 30 minute ramp
+                    
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
                     if minutes_since_start >= linear_ramp:
-                        pct_above_market = -0.02
+                        # After ramp period, set aggressive price
+                        pct_above_market = pct_offset 
                     else:
-                        pct_above_market = pct_above_market - (0.04 * minutes_since_start / linear_ramp)
+                        # During ramp period
+                        progress = minutes_since_start / linear_ramp
+                        pct_above_market = pct_offset - (2 * pct_offset * progress)
 
-                    logger.info(f"pct_above_market: {pct_above_market}")
+                    logger.info(f"Position side: {'long' if is_long else 'short'}, "
+                              f"pct_above_market: {pct_above_market}, "
+                              f"minutes_since_start: {minutes_since_start}, "
+                              f"progress: {progress if minutes_since_start < linear_ramp else 1.0}")
+                    
                     try:
                         succeeded = alpaca_wrapper.close_position_near_market(position, pct_above_market=pct_above_market)
                         found_position = True
                         if not succeeded:
-                            logger.info("failed to close a position, will retry after delay")
+                            logger.info("failed to close position, will retry after delay")
                             retries += 1
                             if retries >= max_retries:
                                 logger.error("Max retries reached, exiting")
                                 return False
-                            sleep(60)  # Wait a minute before retrying
+                            sleep(60)
                             continue
                     except Exception as e:
                         logger.error(f"Error closing position: {e}")
@@ -128,14 +132,13 @@ def backout_near_market(pair, start_time=None):
                         if retries >= max_retries:
                             logger.error("Max retries reached, exiting")
                             return False
-                        sleep(60)  # Wait a minute before retrying
+                        sleep(60)
                         continue
 
             if not found_position:
                 logger.info(f"no position found or error closing for {pair}")
                 return True
 
-            # Reset retries on successful iteration
             retries = 0
             sleep(60*3)  # retry every 3 mins
 
@@ -145,7 +148,7 @@ def backout_near_market(pair, start_time=None):
             if retries >= max_retries:
                 logger.error("Max retries reached, exiting")
                 return False
-            sleep(60)  # Wait a minute before retrying
+            sleep(60)
 
 
 def close_all_positions():
@@ -217,26 +220,32 @@ def ramp_into_position(pair, side, start_time=None):
             
             while cancel_attempts < max_cancel_attempts:
                 try:
-                    logger.info("Attempting to cancel all orders...")
-                    success = alpaca_wrapper.cancel_all_orders()
-                    if success:
-                        # Add delay to let cancellations propagate
-                        sleep(3)
+                    logger.info(f"Attempting to cancel orders for {pair}...")
+                    # Get all open orders
+                    orders = alpaca_wrapper.get_open_orders()
+                    pair_orders = [order for order in orders if hasattr(order, 'symbol') and order.symbol == pair]
+                    
+                    if not pair_orders:
+                        orders_cancelled = True
+                        logger.info(f"No existing orders found for {pair}")
+                        break
                         
-                        # Verify cancellations
-                        orders = alpaca_wrapper.get_open_orders()
-                        remaining_orders = [order for order in orders if hasattr(order, 'symbol') and order.symbol == pair]
-                        
-                        if not remaining_orders:
-                            orders_cancelled = True
-                            logger.info("All relevant orders successfully cancelled")
-                            break
-                        else:
-                            logger.info(f"Found {len(remaining_orders)} remaining orders for {pair}, retrying cancellation")
-                            # Try to cancel specific orders
-                            for order in remaining_orders:
-                                alpaca_wrapper.cancel_order(order)
-                                sleep(1)
+                    # Cancel only orders for this pair
+                    for order in pair_orders:
+                        alpaca_wrapper.cancel_order(order)
+                        sleep(1)  # Small delay between cancellations
+                    
+                    # Verify cancellations
+                    sleep(3)  # Let cancellations propagate
+                    orders = alpaca_wrapper.get_open_orders()
+                    remaining_orders = [order for order in orders if hasattr(order, 'symbol') and order.symbol == pair]
+                    
+                    if not remaining_orders:
+                        orders_cancelled = True
+                        logger.info(f"All orders for {pair} successfully cancelled")
+                        break
+                    else:
+                        logger.info(f"Found {len(remaining_orders)} remaining orders for {pair}, retrying cancellation")
                     
                     cancel_attempts += 1
                     if not orders_cancelled:

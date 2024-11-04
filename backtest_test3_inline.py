@@ -5,7 +5,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from loguru import logger
+from src.logging_utils import setup_logging
+
+logger = setup_logging("backtest_test3_inline.log")
 
 from data_curate_daily import download_daily_stock_data, fetch_spread
 from disk_cache import disk_cache
@@ -121,8 +123,6 @@ def evaluate_strategy(strategy_signals, actual_returns, trading_fee):
 
 
 def backtest_forecasts(symbol, num_simulations=10):
-    logger.remove()
-    logger.add(sys.stdout, format="{time} | {level} | {message}")
 
     # Download the latest data
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
