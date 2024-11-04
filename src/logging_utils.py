@@ -29,6 +29,8 @@ class EDTFormatter(logging.Formatter):
             utc_time = datetime.fromtimestamp(record.created, pytz.UTC).strftime('%Y-%m-%d %H:%M:%S %Z')
             # Get local time
             local_time = datetime.now(self.local_tz).strftime('%Y-%m-%d %H:%M:%S %Z')
+            # Get NZDT time
+            nzdt_time = datetime.now(pytz.timezone('Pacific/Auckland')).strftime('%Y-%m-%d %H:%M:%S %Z')
             
             level_color = self.level_colors.get(record.levelname, "")
             
@@ -39,7 +41,7 @@ class EDTFormatter(logging.Formatter):
             elif hasattr(record.msg, '__dict__'):
                 message = str(record.msg.__dict__)
             
-            return f"{utc_time} | {local_time} | {level_color}{record.levelname}{self.reset_color} | {message}"
+            return f"{utc_time} | {local_time} | {nzdt_time} | {level_color}{record.levelname}{self.reset_color} | {message}"
         except Exception as e:
             # Fallback formatting if something goes wrong
             return f"[ERROR FORMATTING LOG] {str(record.msg)}"
