@@ -208,64 +208,66 @@ def main():
         'BTCUSD', 'ETHUSD', "UNIUSD"
     ]
     previous_picks = {}
-    initial_analysis_done = False
-    market_open_done = False
-    market_close_done = False
-    first_run = True
+    
+    # Track when each analysis was last run
+    last_initial_run = None
+    last_market_open_run = None 
+    last_market_close_run = None
 
     while True:
         try:
             market_open, market_close = get_market_hours()
             now = datetime.now(pytz.timezone('US/Eastern'))
+            today = now.date()
             
-            # Initial analysis when program starts - using dry run
-            if (not initial_analysis_done and (now.hour == 22 and now.minute >= 0 and now.minute < 30)) or first_run:
+            # Initial analysis at NZ morning (22:00-22:30 EST)
+            if ((now.hour == 22 and 0 <= now.minute < 30) and 
+                (last_initial_run is None or last_initial_run != today)):
+                
                 logger.info("\nINITIAL ANALYSIS STARTING...")
                 all_analyzed_results = analyze_symbols(symbols)
                 current_picks = {
                     symbol: data for symbol, data in list(all_analyzed_results.items())[:4] 
-                    if data['avg_return'] > 0  # Only positive returns
+                    if data['avg_return'] > 0
                 }
                 log_trading_plan(current_picks, "INITIAL PLAN")
                 dry_run_manage_positions(current_picks, previous_picks)
                 manage_positions(current_picks, previous_picks, all_analyzed_results)
 
                 previous_picks = current_picks
-                initial_analysis_done = True
-                market_open_done = False
-                market_close_done = False
-                first_run = False
+                last_initial_run = today
                 
-            # Market open analysis - use real trading
-            elif (now.hour == market_open.hour and 
-                  now.minute >= market_open.minute and 
-                  now.minute < market_open.minute + 30 and
-                  not market_open_done):
+            # Market open analysis (9:30-10:00 EST)
+            elif ((now.hour == market_open.hour and market_open.minute <= now.minute < market_open.minute + 30) and
+                  (last_market_open_run is None or last_market_open_run != today) and
+                  is_nyse_trading_day_now()):
+                
                 logger.info("\nMARKET OPEN ANALYSIS STARTING...")
                 all_analyzed_results = analyze_symbols(symbols)
                 current_picks = {
                     symbol: data for symbol, data in list(all_analyzed_results.items())[:4] 
-                    if data['avg_return'] > 0  # Only positive returns
+                    if data['avg_return'] > 0
                 }
                 log_trading_plan(current_picks, "MARKET OPEN PLAN")
                 manage_positions(current_picks, previous_picks, all_analyzed_results)
-                previous_picks = current_picks
-                market_open_done = True
-                sleep(3600)
                 
-            # Market close analysis - use real trading
-            elif now.hour == market_close.hour - 1 and now.minute >= market_close.minute + 45 and not market_close_done:
+                previous_picks = current_picks
+                last_market_open_run = today
+                
+            # Market close analysis (15:45-16:00 EST) 
+            elif ((now.hour == market_close.hour - 1 and now.minute >= 45) and
+                  (last_market_close_run is None or last_market_close_run != today) and
+                  is_nyse_trading_day_ending()):
+                
                 logger.info("\nMARKET CLOSE ANALYSIS STARTING...")
                 all_analyzed_results = analyze_symbols(symbols)
                 previous_picks = manage_market_close(symbols, previous_picks, all_analyzed_results)
-                market_close_done = True
-                sleep(3600)
+                last_market_close_run = today
                     
             sleep(60)
             
         except Exception as e:
             logger.exception(f"Error in main loop: {str(e)}")
             sleep(60)
-
 if __name__ == "__main__":
     main()
