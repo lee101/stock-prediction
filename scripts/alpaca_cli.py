@@ -104,7 +104,7 @@ def backout_near_market(pair, start_time=None):
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
                     if minutes_since_start >= linear_ramp:
                         # After ramp period, set aggressive price
-                        pct_above_market = pct_offset 
+                        pct_above_market = -pct_offset 
                     else:
                         # During ramp period
                         progress = minutes_since_start / linear_ramp
