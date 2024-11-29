@@ -1,4 +1,5 @@
 from ast import List
+import json
 import math
 import traceback
 from time import sleep
@@ -181,6 +182,67 @@ def open_order_at_price(symbol, qty, side, price):
         return None
     print(result)
     return result
+
+def open_order_at_price_or_all(symbol, qty, side, price):
+    result = None
+    # Cancel existing orders for this symbol
+    current_open_orders = get_orders()
+    for order in current_open_orders:
+        if order.symbol == symbol:
+            cancel_order(order)
+
+    # Check for existing position
+    has_current_position = has_current_open_position(symbol, side)
+    if has_current_position:
+        logger.info(f"position {symbol} already open")
+        return None
+
+    max_retries = 3
+    retry_count = 0
+
+    while retry_count < max_retries:
+        try:
+            price = str(round(price, 2))
+            result = alpaca_api.submit_order(
+                order_data=LimitOrderRequest(
+                    symbol=remap_symbols(symbol),
+                    qty=qty,
+                    side=side,
+                    type=OrderType.LIMIT,
+                    time_in_force="gtc",
+                    limit_price=price,
+                )
+            )
+            return result
+
+        except Exception as e:
+            error_str = str(e)
+            logger.error(f"Order attempt {retry_count + 1} failed: {error_str}")
+
+            # Check if error contains insufficient balance message
+            if "insufficient balance" in error_str.lower():
+                try:
+                    # Extract available balance from error message
+                    error_dict = json.loads(error_str.split("'_error': '")[1].split("', '_http_error'")[0])
+                    available = float(error_dict.get("available", 0))
+                    
+                    if available > 0:
+                        # Recalculate quantity based on available balance
+                        new_qty = math.floor(0.99 * available / float(price))  # Use 99% of available balance
+                        if new_qty > 0:
+                            logger.info(f"Retrying with adjusted quantity: {new_qty}")
+                            qty = new_qty
+                            retry_count += 1
+                            continue
+                except Exception as parse_error:
+                    logger.error(f"Error parsing balance from error message: {parse_error}")
+
+            retry_count += 1
+            # if retry_count < max_retries:
+            #     time.sleep(2)  # Wait before retry
+            
+    logger.error("Max retries reached, order failed")
+    return None
 
 
 def close_position_violently(position):

@@ -18,7 +18,7 @@ from loguru import logger
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
-from alpaca_wrapper import open_order_at_price
+from alpaca_wrapper import open_order_at_price_or_all
 from jsonshelve import FlatShelf
 from src.binan import binance_wrapper
 from src.stock_utils import unmap_symbols
@@ -55,13 +55,13 @@ def crypto_order_loop():
                         logger.info(f"buying {symbol} at {order['price']}")
                         crypto_symbol_to_order[symbol] = None
                         del crypto_symbol_to_order[symbol]
-                        open_order_at_price(symbol, order['qty'], "buy", order['price'])
+                        open_order_at_price_or_all(symbol, order['qty'], "buy", order['price'])
                     elif order['side'] == "sell":
                         # if float(very_latest_data.bid_price) > order['price']:
                         logger.info(f"selling {symbol} at {order['price']}")
                         crypto_symbol_to_order[symbol] = None
                         del crypto_symbol_to_order[symbol]
-                        open_order_at_price(symbol, order['qty'], "sell", order['price'])
+                        open_order_at_price_or_all(symbol, order['qty'], "sell", order['price'])
                     else:
                         logger.error(f"unknown side {order['side']}")
                         logger.error(f"order {order}")
