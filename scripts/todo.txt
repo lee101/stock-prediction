@@ -1,0 +1,5 @@
+compute what the actual hlc was so we can trade in a given end of day including buying at end of day
+
+
+need to use the available balance noit the balance
+2024-11-25 03:07:47 UTC | 2024-11-24 22:07:47 EST | 2024-11-25 16:07:47 NZDT | ERROR | {'_error': '{"available":"3860.03","balance":"14863.29","code":40310000,"message":"insufficient balance for USD (requested: 7306.02, available: 3860.03)","symbol":"USD"}', '_http_error': HTTPError('403 Client Error: Forbidden for url: https://api.alpaca.markets/v2/orders')}

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import math
 from time import sleep
 from typing import Optional
@@ -14,6 +14,9 @@ from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT, ALP_KEY_ID_PROD, 
 from src.trading_obj_utils import filter_to_realistic_positions
 
 from src.fixtures import crypto_symbols
+
+import pytz
+from alpaca.trading.client import TradingClient
 
 
 alpaca_api = tradeapi.REST(
@@ -36,6 +39,8 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
 
     ramp_into_position BTCUSD buy - ramp into a position over time
 
+    show_account - display account summary, positions, and orders
+
     :param pair: e.g. BTCUSD
     :param command:
     :param side: buy or sell (default: buy)
@@ -54,6 +59,8 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
     elif command == "ramp_into_position":
         now = datetime.now()
         ramp_into_position(pair, side, start_time=now)
+    elif command == 'show_account':
+        show_account()
 
 
 
@@ -368,6 +375,52 @@ def ramp_into_position(pair, side, start_time=None):
                 logger.error("Max retries reached, exiting")
                 return False
             sleep(60)
+
+def show_account():
+    """Display account summary including positions, orders and market status"""
+    # Get market clock using wrapper
+    clock = alpaca_wrapper.get_clock()
+    
+    # Convert times to NZDT and EDT
+    nz_tz = pytz.timezone('Pacific/Auckland')
+    edt_tz = pytz.timezone('America/New_York')
+    
+    current_time_nz = datetime.now(timezone.utc).astimezone(nz_tz)
+    current_time_edt = datetime.now(timezone.utc).astimezone(edt_tz)
+    
+    # Print market status and times
+    logger.info("\n=== Market Status ===")
+    logger.info(f"Market is {'OPEN' if clock.is_open else 'CLOSED'}")
+    logger.info(f"Current time (NZDT): {current_time_nz.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    logger.info(f"Current time (EDT): {current_time_edt.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    
+    # Get account info
+    logger.info("\n=== Account Summary ===")
+    logger.info(f"Equity: ${alpaca_wrapper.equity:,.2f}")
+    logger.info(f"Cash: ${alpaca_wrapper.cash:,.2f}")
+    logger.info(f"Buying Power: ${alpaca_wrapper.total_buying_power:,.2f}")
+    
+    # Get and display positions
+    positions = alpaca_wrapper.get_all_positions()
+    logger.info("\n=== Open Positions ===")
+    if not positions:
+        logger.info("No open positions")
+    else:
+        for pos in positions:
+            if hasattr(pos, 'symbol') and hasattr(pos, 'qty') and hasattr(pos, 'current_price'):
+                side = "LONG" if hasattr(pos, 'side') and pos.side == 'long' else "SHORT"
+                logger.info(f"{pos.symbol}: {side} {pos.qty} shares @ ${float(pos.current_price):,.2f}")
+    
+    # Get and display orders
+    orders = alpaca_wrapper.get_open_orders()
+    logger.info("\n=== Open Orders ===")
+    if not orders:
+        logger.info("No open orders")
+    else:
+        for order in orders:
+            if hasattr(order, 'symbol') and hasattr(order, 'qty'):
+                price_str = f"@ ${float(order.limit_price):,.2f}" if hasattr(order, 'limit_price') else "(market)"
+                logger.info(f"{order.symbol}: {order.side.upper()} {order.qty} {price_str}")
 
 if __name__ == "__main__":
     typer.run(main)
