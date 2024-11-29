@@ -342,7 +342,7 @@ def ramp_into_position(pair, side, start_time=None):
                 logger.info(f"Attempting to place order: {pair} {side} {qty} @ {order_price}")
                 
                 # Place the order with error handling
-                succeeded = alpaca_wrapper.open_order_at_price(pair, qty, side, order_price)
+                succeeded = alpaca_wrapper.open_order_at_price_or_all(pair, qty, side, order_price)
                 if not succeeded:
                     logger.info("Failed to open position, will retry after delay")
                     retries += 1
