@@ -14,6 +14,7 @@ supported_cryptos = [
     'NEAR',
     'MKR',
 ]
+
 # add paxg and mkr to get resiliency from crypto
 def remap_symbols(symbol):
     crypto_remap = {
@@ -26,6 +27,9 @@ def remap_symbols(symbol):
     if symbol in crypto_symbols:
         return crypto_remap[symbol]
     return symbol
+
+def pairs_equal(pair1, pair2):
+    return remap_symbols(pair1) == remap_symbols(pair2)
 
 def unmap_symbols(symbol):
     crypto_remap = {
