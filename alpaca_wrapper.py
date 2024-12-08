@@ -24,7 +24,7 @@ from retry import retry
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT
 from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols
-from src.stock_utils import remap_symbols
+from src.stock_utils import pairs_equal, remap_symbols
 from src.trading_obj_utils import filter_to_realistic_positions
 from alpaca.trading.models import (
     Order,
@@ -142,7 +142,7 @@ def has_current_open_position(symbol: str, side: str) -> bool:
         # if market value is significant
         if float(position.market_value) < 4:
             continue
-        if position.symbol == symbol:
+        if pairs_equal(position.symbol, symbol):
             if position.side == "long" and side == "buy":
                 logger.info("position already open")
                 return True
@@ -158,7 +158,7 @@ def open_order_at_price(symbol, qty, side, price):
     # cancel all other orders on this symbol
     current_open_orders = get_orders()
     for order in current_open_orders:
-        if order.symbol == symbol:
+        if pairs_equal(order.symbol, symbol):
             cancel_order(order)
     # also check that there are not any open positions on this symbol
     has_current_position = has_current_open_position(symbol, side)
@@ -188,7 +188,7 @@ def open_order_at_price_or_all(symbol, qty, side, price):
     # Cancel existing orders for this symbol
     current_open_orders = get_orders()
     for order in current_open_orders:
-        if order.symbol == symbol:
+        if pairs_equal(order.symbol, symbol):
             cancel_order(order)
 
     # Check for existing position
@@ -341,7 +341,7 @@ def backout_all_non_crypto_positions(positions, predictions):
             continue
         current_row = None
         for pred in predictions:
-            if pred["symbol"] == position.symbol:
+            if pairs_equal(pred["symbol"], position.symbol):
                 current_row = pred
                 break
         logger.info(f"backing out {position.symbol}")
@@ -354,7 +354,7 @@ def backout_all_non_crypto_positions(positions, predictions):
             continue
         current_row = None
         for pred in predictions:
-            if pred["symbol"] == position.symbol:
+            if pairs_equal(pred["symbol"], position.symbol):
                 current_row = pred
                 break
         logger.info(f"backing out at market {position.symbol}")
@@ -371,7 +371,7 @@ def backout_all_non_crypto_positions(positions, predictions):
         # close_position_violently(position)
         current_row = None
         for pred in predictions:
-            if pred["symbol"] == position.symbol:
+            if pairs_equal(pred["symbol"], position.symbol):
                 current_row = pred
                 break
         logger.info(f"backing out at market {position.symbol}")
@@ -515,7 +515,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
         # Cancel existing orders for this symbol
         current_orders = get_orders()
         for order in current_orders:
-            if order.symbol == currentBuySymbol:
+            if pairs_equal(order.symbol, currentBuySymbol):
                 alpaca_api.cancel_order_by_id(order.id)
 
         # Submit the order

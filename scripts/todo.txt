@@ -1,5 +1,10 @@
 compute what the actual hlc was so we can trade in a given end of day including buying at end of day
+more slots basically once a sell is triggered find better trasdes/slots
 
 
-need to use the available balance noit the balance
-2024-11-25 03:07:47 UTC | 2024-11-24 22:07:47 EST | 2024-11-25 16:07:47 NZDT | ERROR | {'_error': '{"available":"3860.03","balance":"14863.29","code":40310000,"message":"insufficient balance for USD (requested: 7306.02, available: 3860.03)","symbol":"USD"}', '_http_error': HTTPError('403 Client Error: Forbidden for url: https://api.alpaca.markets/v2/orders')}
+fix not knowing - lets log the price*qty for each order so we know what we are trading in terms of how much we are betting
+
+
+fix not closing our order 
+2024-12-07 23:15:19 UTC | 2024-12-07 18:15:19 EST | 2024-12-08 12:15:19 NZDT | ERROR | {'_error': '{"available":"0","balance":"6.5930788","code":40310000,"message":"insufficient balance for ETH (requested: 6.5930788, available: 0)","symbol":"USD"}', '_http_error': HTTPError('403 Client Error: Forbidden for url: https://api.alpaca.markets/v2/orders')}
+2024-12-07 23:15:19 UTC | 2024-12-07 18:15:19 EST | 2024-12-08 12:15:19 NZDT | INFO | failed to close position, will retry after delay

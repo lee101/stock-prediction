@@ -11,6 +11,7 @@ from src.logging_utils import setup_logging
 import alpaca_wrapper
 from data_curate_daily import download_exchange_latest_data, get_bid, get_ask
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
+from src.stock_utils import pairs_equal
 from src.trading_obj_utils import filter_to_realistic_positions
 
 from src.fixtures import crypto_symbols
@@ -92,7 +93,7 @@ def backout_near_market(pair, start_time=None):
             logger.info(f"Found {len(orders)} open orders")
 
             for order in orders:
-                if hasattr(order, 'symbol') and order.symbol == pair:
+                if hasattr(order, 'symbol') and pairs_equal(order.symbol, pair):
                     logger.info(f"Cancelling order for {pair}")
                     alpaca_wrapper.cancel_order(order)
                     sleep(1)
@@ -100,7 +101,7 @@ def backout_near_market(pair, start_time=None):
 
             found_position = False
             for position in positions:
-                if hasattr(position, 'symbol') and position.symbol == pair:
+                if hasattr(position, 'symbol') and pairs_equal(position.symbol, pair):
                     logger.info(f"Found matching position for {pair}")
                     is_long = hasattr(position, 'side') and position.side == 'long'
                     
@@ -216,7 +217,7 @@ def ramp_into_position(pair, side, start_time=None):
 
             # First check if we already have the position
             for position in positions:
-                if hasattr(position, 'symbol') and position.symbol == pair:
+                if hasattr(position, 'symbol') and pairs_equal(position.symbol, pair):
                     logger.info(f"Position already exists for {pair}")
                     return True
 
@@ -230,7 +231,7 @@ def ramp_into_position(pair, side, start_time=None):
                     logger.info(f"Attempting to cancel orders for {pair}...")
                     # Get all open orders
                     orders = alpaca_wrapper.get_open_orders()
-                    pair_orders = [order for order in orders if hasattr(order, 'symbol') and order.symbol == pair]
+                    pair_orders = [order for order in orders if hasattr(order, 'symbol') and pairs_equal(order.symbol, pair)]
                     
                     if not pair_orders:
                         orders_cancelled = True
@@ -245,7 +246,7 @@ def ramp_into_position(pair, side, start_time=None):
                     # Verify cancellations
                     sleep(3)  # Let cancellations propagate
                     orders = alpaca_wrapper.get_open_orders()
-                    remaining_orders = [order for order in orders if hasattr(order, 'symbol') and order.symbol == pair]
+                    remaining_orders = [order for order in orders if hasattr(order, 'symbol') and pairs_equal(order.symbol, pair)]
                     
                     if not remaining_orders:
                         orders_cancelled = True
