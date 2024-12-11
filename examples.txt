@@ -163,3 +163,109 @@ Direction: buy
 Avg Return: 0.004
 Predicted Movement: 6.310
 ==============================
+
+
+
+new model
+
+2024-12-11 05:02:14 UTC | 2024-12-11 00:02:14 EST | 2024-12-11 18:02:14 NZDT | INFO | spread: 1.0013975225117788
+config.json: 100%|██████████████████████████████████| 1.12k/1.12k [00:00<00:00, 11.4MB/s]
+model.safetensors: 100%|██████████████████████████████| 821M/821M [00:37<00:00, 21.7MB/s]
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | 
+Backtest results for ETHUSD over 10 simulations:
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average Simple Strategy Return: -0.0308
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average Simple Strategy Sharpe: -3.5642
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average Simple Strategy Final Day Return: 0.0002
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average All Signals Strategy Return: 0.0288
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average All Signals Strategy Sharpe: 4.2773
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average All Signals Strategy Final Day Return: 0.0049
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average Buy and Hold Return: 0.0167
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average Buy and Hold Sharpe: 2.1004
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average Buy and Hold Final Day Return: -0.0040
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: 0.0114
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -1.9502
+2024-12-11 05:02:55 UTC | 2024-12-11 00:02:55 EST | 2024-12-11 18:02:55 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0061
+
+
+2024-12-11 18:14:49.139 | INFO     | data_curate_daily:download_exchange_latest_data:122 - ETHUSD spread 1.0009661318771377
+2024-12-11 05:14:49 UTC | 2024-12-11 00:14:49 EST | 2024-12-11 18:14:49 NZDT | INFO | spread: 1.0009661318771377
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | 
+Backtest results for ETHUSD over 10 simulations:
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average Simple Strategy Return: -0.0308
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average Simple Strategy Sharpe: -3.5642
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average Simple Strategy Final Day Return: 0.0002
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average All Signals Strategy Return: 0.0288
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average All Signals Strategy Sharpe: 4.2773
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average All Signals Strategy Final Day Return: 0.0049
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average Buy and Hold Return: 0.0167
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average Buy and Hold Sharpe: 2.1004
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average Buy and Hold Final Day Return: -0.0040
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: 0.0114
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -1.9502
+2024-12-11 05:14:58 UTC | 2024-12-11 00:14:58 EST | 2024-12-11 18:14:58 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0061
+
+
+==============
+
+2024-12-11 18:15:59.208 | INFO     | data_curate_daily:download_exchange_latest_data:122 - ETHUSD spread 1.0009986684420773
+2024-12-11 05:15:59 UTC | 2024-12-11 00:15:59 EST | 2024-12-11 18:15:59 NZDT | INFO | spread: 1.0009986684420773
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | 
+Backtest results for ETHUSD over 10 simulations:
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average Simple Strategy Return: 0.0010
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average Simple Strategy Sharpe: 0.4982
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average Simple Strategy Final Day Return: -0.0132
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average All Signals Strategy Return: 0.0081
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average All Signals Strategy Sharpe: -1.3223
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average All Signals Strategy Final Day Return: -0.0115
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average Buy and Hold Return: 0.0323
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average Buy and Hold Sharpe: 4.9425
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average Buy and Hold Final Day Return: -0.0040
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: 0.0214
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: 2.0207
+2024-12-11 05:16:34 UTC | 2024-12-11 00:16:34 EST | 2024-12-11 18:16:34 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0066
+
+
+
+
+
+
+=====new_forecast
+
+
+
+ {'date': ('ETH/USD', Timestamp('2024-09-01 05:00:00+0000', tz='UTC')), 'close': 2436.225, 'predicted_close': 2436.27001953125, 'predicted_high': 2511.89453125, 'predicted_low': 2408.725341796875, 'simple_strategy_return': -0.0962122421961018, 'simple_strategy_sharpe': -7.026460300577707, 'simple_strategy_finalday': -0.024327557933955468, 'all_signals_strategy_return': -0.022456634053934055, 'all_signals_strategy_sharpe': -6.48074069840786, 'all_signals_strategy_finalday': -0.024327557933955468, 'buy_hold_return': -0.0962122421961018, 'buy_hold_sharpe': -7.026460300577707, 'buy_hold_finalday': -0.024327557933955468, 'unprofit_shutdown_return': -0.11461345849169369, 'unprofit_shutdown_sharpe': -9.738411038558692, 'unprofit_shutdown_finalday': -0.0}
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | 
+Backtest results for ETHUSD over 100 simulations:
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average Simple Strategy Return: 0.0176
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average Simple Strategy Sharpe: 1.5698
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average Simple Strategy Final Day Return: -0.0013
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average All Signals Strategy Return: 0.0036
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average All Signals Strategy Sharpe: -2.0446
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average All Signals Strategy Final Day Return: -0.0034
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average Buy and Hold Return: 0.0222
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average Buy and Hold Sharpe: 2.1568
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average Buy and Hold Final Day Return: -0.0002
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: 0.0030
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -1.0047
+2024-12-11 05:26:06 UTC | 2024-12-11 00:26:06 EST | 2024-12-11 18:26:06 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0005
+
+
+
+
+old chronos large 
+
+Result: {'date': ('ETH/USD', Timestamp('2024-09-01 05:00:00+0000', tz='UTC')), 'close': 2436.225, 'predicted_close': 2428.645263671875, 'predicted_high': 2504.505126953125, 'predicted_low': 2394.767578125, 'simple_strategy_return': 0.052204917116967176, 'simple_strategy_sharpe': 3.944137122550736, 'simple_strategy_finalday': 0.015116081030326451, 'all_signals_strategy_return': 0.07285217440740288, 'all_signals_strategy_sharpe': 5.999310489226257, 'all_signals_strategy_finalday': -0.00460497996096078, 'buy_hold_return': -0.018515917043984476, 'buy_hold_sharpe': -6.950501834063501, 'buy_hold_finalday': -0.02432604095224801, 'unprofit_shutdown_return': -0.08246611942240745, 'unprofit_shutdown_sharpe': -5.926806537933216, 'unprofit_shutdown_finalday': -0.0}
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | 
+Backtest results for ETHUSD over 100 simulations:
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average Simple Strategy Return: -0.0202
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average Simple Strategy Sharpe: -2.2041
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average Simple Strategy Final Day Return: -0.0047
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average All Signals Strategy Return: 0.0022
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average All Signals Strategy Sharpe: -0.3412
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average All Signals Strategy Final Day Return: -0.0029
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average Buy and Hold Return: 0.0042
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average Buy and Hold Sharpe: 0.1263
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average Buy and Hold Final Day Return: -0.0002
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: -0.0017
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -1.1624
+2024-12-11 05:27:02 UTC | 2024-12-11 00:27:02 EST | 2024-12-11 18:27:02 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0019

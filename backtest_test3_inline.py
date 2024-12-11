@@ -26,16 +26,22 @@ def cached_predict(context, prediction_length, num_samples, temperature, top_k, 
     return pipeline.predict(
         context,
         prediction_length,
-        num_samples=num_samples,
-        temperature=temperature,
-        top_k=top_k,
-        top_p=top_p,
+        # num_samples=num_samples,
+        # temperature=temperature,
+        # top_k=top_k,
+        # top_p=top_p,
     )
 
 
-from chronos import ChronosPipeline
+from chronos import BaseChronosPipeline
 
 current_date_formatted = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+# test data on same dataset
+if __name__ == "__main__":
+    current_date_formatted = "2024-12-11-18-22-30"
+
+print(f"current_date_formatted: {current_date_formatted}")
+
 # tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 
 pipeline = None
@@ -44,10 +50,11 @@ pipeline = None
 def load_pipeline():
     global pipeline
     if pipeline is None:
-        pipeline = ChronosPipeline.from_pretrained(
+        pipeline = BaseChronosPipeline.from_pretrained(
             # "amazon/chronos-t5-large" if not PAPER else "amazon/chronos-t5-tiny",
             # "amazon/chronos-t5-tiny",
-            "amazon/chronos-t5-large",
+            # "amazon/chronos-t5-large",
+            "amazon/chronos-bolt-base",
             device_map="cuda",  # use "cpu" for CPU inference and "mps" for Apple Silicon
             # torch_dtype=torch.bfloat16,
         )
@@ -122,7 +129,7 @@ def evaluate_strategy(strategy_signals, actual_returns, trading_fee):
     return total_return, sharpe_ratio
 
 
-def backtest_forecasts(symbol, num_simulations=10):
+def backtest_forecasts(symbol, num_simulations=100):
 
     # Download the latest data
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
@@ -214,6 +221,8 @@ def backtest_forecasts(symbol, num_simulations=10):
 
             error = np.array(validation["y"][:-1].values) - np.array(predictions[:-1])
             mean_val_loss = np.abs(error).mean()
+            if __name__ == "__main__":
+                print(f"mean_val_loss: {mean_val_loss}")
 
             last_preds[key_to_predict.lower() + "_last_price"] = simulation_data[key_to_predict].iloc[-1]
             last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[-1]
@@ -276,8 +285,10 @@ def backtest_forecasts(symbol, num_simulations=10):
             'unprofit_shutdown_sharpe': float(unprofit_shutdown_sharpe),
             'unprofit_shutdown_finalday': float(unprofit_shutdown_finalday_return)
         }
+
         results.append(result)
-        # print(f"Result: {result}")
+        if __name__ == "__main__":
+            print(f"Result: {result}")
 
     results_df = pd.DataFrame(results)
 

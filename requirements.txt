@@ -102,8 +102,8 @@ alpaca-py
 fastapi
 gunicorn
 uvicorn
-git+https://github.com/amazon-science/chronos-forecasting.git
-
+# git+https://github.com/amazon-science/chronos-forecasting.git
+chronos-forecasting
 scikit-learn
 
 python-binance
