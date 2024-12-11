@@ -1,0 +1,165 @@
+
+2024-12-11 09:48:24.015 | INFO     | data_curate_daily:download_stock_data_between_times:160 - UNIUSD has no exchange key - this is okay
+2024-12-11 09:48:24.268 | INFO     | data_curate_daily:download_stock_data_between_times:160 - UNIUSD has no exchange key - this is okay
+2024-12-11 09:48:24.526 | INFO     | data_curate_daily:download_exchange_latest_data:122 - UNIUSD spread 1.0020188425302827
+2024-12-11 09:48:24.800 | INFO     | data_curate_daily:download_stock_data_between_times:160 - UNIUSD has no exchange key - this is okay
+2024-12-11 09:48:25.054 | INFO     | data_curate_daily:download_exchange_latest_data:122 - UNIUSD spread 1.0020188425302827
+2024-12-10 20:48:25 UTC | 2024-12-10 15:48:25 EST | 2024-12-11 09:48:25 NZDT | INFO | spread: 1.0020188425302827
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO |
+Backtest results for UNIUSD over 300 simulations:
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average Simple Strategy Return: -0.0176
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average Simple Strategy Sharpe: -0.9001
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average Simple Strategy Final Day Return: -0.0049
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average All Signals Strategy Return: -0.0025
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average All Signals Strategy Sharpe: 0.4729
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average All Signals Strategy Final Day Return: -0.0044
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average Buy and Hold Return: 0.0058
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average Buy and Hold Sharpe: -0.4908
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average Buy and Hold Final Day Return: 0.0001
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: 0.0028
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -0.6726
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0011
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Analysis complete for UNIUSD: Avg Return=0.006, side=sell
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Predicted movement: -0.039
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Current close: 6.939
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Predicted close: 6.900
+2024-12-10 20:48:34 UTC | 2024-12-10 15:48:34 EST | 2024-12-11 09:48:34 NZDT | INFO | Managing positions for market close
+2024-12-10 20:48:35 UTC | 2024-12-10 15:48:35 EST | 2024-12-11 09:48:35 NZDT | INFO | Keeping CRWD position as tomorrow's forecast matches current long direction
+2024-12-10 20:48:35 UTC | 2024-12-10 15:48:35 EST | 2024-12-11 09:48:35 NZDT | INFO | Keeping ETHUSD position as tomorrow's forecast matches current long direction
+2024-12-10 20:48:35 UTC | 2024-12-10 15:48:35 EST | 2024-12-11 09:48:35 NZDT | INFO | Keeping NVDA position as tomorrow's forecast matches current long direction
+2024-12-10 20:48:35 UTC | 2024-12-10 15:48:35 EST | 2024-12-11 09:48:35 NZDT | INFO | Keeping TSLA position as tomorrow's forecast matches current long direction
+2024-12-11 03:00:53 UTC | 2024-12-10 22:00:53 EST | 2024-12-11 16:00:53 NZDT | INFO |
+INITIAL ANALYSIS STARTING...
+2024-12-11 03:00:53 UTC | 2024-12-10 22:00:53 EST | 2024-12-11 16:00:53 NZDT | INFO | Analyzing COUR
+2024-12-11 16:00:54.202 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:00:54 UTC | 2024-12-10 22:00:54 EST | 2024-12-11 16:00:54 NZDT | ERROR | Error analyzing COUR: local variable 'daily_df' referenced before assignment
+2024-12-11 03:00:54 UTC | 2024-12-10 22:00:54 EST | 2024-12-11 16:00:54 NZDT | INFO | Analyzing GOOG
+2024-12-11 16:00:55.012 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:00:55 UTC | 2024-12-10 22:00:55 EST | 2024-12-11 16:00:55 NZDT | ERROR | Error analyzing GOOG: local variable 'daily_df' referenced before assignment
+2024-12-11 03:00:55 UTC | 2024-12-10 22:00:55 EST | 2024-12-11 16:00:55 NZDT | INFO | Analyzing TSLA
+2024-12-11 16:00:55.864 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:00:55 UTC | 2024-12-10 22:00:55 EST | 2024-12-11 16:00:55 NZDT | ERROR | Error analyzing TSLA: local variable 'daily_df' referenced before assignment
+2024-12-11 03:00:55 UTC | 2024-12-10 22:00:55 EST | 2024-12-11 16:00:55 NZDT | INFO | Analyzing NVDA
+2024-12-11 16:00:56.738 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:00:56 UTC | 2024-12-10 22:00:56 EST | 2024-12-11 16:00:56 NZDT | ERROR | Error analyzing NVDA: local variable 'daily_df' referenced before assignment
+2024-12-11 03:00:56 UTC | 2024-12-10 22:00:56 EST | 2024-12-11 16:00:56 NZDT | INFO | Analyzing AAPL
+2024-12-11 16:00:57.551 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:00:57 UTC | 2024-12-10 22:00:57 EST | 2024-12-11 16:00:57 NZDT | ERROR | Error analyzing AAPL: local variable 'daily_df' referenced before assignment
+2024-12-11 03:00:57 UTC | 2024-12-10 22:00:57 EST | 2024-12-11 16:00:57 NZDT | INFO | Analyzing U
+2024-12-11 16:00:58.359 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:00:58 UTC | 2024-12-10 22:00:58 EST | 2024-12-11 16:00:58 NZDT | ERROR | Error analyzing U: local variable 'daily_df' referenced before assignment
+2024-12-11 03:00:58 UTC | 2024-12-10 22:00:58 EST | 2024-12-11 16:00:58 NZDT | INFO | Analyzing ADSK
+2024-12-11 16:00:59.247 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:00:59 UTC | 2024-12-10 22:00:59 EST | 2024-12-11 16:00:59 NZDT | ERROR | Error analyzing ADSK: local variable 'daily_df' referenced before assignment
+2024-12-11 03:00:59 UTC | 2024-12-10 22:00:59 EST | 2024-12-11 16:00:59 NZDT | INFO | Analyzing CRWD
+2024-12-11 16:01:00.083 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:01:00 UTC | 2024-12-10 22:01:00 EST | 2024-12-11 16:01:00 NZDT | ERROR | Error analyzing CRWD: local variable 'daily_df' referenced before assignment
+2024-12-11 03:01:00 UTC | 2024-12-10 22:01:00 EST | 2024-12-11 16:01:00 NZDT | INFO | Analyzing ADBE
+2024-12-11 16:01:00.887 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:01:00 UTC | 2024-12-10 22:01:00 EST | 2024-12-11 16:01:00 NZDT | ERROR | Error analyzing ADBE: local variable 'daily_df' referenced before assignment
+2024-12-11 03:01:00 UTC | 2024-12-10 22:01:00 EST | 2024-12-11 16:01:00 NZDT | INFO | Analyzing NET
+2024-12-11 16:01:01.711 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:01:01 UTC | 2024-12-10 22:01:01 EST | 2024-12-11 16:01:01 NZDT | ERROR | Error analyzing NET: local variable 'daily_df' referenced before assignment
+2024-12-11 03:01:01 UTC | 2024-12-10 22:01:01 EST | 2024-12-11 16:01:01 NZDT | INFO | Analyzing COIN
+2024-12-11 16:01:02.539 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:01:02 UTC | 2024-12-10 22:01:02 EST | 2024-12-11 16:01:02 NZDT | ERROR | Error analyzing COIN: local variable 'daily_df' referenced before assignment
+2024-12-11 03:01:02 UTC | 2024-12-10 22:01:02 EST | 2024-12-11 16:01:02 NZDT | INFO | Analyzing MSFT
+2024-12-11 16:01:03.348 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:01:03 UTC | 2024-12-10 22:01:03 EST | 2024-12-11 16:01:03 NZDT | ERROR | Error analyzing MSFT: local variable 'daily_df' referenced before assignment
+2024-12-11 03:01:03 UTC | 2024-12-10 22:01:03 EST | 2024-12-11 16:01:03 NZDT | INFO | Analyzing NFLX
+2024-12-11 16:01:04.151 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 03:01:04 UTC | 2024-12-10 22:01:04 EST | 2024-12-11 16:01:04 NZDT | ERROR | Error analyzing NFLX: local variable 'daily_df' referenced before assignment
+2024-12-11 03:01:04 UTC | 2024-12-10 22:01:04 EST | 2024-12-11 16:01:04 NZDT | INFO | Analyzing BTCUSD
+2024-12-11 16:01:04.931 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 16:01:06.562 | INFO     | data_curate_daily:download_stock_data_between_times:160 - BTCUSD has no exchange key - this is okay
+2024-12-11 16:01:06.809 | INFO     | data_curate_daily:download_stock_data_between_times:160 - BTCUSD has no exchange key - this is okay
+2024-12-11 16:01:07.631 | INFO     | data_curate_daily:download_exchange_latest_data:122 - BTCUSD spread 1.0009924181717316
+2024-12-11 16:01:07.923 | INFO     | data_curate_daily:download_stock_data_between_times:160 - BTCUSD has no exchange key - this is okay
+2024-12-11 16:01:08.179 | INFO     | data_curate_daily:download_exchange_latest_data:122 - BTCUSD spread 1.0009924181717316
+2024-12-11 03:01:08 UTC | 2024-12-10 22:01:08 EST | 2024-12-11 16:01:08 NZDT | INFO | spread: 1.0009924181717316
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO |
+Backtest results for BTCUSD over 300 simulations:
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average Simple Strategy Return: -0.0197
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average Simple Strategy Sharpe: -2.6766
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average Simple Strategy Final Day Return: -0.0055
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average All Signals Strategy Return: -0.0061
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average All Signals Strategy Sharpe: -2.4386
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average All Signals Strategy Final Day Return: -0.0049
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average Buy and Hold Return: -0.0016
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average Buy and Hold Sharpe: -1.7443
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average Buy and Hold Final Day Return: -0.0020
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: 0.0052
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -0.2174
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: 0.0003
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Analysis complete for BTCUSD: Avg Return=-0.002, side=buy
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Predicted movement: 688.751
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Current close: 51985.401
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Predicted close: 52674.152
+2024-12-11 03:01:17 UTC | 2024-12-10 22:01:17 EST | 2024-12-11 16:01:17 NZDT | INFO | Analyzing ETHUSD
+2024-12-11 16:01:18.238 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 16:01:19.311 | INFO     | data_curate_daily:download_stock_data_between_times:160 - ETHUSD has no exchange key - this is okay
+2024-12-11 16:01:19.565 | INFO     | data_curate_daily:download_stock_data_between_times:160 - ETHUSD has no exchange key - this is okay
+2024-12-11 16:01:19.819 | INFO     | data_curate_daily:download_exchange_latest_data:122 - ETHUSD spread 1.0015708822643041
+2024-12-11 16:01:20.089 | INFO     | data_curate_daily:download_stock_data_between_times:160 - ETHUSD has no exchange key - this is okay
+2024-12-11 16:01:20.343 | INFO     | data_curate_daily:download_exchange_latest_data:122 - ETHUSD spread 1.0015708822643041
+2024-12-11 03:01:20 UTC | 2024-12-10 22:01:20 EST | 2024-12-11 16:01:20 NZDT | INFO | spread: 1.0015708822643041
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO |
+Backtest results for ETHUSD over 300 simulations:
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average Simple Strategy Return: -0.0047
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average Simple Strategy Sharpe: -0.7570
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average Simple Strategy Final Day Return: -0.0026
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average All Signals Strategy Return: 0.0006
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average All Signals Strategy Sharpe: -0.8847
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average All Signals Strategy Final Day Return: -0.0036
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average Buy and Hold Return: 0.0039
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average Buy and Hold Sharpe: -0.0418
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average Buy and Hold Final Day Return: -0.0029
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: -0.0074
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -1.4139
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0024
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Analysis complete for ETHUSD: Avg Return=0.004, side=buy
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Predicted movement: 6.310
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Current close: 2774.180
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Predicted close: 2780.490
+2024-12-11 03:01:29 UTC | 2024-12-10 22:01:29 EST | 2024-12-11 16:01:29 NZDT | INFO | Analyzing UNIUSD
+2024-12-11 16:01:30.354 | INFO     | data_curate_daily:download_daily_stock_data:53 - Market is closed
+2024-12-11 16:01:31.177 | INFO     | data_curate_daily:download_stock_data_between_times:160 - UNIUSD has no exchange key - this is okay
+2024-12-11 16:01:31.429 | INFO     | data_curate_daily:download_stock_data_between_times:160 - UNIUSD has no exchange key - this is okay
+2024-12-11 16:01:31.685 | INFO     | data_curate_daily:download_exchange_latest_data:122 - UNIUSD spread 1.0020994832041343
+2024-12-11 16:01:31.952 | INFO     | data_curate_daily:download_stock_data_between_times:160 - UNIUSD has no exchange key - this is okay
+2024-12-11 16:01:32.202 | INFO     | data_curate_daily:download_exchange_latest_data:122 - UNIUSD spread 1.0020994832041343
+2024-12-11 03:01:32 UTC | 2024-12-10 22:01:32 EST | 2024-12-11 16:01:32 NZDT | INFO | spread: 1.0020994832041343
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO |
+Backtest results for UNIUSD over 300 simulations:
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average Simple Strategy Return: -0.0176
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average Simple Strategy Sharpe: -0.9001
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average Simple Strategy Final Day Return: -0.0049
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average All Signals Strategy Return: -0.0025
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average All Signals Strategy Sharpe: 0.4729
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average All Signals Strategy Final Day Return: -0.0044
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average Buy and Hold Return: 0.0058
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average Buy and Hold Sharpe: -0.4908
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average Buy and Hold Final Day Return: 0.0001
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: 0.0028
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -0.6726
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0011
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Analysis complete for UNIUSD: Avg Return=0.006, side=sell
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Predicted movement: -0.039
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Current close: 6.939
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO | Predicted close: 6.900
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO |
+==================================================
+TRADING PLAN (INITIAL PLAN)
+==================================================
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO |
+Symbol: UNIUSD
+Direction: sell
+Avg Return: 0.006
+Predicted Movement: -0.039
+==============================
+2024-12-11 03:01:41 UTC | 2024-12-10 22:01:41 EST | 2024-12-11 16:01:41 NZDT | INFO |
+Symbol: ETHUSD
+Direction: buy
+Avg Return: 0.004
+Predicted Movement: 6.310
+==============================
