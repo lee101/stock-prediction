@@ -60,6 +60,8 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
     elif command == "ramp_into_position":
         now = datetime.now()
         ramp_into_position(pair, side, start_time=now)
+    elif command == "close_position_at_takeprofit":
+        close_position_at_takeprofit(pair, float(side))  # Use side param as target price
     elif command == 'show_account':
         show_account()
 
@@ -422,6 +424,55 @@ def show_account():
             if hasattr(order, 'symbol') and hasattr(order, 'qty'):
                 price_str = f"@ ${float(order.limit_price):,.2f}" if hasattr(order, 'limit_price') else "(market)"
                 logger.info(f"{order.symbol}: {order.side.upper()} {order.qty} {price_str}")
+
+def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=None):
+    """
+    Wait up to 1 hour for the given pair's position to exist, 
+    then place a limit order to close that position at takeprofit_price.
+    If no position is opened within the hour, or if something fails, exit.
+    """
+    from datetime import datetime
+    from time import sleep
+
+    if start_time is None:
+        start_time = datetime.now()
+
+    max_wait_minutes = 60
+    while True:
+        elapsed_minutes = (datetime.now() - start_time).seconds // 60
+        if elapsed_minutes >= max_wait_minutes:
+            logger.error(f"Timed out waiting for position in {pair}")
+            return False
+
+        all_positions = alpaca_wrapper.get_all_positions()
+        positions = [p for p in all_positions if hasattr(p, 'symbol') and pairs_equal(p.symbol, pair)]
+        if not positions:
+            logger.info(f"No position for {pair} yet – waiting. Elapsed: {elapsed_minutes} min")
+            sleep(30)
+            continue
+
+        # We have at least one matching position
+        position = positions[0]
+        logger.info(f"Position found for {pair}: side={position.side}, qty={position.qty}")
+        
+        # Cancel existing orders for this pair
+        orders = alpaca_wrapper.get_open_orders()
+        for order in orders:
+            if hasattr(order, 'symbol') and pairs_equal(order.symbol, pair):
+                logger.info(f"Cancelling order for {pair} before placing takeprofit limit")
+                alpaca_wrapper.cancel_order(order)
+                sleep(1)
+
+        # Place the takeprofit order
+        logger.info(f"Placing limit order to close {pair} at {takeprofit_price}")
+        try:
+            # If it's a long, we SELL at takeprofit. For short, we BUY
+            side = 'sell' if position.side == 'long' else 'buy'
+            alpaca_wrapper.open_order_at_price(pair, position.qty, side, takeprofit_price)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to place takeprofit limit order: {e}")
+            return False
 
 if __name__ == "__main__":
     typer.run(main)

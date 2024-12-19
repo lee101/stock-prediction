@@ -9,7 +9,7 @@ import numpy as np
 from scipy import stats
 
 from backtest_test3_inline import backtest_forecasts
-from src.process_utils import backout_near_market, ramp_into_position
+from src.process_utils import backout_near_market, ramp_into_position, spawn_close_position_at_takeprofit
 from src.fixtures import crypto_symbols
 import alpaca_wrapper
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
@@ -40,34 +40,61 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             num_simulations = 300
 
             backtest_df = backtest_forecasts(symbol, num_simulations)
+            # Get each strategy's average return
+            simple_return = backtest_df["simple_strategy_return"].mean()
+            all_signals_return = backtest_df["all_signals_strategy_return"].mean()
+            takeprofit_return = backtest_df["entry_takeprofit_return"].mean()
 
-            # Use different strategies for crypto vs stocks
-            if symbol in crypto_symbols:
-                # For crypto, only use buy and hold return and only allow long positions
-                avg_return = backtest_df["buy_hold_return"].mean()
-            else:
-                # For stocks, continue using simple strategy return and allow both directions
-                avg_return = backtest_df["simple_strategy_return"].mean()
+            # Compare which strategy is best
+            best_return = max(simple_return, all_signals_return, takeprofit_return)
             last_prediction = backtest_df.iloc[-1]
-            predicted_movement = (
-                last_prediction["predicted_close"] - last_prediction["close"]
-            )
-            position_side = "buy" if predicted_movement > 0 else "sell"
 
-            # Only add to results if we have a valid position side
+            if best_return == takeprofit_return:
+                avg_return = takeprofit_return
+                strategy = "takeprofit"
+                # Determine side as usual
+                predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
+                position_side = "buy" if predicted_movement > 0 else "sell"
+            elif best_return == all_signals_return:
+                avg_return = all_signals_return
+                strategy = "all_signals"
+                # existing code to pick side from signals
+                close_movement = last_prediction["predicted_close"] - last_prediction["close"]
+                high_movement = last_prediction["predicted_high"] - last_prediction["close"]
+                low_movement = last_prediction["predicted_low"] - last_prediction["close"]
+                if all(x > 0 for x in [close_movement, high_movement, low_movement]):
+                    position_side = "buy"
+                elif all(x < 0 for x in [close_movement, high_movement, low_movement]):
+                    position_side = "sell"
+                else:
+                    continue
+                predicted_movement = close_movement
+            else:
+                avg_return = simple_return
+                strategy = "simple"
+                predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
+                position_side = "buy" if predicted_movement > 0 else "sell"
+
             results[symbol] = {
                 "avg_return": avg_return,
                 "predictions": backtest_df,
                 "side": position_side,
                 "predicted_movement": predicted_movement,
+                "strategy": strategy,
+                "predicted_high": float(last_prediction["predicted_high"]),
+                "predicted_low": float(last_prediction["predicted_low"]),
             }
 
             logger.info(
-                f"Analysis complete for {symbol}: Avg Return={avg_return:.3f}, side={position_side}"
+                f"Analysis complete for {symbol}: best_strat={strategy}, avg_return={avg_return:.3f}, side={position_side}"
             )
             logger.info(f"Predicted movement: {predicted_movement:.3f}")
-            logger.info(f"Current close: {last_prediction['close']:.3f}")
-            logger.info(f"Predicted close: {last_prediction['predicted_close']:.3f}")
+            logger.info(
+                f"Predicted High: {last_prediction['predicted_high']:.3f}, "
+                f"Predicted Low: {last_prediction['predicted_low']:.3f}, "
+                f"Current Close: {last_prediction['close']:.3f}"
+            )
+            logger.info(f"Predicted Close: {last_prediction['predicted_close']:.3f}")
 
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {str(e)}")
@@ -122,9 +149,6 @@ def manage_positions(
                 logger.info(
                     f"Closing position for {symbol} due to direction change from {position.side} to {new_forecast['side']}"
                 )
-                logger.info(
-                    f"Predicted movement: {new_forecast['predicted_movement']:.3f}"
-                )
                 should_close = True
         else:
             logger.warning(f"No analysis data for {symbol} - keeping position")
@@ -132,14 +156,13 @@ def manage_positions(
         if should_close:
             backout_near_market(symbol)
 
-    # Enter new positions from current picks
+    # Enter new positions from current_picks
     if not current_picks:
         logger.warning("No current picks available - skipping new position entry")
         return
 
     for symbol, data in current_picks.items():
         position_exists = any(p.symbol == symbol for p in positions)
-        # For crypto, only check if position exists since we only do long positions
         correct_side = any(
             p.symbol == symbol and p.side == data["side"] for p in positions
         )
@@ -152,6 +175,21 @@ def manage_positions(
         if should_enter or not correct_side:
             logger.info(f"Entering new {data['side']} position for {symbol}")
             ramp_into_position(symbol, data["side"])
+
+            # If strategy is 'takeprofit', place a takeprofit limit later
+            if data["strategy"] == "takeprofit" and data["side"] == "buy":
+                # e.g. call close_position_at_takeprofit with predicted_high
+                tp_price = data["predicted_high"]
+                logger.info(f"Scheduling a takeprofit at {tp_price:.3f} for {symbol}")
+                # call the new function from alpaca_cli
+                spawn_close_position_at_takeprofit(symbol, tp_price)
+            elif data["strategy"] == "takeprofit" and data["side"] == "sell":
+                # If short, we might want to place a limit buy at predicted_low
+                # (though you'd need to store predicted_low similarly)
+                # For example:
+                predicted_low = data["predictions"].iloc[-1]["predicted_low"]
+                logger.info(f"Scheduling a takeprofit at {predicted_low:.3f} for short {symbol}")
+                spawn_close_position_at_takeprofit(symbol, predicted_low)
 
 
 def manage_market_close(
