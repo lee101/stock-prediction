@@ -265,6 +265,19 @@ def backtest_forecasts(symbol, num_simulations=100):
                                                                                actual_returns, trading_fee)
         unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (
             2 * trading_fee * SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
+
+        # Entry+takeprofit strategy
+        entry_takeprofit_return, entry_takeprofit_sharpe = evaluate_entry_takeprofit_strategy(
+            last_preds["close_predictions"],
+            last_preds["high_predictions"],
+            last_preds["low_predictions"],
+            last_preds["close_actual_movement_values"],
+            last_preds["high_actual_movement_values"],
+            last_preds["low_actual_movement_values"],
+            trading_fee
+        )
+        entry_takeprofit_finalday_return = entry_takeprofit_return / len(actual_returns)
+
         # print(last_preds)
         result = {
             'date': simulation_data.index[-1],
@@ -283,7 +296,10 @@ def backtest_forecasts(symbol, num_simulations=100):
             'buy_hold_finalday': float(buy_hold_finalday_return),
             'unprofit_shutdown_return': float(unprofit_shutdown_return),
             'unprofit_shutdown_sharpe': float(unprofit_shutdown_sharpe),
-            'unprofit_shutdown_finalday': float(unprofit_shutdown_finalday_return)
+            'unprofit_shutdown_finalday': float(unprofit_shutdown_finalday_return),
+            'entry_takeprofit_return': float(entry_takeprofit_return),
+            'entry_takeprofit_sharpe': float(entry_takeprofit_sharpe),
+            'entry_takeprofit_finalday': float(entry_takeprofit_finalday_return)
         }
 
         results.append(result)
@@ -307,6 +323,10 @@ def backtest_forecasts(symbol, num_simulations=100):
     logger.info(f"Average Unprofit Shutdown Buy and Hold Sharpe: {results_df['unprofit_shutdown_sharpe'].mean():.4f}")
     logger.info(
         f"Average Unprofit Shutdown Buy and Hold Final Day Return: {results_df['unprofit_shutdown_finalday'].mean():.4f}")
+    logger.info(f"Average Entry+Takeprofit Return: {results_df['entry_takeprofit_return'].mean():.4f}")
+    logger.info(f"Average Entry+Takeprofit Sharpe: {results_df['entry_takeprofit_sharpe'].mean():.4f}")
+    logger.info(
+        f"Average Entry+Takeprofit Final Day Return: {results_df['entry_takeprofit_finalday'].mean():.4f}")
 
     return results_df
 
@@ -319,3 +339,68 @@ if __name__ == "__main__":
         symbol = sys.argv[1]
 
     backtest_forecasts(symbol)
+
+
+def evaluate_entry_takeprofit_strategy(
+    close_predictions, high_predictions, low_predictions,
+    actual_close, actual_high, actual_low,
+    trading_fee
+):
+    """
+    Evaluates an entry+takeprofit approach with minimal repeated fees:
+      - If close_predictions[idx] > 0 => 'buy'
+        - Exit when actual_high >= high_predictions[idx], else exit at actual_close.
+      - If close_predictions[idx] < 0 => 'short'
+        - Exit when actual_low <= low_predictions[idx], else exit at actual_close.
+      - If we remain in the same side as previous day, don't pay another opening fee.
+    """
+    import numpy as np
+    import torch
+
+    daily_returns = []
+    last_side = None  # track "buy" or "short" from previous day
+
+    for idx in range(len(close_predictions)):
+        # determine side
+        is_buy = bool(close_predictions[idx] > 0)
+        new_side = "buy" if is_buy else "short"
+
+        # if same side as previous day, we are continuing
+        continuing_same_side = (last_side == new_side)
+
+        # figure out exit
+        if is_buy:
+            if actual_high[idx] >= high_predictions[idx]:
+                daily_return = high_predictions[idx]  # approximate from 0 to predicted high
+            else:
+                daily_return = actual_close[idx]
+        else:  # short
+            if actual_low[idx] <= low_predictions[idx]:
+                daily_return = 0 - low_predictions[idx]  # from 0 down to predicted_low
+            else:
+                daily_return = 0 - actual_close[idx]
+
+        # fees: if it's the first day with new_side, pay one side of the fee
+        # if we exit from the previous day (different side or last_side == None?), pay closing fee
+        fee_to_charge = 0.0
+
+        # if we changed sides or last_side is None, we pay open fee
+        if not continuing_same_side:
+            fee_to_charge += trading_fee  # opening fee
+            if last_side is not None:
+                fee_to_charge += trading_fee  # closing fee for old side
+
+        # apply total fee
+        daily_return -= fee_to_charge
+        daily_returns.append(daily_return)
+
+        last_side = new_side
+
+    daily_returns = np.array(daily_returns, dtype=float)
+    total_return = float(daily_returns.sum())
+    if daily_returns.std() == 0:
+        sharpe_ratio = 0.0
+    else:
+        sharpe_ratio = float(daily_returns.mean() / daily_returns.std() * np.sqrt(252))
+
+    return total_return, sharpe_ratio

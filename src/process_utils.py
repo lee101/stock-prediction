@@ -40,3 +40,16 @@ def ramp_into_position(symbol: str, side: str = "buy"):
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
+
+@debounce(60 * 10, key_func=lambda symbol, takeprofit_price: f"{symbol}_{takeprofit_price}") # only once in 10 minutes
+def spawn_close_position_at_takeprofit(symbol: str, takeprofit_price: float):
+    command = f"PYTHONPATH={cwd} python scripts/alpaca_cli.py close_position_at_takeprofit {symbol} --takeprofit_price={takeprofit_price}"
+    logger.info(f"Running command {command}")
+    # Run process in background without waiting
+    subprocess.Popen(
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
