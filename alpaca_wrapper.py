@@ -13,7 +13,7 @@ from alpaca.data import (
     CryptoHistoricalDataClient,
     CryptoLatestQuoteRequest,
 )
-from alpaca.trading import OrderType, LimitOrderRequest
+from alpaca.trading import OrderType, LimitOrderRequest, LimitOrderRequest, GetOrdersRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide
 from alpaca.trading.requests import MarketOrderRequest
@@ -771,3 +771,75 @@ def close_position_near_market(position, pct_above_market=0.0):
         return False
         
     return result
+
+def get_executed_orders(alpaca_api):
+    """
+    Gets all historical orders that were executed.
+    
+    Args:
+        alpaca_api: The Alpaca trading client instance
+        
+    Returns:
+        List of executed orders
+    """
+    try:
+        # Get all orders with status=filled filter
+        orders = alpaca_api.get_orders(
+            filter=GetOrdersRequest(
+                status="filled"
+            )
+        )
+        return orders
+        
+    except Exception as e:
+        logger.error(f"Error getting executed orders: {e}")
+        traceback.print_exc()
+        return []
+
+def get_account_activities(
+    alpaca_api,
+    activity_types=None,
+    date=None,
+    direction='desc',
+    page_size=100,
+    page_token=None
+):
+    """
+    Retrieve account activities (trades, dividends, etc.) from the Alpaca API.
+    Pagination is handled via page_token. The activity_types argument can be any of:
+    'FILL', 'DIV', 'TRANS', 'MISC', etc.
+
+    Args:
+        alpaca_api: The Alpaca trading client instance.
+        activity_types: List of activity type strings (e.g. ['FILL', 'DIV']).
+        date: (Optional) The date for which you'd like to see activities.
+        direction: 'asc' or 'desc' for sorting.
+        page_size: The number of records to return per page (up to 100 if date is not set).
+        page_token: Used for pagination.
+
+    Returns:
+        A list of account activity records, or an empty list on error.
+    """
+    query_params = {}
+    if activity_types:
+        # Convert single str to list if needed
+        if isinstance(activity_types, str):
+            activity_types = [activity_types]
+        query_params["activity_types"] = ",".join(activity_types)
+
+    if date:
+        query_params["date"] = date
+    if direction:
+        query_params["direction"] = direction
+    if page_size:
+        query_params["page_size"] = str(page_size)
+    if page_token:
+        query_params["page_token"] = page_token
+
+    try:
+        # Directly use the TradingClient's underlying request method to access this endpoint
+        response = alpaca_api._request("GET", "/account/activities", data=query_params)
+        return response
+    except Exception as e:
+        logger.error(f"Error retrieving account activities: {e}")
+        return []
