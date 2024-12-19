@@ -230,7 +230,7 @@ def manage_market_close(
                 should_close = True
             else:
                 logger.info(
-                    f"Keeping {symbol} position as tomorrow's forecast matches current {position.side} direction"
+                    f"Keeping {symbol} position as forecast matches current {position.side} direction"
                 )
         else:
             logger.warning(f"No analysis data for {symbol} - keeping position")
