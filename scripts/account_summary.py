@@ -1,239 +1,209 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
-from alpaca_wrapper import get_account_activities, alpaca_api
-from loguru import logger
 import pytz
+from datetime import datetime, timedelta
+from loguru import logger
+from alpaca_wrapper import get_account_activities, alpaca_api, get_all_positions
 
 def analyze_trading_history():
     """
-    Analyzes historical executed orders and account activities to compute realized P&L
-    and generate visualizations (both $ gains and % gains).
+    A simple Python-based realized P&L calculation for closed trades 
+    plus unrealized P&L for currently open positions.
     """
-    try:
-        # Get all trade activities (FILL = executed trades, DIV/INT = income)
-        activities = get_account_activities(
-            alpaca_api, 
-            activity_types=['FILL', 'DIV', 'INT'],
-            direction='desc'
-        )
-        
-        if not activities:
-            logger.warning("No trading activities found")
-            return
-            
-        # Convert activities to DataFrame
-        activities_data = []
-        for activity in activities:
-            if activity['activity_type'] == 'FILL':
-                activity_data = {
-                    'symbol': activity['symbol'],
-                    'side': activity['side'],
-                    'filled_qty': float(activity['qty']),
-                    'filled_avg_price': float(activity['price']),
-                    'timestamp': activity['transaction_time'],
-                    'type': 'FILL',
-                    'total_value': float(activity['qty']) * float(activity['price'])
-                }
-            elif activity['activity_type'] in ['DIV', 'INT']:
-                # Dividends / interest
-                activity_data = {
-                    'symbol': activity.get('symbol', 'N/A'),
-                    'side': 'dividend' if activity['activity_type'] == 'DIV' else 'interest',
-                    'filled_qty': float(activity.get('qty', 0)),
-                    'filled_avg_price': float(activity.get('per_share_amount', 0)),
-                    'timestamp': activity['date'],
-                    'type': activity['activity_type'],
-                    'total_value': float(activity['net_amount'])
-                }
-            else:
+
+    # 1) Fetch historical FILLs, DIVs, INTs for realized P&L
+    activities = get_account_activities(
+        alpaca_api, 
+        activity_types=['FILL', 'DIV', 'INT'], 
+        direction='desc'
+    )
+
+    if not activities or len(activities) == 0:
+        logger.warning("No trading activities found")
+    else:
+        # Convert to standardized records plus timestamp
+        sorted_activities = []
+        for act in activities:
+            if act['activity_type'] in ('FILL'):
+                stamp = act.get('transaction_time')
+            else:  # DIV / INT
+                stamp = act.get('date')
+
+            try:
+                # Convert from ISO8601 to Python datetime
+                stamp_dt = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            except Exception:
+                logger.error(f"Could not parse timestamp for activity: {act}")
                 continue
-            activities_data.append(activity_data)
 
-        df = pd.DataFrame(activities_data)
-        if df.empty:
-            print("No matching activities.")
-            return
+            sorted_activities.append({
+                'activity_type': act['activity_type'],
+                'symbol': act.get('symbol', 'N/A'),
+                'side': act.get('side', None),
+                'qty': float(act.get('qty', 0.0)),
+                'price': float(act.get('price', 0.0)),
+                'net_amount': float(act.get('net_amount', 0.0)),
+                'timestamp': stamp_dt,
+            })
 
-        # Make timestamps UTC-aware and sort by time ascending
-        df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_convert('UTC')
-        df = df.sort_values('timestamp').reset_index(drop=True)
+        # Sort ascending by time
+        sorted_activities.sort(key=lambda x: x['timestamp'])
 
-        # We'll compute realized P&L from buys & sells. Weighted-average cost basis.
-        # Also track cost_of_sold_shares: cost basis * shares actually sold
-        df['realized_pnl'] = 0.0
-        df['cost_of_sold_shares'] = 0.0
+        # Track realized P&L
+        positions = {}   # symbol => { 'qty': float, 'cost_basis': float }
+        pnl_events = []  # each realized event
+        symbol_trades = {}  # symbol => { 'total_buy_cost': float, 'realized_pnl': float, 'trade_count': int }
+        cumulative_pnl = 0.0
 
-        # Store { symbol: { 'qty': current_shares, 'cost_basis': avg_cost_per_share } }
-        positions = {}
+        for act in sorted_activities:
+            sym = act['symbol']
+            typ = act['activity_type']
+            dt = act['timestamp']
 
-        for i, row in df.iterrows():
-            if row['type'] == 'FILL':
-                symbol = row['symbol']
-                side = row['side']
-                qty = row['filled_qty']
-                price = row['filled_avg_price']
+            if sym not in positions:
+                positions[sym] = {'qty': 0.0, 'cost_basis': 0.0}
+            if sym not in symbol_trades:
+                symbol_trades[sym] = {
+                    'total_buy_cost': 0.0,
+                    'realized_pnl': 0.0,
+                    'trade_count': 0
+                }
 
-                if symbol not in positions:
-                    positions[symbol] = {'qty': 0.0, 'cost_basis': 0.0}
+            if typ == 'FILL':
+                side = act.get('side')
+                qty  = act.get('qty', 0.0)
+                price = act.get('price', 0.0)
 
-                old_qty = positions[symbol]['qty']
-                old_cb = positions[symbol]['cost_basis']
+                symbol_trades[sym]['trade_count'] += 1
 
                 if side == 'buy':
-                    # Weighted-average cost update
+                    old_qty = positions[sym]['qty']
+                    old_cb  = positions[sym]['cost_basis']
                     new_qty = old_qty + qty
                     if new_qty > 0:
-                        new_cb = (old_cb * old_qty + price * qty) / new_qty
+                        new_cb = (old_cb*old_qty + price*qty) / new_qty
                     else:
-                        # Normally shouldn't happen for a buy
                         new_cb = price
-                    positions[symbol]['qty'] = new_qty
-                    positions[symbol]['cost_basis'] = new_cb
+                    positions[sym]['qty'] = new_qty
+                    positions[sym]['cost_basis'] = new_cb
 
                 elif side == 'sell':
-                    # Only realize P&L if we have a positive qty (long shares)
+                    old_qty = positions[sym]['qty']
+                    old_cb  = positions[sym]['cost_basis']
                     if old_qty > 0:
-                        # If we're selling more than we hold, only compute partial
-                        shares_sold = min(qty, old_qty)
-                        cost_of_shares_sold = old_cb * shares_sold
+                        shares_sold = min(old_qty, qty)
+                        cost_of_shares = old_cb * shares_sold
                         realized = (price - old_cb) * shares_sold
 
-                        df.at[i, 'realized_pnl'] = realized
-                        df.at[i, 'cost_of_sold_shares'] = cost_of_shares_sold
+                        symbol_trades[sym]['total_buy_cost']  += cost_of_shares
+                        symbol_trades[sym]['realized_pnl']    += realized
 
-                        positions[symbol]['qty'] = old_qty - shares_sold
-                        # cost basis remains the same unless qty is now zero
-                        if positions[symbol]['qty'] <= 0:
-                            positions[symbol]['qty'] = 0.0
+                        cumulative_pnl += realized
+                        positions[sym]['qty'] = old_qty - shares_sold
+                        if positions[sym]['qty'] == 0:
+                            positions[sym]['cost_basis'] = 0.0
 
-                    # If old_qty == 0, we might be shorting - not handled here
-                    # so no realized P&L in that scenario.
+                        # Store event
+                        pnl_events.append({
+                            'timestamp': dt,
+                            'symbol': sym,
+                            'pnl': realized,
+                            'cost_basis': cost_of_shares,
+                            'type': 'REALIZED_SELL'
+                        })
 
-            elif row['type'] in ['DIV', 'INT']:
-                # Direct gains from dividends/interest
-                df.at[i, 'realized_pnl'] = row['total_value']
+            elif typ in ('DIV','INT'):
+                div_int_gain = act['net_amount']
+                cumulative_pnl += div_int_gain
+                symbol_trades[sym]['realized_pnl'] += div_int_gain
 
-        # Cumulative realized P&L
-        df['cumulative_pnl'] = df['realized_pnl'].cumsum()
+                pnl_events.append({
+                    'timestamp': dt,
+                    'symbol': sym,
+                    'pnl': div_int_gain,
+                    'cost_basis': 0.0,
+                    'type': typ
+                })
 
-        # Save to CSV
-        csv_filename = f"trading_history_{datetime.now().strftime('%Y%m%d')}.csv"
-        df.to_csv(csv_filename, index=False)
-        logger.info(f"Trading history saved to {csv_filename}")
+        print("\n=== All-Time Realized P&L Summary ===")
+        print(f"Total Realized P&L: ${cumulative_pnl:.2f}")
 
-        # Plot the realized P&L over time
-        plt.figure(figsize=(12,6))
-        plt.plot(df['timestamp'], df['cumulative_pnl'], label='Cumulative Realized P&L')
-        plt.title('Trading P&L Over Time')
-        plt.xlabel('Date')
-        plt.ylabel('Realized P&L ($)')
-        plt.xticks(rotation=45)
-        plt.legend()
-        plt.grid(True)
+        # Sort P&L events by time and compute a running total
+        pnl_events.sort(key=lambda x: x['timestamp'])
+        running = 0
+        for evt in pnl_events:
+            running += evt['pnl']
+            evt['cumulative'] = running
 
-        # Save the plot
-        plot_filename = f"pnl_chart_{datetime.now().strftime('%Y%m%d')}.png"
-        plt.savefig(plot_filename, bbox_inches='tight')
-        logger.info(f"P&L chart saved to {plot_filename}")
-
-        # Overall summary
-        print("\n=== All-Time Trading Summary ===")
-        print(f"Total Activities: {len(df)}")
-        print(f"Total Realized P&L: ${df['realized_pnl'].sum():.2f}")
-
-        # Last 7 days analysis
+        # Last 7 days realized
         one_week_ago = datetime.now(pytz.UTC) - timedelta(days=7)
-        week_df = df[df['timestamp'] >= one_week_ago]
+        last_week_pnl  = sum(e['pnl'] for e in pnl_events if e['timestamp'] >= one_week_ago)
+        print("\n=== Last 7 Days Realized P&L ===")
+        print(f"Recent Realized P&L: ${last_week_pnl:.2f}")
 
-        print("\n=== Last 7 Days Summary ===")
-        print(f"Recent Activities: {len(week_df)}")
-        print(f"Week's Realized P&L: ${week_df['realized_pnl'].sum():.2f}")
+        # Show P&L by symbol
+        sorted_syms = sorted(symbol_trades.items(), key=lambda x: x[1]['realized_pnl'], reverse=True)
+        print("\n=== Realized P&L By Symbol (All-Time) ===")
+        for sym, data in sorted_syms:
+            pnl  = data['realized_pnl']
+            cost = data['total_buy_cost']
+            tcnt = data['trade_count']
+            if cost > 0:
+                pct = (pnl / cost)*100
+                print(f"{sym}: ${pnl:.2f} ({pct:.2f}% on ${cost:.2f}) [{tcnt} trades]")
+            else:
+                # Possibly no sells yet => cost=0 or just dividends
+                print(f"{sym}: ${pnl:.2f} (N/A% - no sells) [{tcnt} trades]")
 
-        # All-time trades only
-        trades_df = df[df['type'] == 'FILL']
-        if not trades_df.empty:
-            print(f"\n=== All-Time Trade Statistics ===")
-            print(f"Total Trades: {len(trades_df)}")
-            if 'total_value' in trades_df.columns:
-                print(f"Average Trade Value: ${trades_df['total_value'].mean():.2f}")
+        # Weekly by symbol
+        weekly_stats = {}
+        for evt in pnl_events:
+            if evt['timestamp'] >= one_week_ago:
+                s = evt['symbol']
+                if s not in weekly_stats:
+                    weekly_stats[s] = {'pnl': 0.0, 'cost': 0.0, 'count': 0}
+                weekly_stats[s]['pnl']  += evt['pnl']
+                if evt['type'] == 'REALIZED_SELL':
+                    weekly_stats[s]['cost'] += evt['cost_basis']
+                    weekly_stats[s]['count'] += 1
 
-            print(f"Most Traded Symbol: {trades_df['symbol'].value_counts().index[0]}")
+        print("\n=== Last 7 Days Realized P&L By Symbol ===")
+        if not weekly_stats:
+            print("No realized trades/income in the last 7 days.")
+        else:
+            # Sort by realized P&L
+            for sym, vals in sorted(weekly_stats.items(), key=lambda x: x[1]['pnl'], reverse=True):
+                p = vals['pnl']
+                c = vals['cost']
+                ct = vals['count']
+                if c > 0:
+                    pct = (p / c)*100
+                    print(f"{sym}: ${p:.2f} ({pct:.2f}% on ${c:.2f}) [{ct} sells]")
+                else:
+                    print(f"{sym}: ${p:.2f} (N/A% - no sells) [{ct} sells]")
 
-            # Summaries by symbol
-            # - Summation of realized_pnl
-            # - Summation of cost_of_sold_shares
-            # Then compute percentage = (realized_pnl / cost_of_sold_shares)*100
-            sum_cols = trades_df.groupby('symbol')[['realized_pnl','cost_of_sold_shares']].sum()
-            sum_cols['pct_gain'] = 0.0
-            mask_nonzero_cost = (sum_cols['cost_of_sold_shares'] != 0)
-            sum_cols.loc[mask_nonzero_cost, 'pct_gain'] = (
-                sum_cols.loc[mask_nonzero_cost, 'realized_pnl'] 
-                / sum_cols.loc[mask_nonzero_cost, 'cost_of_sold_shares'] 
-                * 100
-            )
-            # Sort by realized_pnl descending
-            sum_cols = sum_cols.sort_values('realized_pnl', ascending=False)
+    # 2) Now integrate open positions for unrealized P&L
+    print("\n=== Open Positions (Unrealized) ===")
+    try:
+        open_positions = get_all_positions()
+        if not open_positions:
+            print("No open positions.")
+            return
+        for pos in open_positions:
+            # Each position might have fields like:
+            # pos.symbol, pos.qty, pos.avg_entry_price, pos.unrealized_pl
+            sym = pos.symbol
+            qty = float(pos.qty)
+            avg_cost = float(pos.avg_entry_price)
+            upl = float(pos.unrealized_pl) if pos.unrealized_pl else (0.0)
+            
+            # If you want to compute manually:
+            # current_price = float(pos.current_price)
+            # upl_manual = (current_price - avg_cost) * qty
 
-            print("\nRealized P&L By Symbol ($ and %):")
-            for symbol, rowvals in sum_cols.iterrows():
-                # # trades for symbol
-                trades_count = len(trades_df[trades_df['symbol'] == symbol])
-                print(f"{symbol}: ${rowvals['realized_pnl']:.2f} "
-                      f"({rowvals['pct_gain']:.2f}% return) "
-                      f"({trades_count} trades)")
+            print(f"{sym}: {qty} shares, avg cost ${avg_cost:.2f}, unrealized P&L ${upl:.2f}")
 
-            # Last week trades
-            week_trades_df = trades_df[trades_df['timestamp'] >= one_week_ago]
-            if not week_trades_df.empty:
-                print(f"\n=== Last 7 Days Trade Statistics ===")
-                print(f"Recent Trades: {len(week_trades_df)}")
-                if 'total_value' in week_trades_df.columns:
-                    print(f"Week's Average Trade Value: ${week_trades_df['total_value'].mean():.2f}")
+    except Exception as ex:
+        logger.error(f"Error fetching open positions: {ex}")
 
-                # Same approach for the last 7 days
-                week_sum_cols = week_trades_df.groupby('symbol')[['realized_pnl','cost_of_sold_shares']].sum()
-                week_sum_cols['pct_gain'] = 0.0
-                mask_nonzero_cost = (week_sum_cols['cost_of_sold_shares'] != 0)
-                week_sum_cols.loc[mask_nonzero_cost, 'pct_gain'] = (
-                    week_sum_cols.loc[mask_nonzero_cost, 'realized_pnl'] 
-                    / week_sum_cols.loc[mask_nonzero_cost, 'cost_of_sold_shares'] 
-                    * 100
-                )
-                week_sum_cols = week_sum_cols.sort_values('realized_pnl', ascending=False)
-
-                print("\nRecent Realized P&L By Symbol ($ and %):")
-                for symbol, rowvals in week_sum_cols.iterrows():
-                    trades_count = len(week_trades_df[week_trades_df['symbol'] == symbol])
-                    print(f"{symbol}: ${rowvals['realized_pnl']:.2f} "
-                          f"({rowvals['pct_gain']:.2f}% return) "
-                          f"({trades_count} trades)")
-
-        # Dividend & Interest
-        div_df = df[df['type'] == 'DIV']
-        if not div_df.empty:
-            print(f"\n=== Dividend Income ===")
-            print(f"Total Dividend Income: ${div_df['realized_pnl'].sum():.2f}")
-            div_by_symbol = div_df.groupby('symbol')['realized_pnl'].sum().sort_values(ascending=False)
-            for symbol, amount in div_by_symbol.items():
-                print(f"{symbol}: ${amount:.2f}")
-
-            week_div_df = div_df[div_df['timestamp'] >= one_week_ago]
-            if not week_div_df.empty:
-                print(f"\nLast 7 Days Dividend Income: ${week_div_df['realized_pnl'].sum():.2f}")
-
-        int_df = df[df['type'] == 'INT']
-        if not int_df.empty:
-            print(f"\n=== Interest Summary ===")
-            print(f"Total Interest: ${int_df['realized_pnl'].sum():.2f}")
-
-            week_int_df = int_df[int_df['timestamp'] >= one_week_ago]
-            if not week_int_df.empty:
-                print(f"Last 7 Days Interest: ${week_int_df['realized_pnl'].sum():.2f}")
-
-    except Exception as e:
-        logger.error(f"Error analyzing trading history: {e}")
-        raise
 
 if __name__ == "__main__":
     analyze_trading_history()
