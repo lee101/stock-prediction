@@ -3,5 +3,53 @@
         "."
     ],
     "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true
+    "python.testing.pytestEnabled": true,
+    "files.watcherExclude": {
+        "**/.git/objects/**": true,
+        "**/.git/subtree-cache/**": true,
+        "**/node_modules/**": true,
+        "**/dist/**": true,
+        "**/build/**": true,
+        "**/.cache/**": true,
+        "coverage/**": true,
+        "**/logs/**": true,
+        "**/lightning_logs/**": true,
+        "**/lightning_logs2/**": true,
+        "**/lightning_logsminute/**": true,
+        "**/lightning_logs_nforecast/**": true,
+        "**/data/**": true,
+        "**/optuna_test/**": true
+    },
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/CVS": true,
+        "**/.DS_Store": true,
+        "**/node_modules": true,
+        "**/dist": true,
+        "**/build": true,
+        "**/logs": true,
+        "**/lightning_logs": true,
+        "**/lightning_logs2": true,
+        "**/lightning_logsminute": true,
+        "**/lightning_logs_nforecast": true,
+        "**/data": true,
+        "**/optuna_test": true
+    },
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/bower_components": true,
+        "**/dist": true,
+        "**/build": true,
+        "**/.cache": true,
+        "coverage/**": true,
+        "**/logs/**": true,
+        "**/lightning_logs/**": true,
+        "**/lightning_logs2/**": true,
+        "**/lightning_logsminute/**": true,
+        "**/lightning_logs_nforecast/**": true,
+        "**/data/**": true,
+        "**/optuna_test/**": true
+    }
 }
