@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+
 from src.logging_utils import setup_logging
 
 logger = setup_logging("backtest_test3_inline.log")
@@ -68,11 +69,11 @@ def simple_buy_sell_strategy(predictions):
     return (predictions > 0).float() * 2 - 1
 
 
-def all_signals_strategy(close_pred, high_pred, low_pred, open_pred):
+def all_signals_strategy(close_pred, high_pred, low_pred):
     """Buy if all signals are up, sell if all are down, hold otherwise."""
-    close_pred, high_pred, low_pred, open_pred = map(torch.as_tensor, (close_pred, high_pred, low_pred, open_pred))
-    buy_signal = (close_pred > 0) & (high_pred > 0) & (low_pred > 0) & (open_pred > 0)
-    sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0) & (open_pred < 0)
+    close_pred, high_pred, low_pred = map(torch.as_tensor, (close_pred, high_pred, low_pred))
+    buy_signal = (close_pred > 0) & (high_pred > 0) & (low_pred > 0)
+    sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0)
     return buy_signal.float() - sell_signal.float()
 
 
@@ -105,7 +106,7 @@ def evaluate_strategy(strategy_signals, actual_returns, trading_fee):
     # Trading fee is the sum of the spread cost and any additional trading fee
 
     # Pay spread once and trading fee twice per position change
-    fees = np.abs(position_changes) * trading_fee + np.abs(position_changes) * abs((1-SPREAD) / 2)
+    fees = np.abs(position_changes) * trading_fee + np.abs(position_changes) * abs((1 - SPREAD) / 2)
     # logger.info(f'adjusted fees: {fees}')
 
     # Adjust fees: only apply when position changes
@@ -120,7 +121,7 @@ def evaluate_strategy(strategy_signals, actual_returns, trading_fee):
 
     cumulative_returns = (1 + strategy_returns).cumprod() - 1
     total_return = cumulative_returns.iloc[-1]
-    
+
     if strategy_returns.std() == 0 or np.isnan(strategy_returns.std()):
         sharpe_ratio = 0  # or some other default value
     else:
@@ -130,7 +131,6 @@ def evaluate_strategy(strategy_signals, actual_returns, trading_fee):
 
 
 def backtest_forecasts(symbol, num_simulations=100):
-
     # Download the latest data
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
     # use this for testing dataset
@@ -179,8 +179,8 @@ def backtest_forecasts(symbol, num_simulations=100):
             'instrument': symbol,
             'close_last_price': simulation_data['Close'].iloc[-1],
         }
-
-        for key_to_predict in ['Close', 'Low', 'High', 'Open']:
+        # not predicting open because nothing todo with it
+        for key_to_predict in ['Close', 'Low', 'High']:  # , 'Open']:
             data = pre_process_data(simulation_data, key_to_predict)
             price = data[["Close", "High", "Low", "Open"]]
 
@@ -248,8 +248,7 @@ def backtest_forecasts(symbol, num_simulations=100):
         all_signals = all_signals_strategy(
             last_preds["close_predictions"],
             last_preds["high_predictions"],
-            last_preds["low_predictions"],
-            last_preds["open_predictions"]
+            last_preds["low_predictions"]
         )
         all_signals_total_return, all_signals_sharpe = evaluate_strategy(all_signals, actual_returns, trading_fee)
         all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
@@ -342,9 +341,9 @@ if __name__ == "__main__":
 
 
 def evaluate_entry_takeprofit_strategy(
-    close_predictions, high_predictions, low_predictions,
-    actual_close, actual_high, actual_low,
-    trading_fee
+        close_predictions, high_predictions, low_predictions,
+        actual_close, actual_high, actual_low,
+        trading_fee
 ):
     """
     Evaluates an entry+takeprofit approach with minimal repeated fees:
@@ -355,7 +354,6 @@ def evaluate_entry_takeprofit_strategy(
       - If we remain in the same side as previous day, don't pay another opening fee.
     """
     import numpy as np
-    import torch
 
     daily_returns = []
     last_side = None  # track "buy" or "short" from previous day

@@ -1,21 +1,17 @@
-import sys
-from datetime import datetime, timedelta
-from typing import List, Dict
-import pandas as pd
-from loguru import logger
-import pytz
+from datetime import datetime
 from time import sleep
-import numpy as np
-from scipy import stats
+from typing import List, Dict
 
-from backtest_test3_inline import backtest_forecasts
-from src.process_utils import backout_near_market, ramp_into_position, spawn_close_position_at_takeprofit
-from src.fixtures import crypto_symbols
+import pytz
+from loguru import logger
+
 import alpaca_wrapper
-from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
+from backtest_test3_inline import backtest_forecasts
 from src.comparisons import is_same_side
-
+from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
+from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
+from src.process_utils import backout_near_market, ramp_into_position, spawn_close_position_at_takeprofit
 
 # Configure logging
 logger = setup_logging("trade_stock_e2e.log")
@@ -105,7 +101,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
 def log_trading_plan(picks: Dict[str, Dict], action: str):
     """Log the trading plan without executing trades."""
-    logger.info(f"\n{'='*50}\nTRADING PLAN ({action})\n{'='*50}")
+    logger.info(f"\n{'=' * 50}\nTRADING PLAN ({action})\n{'=' * 50}")
 
     for symbol, data in picks.items():
         logger.info(
@@ -114,14 +110,14 @@ Symbol: {symbol}
 Direction: {data['side']}
 Avg Return: {data['avg_return']:.3f}
 Predicted Movement: {data['predicted_movement']:.3f}
-{'='*30}"""
+{'=' * 30}"""
         )
 
 
 def manage_positions(
-    current_picks: Dict[str, Dict],
-    previous_picks: Dict[str, Dict],
-    all_analyzed_results: Dict[str, Dict],
+        current_picks: Dict[str, Dict],
+        previous_picks: Dict[str, Dict],
+        all_analyzed_results: Dict[str, Dict],
 ):
     """Execute actual position management."""
     positions = alpaca_wrapper.get_all_positions()
@@ -193,9 +189,9 @@ def manage_positions(
 
 
 def manage_market_close(
-    symbols: List[str],
-    previous_picks: Dict[str, Dict],
-    all_analyzed_results: Dict[str, Dict],
+        symbols: List[str],
+        previous_picks: Dict[str, Dict],
+        all_analyzed_results: Dict[str, Dict],
 ):
     """Execute market close position management."""
     logger.info("Managing positions for market close")
@@ -253,7 +249,7 @@ def analyze_next_day_positions(symbols: List[str]) -> Dict:
 
 
 def dry_run_manage_positions(
-    current_picks: Dict[str, Dict], previous_picks: Dict[str, Dict]
+        current_picks: Dict[str, Dict], previous_picks: Dict[str, Dict]
 ):
     """Simulate position management without executing trades."""
     positions = alpaca_wrapper.get_all_positions()
@@ -321,7 +317,7 @@ def main():
 
             # Initial analysis at NZ morning (22:00-22:30 EST)
             if (now.hour == 22 and 0 <= now.minute < 30) and (
-                last_initial_run is None or last_initial_run != today
+                    last_initial_run is None or last_initial_run != today
             ):
 
                 logger.info("\nINITIAL ANALYSIS STARTING...")
@@ -340,12 +336,12 @@ def main():
 
             # Market open analysis (9:30-10:00 EST)
             elif (
-                (
-                    now.hour == market_open.hour
-                    and market_open.minute <= now.minute < market_open.minute + 30
-                )
-                and (last_market_open_run is None or last_market_open_run != today)
-                and is_nyse_trading_day_now()
+                    (
+                            now.hour == market_open.hour
+                            and market_open.minute <= now.minute < market_open.minute + 30
+                    )
+                    and (last_market_open_run is None or last_market_open_run != today)
+                    and is_nyse_trading_day_now()
             ):
 
                 logger.info("\nMARKET OPEN ANALYSIS STARTING...")
@@ -363,9 +359,9 @@ def main():
 
             # Market close analysis (15:45-16:00 EST)
             elif (
-                (now.hour == market_close.hour - 1 and now.minute >= 45)
-                and (last_market_close_run is None or last_market_close_run != today)
-                and is_nyse_trading_day_ending()
+                    (now.hour == market_close.hour - 1 and now.minute >= 45)
+                    and (last_market_close_run is None or last_market_close_run != today)
+                    and is_nyse_trading_day_ending()
             ):
 
                 logger.info("\nMARKET CLOSE ANALYSIS STARTING...")
