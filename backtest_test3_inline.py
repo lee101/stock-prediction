@@ -15,6 +15,7 @@ from disk_cache import disk_cache
 from predict_stock_forecasting import load_pipeline, pre_process_data, \
     series_to_tensor
 from src.fixtures import crypto_symbols
+from scripts.alpaca_cli import set_strategy_for_symbol
 
 SPREAD = 1.0008711461252937
 
@@ -277,6 +278,18 @@ def backtest_forecasts(symbol, num_simulations=100):
         )
         entry_takeprofit_finalday_return = entry_takeprofit_return / len(actual_returns)
 
+        # Highlow strategy
+        highlow_return, highlow_sharpe = evaluate_highlow_strategy(
+            last_preds["close_predictions"],
+            last_preds["high_predictions"],
+            last_preds["low_predictions"],
+            last_preds["close_actual_movement_values"],
+            last_preds["high_actual_movement_values"],
+            last_preds["low_actual_movement_values"],
+            trading_fee
+        )
+        highlow_finalday_return = highlow_return / len(actual_returns)
+
         # print(last_preds)
         result = {
             'date': simulation_data.index[-1],
@@ -298,7 +311,10 @@ def backtest_forecasts(symbol, num_simulations=100):
             'unprofit_shutdown_finalday': float(unprofit_shutdown_finalday_return),
             'entry_takeprofit_return': float(entry_takeprofit_return),
             'entry_takeprofit_sharpe': float(entry_takeprofit_sharpe),
-            'entry_takeprofit_finalday': float(entry_takeprofit_finalday_return)
+            'entry_takeprofit_finalday': float(entry_takeprofit_finalday_return),
+            'highlow_return': float(highlow_return),
+            'highlow_sharpe': float(highlow_sharpe),
+            'highlow_finalday_return': float(highlow_finalday_return)
         }
 
         results.append(result)
@@ -326,6 +342,28 @@ def backtest_forecasts(symbol, num_simulations=100):
     logger.info(f"Average Entry+Takeprofit Sharpe: {results_df['entry_takeprofit_sharpe'].mean():.4f}")
     logger.info(
         f"Average Entry+Takeprofit Final Day Return: {results_df['entry_takeprofit_finalday'].mean():.4f}")
+    logger.info(f"Average Highlow Return: {results_df['highlow_return'].mean():.4f}")
+    logger.info(f"Average Highlow Sharpe: {results_df['highlow_sharpe'].mean():.4f}")
+    logger.info(f"Average Highlow Final Day Return: {results_df['highlow_finalday_return'].mean():.4f}")
+
+    # Determine which strategy is best overall
+    avg_simple = results_df["simple_strategy_return"].mean()
+    avg_allsignals = results_df["all_signals_strategy_return"].mean()
+    avg_takeprofit = results_df["entry_takeprofit_return"].mean()
+    avg_highlow = results_df["highlow_return"].mean()
+
+    best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow)
+    if best_return == avg_highlow:
+        best_strategy = "highlow"
+    elif best_return == avg_takeprofit:
+        best_strategy = "takeprofit"
+    elif best_return == avg_allsignals:
+        best_strategy = "all_signals"
+    else:
+        best_strategy = "simple"
+
+    # Record which strategy is best for this symbol & day
+    set_strategy_for_symbol(symbol, best_strategy)
 
     return results_df
 
@@ -400,4 +438,62 @@ def evaluate_entry_takeprofit_strategy(
     else:
         sharpe_ratio = float(daily_returns.mean() / daily_returns.std() * np.sqrt(252))
 
+    return total_return, sharpe_ratio
+
+
+def evaluate_highlow_strategy(
+        close_predictions, high_predictions, low_predictions,
+        actual_close, actual_high, actual_low,
+        trading_fee
+):
+    """
+    Evaluates a 'highlow' approach:
+      - If close_predictions[idx] > 0 => attempt a 'buy' at predicted_low if actual_low[idx] <= low_predictions[idx]. 
+      - Otherwise, skip for that day.
+      - Exit at actual_close[idx] by day's end.
+      - Minimal repeated fees (similar pattern as entry_takeprofit).
+    """
+    daily_returns = []
+    last_side = None  # track "buy" from previous day if continuing
+
+    for idx in range(len(close_predictions)):
+        # determine if we want to buy
+        is_buy = bool(close_predictions[idx] > 0)
+
+        # if not buying, daily return = 0
+        if not is_buy:
+            daily_returns.append(0.0)
+            last_side = None
+            continue
+
+        # check if actual_low is <= predicted_low (i.e., we could achieve that entry)
+        could_buy_at_low = bool(actual_low[idx] <= low_predictions[idx])
+        if could_buy_at_low:
+            entry_price = float(low_predictions[idx])
+        else:
+            # if predicted low wasn't met, assume we just buy at the actual_close
+            entry_price = float(actual_close[idx])
+
+        # exit at actual_close that day
+        daily_return = float(actual_close[idx]) - entry_price
+
+        # fees
+        fee_to_charge = 0.0
+        # if last day was also a buy, continuing same side => no extra open fee
+        # otherwise open fee
+        if last_side != "buy":
+            fee_to_charge += trading_fee  # opening fee
+            if last_side is not None:
+                fee_to_charge += trading_fee  # closing fee if we had a prior side
+
+        daily_return -= fee_to_charge
+        daily_returns.append(daily_return)
+        last_side = "buy"
+
+    daily_returns = np.array(daily_returns, dtype=float)
+    total_return = float(daily_returns.sum())
+    if daily_returns.std() == 0:
+        sharpe_ratio = 0.0
+    else:
+        sharpe_ratio = float(daily_returns.mean() / daily_returns.std() * np.sqrt(252))
     return total_return, sharpe_ratio

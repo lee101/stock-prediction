@@ -1,4 +1,5 @@
 from datetime import datetime
+from math import floor
 from time import sleep
 from typing import List, Dict
 
@@ -40,15 +41,16 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             simple_return = backtest_df["simple_strategy_return"].mean()
             all_signals_return = backtest_df["all_signals_strategy_return"].mean()
             takeprofit_return = backtest_df["entry_takeprofit_return"].mean()
+            # Include highlow_return in our analysis
+            highlow_return = backtest_df["highlow_return"].mean()
 
-            # Compare which strategy is best
-            best_return = max(simple_return, all_signals_return, takeprofit_return)
+            # Compare all four strategy returns
+            best_return = max(simple_return, all_signals_return, takeprofit_return, highlow_return)
             last_prediction = backtest_df.iloc[-1]
 
             if best_return == takeprofit_return:
                 avg_return = takeprofit_return
                 strategy = "takeprofit"
-                # Determine side as usual
                 predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
                 position_side = "buy" if predicted_movement > 0 else "sell"
             elif best_return == all_signals_return:
@@ -65,6 +67,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 else:
                     continue
                 predicted_movement = close_movement
+            elif best_return == highlow_return:
+                avg_return = highlow_return
+                strategy = "highlow"
+                predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
+                position_side = "buy" if predicted_movement > 0 else "sell"
             else:
                 avg_return = simple_return
                 strategy = "simple"
@@ -187,6 +194,49 @@ def manage_positions(
                 logger.info(f"Scheduling a takeprofit at {predicted_low:.3f} for short {symbol}")
                 spawn_close_position_at_takeprofit(symbol, predicted_low)
 
+            # If strategy is 'highlow', place a limit order at predicted_low (for buys)
+            # or predicted_high (for shorts), and then schedule a takeprofit at the opposite predicted price.
+            elif data["strategy"] == "highlow":
+                if data["side"] == "buy":
+                    entry_price = data["predicted_low"]
+                    logger.info(
+                        f"(Highlow) Placing limit BUY order for {symbol} at predicted_low={entry_price:.2f}"
+                    )
+                    qty = get_qty(symbol, entry_price)
+                    alpaca_wrapper.open_order_at_price_or_all(symbol, qty=qty, side="buy", price=entry_price)
+
+                    tp_price = data["predicted_high"]
+                    logger.info(f"(Highlow) Scheduling takeprofit at predicted_high={tp_price:.3f} for {symbol}")
+                    spawn_close_position_at_takeprofit(symbol, tp_price)
+                else:
+                    entry_price = data["predicted_high"]
+                    logger.info(
+                        f"(Highlow) Placing limit SELL/short order for {symbol} at predicted_high={entry_price:.2f}"
+                    )
+                    qty = get_qty(symbol, entry_price)
+                    alpaca_wrapper.open_order_at_price_or_all(symbol, qty=qty, side="sell", price=entry_price)
+
+                    tp_price = data["predicted_low"]
+                    logger.info(f"(Highlow) Scheduling takeprofit at predicted_low={tp_price:.3f} for short {symbol}")
+                    spawn_close_position_at_takeprofit(symbol, tp_price)
+
+def get_qty(symbol, entry_price):
+    # Calculate qty as 15% of available buying power
+    buying_power = alpaca_wrapper.total_buying_power
+    qty = 0.15 * buying_power / entry_price
+    
+    # Round down to 3 decimal places for crypto
+    if symbol in crypto_symbols:
+        qty = floor(qty * 1000) / 1000.0
+    else:
+        # Round down to whole number for stocks
+        qty = floor(qty)
+    
+    # Ensure qty is valid
+    if qty <= 0:
+        logger.error(f"Calculated qty {qty} is invalid")
+        return 0
+    return qty
 
 def manage_market_close(
         symbols: List[str],
@@ -297,7 +347,15 @@ def main():
         "NET",
         "COIN",
         "MSFT",
-        "NFLX",
+        # "NFLX",
+        # adding more as we do quite well now with volatility
+        "META",
+        "AMZN",
+        "AMD",
+        "INTC",
+        "LCID",
+        "QUBT",
+
         "BTCUSD",
         "ETHUSD",
         "UNIUSD",
@@ -316,9 +374,10 @@ def main():
             today = now.date()
 
             # Initial analysis at NZ morning (22:00-22:30 EST)
-            if (now.hour == 22 and 0 <= now.minute < 30) and (
+            # run at start of program to check
+            if last_initial_run is None or ((now.hour == 22 and 0 <= now.minute < 30) and (
                     last_initial_run is None or last_initial_run != today
-            ):
+            )):
 
                 logger.info("\nINITIAL ANALYSIS STARTING...")
                 all_analyzed_results = analyze_symbols(symbols)
