@@ -113,6 +113,28 @@ def test_evaluate_strategy_with_fees():
     assert sharpe_ratio > 0, f"Sharpe ratio {sharpe_ratio} is not positive"
 
 
+def test_evaluate_strategy_approx():
+    strategy_signals = torch.tensor([1., 1., -1., -1., 1.])
+    actual_returns = pd.Series([0.02, 0.01, -0.01, -0.02, 0.03])
+
+    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+
+    # Calculate expected fees correctly
+    expected_gains = [1.02 - (2 * trading_fee),
+                      1.01 - (2 * trading_fee),
+                      1.01 - (2 * trading_fee),
+                      1.02 - (2 * trading_fee),
+                      1.03 - (2 * trading_fee)]
+    actual_gain = 1
+    for gain in expected_gains:
+        actual_gain *= gain
+    actual_gain -= 1
+
+    assert total_return > 0, \
+        f"Expected total return {actual_gain}, but got {total_return}"
+    assert sharpe_ratio > 0, f"Sharpe ratio {sharpe_ratio} is not positive"
+
+
 def test_buy_hold_strategy():
     predictions = torch.tensor([-0.1, 0.2, 0, -0.3, 0.5])
     expected_output = torch.tensor([0., 1., 0., 0., 1.])
@@ -205,7 +227,7 @@ def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_dow
                 signals.extend([0] * (len(actual_returns) - j))
                 break
             signals.append(1)
-            
+
         for j in range(len(signals)):
             if j == 0:
                 # Initial position
@@ -228,6 +250,6 @@ def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_dow
         # Check final day return with simple logic
         final_day_fee = ((1-SPREAD) + 2 * trading_fee) if signals[-1] != signals[-2] else 0
         expected_final_day_return = signals[-1] * actual_returns.iloc[-1] - final_day_fee
-        
+
         assert pytest.approx(results['unprofit_shutdown_finalday'].iloc[i], rel=1e-4) == expected_final_day_return, \
             f"Expected final day return {expected_final_day_return}, but got {results['unprofit_shutdown_finalday'].iloc[i]}"

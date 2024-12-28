@@ -33,7 +33,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     for symbol in symbols:
         try:
             logger.info(f"Analyzing {symbol}")
-            num_simulations = 300
+            num_simulations = 10 # not many because we need to adapt strats? eg the wierd spikes in uniusd are a big opportunity to trade w high/low
 
             backtest_df = backtest_forecasts(symbol, num_simulations)
             # Get each strategy's average return
