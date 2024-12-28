@@ -167,9 +167,9 @@ def backtest_forecasts(symbol, num_simulations=100):
 
     results = []
 
-    for i in range(num_simulations):
+    for i in range(0, num_simulations * 3, 3): # jump 3 to cover more area in backtest
         # Take one day off each iteration
-        simulation_data = stock_data.iloc[:-(i + 1)].copy()
+        simulation_data = stock_data.iloc[:-(i + 1)].copy(deep=True)
 
         if simulation_data.empty:
             logger.warning(f"No data left for simulation {i + 1}")
@@ -353,7 +353,6 @@ def evaluate_entry_takeprofit_strategy(
         - Exit when actual_low <= low_predictions[idx], else exit at actual_close.
       - If we remain in the same side as previous day, don't pay another opening fee.
     """
-    import numpy as np
 
     daily_returns = []
     last_side = None  # track "buy" or "short" from previous day
