@@ -99,15 +99,28 @@ def buy_hold_strategy(predictions):
     return (predictions > 0).float()
 
 
-def unprofit_shutdown_buy_hold(predictions, actual_returns):
+def unprofit_shutdown_buy_hold(predictions, actual_returns, is_crypto=False):
     """Buy and hold strategy that shuts down if the previous trade would have been unprofitable."""
-    signals = torch.ones_like(torch.as_tensor(predictions))
+    predictions = torch.as_tensor(predictions)
+    signals = torch.ones_like(predictions)
     for i in range(1, len(signals)):
-        # if you get the sign right
-        if actual_returns[i - 1] > 0 and predictions[i - 1] > 0 or actual_returns[i - 1] < 0 and predictions[i - 1] < 0:
-            pass
+        if signals[i - 1] != 0.0:
+            # Check if day i-1 was correct
+            was_correct = (
+                (actual_returns[i - 1] > 0 and predictions[i - 1] > 0) or
+                (actual_returns[i - 1] < 0 and predictions[i - 1] < 0)
+            )
+            if was_correct:
+                # Keep same signal direction as predictions[i]
+                signals[i] = 1.0 if predictions[i] > 0 else -1.0 if predictions[i] < 0 else 0.0
+            else:
+                signals[i] = 0.0
         else:
-            signals[i] = 0
+            # If previously no position, open based on prediction direction
+            signals[i] = 1.0 if predictions[i] > 0 else -1.0 if predictions[i] < 0 else 0.0
+    # For crypto, replace negative signals with 0
+    if is_crypto:
+        signals[signals < 0] = 0.0
     return signals
 
 
@@ -270,7 +283,6 @@ def backtest_forecasts(symbol, num_simulations=100):
             last_preds["close_predictions"], 
             last_preds["high_predictions"],
             last_preds["low_predictions"],
-            last_preds.get("open_predictions", None),
             is_crypto=is_crypto
         )
         all_signals_total_return, all_signals_sharpe = evaluate_strategy(all_signals, actual_returns, trading_fee)
@@ -282,7 +294,7 @@ def backtest_forecasts(symbol, num_simulations=100):
         buy_hold_finalday_return = actual_returns.iloc[-1] - (2 * trading_fee * SPREAD)
 
         # Unprofit shutdown buy and hold strategy
-        unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns)
+        unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns, is_crypto=is_crypto)
         unprofit_shutdown_return, unprofit_shutdown_sharpe = evaluate_strategy(unprofit_shutdown_signals,
                                                                                actual_returns, trading_fee)
         unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (

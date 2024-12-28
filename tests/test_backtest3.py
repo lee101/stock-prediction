@@ -141,7 +141,16 @@ def test_unprofit_shutdown_buy_hold():
     actual_returns = pd.Series([0.02, 0.01, 0.01, 0.02, 0.03])
 
     result = unprofit_shutdown_buy_hold(predictions, actual_returns)
-    expected_output = torch.tensor([1., 1., 1., 0., 1.])
+    expected_output = torch.tensor([1., 1., -1., 0., 1.])
+    assert torch.all(result.eq(expected_output)), f"Expected {expected_output}, but got {result}"
+
+
+def test_unprofit_shutdown_buy_hold_crypto():
+    predictions = torch.tensor([0.1, 0.2, -0.1, 0.3, 0.5])
+    actual_returns = pd.Series([0.02, 0.01, 0.01, 0.02, 0.03])
+
+    result = unprofit_shutdown_buy_hold(predictions, actual_returns, is_crypto=True)
+    expected_output = torch.tensor([1., 1., 0., 0., 1.])
     assert torch.all(result.eq(expected_output)), f"Expected {expected_output}, but got {result}"
 
 
@@ -207,10 +216,10 @@ def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_dow
         for j in range(len(signals)):
             if j == 0:
                 # Initial position
-                expected_gains.append(1 + actual_returns.iloc[j] - (2 * trading_fee + (1-SPREAD)))
+                expected_gains.append(1 + actual_returns.iloc[j] - (2 * trading_fee + (1-SPREAD)/2))
             elif signals[j] != signals[j-1]:
                 # Position change
-                expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]) - (2 * trading_fee + (1-SPREAD)))
+                expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]) - (2 * trading_fee + (1-SPREAD)/2))
             else:
                 # Holding position
                 expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]))
