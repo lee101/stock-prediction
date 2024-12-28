@@ -5,6 +5,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+from torch.utils.tensorboard import SummaryWriter
+
+from src.comparisons import is_buy_side
 from src.logging_utils import setup_logging
 
 logger = setup_logging("backtest_test3_inline.log")
@@ -14,6 +17,7 @@ from disk_cache import disk_cache
 from predict_stock_forecasting import load_pipeline, pre_process_data, \
     series_to_tensor
 from src.fixtures import crypto_symbols
+from scripts.alpaca_cli import set_strategy_for_symbol
 
 SPREAD = 1.0008711461252937
 
@@ -42,7 +46,7 @@ if __name__ == "__main__":
 
 print(f"current_date_formatted: {current_date_formatted}")
 
-# tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
+tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 
 pipeline = None
 
@@ -62,17 +66,32 @@ def load_pipeline():
         # pipeline.model = torch.compile(pipeline.model)
 
 
-def simple_buy_sell_strategy(predictions):
-    """Buy if predicted close is up, sell if down."""
+def simple_buy_sell_strategy(predictions, is_crypto=False):
+    """Buy if predicted close is up; if not crypto, short if down."""
     predictions = torch.as_tensor(predictions)
+    if is_crypto:
+        # Prohibit shorts for crypto
+        return (predictions > 0).float()
+    # Otherwise allow buy (1) or sell (-1)
     return (predictions > 0).float() * 2 - 1
 
 
-def all_signals_strategy(close_pred, high_pred, low_pred, open_pred):
-    """Buy if all signals are up, sell if all are down, hold otherwise."""
-    close_pred, high_pred, low_pred, open_pred = map(torch.as_tensor, (close_pred, high_pred, low_pred, open_pred))
-    buy_signal = (close_pred > 0) & (high_pred > 0) & (low_pred > 0) & (open_pred > 0)
-    sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0) & (open_pred < 0)
+def all_signals_strategy(close_pred, high_pred, low_pred, is_crypto=False):
+    """
+    Buy if all signals are up; if not crypto, sell if all signals are down, else hold.
+    If is_crypto=True, no short trades.
+    """
+    close_pred, high_pred, low_pred = map(torch.as_tensor, (close_pred, high_pred, low_pred))
+
+    # For "buy" all must be > 0
+    buy_signal = (close_pred > 0) & (high_pred > 0) & (low_pred > 0)
+    if is_crypto:
+        return buy_signal.float()
+
+    # For non-crypto, "sell" all must be < 0
+    sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0)
+    
+    # Convert to -1, 0, 1
     return buy_signal.float() - sell_signal.float()
 
 
@@ -82,15 +101,28 @@ def buy_hold_strategy(predictions):
     return (predictions > 0).float()
 
 
-def unprofit_shutdown_buy_hold(predictions, actual_returns):
+def unprofit_shutdown_buy_hold(predictions, actual_returns, is_crypto=False):
     """Buy and hold strategy that shuts down if the previous trade would have been unprofitable."""
-    signals = torch.ones_like(torch.as_tensor(predictions))
+    predictions = torch.as_tensor(predictions)
+    signals = torch.ones_like(predictions)
     for i in range(1, len(signals)):
-        # if you get the sign right
-        if actual_returns[i - 1] > 0 and predictions[i - 1] > 0 or actual_returns[i - 1] < 0 and predictions[i - 1] < 0:
-            pass
+        if signals[i - 1] != 0.0:
+            # Check if day i-1 was correct
+            was_correct = (
+                (actual_returns[i - 1] > 0 and predictions[i - 1] > 0) or
+                (actual_returns[i - 1] < 0 and predictions[i - 1] < 0)
+            )
+            if was_correct:
+                # Keep same signal direction as predictions[i]
+                signals[i] = 1.0 if predictions[i] > 0 else -1.0 if predictions[i] < 0 else 0.0
+            else:
+                signals[i] = 0.0
         else:
-            signals[i] = 0
+            # If previously no position, open based on prediction direction
+            signals[i] = 1.0 if predictions[i] > 0 else -1.0 if predictions[i] < 0 else 0.0
+    # For crypto, replace negative signals with 0
+    if is_crypto:
+        signals[signals < 0] = 0.0
     return signals
 
 
@@ -105,7 +137,7 @@ def evaluate_strategy(strategy_signals, actual_returns, trading_fee):
     # Trading fee is the sum of the spread cost and any additional trading fee
 
     # Pay spread once and trading fee twice per position change
-    fees = np.abs(position_changes) * trading_fee + np.abs(position_changes) * abs((1-SPREAD) / 2)
+    fees = np.abs(position_changes) * trading_fee + np.abs(position_changes) * abs((1 - SPREAD) / 2)
     # logger.info(f'adjusted fees: {fees}')
 
     # Adjust fees: only apply when position changes
@@ -120,20 +152,21 @@ def evaluate_strategy(strategy_signals, actual_returns, trading_fee):
 
     cumulative_returns = (1 + strategy_returns).cumprod() - 1
     total_return = cumulative_returns.iloc[-1]
-    
+
     if strategy_returns.std() == 0 or np.isnan(strategy_returns.std()):
         sharpe_ratio = 0  # or some other default value
     else:
         sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
 
-    return total_return, sharpe_ratio
+    return total_return, sharpe_ratio, strategy_returns
 
 
 def backtest_forecasts(symbol, num_simulations=100):
-
     # Download the latest data
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
     # use this for testing dataset
+    if __name__ == "__main__":
+        current_time_formatted = '2024-09-07--03-36-27'
     # current_time_formatted = '2024-04-18--06-14-26'  # new/ 30 minute data # '2022-10-14 09-58-20'
     # current_day_formatted = '2024-04-18'  # new/ 30 minute data # '2022-10-14 09-58-20'
 
@@ -167,9 +200,11 @@ def backtest_forecasts(symbol, num_simulations=100):
 
     results = []
 
-    for i in range(num_simulations):
+    is_crypto = symbol in crypto_symbols
+
+    for i in range(0, num_simulations * 3, 3): # jump 3 to cover more area in backtest
         # Take one day off each iteration
-        simulation_data = stock_data.iloc[:-(i + 1)].copy()
+        simulation_data = stock_data.iloc[:-(i + 1)].copy(deep=True)
 
         if simulation_data.empty:
             logger.warning(f"No data left for simulation {i + 1}")
@@ -179,8 +214,8 @@ def backtest_forecasts(symbol, num_simulations=100):
             'instrument': symbol,
             'close_last_price': simulation_data['Close'].iloc[-1],
         }
-
-        for key_to_predict in ['Close', 'Low', 'High', 'Open']:
+        # not predicting open because nothing todo with it
+        for key_to_predict in ['Close', 'Low', 'High']:  # , 'Open']:
             data = pre_process_data(simulation_data, key_to_predict)
             price = data[["Close", "High", "Low", "Open"]]
 
@@ -221,6 +256,10 @@ def backtest_forecasts(symbol, num_simulations=100):
 
             error = np.array(validation["y"][:-1].values) - np.array(predictions[:-1])
             mean_val_loss = np.abs(error).mean()
+            
+            # Log validation metrics
+            tb_writer.add_scalar(f'{symbol}/{key_to_predict}/val_loss', mean_val_loss, i)
+            
             if __name__ == "__main__":
                 print(f"mean_val_loss: {mean_val_loss}")
 
@@ -240,34 +279,37 @@ def backtest_forecasts(symbol, num_simulations=100):
         actual_returns = pd.Series(last_preds["close_actual_movement_values"].numpy())
 
         # Simple buy/sell strategy
-        simple_signals = simple_buy_sell_strategy(last_preds["close_predictions"])
-        simple_total_return, simple_sharpe = evaluate_strategy(simple_signals, actual_returns, trading_fee)
+        simple_signals = simple_buy_sell_strategy(
+            last_preds["close_predictions"], 
+            is_crypto=is_crypto
+        )
+        simple_total_return, simple_sharpe, simple_returns = evaluate_strategy(simple_signals, actual_returns, trading_fee)
         simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
         # All signals strategy
         all_signals = all_signals_strategy(
-            last_preds["close_predictions"],
+            last_preds["close_predictions"], 
             last_preds["high_predictions"],
             last_preds["low_predictions"],
-            last_preds["open_predictions"]
+            is_crypto=is_crypto
         )
-        all_signals_total_return, all_signals_sharpe = evaluate_strategy(all_signals, actual_returns, trading_fee)
+        all_signals_total_return, all_signals_sharpe, all_signals_returns = evaluate_strategy(all_signals, actual_returns, trading_fee)
         all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
         # Buy and hold strategy
         buy_hold_signals = buy_hold_strategy(last_preds["close_predictions"])
-        buy_hold_return, buy_hold_sharpe = evaluate_strategy(buy_hold_signals, actual_returns, trading_fee)
+        buy_hold_return, buy_hold_sharpe, buy_hold_returns = evaluate_strategy(buy_hold_signals, actual_returns, trading_fee)
         buy_hold_finalday_return = actual_returns.iloc[-1] - (2 * trading_fee * SPREAD)
 
         # Unprofit shutdown buy and hold strategy
-        unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns)
-        unprofit_shutdown_return, unprofit_shutdown_sharpe = evaluate_strategy(unprofit_shutdown_signals,
+        unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns, is_crypto=is_crypto)
+        unprofit_shutdown_return, unprofit_shutdown_sharpe, unprofit_shutdown_returns = evaluate_strategy(unprofit_shutdown_signals,
                                                                                actual_returns, trading_fee)
         unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (
             2 * trading_fee * SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
 
         # Entry+takeprofit strategy
-        entry_takeprofit_return, entry_takeprofit_sharpe = evaluate_entry_takeprofit_strategy(
+        entry_takeprofit_return, entry_takeprofit_sharpe, entry_takeprofit_returns = evaluate_entry_takeprofit_strategy(
             last_preds["close_predictions"],
             last_preds["high_predictions"],
             last_preds["low_predictions"],
@@ -277,6 +319,58 @@ def backtest_forecasts(symbol, num_simulations=100):
             trading_fee
         )
         entry_takeprofit_finalday_return = entry_takeprofit_return / len(actual_returns)
+
+        # Highlow strategy
+        highlow_return, highlow_sharpe, highlow_returns = evaluate_highlow_strategy(
+            last_preds["close_predictions"],
+            last_preds["high_predictions"],
+            last_preds["low_predictions"],
+            last_preds["close_actual_movement_values"],
+            last_preds["high_actual_movement_values"],
+            last_preds["low_actual_movement_values"],
+            trading_fee,
+            is_crypto=is_crypto
+        )
+        highlow_finalday_return = highlow_return / len(actual_returns)
+
+        # Log strategy metrics to tensorboard
+        tb_writer.add_scalar(f'{symbol}/strategies/simple/total_return', simple_total_return, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/simple/sharpe', simple_sharpe, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/simple/finalday', simple_finalday_return, i)
+        
+        tb_writer.add_scalar(f'{symbol}/strategies/all_signals/total_return', all_signals_total_return, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/all_signals/sharpe', all_signals_sharpe, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/all_signals/finalday', all_signals_finalday_return, i)
+        
+        tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/total_return', buy_hold_return, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/sharpe', buy_hold_sharpe, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/finalday', buy_hold_finalday_return, i)
+        
+        tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/total_return', unprofit_shutdown_return, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/sharpe', unprofit_shutdown_sharpe, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/finalday', unprofit_shutdown_finalday_return, i)
+        
+        tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/total_return', entry_takeprofit_return, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/sharpe', entry_takeprofit_sharpe, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/finalday', entry_takeprofit_finalday_return, i)
+        
+        tb_writer.add_scalar(f'{symbol}/strategies/highlow/total_return', highlow_return, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/highlow/sharpe', highlow_sharpe, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/highlow/finalday', highlow_finalday_return, i)
+
+        # Log returns over time
+        for t, ret in enumerate(simple_returns):
+            tb_writer.add_scalar(f'{symbol}/returns_over_time/simple', ret, t)
+        for t, ret in enumerate(all_signals_returns):
+            tb_writer.add_scalar(f'{symbol}/returns_over_time/all_signals', ret, t)
+        for t, ret in enumerate(buy_hold_returns):
+            tb_writer.add_scalar(f'{symbol}/returns_over_time/buy_hold', ret, t)
+        for t, ret in enumerate(unprofit_shutdown_returns):
+            tb_writer.add_scalar(f'{symbol}/returns_over_time/unprofit_shutdown', ret, t)
+        for t, ret in enumerate(entry_takeprofit_returns):
+            tb_writer.add_scalar(f'{symbol}/returns_over_time/entry_takeprofit', ret, t)
+        for t, ret in enumerate(highlow_returns):
+            tb_writer.add_scalar(f'{symbol}/returns_over_time/highlow', ret, t)
 
         # print(last_preds)
         result = {
@@ -299,7 +393,10 @@ def backtest_forecasts(symbol, num_simulations=100):
             'unprofit_shutdown_finalday': float(unprofit_shutdown_finalday_return),
             'entry_takeprofit_return': float(entry_takeprofit_return),
             'entry_takeprofit_sharpe': float(entry_takeprofit_sharpe),
-            'entry_takeprofit_finalday': float(entry_takeprofit_finalday_return)
+            'entry_takeprofit_finalday': float(entry_takeprofit_finalday_return),
+            'highlow_return': float(highlow_return),
+            'highlow_sharpe': float(highlow_sharpe),
+            'highlow_finalday_return': float(highlow_finalday_return)
         }
 
         results.append(result)
@@ -307,6 +404,20 @@ def backtest_forecasts(symbol, num_simulations=100):
             print(f"Result: {result}")
 
     results_df = pd.DataFrame(results)
+
+    # Log final average metrics
+    tb_writer.add_scalar(f'{symbol}/final_metrics/simple_avg_return', results_df['simple_strategy_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/simple_avg_sharpe', results_df['simple_strategy_sharpe'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_return', results_df['all_signals_strategy_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_sharpe', results_df['all_signals_strategy_sharpe'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/buy_hold_avg_return', results_df['buy_hold_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/buy_hold_avg_sharpe', results_df['buy_hold_sharpe'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_return', results_df['unprofit_shutdown_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_sharpe', results_df['unprofit_shutdown_sharpe'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_return', results_df['entry_takeprofit_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_sharpe', results_df['entry_takeprofit_sharpe'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_return', results_df['highlow_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_sharpe', results_df['highlow_sharpe'].mean(), 0)
 
     logger.info(f"\nBacktest results for {symbol} over {num_simulations} simulations:")
     logger.info(f"Average Simple Strategy Return: {results_df['simple_strategy_return'].mean():.4f}")
@@ -327,24 +438,36 @@ def backtest_forecasts(symbol, num_simulations=100):
     logger.info(f"Average Entry+Takeprofit Sharpe: {results_df['entry_takeprofit_sharpe'].mean():.4f}")
     logger.info(
         f"Average Entry+Takeprofit Final Day Return: {results_df['entry_takeprofit_finalday'].mean():.4f}")
+    logger.info(f"Average Highlow Return: {results_df['highlow_return'].mean():.4f}")
+    logger.info(f"Average Highlow Sharpe: {results_df['highlow_sharpe'].mean():.4f}")
+    logger.info(f"Average Highlow Final Day Return: {results_df['highlow_finalday_return'].mean():.4f}")
+
+    # Determine which strategy is best overall
+    avg_simple = results_df["simple_strategy_return"].mean()
+    avg_allsignals = results_df["all_signals_strategy_return"].mean()
+    avg_takeprofit = results_df["entry_takeprofit_return"].mean()
+    avg_highlow = results_df["highlow_return"].mean()
+
+    best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow)
+    if best_return == avg_highlow:
+        best_strategy = "highlow"
+    elif best_return == avg_takeprofit:
+        best_strategy = "takeprofit"
+    elif best_return == avg_allsignals:
+        best_strategy = "all_signals"
+    else:
+        best_strategy = "simple"
+
+    # Record which strategy is best for this symbol & day
+    set_strategy_for_symbol(symbol, best_strategy)
 
     return results_df
 
 
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        symbol = "ETHUSD"
-        print("Usage: python backtest_test.py <symbol> defaultint to eth")
-    else:
-        symbol = sys.argv[1]
-
-    backtest_forecasts(symbol)
-
-
 def evaluate_entry_takeprofit_strategy(
-    close_predictions, high_predictions, low_predictions,
-    actual_close, actual_high, actual_low,
-    trading_fee
+        close_predictions, high_predictions, low_predictions,
+        actual_close, actual_high, actual_low,
+        trading_fee
 ):
     """
     Evaluates an entry+takeprofit approach with minimal repeated fees:
@@ -354,8 +477,6 @@ def evaluate_entry_takeprofit_strategy(
         - Exit when actual_low <= low_predictions[idx], else exit at actual_close.
       - If we remain in the same side as previous day, don't pay another opening fee.
     """
-    import numpy as np
-    import torch
 
     daily_returns = []
     last_side = None  # track "buy" or "short" from previous day
@@ -403,4 +524,84 @@ def evaluate_entry_takeprofit_strategy(
     else:
         sharpe_ratio = float(daily_returns.mean() / daily_returns.std() * np.sqrt(252))
 
-    return total_return, sharpe_ratio
+    return total_return, sharpe_ratio, daily_returns
+
+
+def evaluate_highlow_strategy(
+        close_predictions,
+        high_predictions,
+        low_predictions,
+        actual_close,
+        actual_high,
+        actual_low,
+        trading_fee,
+        is_crypto=False
+):
+    """
+    Evaluates a 'highlow' approach:
+    - If close_predictions[idx] > 0 => attempt a 'buy' at predicted_low, else skip.
+    - If is_crypto=False and close_predictions[idx] < 0 => attempt short at predicted_high, else skip.
+    - Either way, exit at actual_close by day's end.
+    """
+    daily_returns = []
+    last_side = None  # track "buy"/"short" from previous day
+
+    for idx in range(len(close_predictions)):
+        cp = close_predictions[idx]
+        if cp > 0:
+            # Attempt buy at predicted_low if actual_low <= predicted_low, else buy at actual_close
+            entry = low_predictions[idx] if actual_low[idx] <= low_predictions[idx] else actual_close[idx]
+            exit_price = actual_close[idx]
+            new_side = "buy"
+        elif (not is_crypto) and (cp < 0):
+            # Attempt short if not crypto
+            entry = high_predictions[idx] if actual_high[idx] >= high_predictions[idx] else actual_close[idx]
+            # Gains from short are entry - final
+            exit_price = actual_close[idx]
+            new_side = "short"
+        else:
+            # Skip if crypto and cp < 0 (no short), or cp == 0
+            daily_returns.append(0.0)
+            last_side = None
+            continue
+
+        # Calculate daily gain
+        if is_buy_side(new_side):
+            daily_gain = exit_price - entry
+        else:
+            # short
+            daily_gain = entry - exit_price
+
+        # Fees: open if side changed or if None, close prior side if it existed
+        fee_to_charge = 0.0
+        if new_side != last_side:
+            fee_to_charge += trading_fee  # open
+            if last_side is not None:
+                fee_to_charge += trading_fee  # close old side
+
+        daily_gain -= fee_to_charge
+        daily_returns.append(daily_gain)
+        last_side = new_side
+
+    daily_returns = np.array(daily_returns, dtype=float)
+    total_return = daily_returns.sum()
+    if daily_returns.std() == 0:
+        sharpe_ratio = 0.0
+    else:
+        sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
+
+    return float(total_return), float(sharpe_ratio), daily_returns
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        symbol = "ETHUSD"
+        print("Usage: python backtest_test.py <symbol> defaultint to eth")
+    else:
+        symbol = sys.argv[1]
+
+    backtest_forecasts("NVDA")
+    backtest_forecasts(symbol)
+    backtest_forecasts("UNIUSD")
+    backtest_forecasts("AAPL")
+    backtest_forecasts("GOOG")

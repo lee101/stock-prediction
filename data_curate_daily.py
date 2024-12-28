@@ -2,6 +2,7 @@ import datetime
 from pathlib import Path
 import traceback
 
+import pandas as pd
 import matplotlib.pyplot as plt
 import pytz
 from alpaca.data import CryptoBarsRequest, TimeFrame, StockBarsRequest, TimeFrameUnit, CryptoHistoricalDataClient
@@ -48,17 +49,39 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
         ALP_SECRET_KEY,
         paper=ALP_ENDPOINT != "https://api.alpaca.markets",
     )
-    alpaca_clock = api.get_clock()
-    if not alpaca_clock.is_open and not all_data_force:
-        logger.info("Market is closed")
-        symbols = [symbol for symbol in symbols if symbol in crypto_symbols]
 
     save_path = base_dir / 'data'
     if path:
         save_path = base_dir / 'data' / path
     save_path.mkdir(parents=True, exist_ok=True)
 
+
+    ##test code
+    # First check for existing CSV files for each symbol
+    found_symbols = {}
+    remaining_symbols = []
+    end = datetime.datetime.now().strftime('%Y-%m-%d')
+
     for symbol in symbols:
+        # Look for matching CSV files in save_path
+        symbol_files = list(save_path.glob(f'{symbol.replace("/", "-")}*.csv'))
+        if symbol_files:
+            # Use most recent file if multiple exist
+            latest_file = max(symbol_files, key=lambda x: x.stat().st_mtime)
+            found_symbols[symbol] = pd.read_csv(latest_file)
+        else:
+            remaining_symbols.append(symbol)
+
+    if not remaining_symbols:
+        return found_symbols[symbols[-1]] if symbols else DataFrame()
+
+    alpaca_clock = api.get_clock()
+    if not alpaca_clock.is_open and not all_data_force:
+        logger.info("Market is closed")
+        symbols = [symbol for symbol in symbols if symbol in crypto_symbols]
+
+    # Download data for remaining symbols
+    for symbol in remaining_symbols:
         start = (datetime.datetime.now() - datetime.timedelta(days=365 * 4)).strftime('%Y-%m-%d')
         end = (datetime.datetime.now()).strftime('%Y-%m-%d')
         daily_df = download_exchange_historical_data(client, symbol)
@@ -82,7 +105,10 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
         file_save_path = (save_path / '{}-{}.csv'.format(symbol.replace("/", "-"), end))
         file_save_path.parent.mkdir(parents=True, exist_ok=True)
         daily_df.to_csv(file_save_path)
-    return daily_df
+        found_symbols[symbol] = daily_df
+
+    # Return the last processed dataframe or an empty one if none processed
+    return found_symbols[symbols[-1]] if symbols else DataFrame()
 
 
 # cache for 4 hours
