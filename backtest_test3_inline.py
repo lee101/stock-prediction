@@ -74,24 +74,22 @@ def simple_buy_sell_strategy(predictions, is_crypto=False):
     return (predictions > 0).float() * 2 - 1
 
 
-def all_signals_strategy(close_pred, high_pred, low_pred, open_pred=None, is_crypto=False):
+def all_signals_strategy(close_pred, high_pred, low_pred, is_crypto=False):
     """
     Buy if all signals are up; if not crypto, sell if all signals are down, else hold.
     If is_crypto=True, no short trades.
     """
     close_pred, high_pred, low_pred = map(torch.as_tensor, (close_pred, high_pred, low_pred))
-    if open_pred is not None:
-        open_pred = torch.as_tensor(open_pred)
-    else:
-        open_pred = torch.zeros_like(close_pred)
 
-    # For “buy” all must be > 0
-    buy_signal = (close_pred > 0) & (high_pred > 0) & (low_pred > 0) & (open_pred > 0)
+    # For "buy" all must be > 0
+    buy_signal = (close_pred > 0) & (high_pred > 0) & (low_pred > 0)
     if is_crypto:
         return buy_signal.float()
 
-    # For non-crypto, “sell” all must be < 0
-    sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0) & (open_pred < 0)
+    # For non-crypto, "sell" all must be < 0
+    sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0)
+    
+    # Convert to -1, 0, 1
     return buy_signal.float() - sell_signal.float()
 
 
