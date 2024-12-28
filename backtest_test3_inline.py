@@ -64,17 +64,34 @@ def load_pipeline():
         # pipeline.model = torch.compile(pipeline.model)
 
 
-def simple_buy_sell_strategy(predictions):
-    """Buy if predicted close is up, sell if down."""
+def simple_buy_sell_strategy(predictions, is_crypto=False):
+    """Buy if predicted close is up; if not crypto, short if down."""
     predictions = torch.as_tensor(predictions)
+    if is_crypto:
+        # Prohibit shorts for crypto
+        return (predictions > 0).float()
+    # Otherwise allow buy (1) or sell (-1)
     return (predictions > 0).float() * 2 - 1
 
 
-def all_signals_strategy(close_pred, high_pred, low_pred):
-    """Buy if all signals are up, sell if all are down, hold otherwise."""
+def all_signals_strategy(close_pred, high_pred, low_pred, open_pred=None, is_crypto=False):
+    """
+    Buy if all signals are up; if not crypto, sell if all signals are down, else hold.
+    If is_crypto=True, no short trades.
+    """
     close_pred, high_pred, low_pred = map(torch.as_tensor, (close_pred, high_pred, low_pred))
-    buy_signal = (close_pred > 0) & (high_pred > 0) & (low_pred > 0)
-    sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0)
+    if open_pred is not None:
+        open_pred = torch.as_tensor(open_pred)
+    else:
+        open_pred = torch.zeros_like(close_pred)
+
+    # For “buy” all must be > 0
+    buy_signal = (close_pred > 0) & (high_pred > 0) & (low_pred > 0) & (open_pred > 0)
+    if is_crypto:
+        return buy_signal.float()
+
+    # For non-crypto, “sell” all must be < 0
+    sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0) & (open_pred < 0)
     return buy_signal.float() - sell_signal.float()
 
 
@@ -168,6 +185,8 @@ def backtest_forecasts(symbol, num_simulations=100):
 
     results = []
 
+    is_crypto = symbol in crypto_symbols
+
     for i in range(0, num_simulations * 3, 3): # jump 3 to cover more area in backtest
         # Take one day off each iteration
         simulation_data = stock_data.iloc[:-(i + 1)].copy(deep=True)
@@ -241,15 +260,20 @@ def backtest_forecasts(symbol, num_simulations=100):
         actual_returns = pd.Series(last_preds["close_actual_movement_values"].numpy())
 
         # Simple buy/sell strategy
-        simple_signals = simple_buy_sell_strategy(last_preds["close_predictions"])
+        simple_signals = simple_buy_sell_strategy(
+            last_preds["close_predictions"], 
+            is_crypto=is_crypto
+        )
         simple_total_return, simple_sharpe = evaluate_strategy(simple_signals, actual_returns, trading_fee)
         simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
         # All signals strategy
         all_signals = all_signals_strategy(
-            last_preds["close_predictions"],
+            last_preds["close_predictions"], 
             last_preds["high_predictions"],
-            last_preds["low_predictions"]
+            last_preds["low_predictions"],
+            last_preds.get("open_predictions", None),
+            is_crypto=is_crypto
         )
         all_signals_total_return, all_signals_sharpe = evaluate_strategy(all_signals, actual_returns, trading_fee)
         all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
@@ -286,7 +310,8 @@ def backtest_forecasts(symbol, num_simulations=100):
             last_preds["close_actual_movement_values"],
             last_preds["high_actual_movement_values"],
             last_preds["low_actual_movement_values"],
-            trading_fee
+            trading_fee,
+            is_crypto=is_crypto
         )
         highlow_finalday_return = highlow_return / len(actual_returns)
 
@@ -442,58 +467,66 @@ def evaluate_entry_takeprofit_strategy(
 
 
 def evaluate_highlow_strategy(
-        close_predictions, high_predictions, low_predictions,
-        actual_close, actual_high, actual_low,
-        trading_fee
+        close_predictions,
+        high_predictions,
+        low_predictions,
+        actual_close,
+        actual_high,
+        actual_low,
+        trading_fee,
+        is_crypto=False
 ):
     """
     Evaluates a 'highlow' approach:
-      - If close_predictions[idx] > 0 => attempt a 'buy' at predicted_low if actual_low[idx] <= low_predictions[idx]. 
-      - Otherwise, skip for that day.
-      - Exit at actual_close[idx] by day's end.
-      - Minimal repeated fees (similar pattern as entry_takeprofit).
+    - If close_predictions[idx] > 0 => attempt a 'buy' at predicted_low, else skip.
+    - If is_crypto=False and close_predictions[idx] < 0 => attempt short at predicted_high, else skip.
+    - Either way, exit at actual_close by day's end.
     """
     daily_returns = []
-    last_side = None  # track "buy" from previous day if continuing
+    last_side = None  # track "buy"/"short" from previous day
 
     for idx in range(len(close_predictions)):
-        # determine if we want to buy
-        is_buy = bool(close_predictions[idx] > 0)
-
-        # if not buying, daily return = 0
-        if not is_buy:
+        cp = close_predictions[idx]
+        if cp > 0:
+            # Attempt buy at predicted_low if actual_low <= predicted_low, else buy at actual_close
+            entry = low_predictions[idx] if actual_low[idx] <= low_predictions[idx] else actual_close[idx]
+            exit_price = actual_close[idx]
+            new_side = "buy"
+        elif (not is_crypto) and (cp < 0):
+            # Attempt short if not crypto
+            entry = high_predictions[idx] if actual_high[idx] >= high_predictions[idx] else actual_close[idx]
+            # Gains from short are entry - final
+            exit_price = actual_close[idx]
+            new_side = "short"
+        else:
+            # Skip if crypto and cp < 0 (no short), or cp == 0
             daily_returns.append(0.0)
             last_side = None
             continue
 
-        # check if actual_low is <= predicted_low (i.e., we could achieve that entry)
-        could_buy_at_low = bool(actual_low[idx] <= low_predictions[idx])
-        if could_buy_at_low:
-            entry_price = float(low_predictions[idx])
+        # Calculate daily gain
+        if new_side == "buy":
+            daily_gain = exit_price - entry
         else:
-            # if predicted low wasn't met, assume we just buy at the actual_close
-            entry_price = float(actual_close[idx])
+            # short
+            daily_gain = entry - exit_price
 
-        # exit at actual_close that day
-        daily_return = float(actual_close[idx]) - entry_price
-
-        # fees
+        # Fees: open if side changed or if None, close prior side if it existed
         fee_to_charge = 0.0
-        # if last day was also a buy, continuing same side => no extra open fee
-        # otherwise open fee
-        if last_side != "buy":
-            fee_to_charge += trading_fee  # opening fee
+        if new_side != last_side:
+            fee_to_charge += trading_fee  # open
             if last_side is not None:
-                fee_to_charge += trading_fee  # closing fee if we had a prior side
+                fee_to_charge += trading_fee  # close old side
 
-        daily_return -= fee_to_charge
-        daily_returns.append(daily_return)
-        last_side = "buy"
+        daily_gain -= fee_to_charge
+        daily_returns.append(daily_gain)
+        last_side = new_side
 
     daily_returns = np.array(daily_returns, dtype=float)
-    total_return = float(daily_returns.sum())
+    total_return = daily_returns.sum()
     if daily_returns.std() == 0:
         sharpe_ratio = 0.0
     else:
-        sharpe_ratio = float(daily_returns.mean() / daily_returns.std() * np.sqrt(252))
-    return total_return, sharpe_ratio
+        sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
+
+    return float(total_return), float(sharpe_ratio)
