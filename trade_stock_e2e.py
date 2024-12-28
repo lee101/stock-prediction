@@ -12,6 +12,7 @@ from src.comparisons import is_buy_side, is_same_side, is_sell_side
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
+from src.trading_obj_utils import filter_to_realistic_positions
 from src.process_utils import backout_near_market, ramp_into_position, spawn_close_position_at_takeprofit
 
 # Configure logging
@@ -128,7 +129,7 @@ def manage_positions(
 ):
     """Execute actual position management."""
     positions = alpaca_wrapper.get_all_positions()
-
+    positions = filter_to_realistic_positions(positions)
     logger.info("\nEXECUTING POSITION CHANGES:")
 
     if not positions:
@@ -251,6 +252,7 @@ def manage_market_close(
         return previous_picks
 
     positions = alpaca_wrapper.get_all_positions()
+    positions = filter_to_realistic_positions(positions)
     if not positions:
         logger.info("No positions to manage for market close")
         return {
@@ -303,6 +305,7 @@ def dry_run_manage_positions(
 ):
     """Simulate position management without executing trades."""
     positions = alpaca_wrapper.get_all_positions()
+    positions = filter_to_realistic_positions(positions)
 
     logger.info("\nPLANNED POSITION CHANGES:")
 
