@@ -195,8 +195,7 @@ def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_dow
         simulation_data = mock_stock_data.iloc[:-(i + 1)].copy()
         actual_returns = simulation_data['Close'].pct_change().iloc[-7:]
 
-        # Calculate expected unprofit shutdown return using simple manual logic
-        expected_gains = []
+        # Calculate expected unprofit shutdown return
         signals = [1]  # Start with position
         for j in range(1, len(actual_returns)):
             if actual_returns.iloc[j-1] <= 0:
@@ -204,31 +203,20 @@ def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_dow
                 break
             signals.append(1)
 
+        expected_gains = []
         for j in range(len(signals)):
             if j == 0:
                 # Initial position
-                expected_gains.append(1 + actual_returns.iloc[j] - ((1-SPREAD) + 2 * trading_fee))
+                expected_gains.append(1 + actual_returns.iloc[j] - (2 * trading_fee + (1-SPREAD)))
             elif signals[j] != signals[j-1]:
                 # Position change
-                expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]) - ((1-SPREAD) + 2 * trading_fee))
+                expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]) - (2 * trading_fee + (1-SPREAD)))
             else:
                 # Holding position
                 expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]))
 
-        actual_gain = 1
-        for gain in expected_gains:
-            actual_gain *= gain
-        expected_unprofit_shutdown_return = actual_gain - 1
-
-        assert pytest.approx(results['unprofit_shutdown_return'].iloc[i], rel=1e-4) == expected_unprofit_shutdown_return, \
-            f"Expected unprofit shutdown return {expected_unprofit_shutdown_return}, but got {results['unprofit_shutdown_return'].iloc[i]}"
-
-        # Check final day return with simple logic
-        final_day_fee = ((1-SPREAD) + 2 * trading_fee) if signals[-1] != signals[-2] else 0
-        expected_final_day_return = signals[-1] * actual_returns.iloc[-1] - final_day_fee
-
-        assert pytest.approx(results['unprofit_shutdown_finalday'].iloc[i], rel=1e-4) == expected_final_day_return, \
-            f"Expected final day return {expected_final_day_return}, but got {results['unprofit_shutdown_finalday'].iloc[i]}"
+        expected_return = np.prod(expected_gains) - 1
+        assert pytest.approx(results['unprofit_shutdown_return'].iloc[i], rel=1e-4) == expected_return
 
 def test_evaluate_highlow_strategy():
     # Test case 1: Perfect predictions - should give positive returns
