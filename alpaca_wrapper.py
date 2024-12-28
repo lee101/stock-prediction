@@ -22,6 +22,7 @@ from loguru import logger
 from retry import retry
 
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT
+from src.comparisons import is_buy_side, is_sell_side
 from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols
 from src.stock_utils import pairs_equal, remap_symbols
@@ -143,10 +144,10 @@ def has_current_open_position(symbol: str, side: str) -> bool:
         if float(position.market_value) < 4:
             continue
         if pairs_equal(position.symbol, symbol):
-            if position.side == "long" and side == "buy":
+            if is_buy_side(position.side) and is_buy_side(side):
                 logger.info("position already open")
                 return True
-            if position.side == "short" and side == "sell":
+            if is_sell_side(position.side) and is_sell_side(side):
                 logger.info("position already open")
                 return True
     return False
@@ -441,14 +442,14 @@ def get_orders():
 def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side="long", bid=None, ask=None):
     result = None
     # trading at market to add more safety in high spread situations
-    side = "buy" if side == "long" else "sell"
+    side = "buy" if is_buy_side(side) else "sell"
     if side == "buy" and bid:
         price = min(price, bid or price)
     else:
         price = max(price, ask or price)
 
     #skip crypto for now as its high fee
-    if currentBuySymbol in crypto_symbols and side == "buy":
+    if currentBuySymbol in crypto_symbols and is_buy_side(side):
         logger.info(f"Skipping Buying Alpaca crypto order for {currentBuySymbol}")
         logger.info(f"TMp measure as fees are too high IMO move to binance")
         return False
@@ -527,7 +528,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
                     side=side,
                     type=OrderType.LIMIT,
                     time_in_force="gtc",
-                    limit_price=str(math.floor(price) if side == "buy" else math.ceil(price)),
+                    limit_price=str(math.floor(price) if is_buy_side(side) else math.ceil(price)),
                 )
             )
         else:
@@ -538,7 +539,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
                     side=side,
                     type=OrderType.LIMIT,
                     time_in_force="gtc",
-                    limit_price=str(math.floor(price) if side == "buy" else math.ceil(price)),
+                    limit_price=str(math.floor(price) if is_buy_side(side) else math.ceil(price)),
                 )
             )
         print(result)

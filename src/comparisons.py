@@ -22,3 +22,9 @@ def is_same_side(side1: str, side2: str) -> bool:
     if side1 in sell_variants and side2 in sell_variants:
         return True
     return False 
+
+def is_buy_side(side: str) -> bool:
+    return side.lower() in {'buy', 'long'}
+
+def is_sell_side(side: str) -> bool:
+    return side.lower() in {'sell', 'short'}

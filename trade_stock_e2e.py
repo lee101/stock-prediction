@@ -8,7 +8,7 @@ from loguru import logger
 
 import alpaca_wrapper
 from backtest_test3_inline import backtest_forecasts
-from src.comparisons import is_same_side
+from src.comparisons import is_buy_side, is_same_side, is_sell_side
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
@@ -167,11 +167,11 @@ def manage_positions(
     for symbol, data in current_picks.items():
         position_exists = any(p.symbol == symbol for p in positions)
         correct_side = any(
-            p.symbol == symbol and p.side == data["side"] for p in positions
+            p.symbol == symbol and is_same_side(p.side, data["side"]) for p in positions
         )
 
         if symbol in crypto_symbols:
-            should_enter = not position_exists and data["side"] == "buy"
+            should_enter = not position_exists and is_buy_side(data["side"])
         else:
             should_enter = not position_exists
 
@@ -180,13 +180,13 @@ def manage_positions(
             ramp_into_position(symbol, data["side"])
 
             # If strategy is 'takeprofit', place a takeprofit limit later
-            if data["strategy"] == "takeprofit" and data["side"] == "buy":
+            if data["strategy"] == "takeprofit" and is_buy_side(data["side"]):
                 # e.g. call close_position_at_takeprofit with predicted_high
                 tp_price = data["predicted_high"]
                 logger.info(f"Scheduling a takeprofit at {tp_price:.3f} for {symbol}")
                 # call the new function from alpaca_cli
                 spawn_close_position_at_takeprofit(symbol, tp_price)
-            elif data["strategy"] == "takeprofit" and data["side"] == "sell":
+            elif data["strategy"] == "takeprofit" and is_sell_side(data["side"]):
                 # If short, we might want to place a limit buy at predicted_low
                 # (though you'd need to store predicted_low similarly)
                 # For example:
@@ -316,7 +316,7 @@ def dry_run_manage_positions(
                 f"Would close position for {symbol} as it's no longer in top picks"
             )
             should_close = True
-        elif symbol in current_picks and current_picks[symbol]["side"] != position.side:
+        elif symbol in current_picks and not is_same_side(current_picks[symbol]["side"], position.side):
             logger.info(
                 f"Would close position for {symbol} to switch direction from {position.side} to {current_picks[symbol]['side']}"
             )
@@ -326,7 +326,7 @@ def dry_run_manage_positions(
     for symbol, data in current_picks.items():
         position_exists = any(p.symbol == symbol for p in positions)
         correct_side = any(
-            p.symbol == symbol and p.side == data["side"] for p in positions
+            p.symbol == symbol and is_same_side(p.side, data["side"]) for p in positions
         )
 
         if not position_exists or not correct_side:
