@@ -1,5 +1,7 @@
 from datetime import datetime
+
 import torch
+
 
 def unwrap_tensor(data):
     if isinstance(data, torch.Tensor):
@@ -9,7 +11,7 @@ def unwrap_tensor(data):
             return data.tolist()
     else:
         return data
-    
+
 
 def convert_string_to_datetime(data):
     """

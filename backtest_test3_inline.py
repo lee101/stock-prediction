@@ -90,7 +90,7 @@ def all_signals_strategy(close_pred, high_pred, low_pred, is_crypto=False):
 
     # For non-crypto, "sell" all must be < 0
     sell_signal = (close_pred < 0) & (high_pred < 0) & (low_pred < 0)
-    
+
     # Convert to -1, 0, 1
     return buy_signal.float() - sell_signal.float()
 
@@ -109,8 +109,8 @@ def unprofit_shutdown_buy_hold(predictions, actual_returns, is_crypto=False):
         if signals[i - 1] != 0.0:
             # Check if day i-1 was correct
             was_correct = (
-                (actual_returns[i - 1] > 0 and predictions[i - 1] > 0) or
-                (actual_returns[i - 1] < 0 and predictions[i - 1] < 0)
+                    (actual_returns[i - 1] > 0 and predictions[i - 1] > 0) or
+                    (actual_returns[i - 1] < 0 and predictions[i - 1] < 0)
             )
             if was_correct:
                 # Keep same signal direction as predictions[i]
@@ -202,7 +202,7 @@ def backtest_forecasts(symbol, num_simulations=100):
 
     is_crypto = symbol in crypto_symbols
 
-    for i in range(0, num_simulations * 3, 3): # jump 3 to cover more area in backtest
+    for i in range(0, num_simulations * 3, 3):  # jump 3 to cover more area in backtest
         # Take one day off each iteration
         simulation_data = stock_data.iloc[:-(i + 1)].copy(deep=True)
 
@@ -256,10 +256,10 @@ def backtest_forecasts(symbol, num_simulations=100):
 
             error = np.array(validation["y"][:-1].values) - np.array(predictions[:-1])
             mean_val_loss = np.abs(error).mean()
-            
+
             # Log validation metrics
             tb_writer.add_scalar(f'{symbol}/{key_to_predict}/val_loss', mean_val_loss, i)
-            
+
             if __name__ == "__main__":
                 print(f"mean_val_loss: {mean_val_loss}")
 
@@ -280,31 +280,37 @@ def backtest_forecasts(symbol, num_simulations=100):
 
         # Simple buy/sell strategy
         simple_signals = simple_buy_sell_strategy(
-            last_preds["close_predictions"], 
+            last_preds["close_predictions"],
             is_crypto=is_crypto
         )
-        simple_total_return, simple_sharpe, simple_returns = evaluate_strategy(simple_signals, actual_returns, trading_fee)
+        simple_total_return, simple_sharpe, simple_returns = evaluate_strategy(simple_signals, actual_returns,
+                                                                               trading_fee)
         simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
         # All signals strategy
         all_signals = all_signals_strategy(
-            last_preds["close_predictions"], 
+            last_preds["close_predictions"],
             last_preds["high_predictions"],
             last_preds["low_predictions"],
             is_crypto=is_crypto
         )
-        all_signals_total_return, all_signals_sharpe, all_signals_returns = evaluate_strategy(all_signals, actual_returns, trading_fee)
+        all_signals_total_return, all_signals_sharpe, all_signals_returns = evaluate_strategy(all_signals,
+                                                                                              actual_returns,
+                                                                                              trading_fee)
         all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
         # Buy and hold strategy
         buy_hold_signals = buy_hold_strategy(last_preds["close_predictions"])
-        buy_hold_return, buy_hold_sharpe, buy_hold_returns = evaluate_strategy(buy_hold_signals, actual_returns, trading_fee)
+        buy_hold_return, buy_hold_sharpe, buy_hold_returns = evaluate_strategy(buy_hold_signals, actual_returns,
+                                                                               trading_fee)
         buy_hold_finalday_return = actual_returns.iloc[-1] - (2 * trading_fee * SPREAD)
 
         # Unprofit shutdown buy and hold strategy
-        unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns, is_crypto=is_crypto)
-        unprofit_shutdown_return, unprofit_shutdown_sharpe, unprofit_shutdown_returns = evaluate_strategy(unprofit_shutdown_signals,
-                                                                               actual_returns, trading_fee)
+        unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns,
+                                                               is_crypto=is_crypto)
+        unprofit_shutdown_return, unprofit_shutdown_sharpe, unprofit_shutdown_returns = evaluate_strategy(
+            unprofit_shutdown_signals,
+            actual_returns, trading_fee)
         unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (
             2 * trading_fee * SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
 
@@ -337,23 +343,23 @@ def backtest_forecasts(symbol, num_simulations=100):
         tb_writer.add_scalar(f'{symbol}/strategies/simple/total_return', simple_total_return, i)
         tb_writer.add_scalar(f'{symbol}/strategies/simple/sharpe', simple_sharpe, i)
         tb_writer.add_scalar(f'{symbol}/strategies/simple/finalday', simple_finalday_return, i)
-        
+
         tb_writer.add_scalar(f'{symbol}/strategies/all_signals/total_return', all_signals_total_return, i)
         tb_writer.add_scalar(f'{symbol}/strategies/all_signals/sharpe', all_signals_sharpe, i)
         tb_writer.add_scalar(f'{symbol}/strategies/all_signals/finalday', all_signals_finalday_return, i)
-        
+
         tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/total_return', buy_hold_return, i)
         tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/sharpe', buy_hold_sharpe, i)
         tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/finalday', buy_hold_finalday_return, i)
-        
+
         tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/total_return', unprofit_shutdown_return, i)
         tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/sharpe', unprofit_shutdown_sharpe, i)
         tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/finalday', unprofit_shutdown_finalday_return, i)
-        
+
         tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/total_return', entry_takeprofit_return, i)
         tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/sharpe', entry_takeprofit_sharpe, i)
         tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/finalday', entry_takeprofit_finalday_return, i)
-        
+
         tb_writer.add_scalar(f'{symbol}/strategies/highlow/total_return', highlow_return, i)
         tb_writer.add_scalar(f'{symbol}/strategies/highlow/sharpe', highlow_sharpe, i)
         tb_writer.add_scalar(f'{symbol}/strategies/highlow/finalday', highlow_finalday_return, i)
@@ -408,14 +414,20 @@ def backtest_forecasts(symbol, num_simulations=100):
     # Log final average metrics
     tb_writer.add_scalar(f'{symbol}/final_metrics/simple_avg_return', results_df['simple_strategy_return'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/simple_avg_sharpe', results_df['simple_strategy_sharpe'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_return', results_df['all_signals_strategy_return'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_sharpe', results_df['all_signals_strategy_sharpe'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_return',
+                         results_df['all_signals_strategy_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_sharpe',
+                         results_df['all_signals_strategy_sharpe'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/buy_hold_avg_return', results_df['buy_hold_return'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/buy_hold_avg_sharpe', results_df['buy_hold_sharpe'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_return', results_df['unprofit_shutdown_return'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_sharpe', results_df['unprofit_shutdown_sharpe'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_return', results_df['entry_takeprofit_return'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_sharpe', results_df['entry_takeprofit_sharpe'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_return',
+                         results_df['unprofit_shutdown_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_sharpe',
+                         results_df['unprofit_shutdown_sharpe'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_return',
+                         results_df['entry_takeprofit_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_sharpe',
+                         results_df['entry_takeprofit_sharpe'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_return', results_df['highlow_return'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_sharpe', results_df['highlow_sharpe'].mean(), 0)
 

@@ -1,9 +1,9 @@
 import datetime
-from pathlib import Path
 import traceback
+from pathlib import Path
 
-import pandas as pd
 import matplotlib.pyplot as plt
+import pandas as pd
 import pytz
 from alpaca.data import CryptoBarsRequest, TimeFrame, StockBarsRequest, TimeFrameUnit, CryptoHistoricalDataClient
 from alpaca.data.historical import StockHistoricalDataClient
@@ -17,7 +17,6 @@ from retry import retry
 from alpaca_wrapper import latest_data
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
 from src.fixtures import crypto_symbols
-
 from src.stock_utils import remap_symbols
 
 base_dir = Path(__file__).parent
@@ -35,6 +34,7 @@ PFE
 MRNA
 """
 crypto_client = CryptoHistoricalDataClient()
+
 
 def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
     if symbols is None:
@@ -54,7 +54,6 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
     if path:
         save_path = base_dir / 'data' / path
     save_path.mkdir(parents=True, exist_ok=True)
-
 
     ##test code
     # First check for existing CSV files for each symbol
@@ -137,7 +136,7 @@ def download_exchange_latest_data(api, symbol):
     ## logger.info(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
     latest_data_dl = download_stock_data_between_times(api, end, start, symbol)
 
-    if ADD_LATEST: # collect very latest close times, todo extend bars?
+    if ADD_LATEST:  # collect very latest close times, todo extend bars?
         very_latest_data = latest_data(symbol)
         # check if market closed
         ask_price = float(very_latest_data.ask_price)
@@ -150,17 +149,21 @@ def download_exchange_latest_data(api, symbol):
             bids[symbol] = bid_price
             asks[symbol] = ask_price
     return latest_data_dl
+
+
 asks = {}
 bids = {}
 spreads = {}
+
+
 def get_spread(symbol):
     return 1 - spreads.get(symbol, 1.05)
+
 
 def fetch_spread(symbol):
     client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
     minute_df_last = download_exchange_latest_data(client, symbol)
     return spreads.get(symbol, 1.05)
-
 
 
 def get_ask(symbol):
@@ -170,12 +173,14 @@ def get_ask(symbol):
         logger.info(asks)
     return ask
 
+
 def get_bid(symbol):
     bid = bids.get(symbol)
     if not bid:
         logger.error(f"error getting bid price for {symbol}")
         logger.info(bids)
     return bid
+
 
 def download_stock_data_between_times(api, end, start, symbol):
     if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD', "PAXGUSD", "UNIUSD"]:
@@ -192,6 +197,7 @@ def download_stock_data_between_times(api, end, start, symbol):
         except KeyError:
             logger.info(f"{symbol} has no volume or something")
         return daily_df
+
 
 @retry(delay=.1, tries=5)
 def get_bars(api, end, start, symbol):

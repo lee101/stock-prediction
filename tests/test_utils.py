@@ -1,14 +1,15 @@
 import time
-import pytest
 
 from src.utils import debounce
 
 call_count = 0
 
+
 @debounce(2)  # 2 seconds debounce period
 def debounced_function():
     global call_count
     call_count += 1
+
 
 def test_debounce():
     global call_count
@@ -35,6 +36,7 @@ def test_debounce():
 def debounced_function_with_key(x):
     global call_count
     call_count += 1
+
 
 def test_debounce_with_key():
     global call_count

@@ -1,11 +1,10 @@
-from ast import List
 import json
-import math
+import json
 import traceback
 from time import sleep
-from typing import Any, Dict
 
 import cachetools
+import math
 import requests.exceptions
 from alpaca.data import (
     StockLatestQuoteRequest,
@@ -13,7 +12,7 @@ from alpaca.data import (
     CryptoHistoricalDataClient,
     CryptoLatestQuoteRequest,
 )
-from alpaca.trading import OrderType, LimitOrderRequest, LimitOrderRequest, GetOrdersRequest
+from alpaca.trading import OrderType, LimitOrderRequest, GetOrdersRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide
 from alpaca.trading.requests import MarketOrderRequest
@@ -25,13 +24,9 @@ from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY
 from src.comparisons import is_buy_side, is_sell_side
 from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols
+from src.logging_utils import setup_logging
 from src.stock_utils import pairs_equal, remap_symbols
 from src.trading_obj_utils import filter_to_realistic_positions
-from alpaca.trading.models import (
-    Order,
-    Position,
-)  
-from src.logging_utils import setup_logging
 
 logger = setup_logging("stock.log")
 
@@ -46,6 +41,7 @@ data_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
 
 force_open_the_clock = False
 
+
 @cachetools.cached(cache=cachetools.TTLCache(maxsize=100, ttl=60 * 5))
 def get_clock(retries=3):
     clock = get_clock_internal(retries)
@@ -53,9 +49,11 @@ def get_clock(retries=3):
         clock.is_open = True
     return clock
 
+
 def force_open_the_clock_func():
     global force_open_the_clock
     force_open_the_clock = True
+
 
 def get_clock_internal(retries=3):
     try:
@@ -67,8 +65,8 @@ def get_clock_internal(retries=3):
             logger.error("retrying get clock")
             return get_clock_internal(retries - 1)
         raise e
-    
-    
+
+
 def get_all_positions(retries=3):
     try:
         return alpaca_api.get_all_positions()
@@ -184,6 +182,7 @@ def open_order_at_price(symbol, qty, side, price):
     print(result)
     return result
 
+
 def open_order_at_price_or_all(symbol, qty, side, price):
     result = None
     # Cancel existing orders for this symbol
@@ -226,7 +225,7 @@ def open_order_at_price_or_all(symbol, qty, side, price):
                     # Extract available balance from error message
                     error_dict = json.loads(error_str.split("'_error': '")[1].split("', '_http_error'")[0])
                     available = float(error_dict.get("available", 0))
-                    
+
                     if available > 0:
                         # Recalculate quantity based on available balance
                         new_qty = math.floor(0.99 * available / float(price))  # Use 99% of available balance
@@ -241,7 +240,7 @@ def open_order_at_price_or_all(symbol, qty, side, price):
             retry_count += 1
             # if retry_count < max_retries:
             #     time.sleep(2)  # Wait before retry
-            
+
     logger.error("Max retries reached, order failed")
     return None
 
@@ -335,6 +334,7 @@ def close_position_at_current_price(position, row):
         return None
     print(result)
     return result
+
 
 def backout_all_non_crypto_positions(positions, predictions):
     for position in positions:
@@ -435,9 +435,11 @@ def close_position_at_almost_current_price(position, row):
     print(result)
     return result
 
+
 @retry(delay=.1, tries=3)
 def get_orders():
     return alpaca_api.get_orders()
+
 
 def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side="long", bid=None, ask=None):
     result = None
@@ -448,7 +450,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
     else:
         price = max(price, ask or price)
 
-    #skip crypto for now as its high fee
+    # skip crypto for now as its high fee
     if currentBuySymbol in crypto_symbols and is_buy_side(side):
         logger.info(f"Skipping Buying Alpaca crypto order for {currentBuySymbol}")
         logger.info(f"TMp measure as fees are too high IMO move to binance")
@@ -555,6 +557,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
 
 def close_open_orders():
     alpaca_api.cancel_orders()
+
 
 def re_setup_vars():
     global positions
@@ -679,9 +682,11 @@ def latest_data(symbol):
 
     return latest_multisymbol_quotes[symbol]
 
+
 @retry(delay=.1, tries=3)
 def get_account():
     return alpaca_api.get_account()
+
 
 equity = 30000
 cash = 30000
@@ -734,7 +739,7 @@ def close_position_near_market(position, pct_above_market=0.0):
         price = ask_price
     else:
         price = bid_price
-        
+
     result = None
     try:
         if position.side == "long":
@@ -770,16 +775,17 @@ def close_position_near_market(position, pct_above_market=0.0):
         logger.error(e)
         traceback.print_exc()
         return False
-        
+
     return result
+
 
 def get_executed_orders(alpaca_api):
     """
     Gets all historical orders that were executed.
-    
+
     Args:
         alpaca_api: The Alpaca trading client instance
-        
+
     Returns:
         List of executed orders
     """
@@ -791,19 +797,20 @@ def get_executed_orders(alpaca_api):
             )
         )
         return orders
-        
+
     except Exception as e:
         logger.error(f"Error getting executed orders: {e}")
         traceback.print_exc()
         return []
 
+
 def get_account_activities(
-    alpaca_api,
-    activity_types=None,
-    date=None,
-    direction='desc',
-    page_size=100,
-    page_token=None
+        alpaca_api,
+        activity_types=None,
+        date=None,
+        direction='desc',
+        page_size=100,
+        page_token=None
 ):
     """
     Retrieve account activities (trades, dividends, etc.) from the Alpaca API.

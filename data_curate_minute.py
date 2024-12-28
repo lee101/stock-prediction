@@ -60,8 +60,8 @@ def download_minute_stock_data(path=None):
         'SAP',
         'AMD',
         'SONY',
-    # ]
-    # symbols = [
+        # ]
+        # symbols = [
         'BTCUSD',
         'ETHUSD',
         'LTCUSD',
@@ -88,7 +88,7 @@ def download_minute_stock_data(path=None):
 
         start = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
         # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
-        end = (datetime.datetime.now()).strftime('%Y-%m-%d') # todo recent data
+        end = (datetime.datetime.now()).strftime('%Y-%m-%d')  # todo recent data
         # df = api.get_bars(symbol, TimeFrame.Minute, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'), adjustment='raw').df
         # start = pd.Timestamp('2020-08-28 9:30', tz=NY).isoformat()
         # end = pd.Timestamp('2020-08-28 16:00', tz=NY).isoformat()
@@ -106,7 +106,6 @@ def download_minute_stock_data(path=None):
         except KeyError:
             print(f"{symbol} has no volume or something")
             continue
-
 
         # rename columns with upper case
         minute_df.rename(columns=lambda x: x.capitalize(), inplace=True)

@@ -31,4 +31,3 @@ def drop_n_rows(df, n):
     """
     drop_idxes = np.arange(0, len(df), n)
     df.drop(drop_idxes, inplace=True)
-

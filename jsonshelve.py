@@ -4,7 +4,6 @@ objects).
 """
 import datetime
 import json
-import collections
 import os
 from collections.abc import MutableMapping
 
@@ -93,7 +92,6 @@ class FlatShelf(MemoryShelf):
 
     def save(self):
         with open(self.filename, 'w') as f:
-
             json.dump(self.data, f, default=default)
 
 
@@ -108,7 +106,6 @@ class PickleShelf(MemoryShelf):
     def save(self):
         with open(self.filename, 'wb') as f:
             pickle.dump(self.data, f)
-
 
 # class SQLiteShelf(JSONShelf):
 #     """A shelf backed by an SQLite database.

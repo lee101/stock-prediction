@@ -1,25 +1,21 @@
 from datetime import datetime, timezone
-import math
 from time import sleep
 from typing import Optional
 
 import alpaca_trade_api as tradeapi
+import math
+import pytz
 import typer
 from alpaca.data import StockHistoricalDataClient
-from src.logging_utils import setup_logging
 
 import alpaca_wrapper
 from data_curate_daily import download_exchange_latest_data, get_bid, get_ask
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
+from jsonshelve import FlatShelf
+from src.fixtures import crypto_symbols
+from src.logging_utils import setup_logging
 from src.stock_utils import pairs_equal
 from src.trading_obj_utils import filter_to_realistic_positions
-
-from src.fixtures import crypto_symbols
-
-import pytz
-from alpaca.trading.client import TradingClient
-from jsonshelve import FlatShelf
-
 
 alpaca_api = tradeapi.REST(
     ALP_KEY_ID,
@@ -32,12 +28,14 @@ logger = setup_logging("alpaca_cli.log")
 # We'll store strategy usage in a persistent shelf
 positions_shelf = FlatShelf("positions_shelf.json")
 
+
 def set_strategy_for_symbol(symbol: str, strategy: str) -> None:
     """Record that a symbol is traded under the given strategy for today's date."""
     day_key = datetime.now().strftime('%Y-%m-%d')
     shelf_key = f"{symbol}-{day_key}"
     positions_shelf[shelf_key] = strategy
     # positions_shelf.commit()
+
 
 def get_strategy_for_symbol(symbol: str) -> str:
     """Retrieve the strategy for a symbol for today's date, if any."""
@@ -46,6 +44,7 @@ def get_strategy_for_symbol(symbol: str) -> str:
     positions_shelf.load()
     shelf_key = f"{symbol}-{day_key}"
     return positions_shelf.get(shelf_key, None)
+
 
 def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
     """
@@ -85,8 +84,8 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
         show_account()
 
 
-
 client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+
 
 def backout_near_market(pair, start_time=None):
     """
@@ -101,11 +100,11 @@ def backout_near_market(pair, start_time=None):
         try:
             all_positions = alpaca_wrapper.get_all_positions()
             logger.info(f"Retrieved {len(all_positions)} total positions")
-            
+
             if len(all_positions) == 0:
                 logger.info("no positions found, exiting")
                 break
-                
+
             positions = filter_to_realistic_positions(all_positions)
             logger.info(f"After filtering, {len(positions)} positions remain")
 
@@ -125,27 +124,28 @@ def backout_near_market(pair, start_time=None):
                 if hasattr(position, 'symbol') and pairs_equal(position.symbol, pair):
                     logger.info(f"Found matching position for {pair}")
                     is_long = hasattr(position, 'side') and position.side == 'long'
-                    
+
                     # Initial offset from market (0.015 = 1.5%)
                     pct_offset = 0.010
                     linear_ramp = 30  # 30 minute ramp
-                    
+
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
                     if minutes_since_start >= linear_ramp:
                         # After ramp period, set aggressive price
-                        pct_above_market = -pct_offset 
+                        pct_above_market = -pct_offset
                     else:
                         # During ramp period
                         progress = minutes_since_start / linear_ramp
                         pct_above_market = pct_offset - (2 * pct_offset * progress)
 
                     logger.info(f"Position side: {'long' if is_long else 'short'}, "
-                              f"pct_above_market: {pct_above_market}, "
-                              f"minutes_since_start: {minutes_since_start}, "
-                              f"progress: {progress if minutes_since_start < linear_ramp else 1.0}")
-                    
+                                f"pct_above_market: {pct_above_market}, "
+                                f"minutes_since_start: {minutes_since_start}, "
+                                f"progress: {progress if minutes_since_start < linear_ramp else 1.0}")
+
                     try:
-                        succeeded = alpaca_wrapper.close_position_near_market(position, pct_above_market=pct_above_market)
+                        succeeded = alpaca_wrapper.close_position_near_market(position,
+                                                                              pct_above_market=pct_above_market)
                         found_position = True
                         if not succeeded:
                             logger.info("failed to close position, will retry after delay")
@@ -169,7 +169,7 @@ def backout_near_market(pair, start_time=None):
                 return True
 
             retries = 0
-            sleep(60*3)  # retry every 3 mins
+            sleep(60 * 3)  # retry every 3 mins
 
         except Exception as e:
             logger.error(f"Error in backout_near_market: {e}")
@@ -186,14 +186,13 @@ def close_all_positions():
     for position in positions:
         if not hasattr(position, 'symbol'):
             continue
-            
+
         symbol = position.symbol
 
         # get latest data then bid/ask
         download_exchange_latest_data(client, symbol)
         bid = get_bid(symbol)
         ask = get_ask(symbol)
-
 
         current_price = ask if hasattr(position, 'side') and position.side == 'long' else bid
         # close a long with the ask price
@@ -205,7 +204,7 @@ def close_all_positions():
                 'close_last_price_minute': current_price
             }
         )
-            # alpaca_order_stock(position.symbol, position.qty)
+        # alpaca_order_stock(position.symbol, position.qty)
 
 
 def violently_close_all_positions():
@@ -230,7 +229,7 @@ def ramp_into_position(pair, side, start_time=None):
     retries = 0
     max_retries = 5
     linear_ramp = 60  # 1 hour ramp for both crypto and stocks
-    
+
     while True:
         try:
             all_positions = alpaca_wrapper.get_all_positions()
@@ -246,40 +245,42 @@ def ramp_into_position(pair, side, start_time=None):
             cancel_attempts = 0
             max_cancel_attempts = 3
             orders_cancelled = False
-            
+
             while cancel_attempts < max_cancel_attempts:
                 try:
                     logger.info(f"Attempting to cancel orders for {pair}...")
                     # Get all open orders
                     orders = alpaca_wrapper.get_open_orders()
-                    pair_orders = [order for order in orders if hasattr(order, 'symbol') and pairs_equal(order.symbol, pair)]
-                    
+                    pair_orders = [order for order in orders if
+                                   hasattr(order, 'symbol') and pairs_equal(order.symbol, pair)]
+
                     if not pair_orders:
                         orders_cancelled = True
                         logger.info(f"No existing orders found for {pair}")
                         break
-                        
+
                     # Cancel only orders for this pair
                     for order in pair_orders:
                         alpaca_wrapper.cancel_order(order)
                         sleep(1)  # Small delay between cancellations
-                    
+
                     # Verify cancellations
                     sleep(3)  # Let cancellations propagate
                     orders = alpaca_wrapper.get_open_orders()
-                    remaining_orders = [order for order in orders if hasattr(order, 'symbol') and pairs_equal(order.symbol, pair)]
-                    
+                    remaining_orders = [order for order in orders if
+                                        hasattr(order, 'symbol') and pairs_equal(order.symbol, pair)]
+
                     if not remaining_orders:
                         orders_cancelled = True
                         logger.info(f"All orders for {pair} successfully cancelled")
                         break
                     else:
                         logger.info(f"Found {len(remaining_orders)} remaining orders for {pair}, retrying cancellation")
-                    
+
                     cancel_attempts += 1
                     if not orders_cancelled:
                         sleep(5)  # Wait before retry
-                        
+
                 except Exception as e:
                     logger.error(f"Error during order cancellation: {e}")
                     cancel_attempts += 1
@@ -309,7 +310,7 @@ def ramp_into_position(pair, side, start_time=None):
                     continue
 
                 minutes_since_start = (datetime.now() - start_time).seconds // 60
-                
+
                 # Calculate the price to place the order
                 if pair in crypto_symbols:
                     # For crypto, start slightly worse than market and slowly move to other side
@@ -334,7 +335,7 @@ def ramp_into_position(pair, side, start_time=None):
                             order_price = start_price + (price_range * progress)
 
                     logger.info(f"Crypto order: Starting at {'below bid' if side == 'buy' else 'above ask'}, "
-                              f"progress {progress:.2%}, price {order_price:.2f}")
+                                f"progress {progress:.2%}, price {order_price:.2f}")
                 else:
                     # For stocks, be more aggressive
                     if minutes_since_start >= linear_ramp:
@@ -362,7 +363,7 @@ def ramp_into_position(pair, side, start_time=None):
                     return False
 
                 logger.info(f"Attempting to place order: {pair} {side} {qty} @ {order_price}")
-                
+
                 # Place the order with error handling
                 succeeded = alpaca_wrapper.open_order_at_price_or_all(pair, qty, side, order_price)
                 if not succeeded:
@@ -376,7 +377,7 @@ def ramp_into_position(pair, side, start_time=None):
 
                 # Reset retries on successful order placement
                 retries = 0
-                
+
                 # Longer sleep for crypto to reduce API calls
                 sleep_time = 5 * 60 if pair in crypto_symbols else 2 * 60
                 sleep(sleep_time)
@@ -398,30 +399,31 @@ def ramp_into_position(pair, side, start_time=None):
                 return False
             sleep(60)
 
+
 def show_account():
     """Display account summary including positions, orders and market status"""
     # Get market clock using wrapper
     clock = alpaca_wrapper.get_clock()
-    
+
     # Convert times to NZDT and EDT
     nz_tz = pytz.timezone('Pacific/Auckland')
     edt_tz = pytz.timezone('America/New_York')
-    
+
     current_time_nz = datetime.now(timezone.utc).astimezone(nz_tz)
     current_time_edt = datetime.now(timezone.utc).astimezone(edt_tz)
-    
+
     # Print market status and times
     logger.info("\n=== Market Status ===")
     logger.info(f"Market is {'OPEN' if clock.is_open else 'CLOSED'}")
     logger.info(f"Current time (NZDT): {current_time_nz.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     logger.info(f"Current time (EDT): {current_time_edt.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    
+
     # Get account info
     logger.info("\n=== Account Summary ===")
     logger.info(f"Equity: ${alpaca_wrapper.equity:,.2f}")
     logger.info(f"Cash: ${alpaca_wrapper.cash:,.2f}")
     logger.info(f"Buying Power: ${alpaca_wrapper.total_buying_power:,.2f}")
-    
+
     # Get and display positions
     positions = alpaca_wrapper.get_all_positions()
     logger.info("\n=== Open Positions ===")
@@ -432,7 +434,7 @@ def show_account():
             if hasattr(pos, 'symbol') and hasattr(pos, 'qty') and hasattr(pos, 'current_price'):
                 side = "LONG" if hasattr(pos, 'side') and pos.side == 'long' else "SHORT"
                 logger.info(f"{pos.symbol}: {side} {pos.qty} shares @ ${float(pos.current_price):,.2f}")
-    
+
     # Get and display orders
     orders = alpaca_wrapper.get_open_orders()
     logger.info("\n=== Open Orders ===")
@@ -443,6 +445,7 @@ def show_account():
             if hasattr(order, 'symbol') and hasattr(order, 'qty'):
                 price_str = f"@ ${float(order.limit_price):,.2f}" if hasattr(order, 'limit_price') else "(market)"
                 logger.info(f"{order.symbol}: {order.side.upper()} {order.qty} {price_str}")
+
 
 def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=None):
     """
@@ -480,7 +483,7 @@ def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=
         # We have at least one matching position
         position = positions[0]
         logger.info(f"Position found for {pair}: side={position.side}, qty={position.qty}")
-        
+
         # Cancel existing orders for this pair
         orders = alpaca_wrapper.get_open_orders()
         for order in orders:
@@ -498,6 +501,7 @@ def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=
         except Exception as e:
             logger.error(f"Failed to place takeprofit limit order: {e}")
             return False
+
 
 if __name__ == "__main__":
     typer.run(main)
