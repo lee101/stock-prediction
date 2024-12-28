@@ -165,6 +165,8 @@ def backtest_forecasts(symbol, num_simulations=100):
     # Download the latest data
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
     # use this for testing dataset
+    if __name__ == "__main__":
+        current_time_formatted = '2024-09-07--03-36-27'
     # current_time_formatted = '2024-04-18--06-14-26'  # new/ 30 minute data # '2022-10-14 09-58-20'
     # current_day_formatted = '2024-04-18'  # new/ 30 minute data # '2022-10-14 09-58-20'
 
@@ -462,16 +464,6 @@ def backtest_forecasts(symbol, num_simulations=100):
     return results_df
 
 
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        symbol = "ETHUSD"
-        print("Usage: python backtest_test.py <symbol> defaultint to eth")
-    else:
-        symbol = sys.argv[1]
-
-    backtest_forecasts(symbol)
-
-
 def evaluate_entry_takeprofit_strategy(
         close_predictions, high_predictions, low_predictions,
         actual_close, actual_high, actual_low,
@@ -599,3 +591,17 @@ def evaluate_highlow_strategy(
         sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
 
     return float(total_return), float(sharpe_ratio), daily_returns
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        symbol = "ETHUSD"
+        print("Usage: python backtest_test.py <symbol> defaultint to eth")
+    else:
+        symbol = sys.argv[1]
+
+    backtest_forecasts("NVDA")
+    backtest_forecasts(symbol)
+    backtest_forecasts("UNIUSD")
+    backtest_forecasts("AAPL")
+    backtest_forecasts("GOOG")
