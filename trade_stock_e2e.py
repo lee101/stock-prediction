@@ -16,6 +16,7 @@ from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.comparisons import is_same_side
 
 from src.logging_utils import setup_logging
+from src.trading_obj_utils import filter_to_realistic_positions
 
 # Configure logging
 logger = setup_logging("trade_stock_e2e.log")
@@ -125,7 +126,7 @@ def manage_positions(
 ):
     """Execute actual position management."""
     positions = alpaca_wrapper.get_all_positions()
-
+    positions = filter_to_realistic_positions(positions)
     logger.info("\nEXECUTING POSITION CHANGES:")
 
     if not positions:
@@ -205,6 +206,7 @@ def manage_market_close(
         return previous_picks
 
     positions = alpaca_wrapper.get_all_positions()
+    positions = filter_to_realistic_positions(positions)
     if not positions:
         logger.info("No positions to manage for market close")
         return {
@@ -257,6 +259,7 @@ def dry_run_manage_positions(
 ):
     """Simulate position management without executing trades."""
     positions = alpaca_wrapper.get_all_positions()
+    positions = filter_to_realistic_positions(positions)
 
     logger.info("\nPLANNED POSITION CHANGES:")
 
