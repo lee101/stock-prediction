@@ -30,9 +30,13 @@ def remap_symbols(symbol):
         return crypto_remap[symbol]
     return symbol
 
+def pairs_equal(symbol1: str, symbol2: str) -> bool:
+    """Compare two symbols, handling different formats (BTCUSD vs BTC/USD)"""
+    # Normalize both symbols by removing slashes
+    s1 = symbol1.replace("/", "").upper()
+    s2 = symbol2.replace("/", "").upper()
 
-def pairs_equal(pair1, pair2):
-    return remap_symbols(pair1) == remap_symbols(pair2)
+    return remap_symbols(s1) == remap_symbols(s2)
 
 
 def unmap_symbols(symbol):
