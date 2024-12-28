@@ -1,22 +1,19 @@
-import sys
-from datetime import datetime, timedelta
-from typing import List, Dict
-import pandas as pd
-from loguru import logger
-import pytz
+from datetime import datetime
+from math import floor
 from time import sleep
-import numpy as np
-from scipy import stats
+from typing import List, Dict
 
-from backtest_test3_inline import backtest_forecasts
-from src.process_utils import backout_near_market, ramp_into_position, spawn_close_position_at_takeprofit
-from src.fixtures import crypto_symbols
+import pytz
+from loguru import logger
+
 import alpaca_wrapper
+from backtest_test3_inline import backtest_forecasts
+from src.comparisons import is_buy_side, is_same_side, is_sell_side
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
-from src.comparisons import is_same_side
-
+from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
 from src.trading_obj_utils import filter_to_realistic_positions
+from src.process_utils import backout_near_market, ramp_into_position, spawn_close_position_at_takeprofit
 
 # Configure logging
 logger = setup_logging("trade_stock_e2e.log")
@@ -38,22 +35,23 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     for symbol in symbols:
         try:
             logger.info(f"Analyzing {symbol}")
-            num_simulations = 300
+            num_simulations = 10 # not many because we need to adapt strats? eg the wierd spikes in uniusd are a big opportunity to trade w high/low
 
             backtest_df = backtest_forecasts(symbol, num_simulations)
             # Get each strategy's average return
             simple_return = backtest_df["simple_strategy_return"].mean()
             all_signals_return = backtest_df["all_signals_strategy_return"].mean()
             takeprofit_return = backtest_df["entry_takeprofit_return"].mean()
+            # Include highlow_return in our analysis
+            highlow_return = backtest_df["highlow_return"].mean()
 
-            # Compare which strategy is best
-            best_return = max(simple_return, all_signals_return, takeprofit_return)
+            # Compare all four strategy returns
+            best_return = max(simple_return, all_signals_return, takeprofit_return, highlow_return)
             last_prediction = backtest_df.iloc[-1]
 
             if best_return == takeprofit_return:
                 avg_return = takeprofit_return
                 strategy = "takeprofit"
-                # Determine side as usual
                 predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
                 position_side = "buy" if predicted_movement > 0 else "sell"
             elif best_return == all_signals_return:
@@ -70,6 +68,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 else:
                     continue
                 predicted_movement = close_movement
+            elif best_return == highlow_return:
+                avg_return = highlow_return
+                strategy = "highlow"
+                predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
+                position_side = "buy" if predicted_movement > 0 else "sell"
             else:
                 avg_return = simple_return
                 strategy = "simple"
@@ -106,7 +109,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
 def log_trading_plan(picks: Dict[str, Dict], action: str):
     """Log the trading plan without executing trades."""
-    logger.info(f"\n{'='*50}\nTRADING PLAN ({action})\n{'='*50}")
+    logger.info(f"\n{'=' * 50}\nTRADING PLAN ({action})\n{'=' * 50}")
 
     for symbol, data in picks.items():
         logger.info(
@@ -115,14 +118,14 @@ Symbol: {symbol}
 Direction: {data['side']}
 Avg Return: {data['avg_return']:.3f}
 Predicted Movement: {data['predicted_movement']:.3f}
-{'='*30}"""
+{'=' * 30}"""
         )
 
 
 def manage_positions(
-    current_picks: Dict[str, Dict],
-    previous_picks: Dict[str, Dict],
-    all_analyzed_results: Dict[str, Dict],
+        current_picks: Dict[str, Dict],
+        previous_picks: Dict[str, Dict],
+        all_analyzed_results: Dict[str, Dict],
 ):
     """Execute actual position management."""
     positions = alpaca_wrapper.get_all_positions()
@@ -165,11 +168,11 @@ def manage_positions(
     for symbol, data in current_picks.items():
         position_exists = any(p.symbol == symbol for p in positions)
         correct_side = any(
-            p.symbol == symbol and p.side == data["side"] for p in positions
+            p.symbol == symbol and is_same_side(p.side, data["side"]) for p in positions
         )
 
         if symbol in crypto_symbols:
-            should_enter = not position_exists and data["side"] == "buy"
+            should_enter = not position_exists and is_buy_side(data["side"])
         else:
             should_enter = not position_exists
 
@@ -178,13 +181,13 @@ def manage_positions(
             ramp_into_position(symbol, data["side"])
 
             # If strategy is 'takeprofit', place a takeprofit limit later
-            if data["strategy"] == "takeprofit" and data["side"] == "buy":
+            if data["strategy"] == "takeprofit" and is_buy_side(data["side"]):
                 # e.g. call close_position_at_takeprofit with predicted_high
                 tp_price = data["predicted_high"]
                 logger.info(f"Scheduling a takeprofit at {tp_price:.3f} for {symbol}")
                 # call the new function from alpaca_cli
                 spawn_close_position_at_takeprofit(symbol, tp_price)
-            elif data["strategy"] == "takeprofit" and data["side"] == "sell":
+            elif data["strategy"] == "takeprofit" and is_sell_side(data["side"]):
                 # If short, we might want to place a limit buy at predicted_low
                 # (though you'd need to store predicted_low similarly)
                 # For example:
@@ -192,11 +195,54 @@ def manage_positions(
                 logger.info(f"Scheduling a takeprofit at {predicted_low:.3f} for short {symbol}")
                 spawn_close_position_at_takeprofit(symbol, predicted_low)
 
+            # If strategy is 'highlow', place a limit order at predicted_low (for buys)
+            # or predicted_high (for shorts), and then schedule a takeprofit at the opposite predicted price.
+            elif data["strategy"] == "highlow":
+                if data["side"] == "buy":
+                    entry_price = data["predicted_low"]
+                    logger.info(
+                        f"(Highlow) Placing limit BUY order for {symbol} at predicted_low={entry_price:.2f}"
+                    )
+                    qty = get_qty(symbol, entry_price)
+                    alpaca_wrapper.open_order_at_price_or_all(symbol, qty=qty, side="buy", price=entry_price)
+
+                    tp_price = data["predicted_high"]
+                    logger.info(f"(Highlow) Scheduling takeprofit at predicted_high={tp_price:.3f} for {symbol}")
+                    spawn_close_position_at_takeprofit(symbol, tp_price)
+                else:
+                    entry_price = data["predicted_high"]
+                    logger.info(
+                        f"(Highlow) Placing limit SELL/short order for {symbol} at predicted_high={entry_price:.2f}"
+                    )
+                    qty = get_qty(symbol, entry_price)
+                    alpaca_wrapper.open_order_at_price_or_all(symbol, qty=qty, side="sell", price=entry_price)
+
+                    tp_price = data["predicted_low"]
+                    logger.info(f"(Highlow) Scheduling takeprofit at predicted_low={tp_price:.3f} for short {symbol}")
+                    spawn_close_position_at_takeprofit(symbol, tp_price)
+
+def get_qty(symbol, entry_price):
+    # Calculate qty as 15% of available buying power
+    buying_power = alpaca_wrapper.total_buying_power
+    qty = 0.15 * buying_power / entry_price
+    
+    # Round down to 3 decimal places for crypto
+    if symbol in crypto_symbols:
+        qty = floor(qty * 1000) / 1000.0
+    else:
+        # Round down to whole number for stocks
+        qty = floor(qty)
+    
+    # Ensure qty is valid
+    if qty <= 0:
+        logger.error(f"Calculated qty {qty} is invalid")
+        return 0
+    return qty
 
 def manage_market_close(
-    symbols: List[str],
-    previous_picks: Dict[str, Dict],
-    all_analyzed_results: Dict[str, Dict],
+        symbols: List[str],
+        previous_picks: Dict[str, Dict],
+        all_analyzed_results: Dict[str, Dict],
 ):
     """Execute market close position management."""
     logger.info("Managing positions for market close")
@@ -255,7 +301,7 @@ def analyze_next_day_positions(symbols: List[str]) -> Dict:
 
 
 def dry_run_manage_positions(
-    current_picks: Dict[str, Dict], previous_picks: Dict[str, Dict]
+        current_picks: Dict[str, Dict], previous_picks: Dict[str, Dict]
 ):
     """Simulate position management without executing trades."""
     positions = alpaca_wrapper.get_all_positions()
@@ -273,7 +319,7 @@ def dry_run_manage_positions(
                 f"Would close position for {symbol} as it's no longer in top picks"
             )
             should_close = True
-        elif symbol in current_picks and current_picks[symbol]["side"] != position.side:
+        elif symbol in current_picks and not is_same_side(current_picks[symbol]["side"], position.side):
             logger.info(
                 f"Would close position for {symbol} to switch direction from {position.side} to {current_picks[symbol]['side']}"
             )
@@ -283,7 +329,7 @@ def dry_run_manage_positions(
     for symbol, data in current_picks.items():
         position_exists = any(p.symbol == symbol for p in positions)
         correct_side = any(
-            p.symbol == symbol and p.side == data["side"] for p in positions
+            p.symbol == symbol and is_same_side(p.side, data["side"]) for p in positions
         )
 
         if not position_exists or not correct_side:
@@ -304,7 +350,15 @@ def main():
         "NET",
         "COIN",
         "MSFT",
-        "NFLX",
+        # "NFLX",
+        # adding more as we do quite well now with volatility
+        "META",
+        "AMZN",
+        "AMD",
+        "INTC",
+        "LCID",
+        "QUBT",
+
         "BTCUSD",
         "ETHUSD",
         "UNIUSD",
@@ -323,9 +377,10 @@ def main():
             today = now.date()
 
             # Initial analysis at NZ morning (22:00-22:30 EST)
-            if (now.hour == 22 and 0 <= now.minute < 30) and (
-                last_initial_run is None or last_initial_run != today
-            ):
+            # run at start of program to check
+            if last_initial_run is None or ((now.hour == 22 and 0 <= now.minute < 30) and (
+                    last_initial_run is None or last_initial_run != today
+            )):
 
                 logger.info("\nINITIAL ANALYSIS STARTING...")
                 all_analyzed_results = analyze_symbols(symbols)
@@ -343,12 +398,12 @@ def main():
 
             # Market open analysis (9:30-10:00 EST)
             elif (
-                (
-                    now.hour == market_open.hour
-                    and market_open.minute <= now.minute < market_open.minute + 30
-                )
-                and (last_market_open_run is None or last_market_open_run != today)
-                and is_nyse_trading_day_now()
+                    (
+                            now.hour == market_open.hour
+                            and market_open.minute <= now.minute < market_open.minute + 30
+                    )
+                    and (last_market_open_run is None or last_market_open_run != today)
+                    and is_nyse_trading_day_now()
             ):
 
                 logger.info("\nMARKET OPEN ANALYSIS STARTING...")
@@ -366,9 +421,9 @@ def main():
 
             # Market close analysis (15:45-16:00 EST)
             elif (
-                (now.hour == market_close.hour - 1 and now.minute >= 45)
-                and (last_market_close_run is None or last_market_close_run != today)
-                and is_nyse_trading_day_ending()
+                    (now.hour == market_close.hour - 1 and now.minute >= 45)
+                    and (last_market_close_run is None or last_market_close_run != today)
+                    and is_nyse_trading_day_ending()
             ):
 
                 logger.info("\nMARKET CLOSE ANALYSIS STARTING...")

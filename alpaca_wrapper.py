@@ -13,7 +13,7 @@ from alpaca.data import (
     CryptoHistoricalDataClient,
     CryptoLatestQuoteRequest,
 )
-from alpaca.trading import OrderType, LimitOrderRequest
+from alpaca.trading import OrderType, LimitOrderRequest, LimitOrderRequest, GetOrdersRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide
 from alpaca.trading.requests import MarketOrderRequest
@@ -22,6 +22,7 @@ from loguru import logger
 from retry import retry
 
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT
+from src.comparisons import is_buy_side, is_sell_side
 from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols
 from src.stock_utils import pairs_equal, remap_symbols
@@ -143,10 +144,10 @@ def has_current_open_position(symbol: str, side: str) -> bool:
         if float(position.market_value) < 4:
             continue
         if pairs_equal(position.symbol, symbol):
-            if position.side == "long" and side == "buy":
+            if is_buy_side(position.side) and is_buy_side(side):
                 logger.info("position already open")
                 return True
-            if position.side == "short" and side == "sell":
+            if is_sell_side(position.side) and is_sell_side(side):
                 logger.info("position already open")
                 return True
     return False
@@ -441,14 +442,14 @@ def get_orders():
 def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side="long", bid=None, ask=None):
     result = None
     # trading at market to add more safety in high spread situations
-    side = "buy" if side == "long" else "sell"
+    side = "buy" if is_buy_side(side) else "sell"
     if side == "buy" and bid:
         price = min(price, bid or price)
     else:
         price = max(price, ask or price)
 
     #skip crypto for now as its high fee
-    if currentBuySymbol in crypto_symbols and side == "buy":
+    if currentBuySymbol in crypto_symbols and is_buy_side(side):
         logger.info(f"Skipping Buying Alpaca crypto order for {currentBuySymbol}")
         logger.info(f"TMp measure as fees are too high IMO move to binance")
         return False
@@ -527,7 +528,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
                     side=side,
                     type=OrderType.LIMIT,
                     time_in_force="gtc",
-                    limit_price=str(math.floor(price) if side == "buy" else math.ceil(price)),
+                    limit_price=str(math.floor(price) if is_buy_side(side) else math.ceil(price)),
                 )
             )
         else:
@@ -538,7 +539,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
                     side=side,
                     type=OrderType.LIMIT,
                     time_in_force="gtc",
-                    limit_price=str(math.floor(price) if side == "buy" else math.ceil(price)),
+                    limit_price=str(math.floor(price) if is_buy_side(side) else math.ceil(price)),
                 )
             )
         print(result)
@@ -771,3 +772,75 @@ def close_position_near_market(position, pct_above_market=0.0):
         return False
         
     return result
+
+def get_executed_orders(alpaca_api):
+    """
+    Gets all historical orders that were executed.
+    
+    Args:
+        alpaca_api: The Alpaca trading client instance
+        
+    Returns:
+        List of executed orders
+    """
+    try:
+        # Get all orders with status=filled filter
+        orders = alpaca_api.get_orders(
+            filter=GetOrdersRequest(
+                status="filled"
+            )
+        )
+        return orders
+        
+    except Exception as e:
+        logger.error(f"Error getting executed orders: {e}")
+        traceback.print_exc()
+        return []
+
+def get_account_activities(
+    alpaca_api,
+    activity_types=None,
+    date=None,
+    direction='desc',
+    page_size=100,
+    page_token=None
+):
+    """
+    Retrieve account activities (trades, dividends, etc.) from the Alpaca API.
+    Pagination is handled via page_token. The activity_types argument can be any of:
+    'FILL', 'DIV', 'TRANS', 'MISC', etc.
+
+    Args:
+        alpaca_api: The Alpaca trading client instance.
+        activity_types: List of activity type strings (e.g. ['FILL', 'DIV']).
+        date: (Optional) The date for which you'd like to see activities.
+        direction: 'asc' or 'desc' for sorting.
+        page_size: The number of records to return per page (up to 100 if date is not set).
+        page_token: Used for pagination.
+
+    Returns:
+        A list of account activity records, or an empty list on error.
+    """
+    query_params = {}
+    if activity_types:
+        # Convert single str to list if needed
+        if isinstance(activity_types, str):
+            activity_types = [activity_types]
+        query_params["activity_types"] = ",".join(activity_types)
+
+    if date:
+        query_params["date"] = date
+    if direction:
+        query_params["direction"] = direction
+    if page_size:
+        query_params["page_size"] = str(page_size)
+    if page_token:
+        query_params["page_token"] = page_token
+
+    try:
+        # Directly use the TradingClient's underlying request method to access this endpoint
+        response = alpaca_api._request("GET", "/account/activities", data=query_params)
+        return response
+    except Exception as e:
+        logger.error(f"Error retrieving account activities: {e}")
+        return []

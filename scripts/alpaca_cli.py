@@ -18,6 +18,7 @@ from src.fixtures import crypto_symbols
 
 import pytz
 from alpaca.trading.client import TradingClient
+from jsonshelve import FlatShelf
 
 
 alpaca_api = tradeapi.REST(
@@ -27,6 +28,24 @@ alpaca_api = tradeapi.REST(
     'v2')
 
 logger = setup_logging("alpaca_cli.log")
+
+# We'll store strategy usage in a persistent shelf
+positions_shelf = FlatShelf("positions_shelf.json")
+
+def set_strategy_for_symbol(symbol: str, strategy: str) -> None:
+    """Record that a symbol is traded under the given strategy for today's date."""
+    day_key = datetime.now().strftime('%Y-%m-%d')
+    shelf_key = f"{symbol}-{day_key}"
+    positions_shelf[shelf_key] = strategy
+    # positions_shelf.commit()
+
+def get_strategy_for_symbol(symbol: str) -> str:
+    """Retrieve the strategy for a symbol for today's date, if any."""
+    day_key = datetime.now().strftime('%Y-%m-%d')
+    # Reload the shelf to avoid race conditions
+    positions_shelf.load()
+    shelf_key = f"{symbol}-{day_key}"
+    return positions_shelf.get(shelf_key, None)
 
 def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
     """
@@ -427,7 +446,7 @@ def show_account():
 
 def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=None):
     """
-    Wait up to 1 hour for the given pair's position to exist, 
+    Wait for up to 1 hour or 24 hours if symbol is under "highlow" strategy,
     then place a limit order to close that position at takeprofit_price.
     If no position is opened within the hour, or if something fails, exit.
     """
@@ -437,11 +456,18 @@ def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=
     if start_time is None:
         start_time = datetime.now()
 
-    max_wait_minutes = 60
+    # Determine wait time by strategy
+    strategy = get_strategy_for_symbol(pair)
+    if strategy == "highlow":
+        max_wait_minutes = 24 * 60
+        logger.info(f"{pair} is traded with 'highlow' strategy, using 24-hour wait.")
+    else:
+        max_wait_minutes = 60  # default
+
     while True:
         elapsed_minutes = (datetime.now() - start_time).seconds // 60
         if elapsed_minutes >= max_wait_minutes:
-            logger.error(f"Timed out waiting for position in {pair}")
+            logger.error(f"Timed out waiting for position in {pair} under strategy={strategy}")
             return False
 
         all_positions = alpaca_wrapper.get_all_positions()
@@ -466,7 +492,6 @@ def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=
         # Place the takeprofit order
         logger.info(f"Placing limit order to close {pair} at {takeprofit_price}")
         try:
-            # If it's a long, we SELL at takeprofit. For short, we BUY
             side = 'sell' if position.side == 'long' else 'buy'
             alpaca_wrapper.open_order_at_price(pair, position.qty, side, takeprofit_price)
             return True
