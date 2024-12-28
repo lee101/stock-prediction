@@ -1,15 +1,19 @@
 import os
+
+import numpy as np
 import pytest
 import torch
-import numpy as np
+
 from disk_cache import disk_cache
 
 # Set the environment variable for testing
 os.environ['TESTING'] = 'False'
 
+
 @disk_cache
 def cached_function(tensor):
     return tensor * 2
+
 
 def test_disk_cache_with_torch_tensor():
     # Create a random tensor
@@ -24,6 +28,7 @@ def test_disk_cache_with_torch_tensor():
     # Check if the results are the same
     assert torch.all(result1.eq(result2)), "Cached result doesn't match the original result"
 
+
 def test_disk_cache_with_different_tensors():
     # Create two different random tensors
     tensor1 = torch.rand(5, 5)
@@ -35,6 +40,7 @@ def test_disk_cache_with_different_tensors():
 
     # Check if the results are different
     assert not torch.all(result1.eq(result2)), "Results for different tensors should not be the same"
+
 
 def test_disk_cache_persistence():
     # Create a random tensor
@@ -64,6 +70,7 @@ def test_disk_cache_persistence():
     assert torch.all(result2.eq(tensor2 * 2)), "Result2 is not correct"
     assert torch.all(result3.eq(tensor * 2)), "Result3 is not correct"
 
+
 def test_disk_cache_with_numpy_array():
     # Create a random numpy array
     array = np.random.rand(5, 5)
@@ -76,6 +83,7 @@ def test_disk_cache_with_numpy_array():
 
     # Check if the result is correct
     assert torch.all(result.eq(tensor * 2)), "Result is not correct for numpy array converted to tensor"
+
 
 if __name__ == "__main__":
     pytest.main([__file__])

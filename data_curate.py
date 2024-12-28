@@ -39,19 +39,19 @@ def download_daily_stock_data(path=None):
         'REA.AX',
         'XRO.AX',
         'SEK.AX',
-        'NXL.AX', # data analytics
-        'APX.AX', # data collection for ml/labelling
+        'NXL.AX',  # data analytics
+        'APX.AX',  # data collection for ml/labelling
         'CDD.AX',
         'NVX.AX',
-        'BRN.AX', # brainchip
+        'BRN.AX',  # brainchip
         'AV1.AX',
         # 'TEAM',
         # 'PFE',
         # 'MRNA',
         'MSFT',
         'AMD',
-    # ]
-    # symbols = [
+        # ]
+        # symbols = [
         'BTCUSD',
         'ETHUSD',
         # 'LTCUSD',

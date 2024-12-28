@@ -1,11 +1,7 @@
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
-from sqlalchemy.sql.expression import text
-
-from models.featureset import Serializer
 
 Base = declarative_base()
-from sqlalchemy import Column, String, Float, Sequence, DateTime, func, BigInteger, ForeignKey
+from sqlalchemy import Column, String, Float, Sequence, DateTime, func, BigInteger
 
 
 class Trade(Base):

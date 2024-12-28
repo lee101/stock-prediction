@@ -22,14 +22,18 @@ def log_time(prefix=""):
 
 import time
 
+
 def debounce(seconds, key_func=None):
     def decorator(func):
         last_called = {}
+
         def debounced(*args, **kwargs):
             key = key_func(*args, **kwargs) if key_func else None
             elapsed = time.time() - last_called.get(key, 0.0)
             if elapsed >= seconds:
                 last_called[key] = time.time()
                 return func(*args, **kwargs)
+
         return debounced
+
     return decorator

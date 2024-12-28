@@ -13,6 +13,7 @@ def is_nyse_trading_day_ending():
     # Check if it's the end of the trading day
     return now_nyse.hour in [14, 15, 16, 17]  # NYSE closes at 16:00 EST
 
+
 def is_nyse_trading_day_now():
     # Get current time in UTC
     now_utc = datetime.now(pytz.timezone('UTC'))

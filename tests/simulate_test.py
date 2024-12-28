@@ -1,10 +1,6 @@
-import time
-import unittest.mock
-from datetime import datetime, timedelta
-from freezegun import freeze_time
+from datetime import datetime
 
-from env_real import SIMULATE, ADD_LATEST
-from tests.test_data_utils import get_time
+from freezegun import freeze_time
 
 
 def test_foo():

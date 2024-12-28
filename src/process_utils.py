@@ -1,10 +1,9 @@
 import subprocess
-from typing import Optional
+from pathlib import Path
 
 from loguru import logger
 
 from src.utils import debounce
-from pathlib import Path
 
 cwd = Path.cwd()
 
@@ -41,7 +40,8 @@ def ramp_into_position(symbol: str, side: str = "buy"):
         start_new_session=True,
     )
 
-@debounce(60 * 10, key_func=lambda symbol, takeprofit_price: f"{symbol}_{takeprofit_price}") # only once in 10 minutes
+
+@debounce(60 * 10, key_func=lambda symbol, takeprofit_price: f"{symbol}_{takeprofit_price}")  # only once in 10 minutes
 def spawn_close_position_at_takeprofit(symbol: str, takeprofit_price: float):
     command = f"PYTHONPATH={cwd} python scripts/alpaca_cli.py close_position_at_takeprofit {symbol} --takeprofit_price={takeprofit_price}"
     logger.info(f"Running command {command}")

@@ -10,10 +10,12 @@ import torch
 os.environ['TESTING'] = 'True'
 
 # Import the function to test
-from backtest_test3_inline import backtest_forecasts, evaluate_highlow_strategy, simple_buy_sell_strategy, all_signals_strategy, \
+from backtest_test3_inline import backtest_forecasts, evaluate_highlow_strategy, simple_buy_sell_strategy, \
+    all_signals_strategy, \
     evaluate_strategy, buy_hold_strategy, unprofit_shutdown_buy_hold, SPREAD
 
 trading_fee = 0.0025
+
 
 @pytest.fixture
 def mock_stock_data():
@@ -34,7 +36,10 @@ def mock_pipeline():
     mock_pipeline_instance.predict.return_value = [mock_forecast]
     return mock_pipeline_instance
 
+
 trading_fee = 0.0025
+
+
 @patch('backtest_test3_inline.download_daily_stock_data')
 @patch('backtest_test3_inline.BaseChronosPipeline.from_pretrained')
 def test_backtest_forecasts(mock_pipeline_class, mock_download_data, mock_stock_data, mock_pipeline):
@@ -207,7 +212,7 @@ def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_dow
         # Calculate expected unprofit shutdown return
         signals = [1]  # Start with position
         for j in range(1, len(actual_returns)):
-            if actual_returns.iloc[j-1] <= 0:
+            if actual_returns.iloc[j - 1] <= 0:
                 signals.extend([0] * (len(actual_returns) - j))
                 break
             signals.append(1)
@@ -216,10 +221,10 @@ def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_dow
         for j in range(len(signals)):
             if j == 0:
                 # Initial position
-                expected_gains.append(1 + actual_returns.iloc[j] - (2 * trading_fee + (1-SPREAD)/2))
-            elif signals[j] != signals[j-1]:
+                expected_gains.append(1 + actual_returns.iloc[j] - (2 * trading_fee + (1 - SPREAD) / 2))
+            elif signals[j] != signals[j - 1]:
                 # Position change
-                expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]) - (2 * trading_fee + (1-SPREAD)/2))
+                expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]) - (2 * trading_fee + (1 - SPREAD) / 2))
             else:
                 # Holding position
                 expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]))
@@ -227,19 +232,22 @@ def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_dow
         expected_return = np.prod(expected_gains) - 1
         assert pytest.approx(results['unprofit_shutdown_return'].iloc[i], rel=1e-4) == expected_return
 
+
 def test_evaluate_highlow_strategy():
     # Test case 1: Perfect predictions - should give positive returns
     close_pred = np.array([101, 102, 103])
-    high_pred = np.array([103, 104, 105]) 
+    high_pred = np.array([103, 104, 105])
     low_pred = np.array([99, 100, 101])
     actual_close = np.array([101, 102, 103])
     actual_high = np.array([103, 104, 105])
     actual_low = np.array([99, 100, 101])
-    
+
     returns, sharpe = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
-                                      actual_close, actual_high, actual_low,
-                                      trading_fee=0.0025)
+                                                actual_close, actual_high, actual_low,
+                                                trading_fee=0.0025)
     assert returns > 0
+
+
 def test_evaluate_highlow_strategy_wrong_predictions():
     """
     The code only "buys" when predictions > 0, so negative predictions produce 0 daily returns
@@ -247,7 +255,7 @@ def test_evaluate_highlow_strategy_wrong_predictions():
     but the market also went up" won't penalize us. If you do want negative returns for a wrong guess,
     you'd need to add short logic in the function. For now, we just expect some profit or near zero.
     """
-    close_pred = np.array([0.5, 0.5, 0.5])    # all are > 0 => we buy each day
+    close_pred = np.array([0.5, 0.5, 0.5])  # all are > 0 => we buy each day
     high_pred = np.array([0.6, 0.6, 0.6])
     low_pred = np.array([0.4, 0.4, 0.4])
     actual_close = np.array([0.5, 0.6, 0.7])  # actually goes up
@@ -259,6 +267,7 @@ def test_evaluate_highlow_strategy_wrong_predictions():
                                                 trading_fee=0.0025)
     # We now at least expect a positive number (since we always buy).
     assert returns > 0, f"Expected a positive return for these guesses, got {returns}"
+
 
 def test_evaluate_highlow_strategy_flat_predictions():
     """
@@ -279,6 +288,7 @@ def test_evaluate_highlow_strategy_flat_predictions():
     # Now we expect near-zero returns since the function won't buy any day
     assert abs(returns) < 0.01, f"Expected near zero, got {returns}"
 
+
 def test_evaluate_highlow_strategy_trading_fees():
     # Test case 4: Trading fees should reduce returns
     close_pred = np.array([101, 102, 103])
@@ -287,12 +297,11 @@ def test_evaluate_highlow_strategy_trading_fees():
     actual_close = np.array([101, 102, 103])
     actual_high = np.array([103, 104, 105])
     actual_low = np.array([99, 100, 101])
-    
-    returns_low_fee = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
-                                              actual_close, actual_high, actual_low,
-                                              trading_fee=0.0025)
-    returns_high_fee = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
-                                               actual_close, actual_high, actual_low,
-                                               trading_fee=0.01)
-    assert returns_low_fee > returns_high_fee
 
+    returns_low_fee = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
+                                                actual_close, actual_high, actual_low,
+                                                trading_fee=0.0025)
+    returns_high_fee = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
+                                                 actual_close, actual_high, actual_low,
+                                                 trading_fee=0.01)
+    assert returns_low_fee > returns_high_fee

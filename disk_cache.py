@@ -2,13 +2,15 @@ import functools
 import hashlib
 import os
 import pickle
-import torch
 import shutil
 import time
 
+import torch
+
+
 def disk_cache(func):
     cache_dir = os.path.join(os.path.dirname(__file__), '.cache', func.__name__)
-    
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         # Check if we're in testing mode

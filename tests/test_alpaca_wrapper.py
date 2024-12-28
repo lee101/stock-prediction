@@ -9,9 +9,9 @@ def test_get_latest_data():
 
 
 def test_has_current_open_position():
-    has_position = has_current_open_position('BTCUSD', 'buy') # real
+    has_position = has_current_open_position('BTCUSD', 'buy')  # real
     assert has_position is True
-    has_position = has_current_open_position('BTCUSD', 'sell') # real
+    has_position = has_current_open_position('BTCUSD', 'sell')  # real
     assert has_position is False
-    has_position = has_current_open_position('LTCUSD', 'buy') # real
+    has_position = has_current_open_position('LTCUSD', 'buy')  # real
     assert has_position is False
