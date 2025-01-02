@@ -260,8 +260,8 @@ def backtest_forecasts(symbol, num_simulations=100):
             # Log validation metrics
             tb_writer.add_scalar(f'{symbol}/{key_to_predict}/val_loss', mean_val_loss, i)
 
-            if __name__ == "__main__":
-                print(f"mean_val_loss: {mean_val_loss}")
+            # if __name__ == "__main__":
+            #     print(f"mean_val_loss: {mean_val_loss}")
 
             last_preds[key_to_predict.lower() + "_last_price"] = simulation_data[key_to_predict].iloc[-1]
             last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[-1]
@@ -402,7 +402,10 @@ def backtest_forecasts(symbol, num_simulations=100):
             'entry_takeprofit_finalday': float(entry_takeprofit_finalday_return),
             'highlow_return': float(highlow_return),
             'highlow_sharpe': float(highlow_sharpe),
-            'highlow_finalday_return': float(highlow_finalday_return)
+            'highlow_finalday_return': float(highlow_finalday_return),
+            'close_val_loss': float(last_preds['close_val_loss']),
+            'high_val_loss': float(last_preds['high_val_loss']),
+            'low_val_loss': float(last_preds['low_val_loss']),
         }
 
         results.append(result)
@@ -430,6 +433,11 @@ def backtest_forecasts(symbol, num_simulations=100):
                          results_df['entry_takeprofit_sharpe'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_return', results_df['highlow_return'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_sharpe', results_df['highlow_sharpe'].mean(), 0)
+
+    logger.info(f"\nAverage Validation Losses:")
+    logger.info(f"Close Val Loss: {results_df['close_val_loss'].mean():.4f}")
+    logger.info(f"High Val Loss: {results_df['high_val_loss'].mean():.4f}") 
+    logger.info(f"Low Val Loss: {results_df['low_val_loss'].mean():.4f}")
 
     logger.info(f"\nBacktest results for {symbol} over {num_simulations} simulations:")
     logger.info(f"Average Simple Strategy Return: {results_df['simple_strategy_return'].mean():.4f}")
@@ -612,8 +620,8 @@ if __name__ == "__main__":
     else:
         symbol = sys.argv[1]
 
-    backtest_forecasts("NVDA")
+    # backtest_forecasts("NVDA")
     backtest_forecasts(symbol)
-    backtest_forecasts("UNIUSD")
-    backtest_forecasts("AAPL")
-    backtest_forecasts("GOOG")
+    # backtest_forecasts("UNIUSD")
+    # backtest_forecasts("AAPL")
+    # backtest_forecasts("GOOG")
