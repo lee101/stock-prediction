@@ -231,9 +231,10 @@ def backtest_forecasts(symbol, num_simulations=100):
 
             training = price[:-7]
             validation = price[-7:]
-
             load_pipeline()
             predictions = []
+            predictions_p10 = []
+            predictions_p90 = []
             for pred_idx in reversed(range(1, 8)):
                 current_context = price[:-pred_idx]
                 context = torch.tensor(current_context["y"].values, dtype=torch.float)
@@ -249,8 +250,12 @@ def backtest_forecasts(symbol, num_simulations=100):
                 )
                 low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
                 predictions.append(median.item())
+                predictions_p10.append(low.item())
+                predictions_p90.append(high.item())
 
             predictions = torch.tensor(predictions)
+            predictions_p10 = torch.tensor(predictions_p10)
+            predictions_p90 = torch.tensor(predictions_p90)
             actuals = series_to_tensor(validation["y"])
             trading_preds = (predictions[:-1] > 0) * 2 - 1
 
@@ -274,6 +279,8 @@ def backtest_forecasts(symbol, num_simulations=100):
             last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:-1].view(-1)
             last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
             last_preds[key_to_predict.lower() + "_predictions"] = predictions[:-1].view(-1)
+            last_preds[key_to_predict.lower() + "_predictions_p10"] = predictions_p10[:-1].view(-1)
+            last_preds[key_to_predict.lower() + "_predictions_p90"] = predictions_p90[:-1].view(-1)
 
         # Calculate actual returns
         actual_returns = pd.Series(last_preds["close_actual_movement_values"].numpy())
@@ -339,6 +346,25 @@ def backtest_forecasts(symbol, num_simulations=100):
         )
         highlow_finalday_return = highlow_return / len(actual_returns)
 
+        # New magnitude strategy
+        magnitude_return, magnitude_sharpe, magnitude_returns = evaluate_magnitude_strategy(
+            last_preds["close_predictions"],
+            last_preds["high_predictions"],
+            last_preds["low_predictions"],
+            last_preds["close_predictions_p10"],
+            last_preds["high_predictions_p10"],
+            last_preds["low_predictions_p10"],
+            last_preds["close_predictions_p90"],
+            last_preds["high_predictions_p90"],
+            last_preds["low_predictions_p90"],
+            last_preds["close_actual_movement_values"],
+            last_preds["high_actual_movement_values"],
+            last_preds["low_actual_movement_values"],
+            trading_fee,
+            is_crypto=is_crypto
+        )
+        magnitude_finalday_return = magnitude_return / len(actual_returns)
+
         # Log strategy metrics to tensorboard
         tb_writer.add_scalar(f'{symbol}/strategies/simple/total_return', simple_total_return, i)
         tb_writer.add_scalar(f'{symbol}/strategies/simple/sharpe', simple_sharpe, i)
@@ -364,6 +390,10 @@ def backtest_forecasts(symbol, num_simulations=100):
         tb_writer.add_scalar(f'{symbol}/strategies/highlow/sharpe', highlow_sharpe, i)
         tb_writer.add_scalar(f'{symbol}/strategies/highlow/finalday', highlow_finalday_return, i)
 
+        tb_writer.add_scalar(f'{symbol}/strategies/magnitude/total_return', magnitude_return, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/magnitude/sharpe', magnitude_sharpe, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/magnitude/finalday', magnitude_finalday_return, i)
+
         # Log returns over time
         for t, ret in enumerate(simple_returns):
             tb_writer.add_scalar(f'{symbol}/returns_over_time/simple', ret, t)
@@ -377,6 +407,8 @@ def backtest_forecasts(symbol, num_simulations=100):
             tb_writer.add_scalar(f'{symbol}/returns_over_time/entry_takeprofit', ret, t)
         for t, ret in enumerate(highlow_returns):
             tb_writer.add_scalar(f'{symbol}/returns_over_time/highlow', ret, t)
+        for t, ret in enumerate(magnitude_returns):
+            tb_writer.add_scalar(f'{symbol}/returns_over_time/magnitude', ret, t)
 
         # print(last_preds)
         result = {
@@ -406,6 +438,9 @@ def backtest_forecasts(symbol, num_simulations=100):
             'close_val_loss': float(last_preds['close_val_loss']),
             'high_val_loss': float(last_preds['high_val_loss']),
             'low_val_loss': float(last_preds['low_val_loss']),
+            'magnitude_return': float(magnitude_return),
+            'magnitude_sharpe': float(magnitude_sharpe),
+            'magnitude_finalday_return': float(magnitude_finalday_return),
         }
 
         results.append(result)
@@ -433,6 +468,8 @@ def backtest_forecasts(symbol, num_simulations=100):
                          results_df['entry_takeprofit_sharpe'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_return', results_df['highlow_return'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_sharpe', results_df['highlow_sharpe'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/magnitude_avg_return', results_df['magnitude_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/magnitude_avg_sharpe', results_df['magnitude_sharpe'].mean(), 0)
 
     logger.info(f"\nAverage Validation Losses:")
     logger.info(f"Close Val Loss: {results_df['close_val_loss'].mean():.4f}")
@@ -461,20 +498,26 @@ def backtest_forecasts(symbol, num_simulations=100):
     logger.info(f"Average Highlow Return: {results_df['highlow_return'].mean():.4f}")
     logger.info(f"Average Highlow Sharpe: {results_df['highlow_sharpe'].mean():.4f}")
     logger.info(f"Average Highlow Final Day Return: {results_df['highlow_finalday_return'].mean():.4f}")
+    logger.info(f"Average Magnitude Return: {results_df['magnitude_return'].mean():.4f}")
+    logger.info(f"Average Magnitude Sharpe: {results_df['magnitude_sharpe'].mean():.4f}")
+    logger.info(f"Average Magnitude Final Day Return: {results_df['magnitude_finalday_return'].mean():.4f}")
 
     # Determine which strategy is best overall
     avg_simple = results_df["simple_strategy_return"].mean()
     avg_allsignals = results_df["all_signals_strategy_return"].mean()
     avg_takeprofit = results_df["entry_takeprofit_return"].mean()
     avg_highlow = results_df["highlow_return"].mean()
+    avg_magnitude = results_df["magnitude_return"].mean()
 
-    best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow)
+    best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_magnitude)
     if best_return == avg_highlow:
         best_strategy = "highlow"
     elif best_return == avg_takeprofit:
         best_strategy = "takeprofit"
     elif best_return == avg_allsignals:
         best_strategy = "all_signals"
+    elif best_return == avg_magnitude:
+        best_strategy = "magnitude"
     else:
         best_strategy = "simple"
 
@@ -613,9 +656,96 @@ def evaluate_highlow_strategy(
     return float(total_return), float(sharpe_ratio), daily_returns
 
 
+def evaluate_magnitude_strategy(
+    close_predictions, high_predictions, low_predictions, 
+    close_predictions_p10, high_predictions_p10, low_predictions_p10,
+    close_predictions_p90, high_predictions_p90, low_predictions_p90,
+    actual_close, actual_high, actual_low,
+    trading_fee, 
+    is_crypto=False
+):
+    """
+    Magnitude-based approach using median (.5) plus p10 & p90 quantiles:
+    - Buy if the 90% quantile for (pred_high) minus the 10% quantile for (pred_close)
+      still exceeds fees => buy at actual_close, exit near actual_high.
+    - If not crypto and the 90% quantile for (pred_close) minus the 10% quantile for (pred_low)
+      still exceeds fees => short at actual_close, cover near actual_low.
+    - Otherwise skip.
+    """
+    daily_returns = []
+    last_side = None
+    threshold = 2 * trading_fee  # simple threshold for round-trip cost
+
+    for idx in range(len(close_predictions)):
+        # Median-based predictions
+        pred_close = close_predictions[idx]
+        act_close = actual_close[idx]
+        act_high = actual_high[idx]
+        act_low = actual_low[idx]
+
+        # p10/p90 for scenario risk checks
+        pred_close_p10 = close_predictions_p10[idx]
+        pred_high_p90  = high_predictions_p90[idx]
+        pred_close_p90 = close_predictions_p90[idx]
+        pred_low_p10   = low_predictions_p10[idx]
+
+        daily_gain = 0.0
+        new_side = None
+
+        # Check "worst-case buy" scenario:
+        up_move_pred = pred_high_p90 - pred_close_p10
+        # If even that wide range is above threshold => buy
+        if up_move_pred > threshold:
+            entry_price = act_close
+            exit_price  = act_high
+            new_side = "buy"
+            daily_gain = exit_price - entry_price
+        # Otherwise, try short if not crypto:
+        elif (not is_crypto):
+            down_move_pred = pred_close_p90 - pred_low_p10
+            if down_move_pred > threshold:
+                entry_price = act_close
+                exit_price  = act_low
+                new_side = "short"
+                daily_gain = entry_price - exit_price
+            else:
+                # Skip if neither condition is met
+                daily_returns.append(0.0)
+                last_side = None
+                continue
+        else:
+            # Crypto & no buy scenario => skip
+            daily_returns.append(0.0)
+            last_side = None
+            continue
+
+        # Fees if changing side
+        fee_to_charge = 0.0
+        if new_side != last_side:
+            fee_to_charge += trading_fee
+            if last_side is not None:
+                fee_to_charge += trading_fee
+
+        daily_gain -= fee_to_charge
+        daily_returns.append(daily_gain)
+        last_side = new_side
+
+    # Compute final return & sharpe
+    daily_returns = np.array(daily_returns, dtype=float)
+    total_return = float(daily_returns.sum())
+    if daily_returns.std() == 0.0:
+        sharpe_ratio = 0.0
+    else:
+        sharpe_ratio = float(daily_returns.mean() / daily_returns.std() * np.sqrt(252))
+
+    return total_return, sharpe_ratio, daily_returns
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        symbol = "ETHUSD"
+        # symbol = "ETHUSD"
+        # symbol = "NVDA"
+        symbol = "AAPL"
         print("Usage: python backtest_test.py <symbol> defaultint to eth")
     else:
         symbol = sys.argv[1]
