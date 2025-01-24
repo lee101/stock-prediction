@@ -15,6 +15,7 @@ from pandas.plotting import register_matplotlib_converters
 from retry import retry
 
 from alpaca_wrapper import latest_data
+from data_utils import is_fp_close_to_zero
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
 from src.fixtures import crypto_symbols
 from src.stock_utils import remap_symbols
@@ -144,7 +145,12 @@ def download_exchange_latest_data(api, symbol):
         ask_price = float(very_latest_data.ask_price)
         bid_price = float(very_latest_data.bid_price)
         logger.info(f"Latest {symbol} bid: {bid_price}, ask: {ask_price}")
-        if bid_price != 0 and ask_price != 0:
+        if is_fp_close_to_zero(bid_price) or is_fp_close_to_zero(ask_price):
+            if not is_fp_close_to_zero(bid_price) or not is_fp_close_to_zero(ask_price):
+                logger.warning(f"Invalid bid/ask prices for {symbol}, one is incorrect as its zero 0- using max")
+                bid_price = max(bid_price, ask_price)
+                ask_price = max(bid_price, ask_price)
+        if not is_fp_close_to_zero(bid_price) and not is_fp_close_to_zero(ask_price):
             # only update the latest row
             latest_data_dl.iloc[-1]['close'] = (bid_price + ask_price) / 2.
             spread = ask_price / bid_price
