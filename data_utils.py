@@ -31,3 +31,9 @@ def drop_n_rows(df, n):
     """
     drop_idxes = np.arange(0, len(df), n)
     df.drop(drop_idxes, inplace=True)
+
+def is_fp_close(number, tol=1e-6):
+    return abs(number - round(number)) < tol
+
+def is_fp_close_to_zero(number, tol=1e-6):
+    return abs(number) < tol
