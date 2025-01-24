@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from time import sleep
+import traceback
 from typing import Optional
 
 import alpaca_trade_api as tradeapi
@@ -383,6 +384,7 @@ def ramp_into_position(pair, side, start_time=None):
                 sleep(sleep_time)
 
             except Exception as e:
+                traceback.print_exc()
                 logger.error(f"Error during order placement: {e}")
                 retries += 1
                 if retries >= max_retries:
@@ -392,6 +394,7 @@ def ramp_into_position(pair, side, start_time=None):
                 continue
 
         except Exception as e:
+            traceback.print_exc()
             logger.error(f"Error in ramp_into_position main loop: {e}")
             retries += 1
             if retries >= max_retries:

@@ -42,7 +42,7 @@ data_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
 force_open_the_clock = False
 
 
-@cachetools.cached(cache=cachetools.TTLCache(maxsize=100, ttl=60 * 5))
+@cachetools.cached(cache=cachetools.TTLCache(maxsize=100, ttl=60 * 3)) # 3 mins
 def get_clock(retries=3):
     clock = get_clock_internal(retries)
     if not clock.is_open and force_open_the_clock:
