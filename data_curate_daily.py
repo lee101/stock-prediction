@@ -60,19 +60,21 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
     found_symbols = {}
     remaining_symbols = []
     end = datetime.datetime.now().strftime('%Y-%m-%d')
+    # todo only do this in test mode
+    # if False:
+    #     for symbol in symbols:
+    #         # Look for matching CSV files in save_path
+    #         symbol_files = list(save_path.glob(f'{symbol.replace("/", "-")}*.csv'))
+    #         if symbol_files:
+    #             # Use most recent file if multiple exist
+    #             latest_file = max(symbol_files, key=lambda x: x.stat().st_mtime)
+    #             found_symbols[symbol] = pd.read_csv(latest_file)
+    #         else:
+    #             remaining_symbols.append(symbol)
 
-    for symbol in symbols:
-        # Look for matching CSV files in save_path
-        symbol_files = list(save_path.glob(f'{symbol.replace("/", "-")}*.csv'))
-        if symbol_files:
-            # Use most recent file if multiple exist
-            latest_file = max(symbol_files, key=lambda x: x.stat().st_mtime)
-            found_symbols[symbol] = pd.read_csv(latest_file)
-        else:
-            remaining_symbols.append(symbol)
-
-    if not remaining_symbols:
-        return found_symbols[symbols[-1]] if symbols else DataFrame()
+    #     if not remaining_symbols:
+    #         return found_symbols[symbols[-1]] if symbols else DataFrame()
+    remaining_symbols = symbols
 
     alpaca_clock = api.get_clock()
     if not alpaca_clock.is_open and not all_data_force:
@@ -141,13 +143,18 @@ def download_exchange_latest_data(api, symbol):
         # check if market closed
         ask_price = float(very_latest_data.ask_price)
         bid_price = float(very_latest_data.bid_price)
+        logger.info(f"Latest {symbol} bid: {bid_price}, ask: {ask_price}")
         if bid_price != 0 and ask_price != 0:
-            latest_data_dl["close"] = (bid_price + ask_price) / 2.
+            # only update the latest row
+            latest_data_dl.iloc[-1]['close'] = (bid_price + ask_price) / 2.
             spread = ask_price / bid_price
             logger.info(f"{symbol} spread {spread}")
             spreads[symbol] = spread
             bids[symbol] = bid_price
             asks[symbol] = ask_price
+
+    logger.info(f"Data timestamp: {latest_data_dl.index[-1]}")
+    logger.info(f"Current time: {datetime.datetime.now(tz=pytz.utc)}")
     return latest_data_dl
 
 
@@ -188,7 +195,8 @@ def download_stock_data_between_times(api, end, start, symbol):
         try:
             daily_df.drop(['exchange'], axis=1, inplace=True)
         except KeyError:
-            logger.info(f"{symbol} has no exchange key - this is okay")
+            pass
+            #logger.info(f"{symbol} has no exchange key - this is okay")
         return daily_df
     else:
         daily_df = get_bars(api, end, start, symbol)
@@ -216,10 +224,10 @@ def crypto_get_bars(end, start, symbol):
 
 def visualize_stock_data(df):
     register_matplotlib_converters()
-    df.plot(x='Date', y='Close')
+    df.plot(x='timestamp', y='close')
     plt.show()
 
 
 if __name__ == '__main__':
-    df = download_daily_stock_data()
+    df = download_daily_stock_data(symbols=['GOOGL'])
     visualize_stock_data(df)

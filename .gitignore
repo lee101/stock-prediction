@@ -18,3 +18,4 @@ __pycache__
 __pycache__*
 logfile.log
 *.log
+positions_shelf.json
