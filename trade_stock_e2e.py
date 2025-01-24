@@ -35,7 +35,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     for symbol in symbols:
         try:
             logger.info(f"Analyzing {symbol}")
-            num_simulations = 10 # not many because we need to adapt strats? eg the wierd spikes in uniusd are a big opportunity to trade w high/low
+            # not many because we need to adapt strats? eg the wierd spikes in uniusd are a big opportunity to trade w high/low
+            # but then i bumped up because its not going to say buy crypto when its down, if its most recent based?
+            num_simulations = 70 
 
             backtest_df = backtest_forecasts(symbol, num_simulations)
             # Get each strategy's average return
