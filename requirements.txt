@@ -108,3 +108,5 @@ scikit-learn
 
 python-binance
 typer
+diskcache
+anthropic
