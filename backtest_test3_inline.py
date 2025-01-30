@@ -202,215 +202,19 @@ def backtest_forecasts(symbol, num_simulations=100):
 
     is_crypto = symbol in crypto_symbols
 
-    for i in range(0, num_simulations * 3, 3):  # jump 3 to cover more area in backtest
-        # Take one day off each iteration
-        simulation_data = stock_data.iloc[:-(i + 1)].copy(deep=True)
-
+    for sim_idx in range(0, num_simulations * 3, 3):  # jump 3 to cover more area in backtest
+        simulation_data = stock_data.iloc[:-(sim_idx + 1)].copy(deep=True)
         if simulation_data.empty:
-            logger.warning(f"No data left for simulation {i + 1}")
+            logger.warning(f"No data left for simulation {sim_idx + 1}")
             continue
 
-        last_preds = {
-            'instrument': symbol,
-            'close_last_price': simulation_data['Close'].iloc[-1],
-        }
-        # not predicting open because nothing todo with it
-        for key_to_predict in ['Close', 'Low', 'High']:  # , 'Open']:
-            data = pre_process_data(simulation_data, key_to_predict)
-            price = data[["Close", "High", "Low", "Open"]]
-
-            price = price.rename(columns={"Date": "time_idx"})
-            price["ds"] = pd.date_range(start="1949-01-01", periods=len(price), freq="D").values
-            price['y'] = price[key_to_predict].shift(-1)
-            price['trade_weight'] = (price["y"] > 0) * 2 - 1
-
-            price.drop(price.tail(1).index, inplace=True)
-            price['id'] = price.index
-            price['unique_id'] = 1
-            price = price.dropna()
-
-            training = price[:-7]
-            validation = price[-7:]
-
-            load_pipeline()
-            predictions = []
-            for pred_idx in reversed(range(1, 8)):
-                current_context = price[:-pred_idx]
-                context = torch.tensor(current_context["y"].values, dtype=torch.float)
-
-                prediction_length = 1
-                forecast = cached_predict(
-                    context,
-                    prediction_length,
-                    num_samples=20,
-                    temperature=1.0,
-                    top_k=4000,
-                    top_p=1.0,
-                )
-                low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
-                predictions.append(median.item())
-
-            predictions = torch.tensor(predictions)
-            actuals = series_to_tensor(validation["y"])
-            trading_preds = (predictions[:-1] > 0) * 2 - 1
-
-            error = np.array(validation["y"][:-1].values) - np.array(predictions[:-1])
-            mean_val_loss = np.abs(error).mean()
-
-            # Log validation metrics
-            tb_writer.add_scalar(f'{symbol}/{key_to_predict}/val_loss', mean_val_loss, i)
-
-            # if __name__ == "__main__":
-            #     print(f"mean_val_loss: {mean_val_loss}")
-
-            last_preds[key_to_predict.lower() + "_last_price"] = simulation_data[key_to_predict].iloc[-1]
-            last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[-1]
-            last_preds[key_to_predict.lower() + "_predicted_price_value"] = last_preds[
-                                                                                key_to_predict.lower() + "_last_price"] + (
-                                                                                    last_preds[
-                                                                                        key_to_predict.lower() + "_last_price"] *
-                                                                                    predictions[-1])
-            last_preds[key_to_predict.lower() + "_val_loss"] = mean_val_loss
-            last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:-1].view(-1)
-            last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
-            last_preds[key_to_predict.lower() + "_predictions"] = predictions[:-1].view(-1)
-
-        # Calculate actual returns
-        actual_returns = pd.Series(last_preds["close_actual_movement_values"].numpy())
-
-        # Simple buy/sell strategy
-        simple_signals = simple_buy_sell_strategy(
-            last_preds["close_predictions"],
-            is_crypto=is_crypto
-        )
-        simple_total_return, simple_sharpe, simple_returns = evaluate_strategy(simple_signals, actual_returns,
-                                                                               trading_fee)
-        simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
-
-        # All signals strategy
-        all_signals = all_signals_strategy(
-            last_preds["close_predictions"],
-            last_preds["high_predictions"],
-            last_preds["low_predictions"],
-            is_crypto=is_crypto
-        )
-        all_signals_total_return, all_signals_sharpe, all_signals_returns = evaluate_strategy(all_signals,
-                                                                                              actual_returns,
-                                                                                              trading_fee)
-        all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
-
-        # Buy and hold strategy
-        buy_hold_signals = buy_hold_strategy(last_preds["close_predictions"])
-        buy_hold_return, buy_hold_sharpe, buy_hold_returns = evaluate_strategy(buy_hold_signals, actual_returns,
-                                                                               trading_fee)
-        buy_hold_finalday_return = actual_returns.iloc[-1] - (2 * trading_fee * SPREAD)
-
-        # Unprofit shutdown buy and hold strategy
-        unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns,
-                                                               is_crypto=is_crypto)
-        unprofit_shutdown_return, unprofit_shutdown_sharpe, unprofit_shutdown_returns = evaluate_strategy(
-            unprofit_shutdown_signals,
-            actual_returns, trading_fee)
-        unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (
-            2 * trading_fee * SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
-
-        # Entry+takeprofit strategy
-        entry_takeprofit_return, entry_takeprofit_sharpe, entry_takeprofit_returns = evaluate_entry_takeprofit_strategy(
-            last_preds["close_predictions"],
-            last_preds["high_predictions"],
-            last_preds["low_predictions"],
-            last_preds["close_actual_movement_values"],
-            last_preds["high_actual_movement_values"],
-            last_preds["low_actual_movement_values"],
-            trading_fee
-        )
-        entry_takeprofit_finalday_return = entry_takeprofit_return / len(actual_returns)
-
-        # Highlow strategy
-        highlow_return, highlow_sharpe, highlow_returns = evaluate_highlow_strategy(
-            last_preds["close_predictions"],
-            last_preds["high_predictions"],
-            last_preds["low_predictions"],
-            last_preds["close_actual_movement_values"],
-            last_preds["high_actual_movement_values"],
-            last_preds["low_actual_movement_values"],
-            trading_fee,
-            is_crypto=is_crypto
-        )
-        highlow_finalday_return = highlow_return / len(actual_returns)
-
-        # Log strategy metrics to tensorboard
-        tb_writer.add_scalar(f'{symbol}/strategies/simple/total_return', simple_total_return, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/simple/sharpe', simple_sharpe, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/simple/finalday', simple_finalday_return, i)
-
-        tb_writer.add_scalar(f'{symbol}/strategies/all_signals/total_return', all_signals_total_return, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/all_signals/sharpe', all_signals_sharpe, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/all_signals/finalday', all_signals_finalday_return, i)
-
-        tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/total_return', buy_hold_return, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/sharpe', buy_hold_sharpe, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/finalday', buy_hold_finalday_return, i)
-
-        tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/total_return', unprofit_shutdown_return, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/sharpe', unprofit_shutdown_sharpe, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/finalday', unprofit_shutdown_finalday_return, i)
-
-        tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/total_return', entry_takeprofit_return, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/sharpe', entry_takeprofit_sharpe, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/finalday', entry_takeprofit_finalday_return, i)
-
-        tb_writer.add_scalar(f'{symbol}/strategies/highlow/total_return', highlow_return, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/highlow/sharpe', highlow_sharpe, i)
-        tb_writer.add_scalar(f'{symbol}/strategies/highlow/finalday', highlow_finalday_return, i)
-
-        # Log returns over time
-        for t, ret in enumerate(simple_returns):
-            tb_writer.add_scalar(f'{symbol}/returns_over_time/simple', ret, t)
-        for t, ret in enumerate(all_signals_returns):
-            tb_writer.add_scalar(f'{symbol}/returns_over_time/all_signals', ret, t)
-        for t, ret in enumerate(buy_hold_returns):
-            tb_writer.add_scalar(f'{symbol}/returns_over_time/buy_hold', ret, t)
-        for t, ret in enumerate(unprofit_shutdown_returns):
-            tb_writer.add_scalar(f'{symbol}/returns_over_time/unprofit_shutdown', ret, t)
-        for t, ret in enumerate(entry_takeprofit_returns):
-            tb_writer.add_scalar(f'{symbol}/returns_over_time/entry_takeprofit', ret, t)
-        for t, ret in enumerate(highlow_returns):
-            tb_writer.add_scalar(f'{symbol}/returns_over_time/highlow', ret, t)
-
-        # print(last_preds)
-        result = {
-            'date': simulation_data.index[-1],
-            'close': float(last_preds['close_last_price']),
-            'predicted_close': float(last_preds['close_predicted_price_value']),
-            'predicted_high': float(last_preds['high_predicted_price_value']),
-            'predicted_low': float(last_preds['low_predicted_price_value']),
-            'simple_strategy_return': float(simple_total_return),
-            'simple_strategy_sharpe': float(simple_sharpe),
-            'simple_strategy_finalday': float(simple_finalday_return),
-            'all_signals_strategy_return': float(all_signals_total_return),
-            'all_signals_strategy_sharpe': float(all_signals_sharpe),
-            'all_signals_strategy_finalday': float(all_signals_finalday_return),
-            'buy_hold_return': float(buy_hold_return),
-            'buy_hold_sharpe': float(buy_hold_sharpe),
-            'buy_hold_finalday': float(buy_hold_finalday_return),
-            'unprofit_shutdown_return': float(unprofit_shutdown_return),
-            'unprofit_shutdown_sharpe': float(unprofit_shutdown_sharpe),
-            'unprofit_shutdown_finalday': float(unprofit_shutdown_finalday_return),
-            'entry_takeprofit_return': float(entry_takeprofit_return),
-            'entry_takeprofit_sharpe': float(entry_takeprofit_sharpe),
-            'entry_takeprofit_finalday': float(entry_takeprofit_finalday_return),
-            'highlow_return': float(highlow_return),
-            'highlow_sharpe': float(highlow_sharpe),
-            'highlow_finalday_return': float(highlow_finalday_return),
-            'close_val_loss': float(last_preds['close_val_loss']),
-            'high_val_loss': float(last_preds['high_val_loss']),
-            'low_val_loss': float(last_preds['low_val_loss']),
-        }
-
+        result = run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_idx)
         results.append(result)
-        if __name__ == "__main__":
-            print(f"Result: {result}")
+
+    # Final iteration: use the entire dataset to get the *very* last forecast
+    final_data = stock_data.copy(deep=True)
+    final_result = run_single_simulation(final_data, symbol, trading_fee, is_crypto, -1)
+    results.append(final_result)
 
     results_df = pd.DataFrame(results)
 
@@ -482,6 +286,208 @@ def backtest_forecasts(symbol, num_simulations=100):
     set_strategy_for_symbol(symbol, best_strategy)
 
     return results_df
+
+
+def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_idx):
+    last_preds = {
+        'instrument': symbol,
+        'close_last_price': simulation_data['Close'].iloc[-1],
+    }
+    # not predicting open because nothing todo with it
+    for key_to_predict in ['Close', 'Low', 'High']:  # , 'Open']:
+        data = pre_process_data(simulation_data, key_to_predict)
+        price = data[["Close", "High", "Low", "Open"]]
+
+        price = price.rename(columns={"Date": "time_idx"})
+        price["ds"] = pd.date_range(start="1949-01-01", periods=len(price), freq="D").values
+        price['y'] = price[key_to_predict].shift(-1)
+        price['trade_weight'] = (price["y"] > 0) * 2 - 1
+
+        price.drop(price.tail(1).index, inplace=True)
+        price['id'] = price.index
+        price['unique_id'] = 1
+        price = price.dropna()
+
+        training = price[:-7]
+        validation = price[-7:]
+
+        load_pipeline()
+        predictions = []
+        for pred_idx in reversed(range(1, 8)):
+            current_context = price[:-pred_idx]
+            context = torch.tensor(current_context["y"].values, dtype=torch.float)
+
+            prediction_length = 1
+            forecast = cached_predict(
+                context,
+                prediction_length,
+                num_samples=20,
+                temperature=1.0,
+                top_k=4000,
+                top_p=1.0,
+            )
+            low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
+            predictions.append(median.item())
+
+        predictions = torch.tensor(predictions)
+        actuals = series_to_tensor(validation["y"])
+        trading_preds = (predictions[:-1] > 0) * 2 - 1
+
+        error = np.array(validation["y"][:-1].values) - np.array(predictions[:-1])
+        mean_val_loss = np.abs(error).mean()
+
+        # Log validation metrics
+        tb_writer.add_scalar(f'{symbol}/{key_to_predict}/val_loss', mean_val_loss, sim_idx)
+
+        # if __name__ == "__main__":
+        #     print(f"mean_val_loss: {mean_val_loss}")
+
+        last_preds[key_to_predict.lower() + "_last_price"] = simulation_data[key_to_predict].iloc[-1]
+        last_preds[key_to_predict.lower() + "_predicted_price"] = predictions[-1]
+        last_preds[key_to_predict.lower() + "_predicted_price_value"] = last_preds[
+                                                                            key_to_predict.lower() + "_last_price"] + (
+                                                                                last_preds[
+                                                                                    key_to_predict.lower() + "_last_price"] *
+                                                                                predictions[-1])
+        last_preds[key_to_predict.lower() + "_val_loss"] = mean_val_loss
+        last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:-1].view(-1)
+        last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
+        last_preds[key_to_predict.lower() + "_predictions"] = predictions[:-1].view(-1)
+
+    # Calculate actual returns
+    actual_returns = pd.Series(last_preds["close_actual_movement_values"].numpy())
+
+    # Simple buy/sell strategy
+    simple_signals = simple_buy_sell_strategy(
+        last_preds["close_predictions"],
+        is_crypto=is_crypto
+    )
+    simple_total_return, simple_sharpe, simple_returns = evaluate_strategy(simple_signals, actual_returns,
+                                                                           trading_fee)
+    simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
+
+    # All signals strategy
+    all_signals = all_signals_strategy(
+        last_preds["close_predictions"],
+        last_preds["high_predictions"],
+        last_preds["low_predictions"],
+        is_crypto=is_crypto
+    )
+    all_signals_total_return, all_signals_sharpe, all_signals_returns = evaluate_strategy(all_signals,
+                                                                                          actual_returns,
+                                                                                          trading_fee)
+    all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
+
+    # Buy and hold strategy
+    buy_hold_signals = buy_hold_strategy(last_preds["close_predictions"])
+    buy_hold_return, buy_hold_sharpe, buy_hold_returns = evaluate_strategy(buy_hold_signals, actual_returns,
+                                                                           trading_fee)
+    buy_hold_finalday_return = actual_returns.iloc[-1] - (2 * trading_fee * SPREAD)
+
+    # Unprofit shutdown buy and hold strategy
+    unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns,
+                                                           is_crypto=is_crypto)
+    unprofit_shutdown_return, unprofit_shutdown_sharpe, unprofit_shutdown_returns = evaluate_strategy(
+        unprofit_shutdown_signals,
+        actual_returns, trading_fee)
+    unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (
+        2 * trading_fee * SPREAD if unprofit_shutdown_signals[-1].item() != 0 else 0)
+
+    # Entry+takeprofit strategy
+    entry_takeprofit_return, entry_takeprofit_sharpe, entry_takeprofit_returns = evaluate_entry_takeprofit_strategy(
+        last_preds["close_predictions"],
+        last_preds["high_predictions"],
+        last_preds["low_predictions"],
+        last_preds["close_actual_movement_values"],
+        last_preds["high_actual_movement_values"],
+        last_preds["low_actual_movement_values"],
+        trading_fee
+    )
+    entry_takeprofit_finalday_return = entry_takeprofit_return / len(actual_returns)
+
+    # Highlow strategy
+    highlow_return, highlow_sharpe, highlow_returns = evaluate_highlow_strategy(
+        last_preds["close_predictions"],
+        last_preds["high_predictions"],
+        last_preds["low_predictions"],
+        last_preds["close_actual_movement_values"],
+        last_preds["high_actual_movement_values"],
+        last_preds["low_actual_movement_values"],
+        trading_fee,
+        is_crypto=is_crypto
+    )
+    highlow_finalday_return = highlow_return / len(actual_returns)
+
+    # Log strategy metrics to tensorboard
+    tb_writer.add_scalar(f'{symbol}/strategies/simple/total_return', simple_total_return, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/simple/sharpe', simple_sharpe, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/simple/finalday', simple_finalday_return, sim_idx)
+
+    tb_writer.add_scalar(f'{symbol}/strategies/all_signals/total_return', all_signals_total_return, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/all_signals/sharpe', all_signals_sharpe, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/all_signals/finalday', all_signals_finalday_return, sim_idx)
+
+    tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/total_return', buy_hold_return, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/sharpe', buy_hold_sharpe, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/buy_hold/finalday', buy_hold_finalday_return, sim_idx)
+
+    tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/total_return', unprofit_shutdown_return, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/sharpe', unprofit_shutdown_sharpe, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/unprofit_shutdown/finalday', unprofit_shutdown_finalday_return, sim_idx)
+
+    tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/total_return', entry_takeprofit_return, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/sharpe', entry_takeprofit_sharpe, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/entry_takeprofit/finalday', entry_takeprofit_finalday_return, sim_idx)
+
+    tb_writer.add_scalar(f'{symbol}/strategies/highlow/total_return', highlow_return, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/highlow/sharpe', highlow_sharpe, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/highlow/finalday', highlow_finalday_return, sim_idx)
+
+    # Log returns over time
+    for t, ret in enumerate(simple_returns):
+        tb_writer.add_scalar(f'{symbol}/returns_over_time/simple', ret, t)
+    for t, ret in enumerate(all_signals_returns):
+        tb_writer.add_scalar(f'{symbol}/returns_over_time/all_signals', ret, t)
+    for t, ret in enumerate(buy_hold_returns):
+        tb_writer.add_scalar(f'{symbol}/returns_over_time/buy_hold', ret, t)
+    for t, ret in enumerate(unprofit_shutdown_returns):
+        tb_writer.add_scalar(f'{symbol}/returns_over_time/unprofit_shutdown', ret, t)
+    for t, ret in enumerate(entry_takeprofit_returns):
+        tb_writer.add_scalar(f'{symbol}/returns_over_time/entry_takeprofit', ret, t)
+    for t, ret in enumerate(highlow_returns):
+        tb_writer.add_scalar(f'{symbol}/returns_over_time/highlow', ret, t)
+
+    # print(last_preds)
+    result = {
+        'date': simulation_data.index[-1],
+        'close': float(last_preds['close_last_price']),
+        'predicted_close': float(last_preds['close_predicted_price_value']),
+        'predicted_high': float(last_preds['high_predicted_price_value']),
+        'predicted_low': float(last_preds['low_predicted_price_value']),
+        'simple_strategy_return': float(simple_total_return),
+        'simple_strategy_sharpe': float(simple_sharpe),
+        'simple_strategy_finalday': float(simple_finalday_return),
+        'all_signals_strategy_return': float(all_signals_total_return),
+        'all_signals_strategy_sharpe': float(all_signals_sharpe),
+        'all_signals_strategy_finalday': float(all_signals_finalday_return),
+        'buy_hold_return': float(buy_hold_return),
+        'buy_hold_sharpe': float(buy_hold_sharpe),
+        'buy_hold_finalday': float(buy_hold_finalday_return),
+        'unprofit_shutdown_return': float(unprofit_shutdown_return),
+        'unprofit_shutdown_sharpe': float(unprofit_shutdown_sharpe),
+        'unprofit_shutdown_finalday': float(unprofit_shutdown_finalday_return),
+        'entry_takeprofit_return': float(entry_takeprofit_return),
+        'entry_takeprofit_sharpe': float(entry_takeprofit_sharpe),
+        'entry_takeprofit_finalday': float(entry_takeprofit_finalday_return),
+        'highlow_return': float(highlow_return),
+        'highlow_sharpe': float(highlow_sharpe),
+        'highlow_finalday_return': float(highlow_finalday_return),
+        'close_val_loss': float(last_preds['close_val_loss']),
+        'high_val_loss': float(last_preds['high_val_loss']),
+        'low_val_loss': float(last_preds['low_val_loss']),
+    }
+
+    return result
 
 
 def evaluate_entry_takeprofit_strategy(

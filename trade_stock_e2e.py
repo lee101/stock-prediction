@@ -151,7 +151,11 @@ def manage_positions(
 
         if symbol in all_analyzed_results:
             new_forecast = all_analyzed_results[symbol]
-            if not is_same_side(new_forecast["side"], position.side):
+            if symbol not in current_picks:
+                # todo evaluate this and if it trades too much
+                logger.info(f"Closing position for {symbol} as it's no longer in top picks")
+                should_close = True
+            elif not is_same_side(new_forecast["side"], position.side):
                 logger.info(
                     f"Closing position for {symbol} due to direction change from {position.side} to {new_forecast['side']}"
                 )
