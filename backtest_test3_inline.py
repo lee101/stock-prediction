@@ -339,6 +339,17 @@ def backtest_forecasts(symbol, num_simulations=100):
         )
         highlow_finalday_return = highlow_return / len(actual_returns)
 
+        # --- New Strategy: buy_low_sell_high ---
+        buy_low_sell_high_return, buy_low_sell_high_sharpe, buy_low_sell_high_returns = evaluate_buy_low_sell_high_strategy(
+            last_preds["high_predictions"],
+            last_preds["low_predictions"],
+            last_preds["high_actual_movement_values"],
+            last_preds["low_actual_movement_values"],
+            last_preds["close_actual_movement_values"],
+            trading_fee
+        )
+        buy_low_sell_high_finalday_return = buy_low_sell_high_return / len(actual_returns)
+
         # Log strategy metrics to tensorboard
         tb_writer.add_scalar(f'{symbol}/strategies/simple/total_return', simple_total_return, i)
         tb_writer.add_scalar(f'{symbol}/strategies/simple/sharpe', simple_sharpe, i)
@@ -364,6 +375,11 @@ def backtest_forecasts(symbol, num_simulations=100):
         tb_writer.add_scalar(f'{symbol}/strategies/highlow/sharpe', highlow_sharpe, i)
         tb_writer.add_scalar(f'{symbol}/strategies/highlow/finalday', highlow_finalday_return, i)
 
+        # --- New Strategy: buy_low_sell_high ---
+        tb_writer.add_scalar(f'{symbol}/strategies/buy_low_sell_high/total_return', buy_low_sell_high_return, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/buy_low_sell_high/sharpe', buy_low_sell_high_sharpe, i)
+        tb_writer.add_scalar(f'{symbol}/strategies/buy_low_sell_high/finalday', buy_low_sell_high_finalday_return, i)
+
         # Log returns over time
         for t, ret in enumerate(simple_returns):
             tb_writer.add_scalar(f'{symbol}/returns_over_time/simple', ret, t)
@@ -377,6 +393,8 @@ def backtest_forecasts(symbol, num_simulations=100):
             tb_writer.add_scalar(f'{symbol}/returns_over_time/entry_takeprofit', ret, t)
         for t, ret in enumerate(highlow_returns):
             tb_writer.add_scalar(f'{symbol}/returns_over_time/highlow', ret, t)
+        for t, ret in enumerate(buy_low_sell_high_returns):
+            tb_writer.add_scalar(f'{symbol}/returns_over_time/buy_low_sell_high', ret, t)
 
         # print(last_preds)
         result = {
@@ -403,6 +421,9 @@ def backtest_forecasts(symbol, num_simulations=100):
             'highlow_return': float(highlow_return),
             'highlow_sharpe': float(highlow_sharpe),
             'highlow_finalday_return': float(highlow_finalday_return),
+            'buy_low_sell_high_return': float(buy_low_sell_high_return),
+            'buy_low_sell_high_sharpe': float(buy_low_sell_high_sharpe),
+            'buy_low_sell_high_finalday': float(buy_low_sell_high_finalday_return),
             'close_val_loss': float(last_preds['close_val_loss']),
             'high_val_loss': float(last_preds['high_val_loss']),
             'low_val_loss': float(last_preds['low_val_loss']),
@@ -434,6 +455,9 @@ def backtest_forecasts(symbol, num_simulations=100):
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_return', results_df['highlow_return'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_sharpe', results_df['highlow_sharpe'].mean(), 0)
 
+    tb_writer.add_scalar(f'{symbol}/final_metrics/buy_low_sell_high_avg_return', results_df['buy_low_sell_high_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/buy_low_sell_high_avg_sharpe', results_df['buy_low_sell_high_sharpe'].mean(), 0)
+
     logger.info(f"\nAverage Validation Losses:")
     logger.info(f"Close Val Loss: {results_df['close_val_loss'].mean():.4f}")
     logger.info(f"High Val Loss: {results_df['high_val_loss'].mean():.4f}") 
@@ -461,15 +485,21 @@ def backtest_forecasts(symbol, num_simulations=100):
     logger.info(f"Average Highlow Return: {results_df['highlow_return'].mean():.4f}")
     logger.info(f"Average Highlow Sharpe: {results_df['highlow_sharpe'].mean():.4f}")
     logger.info(f"Average Highlow Final Day Return: {results_df['highlow_finalday_return'].mean():.4f}")
+    logger.info(f"Average Buy Low Sell High Return: {results_df['buy_low_sell_high_return'].mean():.4f}")
+    logger.info(f"Average Buy Low Sell High Sharpe: {results_df['buy_low_sell_high_sharpe'].mean():.4f}")
+    logger.info(f"Average Buy Low Sell High Final Day Return: {results_df['buy_low_sell_high_finalday'].mean():.4f}")
 
     # Determine which strategy is best overall
     avg_simple = results_df["simple_strategy_return"].mean()
     avg_allsignals = results_df["all_signals_strategy_return"].mean()
     avg_takeprofit = results_df["entry_takeprofit_return"].mean()
     avg_highlow = results_df["highlow_return"].mean()
+    avg_buylowhigh = results_df["buy_low_sell_high_return"].mean()
 
-    best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow)
-    if best_return == avg_highlow:
+    best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_buylowhigh)
+    if best_return == avg_buylowhigh:
+        best_strategy = "buy_low_sell_high"
+    elif best_return == avg_highlow:
         best_strategy = "highlow"
     elif best_return == avg_takeprofit:
         best_strategy = "takeprofit"
@@ -613,9 +643,74 @@ def evaluate_highlow_strategy(
     return float(total_return), float(sharpe_ratio), daily_returns
 
 
+def evaluate_buy_low_sell_high_strategy(
+        high_predictions,
+        low_predictions,
+        actual_high,
+        actual_low,
+        actual_close,
+        trading_fee
+):
+    """
+    Open a position if actual_low <= predicted_low.
+    Pay one open fee on the day you open a position.
+    If actual_high >= predicted_high on a future day, close the position,
+    pay a close fee, and realize (predicted_high - entry_price).
+    If the price never passes predicted_high, you keep holding indefinitely
+    (or optionally force-close on last day).
+    """
+    daily_returns = []
+    pos_open = False
+    entry_price = 0.0
+
+    for day in range(len(high_predictions)):
+        if not pos_open:
+            # Attempt to open if we cross below predicted_low
+            if actual_low[day] <= low_predictions[day]:
+                # Buy at the predicted_low
+                pos_open = True
+                entry_price = low_predictions[day]
+                # Pay open fee
+                daily_return = -1.0 * trading_fee
+            else:
+                # No trade
+                daily_return = 0.0
+        else:
+            # Position is open; check if we can close
+            if actual_high[day] >= high_predictions[day]:
+                # Close at predicted_high
+                profit = (high_predictions[day] - entry_price)
+                # Pay close fee
+                daily_return = profit - trading_fee
+                pos_open = False
+                entry_price = 0.0
+            else:
+                # Still holding, no realized profit/loss
+                daily_return = 0.0
+
+        daily_returns.append(daily_return)
+
+    # Optional: if you want to force-close any still-open position on the final day:
+    # if pos_open:
+    #     profit = actual_close[-1] - entry_price
+    #     daily_returns[-1] += profit - trading_fee
+    #     pos_open = False
+
+    daily_returns = np.array(daily_returns, dtype=float)
+    total_return = daily_returns.sum()
+    if daily_returns.std() == 0:
+        sharpe_ratio = 0.0
+    else:
+        sharpe_ratio = float(daily_returns.mean() / daily_returns.std() * np.sqrt(252))
+    return float(total_return), float(sharpe_ratio), daily_returns
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         symbol = "ETHUSD"
+        symbol = "NVDA"
+        symbol = "AAPL"
+        symbol = "UNIUSD"
         print("Usage: python backtest_test.py <symbol> defaultint to eth")
     else:
         symbol = sys.argv[1]

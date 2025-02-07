@@ -1,0 +1,71 @@
+looking at the new buylow ethusd
+
+erage Simple Strategy Return: 0.0068
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Simple Strategy Sharpe: -0.4943
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Simple Strategy Final Day Return: -0.0027
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average All Signals Strategy Return: 0.0017
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average All Signals Strategy Sharpe: -1.2971
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average All Signals Strategy Final Day Return: -0.0036
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Buy and Hold Return: 0.0068
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Buy and Hold Sharpe: -0.4943
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Buy and Hold Final Day Return: -0.0016
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: -0.0060
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -1.4893
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0025
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Entry+Takeprofit Return: -0.0500
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Entry+Takeprofit Sharpe: -9.7845
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Entry+Takeprofit Final Day Return: -0.0083
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Highlow Return: -0.0192
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Highlow Sharpe: -4.9243
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Highlow Final Day Return: -0.0032
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Buy Low Sell High Return: -0.0125
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Buy Low Sell High Sharpe: -11.7758
+2025-01-16 09:00:55 UTC | 2025-01-16 04:00:55 EST | 2025-01-16 22:00:55 NZDT | INFO | Average Buy Low Sell High Final Day Return: -0.0021
+
+
+nvda
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Simple Strategy Return: -0.0058
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Simple Strategy Sharpe: 1.6755
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Simple Strategy Final Day Return: -0.0089
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average All Signals Strategy Return: -0.0083
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average All Signals Strategy Sharpe: 0.8346
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average All Signals Strategy Final Day Return: -0.0079
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Buy and Hold Return: -0.0016
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Buy and Hold Sharpe: 1.8555
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Buy and Hold Final Day Return: -0.0069
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: -0.0090
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: 0.8113
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: -0.0065
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Entry+Takeprofit Return: -0.0518
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Entry+Takeprofit Sharpe: -3.6083
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Entry+Takeprofit Final Day Return: -0.0086
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Highlow Return: -0.0660
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Highlow Sharpe: -7.8392
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Highlow Final Day Return: -0.0110
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Buy Low Sell High Return: -0.0039
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Buy Low Sell High Sharpe: -8.2752
+2025-01-16 09:01:26 UTC | 2025-01-16 04:01:26 EST | 2025-01-16 22:01:26 NZDT | INFO | Average Buy Low Sell High Final Day Return: -0.0007
+
+
+aapl
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Simple Strategy Return: 0.0057
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Simple Strategy Sharpe: 0.7896
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Simple Strategy Final Day Return: 0.0005
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average All Signals Strategy Return: 0.0036
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average All Signals Strategy Sharpe: 0.2103
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average All Signals Strategy Final Day Return: -0.0001
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Buy and Hold Return: 0.0048
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Buy and Hold Sharpe: 0.7150
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Buy and Hold Final Day Return: -0.0005
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Return: 0.0032
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Sharpe: -0.1892
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Unprofit Shutdown Buy and Hold Final Day Return: 0.0007
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Entry+Takeprofit Return: -0.0174
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Entry+Takeprofit Sharpe: -4.1051
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Entry+Takeprofit Final Day Return: -0.0029
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Highlow Return: -0.0252
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Highlow Sharpe: -9.5303
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Highlow Final Day Return: -0.0042
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Buy Low Sell High Return: -0.0015
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Buy Low Sell High Sharpe: -10.1742
+2025-01-16 09:02:28 UTC | 2025-01-16 04:02:28 EST | 2025-01-16 22:02:28 NZDT | INFO | Average Buy Low Sell High Final Day Return: -0.0003
