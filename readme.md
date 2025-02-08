@@ -1,5 +1,6 @@
 
-
+A collection of scripts for trading stocks and crypto.
+on alpaca markets and binance.
 
 ## readme
 
@@ -75,15 +76,18 @@ use binance for crypto try not trade it on alpaca?
 
 ### install requirements
 
-with a pip cache local dir
-
 ```
-pip install --cache_dir=/media/lee/crucial/pipcache -r requirements.txt
+uv pip install requirements.txt
 ```
 
+Run the stock trading bot 
+``` 
+python trade_stock_e2e.py
+```
 
-add these lines for cache
-vi ~/.config/pip/pip.conf
-[global]
-cache-dir = /media/lee/crucial/pipcache
-no-cache-dir = false
+Please support me!
+
+You can support us by purchasing [Netwrck](https://netwrck.com/).
+
+Also checkout [AIArt-Generator.art](https://AIArt-Generator.art) and [Netwrck.com](https://netwrck.com)
+Also checkout [Helix.app.nz](https://helix.app.nz)
