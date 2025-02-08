@@ -90,7 +90,19 @@ Run the stock trading bot
 python trade_stock_e2e.py
 ```
 
-Please support me!
+Run the tests
+
+```
+pytest .
+```
+
+Run a simulation
+
+```
+PYTHONPATH=$(pwd) python backtest_test3_inline.py
+```
+
+### Please support me!
 
 You can support us by purchasing [Netwrck](https://netwrck.com/).
 
