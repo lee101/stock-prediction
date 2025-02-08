@@ -1,8 +1,13 @@
 
-A collection of scripts for trading stocks and crypto.
-on alpaca markets and binance.
+A collection of scripts for trading stocks and crypto on alpaca markets and binance.
 
-## readme
+## History & Background
+
+Neural network trading bot that trades stocks (long/short) and crypto (long-only) daily at market open/close. Successfully grew my portfolio from $38k to $66k over several months in favorable conditions at the end of 2024.
+
+Uses Amazon Chronos model for time series forecasting.
+
+## Getting Started
 
 npm install -g selenium-side-runner
 npm install -g chromedriver
