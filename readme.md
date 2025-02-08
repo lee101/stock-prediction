@@ -18,15 +18,20 @@ sudo apt-get install libxslt1-dev
 ### Scripts
 clear out positions at bid/ask (much more cost effective than market orders)
 
+```
 PYTHONPATH=$(pwd) python ./scripts/alpaca_cli.py close_all_positions
+```
 
 ##### cancel an order with a linear ramp
 
+```
 PYTHONPATH=$(pwd) python scripts/alpaca_cli.py backout_near_market BTCUSD
-
+```
 ##### ramp into a position
 
+```
 PYTHONPATH=$(pwd) python scripts/alpaca_cli.py ramp_into_position ETHUSD
+```
 
 # at a time e.g. sudo apt install at
 
