@@ -8,6 +8,10 @@ This neural network trading bot trades stocks (long/short) and crypto (long-only
 
 The bot uses the Amazon Chronos model for time series forecasting.
 
+Breakdown of how it works
+
+https://www.youtube.com/watch?v=56c3OhqJDJk&list=PLVovYLPm_feCybDdwSeXUCCTHZaLPoXZJ&index=9
+
 ## Getting Started
 
 ```bash
