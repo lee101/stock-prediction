@@ -62,10 +62,11 @@ def analyse_prediction(pred: str):
         return 0.0
         
 @async_cache_decorator(typed=True)
-async def predict_chronos(model, context_values):
+async def predict_chronos(context_values):
+    """Cached prediction function that doesn't include the model in the cache key"""
     with torch.inference_mode():
         transformers.set_seed(42)
-        pred = model.predict(
+        pred = chronos_model.predict(
             context=torch.from_numpy(context_values),
             prediction_length=1, 
             num_samples=100
@@ -77,8 +78,8 @@ for t in tqdm(range(start_idx, end_idx)):
     context = data['returns'].iloc[:t]
     actual = data['returns'].iloc[t]
     
-    # Chronos forecast
-    chronos_pred_mean = asyncio.run(predict_chronos(chronos_model, context.values))
+    # Chronos forecast - now not passing model as argument
+    chronos_pred_mean = asyncio.run(predict_chronos(context.values))
     
     # Claude forecast
     recent_returns = context.tail(10).tolist()

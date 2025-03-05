@@ -1,6 +1,7 @@
 import asyncio
 from typing import Optional, FrozenSet, Any, List
 from anthropic import AsyncAnthropic
+from anthropic.types import MessageParam
 from loguru import logger
 
 from src.cache import async_cache_decorator
@@ -24,7 +25,8 @@ async def query_to_claude_async(
     else:
         extra_data = {}
     try:
-        messages = [
+        # Create properly typed messages
+        messages: List[MessageParam] = [
             {
                 "role": "user",
                 "content": prompt.strip(),
@@ -45,7 +47,7 @@ async def query_to_claude_async(
                 claude_client.messages.create(
                     max_tokens=2024,
                     messages=messages,
-                    model="claude-3-sonnet-20240229",
+                    model="claude-3-7-sonnet-20250219",
                     system=system_message.strip() if system_message else "",
                     stop_sequences=list(stop_sequences) if stop_sequences else [],
                 ),
@@ -53,9 +55,12 @@ async def query_to_claude_async(
             )
 
             if message.content:
-                generated_text = message.content[0].text
-                logger.info(f"Claude Generated text: {generated_text}")
-                return generated_text
+                # Fix content access - check type before accessing text
+                content_block = message.content[0]
+                if hasattr(content_block, 'text'):
+                    generated_text = content_block.text
+                    logger.info(f"Claude Generated text: {generated_text}")
+                    return generated_text
             return None
 
     except Exception as e:
