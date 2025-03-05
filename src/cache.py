@@ -1,4 +1,6 @@
 from pathlib import Path
+import hashlib
+import pickle
 
 from diskcache import Cache
 
@@ -35,12 +37,15 @@ def async_cache_decorator(
 
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Generate a hash of the cache key to avoid "string or blob too big" error
             cache_key = cached_key_func.__cache_key__(*args, **kwargs)
-            result = cache.get(cache_key)
+            key_hash = hashlib.md5(pickle.dumps(cache_key)).hexdigest()
+            
+            result = cache.get(key_hash)
             
             if result is None:
                 result = await func(*args, **kwargs)
-                cache.set(cache_key, result)
+                cache.set(key_hash, result)
             
             return result
 
