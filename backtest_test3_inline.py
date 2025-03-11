@@ -204,7 +204,7 @@ def backtest_forecasts(symbol, num_simulations=100):
 
     for sim_idx in range(num_simulations):
         # Change from :-(sim_idx + 1) to :-(sim_idx * 3 + 1) to maintain spacing
-        simulation_data = stock_data.iloc[:-(sim_idx * 3 + 1)].copy(deep=True)
+        simulation_data = stock_data.iloc[:-(sim_idx)].copy(deep=True)
         if simulation_data.empty:
             logger.warning(f"No data left for simulation {sim_idx + 1}")
             continue
