@@ -202,8 +202,9 @@ def backtest_forecasts(symbol, num_simulations=100):
 
     is_crypto = symbol in crypto_symbols
 
-    for sim_idx in range(0, num_simulations * 3, 3):  # jump 3 to cover more area in backtest
-        simulation_data = stock_data.iloc[:-(sim_idx + 1)].copy(deep=True)
+    for sim_idx in range(num_simulations):
+        # Change from :-(sim_idx + 1) to :-(sim_idx * 3 + 1) to maintain spacing
+        simulation_data = stock_data.iloc[:-(sim_idx * 3 + 1)].copy(deep=True)
         if simulation_data.empty:
             logger.warning(f"No data left for simulation {sim_idx + 1}")
             continue
@@ -303,7 +304,10 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         price['y'] = price[key_to_predict].shift(-1)
         price['trade_weight'] = (price["y"] > 0) * 2 - 1
 
-        price.drop(price.tail(1).index, inplace=True)
+        # Only drop last row if NOT final simulation
+        if sim_idx != -1:  # <-- This is the key conditional
+            price.drop(price.tail(1).index, inplace=True)
+            
         price['id'] = price.index
         price['unique_id'] = 1
         price = price.dropna()

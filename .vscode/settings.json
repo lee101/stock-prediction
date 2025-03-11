@@ -9,6 +9,7 @@
         "**/.git/subtree-cache/**": true,
         "**/node_modules/**": true,
         "**/dist/**": true,
+        "**/results/**": true,
         "**/build/**": true,
         "**/.cache/**": true,
         "coverage/**": true,

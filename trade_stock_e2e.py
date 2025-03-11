@@ -37,7 +37,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             logger.info(f"Analyzing {symbol}")
             # not many because we need to adapt strats? eg the wierd spikes in uniusd are a big opportunity to trade w high/low
             # but then i bumped up because its not going to say buy crypto when its down, if its most recent based?
-            num_simulations = 70 
+            num_simulations = 250
 
             backtest_df = backtest_forecasts(symbol, num_simulations)
             # Get each strategy's average return
@@ -51,35 +51,59 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             best_return = max(simple_return, all_signals_return, takeprofit_return, highlow_return)
             last_prediction = backtest_df.iloc[-1]
 
-            if best_return == takeprofit_return:
-                avg_return = takeprofit_return
-                strategy = "takeprofit"
-                predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
-                position_side = "buy" if predicted_movement > 0 else "sell"
-            elif best_return == all_signals_return:
-                avg_return = all_signals_return
-                strategy = "all_signals"
-                # existing code to pick side from signals
-                close_movement = last_prediction["predicted_close"] - last_prediction["close"]
-                high_movement = last_prediction["predicted_high"] - last_prediction["close"]
-                low_movement = last_prediction["predicted_low"] - last_prediction["close"]
-                if all(x > 0 for x in [close_movement, high_movement, low_movement]):
-                    position_side = "buy"
-                elif all(x < 0 for x in [close_movement, high_movement, low_movement]):
-                    position_side = "sell"
-                else:
-                    continue
-                predicted_movement = close_movement
-            elif best_return == highlow_return:
-                avg_return = highlow_return
-                strategy = "highlow"
-                predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
-                position_side = "buy" if predicted_movement > 0 else "sell"
-            else:
-                avg_return = simple_return
-                strategy = "simple"
-                predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
-                position_side = "buy" if predicted_movement > 0 else "sell"
+            # Try each strategy in order of performance until we find one that gives a clear signal
+            ## logic a bit different here added to ensure that we are taking enough risk eg trading as often as possible
+            # TODO backtest this
+            strategies = [
+                (takeprofit_return, "takeprofit"),
+                (all_signals_return, "all_signals"), 
+                (highlow_return, "highlow"),
+                (simple_return, "simple")
+            ]
+            strategies.sort(reverse=True)  # Sort by return value
+            
+            for strat_return, strat_name in strategies:
+                if strat_name == "takeprofit":
+                    predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
+                    position_side = "buy" if predicted_movement > 0 else "sell"
+                    avg_return = takeprofit_return
+                    strategy = "takeprofit"
+                    break
+                    
+                elif strat_name == "all_signals":
+                    close_movement = last_prediction["predicted_close"] - last_prediction["close"]
+                    high_movement = last_prediction["predicted_high"] - last_prediction["close"]
+                    low_movement = last_prediction["predicted_low"] - last_prediction["close"]
+                    if all(x > 0 for x in [close_movement, high_movement, low_movement]):
+                        position_side = "buy"
+                        predicted_movement = close_movement
+                        avg_return = all_signals_return
+                        strategy = "all_signals"
+                        break
+                    elif all(x < 0 for x in [close_movement, high_movement, low_movement]):
+                        position_side = "sell"
+                        predicted_movement = close_movement
+                        avg_return = all_signals_return
+                        strategy = "all_signals"
+                        break
+                        
+                elif strat_name == "highlow":
+                    predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
+                    position_side = "buy" if predicted_movement > 0 else "sell"
+                    avg_return = highlow_return
+                    strategy = "highlow"
+                    break
+                    
+                else:  # simple strategy
+                    predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
+                    position_side = "buy" if predicted_movement > 0 else "sell"
+                    avg_return = simple_return
+                    strategy = "simple"
+                    break
+
+            if avg_return == 0:
+                logger.warning(f"No valid strategy found for {symbol}")
+                continue
 
             results[symbol] = {
                 "avg_return": avg_return,
@@ -361,9 +385,9 @@ def main():
         "META",
         "AMZN",
         "AMD",
-        "INTC",
-        "LCID",
-        "QUBT",
+        # "INTC",
+        # "LCID",
+        # "QUBT",
 
         "BTCUSD",
         "ETHUSD",

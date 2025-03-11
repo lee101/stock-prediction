@@ -9,8 +9,8 @@ cwd = Path.cwd()
 
 
 @debounce(
-    60 * 10, key_func=lambda symbol: symbol
-)  # 10 minutes to not call too much for the same symbol
+    60 * 5, key_func=lambda symbol: symbol
+)  # 5 minutes to not call too much for the same symbol
 def backout_near_market(symbol):
     command = (
         f"PYTHONPATH={cwd} python scripts/alpaca_cli.py backout_near_market {symbol}"
@@ -26,7 +26,7 @@ def backout_near_market(symbol):
     )
 
 
-@debounce(60 * 10, key_func=lambda symbol, side: f"{symbol}_{side}")
+@debounce(60 * 5, key_func=lambda symbol, side: f"{symbol}_{side}")
 def ramp_into_position(symbol: str, side: str = "buy"):
     """Ramp into a position over time using the alpaca CLI."""
     command = f"PYTHONPATH={cwd} python scripts/alpaca_cli.py ramp_into_position {symbol} --side={side}"
@@ -41,7 +41,7 @@ def ramp_into_position(symbol: str, side: str = "buy"):
     )
 
 
-@debounce(60 * 10, key_func=lambda symbol, takeprofit_price: f"{symbol}_{takeprofit_price}")  # only once in 10 minutes
+@debounce(60 * 5, key_func=lambda symbol, takeprofit_price: f"{symbol}_{takeprofit_price}")  # only once in 5 minutes
 def spawn_close_position_at_takeprofit(symbol: str, takeprofit_price: float):
     command = f"PYTHONPATH={cwd} python scripts/alpaca_cli.py close_position_at_takeprofit {symbol} --takeprofit_price={takeprofit_price}"
     logger.info(f"Running command {command}")

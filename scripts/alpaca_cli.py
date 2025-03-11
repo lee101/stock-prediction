@@ -126,8 +126,8 @@ def backout_near_market(pair, start_time=None):
                     logger.info(f"Found matching position for {pair}")
                     is_long = hasattr(position, 'side') and position.side == 'long'
 
-                    # Initial offset from market (0.015 = 1.5%)
-                    pct_offset = 0.010
+                    # Initial offset from market (0.002 = 0.2%)
+                    pct_offset = 0.004
                     linear_ramp = 30  # 30 minute ramp
 
                     minutes_since_start = (datetime.now() - start_time).seconds // 60

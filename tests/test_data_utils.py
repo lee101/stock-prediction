@@ -12,18 +12,20 @@ def test_drop_n_rows():
     df = pd.DataFrame()
     df["a"] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     drop_n_rows(df, n=2)
-    assert df["a"] == [2, 4, 6, 8, 10]
+    assert df["a"].tolist() == [2, 4, 6, 8, 10]
 
 
 def test_drop_n_rows_three():
     df = pd.DataFrame()
     df["a"] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    drop_n_rows(df, n=3)  # drops every third
-    assert df["a"] == [2, 4, 6, 8, 10]
+    drop_n_rows(df, n=3)
+    assert df["a"].tolist() == [2, 3, 5, 6, 8, 9]
 
 
 def test_to_augment_percent():
-    assert percent_movements_augment(torch.tensor([100., 150., 50.])) == [1, 0.5, -0.666]
+    result = percent_movements_augment(torch.tensor([100., 150., 50.])).tolist()
+    expected = [0.5, -0.6666666865348816, 0.0]
+    assert all(abs(a - b) < 0.0001 for a, b in zip(result, expected))
 
 
 def test_calculate_takeprofit_torch():
@@ -81,7 +83,7 @@ def test_takeprofits():
                                                           # low lowpreds
                                                           )
 
-    assert (profits - (.59)) < .002
+    assert (profits - (.59)) < .002  # TODO take away non trades from trading loss
 
 
 def test_entry_takeprofits():

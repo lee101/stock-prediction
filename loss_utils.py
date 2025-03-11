@@ -263,15 +263,23 @@ def calculate_trading_profit_torch_with_entry_buysell(scaler, last_values, y_tes
                                                                                        y_test_low, y_test_low_pred,
                                                                                        y_test_pred)
 
-    current_profit = torch.sum(
-        # saved money
-        # saved_money
-        # +
-        # bought
-        calculated_profit_values
-    )
+    # Check for NaN values
+    if torch.isnan(calculated_profit_values).any():
+        raise ValueError("NaN values detected in profit calculation")
+        
+    # Ensure we're calculating the total correctly
+    current_profit = torch.sum(calculated_profit_values)
+    
+    # For debugging - print values
+    if torch.numel(calculated_profit_values) <= 10:  # Only print for small tensors
+        print("Profit values:", calculated_profit_values.tolist())
+        print("Total profit:", current_profit.item())
+    
+    # Verify consistency between sum and total (for debugging)
+    sum_check = calculated_profit_values.sum()
+    if abs(current_profit - sum_check) > 0.0001:
+        print(f"WARNING: Sum mismatch - direct sum: {sum_check}, calculated sum: {current_profit}")
 
-    # todo random deprecation?
     return current_profit
 
 
@@ -285,50 +293,67 @@ def calculate_profit_torch_with_entry_buysell_profit_values(y_test, y_test_high,
     y_test_high_pred = y_test_high_pred.view(-1)
     y_test_low = y_test_low.view(-1)
     y_test_low_pred = y_test_low_pred.view(-1)
+    
     # make sure y_test_low_pred is lower than 0/reasonable
     y_test_low_pred = torch.clamp(y_test_low_pred, -1, 0)
     y_test_high_pred = torch.clamp(y_test_high_pred, 0, 10)
+    
+    # Calculate price differences
     percent_movements_scaled = y_test  # not scientific
     pred_low_to_close_percent_movements = torch.abs(y_test_low_pred - y_test)
     pred_low_to_high_percent_movements = torch.abs(y_test_low_pred - y_test_high_pred)
     pred_high_to_close_percent_movements = torch.abs(y_test_high_pred - y_test)
     pred_high_to_low_percent_movements = torch.abs(y_test_high_pred - y_test_low_pred)
+    
     detached_y_test_pred = y_test_pred
+    
+    # Conditions for trades
+    can_buy = (y_test_low_pred > y_test_low)  # miss out on buying if low is lower than low pred
+    can_sell = (y_test_high_pred < y_test_high)  # miss out on selling if high is higher than high pred
+    
     # bought profits are 0 if we don't hit the low or low to close
-    bought_profits = torch.clip(detached_y_test_pred, 0, 10) * pred_low_to_close_percent_movements * (
-            y_test_low_pred > y_test_low)  # miss out on buying if low is lower than low pred
-    sold_profits = torch.clip(y_test_pred, -10, 0) * pred_high_to_close_percent_movements * (
-            y_test_high_pred < y_test_high)  # miss out on selling if high is higher than high pred
-    # saved_money = torch.clamp(
-    #             1 - torch.abs(y_test_pred), 0, 500
-    #         )
-    # / detached_y_test_pred.numel()
-    # for the buys if we follow the y_test_high_pred to sell at, we can instead sell at the high only if its within that day
-    # find points where y_test_high is greater than y_test_high_pred
-    hit_high_points = pred_low_to_high_percent_movements * (y_test_high_pred <= y_test_high) * torch.clip(
-        detached_y_test_pred, 0, 10) * (
-                              y_test_low_pred > y_test_low)  # miss out on buying if low is lower than low pred
-    missed_high_points = bought_profits * (
-            y_test_high_pred > y_test_high)  # already calculated/betted on but not cutoff
-    # print("profit before hit_high_points: ", bought_profits)
+    bought_profits = torch.clip(detached_y_test_pred, 0, 10) * pred_low_to_close_percent_movements * can_buy
+    sold_profits = torch.clip(y_test_pred, -10, 0) * pred_high_to_close_percent_movements * can_sell
+    
+    # For the buys if we follow the y_test_high_pred to sell at, we can instead sell at the high only if it's within that day
+    hit_high_points = pred_low_to_high_percent_movements * can_sell * torch.clip(detached_y_test_pred, 0, 10) * can_buy
+    missed_high_points = bought_profits * (~can_sell)  # already calculated/betted on but not cutoff
+    
     bought_adjusted_profits = hit_high_points + missed_high_points
-    # print("profit hit_high_points: ", bought_adjusted_profits)
-    # bought_adjusted_profits = torch.max(hit_high_points * (bought_adjusted_profits > 0).float(), bought_adjusted_profits)
-    # find points where y_test_low is less than y_test_low_pred
-    hit_low_points = -1 * pred_high_to_low_percent_movements * (y_test_low_pred >= y_test_low) * torch.clip(y_test_pred,
-                                                                                                            -10, 0) * (
-                             y_test_high_pred < y_test_high)  # miss out on selling if high is higher than high pred
-    missed_points = sold_profits * (
-            y_test_low_pred < y_test_low)  # you are left with missed points/others already calculated
-    # print("profit before hit_low_points: ", sold_profits)
+    
+    # Find points where y_test_low is less than y_test_low_pred
+    hit_low_points = -1 * pred_high_to_low_percent_movements * can_buy * torch.clip(y_test_pred, -10, 0) * can_sell
+    missed_points = sold_profits * (~can_buy)  # you are left with missed points/others already calculated
+    
     adjusted_profits = hit_low_points + missed_points
-    # print("profit after hit_low_points: ", adjusted_profits)
-    # sold_profits = torch.max(torch.abs(hit_low_points) * (sold_profits > 0).float(), sold_profits)
-    hit_trading_points = torch.logical_and((y_test_high_pred < y_test_high), (y_test_low_pred > y_test_low))
-    calculated_profit_values = (bought_adjusted_profits +
-                                adjusted_profits -
-                                ((torch.abs(detached_y_test_pred) * TRADING_FEE) * hit_trading_points)  # fee
-                                )
+    
+    # Only charge fees on trades that actually happen
+    hit_trading_points = torch.logical_and(can_sell, can_buy)
+    fees = (torch.abs(detached_y_test_pred) * TRADING_FEE) * hit_trading_points
+    
+    # Calculate final profit values
+    calculated_profit_values = bought_adjusted_profits + adjusted_profits - fees
+    
+    # Add validation check
+    if torch.isnan(calculated_profit_values).any():
+        raise ValueError("NaN values detected in profit calculation")
+    
+    # Add more detailed debugging for tensor values
+    if torch.numel(y_test) <= 10:  # Only print for small tensors
+        print("DEBUG profit calculation:")
+        print(f"y_test: {y_test}")
+        print(f"y_test_pred: {y_test_pred}")
+        print(f"can_buy: {can_buy}")
+        print(f"can_sell: {can_sell}")
+        print(f"bought_profits: {bought_profits}")
+        print(f"sold_profits: {sold_profits}")
+        print(f"hit_high_points: {hit_high_points}")
+        print(f"bought_adjusted_profits: {bought_adjusted_profits}")
+        print(f"adjusted_profits: {adjusted_profits}")
+        print(f"fees: {fees}")
+        print(f"final_profits: {calculated_profit_values}")
+        print(f"total: {calculated_profit_values.sum()}")
+        
     return calculated_profit_values
 
 
