@@ -563,7 +563,7 @@ def buy_stock(row, all_preds, positions, orders):
     margin_multiplier = initial_margin_multiplier
     logger.debug(f"[{current_interest_symbol}] Initial margin_multiplier: {margin_multiplier}")
 
-    # Margin multiplier reduction logic for non-crypto (original logic assumed)
+    # Margin multiplier reduction logic for non-crypto
     if current_interest_symbol not in crypto_symbols:
         if entry_price_strategy == 'entry':
             entry_takeprofit_profit_over_two_trades = sum(literal_eval(row['entry_takeprofit_profit_values'])[:-2])
@@ -581,7 +581,7 @@ def buy_stock(row, all_preds, positions, orders):
                 logger.info(f"[{current_interest_symbol}] Non-crypto, entry_strategy='maxdiff', max_diff_profit_over_two_trades <= 0. Reducing margin_multiplier.")
                 margin_multiplier = .001
     
-    # General P&L based margin reduction (original logic assumed)
+    # General P&L based margin reduction
     made_money_recently_pnl = made_money_recently.get(current_interest_symbol, 0)
     made_money_recently_shorting_pnl = made_money_recently_shorting.get(current_interest_symbol, 0)
 
@@ -599,7 +599,7 @@ def buy_stock(row, all_preds, positions, orders):
     if margin_multiplier != initial_margin_multiplier:
         logger.info(f"[{current_interest_symbol}] Final margin_multiplier after all checks: {margin_multiplier}")
 
-    # Determine price_to_trade_at (original logic assumed)
+    # Determine price_to_trade_at
     current_price = row['close_last_price_minute']
     price_to_trade_at = current_price # Default, will be refined
     current_strategy_for_trade_price = instrument_strategies.get(current_interest_symbol, 'aggressive_buy') # Renamed to avoid confusion
