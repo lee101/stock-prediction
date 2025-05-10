@@ -148,8 +148,8 @@ def download_exchange_latest_data(api, symbol):
         if is_fp_close_to_zero(bid_price) or is_fp_close_to_zero(ask_price):
             if not is_fp_close_to_zero(bid_price) or not is_fp_close_to_zero(ask_price):
                 logger.warning(f"Invalid bid/ask prices for {symbol}, one is incorrect as its zero 0- using max")
-                bid_price = max(bid_price, ask_price)
                 ask_price = max(bid_price, ask_price)
+                bid_price = max(bid_price, ask_price)
         if not is_fp_close_to_zero(bid_price) and not is_fp_close_to_zero(ask_price):
             # only update the latest row
             latest_data_dl.loc[latest_data_dl.index[-1], 'close'] = (bid_price + ask_price) / 2.
