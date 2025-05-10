@@ -152,7 +152,7 @@ def download_exchange_latest_data(api, symbol):
                 ask_price = max(bid_price, ask_price)
         if not is_fp_close_to_zero(bid_price) and not is_fp_close_to_zero(ask_price):
             # only update the latest row
-            latest_data_dl.iloc[-1]['close'] = (bid_price + ask_price) / 2.
+            latest_data_dl.loc[latest_data_dl.index[-1], 'close'] = (bid_price + ask_price) / 2.
             spread = ask_price / bid_price
             logger.info(f"{symbol} spread {spread}")
             spreads[symbol] = spread
