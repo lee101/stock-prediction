@@ -1,5 +1,6 @@
 import logging
 import sys
+import os
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
@@ -44,21 +45,28 @@ class EDTFormatter(logging.Formatter):
             elif hasattr(record.msg, '__dict__'):
                 message = str(record.msg.__dict__)
 
-            return f"{utc_time} | {local_time} | {nzdt_time} | {level_color}{record.levelname}{self.reset_color} | {message}"
+            # Get file, function, and line number
+            filename = os.path.basename(record.pathname)
+            func_name = record.funcName
+            line_no = record.lineno
+
+            return f"{utc_time} | {local_time} | {nzdt_time} | {filename}:{func_name}:{line_no} {level_color}{record.levelname}{self.reset_color} | {message}"
         except Exception as e:
             # Fallback formatting if something goes wrong
-            return f"[ERROR FORMATTING LOG] {str(record.msg)}"
+            return f"[ERROR FORMATTING LOG] {str(record.msg)} - Error: {str(e)}"
 
 
 def setup_logging(log_file: str) -> logging.Logger:
     """Configure logging to output to both stdout and a file with EDT formatting."""
     try:
         # Create logger
-        logger = logging.getLogger('main_logger')
+        logger_name = os.path.splitext(os.path.basename(log_file))[0]
+        logger = logging.getLogger(logger_name)
         logger.setLevel(logging.DEBUG)
 
-        # Clear any existing handlers
-        logger.handlers.clear()
+        # Clear any existing handlers to prevent duplicate logs if called multiple times
+        if logger.hasHandlers():
+            logger.handlers.clear()
 
         # Create formatters
         formatter = EDTFormatter()
@@ -81,7 +89,10 @@ def setup_logging(log_file: str) -> logging.Logger:
         logger.addHandler(stdout_handler)
         logger.addHandler(file_handler)
 
+        # Prevent log messages from propagating to the root logger
+        logger.propagate = False
+
         return logger
     except Exception as e:
-        print(f"Error setting up logging: {str(e)}")
+        print(f"Error setting up logging for {log_file}: {str(e)}")
         raise
