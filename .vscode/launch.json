@@ -5,6 +5,19 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Run trade_stock_e2e",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/trade_stock_e2e.py",
+            "console": "integratedTerminal",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.venv/lib/python3.12/site-packages:${env:PYTHONPATH}"
+            },
+            "envFile": "${workspaceFolder}/.env",
+            "cwd": "${workspaceFolder}"
+        },
+        {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",

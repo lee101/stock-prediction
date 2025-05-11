@@ -136,9 +136,8 @@ def manage_positions(
 
     if not positions:
         logger.info("No positions to analyze")
-        return
 
-    if not all_analyzed_results:
+    if not all_analyzed_results and not current_picks:
         logger.warning(
             "No analysis results available - skipping position closure checks"
         )
@@ -171,6 +170,7 @@ def manage_positions(
         logger.warning("No current picks available - skipping new position entry")
         return
 
+    logger.info(f"Current picks to attempt entering: {current_picks}")
     for symbol, data in current_picks.items():
         position_exists = any(p.symbol == symbol for p in positions)
         correct_side = any(
