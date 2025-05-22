@@ -114,6 +114,14 @@ pytest .
 ```bash
 PYTHONPATH=$(pwd) python backtest_test3_inline.py
 ```
+### Offline Backtest
+
+To simulate trading completely offline over two weeks run:
+
+```bash
+PYTHONPATH=$(pwd) python offline_backtest.py
+```
+
 
 # todos
 
