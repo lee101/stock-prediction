@@ -114,6 +114,16 @@ pytest .
 ```bash
 PYTHONPATH=$(pwd) python backtest_test3_inline.py
 ```
+### Offline Backtest
+
+The offline simulator now uses a small ``FakeAlpaca`` shim to track cash and
+positions in memory.  It patches the trading routines and steps through
+``WIKI-AAPL.csv`` day by day to mimic a two week trading session.  Run it with:
+
+```bash
+PYTHONPATH=$(pwd) python offline_backtest.py
+```
+
 
 # todos
 
