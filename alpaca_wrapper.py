@@ -202,7 +202,8 @@ def open_order_at_price_or_all(symbol, qty, side, price):
 
     while retry_count < max_retries:
         try:
-            price = str(round(price, 2))
+            # Keep price as float for calculations, only convert when submitting order
+            price_rounded = round(price, 2)
             result = alpaca_api.submit_order(
                 order_data=LimitOrderRequest(
                     symbol=remap_symbols(symbol),
@@ -210,7 +211,7 @@ def open_order_at_price_or_all(symbol, qty, side, price):
                     side=side,
                     type=OrderType.LIMIT,
                     time_in_force="gtc",
-                    limit_price=price,
+                    limit_price=str(price_rounded),
                 )
             )
             return result
@@ -222,18 +223,37 @@ def open_order_at_price_or_all(symbol, qty, side, price):
             # Check if error contains insufficient balance message
             if "insufficient balance" in error_str.lower():
                 try:
-                    # Extract available balance from error message
-                    error_dict = json.loads(error_str.split("'_error': '")[1].split("', '_http_error'")[0])
-                    available = float(error_dict.get("available", 0))
+                    # Try to parse the error as JSON directly first
+                    error_dict = json.loads(error_str)
+                    available = error_dict.get("available", "0")
+                    
+                    # Convert available to float, handling string values
+                    available = float(available)
 
                     if available > 0:
                         # Recalculate quantity based on available balance
-                        new_qty = math.floor(0.99 * available / float(price))  # Use 99% of available balance
+                        new_qty = math.floor(0.99 * available / price)  # Use 99% of available balance
                         if new_qty > 0:
                             logger.info(f"Retrying with adjusted quantity: {new_qty}")
                             qty = new_qty
                             retry_count += 1
                             continue
+                except json.JSONDecodeError:
+                    # If direct JSON parsing fails, try the old method
+                    try:
+                        error_dict = json.loads(error_str.split("'_error': '")[1].split("', '_http_error'")[0])
+                        available = float(error_dict.get("available", 0))
+                        
+                        if available > 0:
+                            # Recalculate quantity based on available balance
+                            new_qty = math.floor(0.99 * available / price)  # Use 99% of available balance
+                            if new_qty > 0:
+                                logger.info(f"Retrying with adjusted quantity: {new_qty}")
+                                qty = new_qty
+                                retry_count += 1
+                                continue
+                    except Exception as parse_error:
+                        logger.error(f"Error parsing balance from error message: {parse_error}")
                 except Exception as parse_error:
                     logger.error(f"Error parsing balance from error message: {parse_error}")
 
