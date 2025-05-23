@@ -27,7 +27,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 from torch.utils.tensorboard import SummaryWriter
 
-from chronos import ChronosPipeline
+from chronos import BaseChronosPipeline
 
 current_date_formatted = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
@@ -38,10 +38,10 @@ pipeline = None
 def load_pipeline():
     global pipeline
     if pipeline is None:
-        pipeline = ChronosPipeline.from_pretrained(
+        pipeline = BaseChronosPipeline.from_pretrained(
             # "amazon/chronos-t5-large" if not PAPER else "amazon/chronos-t5-tiny",
             # "amazon/chronos-t5-tiny",
-            "amazon/chronos-t5-large",
+            "amazon/chronos-bolt-base",
             device_map="cuda",  # use "cpu" for CPU inference and "mps" for Apple Silicon
             # torch_dtype=torch.bfloat16,
         )
