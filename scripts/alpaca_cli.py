@@ -126,9 +126,9 @@ def backout_near_market(pair, start_time=None):
                     logger.info(f"Found matching position for {pair}")
                     is_long = hasattr(position, 'side') and position.side == 'long'
 
-                    # Initial offset from market (0.015 = 1.5%)
-                    pct_offset = 0.010
-                    linear_ramp = 30  # 30 minute ramp
+                    # Initial offset from market - faster execution to hit market
+                    pct_offset = 0.007
+                    linear_ramp = 15  # 15 minute ramp for quicker market execution
 
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
                     if minutes_since_start >= linear_ramp:
@@ -170,7 +170,7 @@ def backout_near_market(pair, start_time=None):
                 return True
 
             retries = 0
-            sleep(60 * 3)  # retry every 3 mins
+            sleep(60 * 1.5)  # retry every 1.5 mins for faster execution
 
         except Exception as e:
             logger.error(f"Error in backout_near_market: {e}")
