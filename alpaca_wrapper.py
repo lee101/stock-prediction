@@ -1,5 +1,6 @@
 import json
 import json
+import re
 import traceback
 from time import sleep
 
@@ -21,6 +22,7 @@ from loguru import logger
 from retry import retry
 
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT
+from typing import Iterable, Dict, Any
 from src.comparisons import is_buy_side, is_sell_side
 from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols
@@ -117,6 +119,23 @@ def open_market_order_violently(symbol, qty, side, retries=3):
         return None
     print(result)
     return result
+
+
+def _parse_available_balance(error_str: str) -> float:
+    """Extract available balance from an error message."""
+    try:
+        data = json.loads(error_str)
+        return float(data.get("available", 0))
+    except Exception:
+        pass
+
+    match = re.search(r"available['\"]?:\s*([0-9]*\.?[0-9]+)", error_str)
+    if match:
+        try:
+            return float(match.group(1))
+        except Exception:
+            pass
+    return 0.0
 
 
 # er_stock:372 - LTCUSD buying 116.104 at 83.755
@@ -220,42 +239,19 @@ def open_order_at_price_or_all(symbol, qty, side, price):
             error_str = str(e)
             logger.error(f"Order attempt {retry_count + 1} failed: {error_str}")
 
-            # Check if error contains insufficient balance message
-            if "insufficient balance" in error_str.lower():
-                try:
-                    # Try to parse the error as JSON directly first
-                    error_dict = json.loads(error_str)
-                    available = error_dict.get("available", "0")
-                    
-                    # Convert available to float, handling string values
-                    available = float(available)
+            # Check if error indicates insufficient funds
+            if "insufficient" in error_str.lower():
+                available = _parse_available_balance(error_str)
+                if available <= 0:
+                    available = cash
 
-                    if available > 0:
-                        # Recalculate quantity based on available balance
-                        new_qty = math.floor(0.99 * available / price)  # Use 99% of available balance
-                        if new_qty > 0:
-                            logger.info(f"Retrying with adjusted quantity: {new_qty}")
-                            qty = new_qty
-                            retry_count += 1
-                            continue
-                except json.JSONDecodeError:
-                    # If direct JSON parsing fails, try the old method
-                    try:
-                        error_dict = json.loads(error_str.split("'_error': '")[1].split("', '_http_error'")[0])
-                        available = float(error_dict.get("available", 0))
-                        
-                        if available > 0:
-                            # Recalculate quantity based on available balance
-                            new_qty = math.floor(0.99 * available / price)  # Use 99% of available balance
-                            if new_qty > 0:
-                                logger.info(f"Retrying with adjusted quantity: {new_qty}")
-                                qty = new_qty
-                                retry_count += 1
-                                continue
-                    except Exception as parse_error:
-                        logger.error(f"Error parsing balance from error message: {parse_error}")
-                except Exception as parse_error:
-                    logger.error(f"Error parsing balance from error message: {parse_error}")
+                if available > 0:
+                    new_qty = math.floor(0.99 * available / price)
+                    if new_qty > 0 and new_qty != qty:
+                        logger.info(f"Retrying with adjusted quantity: {new_qty}")
+                        qty = new_qty
+                        retry_count += 1
+                        continue
 
             retry_count += 1
             # if retry_count < max_retries:
@@ -263,6 +259,40 @@ def open_order_at_price_or_all(symbol, qty, side, price):
 
     logger.error("Max retries reached, order failed")
     return None
+
+
+def execute_portfolio_orders(orders: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    """Execute multiple orders sequentially.
+
+    Each order should be a mapping containing ``symbol``, ``qty``, ``side`` and
+    ``price`` keys. If an order fails, the error is logged and execution
+    continues with the remaining orders.
+
+    Parameters
+    ----------
+    orders: Iterable[Dict[str, Any]]
+        Iterable of order dictionaries.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Mapping of symbol to the result returned by
+        :func:`open_order_at_price_or_all` or ``None`` if the order failed.
+    """
+    results: Dict[str, Any] = {}
+    for order in orders:
+        symbol = order.get("symbol")
+        qty = order.get("qty")
+        side = order.get("side")
+        price = order.get("price")
+
+        try:
+            results[symbol] = open_order_at_price_or_all(symbol, qty, side, price)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(f"Failed to execute order for {symbol}: {e}")
+            results[symbol] = None
+
+    return results
 
 
 def close_position_violently(position):
