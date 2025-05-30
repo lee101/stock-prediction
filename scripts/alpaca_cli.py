@@ -126,27 +126,28 @@ def backout_near_market(pair, start_time=None):
                     logger.info(f"Found matching position for {pair}")
                     is_long = hasattr(position, 'side') and position.side == 'long'
 
-                    # Initial offset from market - faster execution to hit market
-                    pct_offset = 0.007
-                    linear_ramp = 15  # 15 minute ramp for quicker market execution
+                    # Initial offset from market - start aggressive and cross market price
+                    pct_offset = 0.007  # Start 0.7% away from market
+                    pct_final_offset = -0.015  # End 1.5% past market to ensure execution
+                    linear_ramp = 30  # 30 minute ramp to gradually cross market
 
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
                     if minutes_since_start >= linear_ramp:
-                        # After ramp period, set aggressive price
-                        pct_above_market = -pct_offset
+                        # After ramp period, set very aggressive price past market
+                        pct_above_market = pct_final_offset
                     else:
-                        # During ramp period
+                        # During ramp period - linear progression from start to final offset
                         progress = minutes_since_start / linear_ramp
-                        pct_above_market = pct_offset - (2 * pct_offset * progress)
+                        pct_above_market = pct_offset + (pct_final_offset - pct_offset) * progress
 
                     logger.info(f"Position side: {'long' if is_long else 'short'}, "
-                                f"pct_above_market: {pct_above_market}, "
-                                f"minutes_since_start: {minutes_since_start}, "
-                                f"progress: {progress if minutes_since_start < linear_ramp else 1.0}")
+                              f"pct_above_market: {pct_above_market:.4f}, "
+                              f"minutes_since_start: {minutes_since_start}, "
+                              f"progress: {progress:.2f}")
 
                     try:
                         succeeded = alpaca_wrapper.close_position_near_market(position,
-                                                                              pct_above_market=pct_above_market)
+                                                                            pct_above_market=pct_above_market)
                         found_position = True
                         if not succeeded:
                             logger.info("failed to close position, will retry after delay")
