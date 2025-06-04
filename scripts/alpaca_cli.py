@@ -88,12 +88,31 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
 client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
 
 
-def backout_near_market(pair, start_time=None):
+def backout_near_market(
+    pair,
+    start_time=None,
+    ramp_minutes=15,
+    market_after=15,
+    sleep_interval=90,
+):
+    """Back out of an open position by progressively crossing the market.
+
+    The function starts with a limit order slightly favourable to the
+    current price and linearly ramps to the opposite side of the spread
+    over ``ramp_minutes``.  If the position is still open after
+    ``market_after`` minutes, a market order is sent to guarantee the
+    exit.
+
+    Args:
+        pair: The trading pair symbol, e.g. ``"META"``.
+        start_time: ``datetime`` the ramp started. ``None`` means now.
+        ramp_minutes: Minutes to complete the limit order ramp.
+        market_after: Minutes before switching to a market order.
+        sleep_interval: Seconds to wait between iterations.
     """
-    backout at market - linear ramp towards market price within 30min
-    For long positions: Sell at progressively lower prices (start above bid, ramp down)
-    For short positions: Buy at progressively higher prices (start below ask, ramp up)
-    """
+    if start_time is None:
+        start_time = datetime.now()
+
     retries = 0
     max_retries = 5
 
@@ -126,18 +145,31 @@ def backout_near_market(pair, start_time=None):
                     logger.info(f"Found matching position for {pair}")
                     is_long = hasattr(position, 'side') and position.side == 'long'
 
-                    # Initial offset from market - start aggressive and cross market price
-                    pct_offset = 0.007  # Start 0.7% away from market
-                    pct_final_offset = -0.015  # End 1.5% past market to ensure execution
-                    linear_ramp = 30  # 30 minute ramp to gradually cross market
+                    # Initial and final offsets from market price. Start slightly
+                    # favourable, then cross to the other side over ``ramp_minutes``.
+                    pct_offset = 0.003 if is_long else -0.003  # 0.3% away
+                    pct_final_offset = -0.02 if is_long else 0.02  # 2% past market
 
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
-                    if minutes_since_start >= linear_ramp:
-                        # After ramp period, set very aggressive price past market
+                    progress = min(minutes_since_start / ramp_minutes, 1.0)
+                    if minutes_since_start >= market_after:
+                        logger.info("Switching to market order to guarantee close")
+                        succeeded = alpaca_wrapper.close_position_violently(position)
+                        found_position = True
+                        if not succeeded:
+                            logger.info("Market order failed, will retry after delay")
+                            retries += 1
+                            if retries >= max_retries:
+                                logger.error("Max retries reached, exiting")
+                                return False
+                            sleep(60)
+                            continue
+                        break
+                    elif minutes_since_start >= ramp_minutes:
+                        # After ramp period, set price well beyond market to guarantee fill
                         pct_above_market = pct_final_offset
                     else:
                         # During ramp period - linear progression from start to final offset
-                        progress = minutes_since_start / linear_ramp
                         pct_above_market = pct_offset + (pct_final_offset - pct_offset) * progress
 
                     logger.info(f"Position side: {'long' if is_long else 'short'}, "
@@ -171,7 +203,7 @@ def backout_near_market(pair, start_time=None):
                 return True
 
             retries = 0
-            sleep(60 * 1.5)  # retry every 1.5 mins for faster execution
+            sleep(sleep_interval)  # configurable retry interval
 
         except Exception as e:
             logger.error(f"Error in backout_near_market: {e}")
