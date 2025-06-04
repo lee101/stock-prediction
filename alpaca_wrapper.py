@@ -810,7 +810,7 @@ def close_position_near_market(position, pct_above_market=0.0):
                 )
             )
         else:
-            buy_price = price * (1 + pct_above_market)
+            buy_price = price * (1 - pct_above_market)
             buy_price = str(round(buy_price, 2))
             logger.info(f"buying {position.symbol} at {buy_price}")
             result = alpaca_api.submit_order(
