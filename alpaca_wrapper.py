@@ -767,6 +767,7 @@ except Exception as e:
 
 
 def close_position_near_market(position, pct_above_market=0.0):
+    """Place a limit order at ``pct_above_market`` relative to the quote."""
     bids = {}
     asks = {}
     symbol = position.symbol
@@ -786,9 +787,11 @@ def close_position_near_market(position, pct_above_market=0.0):
         return False
 
     if position.side == "long":
-        price = ask_price
-    else:
+        # For long positions, reference the bid price when selling
         price = bid_price
+    else:
+        # For short positions, reference the ask price when buying back
+        price = ask_price
 
     result = None
     try:
@@ -807,7 +810,7 @@ def close_position_near_market(position, pct_above_market=0.0):
                 )
             )
         else:
-            buy_price = price * (1 - pct_above_market)
+            buy_price = price * (1 + pct_above_market)
             buy_price = str(round(buy_price, 2))
             logger.info(f"buying {position.symbol} at {buy_price}")
             result = alpaca_api.submit_order(
