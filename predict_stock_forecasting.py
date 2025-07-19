@@ -27,7 +27,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 from torch.utils.tensorboard import SummaryWriter
 
-from chronos import BaseChronosPipeline
+from src.models.toto_wrapper import TotoPipeline
 
 current_date_formatted = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
@@ -38,15 +38,11 @@ pipeline = None
 def load_pipeline():
     global pipeline
     if pipeline is None:
-        pipeline = BaseChronosPipeline.from_pretrained(
-            # "amazon/chronos-t5-large" if not PAPER else "amazon/chronos-t5-tiny",
-            # "amazon/chronos-t5-tiny",
-            "amazon/chronos-bolt-base",
+        pipeline = TotoPipeline.from_pretrained(
+            "Datadog/Toto-Open-Base-1.0",
             device_map="cuda",  # use "cpu" for CPU inference and "mps" for Apple Silicon
             # torch_dtype=torch.bfloat16,
         )
-        pipeline.model = pipeline.model.eval()
-        # pipeline.model = torch.compile(pipeline.model)
 
 
 def load_stock_data_from_csv(csv_file_path: Path):
