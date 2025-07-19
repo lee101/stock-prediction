@@ -45,7 +45,9 @@ def show_forecasts(symbol):
                 logger.warning(f"No fresh predictions found for {symbol}, falling back to cached data")
                 
         except Exception as e:
+            import traceback
             logger.error(f"Error getting fresh data: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             logger.info("Falling back to cached predictions...")
     else:
         logger.info(f"Market is closed and {symbol} is not crypto, using cached data")
