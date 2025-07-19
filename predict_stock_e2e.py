@@ -38,10 +38,6 @@ retrain = True
 daily_predictions = DataFrame()
 daily_predictions_time = None
 
-# Configure loguru to print both UTC and EDT time, and write to both stdout and a log file
-import pytz
-import sys
-
 logger = setup_logging("predict_stock_e2e.log")
 
 @timeit
@@ -52,7 +48,7 @@ def do_forecasting():
     alpaca_clock = alpaca_wrapper.get_clock()
     if daily_predictions.empty and (
             daily_predictions_time is None or daily_predictions_time < datetime.now() - timedelta(days=1)) or (
-            'SAP' not in daily_predictions[
+            not daily_predictions.empty and 'SAP' not in daily_predictions[
         'instrument'].unique() and alpaca_clock.is_open):  # or if we dont have stocks like SAP in there?
         logger.info("Daily predictions are empty or stale, or key stock missing; attempting to regenerate.")
         daily_predictions_time = datetime.now()
@@ -91,7 +87,7 @@ def do_forecasting():
     logger.info("Proceeding to make trade suggestions.")
     make_trade_suggestions(daily_predictions, minute_predictions)
 
-COOLDOWN_PERIOD = timedelta(minutes=60)  # Adjust this value as needed
+COOLDOWN_PERIOD = timedelta(minutes=60)
 
 def close_profitable_trades(all_preds, positions, orders, change_settings=True):
     # global made_money_recently

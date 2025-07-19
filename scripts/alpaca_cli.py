@@ -61,6 +61,8 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
 
     show_account - display account summary, positions, and orders
 
+    show_forecasts - display forecast predictions for a symbol
+
     :param pair: e.g. BTCUSD
     :param command:
     :param side: buy or sell (default: buy)
@@ -83,6 +85,11 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
         close_position_at_takeprofit(pair, float(side))  # Use side param as target price
     elif command == 'show_account':
         show_account()
+    elif command == 'show_forecasts':
+        if not pair:
+            logger.error("Symbol is required for show_forecasts command")
+            return
+        show_forecasts_for_symbol(pair)
 
 
 client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
@@ -537,6 +544,16 @@ def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=
         except Exception as e:
             logger.error(f"Failed to place takeprofit limit order: {e}")
             return False
+
+
+def show_forecasts_for_symbol(symbol: str):
+    """Display forecast predictions for a symbol, using cached data when markets are closed"""
+    try:
+        # Import here to avoid circular imports
+        from show_forecasts import show_forecasts
+        show_forecasts(symbol)
+    except Exception as e:
+        logger.error(f"Error showing forecasts for {symbol}: {e}")
 
 
 if __name__ == "__main__":
