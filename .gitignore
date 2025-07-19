@@ -1,4 +1,5 @@
 .env
+backtestdata
 .env2
 .cache
 data

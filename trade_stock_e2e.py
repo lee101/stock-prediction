@@ -148,19 +148,21 @@ def manage_positions(
         symbol = position.symbol
         should_close = False
 
-        if symbol in all_analyzed_results:
-            new_forecast = all_analyzed_results[symbol]
-            if symbol not in current_picks:
-                # todo evaluate this and if it trades too much
-                logger.info(f"Closing position for {symbol} as it's no longer in top picks")
+        if symbol not in current_picks:
+            logger.info(f"Closing position for {symbol} as it's no longer in top picks")
+            should_close = True
+        elif symbol not in all_analyzed_results:
+            # Only close positions when no analysis data if it's a short position and market is open
+            if is_sell_side(position.side) and is_nyse_trading_day_now():
+                logger.info(f"Closing short position for {symbol} as no analysis data available and market is open - reducing risk")
                 should_close = True
-            elif not is_same_side(new_forecast["side"], position.side):
-                logger.info(
-                    f"Closing position for {symbol} due to direction change from {position.side} to {new_forecast['side']}"
-                )
-                should_close = True
-        else:
-            logger.warning(f"No analysis data for {symbol} - keeping position")
+            else:
+                logger.info(f"No analysis data for {symbol} but keeping position (not a short or market not open)")
+        elif not is_same_side(all_analyzed_results[symbol]["side"], position.side):
+            logger.info(
+                f"Closing position for {symbol} due to direction change from {position.side} to {all_analyzed_results[symbol]['side']}"
+            )
+            should_close = True
 
         if should_close:
             backout_near_market(symbol)

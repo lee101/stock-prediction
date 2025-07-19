@@ -200,10 +200,6 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                     forecast = pipeline.predict(
                         context,
                         prediction_length,
-                        num_samples=20,
-                        temperature=1.0,
-                        top_k=4000,
-                        top_p=1.0,
                     )
                     low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)  # todo use spread?
                     predictions.append(median.item())

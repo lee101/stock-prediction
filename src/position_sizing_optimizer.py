@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import Callable, Dict, Union
+from typing import Callable, Dict, Union, Optional
 
 
 Returns = Union[pd.Series, pd.DataFrame]
@@ -87,7 +87,7 @@ def optimize_position_sizing(
     predicted_returns: Returns,
     trading_fee: float = 0.0,
     risk_factor: float = 1.0,
-    max_abs_size: float | None = None,
+    max_abs_size: Optional[float] = None,
     risk_free_rate: float = 0.0,
 ) -> Dict[str, float]:
     """Return pnl and Sharpe ratio for several sizing strategies."""
