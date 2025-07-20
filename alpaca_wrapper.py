@@ -246,12 +246,16 @@ def open_order_at_price_or_all(symbol, qty, side, price):
                     available = cash
 
                 if available > 0:
-                    new_qty = math.floor(0.99 * available / price)
+                    # Calculate maximum quantity we can afford with available balance
+                    # Use 0.99 buffer and round to 6 decimal places for crypto
+                    new_qty = round(0.99 * available / price, 6)
                     if new_qty > 0 and new_qty != qty:
-                        logger.info(f"Retrying with adjusted quantity: {new_qty}")
+                        logger.info(f"Insufficient funds. Adjusting quantity from {qty} to {new_qty} (available: {available})")
                         qty = new_qty
-                        retry_count += 1
-                        continue
+                        continue  # Don't increment retry_count, just retry with new quantity
+                    else:
+                        logger.error(f"Cannot afford any quantity. Available: {available}, Price: {price}, Calculated qty: {new_qty}")
+                        return None  # Exit immediately if we can't afford any quantity
 
             retry_count += 1
             # if retry_count < max_retries:
