@@ -52,7 +52,7 @@ def download_minute_stock_data(path=None):
         # 'PFE',
         # 'MRNA',
         'AMD',
-        'MSFT',
+#        'MSFT',
         'META',
         'CRM',
         'NFLX',
@@ -65,7 +65,8 @@ def download_minute_stock_data(path=None):
         'BTCUSD',
         'ETHUSD',
         'LTCUSD',
-        "PAXGUSD", "UNIUSD"
+        #"PAXGUSD",
+        "UNIUSD"
 
     ]
     api = REST(secret_key=ALP_SECRET_KEY, key_id=ALP_KEY_ID, base_url=ALP_ENDPOINT)
