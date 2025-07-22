@@ -1,4 +1,5 @@
 import datetime
+import time
 import traceback
 from pathlib import Path
 
@@ -142,17 +143,54 @@ def download_exchange_latest_data(api, symbol):
     latest_data_dl = download_stock_data_between_times(api, end, start, symbol)
 
     if ADD_LATEST:  # collect very latest close times, todo extend bars?
-        very_latest_data = latest_data(symbol)
-        # check if market closed
-        ask_price = float(very_latest_data.ask_price)
-        bid_price = float(very_latest_data.bid_price)
-        logger.info(f"Latest {symbol} bid: {bid_price}, ask: {ask_price}")
+        # Try up to 3 times to get valid bid/ask data
+        max_retries = 3
+        retry_count = 0
+        ask_price = None
+        bid_price = None
+        
+        while retry_count < max_retries:
+            try:
+                very_latest_data = latest_data(symbol)
+                ask_price = float(very_latest_data.ask_price)
+                bid_price = float(very_latest_data.bid_price)
+                logger.info(f"Latest {symbol} bid: {bid_price}, ask: {ask_price} (attempt {retry_count + 1})")
+                
+                # If both prices are valid, break out of retry loop
+                if not is_fp_close_to_zero(bid_price) and not is_fp_close_to_zero(ask_price):
+                    break
+                    
+                # If at least one is invalid, log and retry
+                if retry_count < max_retries - 1:
+                    logger.warning(f"Invalid bid/ask prices for {symbol} on attempt {retry_count + 1}, retrying...")
+                    retry_count += 1
+                    time.sleep(0.5)  # Small delay between retries
+                    continue
+                else:
+                    # Final attempt failed
+                    break
+                    
+            except Exception as e:
+                logger.error(f"Error getting latest data for {symbol} on attempt {retry_count + 1}: {e}")
+                if retry_count < max_retries - 1:
+                    retry_count += 1
+                    time.sleep(0.5)
+                    continue
+                else:
+                    break
+        
+        # Handle invalid prices after all retries
         if is_fp_close_to_zero(bid_price) or is_fp_close_to_zero(ask_price):
             if not is_fp_close_to_zero(bid_price) or not is_fp_close_to_zero(ask_price):
-                logger.warning(f"Invalid bid/ask prices for {symbol}, one is incorrect as its zero 0- using max")
+                logger.warning(f"Invalid bid/ask prices for {symbol} after {max_retries} attempts, one is zero - using max")
                 ask_price = max(bid_price, ask_price)
                 bid_price = max(bid_price, ask_price)
-        if not is_fp_close_to_zero(bid_price) and not is_fp_close_to_zero(ask_price):
+            else:
+                logger.warning(f"Both bid/ask prices are zero for {symbol} after {max_retries} attempts - using synthetic spread")
+                # Both are zero, can't calculate a meaningful price
+                ask_price = None
+                bid_price = None
+        if bid_price is not None and ask_price is not None and not is_fp_close_to_zero(bid_price) and not is_fp_close_to_zero(ask_price):
             # only update the latest row
             latest_data_dl.loc[latest_data_dl.index[-1], 'close'] = (bid_price + ask_price) / 2.
             spread = ask_price / bid_price
@@ -160,6 +198,15 @@ def download_exchange_latest_data(api, symbol):
             spreads[symbol] = spread
             bids[symbol] = bid_price
             asks[symbol] = ask_price
+        else:
+            # Use a synthetic spread when we can't get valid bid/ask data
+            logger.warning(f"Using synthetic spread of 1.01 for {symbol} due to invalid bid/ask data")
+            last_close = latest_data_dl.iloc[-1]['close'] if not latest_data_dl.empty else 100.0
+            synthetic_bid = last_close / 1.005  # Assume 0.5% spread around mid
+            synthetic_ask = last_close * 1.005
+            spreads[symbol] = 1.01  # Use 1.01 as fallback spread
+            bids[symbol] = synthetic_bid
+            asks[symbol] = synthetic_ask
 
     logger.info(f"Data timestamp: {latest_data_dl.index[-1]}")
     logger.info(f"Current time: {datetime.datetime.now(tz=pytz.utc)}")
