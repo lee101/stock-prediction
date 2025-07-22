@@ -63,6 +63,8 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
 
     show_forecasts - display forecast predictions for a symbol
 
+    debug_raw_data SYMBOL - print raw JSON data from Alpaca for the symbol
+
     :param pair: e.g. BTCUSD
     :param command:
     :param side: buy or sell (default: buy)
@@ -90,6 +92,11 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
             logger.error("Symbol is required for show_forecasts command")
             return
         show_forecasts_for_symbol(pair)
+    elif command == 'debug_raw_data':
+        if not pair:
+            logger.error("Symbol is required for debug_raw_data command")
+            return
+        debug_raw_data(pair)
 
 
 client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
@@ -554,6 +561,49 @@ def show_forecasts_for_symbol(symbol: str):
         show_forecasts(symbol)
     except Exception as e:
         logger.error(f"Error showing forecasts for {symbol}: {e}")
+
+
+def debug_raw_data(symbol: str):
+    """Print raw JSON data from Alpaca for debugging bid/ask issues"""
+    import json
+    logger.info(f"=== DEBUG RAW DATA FOR {symbol} ===")
+    
+    try:
+        # Get the raw data from alpaca_wrapper
+        raw_data = alpaca_wrapper.latest_data(symbol)
+        logger.info(f"Raw data type: {type(raw_data)}")
+        logger.info(f"Raw data object: {raw_data}")
+        
+        # Try to convert to dict if it has attributes
+        data_dict = {}
+        for attr in dir(raw_data):
+            if not attr.startswith('_'):
+                try:
+                    value = getattr(raw_data, attr)
+                    if not callable(value):
+                        data_dict[attr] = value
+                except Exception:
+                    pass
+        
+        logger.info(f"Raw data attributes as dict:")
+        logger.info(json.dumps(data_dict, indent=2, default=str))
+        
+        # Extract specific fields we care about
+        if hasattr(raw_data, 'ask_price'):
+            logger.info(f"ask_price: {raw_data.ask_price} (type: {type(raw_data.ask_price)})")
+        if hasattr(raw_data, 'bid_price'):
+            logger.info(f"bid_price: {raw_data.bid_price} (type: {type(raw_data.bid_price)})")
+        if hasattr(raw_data, 'ask_size'):
+            logger.info(f"ask_size: {raw_data.ask_size}")
+        if hasattr(raw_data, 'bid_size'):
+            logger.info(f"bid_size: {raw_data.bid_size}")
+        if hasattr(raw_data, 'timestamp'):
+            logger.info(f"timestamp: {raw_data.timestamp}")
+        
+    except Exception as e:
+        logger.error(f"Error getting raw data for {symbol}: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
