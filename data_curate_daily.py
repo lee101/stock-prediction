@@ -41,7 +41,9 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
     if symbols is None:
         symbols = [
             'COUR', 'GOOG', 'TSLA', 'NVDA', 'AAPL', "U", "ADSK", "CRWD", "ADBE", "NET",
-            'COIN', 'MSFT', 'NFLX', 'PYPL', 'SAP', 'SONY', 'BTCUSD', 'ETHUSD',
+            'COIN', 
+            #'MSFT', 
+            'NFLX', 'PYPL', 'SAP', 'SONY', 'BTCUSD', 'ETHUSD',
         ]
 
     client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)

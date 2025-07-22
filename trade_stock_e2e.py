@@ -149,8 +149,23 @@ def manage_positions(
         should_close = False
 
         if symbol not in current_picks:
-            logger.info(f"Closing position for {symbol} as it's no longer in top picks")
-            should_close = True
+            # For crypto on weekends, only close if direction changed
+            if symbol in crypto_symbols and not is_nyse_trading_day_now():
+                if symbol in all_analyzed_results and not is_same_side(all_analyzed_results[symbol]["side"], position.side):
+                    logger.info(f"Closing crypto position for {symbol} due to direction change (weekend)")
+                    should_close = True
+                else:
+                    logger.info(f"Keeping crypto position for {symbol} on weekend - no direction change")
+            # For stocks when market is closed, only close if direction changed
+            elif symbol not in crypto_symbols and not is_nyse_trading_day_now():
+                if symbol in all_analyzed_results and not is_same_side(all_analyzed_results[symbol]["side"], position.side):
+                    logger.info(f"Closing stock position for {symbol} due to direction change (market closed)")
+                    should_close = True
+                else:
+                    logger.info(f"Keeping stock position for {symbol} when market closed - no direction change")
+            else:
+                logger.info(f"Closing position for {symbol} as it's no longer in top picks")
+                should_close = True
         elif symbol not in all_analyzed_results:
             # Only close positions when no analysis data if it's a short position and market is open
             if is_sell_side(position.side) and is_nyse_trading_day_now():
@@ -230,9 +245,9 @@ def manage_positions(
                     spawn_close_position_at_takeprofit(symbol, tp_price)
 
 def get_qty(symbol, entry_price):
-    # Calculate qty as 15% of available buying power
+    # Calculate qty as 50% of available buying power
     buying_power = alpaca_wrapper.total_buying_power
-    qty = 0.15 * buying_power / entry_price
+    qty = 0.50 * buying_power / entry_price
     
     # Round down to 3 decimal places for crypto
     if symbol in crypto_symbols:
@@ -297,7 +312,7 @@ def manage_market_close(
     # Return top picks for next day
     return {
         symbol: data
-        for symbol, data in list(all_analyzed_results.items())[:4]
+        for symbol, data in list(all_analyzed_results.items())[:2]
         if data["avg_return"] > 0
     }
 
@@ -323,10 +338,17 @@ def dry_run_manage_positions(
         should_close = False
 
         if symbol not in current_picks:
-            logger.info(
-                f"Would close position for {symbol} as it's no longer in top picks"
-            )
-            should_close = True
+            # For crypto on weekends, only close if direction changed
+            if symbol in crypto_symbols and not is_nyse_trading_day_now():
+                logger.info(f"Would keep crypto position for {symbol} on weekend - no direction change check needed in dry run")
+            # For stocks when market is closed, only close if direction changed  
+            elif symbol not in crypto_symbols and not is_nyse_trading_day_now():
+                logger.info(f"Would keep stock position for {symbol} when market closed - no direction change check needed in dry run")
+            else:
+                logger.info(
+                    f"Would close position for {symbol} as it's no longer in top picks"
+                )
+                should_close = True
         elif symbol in current_picks and not is_same_side(current_picks[symbol]["side"], position.side):
             logger.info(
                 f"Would close position for {symbol} to switch direction from {position.side} to {current_picks[symbol]['side']}"
@@ -357,7 +379,7 @@ def main():
         "ADBE",
         "NET",
         "COIN",
-        "MSFT",
+        #"MSFT",
         # "NFLX",
         # adding more as we do quite well now with volatility
         "META",
@@ -394,7 +416,7 @@ def main():
                 all_analyzed_results = analyze_symbols(symbols)
                 current_picks = {
                     symbol: data
-                    for symbol, data in list(all_analyzed_results.items())[:4]
+                    for symbol, data in list(all_analyzed_results.items())[:2]
                     if data["avg_return"] > 0
                 }
                 log_trading_plan(current_picks, "INITIAL PLAN")
@@ -418,7 +440,7 @@ def main():
                 all_analyzed_results = analyze_symbols(symbols)
                 current_picks = {
                     symbol: data
-                    for symbol, data in list(all_analyzed_results.items())[:4]
+                    for symbol, data in list(all_analyzed_results.items())[:2]
                     if data["avg_return"] > 0
                 }
                 log_trading_plan(current_picks, "MARKET OPEN PLAN")
