@@ -8,12 +8,15 @@ from loguru import logger
 
 import alpaca_wrapper
 from backtest_test3_inline import backtest_forecasts
+from data_curate_daily import get_bid, get_ask, download_exchange_latest_data
+from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from src.comparisons import is_buy_side, is_same_side, is_sell_side
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
 from src.trading_obj_utils import filter_to_realistic_positions
 from src.process_utils import backout_near_market, ramp_into_position, spawn_close_position_at_takeprofit
+from alpaca.data import StockHistoricalDataClient
 
 # Configure logging
 logger = setup_logging("trade_stock_e2e.log")
@@ -193,15 +196,64 @@ def manage_positions(
         correct_side = any(
             p.symbol == symbol and is_same_side(p.side, data["side"]) for p in positions
         )
-
-        if symbol in crypto_symbols:
-            should_enter = not position_exists and is_buy_side(data["side"])
+        
+        # Calculate current position size and target size
+        current_position_size = 0
+        current_position_value = 0
+        for p in positions:
+            if p.symbol == symbol:
+                current_position_size = float(p.qty)
+                if hasattr(p, 'current_price'):
+                    current_position_value = current_position_size * float(p.current_price)
+                break
+        
+        # Calculate target position size
+        client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+        download_exchange_latest_data(client, symbol)
+        bid_price = get_bid(symbol)
+        ask_price = get_ask(symbol)
+        
+        should_enter = False
+        needs_size_increase = False
+        
+        if bid_price is not None and ask_price is not None:
+            entry_price = ask_price if data["side"] == "buy" else bid_price
+            target_qty = get_qty(symbol, entry_price)
+            target_value = target_qty * entry_price
+            
+            logger.info(f"{symbol}: Current position: {current_position_size} qty (${current_position_value:.2f}), Target: {target_qty} qty (${target_value:.2f})")
+            
+            # Check if we need to enter or increase position
+            if symbol in crypto_symbols:
+                should_enter = (not position_exists and is_buy_side(data["side"])) or (current_position_size < target_qty * 0.95)  # 5% tolerance
+            else:
+                should_enter = not position_exists or (current_position_size < target_qty * 0.95)
+                
+            needs_size_increase = current_position_size > 0 and current_position_size < target_qty * 0.95
         else:
-            should_enter = not position_exists
+            # Fallback to old logic if we can't get prices
+            if symbol in crypto_symbols:
+                should_enter = not position_exists and is_buy_side(data["side"])
+            else:
+                should_enter = not position_exists
 
         if should_enter or not correct_side:
-            logger.info(f"Entering new {data['side']} position for {symbol}")
-            ramp_into_position(symbol, data["side"])
+            if needs_size_increase and bid_price is not None and ask_price is not None:
+                entry_price = ask_price if data["side"] == "buy" else bid_price
+                target_qty_for_log = get_qty(symbol, entry_price)
+                logger.info(f"Increasing existing {data['side']} position for {symbol} from {current_position_size} to {target_qty_for_log}")
+            else:
+                logger.info(f"Entering new {data['side']} position for {symbol}")
+            
+            # Use the prices and target_qty we already calculated
+            if bid_price is not None and ask_price is not None:
+                entry_price = ask_price if data["side"] == "buy" else bid_price
+                target_qty = get_qty(symbol, entry_price)  # Recalculate to be safe
+                logger.info(f"Target quantity for {symbol}: {target_qty} at price {entry_price}")
+                ramp_into_position(symbol, data["side"], target_qty=target_qty)
+            else:
+                logger.warning(f"Could not get bid/ask prices for {symbol}, using default sizing")
+                ramp_into_position(symbol, data["side"])
 
             # If strategy is 'takeprofit', place a takeprofit limit later
             if data["strategy"] == "takeprofit" and is_buy_side(data["side"]):

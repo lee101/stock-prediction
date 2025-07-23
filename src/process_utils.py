@@ -26,10 +26,12 @@ def backout_near_market(symbol):
     )
 
 
-@debounce(60 * 10, key_func=lambda symbol, side: f"{symbol}_{side}")
-def ramp_into_position(symbol: str, side: str = "buy"):
+@debounce(60 * 10, key_func=lambda symbol, side, target_qty=None: f"{symbol}_{side}_{target_qty}")
+def ramp_into_position(symbol: str, side: str = "buy", target_qty: float = None):
     """Ramp into a position over time using the alpaca CLI."""
     command = f"PYTHONPATH={cwd} python scripts/alpaca_cli.py ramp_into_position {symbol} --side={side}"
+    if target_qty is not None:
+        command += f" --target-qty={target_qty}"
     logger.info(f"Running command {command}")
     # Run process in background without waiting
     subprocess.Popen(
