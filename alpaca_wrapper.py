@@ -265,6 +265,64 @@ def open_order_at_price_or_all(symbol, qty, side, price):
     return None
 
 
+def open_order_at_price_allow_add_to_position(symbol, qty, side, price):
+    """
+    Similar to open_order_at_price_or_all but allows adding to existing positions.
+    This is used when we want to increase position size to a target amount.
+    """
+    result = None
+    # Cancel existing orders for this symbol
+    current_open_orders = get_orders()
+    for order in current_open_orders:
+        if pairs_equal(order.symbol, symbol):
+            cancel_order(order)
+    
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            # Keep price as float for calculations, only convert when submitting order
+            price_rounded = round(price, 2)
+            result = alpaca_api.submit_order(
+                order_data=LimitOrderRequest(
+                    symbol=remap_symbols(symbol),
+                    qty=qty,
+                    side=side,
+                    type=OrderType.LIMIT,
+                    time_in_force="gtc",
+                    limit_price=str(price_rounded),
+                )
+            )
+            logger.info(f"Order placed for {symbol}: {side} {qty} @ {price_rounded}")
+            return result
+        except Exception as e:
+            error_str = str(e)
+            logger.error(f"Order attempt {retry_count + 1} failed: {error_str}")
+            
+            # Check if error indicates insufficient funds
+            if "insufficient" in error_str.lower():
+                available = _parse_available_balance(error_str)
+                if available <= 0:
+                    available = cash
+                if available > 0:
+                    # Calculate maximum quantity we can afford with available balance
+                    # Use 0.99 buffer and round to 6 decimal places for crypto
+                    new_qty = round(0.99 * available / price, 6)
+                    if new_qty > 0 and new_qty != qty:
+                        logger.info(f"Insufficient funds. Adjusting quantity from {qty} to {new_qty} (available: {available})")
+                        qty = new_qty
+                        continue  # Don't increment retry_count, just retry with new quantity
+                    else:
+                        logger.error(f"Cannot afford any quantity. Available: {available}, Price: {price}, Calculated qty: {new_qty}")
+                        return None  # Exit immediately if we can't afford any quantity
+            
+            retry_count += 1
+            
+    logger.error("Max retries reached, order failed")
+    return None
+
+
 def execute_portfolio_orders(orders: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     """Execute multiple orders sequentially.
 

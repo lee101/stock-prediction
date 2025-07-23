@@ -47,7 +47,7 @@ def get_strategy_for_symbol(symbol: str) -> str:
     return positions_shelf.get(shelf_key, None)
 
 
-def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
+def main(command: str, pair: Optional[str], side: Optional[str] = "buy", target_qty: Optional[float] = None):
     """
     cancel_all_orders - cancel all orders
 
@@ -82,7 +82,7 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy"):
         backout_near_market(pair, start_time=now)
     elif command == "ramp_into_position":
         now = datetime.now()
-        ramp_into_position(pair, side, start_time=now)
+        ramp_into_position(pair, side, start_time=now, target_qty=target_qty)
     elif command == "close_position_at_takeprofit":
         close_position_at_takeprofit(pair, float(side))  # Use side param as target price
     elif command == 'show_account':
@@ -261,11 +261,12 @@ def violently_close_all_positions():
         alpaca_wrapper.close_position_violently(position)
 
 
-def ramp_into_position(pair, side, start_time=None):
+def ramp_into_position(pair, side, start_time=None, target_qty=None):
     """
     Ramp into a position with different strategies for crypto vs stocks:
     - Crypto: Start slightly worse than market price, ramp to opposite side over 1 hour
     - Stocks: More aggressive pricing starting at market, ramp over 1 hour
+    - If target_qty is provided, will add to existing position to reach that target
     """
     if pair in crypto_symbols and side.lower() == "sell":
         logger.error(f"Cannot short crypto {pair}")
@@ -283,11 +284,43 @@ def ramp_into_position(pair, side, start_time=None):
             all_positions = alpaca_wrapper.get_all_positions()
             positions = filter_to_realistic_positions(all_positions)
 
-            # First check if we already have the position
+            # Check current position size and calculate required quantity
+            current_qty = 0
+            existing_position = None
             for position in positions:
                 if hasattr(position, 'symbol') and pairs_equal(position.symbol, pair):
-                    logger.info(f"Position already exists for {pair}")
-                    return True
+                    current_qty = float(position.qty)
+                    existing_position = position
+                    logger.info(f"Existing position for {pair}: {current_qty} shares")
+                    break
+
+            # If target_qty not provided, calculate it as 50% of buying power (existing behavior)
+            if target_qty is None:
+                buying_power = alpaca_wrapper.cash
+                # Get current market price to calculate target qty
+                download_exchange_latest_data(client, pair)
+                bid_price = get_bid(pair)
+                ask_price = get_ask(pair)
+                if bid_price is None or ask_price is None:
+                    logger.error(f"Failed to get bid/ask prices for {pair}")
+                    return False
+                current_price = ask_price if side == "buy" else bid_price
+                target_qty = 0.5 * buying_power / current_price
+                if pair not in crypto_symbols:
+                    target_qty = math.floor(target_qty)
+                else:
+                    target_qty = math.floor(target_qty * 1000) / 1000.0
+
+            logger.info(f"Current position: {current_qty}, Target position: {target_qty}")
+            
+            # Check if we already have the target position or more
+            if current_qty >= target_qty:
+                logger.info(f"Position already at or above target for {pair} ({current_qty} >= {target_qty})")
+                return True
+                
+            # Calculate the quantity we need to add
+            qty_to_add = target_qty - current_qty
+            logger.info(f"Need to add {qty_to_add} to reach target position")
 
             # Cancel orders with retry logic
             cancel_attempts = 0
@@ -398,24 +431,60 @@ def ramp_into_position(pair, side, start_time=None):
                             price_range = ask_price - bid_price
                             order_price = ask_price - (price_range * progress)
 
-                # Calculate position size
-                buying_power = alpaca_wrapper.cash
-                qty = 0.5 * buying_power / order_price
-                qty = math.floor(qty * 1000) / 1000.0  # Round down to 3 decimal places
-
-                if pair not in crypto_symbols:
-                    qty = math.floor(qty)  # Round down to whole number for stocks
+                # Use the quantity we calculated earlier (qty_to_add)
+                qty = qty_to_add
 
                 if qty <= 0:
                     logger.error(f"Calculated qty {qty} is invalid")
                     return False
 
-                logger.info(f"Attempting to place order: {pair} {side} {qty} @ {order_price}")
+                logger.info(f"Attempting to place order: {pair} {side} {qty} @ {order_price} (adding to existing {current_qty})")
 
-                # Place the order with error handling
-                succeeded = alpaca_wrapper.open_order_at_price_or_all(pair, qty, side, order_price)
-                if not succeeded:
-                    logger.info("Failed to open position, will retry after delay")
+                # Check account status before placing order
+                try:
+                    buying_power_check = alpaca_wrapper.cash
+                    total_buying_power_check = alpaca_wrapper.total_buying_power
+                    logger.info(f"Account status - Cash: ${buying_power_check:.2f}, Total buying power: ${total_buying_power_check:.2f}")
+                    estimated_cost = qty * order_price
+                    logger.info(f"Estimated order cost: ${estimated_cost:.2f}")
+                except Exception as e:
+                    logger.error(f"Error checking account status: {e}")
+
+                # Place the order with error handling using new function that allows adding to positions
+                try:
+                    succeeded = alpaca_wrapper.open_order_at_price_allow_add_to_position(pair, qty, side, order_price)
+                    logger.info(f"Order result: {succeeded} (type: {type(succeeded)})")
+                    
+                    if succeeded is None:
+                        logger.error("Order placement returned None - check alpaca_wrapper logs for details")
+                        retries += 1
+                        if retries >= max_retries:
+                            logger.error("Max retries reached, exiting")
+                            return False
+                        sleep(60)
+                        continue
+                    elif not succeeded:
+                        logger.error("Order placement returned False")
+                        retries += 1
+                        if retries >= max_retries:
+                            logger.error("Max retries reached, exiting")
+                            return False
+                        sleep(60)
+                        continue
+                    else:
+                        logger.info(f"Order placed successfully: {succeeded} (ID: {succeeded.id if hasattr(succeeded, 'id') else 'N/A'})")
+                    
+                    # Order was successful, continue to reset retries and sleep
+                    
+                except Exception as e:
+                    logger.error(f"Exception during order placement: {e}")
+                    traceback.print_exc()
+                    
+                    # Check if it's an insufficient funds error and try to adjust quantity
+                    error_str = str(e)
+                    if "insufficient" in error_str.lower():
+                        logger.warning("Insufficient funds detected, will retry with adjusted quantity on next iteration")
+                    
                     retries += 1
                     if retries >= max_retries:
                         logger.error("Max retries reached, exiting")
@@ -423,7 +492,7 @@ def ramp_into_position(pair, side, start_time=None):
                     sleep(60)
                     continue
 
-                # Reset retries on successful order placement
+                # Reset retries on successful order placement  
                 retries = 0
 
                 # Longer sleep for crypto to reduce API calls
