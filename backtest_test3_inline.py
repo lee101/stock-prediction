@@ -237,6 +237,16 @@ def backtest_forecasts(symbol, num_simulations=100):
                          results_df['entry_takeprofit_sharpe'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_return', results_df['highlow_return'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_sharpe', results_df['highlow_sharpe'].mean(), 0)
+    tb_writer.add_scalar(
+        f'{symbol}/final_metrics/quantile_confidence_avg_return',
+        results_df['quantile_confidence_return'].mean(),
+        0,
+    )
+    tb_writer.add_scalar(
+        f'{symbol}/final_metrics/quantile_confidence_avg_sharpe',
+        results_df['quantile_confidence_sharpe'].mean(),
+        0,
+    )
 
     logger.info(f"\nAverage Validation Losses:")
     logger.info(f"Close Val Loss: {results_df['close_val_loss'].mean():.4f}")
@@ -265,20 +275,32 @@ def backtest_forecasts(symbol, num_simulations=100):
     logger.info(f"Average Highlow Return: {results_df['highlow_return'].mean():.4f}")
     logger.info(f"Average Highlow Sharpe: {results_df['highlow_sharpe'].mean():.4f}")
     logger.info(f"Average Highlow Final Day Return: {results_df['highlow_finalday_return'].mean():.4f}")
+    logger.info(
+        f"Average Quantile Confidence Return: {results_df['quantile_confidence_return'].mean():.4f}"
+    )
+    logger.info(
+        f"Average Quantile Confidence Sharpe: {results_df['quantile_confidence_sharpe'].mean():.4f}"
+    )
+    logger.info(
+        f"Average Quantile Confidence Final Day Return: {results_df['quantile_confidence_finalday'].mean():.4f}"
+    )
 
     # Determine which strategy is best overall
     avg_simple = results_df["simple_strategy_return"].mean()
     avg_allsignals = results_df["all_signals_strategy_return"].mean()
     avg_takeprofit = results_df["entry_takeprofit_return"].mean()
     avg_highlow = results_df["highlow_return"].mean()
+    avg_quantile = results_df["quantile_confidence_return"].mean()
 
-    best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow)
+    best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_quantile)
     if best_return == avg_highlow:
         best_strategy = "highlow"
     elif best_return == avg_takeprofit:
         best_strategy = "takeprofit"
     elif best_return == avg_allsignals:
         best_strategy = "all_signals"
+    elif best_return == avg_quantile:
+        best_strategy = "quantile_confidence"
     else:
         best_strategy = "simple"
 
@@ -313,6 +335,8 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
 
         load_pipeline()
         predictions = []
+        predictions_low_q = []
+        predictions_high_q = []
         for pred_idx in reversed(range(1, 8)):
             current_context = price[:-pred_idx]
             context = torch.tensor(current_context["y"].values, dtype=torch.float)
@@ -328,8 +352,12 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
             )
             low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
             predictions.append(median.item())
+            predictions_low_q.append(low.item())
+            predictions_high_q.append(high.item())
 
         predictions = torch.tensor(predictions)
+        predictions_low_q = torch.tensor(predictions_low_q)
+        predictions_high_q = torch.tensor(predictions_high_q)
         actuals = series_to_tensor(validation["y"])
         trading_preds = (predictions[:-1] > 0) * 2 - 1
 
@@ -353,6 +381,8 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:-1].view(-1)
         last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
         last_preds[key_to_predict.lower() + "_predictions"] = predictions[:-1].view(-1)
+        last_preds[key_to_predict.lower() + "_predictions_low_q"] = predictions_low_q[:-1].view(-1)
+        last_preds[key_to_predict.lower() + "_predictions_high_q"] = predictions_high_q[:-1].view(-1)
 
     # Calculate actual returns
     actual_returns = pd.Series(last_preds["close_actual_movement_values"].numpy())
@@ -418,6 +448,21 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     )
     highlow_finalday_return = highlow_return / len(actual_returns)
 
+    # Quantile confidence strategy
+    quantile_signals = quantile_confidence_strategy(
+        last_preds["close_predictions_low_q"],
+        last_preds["close_predictions_high_q"],
+        is_crypto=is_crypto,
+    )
+    quantile_total_return, quantile_sharpe, quantile_returns = evaluate_strategy(
+        quantile_signals,
+        actual_returns,
+        trading_fee,
+    )
+    quantile_finalday_return = (
+        quantile_signals[-1].item() * actual_returns.iloc[-1]
+    ) - (2 * trading_fee * SPREAD if quantile_signals[-1].item() != 0 else 0)
+
     # Log strategy metrics to tensorboard
     tb_writer.add_scalar(f'{symbol}/strategies/simple/total_return', simple_total_return, sim_idx)
     tb_writer.add_scalar(f'{symbol}/strategies/simple/sharpe', simple_sharpe, sim_idx)
@@ -443,6 +488,10 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     tb_writer.add_scalar(f'{symbol}/strategies/highlow/sharpe', highlow_sharpe, sim_idx)
     tb_writer.add_scalar(f'{symbol}/strategies/highlow/finalday', highlow_finalday_return, sim_idx)
 
+    tb_writer.add_scalar(f'{symbol}/strategies/quantile_confidence/total_return', quantile_total_return, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/quantile_confidence/sharpe', quantile_sharpe, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/quantile_confidence/finalday', quantile_finalday_return, sim_idx)
+
     # Log returns over time
     for t, ret in enumerate(simple_returns):
         tb_writer.add_scalar(f'{symbol}/returns_over_time/simple', ret, t)
@@ -456,6 +505,8 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         tb_writer.add_scalar(f'{symbol}/returns_over_time/entry_takeprofit', ret, t)
     for t, ret in enumerate(highlow_returns):
         tb_writer.add_scalar(f'{symbol}/returns_over_time/highlow', ret, t)
+    for t, ret in enumerate(quantile_returns):
+        tb_writer.add_scalar(f'{symbol}/returns_over_time/quantile_confidence', ret, t)
 
     # print(last_preds)
     result = {
@@ -482,6 +533,9 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         'highlow_return': float(highlow_return),
         'highlow_sharpe': float(highlow_sharpe),
         'highlow_finalday_return': float(highlow_finalday_return),
+        'quantile_confidence_return': float(quantile_total_return),
+        'quantile_confidence_sharpe': float(quantile_sharpe),
+        'quantile_confidence_finalday': float(quantile_finalday_return),
         'close_val_loss': float(last_preds['close_val_loss']),
         'high_val_loss': float(last_preds['high_val_loss']),
         'low_val_loss': float(last_preds['low_val_loss']),
@@ -617,6 +671,20 @@ def evaluate_highlow_strategy(
         sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
 
     return float(total_return), float(sharpe_ratio), daily_returns
+
+
+def quantile_confidence_strategy(low_quantile_predictions, high_quantile_predictions, is_crypto=False):
+    """Generate signals only when both quantiles agree on direction."""
+    low_quantile_predictions = torch.as_tensor(low_quantile_predictions)
+    high_quantile_predictions = torch.as_tensor(high_quantile_predictions)
+
+    buy_signal = (low_quantile_predictions > 0) & (high_quantile_predictions > 0)
+    sell_signal = (low_quantile_predictions < 0) & (high_quantile_predictions < 0)
+
+    if is_crypto:
+        return buy_signal.float()
+
+    return buy_signal.float() - sell_signal.float()
 
 
 if __name__ == "__main__":

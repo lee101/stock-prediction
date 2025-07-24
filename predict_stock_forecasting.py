@@ -187,6 +187,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
 
                 load_pipeline()
                 predictions = []
+                predictions_low_q = []
+                predictions_high_q = []
                 # make 7 predictions - todo can batch this all in 1 go
                 for pred_idx in reversed(range(1, 8)):
                     current_context = price[:-pred_idx]
@@ -199,6 +201,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                     )
                     low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)  # todo use spread?
                     predictions.append(median.item())
+                    predictions_low_q.append(low.item())
+                    predictions_high_q.append(high.item())
                 Y_hat_df = pd.DataFrame({'y': predictions})
 
                 # Y_hat_df = Y_test_df.merge(Y_hat_df, how='left', on=['unique_id', 'ds'])
@@ -297,6 +301,8 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                     calculated_profit_values.view(-1).detach().cpu().numpy())
                 last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
                 last_preds[key_to_predict.lower() + "_predictions"] = predictions[:-1].view(-1)
+                last_preds[key_to_predict.lower() + "_predictions_low_q"] = torch.tensor(predictions_low_q[:-1]).view(-1)
+                last_preds[key_to_predict.lower() + "_predictions_high_q"] = torch.tensor(predictions_high_q[:-1]).view(-1)
                 # last_preds[key_to_predict.lower() + "_percent_movement"] = percent_movement
                 # last_preds[
                 #     key_to_predict.lower() + "_likely_percent_uncertainty"
