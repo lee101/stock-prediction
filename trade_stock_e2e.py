@@ -218,7 +218,7 @@ def manage_positions(
         
         if bid_price is not None and ask_price is not None:
             entry_price = ask_price if data["side"] == "buy" else bid_price
-            target_qty = get_qty(symbol, entry_price)
+            target_qty = get_qty(symbol, entry_price, positions)
             target_value = target_qty * entry_price
             
             logger.info(f"{symbol}: Current position: {current_position_size} qty (${current_position_value:.2f}), Target: {target_qty} qty (${target_value:.2f})")
@@ -240,7 +240,7 @@ def manage_positions(
         if should_enter or not correct_side:
             if needs_size_increase and bid_price is not None and ask_price is not None:
                 entry_price = ask_price if data["side"] == "buy" else bid_price
-                target_qty_for_log = get_qty(symbol, entry_price)
+                target_qty_for_log = get_qty(symbol, entry_price, positions)
                 logger.info(f"Increasing existing {data['side']} position for {symbol} from {current_position_size} to {target_qty_for_log}")
             else:
                 logger.info(f"Entering new {data['side']} position for {symbol}")
@@ -248,7 +248,7 @@ def manage_positions(
             # Use the prices and target_qty we already calculated
             if bid_price is not None and ask_price is not None:
                 entry_price = ask_price if data["side"] == "buy" else bid_price
-                target_qty = get_qty(symbol, entry_price)  # Recalculate to be safe
+                target_qty = get_qty(symbol, entry_price, positions)  # Recalculate to be safe
                 logger.info(f"Target quantity for {symbol}: {target_qty} at price {entry_price}")
                 ramp_into_position(symbol, data["side"], target_qty=target_qty)
             else:
@@ -278,7 +278,7 @@ def manage_positions(
                     logger.info(
                         f"(Highlow) Placing limit BUY order for {symbol} at predicted_low={entry_price:.2f}"
                     )
-                    qty = get_qty(symbol, entry_price)
+                    qty = get_qty(symbol, entry_price, positions)
                     alpaca_wrapper.open_order_at_price_or_all(symbol, qty=qty, side="buy", price=entry_price)
 
                     tp_price = data["predicted_high"]
@@ -289,17 +289,59 @@ def manage_positions(
                     logger.info(
                         f"(Highlow) Placing limit SELL/short order for {symbol} at predicted_high={entry_price:.2f}"
                     )
-                    qty = get_qty(symbol, entry_price)
+                    qty = get_qty(symbol, entry_price, positions)
                     alpaca_wrapper.open_order_at_price_or_all(symbol, qty=qty, side="sell", price=entry_price)
 
                     tp_price = data["predicted_low"]
                     logger.info(f"(Highlow) Scheduling takeprofit at predicted_low={tp_price:.3f} for short {symbol}")
                     spawn_close_position_at_takeprofit(symbol, tp_price)
 
-def get_qty(symbol, entry_price):
-    # Calculate qty as 50% of available buying power
+def get_current_symbol_exposure(symbol, positions):
+    """Calculate current exposure to a symbol as percentage of total equity."""
+    total_exposure = 0
+    equity = alpaca_wrapper.equity
+    
+    for position in positions:
+        if position.symbol == symbol:
+            market_value = float(position.market_value) if position.market_value else 0
+            total_exposure += abs(market_value)  # Use abs to account for short positions
+    
+    return (total_exposure / equity) * 100 if equity > 0 else 0
+
+
+def get_qty(symbol, entry_price, positions=None):
+    """Calculate quantity with 60% max exposure check per symbol."""
+    # Get current positions to check existing exposure if not provided
+    if positions is None:
+        positions = alpaca_wrapper.get_all_positions()
+        positions = filter_to_realistic_positions(positions)
+    
+    # Check current exposure to this symbol
+    current_exposure_pct = get_current_symbol_exposure(symbol, positions)
+    
+    # Maximum allowed exposure is 60%
+    max_exposure_pct = 60.0
+    
+    if current_exposure_pct >= max_exposure_pct:
+        logger.warning(f"Symbol {symbol} already at {current_exposure_pct:.1f}% exposure, max is {max_exposure_pct}%. Skipping position increase.")
+        return 0
+    
+    # Calculate how much more we can add without exceeding 60%
+    remaining_exposure_pct = max_exposure_pct - current_exposure_pct
+    
+    # Calculate qty as 50% of available buying power, but limit by remaining exposure
     buying_power = alpaca_wrapper.total_buying_power
-    qty = 0.50 * buying_power / entry_price
+    equity = alpaca_wrapper.equity
+    
+    # Calculate qty based on 50% of buying power
+    qty_from_buying_power = 0.50 * buying_power / entry_price
+    
+    # Calculate max qty based on remaining exposure allowance
+    max_additional_value = (remaining_exposure_pct / 100) * equity
+    qty_from_exposure_limit = max_additional_value / entry_price
+    
+    # Use the smaller of the two
+    qty = min(qty_from_buying_power, qty_from_exposure_limit)
     
     # Round down to 3 decimal places for crypto
     if symbol in crypto_symbols:
@@ -310,8 +352,15 @@ def get_qty(symbol, entry_price):
     
     # Ensure qty is valid
     if qty <= 0:
-        logger.error(f"Calculated qty {qty} is invalid")
+        logger.warning(f"Calculated qty {qty} is invalid for {symbol} (current exposure: {current_exposure_pct:.1f}%)")
         return 0
+    
+    # Log the exposure calculation
+    future_exposure_value = sum(abs(float(p.market_value)) for p in positions if p.symbol == symbol) + (qty * entry_price)
+    future_exposure_pct = (future_exposure_value / equity) * 100 if equity > 0 else 0
+    
+    logger.info(f"Position sizing for {symbol}: current={current_exposure_pct:.1f}%, new position will be {future_exposure_pct:.1f}% of total equity")
+    
     return qty
 
 def manage_market_close(
@@ -364,7 +413,7 @@ def manage_market_close(
     # Return top picks for next day
     return {
         symbol: data
-        for symbol, data in list(all_analyzed_results.items())[:2]
+        for symbol, data in list(all_analyzed_results.items())[:4]
         if data["avg_return"] > 0
     }
 
@@ -468,7 +517,7 @@ def main():
                 all_analyzed_results = analyze_symbols(symbols)
                 current_picks = {
                     symbol: data
-                    for symbol, data in list(all_analyzed_results.items())[:2]
+                    for symbol, data in list(all_analyzed_results.items())[:4]
                     if data["avg_return"] > 0
                 }
                 log_trading_plan(current_picks, "INITIAL PLAN")
@@ -492,7 +541,7 @@ def main():
                 all_analyzed_results = analyze_symbols(symbols)
                 current_picks = {
                     symbol: data
-                    for symbol, data in list(all_analyzed_results.items())[:2]
+                    for symbol, data in list(all_analyzed_results.items())[:4]
                     if data["avg_return"] > 0
                 }
                 log_trading_plan(current_picks, "MARKET OPEN PLAN")
