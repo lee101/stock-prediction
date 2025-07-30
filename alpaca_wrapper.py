@@ -30,7 +30,7 @@ from src.logging_utils import setup_logging
 from src.stock_utils import pairs_equal, remap_symbols
 from src.trading_obj_utils import filter_to_realistic_positions
 
-logger = setup_logging("stock.log")
+logger = setup_logging("alpaca_cli.log")
 
 alpaca_api = TradingClient(
     ALP_KEY_ID,
@@ -113,9 +113,20 @@ def open_market_order_violently(symbol, qty, side, retries=3):
             )
         )
     except Exception as e:
+        error_str = str(e)
+        logger.error(f"Market order attempt failed for {symbol}: {error_str}")
+        logger.error(f"Full exception object: {repr(e)}")
+        logger.error(f"Exception type: {type(e)}")
+        if hasattr(e, 'response'):
+            logger.error(f"API response object: {e.response}")
+        if hasattr(e, 'status_code'):
+            logger.error(f"HTTP status code: {e.status_code}")
+        if hasattr(e, '__dict__'):
+            logger.error(f"Exception attributes: {e.__dict__}")
         if retries > 0:
+            logger.info(f"Retrying market order for {symbol}, {retries} attempts left")
             return open_market_order_violently(symbol, qty, side, retries - 1)
-        logger.error(e)
+        logger.error(f"RETURNING None - Market order failed after all retries for {symbol} {side} {qty}")
         return None
     print(result)
     return result
@@ -182,6 +193,7 @@ def open_order_at_price(symbol, qty, side, price):
     has_current_position = has_current_open_position(symbol, side)
     if has_current_position:
         logger.info(f"position {symbol} already open")
+        logger.error(f"RETURNING None - Position already open for {symbol} {side}")
         return None
     try:
         price = str(round(price, 2))
@@ -196,7 +208,17 @@ def open_order_at_price(symbol, qty, side, price):
             )
         )
     except Exception as e:
-        logger.error(e)
+        error_str = str(e)
+        logger.error(f"Order placement failed for {symbol}: {error_str}")
+        logger.error(f"Full exception object: {repr(e)}")
+        logger.error(f"Exception type: {type(e)}")
+        if hasattr(e, 'response'):
+            logger.error(f"API response object: {e.response}")
+        if hasattr(e, 'status_code'):
+            logger.error(f"HTTP status code: {e.status_code}")
+        if hasattr(e, '__dict__'):
+            logger.error(f"Exception attributes: {e.__dict__}")
+        logger.error(f"RETURNING None - Order placement failed for {symbol} {side} {qty} @ {price}")
         return None
     print(result)
     return result
@@ -214,6 +236,7 @@ def open_order_at_price_or_all(symbol, qty, side, price):
     has_current_position = has_current_open_position(symbol, side)
     if has_current_position:
         logger.info(f"position {symbol} already open")
+        logger.error(f"RETURNING None - Position already open for {symbol} {side}")
         return None
 
     max_retries = 3
@@ -238,9 +261,18 @@ def open_order_at_price_or_all(symbol, qty, side, price):
         except Exception as e:
             error_str = str(e)
             logger.error(f"Order attempt {retry_count + 1} failed: {error_str}")
+            logger.error(f"Full exception object: {repr(e)}")
+            logger.error(f"Exception type: {type(e)}")
+            if hasattr(e, 'response'):
+                logger.error(f"API response object: {e.response}")
+            if hasattr(e, 'status_code'):
+                logger.error(f"HTTP status code: {e.status_code}")
+            if hasattr(e, '__dict__'):
+                logger.error(f"Exception attributes: {e.__dict__}")
 
             # Check if error indicates insufficient funds
             if "insufficient" in error_str.lower():
+                logger.error(f"Detected insufficient funds error. Full error_str: '{error_str}'")
                 available = _parse_available_balance(error_str)
                 if available <= 0:
                     available = cash
@@ -255,13 +287,15 @@ def open_order_at_price_or_all(symbol, qty, side, price):
                         continue  # Don't increment retry_count, just retry with new quantity
                     else:
                         logger.error(f"Cannot afford any quantity. Available: {available}, Price: {price}, Calculated qty: {new_qty}")
+                        logger.error(f"RETURNING None - Insufficient funds for {symbol} {side} {qty} @ {price}")
                         return None  # Exit immediately if we can't afford any quantity
 
             retry_count += 1
             # if retry_count < max_retries:
             #     time.sleep(2)  # Wait before retry
 
-    logger.error("Max retries reached, order failed")
+    logger.error(f"Max retries reached, order failed for {symbol} {side} {qty} @ {price}")
+    logger.error(f"RETURNING None - Max retries reached for {symbol}")
     return None
 
 
@@ -270,6 +304,7 @@ def open_order_at_price_allow_add_to_position(symbol, qty, side, price):
     Similar to open_order_at_price_or_all but allows adding to existing positions.
     This is used when we want to increase position size to a target amount.
     """
+    logger.info(f"Starting order placement for {symbol} {side} {qty} @ {price}")
     result = None
     # Cancel existing orders for this symbol
     current_open_orders = get_orders()
@@ -284,6 +319,7 @@ def open_order_at_price_allow_add_to_position(symbol, qty, side, price):
         try:
             # Keep price as float for calculations, only convert when submitting order
             price_rounded = round(price, 2)
+            logger.debug(f"Submitting order: {symbol} {side} {qty} @ {price_rounded} (attempt {retry_count + 1})")
             result = alpaca_api.submit_order(
                 order_data=LimitOrderRequest(
                     symbol=remap_symbols(symbol),
@@ -294,14 +330,23 @@ def open_order_at_price_allow_add_to_position(symbol, qty, side, price):
                     limit_price=str(price_rounded),
                 )
             )
-            logger.info(f"Order placed for {symbol}: {side} {qty} @ {price_rounded}")
+            logger.info(f"Order placed successfully for {symbol}: {side} {qty} @ {price_rounded}, result: {result}")
             return result
         except Exception as e:
             error_str = str(e)
-            logger.error(f"Order attempt {retry_count + 1} failed: {error_str}")
+            logger.error(f"Order attempt {retry_count + 1} failed for {symbol}: {error_str}")
+            logger.error(f"Full exception object: {repr(e)}")
+            logger.error(f"Exception type: {type(e)}")
+            if hasattr(e, 'response'):
+                logger.error(f"API response object: {e.response}")
+            if hasattr(e, 'status_code'):
+                logger.error(f"HTTP status code: {e.status_code}")
+            if hasattr(e, '__dict__'):
+                logger.error(f"Exception attributes: {e.__dict__}")
             
             # Check if error indicates insufficient funds
             if "insufficient" in error_str.lower():
+                logger.error(f"Detected insufficient funds error. Full error_str: '{error_str}'")
                 available = _parse_available_balance(error_str)
                 if available <= 0:
                     available = cash
@@ -315,11 +360,13 @@ def open_order_at_price_allow_add_to_position(symbol, qty, side, price):
                         continue  # Don't increment retry_count, just retry with new quantity
                     else:
                         logger.error(f"Cannot afford any quantity. Available: {available}, Price: {price}, Calculated qty: {new_qty}")
+                        logger.error(f"RETURNING None - Insufficient funds for {symbol} {side} {qty} @ {price}")
                         return None  # Exit immediately if we can't afford any quantity
             
             retry_count += 1
             
-    logger.error("Max retries reached, order failed")
+    logger.error(f"Max retries reached, order failed for {symbol} {side} {qty} @ {price}")
+    logger.error(f"RETURNING None - Max retries reached for {symbol}")
     return None
 
 
