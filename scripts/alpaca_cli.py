@@ -18,6 +18,9 @@ from src.logging_utils import setup_logging
 from src.stock_utils import pairs_equal
 from src.trading_obj_utils import filter_to_realistic_positions
 
+# Import position sizing utilities
+from src.sizing_utils import get_qty
+
 alpaca_api = tradeapi.REST(
     ALP_KEY_ID,
     ALP_SECRET_KEY,
@@ -294,9 +297,8 @@ def ramp_into_position(pair, side, start_time=None, target_qty=None):
                     logger.info(f"Existing position for {pair}: {current_qty} shares")
                     break
 
-            # If target_qty not provided, calculate it as 50% of buying power (existing behavior)
+            # If target_qty not provided, use the centralized get_qty function for consistent risk management
             if target_qty is None:
-                buying_power = alpaca_wrapper.cash
                 # Get current market price to calculate target qty
                 download_exchange_latest_data(client, pair)
                 bid_price = get_bid(pair)
@@ -304,12 +306,15 @@ def ramp_into_position(pair, side, start_time=None, target_qty=None):
                 if bid_price is None or ask_price is None:
                     logger.error(f"Failed to get bid/ask prices for {pair}")
                     return False
-                current_price = ask_price if side == "buy" else bid_price
-                target_qty = 0.5 * buying_power / current_price
-                if pair not in crypto_symbols:
-                    target_qty = math.floor(target_qty)
-                else:
-                    target_qty = math.floor(target_qty * 1000) / 1000.0
+                entry_price = ask_price if side == "buy" else bid_price
+                
+                # Use the centralized get_qty function which includes exposure limits and risk management
+                target_qty = get_qty(pair, entry_price, positions)
+                
+                # If get_qty returns 0, we can't add more to this position
+                if target_qty == 0:
+                    logger.warning(f"Cannot add to position for {pair} - exposure limits reached or invalid quantity")
+                    return True  # Return success since this is a risk management decision
 
             logger.info(f"Current position: {current_qty}, Target position: {target_qty}")
             
@@ -321,6 +326,12 @@ def ramp_into_position(pair, side, start_time=None, target_qty=None):
             # Calculate the quantity we need to add
             qty_to_add = target_qty - current_qty
             logger.info(f"Need to add {qty_to_add} to reach target position")
+            
+            # Check for minimum order size to prevent tiny orders that fail
+            min_order_size = 0.01 if pair in crypto_symbols else 1.0
+            if abs(qty_to_add) < min_order_size:
+                logger.info(f"Quantity to add ({qty_to_add}) is below minimum order size ({min_order_size}) for {pair}")
+                return True  # Consider this a success since we're essentially at target
 
             # Cancel orders with retry logic
             cancel_attempts = 0
