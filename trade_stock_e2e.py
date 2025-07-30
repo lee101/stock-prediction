@@ -450,6 +450,7 @@ def main():
     # Track when each analysis was last run
     last_initial_run = None
     last_market_open_run = None
+    last_market_open_hour2_run = None
     last_market_close_run = None
 
     while True:
@@ -500,6 +501,29 @@ def main():
 
                 previous_picks = current_picks
                 last_market_open_run = today
+
+            # Market open hour 2 analysis (10:30-11:00 EST)
+            elif (
+                    (
+                            now.hour == market_open.hour + 1
+                            and market_open.minute <= now.minute < market_open.minute + 30
+                    )
+                    and (last_market_open_hour2_run is None or last_market_open_hour2_run != today)
+                    and is_nyse_trading_day_now()
+            ):
+
+                logger.info("\nMARKET OPEN HOUR 2 ANALYSIS STARTING...")
+                all_analyzed_results = analyze_symbols(symbols)
+                current_picks = {
+                    symbol: data
+                    for symbol, data in list(all_analyzed_results.items())[:2]
+                    if data["avg_return"] > 0
+                }
+                log_trading_plan(current_picks, "MARKET OPEN HOUR 2 PLAN")
+                manage_positions(current_picks, previous_picks, all_analyzed_results)
+
+                previous_picks = current_picks
+                last_market_open_hour2_run = today
 
             # Market close analysis (15:45-16:00 EST)
             elif (
