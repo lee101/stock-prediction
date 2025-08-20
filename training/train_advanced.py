@@ -15,6 +15,7 @@ import json
 from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
+from torch.utils.tensorboard import SummaryWriter
 
 from advanced_trainer import (
     AdvancedTrainingConfig,
@@ -36,10 +37,16 @@ from train_full_model import load_and_prepare_data, generate_synthetic_data
 class AdvancedPPOTrainer:
     """Advanced PPO trainer with all modern techniques"""
     
-    def __init__(self, agent, config: AdvancedTrainingConfig, device='cuda'):
+    def __init__(self, agent, config: AdvancedTrainingConfig, device='cuda', log_dir='traininglogs'):
         self.agent = agent
         self.config = config
         self.device = device
+        
+        # TensorBoard writer
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.writer = SummaryWriter(f'{log_dir}/advanced_{timestamp}')
+        self.global_step = 0
+        self.episode_num = 0
         
         # Optimizer
         if config.optimizer == 'muon':
@@ -53,10 +60,15 @@ class AdvancedPPOTrainer:
                 weight_decay=0.01
             )
         
-        # Learning rate scheduler
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            self.optimizer, T_0=100, T_mult=2
+        # Learning rate scheduler - use plateau scheduler to handle dropoff
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='max', factor=0.5, patience=50, 
+            verbose=True, min_lr=1e-6
         )
+        
+        # Track plateau detection
+        self.plateau_counter = 0
+        self.best_recent_reward = -float('inf')
         
         # Replay buffers
         self.replay_buffer = PrioritizedReplayBuffer(capacity=100000)
@@ -193,13 +205,24 @@ class AdvancedPPOTrainer:
             self.optimizer.step()
             total_loss += loss.item()
         
-        # Update learning rate
-        self.scheduler.step()
+        # Update learning rate based on performance
+        # Don't step here, do it based on evaluation metrics
         
         # Track metrics
         self.metrics['actor_losses'].append(actor_loss.item())
         self.metrics['critic_losses'].append(value_loss.item())
         self.metrics['learning_rates'].append(self.optimizer.param_groups[0]['lr'])
+        
+        # Log to TensorBoard
+        self.writer.add_scalar('Loss/Actor', actor_loss.item(), self.global_step)
+        self.writer.add_scalar('Loss/Critic', value_loss.item(), self.global_step)
+        self.writer.add_scalar('Loss/Total', total_loss / self.config.ppo_epochs, self.global_step)
+        self.writer.add_scalar('Loss/Entropy', entropy.item() if not isinstance(entropy, float) else entropy, self.global_step)
+        self.writer.add_scalar('Training/LearningRate', self.optimizer.param_groups[0]['lr'], self.global_step)
+        self.writer.add_scalar('Training/Advantages_Mean', advantages.mean().item(), self.global_step)
+        self.writer.add_scalar('Training/Advantages_Std', advantages.std().item(), self.global_step)
+        self.writer.add_scalar('Training/Returns_Mean', returns.mean().item(), self.global_step)
+        self.global_step += 1
         
         return total_loss / self.config.ppo_epochs
     
@@ -285,6 +308,21 @@ class AdvancedPPOTrainer:
             metrics = env.get_metrics()
             self.metrics['episode_profits'].append(metrics.get('total_return', 0))
             self.metrics['episode_sharpes'].append(metrics.get('sharpe_ratio', 0))
+            
+            # Log episode metrics to TensorBoard
+            self.writer.add_scalar('Episode/Reward', episode_reward, self.episode_num)
+            self.writer.add_scalar('Episode/TotalReturn', metrics.get('total_return', 0), self.episode_num)
+            self.writer.add_scalar('Episode/SharpeRatio', metrics.get('sharpe_ratio', 0), self.episode_num)
+            self.writer.add_scalar('Episode/MaxDrawdown', metrics.get('max_drawdown', 0), self.episode_num)
+            self.writer.add_scalar('Episode/NumTrades', metrics.get('num_trades', 0), self.episode_num)
+            self.writer.add_scalar('Episode/WinRate', metrics.get('win_rate', 0), self.episode_num)
+            self.writer.add_scalar('Episode/Steps', episode_steps, self.episode_num)
+            
+            # Log portfolio metrics
+            self.writer.add_scalar('Portfolio/FinalBalance', env.balance, self.episode_num)
+            self.writer.add_scalar('Portfolio/ProfitLoss', env.balance - env.initial_balance, self.episode_num)
+            
+        self.episode_num += 1
         
         return episode_reward, episode_steps
     
@@ -294,6 +332,9 @@ class AdvancedPPOTrainer:
             num_episodes = self.config.num_episodes
         
         best_reward = -float('inf')
+        best_sharpe = -float('inf')
+        best_profit = -float('inf')
+        best_combined = -float('inf')
         
         with tqdm(total=num_episodes, desc="Training") as pbar:
             for episode in range(num_episodes):
@@ -312,15 +353,84 @@ class AdvancedPPOTrainer:
                 if (episode + 1) % self.config.eval_interval == 0:
                     eval_reward = self.evaluate(env)
                     
+                    # Get detailed metrics
+                    env.reset()
+                    state = env.reset()
+                    done = False
+                    while not done:
+                        action, _ = self.select_action(state, deterministic=True)
+                        state, _, done, _ = env.step([action])
+                    
+                    eval_metrics = env.get_metrics()
+                    eval_sharpe = eval_metrics.get('sharpe_ratio', -10)
+                    eval_profit = eval_metrics.get('total_return', -1)
+                    
+                    # Combined score for best overall model
+                    combined_score = 0.5 * eval_sharpe + 0.5 * (eval_profit * 10)
+                    
+                    # Save different types of best models
                     if eval_reward > best_reward:
                         best_reward = eval_reward
-                        self.save_checkpoint(f'models/best_advanced_model.pth')
+                        self.save_checkpoint(f'models/best_reward_model.pth', 
+                                           episode, 'reward', eval_reward)
                     
-                    tqdm.write(f"\nEpisode {episode + 1} Evaluation: {eval_reward:.3f}")
+                    if eval_sharpe > best_sharpe:
+                        best_sharpe = eval_sharpe
+                        self.save_checkpoint(f'models/best_sharpe_model.pth', 
+                                           episode, 'sharpe', eval_sharpe)
+                    
+                    if eval_profit > best_profit:
+                        best_profit = eval_profit
+                        self.save_checkpoint(f'models/best_profit_model.pth', 
+                                           episode, 'profit', eval_profit)
+                    
+                    if combined_score > best_combined:
+                        best_combined = combined_score
+                        self.save_checkpoint(f'models/best_combined_model.pth', 
+                                           episode, 'combined', combined_score)
+                    
+                    # Log evaluation metrics
+                    self.writer.add_scalar('Evaluation/Reward', eval_reward, episode)
+                    self.writer.add_scalar('Evaluation/Sharpe', eval_sharpe, episode)
+                    self.writer.add_scalar('Evaluation/Profit', eval_profit, episode)
+                    self.writer.add_scalar('Evaluation/CombinedScore', combined_score, episode)
+                    self.writer.add_scalar('Evaluation/BestReward', best_reward, episode)
+                    self.writer.add_scalar('Evaluation/BestSharpe', best_sharpe, episode)
+                    self.writer.add_scalar('Evaluation/BestProfit', best_profit, episode)
+                    
+                    tqdm.write(f"\nEpisode {episode + 1} - Reward: {eval_reward:.3f}, Sharpe: {eval_sharpe:.3f}, Profit: {eval_profit:.2%}")
+                
+                # Update scheduler with current performance
+                self.scheduler.step(eval_sharpe)  # Use Sharpe as the metric
+                
+                # Adaptive techniques to break through plateau
+                if episode > 300:
+                    # Check for plateau
+                    if eval_sharpe <= self.best_recent_reward * 1.01:  # Not improving by 1%
+                        self.plateau_counter += 1
+                    else:
+                        self.plateau_counter = 0
+                        self.best_recent_reward = max(self.best_recent_reward, eval_sharpe)
+                    
+                    # Apply adaptive techniques based on plateau duration
+                    if self.plateau_counter > 5:  # Stuck for 100+ episodes
+                        # Increase exploration
+                        self.config.entropy_coef = min(0.1, self.config.entropy_coef * 1.5)
+                        tqdm.write(f"\n🔄 Plateau detected! Increased exploration: entropy={self.config.entropy_coef:.4f}")
+                        
+                        # Reset plateau counter
+                        self.plateau_counter = 0
+                    
+                    # At episode 600, apply special boost to break through
+                    if episode == 600:
+                        tqdm.write(f"\n🚀 Episode 600 boost: Adjusting hyperparameters")
+                        self.config.ppo_clip = min(0.3, self.config.ppo_clip * 1.2)
+                        self.config.ppo_epochs = min(20, self.config.ppo_epochs + 2)
+                        self.config.value_loss_coef *= 0.8  # Reduce value loss importance
                 
                 # Save checkpoint
                 if (episode + 1) % self.config.save_interval == 0:
-                    self.save_checkpoint(f'models/checkpoint_ep{episode + 1}.pth')
+                    self.save_checkpoint(f'models/checkpoint_ep{episode + 1}.pth', episode)
         
         return self.metrics
     
@@ -342,15 +452,25 @@ class AdvancedPPOTrainer:
         
         return total_reward / num_episodes
     
-    def save_checkpoint(self, filepath):
-        """Save model checkpoint"""
+    def save_checkpoint(self, filepath, episode=None, metric_type=None, metric_value=None):
+        """Save model checkpoint with metadata"""
         Path(filepath).parent.mkdir(exist_ok=True, parents=True)
+        
+        # Create training run metadata
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        run_name = f"advanced_training_{timestamp}"
         
         checkpoint = {
             'config': self.config.__dict__,
             'metrics': self.metrics,
             'optimizer_state': self.optimizer.state_dict(),
-            'scheduler_state': self.scheduler.state_dict()
+            'scheduler_state': self.scheduler.state_dict(),
+            'episode': episode,
+            'metric_type': metric_type,
+            'metric_value': metric_value,
+            'run_name': run_name,
+            'timestamp': timestamp,
+            'global_step': self.global_step
         }
         
         if isinstance(self.agent, EnsembleTradingAgent):
@@ -362,7 +482,10 @@ class AdvancedPPOTrainer:
             checkpoint['agent_state'] = self.agent.state_dict()
         
         torch.save(checkpoint, filepath)
-        print(f"Checkpoint saved to {filepath}")
+        if metric_type:
+            print(f"Best {metric_type} model saved: {metric_value:.4f} at episode {episode}")
+        else:
+            print(f"Checkpoint saved to {filepath}")
 
 
 def main():
@@ -374,11 +497,11 @@ def main():
     # Configuration
     config = AdvancedTrainingConfig(
         architecture='transformer',
-        optimizer='muon',  # Advanced optimizer for better convergence
-        learning_rate=0.001,
-        num_episodes=5000,  # Production training
-        eval_interval=50,
-        save_interval=200,
+        optimizer='adam',  # Stable optimizer
+        learning_rate=0.001,  # Higher initial LR with decay
+        num_episodes=3000,  # Extended training to push through plateau
+        eval_interval=20,  # More frequent evaluation
+        save_interval=100,  # More frequent checkpoints
         use_curiosity=True,
         use_her=True,
         use_augmentation=True,
@@ -486,7 +609,9 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"  Device: {device}")
     
-    trainer = AdvancedPPOTrainer(agent, config, device)
+    trainer = AdvancedPPOTrainer(agent, config, device, log_dir='traininglogs')
+    print(f"  TensorBoard logs: traininglogs/advanced_*")
+    print(f"  Run: tensorboard --logdir=traininglogs")
     
     # Train
     print("\n🏋️ Starting advanced training...")
@@ -585,7 +710,12 @@ def main():
         }, f, indent=2, default=float)
     
     print("\n📊 Results saved to results/")
+    
+    # Close TensorBoard writer
+    trainer.writer.close()
+    
     print("\n🎉 Advanced training complete!")
+    print(f"\n📊 View training curves: tensorboard --logdir=traininglogs")
 
 
 if __name__ == '__main__':

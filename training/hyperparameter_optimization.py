@@ -24,10 +24,33 @@ from advanced_trainer import (
     create_advanced_agent,
     create_optimizer
 )
-from train_advanced import AdvancedPPOTrainer, ReshapeWrapper
+from train_advanced import AdvancedPPOTrainer
 from trading_env import DailyTradingEnv
 from trading_config import get_trading_costs
 from train_full_model import generate_synthetic_data
+
+
+# Reshape input for transformer (batch, seq_len, features)
+class ReshapeWrapper(nn.Module):
+    def __init__(self, agent, window_size=30):
+        super().__init__()
+        self.agent = agent
+        self.window_size = window_size
+    
+    def forward(self, x):
+        # Reshape from (batch, flat_features) to (batch, seq_len, features)
+        if len(x.shape) == 2:
+            batch_size = x.shape[0]
+            features_per_step = x.shape[1] // self.window_size
+            x = x.view(batch_size, self.window_size, features_per_step)
+        return self.agent(x)
+    
+    def get_action_distribution(self, x):
+        if len(x.shape) == 2:
+            batch_size = x.shape[0]
+            features_per_step = x.shape[1] // self.window_size
+            x = x.view(batch_size, self.window_size, features_per_step)
+        return self.agent.get_action_distribution(x)
 
 
 def objective(trial):
@@ -67,7 +90,7 @@ def objective(trial):
         use_curriculum=trial.suggest_categorical('use_curriculum', [True, False]),
         
         # Training
-        num_episodes=200,  # Shorter for optimization
+        num_episodes=100,  # Very short for quick optimization
         eval_interval=50,
         save_interval=100,
         
@@ -200,7 +223,7 @@ def main():
     print("\n🏃 Starting optimization...")
     print("-" * 40)
     
-    n_trials = 50  # Number of trials
+    n_trials = 10  # Quick optimization to get started
     
     study.optimize(
         objective,
