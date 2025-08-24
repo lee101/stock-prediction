@@ -1,0 +1,79 @@
+[
+  {
+    "strategy": "magnitude_based",
+    "signal_strength": 0.019297142582181064,
+    "position_size": 2833,
+    "recommendation": "HOLD",
+    "confidence": "VERY_LOW",
+    "symbol": "LTCUSD",
+    "current_price": 74.04245,
+    "predicted_price": 74.18534851074219,
+    "timestamp": "2025-08-06T21:28:56.609464"
+  },
+  {
+    "strategy": "consensus_based",
+    "signal_strength": 0.7200000000000001,
+    "position_size": 5500,
+    "recommendation": "STRONG_BUY",
+    "confidence": "HIGH",
+    "symbol": "LTCUSD",
+    "current_price": 74.04245,
+    "predicted_price": 74.18534851074219,
+    "timestamp": "2025-08-06T21:28:56.610194"
+  },
+  {
+    "strategy": "volatility_adjusted",
+    "signal_strength": 0.7464886212770211,
+    "position_size": 6000,
+    "recommendation": "STRONG_BUY",
+    "confidence": "HIGH",
+    "symbol": "LTCUSD",
+    "current_price": 74.04245,
+    "predicted_price": 74.18534851074219,
+    "timestamp": "2025-08-06T21:28:56.610869"
+  },
+  {
+    "strategy": "momentum_volatility",
+    "signal_strength": 0.028441213475954474,
+    "position_size": 1000,
+    "recommendation": "HOLD",
+    "confidence": "VERY_LOW",
+    "symbol": "LTCUSD",
+    "current_price": 74.04245,
+    "predicted_price": 74.18534851074219,
+    "timestamp": "2025-08-06T21:28:56.611513"
+  },
+  {
+    "strategy": "profit_target",
+    "signal_strength": 0.4647602050963691,
+    "position_size": 4000,
+    "recommendation": "WEAK_BUY",
+    "confidence": "MEDIUM",
+    "symbol": "LTCUSD",
+    "current_price": 74.04245,
+    "predicted_price": 74.18534851074219,
+    "timestamp": "2025-08-06T21:28:56.612229"
+  },
+  {
+    "strategy": "hybrid_profit_volatility",
+    "signal_strength": 0.4839180794864928,
+    "position_size": 4500,
+    "recommendation": "WEAK_BUY",
+    "confidence": "MEDIUM",
+    "symbol": "LTCUSD",
+    "current_price": 74.04245,
+    "predicted_price": 74.18534851074219,
+    "timestamp": "2025-08-06T21:28:56.612977"
+  },
+  {
+    "strategy": "adaptive",
+    "signal_strength": 0.41048421031966975,
+    "position_size": 2500,
+    "recommendation": "WEAK_BUY",
+    "confidence": "MEDIUM",
+    "symbol": "LTCUSD",
+    "current_price": 74.04245,
+    "predicted_price": 74.18534851074219,
+    "timestamp": "2025-08-06T21:28:56.614548"
+  }
+]

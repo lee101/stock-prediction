@@ -206,7 +206,8 @@ def main(args):
         update_interval=args.update_interval,
         eval_interval=args.eval_interval,
         save_interval=args.save_interval,
-        save_dir=args.save_dir
+        save_dir=args.save_dir,
+        top_k=args.top_k
     )
     
     print("\nEvaluating on test set...")
@@ -278,6 +279,7 @@ if __name__ == '__main__':
     parser.add_argument('--k_epochs', type=int, default=4, help='PPO update epochs')
     parser.add_argument('--action_std', type=float, default=0.5, help='Action std deviation')
     parser.add_argument('--entropy_coef', type=float, default=0.01, help='Entropy coefficient')
+    parser.add_argument('--top_k', type=int, default=5, help='Number of top profitable models to keep')
     
     args = parser.parse_args()
     

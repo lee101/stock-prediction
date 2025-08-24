@@ -63,7 +63,7 @@ class AdvancedPPOTrainer:
         # Learning rate scheduler - use plateau scheduler to handle dropoff
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='max', factor=0.5, patience=50, 
-            verbose=True, min_lr=1e-6
+            min_lr=1e-6
         )
         
         # Track plateau detection

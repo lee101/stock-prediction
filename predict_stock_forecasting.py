@@ -27,21 +27,20 @@ from sklearn.preprocessing import MinMaxScaler
 
 from torch.utils.tensorboard import SummaryWriter
 
-from src.models.toto_wrapper import TotoPipeline
+from src.forecasting_bolt_wrapper import ForecastingBoltWrapper
 
 current_date_formatted = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 
-pipeline = None
+forecasting_wrapper = None
 
 
 def load_pipeline():
-    global pipeline
-    if pipeline is None:
-        pipeline = TotoPipeline.from_pretrained(
-            "Datadog/Toto-Open-Base-1.0",
-            device_map="cuda",  # use "cpu" for CPU inference and "mps" for Apple Silicon
-            # torch_dtype=torch.bfloat16,
+    global forecasting_wrapper
+    if forecasting_wrapper is None:
+        forecasting_wrapper = ForecastingBoltWrapper(
+            model_name="amazon/chronos-bolt-base",
+            device="cuda" if torch.cuda.is_available() else "cpu"
         )
 
 
@@ -193,12 +192,11 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                     context = torch.tensor(current_context["y"].values, dtype=torch.float)
 
                     prediction_length = 1
-                    forecast = pipeline.predict(
+                    median = forecasting_wrapper.predict_single(
                         context,
                         prediction_length,
                     )
-                    low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)  # todo use spread?
-                    predictions.append(median.item())
+                    predictions.append(median)
                 Y_hat_df = pd.DataFrame({'y': predictions})
 
                 # Y_hat_df = Y_test_df.merge(Y_hat_df, how='left', on=['unique_id', 'ds'])
