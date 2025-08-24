@@ -248,12 +248,15 @@ class PPOTrainer:
     
     def train(self, env, num_episodes: int = 1000, update_interval: int = 10,
               eval_interval: int = 50, save_interval: int = 100,
-              save_dir: str = './models'):
+              save_dir: str = './models', top_k: int = 5):
         
         save_path = Path(save_dir)
         save_path.mkdir(exist_ok=True)
         
         best_reward = -np.inf
+        
+        # Track top-k models by profitability (total return)
+        top_k_models = []  # List of (episode, total_return, model_path)
         
         for episode in range(num_episodes):
             episode_reward, episode_length, info = self.train_episode(env)
@@ -268,21 +271,64 @@ class PPOTrainer:
                 eval_reward, _, eval_info = self.train_episode(env, deterministic=True)
                 metrics = env.get_metrics()
                 
+                total_return = metrics.get('total_return', 0)
+                
                 print(f"\nEpisode {episode + 1} Evaluation:")
                 print(f"  Reward: {eval_reward:.4f}")
-                print(f"  Total Return: {metrics.get('total_return', 0):.2%}")
+                print(f"  Total Return: {total_return:.2%}")
                 print(f"  Sharpe Ratio: {metrics.get('sharpe_ratio', 0):.2f}")
                 print(f"  Max Drawdown: {metrics.get('max_drawdown', 0):.2%}")
                 print(f"  Num Trades: {metrics.get('num_trades', 0)}")
                 print(f"  Win Rate: {metrics.get('win_rate', 0):.2%}\n")
                 
+                # Save best model by reward
                 if eval_reward > best_reward:
                     best_reward = eval_reward
                     self.save_checkpoint(save_path / 'best_model.pth')
+                    print(f"  New best model saved (reward: {eval_reward:.4f})")
+                
+                # Track top-k models by profitability
+                model_info = (episode + 1, total_return, f'top_{episode + 1}_profit_{total_return:.4f}.pth')
+                top_k_models.append(model_info)
+                
+                # Sort by total return (descending) and keep only top-k
+                top_k_models.sort(key=lambda x: x[1], reverse=True)
+                
+                # Save current model if it's in top-k
+                if len(top_k_models) <= top_k or model_info in top_k_models[:top_k]:
+                    top_k_path = save_path / f'top_profit_{episode + 1}_return_{total_return:.4f}.pth'
+                    self.save_checkpoint(top_k_path)
+                    print(f"  Model saved to top-{top_k} profitable models")
+                
+                # Remove models outside top-k
+                if len(top_k_models) > top_k:
+                    for _, _, old_path in top_k_models[top_k:]:
+                        old_file = save_path / old_path
+                        if old_file.exists() and 'top_profit_' in str(old_file):
+                            old_file.unlink()
+                            print(f"  Removed model outside top-{top_k}: {old_path}")
+                    top_k_models = top_k_models[:top_k]
             
             if (episode + 1) % save_interval == 0:
                 checkpoint_path = save_path / f'checkpoint_ep{episode + 1}.pth'
                 self.save_checkpoint(checkpoint_path)
+        
+        # Save summary of top-k models
+        if top_k_models:
+            summary = {
+                'top_k_models': [
+                    {
+                        'episode': ep,
+                        'total_return': ret,
+                        'filename': path
+                    }
+                    for ep, ret, path in top_k_models
+                ]
+            }
+            import json
+            with open(save_path / 'top_k_summary.json', 'w') as f:
+                json.dump(summary, f, indent=2)
+            print(f"\nTop-{top_k} models summary saved to top_k_summary.json")
         
         return self.training_history
     
