@@ -243,18 +243,12 @@ class ProductionTrainer:
             weight_decay=weight_decay
         )
         
-        # Setup scheduler
-        total_steps = self.config.get('max_steps', 10000)
-        warmup_steps = self.config.get('warmup_steps', 500)
-        
-        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        # Setup scheduler - FIXED: Use CosineAnnealingWarmRestarts instead of OneCycleLR
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             self.optimizer,
-            max_lr=lr,
-            total_steps=total_steps,
-            pct_start=warmup_steps/total_steps,
-            anneal_strategy='cos',
-            div_factor=25.0,
-            final_div_factor=1000.0
+            T_0=500,  # Restart every 500 steps
+            T_mult=2,  # Double period after each restart
+            eta_min=1e-6
         )
         
         # Setup mixed precision

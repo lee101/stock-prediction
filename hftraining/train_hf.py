@@ -85,7 +85,7 @@ class StockDataset(Dataset):
         return {
             'input_ids': sequence,
             'labels': targets,
-            'action_labels': torch.LongTensor([action_label]),
+            'action_labels': torch.tensor(action_label, dtype=torch.long),
             'attention_mask': torch.ones(self.sequence_length)
         }
 
@@ -360,7 +360,7 @@ class HFTrainer:
             # Calculate losses
             action_loss = F.cross_entropy(
                 outputs['action_logits'],
-                batch['action_labels'].squeeze()
+                batch['action_labels']
             )
             
             price_loss = F.mse_loss(
@@ -409,7 +409,7 @@ class HFTrainer:
                 
                 action_loss = F.cross_entropy(
                     outputs['action_logits'],
-                    batch['action_labels'].squeeze()
+                    batch['action_labels']
                 )
                 
                 price_loss = F.mse_loss(
