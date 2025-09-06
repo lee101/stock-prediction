@@ -108,7 +108,7 @@ class HFTrader:
                 # Get recent data
                 data = self.get_recent_data(symbol)
                 
-                if data is None or len(data) < self.engine.config['sequence_length']:
+                if data is None or len(data) < getattr(self.engine.data_processor, 'sequence_length', 60):
                     continue
                 
                 # Generate signal

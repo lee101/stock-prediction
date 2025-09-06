@@ -16,7 +16,6 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from hfinference.hf_trading_engine import (
     HFTradingEngine, 
-    TransformerTradingModel,
     DataProcessor,
     TradingSignal
 )

@@ -111,10 +111,14 @@ class StockDataProcessor:
         
         self.feature_names = feature_columns
         
-        # Handle missing values
-        df = df[feature_columns].fillna(method='ffill').fillna(method='bfill')
+        # Handle missing values - use forward fill then backward fill, then fill with 0
+        df_features = df[feature_columns].copy()
+        df_features = df_features.ffill().bfill()
         
-        return df[feature_columns].values
+        # For any remaining NaNs (shouldn't be many), fill with 0
+        df_features = df_features.fillna(0)
+        
+        return df_features.values
     
     def fit_scalers(self, data):
         """Fit scalers on training data"""
@@ -271,7 +275,7 @@ def split_data(data, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15):
     
     n = len(data)
     train_end = int(n * train_ratio)
-    val_end = int(n * (train_ratio + val_ratio))
+    val_end = train_end + int(n * val_ratio)
     
     train_data = data[:train_end]
     val_data = data[train_end:val_end]
@@ -306,7 +310,7 @@ def augment_data(data, noise_factor=0.01, scaling_factor=0.05):
     return augmented
 
 
-def load_training_data(data_dir="trainingdata", symbols=None, start_date='2015-01-01'):
+def load_training_data(data_dir="trainingdata", symbols=None, start_date='2015-01-01', recursive: bool = True, min_rows: int = 50):
     """
     Load training data from various sources
     
@@ -321,32 +325,45 @@ def load_training_data(data_dir="trainingdata", symbols=None, start_date='2015-0
     
     data_path = Path(data_dir)
     
-    # Try to load from local CSV files first
+    # Try to load from local CSV files first (supports nested folders)
     if data_path.exists():
-        csv_files = list(data_path.glob("*.csv"))
+        csv_files = list(data_path.rglob("*.csv")) if recursive else list(data_path.glob("*.csv"))
         if csv_files:
-            print(f"Found {len(csv_files)} CSV files in {data_dir}")
+            print(f"Found {len(csv_files)} CSV files under {data_path} (recursive={recursive})")
             
-            # Load and combine all CSV files
             all_data = []
+            loaded_files = 0
             for csv_file in csv_files:
                 try:
                     df = pd.read_csv(csv_file)
-                    print(f"Loaded {csv_file.name}: {len(df)} records")
+                    # Standardize columns
+                    df.columns = df.columns.str.lower()
+                    if 'date' in df.columns:
+                        try:
+                            df['date'] = pd.to_datetime(df['date'])
+                            df = df.sort_values('date')
+                        except Exception:
+                            pass
                     
-                    # Assume standard OHLCV format
-                    if 'close' in df.columns.str.lower():
-                        processor = StockDataProcessor()
-                        features = processor.prepare_features(df)
-                        all_data.append(features)
-                        
+                    print(f"Loaded {csv_file.name}: {len(df)} rows")
+                    
+                    # Validate required columns
+                    required = {'open', 'high', 'low', 'close', 'volume'}
+                    if not required.issubset(set(df.columns)):
+                        continue
+                    if len(df) < min_rows:
+                        continue
+                    
+                    processor = StockDataProcessor()
+                    features = processor.prepare_features(df)
+                    all_data.append(features)
+                    loaded_files += 1
                 except Exception as e:
                     print(f"Error loading {csv_file}: {e}")
             
             if all_data:
-                # Combine all data
                 combined_data = np.vstack(all_data)
-                print(f"Combined data shape: {combined_data.shape}")
+                print(f"Combined local data shape: {combined_data.shape} from {loaded_files} files")
                 return combined_data
     
     # If no local data, try to download
