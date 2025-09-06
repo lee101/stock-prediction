@@ -50,9 +50,10 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             takeprofit_return = backtest_df["entry_takeprofit_return"].mean()
             # Include highlow_return in our analysis
             highlow_return = backtest_df["highlow_return"].mean()
+            quantile_return = backtest_df["quantile_confidence_return"].mean()
 
             # Compare all four strategy returns
-            best_return = max(simple_return, all_signals_return, takeprofit_return, highlow_return)
+            best_return = max(simple_return, all_signals_return, takeprofit_return, highlow_return, quantile_return)
             last_prediction = backtest_df.iloc[-1]
 
             if best_return == takeprofit_return:
@@ -77,6 +78,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             elif best_return == highlow_return:
                 avg_return = highlow_return
                 strategy = "highlow"
+                predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
+                position_side = "buy" if predicted_movement > 0 else "sell"
+            elif best_return == quantile_return:
+                avg_return = quantile_return
+                strategy = "quantile_confidence"
                 predicted_movement = last_prediction["predicted_close"] - last_prediction["close"]
                 position_side = "buy" if predicted_movement > 0 else "sell"
             else:
