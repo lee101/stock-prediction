@@ -12,7 +12,7 @@ from realistic_backtest_rl import (
     RealisticTradingConfig, RealisticTradingEnvironment, 
     RealisticRLModel, train_realistic_rl
 )
-from data_utils import StockDataProcessor, download_stock_data, split_data
+from data_utils import StockDataProcessor, split_data
 import pandas as pd
 import time
 
@@ -26,16 +26,16 @@ def quick_test():
     config = RealisticTradingConfig()
     config.sequence_length = 30  # Shorter sequence
     
-    # Download minimal data
-    logger.info("Downloading SPY data...")
-    stock_data = download_stock_data('SPY', start_date='2020-01-01')
-    
-    if 'SPY' not in stock_data:
-        logger.error("Failed to download data")
+    # Load minimal local data
+    from pathlib import Path
+    data_dir = Path('trainingdata')
+    candidates = list(data_dir.glob('SPY.csv')) or [p for p in data_dir.glob('*.csv') if 'spy' in p.stem.lower()]
+    if not candidates:
+        logger.error("No SPY CSV found under trainingdata/")
         return None, None
-        
-    df = stock_data['SPY']
-    logger.info(f"Downloaded {len(df)} records")
+    df = pd.read_csv(candidates[0])
+    df.columns = df.columns.str.lower()
+    logger.info(f"Loaded {len(df)} records")
     
     # Process data
     processor = StockDataProcessor()

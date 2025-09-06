@@ -14,7 +14,7 @@ import re
 class PretrainedWeightLoader:
     """Manages loading and adapting pretrained model weights"""
     
-    def __init__(self, models_dir: str = "training/models"):
+    def __init__(self, models_dir: str = "models"):
         self.models_dir = Path(models_dir)
         self.available_models = self._scan_models()
     
@@ -24,7 +24,7 @@ class PretrainedWeightLoader:
         
         for model_path in self.models_dir.glob("*.pth"):
             try:
-                checkpoint = torch.load(model_path, map_location='cpu')
+                checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
                 
                 # Extract metadata
                 model_info = {
@@ -43,7 +43,9 @@ class PretrainedWeightLoader:
                         model_info['metrics'] = checkpoint['metrics']
                     
                     # Count parameters
-                    if 'state_dict' in checkpoint:
+                    if 'agent_state_dict' in checkpoint:
+                        state_dict = checkpoint['agent_state_dict']
+                    elif 'state_dict' in checkpoint:
                         state_dict = checkpoint['state_dict']
                     else:
                         state_dict = {k: v for k, v in checkpoint.items() 
@@ -87,14 +89,22 @@ class PretrainedWeightLoader:
             exclude_patterns = [
                 r'.*classifier.*',  # Exclude final classification layers
                 r'.*head.*',        # Exclude head layers
-                r'.*output.*'       # Exclude output layers
+                r'.*output.*',      # Exclude output layers
+                r'.*actor.*',       # Exclude actor layers
+                r'.*critic.*',      # Exclude critic layers
+                r'.*action_var.*'   # Exclude action variance
             ]
         
         try:
-            checkpoint = torch.load(pretrained_path, map_location='cpu')
+            checkpoint = torch.load(pretrained_path, map_location='cpu', weights_only=False)
             
-            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-                pretrained_dict = checkpoint['state_dict']
+            if isinstance(checkpoint, dict):
+                if 'agent_state_dict' in checkpoint:
+                    pretrained_dict = checkpoint['agent_state_dict']
+                elif 'state_dict' in checkpoint:
+                    pretrained_dict = checkpoint['state_dict']
+                else:
+                    pretrained_dict = checkpoint
             else:
                 pretrained_dict = checkpoint
             
@@ -151,21 +161,33 @@ class PretrainedWeightLoader:
     def create_embedding_backbone(self, pretrained_path: str) -> nn.Module:
         """Create embedding backbone from pretrained model"""
         try:
-            checkpoint = torch.load(pretrained_path, map_location='cpu')
+            checkpoint = torch.load(pretrained_path, map_location='cpu', weights_only=False)
             
             # Extract transformer/encoder components
-            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-                state_dict = checkpoint['state_dict']
+            if isinstance(checkpoint, dict):
+                if 'agent_state_dict' in checkpoint:
+                    state_dict = checkpoint['agent_state_dict']
+                elif 'state_dict' in checkpoint:
+                    state_dict = checkpoint['state_dict']
+                else:
+                    state_dict = checkpoint
             else:
                 state_dict = checkpoint
             
-            # Find transformer/encoder layers
+            # Find backbone layers (from RL agent)
+            backbone_keys = [k for k in state_dict.keys() if 'backbone' in k]
+            
+            if backbone_keys:
+                # Extract backbone from RL agent
+                return self._extract_backbone_from_agent(state_dict, pretrained_path)
+            
+            # Try to find transformer/encoder layers
             transformer_keys = [k for k in state_dict.keys() 
                               if any(pattern in k.lower() for pattern in 
                                    ['transformer', 'encoder', 'attention'])]
             
             if not transformer_keys:
-                print("No transformer layers found, creating fallback backbone")
+                print("No transformer/backbone layers found, creating fallback backbone")
                 return self._create_fallback_backbone()
             
             # Try to reconstruct transformer architecture
@@ -224,6 +246,57 @@ class PretrainedWeightLoader:
                     layer_numbers.append(int(match.group(1)))
             return max(layer_numbers) + 1 if layer_numbers else 2
         return 2  # Default fallback
+    
+    def _extract_backbone_from_agent(self, state_dict: Dict[str, torch.Tensor], pretrained_path: str) -> nn.Module:
+        """Extract backbone network from RL agent state dict"""
+        # Analyze backbone structure
+        backbone_keys = sorted([k for k in state_dict.keys() if k.startswith('backbone.')])
+        
+        if not backbone_keys:
+            return self._create_fallback_backbone()
+        
+        # Infer layer numbers and sizes
+        layers = []
+        for key in backbone_keys:
+            match = re.match(r'backbone\.(\d+)\.weight', key)
+            if match:
+                layer_num = int(match.group(1))
+                weight = state_dict[key]
+                if len(weight.shape) == 2:  # Linear layer weights
+                    layers.append((layer_num, weight.shape))
+                elif len(weight.shape) == 1:  # Could be batch norm or bias
+                    continue  # Skip non-linear layers
+        
+        layers.sort(key=lambda x: x[0])
+        
+        # Build sequential model matching the structure
+        modules = []
+        for i, (layer_num, shape) in enumerate(layers):
+            out_features, in_features = shape
+            modules.append(nn.Linear(in_features, out_features))
+            
+            # Check if there's a bias
+            bias_key = f'backbone.{layer_num}.bias'
+            if bias_key in state_dict:
+                modules[-1].bias.data = state_dict[bias_key].clone()
+            
+            # Load weights
+            weight_key = f'backbone.{layer_num}.weight'
+            if weight_key in state_dict:
+                modules[-1].weight.data = state_dict[weight_key].clone()
+            
+            # Add activation if not last layer
+            if i < len(layers) - 1:
+                # Check next layer number to infer activation
+                if i + 1 < len(layers):
+                    next_layer_num = layers[i + 1][0]
+                    # Typical pattern: Linear -> ReLU -> Linear
+                    if next_layer_num - layer_num > 1:
+                        modules.append(nn.ReLU())
+        
+        backbone = nn.Sequential(*modules)
+        print(f"Extracted backbone with {len(modules)} modules from RL agent")
+        return backbone
     
     def _create_fallback_backbone(self) -> nn.Module:
         """Create fallback backbone if loading fails"""

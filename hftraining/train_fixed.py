@@ -195,14 +195,26 @@ class FixedTrainer:
     def setup_optimizer(self):
         """Setup optimizer with FIXED learning rate scheduling"""
         
-        # Use AdamW optimizer
-        self.optimizer = optim.AdamW(
-            self.model.parameters(),
-            lr=self.config['learning_rate'],
-            betas=(0.9, 0.999),
-            weight_decay=self.config.get('weight_decay', 0.01),
-            eps=1e-8
-        )
+        # Use Shampoo optimizer for improved convergence
+        try:
+            from modern_optimizers import Shampoo
+            self.optimizer = Shampoo(
+                self.model.parameters(),
+                lr=self.config['learning_rate'],
+                betas=(0.9, 0.999),
+                eps=1e-10,
+                weight_decay=self.config.get('weight_decay', 0.01)
+            )
+            self.logger.info("Using Shampoo optimizer")
+        except ImportError:
+            self.logger.warning("Shampoo not available, falling back to AdamW")
+            self.optimizer = optim.AdamW(
+                self.model.parameters(),
+                lr=self.config['learning_rate'],
+                betas=(0.9, 0.999),
+                weight_decay=self.config.get('weight_decay', 0.01),
+                eps=1e-8
+            )
         
         # FIXED: Use a scheduler that maintains proper learning rate
         # Option 1: Simple StepLR

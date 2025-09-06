@@ -13,8 +13,28 @@ import json
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Any, Union
-import yfinance as yf
+# Make yfinance optional; provide a stub so tests can patch yf.download
+try:
+    import yfinance as yf  # Optional; may be unavailable in restricted envs
+except Exception:
+    class _YFStub:
+        @staticmethod
+        def download(*args, **kwargs):
+            raise RuntimeError("yfinance unavailable and no local data provided")
+
+        class Ticker:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def history(self, *args, **kwargs):
+                raise RuntimeError("yfinance unavailable and no local data provided")
+
+    yf = _YFStub
 from dataclasses import dataclass, field
+try:
+    import joblib
+except Exception:
+    joblib = None
 import warnings
 import traceback
 from collections import deque
@@ -27,6 +47,7 @@ warnings.filterwarnings('ignore')
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 from hftraining.data_utils import StockDataProcessor
+import hfshared
 
 # Import the HF training model directly
 try:
@@ -191,6 +212,23 @@ class ProductionTradingEngine:
             sequence_length=self.config['model']['sequence_length'],
             prediction_horizon=self.config['model']['prediction_horizon']
         )
+        # Try to load training scalers to enforce consistency with training
+        self._processor_path = (
+            self.config.get('data', {}).get('processor_path')
+            or str(Path(checkpoint_path).parent / 'data_processor.pkl')
+        )
+        self.feature_names: List[str] = []
+        if self._processor_path and Path(self._processor_path).exists():
+            try:
+                processor_data = hfshared.load_processor(self._processor_path)
+                if processor_data:
+                    # Set scalers on data processor if available
+                    self.data_processor.scalers = processor_data.get('scalers', {})
+                    self.data_processor.feature_names = processor_data.get('feature_names', [])
+                    self.feature_names = list(processor_data.get('feature_names', []))
+                    self.logger.info(f"Loaded training scalers from {self._processor_path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to load training scalers: {e}")
         
         # Portfolio management
         self.positions: Dict[str, Position] = {}
@@ -404,12 +442,22 @@ class ProductionTradingEngine:
                         }
                         setattr(config_obj, field, defaults.get(field, 0))
                 
-                # Get input dimension
+                # Determine input dimension (infer from checkpoint if possible)
                 input_dim = model_config.get('input_features', 30)
+                state_dict = checkpoint.get('model_state_dict', checkpoint)
+                if isinstance(state_dict, dict):
+                    inferred_dim = hfshared.infer_input_dim_from_state(state_dict)
+                    if inferred_dim is not None:
+                        input_dim = inferred_dim
                 model = TransformerTradingModel(config_obj, input_dim=input_dim)
             else:
                 # Use dict config directly (fallback model)
                 input_dim = model_config.get('input_features', 30)
+                state_dict = checkpoint.get('model_state_dict', checkpoint)
+                if isinstance(state_dict, dict):
+                    inferred_dim = hfshared.infer_input_dim_from_state(state_dict)
+                    if inferred_dim is not None:
+                        input_dim = inferred_dim
                 model = TransformerTradingModel(model_config, input_dim=input_dim)
             
             # Load weights
@@ -473,7 +521,7 @@ class ProductionTradingEngine:
             seq_len = self.config['model']['sequence_length']
             features = features[-seq_len:]
             
-            # Normalize features if configured
+            # Normalize features to match training if configured
             if self.config['data']['normalize_features']:
                 features = self._normalize_features(features, data)
             
@@ -577,34 +625,51 @@ class ProductionTradingEngine:
             return None
     
     def _normalize_features(self, features: np.ndarray, data: pd.DataFrame) -> np.ndarray:
-        """Normalize features to match training"""
-        
-        # Simple normalization - should match training preprocessing
-        # Price features: normalize by current price
-        current_price = data['close'].iloc[-1] if 'close' in data.columns else data['Close'].iloc[-1]
-        
-        # Normalize OHLC columns (0-3)
-        features[:, :4] = features[:, :4] / current_price
-        
-        # Volume normalization (column 4)
-        if features.shape[1] > 4:
-            avg_volume = features[:, 4].mean()
-            if avg_volume > 0:
-                features[:, 4] = features[:, 4] / avg_volume
-        
-        # Other features are already normalized in data_processor
-        
-        return features
+        """Normalize features to match training using shared utilities."""
+        # Use training scaler if loaded via StockDataProcessor
+        try:
+            scalers = getattr(self.data_processor, 'scalers', {})
+            std_scaler = scalers.get('standard') if isinstance(scalers, dict) else None
+            if std_scaler is not None:
+                feats = np.asarray(features, dtype=np.float32)
+                # If we know feature_names from training, recompute features to enforce exact ordering
+                if self.feature_names:
+                    feats_df = self._calculate_training_style_features(data)
+                    feats = hfshared.normalize_with_scaler(
+                        feats_df.values.astype(np.float32),
+                        std_scaler,
+                        self.feature_names,
+                        df_for_recompute=data
+                    )
+                return feats
+        except Exception as e:
+            self.logger.warning(f"Scaler-based normalization failed; falling back. Error: {e}")
+
+        # Fallback: use shared per-window z-score normalization
+        return hfshared.zscore_per_window(features)
     
     def _denormalize_price(self, normalized_price: float, current_price: float) -> float:
-        """Denormalize predicted price"""
-        
-        # If normalized price is small (likely a delta), add to current
+        """Denormalize predicted close using shared utility."""
+        try:
+            scalers = getattr(self.data_processor, 'scalers', {})
+            std_scaler = scalers.get('standard') if isinstance(scalers, dict) else None
+            if std_scaler is not None:
+                return hfshared.denormalize_with_scaler(
+                    normalized_price,
+                    std_scaler,
+                    self.feature_names,
+                    column='close'
+                )
+        except Exception:
+            pass
+        # Heuristic fallback
         if abs(normalized_price) < 1:
-            return current_price * (1 + normalized_price)
-        else:
-            # Already in price scale
-            return normalized_price
+            return float(current_price) * (1 + float(normalized_price))
+        return float(normalized_price)
+
+    def _calculate_training_style_features(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Mirror training feature engineering using shared utilities."""
+        return hfshared.compute_training_style_features(data)
     
     def _calculate_technical_signals(self, data: pd.DataFrame) -> Dict[str, float]:
         """Calculate technical indicator signals"""

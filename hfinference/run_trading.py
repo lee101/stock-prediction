@@ -11,7 +11,23 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-import yfinance as yf
+# Make yfinance optional; provide a stub so tests can patch yf.download
+try:
+    import yfinance as yf  # Optional; may be unavailable in restricted envs
+except Exception:
+    class _YFStub:
+        @staticmethod
+        def download(*args, **kwargs):
+            raise RuntimeError("yfinance unavailable and no local data provided")
+
+        class Ticker:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def history(self, *args, **kwargs):
+                raise RuntimeError("yfinance unavailable and no local data provided")
+
+    yf = _YFStub
 import time
 import sys
 
@@ -135,7 +151,33 @@ class HFTrader:
         
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
-        
+
+        # Try local CSVs first
+        from pathlib import Path as _P
+        def _load_local(symbol: str):
+            for base in [_P('trainingdata'), _P('hftraining/trainingdata')]:
+                for name in [f"{symbol}.csv", f"{symbol.upper()}.csv", f"{symbol.lower()}.csv"]:
+                    p = base / name
+                    if p.exists():
+                        try:
+                            df = pd.read_csv(p)
+                            df.columns = [c.lower() for c in df.columns]
+                            if 'date' in df.columns:
+                                df['date'] = pd.to_datetime(df['date'])
+                                df = df.sort_values('date').set_index('date')
+                            # Clip to requested window if date index exists
+                            if isinstance(df.index, pd.DatetimeIndex):
+                                return df[df.index >= start_date][:days+5]
+                            return df.tail(days)
+                        except Exception:
+                            continue
+            return None
+
+        data = _load_local(symbol)
+        if data is not None and len(data) > 0:
+            return data
+
+        # Fallback to yfinance if available
         try:
             data = yf.download(
                 symbol,

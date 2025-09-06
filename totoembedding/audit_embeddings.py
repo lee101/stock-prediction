@@ -11,29 +11,39 @@ from pathlib import Path
 import torch
 import numpy as np
 
-from embedding_model import TotoEmbeddingModel
+from totoembedding.embedding_model import TotoEmbeddingModel
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--pretrained', type=str, default='training/models/modern_best_sharpe.pth',
-                   help='Path to pretrained model checkpoint (.pth)')
+    p.add_argument('--pretrained', type=str, default='',
+                   help='Optional: Path to fallback checkpoint (.pth) when not using Toto')
+    p.add_argument('--use_toto', action='store_true', help='Use real Toto backbone')
+    p.add_argument('--toto_model_id', type=str, default='Datadog/Toto-Open-Base-1.0')
+    p.add_argument('--device', type=str, default='cuda')
     p.add_argument('--symbols', type=int, default=21)
     p.add_argument('--window', type=int, default=30)
     p.add_argument('--batch', type=int, default=2)
     args = p.parse_args()
 
-    ckpt = Path(args.pretrained)
-    print(f"Pretrained path: {ckpt} (exists={ckpt.exists()})")
+    ckpt = Path(args.pretrained) if args.pretrained else None
+    if ckpt is not None:
+        print(f"Pretrained path: {ckpt} (exists={ckpt.exists()})")
 
     model = TotoEmbeddingModel(
-        pretrained_model_path=str(ckpt),
+        pretrained_model_path=str(ckpt) if ckpt is not None else None,
         num_symbols=args.symbols,
         freeze_backbone=True,
+        use_toto=args.use_toto,
+        toto_model_id=args.toto_model_id,
+        toto_device=args.device,
     )
     model.eval()
 
-    print('Backbone type:', type(model.backbone).__name__)
+    backbone_type = type(getattr(model, 'backbone', None)).__name__ if getattr(model, 'backbone', None) is not None else 'Toto'
+    mode = getattr(model, '_backbone_mode', 'unknown')
+    print('Backbone type:', backbone_type)
+    print('Backbone mode:', mode)
     print('Inferred d_model:', model.backbone_dim)
 
     # Create a tiny synthetic batch matching expected features
@@ -68,4 +78,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

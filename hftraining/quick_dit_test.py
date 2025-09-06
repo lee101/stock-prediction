@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from modern_dit_rl_trader import ModernTradingConfig, ModernDiTTrader, ImprovedRLEnvironment
-from data_utils import download_stock_data, StockDataProcessor, split_data
+from data_utils import StockDataProcessor, split_data
 import time
 import logging
 
@@ -131,15 +131,18 @@ def run_quick_training_demo():
     
     logger.info("\n=== QUICK TRAINING DEMONSTRATION ===")
     
-    # Get real data  
-    logger.info("Getting SPY data...")
-    stock_data = download_stock_data('SPY', start_date='2023-01-01')
-    
-    if 'SPY' not in stock_data:
-        logger.warning("Could not download data, using random data")
+    # Get local data
+    logger.info("Getting SPY data from trainingdata/")
+    from pathlib import Path
+    import pandas as pd
+    data_dir = Path('trainingdata')
+    candidates = list(data_dir.glob('SPY.csv')) or [p for p in data_dir.glob('*.csv') if 'spy' in p.stem.lower()]
+    if not candidates:
+        logger.warning("No SPY CSV found; using random data")
         normalized_data = np.random.randn(1000, 10)
     else:
-        df = stock_data['SPY']
+        df = pd.read_csv(candidates[0])
+        df.columns = df.columns.str.lower()
         processor = StockDataProcessor()
         features = processor.prepare_features(df)
         processor.fit_scalers(features)

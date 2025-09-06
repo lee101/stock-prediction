@@ -11,22 +11,7 @@ from torch.cuda.amp import GradScaler, autocast
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
-try:
-    import yfinance as yf  # Optional; may be unavailable in restricted envs
-except Exception:
-    class _YFStub:
-        @staticmethod
-        def download(*args, **kwargs):
-            raise RuntimeError("yfinance unavailable; use local trainingdata instead")
-
-        class Ticker:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def history(self, *args, **kwargs):
-                raise RuntimeError("yfinance unavailable; use local trainingdata instead")
-
-    yf = _YFStub
+# yfinance removed; rely on local CSVs instead
 from pathlib import Path
 from datetime import datetime
 import json
@@ -632,81 +617,66 @@ class AdvancedTrainer:
 
 
 def load_enhanced_data():
-    """Load data with enhanced preprocessing"""
+    """Load data with enhanced preprocessing from trainingdata/ CSVs (no downloads)."""
     try:
-        # More diverse symbols for better generalization
-        symbols = [
-            'AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN', 'META', 'NFLX', 'NVDA',
-            'JPM', 'BAC', 'WMT', 'JNJ', 'V', 'PG', 'DIS', 'ADBE'
-        ]
-        print("📊 Downloading enhanced dataset...")
-        
+        data_dir = Path('trainingdata')
+        print("📊 Loading enhanced dataset from local CSVs...")
+
+        csv_files = list(data_dir.glob('*.csv'))
         all_data = []
-        
-        for symbol in symbols:
-            print(f"  • {symbol}")
+        for csv in csv_files:
             try:
-                data = yf.download(symbol, start='2019-01-01', end='2025-01-01', progress=False)
-                
-                if len(data) > 100:  # Ensure sufficient data
-                    # Basic OHLCV
-                    df = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-                    
-                    # Enhanced technical features
-                    df['returns'] = df['Close'].pct_change()
-                    df['log_returns'] = np.log(df['Close'] / df['Close'].shift(1))
-                    df['price_range'] = (df['High'] - df['Low']) / df['Close']
-                    df['close_to_open'] = (df['Close'] - df['Open']) / df['Open']
-                    
-                    # Advanced volume features
-                    volume_col = df['Volume']
-                    df['volume_sma'] = volume_col.rolling(20).mean()
-                    df['volume_ratio'] = volume_col / (df['volume_sma'] + 1e-8)
-                    df['volume_rsi'] = calculate_rsi(volume_col, 14)
-                    
-                    # Multiple timeframe moving averages
-                    for period in [5, 10, 20, 50]:
-                        df[f'sma_{period}'] = df['Close'].rolling(period).mean()
-                        df[f'sma_{period}_ratio'] = df['Close'] / (df[f'sma_{period}'] + 1e-8)
-                    
-                    # Advanced technical indicators
-                    df['volatility'] = df['returns'].rolling(20).std()
-                    df['rsi'] = calculate_rsi(df['Close'], 14)
-                    df['rsi_fast'] = calculate_rsi(df['Close'], 7)
-                    
-                    # MACD with signal
-                    df['macd'] = df['Close'].ewm(span=12).mean() - df['Close'].ewm(span=26).mean()
-                    df['macd_signal'] = df['macd'].ewm(span=9).mean()
-                    df['macd_histogram'] = df['macd'] - df['macd_signal']
-                    
-                    # Bollinger Bands
-                    bb_period = 20
-                    bb_std = 2
-                    df['bb_middle'] = df['Close'].rolling(bb_period).mean()
-                    df['bb_upper'] = df['bb_middle'] + bb_std * df['Close'].rolling(bb_period).std()
-                    df['bb_lower'] = df['bb_middle'] - bb_std * df['Close'].rolling(bb_period).std()
-                    df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
-                    df['bb_position'] = (df['Close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
-                    
-                    # Clean and normalize
-                    df = df.ffill().fillna(0)
-                    df = df.replace([np.inf, -np.inf], 0)
-                    
-                    # Select final 21 features to match expected input
-                    feature_cols = [
-                        'Open', 'High', 'Low', 'Close', 'Volume',
-                        'returns', 'log_returns', 'price_range', 'close_to_open',
-                        'volume_sma', 'volume_ratio', 'volume_rsi',
-                        'sma_5_ratio', 'sma_20_ratio', 'volatility', 'rsi', 'rsi_fast',
-                        'macd', 'macd_signal', 'macd_histogram', 'bb_position'
-                    ]
-                    
-                    if len(feature_cols) == 21:  # Ensure exactly 21 features
-                        selected_data = df[feature_cols].values
-                        if not np.isnan(selected_data).any():
-                            all_data.append(selected_data)
+                df = pd.read_csv(csv)
+                df.columns = df.columns.str.title()
+                if not set(['Open','High','Low','Close','Volume']).issubset(df.columns):
+                    continue
+                # Enhanced technical features
+                df['returns'] = df['Close'].pct_change()
+                df['log_returns'] = np.log(df['Close'] / df['Close'].shift(1))
+                df['price_range'] = (df['High'] - df['Low']) / (df['Close'] + 1e-8)
+                df['close_to_open'] = (df['Close'] - df['Open']) / (df['Open'] + 1e-8)
+                volume_col = df['Volume']
+                df['volume_sma'] = volume_col.rolling(20).mean()
+                df['volume_ratio'] = volume_col / (df['volume_sma'] + 1e-8)
+                df['volume_rsi'] = calculate_rsi(volume_col, 14)
+                for period in [5, 10, 20, 50]:
+                    df[f'sma_{period}'] = df['Close'].rolling(period).mean()
+                    df[f'sma_{period}_ratio'] = df['Close'] / (df[f'sma_{period}'] + 1e-8)
+                df['volatility'] = df['returns'].rolling(20).std()
+                df['rsi'] = calculate_rsi(df['Close'], 14)
+                df['rsi_fast'] = calculate_rsi(df['Close'], 7)
+                df['macd'] = df['Close'].ewm(span=12).mean() - df['Close'].ewm(span=26).mean()
+                df['macd_signal'] = df['macd'].ewm(span=9).mean()
+                df['macd_histogram'] = df['macd'] - df['macd_signal']
+                bb_period = 20
+                bb_std = 2
+                df['bb_middle'] = df['Close'].rolling(bb_period).mean()
+                std = df['Close'].rolling(bb_period).std()
+                df['bb_upper'] = df['bb_middle'] + bb_std * std
+                df['bb_lower'] = df['bb_middle'] - bb_std * std
+                df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / (df['bb_middle'] + 1e-8)
+                df['bb_position'] = (df['Close'] - df['bb_lower']) / ((df['bb_upper'] - df['bb_lower']) + 1e-8)
+                df = df.ffill().fillna(0).replace([np.inf, -np.inf], 0)
+
+                feature_cols = [
+                    'Open', 'High', 'Low', 'Close', 'Volume',
+                    'returns', 'log_returns', 'price_range', 'close_to_open',
+                    'volume_sma', 'volume_ratio', 'volume_rsi',
+                    'sma_5_ratio', 'sma_20_ratio', 'volatility', 'rsi', 'rsi_fast',
+                    'macd', 'macd_signal', 'macd_histogram', 'bb_position'
+                ]
+                # Ensure ratio columns exist
+                if 'sma_5_ratio' not in df.columns and 'sma_5' in df.columns:
+                    df['sma_5_ratio'] = df['Close'] / (df['sma_5'] + 1e-8)
+                if 'sma_20_ratio' not in df.columns and 'sma_20' in df.columns:
+                    df['sma_20_ratio'] = df['Close'] / (df['sma_20'] + 1e-8)
+
+                if set(feature_cols).issubset(df.columns):
+                    selected_data = df[feature_cols].values
+                    if not np.isnan(selected_data).any():
+                        all_data.append(selected_data)
             except Exception as e:
-                print(f"    Warning: Failed to process {symbol}: {e}")
+                print(f"    Warning: Failed to process {csv.name}: {e}")
                 continue
         
         if not all_data:

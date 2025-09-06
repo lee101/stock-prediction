@@ -66,3 +66,5 @@ pufferlibtraining/models
 pufferlibtraining/cache
 pufferlibtraining/output
 pufferlibtraining/runs
+hftraining/output
+.coverage

@@ -15,7 +15,10 @@ from torch.utils.data import DataLoader
 
 
 class AutoBatchTuner:
-    """Tune batch size by trying nearby candidates and measuring throughput."""
+    """Tune batch size by trying nearby candidates and measuring throughput.
+
+    Can benchmark against a fixed test batch for stable measurements.
+    """
 
     def __init__(self, device: torch.device, steps: int = 10, num_workers: int = 0, pin_memory: bool = False):
         self.device = device
@@ -32,38 +35,61 @@ class AutoBatchTuner:
             pass
         return m
 
-    def _try_batch(self, trainer, dataset, batch_size: int) -> Tuple[bool, Dict[str, float]]:
-        """Attempt a short training loop with the given batch size."""
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=self.num_workers, pin_memory=self.pin_memory)
+    def _try_batch(self, trainer, dataset=None, batch_size: int = 0, test_batch: Dict[str, torch.Tensor] | None = None) -> Tuple[bool, Dict[str, float]]:
+        """Attempt a short training loop with the given batch size.
+
+        If `test_batch` is provided, reuse it for all steps; otherwise build a
+        DataLoader with shuffle=False and benchmark on the first batch repeated.
+        """
         samples = 0
         times: List[float] = []
         ok = True
         try:
-            # Keep original states minimal interference
             model = trainer.model
             model.train()
-            it = iter(loader)
+            non_block = bool(torch.cuda.is_available())
+
+            if test_batch is None:
+                if dataset is None:
+                    raise ValueError("dataset or test_batch must be provided")
+                loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=self.num_workers, pin_memory=self.pin_memory)
+                it = iter(loader)
+                batch = next(it)
+            else:
+                batch = test_batch
+
+            # Move one batch to device once, reuse for multiple benchmark steps
+            batch = {k: v.to(self.device, non_blocking=non_block) for k, v in batch.items()}
+
+            # Reset peak memory for cleaner measurement
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.reset_peak_memory_stats()
+                except Exception:
+                    pass
+
             steps = 0
             while steps < self.steps:
-                batch = next(it)
-                non_block = bool(torch.cuda.is_available())
-                batch = {k: v.to(self.device, non_blocking=non_block) for k, v in batch.items()}
                 t0 = time.time()
-                # Use trainer's training_step which includes forward/backward/clipping
-                loss = trainer.training_step(batch)
-                # Do not step scheduler/optimizer every step here to limit side-effects
-                # but training_step already handles accumulation; this is fine for tuning
+                # Prefer a dedicated benchmark step if available to avoid optimizer stepping
+                if hasattr(trainer, 'benchmark_step'):
+                    trainer.benchmark_step(batch)
+                else:
+                    trainer.training_step(batch)
+                if torch.cuda.is_available():
+                    try:
+                        torch.cuda.synchronize()
+                    except Exception:
+                        pass
                 dt = max(1e-9, time.time() - t0)
                 times.append(dt)
-                samples += batch_size
+                samples += batch_size if batch_size else (batch['input_ids'].shape[0])
                 steps += 1
         except torch.cuda.OutOfMemoryError:
             ok = False
-            # Clear CUDA OOM state
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except StopIteration:
-            # Dataset too small; still compute from what we have
             pass
         except Exception:
             ok = False
@@ -82,11 +108,14 @@ class AutoBatchTuner:
         candidates = sorted(set([max(1, base // 2), base, base * 2, base * 4]))
         return candidates
 
-    def tune(self, trainer, dataset, initial_batch: int) -> Dict[str, float]:
-        """Run tuning and return the best batch size and metrics."""
+    def tune(self, trainer, dataset=None, initial_batch: int = 0, test_batch: Dict[str, torch.Tensor] | None = None) -> Dict[str, float]:
+        """Run tuning and return the best batch size and metrics.
+
+        Pass `test_batch` to run over a fixed evaluation batch for stability.
+        """
         results = []
         for b in self.suggest(initial_batch):
-            ok, m = self._try_batch(trainer, dataset, b)
+            ok, m = self._try_batch(trainer, dataset=dataset, batch_size=b, test_batch=test_batch)
             results.append({'batch_size': b, 'ok': ok, **m})
         # Filter feasible
         feasible = [r for r in results if r['ok'] and r['samples_per_sec'] > 0]
@@ -96,4 +125,3 @@ class AutoBatchTuner:
         # Pick highest throughput
         best = max(feasible, key=lambda r: r['samples_per_sec'])
         return best
-
