@@ -627,6 +627,46 @@ class HFTrainer:
                 pass
 
         return total_loss.item() * self.config.gradient_accumulation_steps  # Rescale for logging
+
+    def benchmark_step(self, batch) -> float:
+        """Run a forward+backward pass that does not step optimizers or advance state.
+
+        - Does not modify global_step, scheduler, or optimizer state (other than transient grads).
+        - Zeroes gradients before and after to avoid accumulation.
+        Returns the scalar total loss value for reference.
+        """
+        was_training = self.model.training
+        self.model.train()
+        try:
+            self.optimizer.zero_grad(set_to_none=True)
+            with self.mp_trainer.autocast():
+                inputs = batch['input_ids']
+                outputs = self.model(inputs, attention_mask=batch.get('attention_mask'))
+                action_loss = F.cross_entropy(
+                    outputs['action_logits'],
+                    batch['action_labels'],
+                    label_smoothing=0.1
+                )
+                price_loss = F.mse_loss(
+                    outputs['price_predictions'],
+                    batch['labels'][:, :self.config.prediction_horizon, 3]
+                )
+                total_loss = action_loss + 0.5 * price_loss
+            if self.mp_trainer.enabled:
+                self.mp_trainer.scaler.scale(total_loss).backward()
+                self.mp_trainer.scaler.unscale_(self.optimizer)
+            else:
+                total_loss.backward()
+            # no optimizer or scheduler step here
+            loss_val = float(total_loss.detach().item())
+        finally:
+            try:
+                self.optimizer.zero_grad(set_to_none=True)
+            except Exception:
+                pass
+            if not was_training:
+                self.model.eval()
+        return loss_val
     
     def evaluate(self, eval_loader):
         """Evaluation loop"""

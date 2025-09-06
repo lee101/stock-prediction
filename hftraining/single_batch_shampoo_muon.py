@@ -32,6 +32,7 @@ def make_line_data(n=256, noise=0.02, seed=123):
 def run_once(optimizer_name: str, scheduler_name: str, steps: int, lr: float):
     x, y = make_line_data(n=256, noise=0.02, seed=123)
     model = nn.Linear(1, 1)
+    model.train()
     opt = get_optimizer(optimizer_name, model.parameters(), lr=lr, weight_decay=0.0)
     sched = None
     if scheduler_name:
@@ -96,4 +97,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

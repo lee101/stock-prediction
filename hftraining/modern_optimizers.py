@@ -6,6 +6,7 @@ Includes GPro, Lion, AdaFactor, and other state-of-the-art optimizers
 
 import torch
 import torch.nn as nn
+import torch.optim
 import math
 from typing import Dict, List, Tuple, Optional, Any
 

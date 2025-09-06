@@ -20,7 +20,7 @@ sys.path.append(os.path.dirname(current_dir))
 from config import create_config
 from train_hf import HFTrainer, StockDataset
 from hf_trainer import TransformerTradingModel, HFTrainingConfig
-from data_utils import StockDataProcessor, download_stock_data, split_data
+from data_utils import StockDataProcessor, split_data, load_local_stock_data
 from profit_tracker import ProfitTracker, integrate_profit_tracking, ProfitAwareLoss
 from base_model_trainer import BaseModelTrainer
 from logging_utils import get_logger
@@ -99,16 +99,14 @@ def train_single_stock_with_profit(
     config.output.logging_dir = str(dirs['tensorboard'] / f"{stock_symbol}_{timestamp}")
     config.experiment_name = f"{stock_symbol}_{timestamp}"
     
-    # Download and process data
-    logger.info(f"Downloading data for {stock_symbol}...")
-    stock_data = download_stock_data(stock_symbol, start_date='2018-01-01')
-    
-    if stock_symbol not in stock_data:
-        logger.error(f"Failed to download data for {stock_symbol}")
+    # Load local CSV data
+    logger.info(f"Loading local CSV for {stock_symbol}...")
+    stock_map = load_local_stock_data([stock_symbol], data_dir="trainingdata")
+    if stock_symbol not in stock_map:
+        logger.error(f"No local CSV found for {stock_symbol} under trainingdata/")
         return None
-    
-    df = stock_data[stock_symbol]
-    logger.info(f"Downloaded {len(df)} records for {stock_symbol}")
+    df = stock_map[stock_symbol]
+    logger.info(f"Loaded {len(df)} records for {stock_symbol}")
     
     # Process data
     processor = StockDataProcessor()

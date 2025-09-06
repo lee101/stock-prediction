@@ -27,7 +27,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 sys.path.append(os.path.dirname(current_dir))
 
-from data_utils import StockDataProcessor, download_stock_data, split_data
+from data_utils import StockDataProcessor, split_data
 from train_hf import StockDataset
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -551,17 +551,28 @@ def main():
     # Configuration
     config = RLTradingConfig()
     
-    # Download data
-    logger.info("Downloading stock data...")
+    # Load local data
+    logger.info("Loading local stock CSVs...")
     stocks = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA']
     
     all_data = []
+    data_dir = Path('trainingdata')
     for symbol in stocks[:1]:  # Start with one stock for faster iteration
-        stock_data = download_stock_data(symbol, start_date='2020-01-01')
-        if symbol in stock_data:
-            df = stock_data[symbol]
-            logger.info(f"Downloaded {len(df)} records for {symbol}")
-            all_data.append(df)
+        candidates = list(data_dir.glob(f"{symbol}.csv"))
+        if not candidates:
+            candidates = [p for p in data_dir.glob('*.csv') if symbol.lower() in p.stem.lower()]
+        if not candidates:
+            continue
+        df = pd.read_csv(candidates[0])
+        df.columns = df.columns.str.lower()
+        if 'date' in df.columns:
+            try:
+                df['date'] = pd.to_datetime(df['date'])
+                df = df.sort_values('date')
+            except Exception:
+                pass
+        logger.info(f"Loaded {len(df)} records for {symbol}")
+        all_data.append(df)
     
     # Process data
     combined_df = all_data[0]

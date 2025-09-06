@@ -78,12 +78,15 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
 
     #     if not remaining_symbols:
     #         return found_symbols[symbols[-1]] if symbols else DataFrame()
-    remaining_symbols = symbols
 
     alpaca_clock = api.get_clock()
     if not alpaca_clock.is_open and not all_data_force:
         logger.info("Market is closed")
+        # Only keep crypto symbols when the stock market is closed
         symbols = [symbol for symbol in symbols if symbol in crypto_symbols]
+
+    # Use the (potentially filtered) symbols list for downloading
+    remaining_symbols = symbols
 
     # Download data for remaining symbols
     for symbol in remaining_symbols:

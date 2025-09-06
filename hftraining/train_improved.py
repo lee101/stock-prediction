@@ -351,83 +351,44 @@ class ImprovedTrainer:
 
 
 def load_and_prepare_data():
-    """Load and prepare stock data with enhanced features"""
+    """Load and prepare stock data with enhanced features from local trainingdata/ CSVs."""
     try:
-        try:
-            import yfinance as yf  # Optional; may be unavailable in restricted envs
-        except Exception:
-            class _YFStub:
-                @staticmethod
-                def download(*args, **kwargs):
-                    raise RuntimeError("yfinance unavailable; use local trainingdata instead")
-
-                class Ticker:
-                    def __init__(self, *args, **kwargs):
-                        pass
-
-                    def history(self, *args, **kwargs):
-                        raise RuntimeError("yfinance unavailable; use local trainingdata instead")
-
-            yf = _YFStub
+        data_dir = Path('trainingdata')
         import pandas as pd
-        
-        # Download data for multiple stocks
-        symbols = ['AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN', 'META', 'NFLX', 'NVDA']
-        
+        csv_files = list(data_dir.glob('*.csv'))
         all_data = []
+
+        for csv in csv_files:
+            df = pd.read_csv(csv)
+            df.columns = df.columns.str.title()
+            if not set(['Open','High','Low','Close','Volume']).issubset(df.columns):
+                continue
+            # Technical features
+            df['returns'] = df['Close'].pct_change()
+            df['log_returns'] = np.log(df['Close'] / df['Close'].shift(1))
+            df['price_range'] = (df['High'] - df['Low']) / (df['Close'] + 1e-8)
+            df['close_to_open'] = (df['Close'] - df['Open']) / (df['Open'] + 1e-8)
+            df['volume_sma'] = df['Volume'].rolling(20).mean()
+            df['volume_ratio'] = df['Volume'] / (df['volume_sma'] + 1e-8)
+            for period in [5, 10, 20]:
+                df[f'sma_{period}'] = df['Close'].rolling(period).mean()
+                df[f'sma_{period}_ratio'] = df['Close'] / (df[f'sma_{period}'] + 1e-8)
+            df['volatility'] = df['returns'].rolling(20).std()
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / (loss + 1e-8)
+            df['rsi'] = 100 - (100 / (1 + rs))
+            df['macd'] = df['Close'].ewm(span=12).mean() - df['Close'].ewm(span=26).mean()
+            df['macd_signal'] = df['macd'].ewm(span=9).mean()
+            df = df.ffill().fillna(0).replace([np.inf, -np.inf], 0)
+            all_data.append(df.values)
         
-        for symbol in symbols:
-            print(f"Downloading {symbol}...")
-            data = yf.download(symbol, start='2020-01-01', end='2025-01-01', progress=False)
-            
-            if len(data) > 0:
-                # Basic OHLCV
-                df = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-                
-                # Technical features
-                df['returns'] = df['Close'].pct_change()
-                df['log_returns'] = np.log(df['Close'] / df['Close'].shift(1))
-                df['price_range'] = (df['High'] - df['Low']) / df['Close']
-                df['close_to_open'] = (df['Close'] - df['Open']) / df['Open']
-                
-                # Volume features
-                df['volume_sma'] = df['Volume'].rolling(20).mean()
-                df['volume_ratio'] = df['Volume'] / df['volume_sma']
-                
-                # Moving averages
-                for period in [5, 10, 20]:
-                    df[f'sma_{period}'] = df['Close'].rolling(period).mean()
-                    df[f'sma_{period}_ratio'] = df['Close'] / df[f'sma_{period}']
-                
-                # Volatility
-                df['volatility'] = df['returns'].rolling(20).std()
-                
-                # RSI
-                delta = df['Close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                rs = gain / loss
-                df['rsi'] = 100 - (100 / (1 + rs))
-                
-                # MACD
-                df['macd'] = df['Close'].ewm(span=12).mean() - df['Close'].ewm(span=26).mean()
-                df['macd_signal'] = df['macd'].ewm(span=9).mean()
-                
-                # Clean data
-                df = df.ffill().fillna(0)
-                df = df.replace([np.inf, -np.inf], 0)
-                
-                all_data.append(df.values)
-        
-        # Combine all data
         combined_data = np.vstack(all_data)
         print(f"Combined data shape: {combined_data.shape}")
-        
-        # Normalize features
         from sklearn.preprocessing import RobustScaler
         scaler = RobustScaler()
         normalized_data = scaler.fit_transform(combined_data)
-        
         return normalized_data
         
     except Exception as e:

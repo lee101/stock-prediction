@@ -11,22 +11,7 @@ from torch.cuda.amp import GradScaler, autocast
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
-try:
-    import yfinance as yf  # Optional; may be unavailable in restricted envs
-except Exception:
-    class _YFStub:
-        @staticmethod
-        def download(*args, **kwargs):
-            raise RuntimeError("yfinance unavailable; use local trainingdata instead")
-
-        class Ticker:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def history(self, *args, **kwargs):
-                raise RuntimeError("yfinance unavailable; use local trainingdata instead")
-
-    yf = _YFStub
+# yfinance removed; use local CSVs from trainingdata/
 from pathlib import Path
 from datetime import datetime, timedelta
 import json
@@ -375,15 +360,23 @@ class ProductionTrainer:
         def process_stock(symbol):
             try:
                 self.logger.info(f"Processing {symbol}")
-                
-                # Download with longer history
-                ticker = yf.Ticker(symbol)
-                df = ticker.history(
-                    start=self.config.start_date, 
-                    end=None,
-                    interval='1d'
-                )
-                
+                # Load from trainingdata CSVs
+                base = Path('trainingdata')
+                candidates = list(base.glob(f"{symbol}.csv"))
+                if not candidates:
+                    candidates = [p for p in base.glob("*.csv") if symbol.lower() in p.stem.lower()]
+                if not candidates:
+                    self.logger.warning(f"No local CSV for {symbol}")
+                    return symbol, None
+                df = pd.read_csv(candidates[0])
+                df.columns = df.columns.str.lower()
+                if 'date' in df.columns:
+                    try:
+                        df['date'] = pd.to_datetime(df['date'])
+                        df = df.sort_values('date')
+                    except Exception:
+                        pass
+
                 if len(df) < 500:  # Need substantial history
                     self.logger.warning(f"Insufficient data for {symbol}")
                     return symbol, None
@@ -476,12 +469,24 @@ class ProductionTrainer:
         model = ProductionTransformerModel(self.config, input_features)
         model.to(self.device)
         
-        # Training setup
-        optimizer = optim.AdamW(
-            model.parameters(),
-            lr=self.config.base_lr,
-            weight_decay=0.01
-        )
+        # Training setup - use Shampoo optimizer
+        try:
+            from modern_optimizers import Shampoo
+            optimizer = Shampoo(
+                model.parameters(),
+                lr=self.config.base_lr,
+                betas=(0.9, 0.999),
+                eps=1e-10,
+                weight_decay=0.01
+            )
+            self.logger.info("Using Shampoo optimizer")
+        except ImportError:
+            self.logger.warning("Shampoo not available, falling back to AdamW")
+            optimizer = optim.AdamW(
+                model.parameters(),
+                lr=self.config.base_lr,
+                weight_decay=0.01
+            )
         
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer, T_0=500, T_mult=2, eta_min=1e-6
@@ -654,12 +659,24 @@ class ProductionTrainer:
                 augment=False
             )
             
-            # Specialist training with lower learning rate
-            optimizer = optim.AdamW(
-                specialist.parameters(),
-                lr=self.config.specialist_lr,
-                weight_decay=0.005
-            )
+            # Specialist training with lower learning rate - use Shampoo
+            try:
+                from modern_optimizers import Shampoo
+                optimizer = Shampoo(
+                    specialist.parameters(),
+                    lr=self.config.specialist_lr,
+                    betas=(0.9, 0.999),
+                    eps=1e-10,
+                    weight_decay=0.005
+                )
+                self.logger.info(f"Using Shampoo optimizer for specialist {name}")
+            except ImportError:
+                self.logger.warning(f"Shampoo not available for specialist {name}, falling back to AdamW")
+                optimizer = optim.AdamW(
+                    specialist.parameters(),
+                    lr=self.config.specialist_lr,
+                    weight_decay=0.005
+                )
             
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-6

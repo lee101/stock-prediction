@@ -17,11 +17,79 @@ import json
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Any
-import yfinance as yf
+# Make yfinance optional; provide a stub so tests can patch yf.download
+try:
+    import yfinance as yf  # Optional; may be unavailable in restricted envs
+except Exception:
+    class _YFStub:
+        @staticmethod
+        def download(*args, **kwargs):
+            raise RuntimeError("yfinance unavailable and no local data provided")
+
+        class Ticker:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def history(self, *args, **kwargs):
+                raise RuntimeError("yfinance unavailable and no local data provided")
+
+    yf = _YFStub
 from dataclasses import dataclass
+try:
+    import joblib  # For loading saved scalers from training
+except Exception:
+    joblib = None
 import warnings
 
 warnings.filterwarnings('ignore')
+
+# Import shared utilities
+import sys
+sys.path.append(str(Path(__file__).parent.parent))
+import hfshared
+
+def _load_local_symbol_data(symbol: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Optional[pd.DataFrame]:
+    """Load OHLCV data for a symbol from local CSVs under trainingdata/ or hftraining/trainingdata/.
+
+    Returns a DataFrame or None if no matching local file is found.
+    """
+    try:
+        bases = [Path('trainingdata'), Path('hftraining/trainingdata')]
+        candidates = []
+        for base in bases:
+            for name in [f"{symbol}.csv", f"{symbol.upper()}.csv", f"{symbol.lower()}.csv"]:
+                p = base / name
+                if p.exists():
+                    candidates.append(p)
+        path = candidates[0] if candidates else None
+        if not path:
+            return None
+
+        df = pd.read_csv(path)
+        # Standardize columns and parse date if present
+        df.columns = [c.lower() for c in df.columns]
+        if 'date' in df.columns:
+            try:
+                df['date'] = pd.to_datetime(df['date'])
+                df = df.sort_values('date').set_index('date')
+            except Exception:
+                pass
+
+        # Filter by date range if provided (YYYY-MM-DD strings okay)
+        if start_date:
+            try:
+                df = df[df.index >= pd.to_datetime(start_date)] if isinstance(df.index, pd.DatetimeIndex) else df
+            except Exception:
+                pass
+        if end_date:
+            try:
+                df = df[df.index <= pd.to_datetime(end_date)] if isinstance(df.index, pd.DatetimeIndex) else df
+            except Exception:
+                pass
+
+        return df
+    except Exception:
+        return None
 
 # Import the HF training model to ensure architecture parity
 try:
@@ -164,30 +232,11 @@ class HFTradingEngine:
         # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
-        # Determine input dimension for inference features
-        # Priority:
-        # 1) Infer from checkpoint input layer if present
-        # 2) Use config-provided 'input_features' (or nested under 'model')
-        # 3) Fallback to OHLCV (5)
+        # Determine input dimension for inference features using shared utility
         input_dim = None
-        # Try to infer from checkpoint weights (robust to missing config)
-        try:
-            if 'model_state_dict' in checkpoint:
-                state = checkpoint['model_state_dict']
-                # Common key name in training models
-                if 'input_projection.weight' in state:
-                    w = state['input_projection.weight']
-                    if hasattr(w, 'shape') and len(w.shape) == 2:
-                        input_dim = int(w.shape[1])
-                else:
-                    # Try to find a plausible input projection layer by heuristic
-                    for k, v in state.items():
-                        if k.endswith('input_projection.weight') and hasattr(v, 'shape') and len(v.shape) == 2:
-                            input_dim = int(v.shape[1])
-                            break
-        except Exception:
-            # If anything goes wrong, we'll rely on config/default below
-            input_dim = None
+        # Try to infer from checkpoint weights using shared utility
+        if 'model_state_dict' in checkpoint:
+            input_dim = hfshared.infer_input_dim_from_state(checkpoint['model_state_dict'])
 
         if input_dim is None and isinstance(self.config, dict):
             input_dim = (
@@ -268,7 +317,40 @@ class HFTradingEngine:
         if 'global_step' in checkpoint:
             self.logger.info(f"Model trained for {checkpoint['global_step']} steps")
         
+        # Try to load training scalers to keep inference identical to training
+        self._try_load_training_scalers(checkpoint_path)
+
         return model
+
+    def _try_load_training_scalers(self, checkpoint_path: Path) -> None:
+        """Attempt to load data processor scalers saved during training.
+
+        Looks for 'data_processor.pkl' in either:
+        - Same directory as checkpoint
+        - Path provided via config['processor_path'] or config['data']['processor_path']
+        Sets attributes on self.data_processor after it is constructed.
+        """
+        # Defer if DataProcessor not yet created; we'll store path for later
+        proc_path = None
+        # 1) Config-specified path
+        if isinstance(self.config, dict):
+            proc_path = (
+                self.config.get('processor_path')
+                or self.config.get('data', {}).get('processor_path')
+            )
+        # 2) Sibling of checkpoint
+        if not proc_path:
+            candidate = checkpoint_path.parent / 'data_processor.pkl'
+            if candidate.exists():
+                proc_path = str(candidate)
+
+        # Store for later and propagate into config so DataProcessor can read it
+        self._processor_path = proc_path
+        if proc_path and isinstance(self.config, dict):
+            try:
+                self.config.setdefault('processor_path', proc_path)
+            except Exception:
+                pass
     
     @torch.no_grad()
     def generate_signal(self, symbol: str, data: pd.DataFrame) -> TradingSignal:
@@ -447,8 +529,10 @@ class HFTradingEngine:
         for symbol in symbols:
             self.logger.info(f"Backtesting {symbol}")
             
-            # Get historical data
-            data = yf.download(symbol, start=start_date, end=end_date, progress=False)
+            # Get historical data (prefer local CSVs, fallback to yfinance)
+            data = _load_local_symbol_data(symbol, start_date, end_date)
+            if data is None or len(data) == 0:
+                data = yf.download(symbol, start=start_date, end=end_date, progress=False)
             
             # Extract sequence_length from appropriate location
             seq_len = 60
@@ -618,6 +702,22 @@ class DataProcessor:
         # Track per-window normalization params for denorm
         self._feature_mean = None
         self._feature_std = None
+        # Training scalers (StandardScaler) if available
+        self.scaler = None
+        self.feature_names = []
+        proc_path = (
+            self.config.get('processor_path')
+            or self.config.get('data', {}).get('processor_path')
+        )
+        if proc_path:
+            try:
+                processor_data = hfshared.load_processor(proc_path)
+                if processor_data:
+                    self.scaler = processor_data.get('scalers', {}).get('standard')
+                    self.feature_names = list(processor_data.get('feature_names', []))
+            except Exception:
+                # If loading fails, proceed without scalers
+                self.scaler = None
 
     def prepare_features(self, data: pd.DataFrame) -> Optional[np.ndarray]:
         if len(data) < self.sequence_length:
@@ -626,71 +726,64 @@ class DataProcessor:
         # Take last sequence_length rows
         df = data.tail(self.sequence_length).copy()
 
-        # Compute features expected by trainer (OHLCV)
-        feats = self.calculate_features(df)
-
-        # Normalize per window (z-score)
-        feats_norm = self.normalize(feats)
-        return feats_norm
+        # Compute features. If a trained scaler is available, compute the full
+        # training-style feature set and transform with the scaler to preserve
+        # exact training distribution and ordering.
+        if self.scaler is not None and self.feature_names:
+            feats_df = self.calculate_training_style_features(df)
+            # Use shared normalization with scaler
+            feats_norm = hfshared.normalize_with_scaler(
+                feats_df.values.astype(np.float32),
+                self.scaler,
+                self.feature_names,
+                df_for_recompute=df
+            )
+            return feats_norm
+        else:
+            # Minimal inference features (OHLC +/- V) with optional pct change
+            feats = self.calculate_features(df)
+            # Use shared per-window normalization
+            feats_norm = hfshared.zscore_per_window(feats)
+            # Store params for denormalization compatibility
+            self._feature_mean = feats.mean(axis=0)
+            self._feature_std = feats.std(axis=0) + 1e-8
+            return feats_norm
 
     def calculate_features(self, data: pd.DataFrame) -> np.ndarray:
-        # Support both Yahoo style (capitalized) and lowercase column names
-        cols = list(data.columns)
-        col_map = {c.lower(): c for c in cols}
+        """Calculate compact features using shared utilities."""
+        return hfshared.compute_compact_features(
+            data,
+            feature_mode=self.feature_mode,
+            use_pct_change=self.use_pct_change
+        )
 
-        # Determine which base columns to use
-        if self.feature_mode == 'ohlc':
-            need = ['open', 'high', 'low', 'close']
-        elif self.feature_mode == 'ohlcv':
-            need = ['open', 'high', 'low', 'close', 'volume']
-        else:
-            # auto: prefer OHLCV if volume exists, else OHLC
-            need = ['open', 'high', 'low', 'close'] + (['volume'] if 'volume' in col_map else [])
-
-        chosen = []
-        for k in need:
-            if k in col_map:
-                chosen.append(col_map[k])
-
-        # If auto and couldn't find all OHLC by name, attempt positional fallback
-        if len(chosen) < 4:
-            # typical order: Open, High, Low, Close, (Volume)
-            base = [c for c in cols[:5]] if len(cols) >= 4 else cols
-            chosen = base[:4]
-
-        # If we forced OHLCV but volume missing, append a synthetic zero-volume
-        if self.feature_mode == 'ohlcv' and len(chosen) == 4:
-            # Create volume column as zeros later after selection
-            df = data[chosen].copy()
-            df['__volume__'] = 0.0
-            chosen = list(df.columns)  # includes synthetic volume at the end
-        else:
-            df = data[chosen].copy()
-
-        # Forward/backward fill then fill any remaining NAs
-        df = df.ffill().bfill().fillna(0.0)
-
-        # Optional percent-change transform per column (keeps same dimension)
-        if self.use_pct_change:
-            # Compute 1-step pct change for each feature
-            df = df.pct_change().replace([np.inf, -np.inf], 0.0).fillna(0.0)
-
-        return df.values.astype(np.float32)
+    def calculate_training_style_features(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Replicate training feature engineering using shared utilities."""
+        return hfshared.compute_training_style_features(data)
 
     def normalize(self, features: np.ndarray) -> np.ndarray:
-        mu = features.mean(axis=0)
-        sigma = features.std(axis=0) + 1e-8
-        self._feature_mean = mu
-        self._feature_std = sigma
-        return (features - mu) / sigma
+        """Per-window z-score normalization using shared utility."""
+        normalized = hfshared.zscore_per_window(features)
+        # Store params for denormalization compatibility
+        self._feature_mean = features.mean(axis=0)
+        self._feature_std = features.std(axis=0) + 1e-8
+        return normalized
 
     def denormalize_close(self, normalized_close: float) -> float:
-        # close is index 3 in OHLCV
+        """Denormalize close price using shared utility."""
+        if self.scaler is not None:
+            return hfshared.denormalize_with_scaler(
+                normalized_close,
+                self.scaler,
+                self.feature_names,
+                column='close'
+            )
+        # Otherwise fallback to per-window stats captured during normalize()
         if self._feature_mean is None or self._feature_std is None:
             return float(normalized_close)
         mu_c = float(self._feature_mean[3]) if len(self._feature_mean) > 3 else 0.0
         std_c = float(self._feature_std[3]) if len(self._feature_std) > 3 else 1.0
-        return normalized_close * std_c + mu_c
+        return float(normalized_close) * std_c + mu_c
 
 
 class RiskManager:

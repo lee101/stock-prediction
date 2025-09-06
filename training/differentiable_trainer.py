@@ -22,9 +22,11 @@ import logging
 from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
 import matplotlib.pyplot as plt
+import os
 from collections import defaultdict
 import warnings
 warnings.filterwarnings('ignore')
+from torch.utils.checkpoint import checkpoint
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -46,6 +48,12 @@ class TrainingConfig:
     use_gradient_checkpointing: bool = False
     monitor_gradients: bool = True
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # Differentiable trading loss weights
+    w_pnl: float = 0.2
+    w_sharpe: float = 0.2
+    w_pos_reg: float = 0.05
+    # Optional model compilation (PyTorch 2.x)
+    use_torch_compile: bool = False
 
 
 class DifferentiableAttention(nn.Module):
@@ -136,6 +144,7 @@ class DifferentiableTradingModel(nn.Module):
         ])
         
         self.norm = nn.LayerNorm(hidden_dim)
+        self.use_gradient_checkpointing = False
         
         # Multiple output heads for different trading decisions
         self.action_head = nn.Sequential(
@@ -183,7 +192,10 @@ class DifferentiableTradingModel(nn.Module):
         
         # Pass through transformer blocks
         for block in self.transformer_blocks:
-            x = block(x, mask)
+            if self.use_gradient_checkpointing and self.training:
+                x = checkpoint(lambda inp: block(inp, mask), x)
+            else:
+                x = block(x, mask)
         
         x = self.norm(x)
         
@@ -204,31 +216,44 @@ class DifferentiableTradingModel(nn.Module):
 
 
 class DifferentiableLoss(nn.Module):
-    """Custom differentiable loss function for trading"""
+    """Custom differentiable loss function for trading
+    Includes classification, regression, confidence calibration, and differentiable PnL metrics.
+    """
     
-    def __init__(self, alpha: float = 0.5, beta: float = 0.3, gamma: float = 0.2):
+    def __init__(
+        self,
+        alpha: float = 0.5,  # action loss
+        beta: float = 0.3,   # position size regression
+        gamma: float = 0.2,  # confidence calibration
+        label_smoothing: float = 0.0,
+        w_pnl: float = 0.0,       # maximize pnl (minimize negative pnl)
+        w_sharpe: float = 0.0,    # maximize sharpe (minimize negative sharpe)
+        w_pos_reg: float = 0.0    # regularize position magnitude
+    ):
         super().__init__()
-        self.alpha = alpha  # Weight for action loss
-        self.beta = beta    # Weight for position size loss
-        self.gamma = gamma  # Weight for confidence calibration
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.label_smoothing = label_smoothing
+        self.w_pnl = w_pnl
+        self.w_sharpe = w_sharpe
+        self.w_pos_reg = w_pos_reg
         
     def forward(self, predictions: Dict[str, torch.Tensor], 
                 targets: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         
-        losses = {}
+        losses: Dict[str, torch.Tensor] = {}
+        device = predictions['actions'].device
         
-        # Action classification loss with label smoothing
+        # Action classification loss with built-in label smoothing (keeps autograd clean)
         if 'actions' in targets:
             action_logits = predictions['actions']
             action_targets = targets['actions']
-            
-            # Apply label smoothing for better generalization
-            num_classes = action_logits.size(-1)
-            smooth_targets = torch.zeros_like(action_logits)
-            smooth_targets.scatter_(1, action_targets.unsqueeze(1), 1.0)
-            smooth_targets = smooth_targets * 0.9 + 0.1 / num_classes
-            
-            losses['action_loss'] = F.cross_entropy(action_logits, action_targets)
+            losses['action_loss'] = F.cross_entropy(
+                action_logits,
+                action_targets,
+                label_smoothing=float(self.label_smoothing) if self.label_smoothing > 0 else 0.0,
+            )
         
         # Position size regression loss (smooth L1 for robustness)
         if 'position_sizes' in targets:
@@ -236,23 +261,48 @@ class DifferentiableLoss(nn.Module):
             position_target = targets['position_sizes']
             losses['position_loss'] = F.smooth_l1_loss(position_pred, position_target)
         
-        # Confidence calibration loss
+        # Confidence calibration loss (encourage confidence ~ probability of positive return)
         if 'confidences' in predictions and 'returns' in targets:
             confidences = predictions['confidences']
             returns = targets['returns']
-            
-            # Confidence should correlate with actual returns
-            confidence_target = torch.sigmoid(returns * 10)  # Scale returns to [0, 1]
+            confidence_target = torch.sigmoid(returns * 10)  # differentiable mapping to [0,1]
             losses['confidence_loss'] = F.mse_loss(confidences, confidence_target)
         
+        # Differentiable PnL-based terms using predicted position sizes
+        if 'returns' in targets and 'position_sizes' in predictions:
+            r = targets['returns'].view_as(predictions['position_sizes']).to(device)
+            p = predictions['position_sizes']
+            pnl = p * r  # differentiable wrt model outputs
+            
+            if self.w_pnl > 0:
+                # Maximize E[pnl] => minimize -E[pnl]
+                losses['pnl_loss'] = -pnl.mean()
+            
+            if self.w_sharpe > 0:
+                # Maximize Sharpe ~ mean/std; add eps for stability
+                mean = pnl.mean()
+                std = pnl.std(unbiased=False)
+                sharpe = mean / (std + 1e-6)
+                losses['sharpe_loss'] = -sharpe
+            
+            if self.w_pos_reg > 0:
+                # L1 penalty on position magnitude to discourage over-leverage
+                losses['position_reg'] = p.abs().mean()
+        
         # Combine losses with weights
-        total_loss = torch.tensor(0.0, device=predictions['actions'].device)
+        total_loss = torch.zeros((), device=device)
         if 'action_loss' in losses:
             total_loss = total_loss + self.alpha * losses['action_loss']
         if 'position_loss' in losses:
             total_loss = total_loss + self.beta * losses['position_loss']
         if 'confidence_loss' in losses:
             total_loss = total_loss + self.gamma * losses['confidence_loss']
+        if 'pnl_loss' in losses:
+            total_loss = total_loss + self.w_pnl * losses['pnl_loss']
+        if 'sharpe_loss' in losses:
+            total_loss = total_loss + self.w_sharpe * losses['sharpe_loss']
+        if 'position_reg' in losses:
+            total_loss = total_loss + self.w_pos_reg * losses['position_reg']
         
         return total_loss, losses
 
@@ -321,6 +371,16 @@ class DifferentiableTrainer:
     
     def __init__(self, model: nn.Module, config: TrainingConfig):
         self.model = model.to(config.device)
+        # Optional compilation for speed on PyTorch 2.x
+        if getattr(config, 'use_torch_compile', False) and hasattr(torch, 'compile'):
+            try:
+                self.model = torch.compile(self.model)
+                logger.info("Model compiled with torch.compile")
+            except Exception as e:
+                logger.warning(f"torch.compile failed, continuing without it: {e}")
+        # Enable gradient checkpointing if requested
+        if hasattr(self.model, 'use_gradient_checkpointing'):
+            self.model.use_gradient_checkpointing = bool(config.use_gradient_checkpointing)
         self.config = config
         self.device = torch.device(config.device)
         
@@ -339,8 +399,16 @@ class DifferentiableTrainer:
         # Mixed precision training
         self.scaler = GradScaler() if config.mixed_precision else None
         
-        # Loss function
-        self.criterion = DifferentiableLoss()
+        # Loss function (wire label smoothing and differentiable trading terms)
+        self.criterion = DifferentiableLoss(
+            alpha=0.5,
+            beta=0.3,
+            gamma=0.2,
+            label_smoothing=self.config.label_smoothing,
+            w_pnl=self.config.w_pnl,
+            w_sharpe=self.config.w_sharpe,
+            w_pos_reg=self.config.w_pos_reg,
+        )
         
         # Gradient monitor
         self.grad_monitor = GradientMonitor() if config.monitor_gradients else None
@@ -605,12 +673,13 @@ class TradingDataset(Dataset):
         else:
             action = 1  # Hold
         
-        position_size = np.clip(next_return * 10, -1, 1)  # Scale return to position size
+        # Scale return to position size using differentiable clamp for consistency
+        position_size = torch.clamp(torch.tensor(next_return * 10, dtype=torch.float32), -1.0, 1.0)
         
         return {
             'inputs': features,
             'actions': torch.LongTensor([action]).squeeze(),
-            'position_sizes': torch.FloatTensor([position_size]).squeeze(),
+            'position_sizes': position_size.view(1).squeeze(),
             'returns': torch.FloatTensor([next_return]).squeeze()
         }
 
@@ -641,17 +710,19 @@ def main():
     """Main training pipeline"""
     
     # Create configuration
+    quick = os.environ.get("QUICK_RUN", "0") == "1"
     config = TrainingConfig(
         learning_rate=1e-3,
-        batch_size=32,
-        num_epochs=50,
+        batch_size=64 if quick else 32,
+        num_epochs=3 if quick else 50,
         gradient_clip_norm=1.0,
-        gradient_accumulation_steps=4,
+        gradient_accumulation_steps=2 if quick else 4,
         mixed_precision=torch.cuda.is_available(),
-        warmup_steps=100,
+        warmup_steps=50 if quick else 100,
         weight_decay=1e-4,
         dropout_rate=0.1,
-        monitor_gradients=True
+        monitor_gradients=True,
+        use_torch_compile=hasattr(torch, 'compile') and not quick
     )
     
     # Create model
@@ -664,7 +735,7 @@ def main():
     )
     
     # Create synthetic data
-    data = create_synthetic_data(5000)
+    data = create_synthetic_data(1000 if quick else 5000)
     
     # Split data
     train_size = int(0.8 * len(data))
@@ -675,8 +746,11 @@ def main():
     train_dataset = TradingDataset(train_data)
     val_dataset = TradingDataset(val_data)
     
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
+    loader_kwargs = {}
+    if torch.cuda.is_available():
+        loader_kwargs.update(dict(pin_memory=True, num_workers=2))
+    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, **loader_kwargs)
     
     # Create trainer
     trainer = DifferentiableTrainer(model, config)

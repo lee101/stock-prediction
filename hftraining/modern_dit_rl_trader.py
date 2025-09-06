@@ -23,7 +23,7 @@ import sys
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
-from data_utils import StockDataProcessor, download_stock_data, split_data
+from data_utils import StockDataProcessor, split_data
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -475,16 +475,21 @@ def train_modern_dit_rl(max_minutes: float = 2):
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     # Get data
-    logger.info("Downloading data...")
+    logger.info("Loading local data...")
     symbols = ['SPY', 'QQQ', 'AAPL']
     all_data = []
     
+    from pathlib import Path
     for symbol in symbols:
-        stock_data = download_stock_data(symbol, start_date='2020-01-01')
-        if symbol in stock_data:
-            df = stock_data[symbol]
-            all_data.append(df)
-            logger.info(f"Downloaded {len(df)} records for {symbol}")
+        data_dir = Path('trainingdata')
+        candidates = list(data_dir.glob(f"{symbol}.csv")) or [p for p in data_dir.glob('*.csv') if symbol.lower() in p.stem.lower()]
+        if not candidates:
+            continue
+        import pandas as pd
+        df = pd.read_csv(candidates[0])
+        df.columns = df.columns.str.lower()
+        all_data.append(df)
+        logger.info(f"Loaded {len(df)} records for {symbol}")
     
     # Process data
     combined_df = pd.concat(all_data, ignore_index=True)

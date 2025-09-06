@@ -61,14 +61,8 @@ class HFRLLauncher:
             log_file=f"{self.config.logging_dir}/training_{datetime.now():%Y%m%d_%H%M%S}.log"
         )
         
-        # Setup wandb if enabled
-        if args.use_wandb:
-            try:
-                import wandb
-                self._setup_wandb()
-            except ImportError:
-                self.logger.warning("wandb not installed, skipping W&B integration")
-                self.args.use_wandb = False
+        # TensorBoard logging is handled inside PPOTrainer via SummaryWriter
+        # (No external experiment tracker required.)
     
     def _load_config(self) -> HFRLConfig:
         """Load and merge configuration"""
@@ -105,15 +99,7 @@ class HFRLLauncher:
         
         return config
     
-    def _setup_wandb(self):
-        """Initialize Weights & Biases tracking"""
-        import wandb
-        wandb.init(
-            project="toto-rl-training",
-            name=f"hf_rl_{datetime.now():%Y%m%d_%H%M%S}",
-            config=self.config.__dict__,
-            tags=["hf-style", "toto-embeddings", "ppo", self.config.optimizer_type]
-        )
+    # Removed W&B setup; using TensorBoard via SummaryWriter in PPOTrainer
     
     def create_environments(self) -> tuple:
         """Create training and evaluation environments"""
@@ -185,20 +171,7 @@ class HFRLLauncher:
             eval_env=eval_env
         )
         
-        # Add wandb callback if enabled
-        if self.args.use_wandb:
-            try:
-                import wandb
-                original_train = trainer.train
-                
-                def train_with_wandb():
-                    results = original_train()
-                    wandb.log(results)
-                    return results
-                
-                trainer.train = train_with_wandb
-            except ImportError:
-                pass
+        # No-op: Trainer internally logs to TensorBoard (SummaryWriter)
         
         # Train
         final_metrics = trainer.train()
@@ -277,12 +250,7 @@ class HFRLLauncher:
         
         self.logger.info(f"Results saved to {results_path}")
         
-        if self.args.use_wandb:
-            try:
-                import wandb
-                wandb.save(results_path)
-            except ImportError:
-                pass
+        # Results are written to disk; TensorBoard reads from logging_dir
     
     def run(self):
         """Main entry point"""
@@ -315,12 +283,8 @@ class HFRLLauncher:
             raise
         
         finally:
-            if self.args.use_wandb:
-                try:
-                    import wandb
-                    wandb.finish()
-                except ImportError:
-                    pass
+            # Nothing to finalize for TensorBoard SummaryWriter here
+            pass
 
 
 def main():
@@ -354,7 +318,7 @@ def main():
     parser.add_argument('--gradient-checkpointing', action='store_true', help='Enable gradient checkpointing')
     
     # Logging options
-    parser.add_argument('--use-wandb', action='store_true', help='Use Weights & Biases for logging')
+    # TensorBoard is enabled by default via PPOTrainer SummaryWriter
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     
     args = parser.parse_args()

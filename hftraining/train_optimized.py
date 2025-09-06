@@ -252,13 +252,25 @@ class OptimizedTrainer:
             },
         ]
         
-        # Use AdamW with optimized settings
-        self.optimizer = optim.AdamW(
-            optimizer_grouped_parameters,
-            lr=self.config['learning_rate'],
-            betas=(0.9, 0.999),
-            eps=1e-8
-        )
+        # Use Shampoo optimizer for better convergence
+        try:
+            from modern_optimizers import Shampoo
+            self.optimizer = Shampoo(
+                optimizer_grouped_parameters,
+                lr=self.config['learning_rate'],
+                betas=(0.9, 0.999),
+                eps=1e-10,
+                weight_decay=0.0  # Already handled in param groups
+            )
+            self.logger.info("Using Shampoo optimizer")
+        except ImportError:
+            self.logger.warning("Shampoo not available, falling back to AdamW")
+            self.optimizer = optim.AdamW(
+                optimizer_grouped_parameters,
+                lr=self.config['learning_rate'],
+                betas=(0.9, 0.999),
+                eps=1e-8
+            )
         
         # Use CosineAnnealingWarmRestarts for better convergence
         self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(

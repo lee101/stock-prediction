@@ -39,10 +39,7 @@ while [[ $# -gt 0 ]]; do
             DEBUG="--debug"
             shift
             ;;
-        --wandb)
-            WANDB="--use-wandb"
-            shift
-            ;;
+        # --wandb option removed; TensorBoard is used by default
         *)
             echo "Unknown option: $1"
             exit 1
@@ -87,9 +84,12 @@ python launch_hf_training.py \
     --batch-size "$BATCH_SIZE" \
     $UNFREEZE \
     $DISTRIBUTED \
-    $DEBUG \
-    $WANDB
+    $DEBUG
 
 echo ""
-echo "Training completed! Check logs/hf_rl/ for detailed logs."
-echo "Models saved to models/hf_rl/"
+echo "Training completed!"
+echo "- Logs (TensorBoard): logs/hf_rl/"
+echo "- Models: models/hf_rl/"
+echo ""
+echo "To view training curves:"
+echo "  tensorboard --logdir logs/hf_rl --port 6006"
