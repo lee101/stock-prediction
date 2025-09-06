@@ -24,7 +24,7 @@ sys.path.append(os.path.dirname(current_dir))
 from config import create_config
 from train_hf import HFTrainer, StockDataset
 from hf_trainer import TransformerTradingModel, HFTrainingConfig
-from data_utils import StockDataProcessor, download_stock_data, split_data
+from data_utils import load_training_data, split_data
 from profit_tracker import ProfitTracker, ProfitAwareLoss
 
 # Setup logging
@@ -257,27 +257,9 @@ def main():
     checkpoint_dir = Path("hftraining/checkpoints/rl_quick")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
-    # Download fresh data
-    logger.info("Downloading stock data...")
-    stocks = ['AAPL', 'GOOGL', 'MSFT', 'AMZN', 'TSLA']
-    
-    all_data = []
-    for symbol in stocks:
-        stock_data = download_stock_data(symbol, start_date='2020-01-01')
-        if symbol in stock_data:
-            df = stock_data[symbol]
-            logger.info(f"Downloaded {len(df)} records for {symbol}")
-            all_data.append(df)
-    
-    # Combine data
-    combined_df = pd.concat(all_data, ignore_index=True)
-    logger.info(f"Total data points: {len(combined_df)}")
-    
-    # Process data
-    processor = StockDataProcessor()
-    features = processor.prepare_features(combined_df)
-    processor.fit_scalers(features)
-    normalized_data = processor.transform(features)
+    # Load local training data or synthetic fallback (no network required)
+    logger.info("Loading local training data (or synthetic fallback)...")
+    normalized_data = load_training_data(data_dir="trainingdata")
     
     # Create datasets
     train_data, val_data, _ = split_data(normalized_data, 0.7, 0.15, 0.15)
@@ -334,8 +316,9 @@ def main():
     # Create trainer
     trainer = RLTradingTrainer(model, train_loader, val_loader)
     
-    # Train
-    trained_model = trainer.train(max_minutes=2)
+    # Train (allow override via env var RL_MINUTES)
+    minutes = float(os.environ.get("RL_MINUTES", "2"))
+    trained_model = trainer.train(max_minutes=minutes)
     
     # Save best model
     torch.save({
@@ -353,8 +336,8 @@ def main():
         'best_profit': float(trainer.best_profit),
         'best_sharpe': float(trainer.best_sharpe),
         'training_time': datetime.now().isoformat(),
-        'stocks_trained': stocks,
-        'data_points': len(combined_df),
+        'stocks_trained': [],
+        'data_points': int(len(train_data) + len(val_data)),
         'model_params': sum(p.numel() for p in model.parameters())
     }
     

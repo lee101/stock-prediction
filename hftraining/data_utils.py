@@ -9,7 +9,10 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
-import yfinance as yf
+try:
+    import yfinance as yf  # Optional; may be unavailable in restricted envs
+except Exception:
+    yf = None
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import joblib
 import warnings
@@ -182,6 +185,11 @@ def download_stock_data(symbols, start_date='2015-01-01', end_date=None):
         symbols = [symbols]
     
     data = {}
+
+    # Gracefully handle missing yfinance in restricted environments
+    if yf is None:
+        print("yfinance not available; skipping download and returning empty dataset.")
+        return data
     
     for symbol in symbols:
         try:
