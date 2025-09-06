@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "max_positions": {"type": "integer", "minimum": 1, "maximum": 10},
+    "max_position_size": {"type": "number", "minimum": 0.05, "maximum": 1.0},
+    "rebalance_frequency": {"type": "integer", "enum": [1, 3, 5, 7]},
+    "min_expected_return": {"type": "number", "minimum": 0.0, "maximum": 0.2},
+    "position_sizing_method": {"type": "string", "enum": ["equal_weight", "return_weighted"]},
+    "stop_loss": {"type": ["number", "null"], "minimum": 0.0, "maximum": 0.5},
+    "take_profit": {"type": ["number", "null"], "minimum": 0.0, "maximum": 1.0},
+    "max_drawdown_stop": {"type": ["number", "null"], "minimum": 0.0, "maximum": 0.8}
+  },
+  "required": [
+    "max_positions",
+    "max_position_size",
+    "rebalance_frequency",
+    "min_expected_return",
+    "position_sizing_method"
+  ]
+}
+
