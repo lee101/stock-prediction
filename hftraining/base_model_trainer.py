@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import json
-import yfinance as yf
 from tqdm import tqdm
 
 # Add current directory to path
@@ -25,7 +24,7 @@ sys.path.append(os.path.dirname(current_dir))
 from config import create_config, ExperimentConfig
 from train_hf import HFTrainer, StockDataset
 from hf_trainer import TransformerTradingModel, HFTrainingConfig
-from data_utils import StockDataProcessor, download_stock_data, split_data
+from data_utils import StockDataProcessor, split_data, load_local_stock_data
 from profit_tracker import ProfitTracker, integrate_profit_tracking
 from logging_utils import get_logger
 
@@ -138,15 +137,17 @@ class BaseModelTrainer:
         start_date: str = '2018-01-01',
         end_date: Optional[str] = None
     ) -> Dict[str, pd.DataFrame]:
-        """Download data for all base stocks"""
-        
-        self.logger.info(f"Downloading data for {len(self.base_stocks)} stocks")
-        stock_data = download_stock_data(self.base_stocks, start_date, end_date)
-        
-        # Log statistics
+        """Load local CSV data for all base stocks (no external download)"""
+        self.logger.info(f"Loading local data for {len(self.base_stocks)} stocks from trainingdata/")
+        stock_data = load_local_stock_data(self.base_stocks, data_dir="trainingdata")
+        if not stock_data:
+            self.logger.error("No local CSVs found under trainingdata/ for requested symbols")
+            return {}
+        # Log statistics (if date column exists)
         for symbol, df in stock_data.items():
-            self.logger.info(f"{symbol}: {len(df)} records, from {df.index[0]} to {df.index[-1]}")
-        
+            n = len(df)
+            if n > 0:
+                self.logger.info(f"{symbol}: {n} records")
         return stock_data
     
     def prepare_multi_stock_data(
@@ -303,15 +304,12 @@ class BaseModelTrainer:
         
         self.logger.info(f"Loaded base model from {base_checkpoint_path}")
         
-        # Download stock-specific data
-        stock_data = download_stock_data(stock_symbol, start_date)
-        
-        if stock_symbol not in stock_data or len(stock_data[stock_symbol]) == 0:
-            self.logger.error(f"Failed to download data for {stock_symbol}")
+        # Load stock-specific data locally
+        stock_map = load_local_stock_data([stock_symbol], data_dir="trainingdata")
+        if stock_symbol not in stock_map or len(stock_map[stock_symbol]) == 0:
+            self.logger.error(f"No local CSV found for {stock_symbol} under trainingdata/")
             return None, None
-        
-        # Process data
-        df = stock_data[stock_symbol]
+        df = stock_map[stock_symbol]
         features = self.processor.prepare_features(df)
         normalized_data = self.processor.transform(features)
         

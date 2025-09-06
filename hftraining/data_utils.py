@@ -9,10 +9,6 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
-try:
-    import yfinance as yf  # Optional; may be unavailable in restricted envs
-except Exception:
-    yf = None
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from hfshared import compute_training_style_features, training_feature_columns_list
 import joblib
@@ -84,50 +80,42 @@ class StockDataProcessor:
         return self
 
 
-def download_stock_data(symbols, start_date='2015-01-01', end_date=None):
+def load_local_stock_data(symbols: List[str], data_dir: str = "trainingdata") -> Dict[str, pd.DataFrame]:
+    """Load per-symbol CSVs from trainingdata directory.
+
+    Looks for files like SYMBOL.csv (case-insensitive). Returns a dict of dataframes
+    with standardized lowercase columns and a 'date' column if present.
     """
-    Download stock data from Yahoo Finance
-    
-    Args:
-        symbols: List of stock symbols or single symbol
-        start_date: Start date for data
-        end_date: End date for data (default: today)
-        
-    Returns:
-        Dictionary of dataframes or single dataframe
-    """
-    
     if isinstance(symbols, str):
         symbols = [symbols]
-    
-    data = {}
-
-    # Gracefully handle missing yfinance in restricted environments
-    if yf is None:
-        print("yfinance not available; skipping download and returning empty dataset.")
-        return data
-    
-    for symbol in symbols:
+    data: Dict[str, pd.DataFrame] = {}
+    base = Path(data_dir)
+    for sym in symbols:
+        candidates = list(base.glob(f"{sym}.csv"))
+        if not candidates:
+            # Try case-insensitive / contains match
+            candidates = [p for p in base.glob("*.csv") if sym.lower() in p.stem.lower()]
+        if not candidates:
+            print(f"Warning: no CSV found for symbol {sym} under {base}")
+            continue
         try:
-            print(f"Downloading data for {symbol}...")
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(start=start_date, end=end_date)
-            
-            if len(df) > 0:
-                # Clean column names
-                df.columns = [col.lower().replace(' ', '_') for col in df.columns]
-                df.index.name = 'date'
-                df.reset_index(inplace=True)
-                
-                data[symbol] = df
-                print(f"Downloaded {len(df)} records for {symbol}")
-            else:
-                print(f"No data found for {symbol}")
-                
+            df = pd.read_csv(candidates[0])
+            df.columns = df.columns.str.lower()
+            if 'date' in df.columns:
+                try:
+                    df['date'] = pd.to_datetime(df['date'])
+                    df = df.sort_values('date')
+                except Exception:
+                    pass
+            elif 'timestamp' in df.columns:
+                try:
+                    df['date'] = pd.to_datetime(df['timestamp'])
+                    df = df.sort_values('date')
+                except Exception:
+                    pass
+            data[sym] = df
         except Exception as e:
-            print(f"Error downloading {symbol}: {e}")
-    
-    # Always return a dictionary for consistency
+            print(f"Error loading {sym} from {candidates[0]}: {e}")
     return data
 
 
@@ -290,28 +278,20 @@ def load_training_data(data_dir="trainingdata", symbols=None, start_date='2015-0
                 print(f"Combined local data shape: {combined_data.shape} from {loaded_files} files")
                 return combined_data
     
-    # If no local data, try to download
+    # If no local data, try symbols from local stock CSVs (no external download)
     if symbols:
-        print(f"No local data found. Downloading symbols: {symbols}")
-        data_dict = download_stock_data(symbols, start_date)
-        
-        if data_dict and len(data_dict) > 0:
+        print(f"No aggregated CSVs found. Loading local per-symbol CSVs for: {symbols}")
+        data_dict = load_local_stock_data(symbols, data_dir=str(data_path))
+        if data_dict:
             all_data = []
             processor = StockDataProcessor()
-            
-            for symbol, df in data_dict.items():
+            for _, df in data_dict.items():
                 features = processor.prepare_features(df)
                 all_data.append(features)
-            
-            combined_data = np.vstack(all_data)
-            print(f"Downloaded data shape: {combined_data.shape}")
-            
-            # Save for future use
-            data_path.mkdir(parents=True, exist_ok=True)
-            for symbol, df in data_dict.items():
-                df.to_csv(data_path / f"{symbol}.csv", index=False)
-            
-            return combined_data
+            if all_data:
+                combined_data = np.vstack(all_data)
+                print(f"Combined local symbol data shape: {combined_data.shape}")
+                return combined_data
     
     # Generate synthetic data as fallback
     print("No data sources available. Generating synthetic data...")

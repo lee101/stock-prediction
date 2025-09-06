@@ -11,7 +11,6 @@ from torch.cuda.amp import GradScaler, autocast
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
-import yfinance as yf
 from pathlib import Path
 from datetime import datetime
 import json
@@ -470,76 +469,56 @@ class OptimizedTrainer:
 
 
 def load_optimized_data():
-    """Load data with optimized preprocessing"""
+    """Load data with optimized preprocessing from trainingdata/ CSVs (no downloads)."""
     try:
-        # Focus on major stocks for stability
-        symbols = ['AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN', 'META', 'NVDA', 'JPM']
-        print("Loading optimized dataset...")
-        
+        data_dir = Path("trainingdata")
+        print("Loading optimized dataset from local CSVs...")
+
+        csv_files = list(data_dir.glob("*.csv"))
         all_data = []
-        
-        for symbol in symbols:
-            print(f"  • {symbol}")
+        for csv in csv_files:
             try:
-                data = yf.download(symbol, start='2020-01-01', end='2025-01-01', progress=False)
-                
-                if len(data) > 100:
-                    # Basic OHLCV (handle MultiIndex columns properly)
-                    if data.columns.nlevels > 1:
-                        # MultiIndex columns - select first level
-                        data.columns = data.columns.get_level_values(0)
-                    
-                    df = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-                    
-                    # Technical features
-                    df['returns'] = df['Close'].pct_change()
-                    df['log_returns'] = np.log(df['Close'] / df['Close'].shift(1))
-                    df['price_range'] = (df['High'] - df['Low']) / df['Close']
-                    df['close_to_open'] = (df['Close'] - df['Open']) / df['Open']
-                    
-                    # Volume features (fix the multi-column issue)
-                    df['volume_sma'] = df['Volume'].rolling(20).mean()
-                    df['volume_ratio'] = df['Volume'] / (df['volume_sma'] + 1e-8)
-                    
-                    # Moving averages
-                    for period in [5, 10, 20]:
-                        sma_col = f'sma_{period}'
-                        df[sma_col] = df['Close'].rolling(period).mean()
-                        df[f'{sma_col}_ratio'] = df['Close'] / (df[sma_col] + 1e-8)
-                    
-                    # Technical indicators
-                    df['volatility'] = df['returns'].rolling(20).std()
-                    
-                    # RSI
-                    delta = df['Close'].diff()
-                    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-                    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                    df['rsi'] = 100 - (100 / (1 + gain / (loss + 1e-8)))
-                    
-                    # MACD
-                    df['macd'] = df['Close'].ewm(span=12).mean() - df['Close'].ewm(span=26).mean()
-                    df['macd_signal'] = df['macd'].ewm(span=9).mean()
-                    
-                    # Select exactly 21 features
-                    feature_cols = [
-                        'Open', 'High', 'Low', 'Close', 'Volume',
-                        'returns', 'log_returns', 'price_range', 'close_to_open',
-                        'volume_sma', 'volume_ratio',
-                        'sma_5', 'sma_5_ratio', 'sma_10', 'sma_10_ratio', 
-                        'sma_20', 'sma_20_ratio', 'volatility', 'rsi', 'macd', 'macd_signal'
-                    ]
-                    
-                    # Clean data
-                    df = df.ffill().fillna(0)
-                    df = df.replace([np.inf, -np.inf], 0)
-                    
-                    if len(feature_cols) == 21:
-                        selected_data = df[feature_cols].values
-                        if not np.isnan(selected_data).any():
-                            all_data.append(selected_data)
-                            print(f"    {selected_data.shape[0]} samples")
+                df = pd.read_csv(csv)
+                # Normalize to capitalized column names for consistency
+                df.columns = df.columns.str.title()
+                if not set(['Open','High','Low','Close','Volume']).issubset(df.columns):
+                    continue
+
+                # Technical features mirroring previous pipeline
+                df['returns'] = df['Close'].pct_change()
+                df['log_returns'] = np.log(df['Close'] / df['Close'].shift(1))
+                df['price_range'] = (df['High'] - df['Low']) / (df['Close'] + 1e-8)
+                df['close_to_open'] = (df['Close'] - df['Open']) / (df['Open'] + 1e-8)
+                df['volume_sma'] = df['Volume'].rolling(20).mean()
+                df['volume_ratio'] = df['Volume'] / (df['volume_sma'] + 1e-8)
+                for period in [5, 10, 20]:
+                    sma_col = f'sma_{period}'
+                    df[sma_col] = df['Close'].rolling(period).mean()
+                    df[f'{sma_col}_ratio'] = df['Close'] / (df[sma_col] + 1e-8)
+                df['volatility'] = df['returns'].rolling(20).std()
+                delta = df['Close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                df['rsi'] = 100 - (100 / (1 + gain / (loss + 1e-8)))
+                df['macd'] = df['Close'].ewm(span=12).mean() - df['Close'].ewm(span=26).mean()
+                df['macd_signal'] = df['macd'].ewm(span=9).mean()
+
+                feature_cols = [
+                    'Open', 'High', 'Low', 'Close', 'Volume',
+                    'returns', 'log_returns', 'price_range', 'close_to_open',
+                    'volume_sma', 'volume_ratio',
+                    'sma_5', 'sma_5_ratio', 'sma_10', 'sma_10_ratio',
+                    'sma_20', 'sma_20_ratio', 'volatility', 'rsi', 'macd', 'macd_signal'
+                ]
+
+                df = df.ffill().fillna(0).replace([np.inf, -np.inf], 0)
+                if set(feature_cols).issubset(df.columns):
+                    arr = df[feature_cols].values
+                    if not np.isnan(arr).any():
+                        all_data.append(arr)
+                        print(f"    {csv.name}: {arr.shape[0]} samples")
             except Exception as e:
-                print(f"    Failed: {e}")
+                print(f"    Failed {csv.name}: {e}")
                 continue
         
         if not all_data:

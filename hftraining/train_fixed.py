@@ -10,7 +10,6 @@ import torch.optim as optim
 from torch.cuda.amp import GradScaler, autocast
 import numpy as np
 import pandas as pd
-import yfinance as yf
 from pathlib import Path
 from datetime import datetime
 import json
@@ -391,71 +390,56 @@ class FixedTrainer:
 
 
 def load_and_prepare_data():
-    """Load and prepare stock data"""
+    """Load and prepare stock data from local trainingdata/ CSVs (no external downloads)."""
     try:
-        # Download data for multiple stocks
-        symbols = ['AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN']
-        print("Downloading stock data...")
-        
+        data_dir = Path("trainingdata")
+        csv_files = list(data_dir.glob("*.csv"))
+        if not csv_files:
+            raise RuntimeError(f"No CSV files found under {data_dir}")
+
         all_data = []
-        
-        for symbol in symbols:
-            print(f"  • {symbol}")
-            data = yf.download(symbol, start='2020-01-01', end='2025-01-01', progress=False)
-            
-            if len(data) > 0:
-                # Basic OHLCV
-                df = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-                
-                # Technical features
-                df['returns'] = df['Close'].pct_change()
-                df['log_returns'] = np.log(df['Close'] / df['Close'].shift(1))
-                df['price_range'] = (df['High'] - df['Low']) / df['Close']
-                df['close_to_open'] = (df['Close'] - df['Open']) / df['Open']
-                
-                # Volume features  
-                # Handle potential multi-column Volume issue
-                volume_col = df['Volume']
-                if hasattr(volume_col, 'iloc') and len(volume_col.shape) > 1:
-                    volume_col = volume_col.iloc[:, 0] if volume_col.shape[1] > 0 else volume_col
-                
-                df['volume_sma'] = volume_col.rolling(20).mean()
-                df['volume_ratio'] = volume_col / df['volume_sma']
-                
-                # Moving averages
-                for period in [5, 10, 20]:
-                    df[f'sma_{period}'] = df['Close'].rolling(period).mean()
-                    df[f'sma_{period}_ratio'] = df['Close'] / df[f'sma_{period}']
-                
-                # Technical indicators
-                df['volatility'] = df['returns'].rolling(20).std()
-                
-                # RSI
-                delta = df['Close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                rs = gain / loss
-                df['rsi'] = 100 - (100 / (1 + rs))
-                
-                # MACD
-                df['macd'] = df['Close'].ewm(span=12).mean() - df['Close'].ewm(span=26).mean()
-                df['macd_signal'] = df['macd'].ewm(span=9).mean()
-                
-                # Clean data
-                df = df.ffill().fillna(0)
-                df = df.replace([np.inf, -np.inf], 0)
-                
-                all_data.append(df.values)
-        
-        # Combine data
+        for csv in csv_files:
+            df = pd.read_csv(csv)
+            # Standardize columns to match prior code expectations
+            cols = {c.lower(): c for c in df.columns}
+            def get(col):
+                return df[cols.get(col, col.title())] if cols.get(col) in df.columns else df[col.title()] if col.title() in df.columns else None
+            open_s = get('open'); high_s = get('high'); low_s = get('low'); close_s = get('close'); volume_s = get('volume')
+            if any(s is None for s in [open_s, high_s, low_s, close_s, volume_s]):
+                continue
+            df2 = pd.DataFrame({
+                'Open': open_s,
+                'High': high_s,
+                'Low': low_s,
+                'Close': close_s,
+                'Volume': volume_s,
+            }).copy()
+            # Technical features
+            df2['returns'] = df2['Close'].pct_change()
+            df2['log_returns'] = np.log(df2['Close'] / df2['Close'].shift(1))
+            df2['price_range'] = (df2['High'] - df2['Low']) / df2['Close']
+            df2['close_to_open'] = (df2['Close'] - df2['Open']) / df2['Open']
+            df2['volume_sma'] = df2['Volume'].rolling(20).mean()
+            df2['volume_ratio'] = df2['Volume'] / (df2['volume_sma'] + 1e-8)
+            for period in [5, 10, 20]:
+                sma = df2['Close'].rolling(period).mean()
+                df2[f'sma_{period}'] = sma
+                df2[f'sma_{period}_ratio'] = df2['Close'] / (sma + 1e-8)
+            df2['volatility'] = df2['returns'].rolling(20).std()
+            delta = df2['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            df2['rsi'] = 100 - (100 / (1 + gain / (loss + 1e-8)))
+            df2['macd'] = df2['Close'].ewm(span=12).mean() - df2['Close'].ewm(span=26).mean()
+            df2['macd_signal'] = df2['macd'].ewm(span=9).mean()
+            df2 = df2.ffill().fillna(0).replace([np.inf, -np.inf], 0)
+            all_data.append(df2.values)
+
         combined_data = np.vstack(all_data)
         print(f"Combined data shape: {combined_data.shape}")
-        
-        # Normalize
         from sklearn.preprocessing import RobustScaler
         scaler = RobustScaler()
         normalized_data = scaler.fit_transform(combined_data)
-        
         return normalized_data
         
     except Exception as e:

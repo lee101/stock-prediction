@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple, Optional, Any
 import warnings
 import logging
 from collections import defaultdict
-import yfinance as yf
+from data_utils import load_local_stock_data
 from sklearn.preprocessing import RobustScaler
 import ta  # Technical analysis library
 
@@ -353,27 +353,39 @@ def download_and_process_stocks(
     start_date: str = '2018-01-01',
     end_date: str = None
 ) -> Tuple[np.ndarray, List[str]]:
-    """Download and process multiple stocks"""
+    """Load local CSVs for symbols and process with indicators.
+
+    This function no longer downloads via yfinance. It expects CSVs under
+    the trainingdata/ directory (or a configured data dir) and will raise if
+    none are found.
+    """
     
     processor = AdvancedDataProcessor()
     validator = DataValidator()
     all_data = []
     
-    for symbol in symbols:
+    # Load local CSVs
+    local = load_local_stock_data(symbols, data_dir="trainingdata")
+    if not local:
+        raise ValueError("No local CSVs found for provided symbols under trainingdata/")
+
+    for symbol, df in local.items():
         try:
-            logging.info(f"Downloading {symbol}...")
-            
-            # Download data
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(start=start_date, end=end_date)
-            
+            logging.info(f"Processing {symbol}...")
+
             if len(df) < 100:
                 logging.warning(f"Insufficient data for {symbol}, skipping")
                 continue
             
-            # Clean column names
+            # Clean column names and ensure lowercase
+            df = df.copy()
             df.columns = df.columns.str.lower()
-            df = df.reset_index()
+            if 'date' in df.columns:
+                try:
+                    df['date'] = pd.to_datetime(df['date'])
+                    df = df.sort_values('date')
+                except Exception:
+                    pass
             
             # Validate data
             df = validator.validate_dataframe(df)
