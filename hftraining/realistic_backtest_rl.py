@@ -18,14 +18,14 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
-import yfinance as yf
+# yfinance removed; rely on local CSVs if needed
 
 # Add paths
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 sys.path.append(os.path.dirname(current_dir))
 
-from data_utils import StockDataProcessor, download_stock_data, split_data
+from data_utils import StockDataProcessor, split_data
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -679,22 +679,30 @@ def train_realistic_rl(max_minutes=2):
     checkpoint_dir = Path("hftraining/checkpoints/realistic_rl")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
-    # Download data
-    logger.info("Downloading stock data...")
+    # Load local CSVs
+    logger.info("Loading local stock CSVs...")
     symbols = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL']
-    
+    data_dir = Path("trainingdata")
     all_data = []
     for symbol in symbols[:2]:  # Start with 2 for testing
-        stock_data = download_stock_data(symbol, start_date='2019-01-01')
-        if symbol in stock_data:
-            df = stock_data[symbol]
-            logger.info(f"Downloaded {len(df)} records for {symbol}")
-            
-            # Add volume if missing
-            if 'Volume' not in df.columns:
-                df['Volume'] = 1e6  # Default volume
-            
-            all_data.append(df)
+        candidates = list(data_dir.glob(f"{symbol}.csv"))
+        if not candidates:
+            candidates = [p for p in data_dir.glob("*.csv") if symbol.lower() in p.stem.lower()]
+        if not candidates:
+            logger.warning(f"No local CSV found for {symbol}")
+            continue
+        df = pd.read_csv(candidates[0])
+        df.columns = df.columns.str.lower()
+        if 'date' in df.columns:
+            try:
+                df['date'] = pd.to_datetime(df['date'])
+                df = df.sort_values('date')
+            except Exception:
+                pass
+        # Ensure volume exists
+        if 'volume' not in df.columns:
+            df['volume'] = 1e6
+        all_data.append(df)
     
     # Process data
     combined_df = pd.concat(all_data, ignore_index=True)
