@@ -20,6 +20,8 @@ from torch.utils.data import DataLoader, Dataset
 import sys
 import os
 import time
+import shutil
+import subprocess
 
 # Add current directory to path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -33,7 +35,8 @@ from hf_trainer import (
     get_linear_schedule_with_warmup,
     get_cosine_schedule_with_warmup,
     MixedPrecisionTrainer,
-    EarlyStopping
+    EarlyStopping,
+    adaptive_clip_grad_
 )
 from modern_optimizers import get_optimizer
 from logging_utils import get_logger, MetricsTracker
@@ -134,14 +137,58 @@ class HFTrainer:
         self.current_epoch = 0
         self.best_metric = None
         self.start_time = None
+        self.last_step_time = None
+        
+    def _get_gpu_metrics(self):
+        """Safely collect GPU metrics if CUDA is available."""
+        metrics = {}
+        try:
+            if torch.cuda.is_available():
+                device_idx = 0
+                metrics['gpu_memory_allocated_mb'] = torch.cuda.memory_allocated(device_idx) / (1024**2)
+                metrics['gpu_memory_reserved_mb'] = torch.cuda.memory_reserved(device_idx) / (1024**2)
+                metrics['gpu_max_memory_allocated_mb'] = torch.cuda.max_memory_allocated(device_idx) / (1024**2)
+                # Optional: nvidia-smi utilization
+                if shutil.which('nvidia-smi'):
+                    try:
+                        out = subprocess.check_output([
+                            'nvidia-smi',
+                            '--query-gpu=utilization.gpu,memory.used',
+                            '--format=csv,noheader,nounits',
+                            '-i', '0'
+                        ], stderr=subprocess.DEVNULL, text=True).strip()
+                        if out:
+                            util_str, mem_used_str = out.split(',')
+                            metrics['gpu_utilization_pct'] = float(util_str.strip())
+                            metrics['gpu_memory_used_mb'] = float(mem_used_str.strip())
+                    except Exception:
+                        pass
+        except Exception:
+            # Never let metrics collection break training
+            pass
+        return metrics
         
     def _create_optimizer(self):
         """Create optimizer based on config using modern_optimizers factory"""
         name = (self.config.optimizer_name or "adamw").lower()
+        # Parameter groups: do not decay biases and (Layer)Norm parameters
+        decay_params, no_decay_params = [], []
+        for n, p in self.model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if n.endswith('.bias') or 'norm' in n.lower():
+                no_decay_params.append(p)
+            else:
+                decay_params.append(p)
+        param_groups = [
+            {"params": decay_params, "weight_decay": self.config.weight_decay},
+            {"params": no_decay_params, "weight_decay": 0.0},
+        ]
+
         try:
             return get_optimizer(
                 name,
-                self.model.parameters(),
+                param_groups,
                 lr=self.config.learning_rate,
                 betas=(self.config.adam_beta1, self.config.adam_beta2),
                 eps=self.config.adam_epsilon,
@@ -151,13 +198,10 @@ class HFTrainer:
             # Fallback to AdamW on any issue
             if hasattr(self, 'training_logger'):
                 self.training_logger.logger.warning(f"Falling back to AdamW optimizer due to: {e}")
-            return torch.optim.AdamW(
-                self.model.parameters(),
-                lr=self.config.learning_rate,
-                betas=(self.config.adam_beta1, self.config.adam_beta2),
-                eps=self.config.adam_epsilon,
-                weight_decay=self.config.weight_decay
-            )
+            return torch.optim.AdamW(param_groups,
+                                     lr=self.config.learning_rate,
+                                     betas=(self.config.adam_beta1, self.config.adam_beta2),
+                                     eps=self.config.adam_epsilon)
     
     def _create_scheduler(self):
         """Create learning rate scheduler"""
@@ -208,12 +252,13 @@ class HFTrainer:
         self.training_logger.log_training_start(config_dict, model_info)
         
         # Create data loaders
+        pin_mem = bool(torch.cuda.is_available())
         train_loader = DataLoader(
             self.train_dataset,
             batch_size=self.config.batch_size,
             shuffle=True,
             num_workers=0,
-            pin_memory=False
+            pin_memory=pin_mem
         )
         
         eval_loader = None
@@ -223,7 +268,7 @@ class HFTrainer:
                 batch_size=self.config.batch_size,
                 shuffle=False,
                 num_workers=0,
-                pin_memory=False
+                pin_memory=pin_mem
             )
         
         # Training loop
@@ -251,21 +296,33 @@ class HFTrainer:
                     break
                 
                 # Move batch to device
-                batch = {k: v.to(self.device) for k, v in batch.items()}
+                non_block = bool(torch.cuda.is_available())
+                batch = {k: v.to(self.device, non_blocking=non_block) for k, v in batch.items()}
                 
                 # Training step
+                step_start = time.time()
                 loss = self.training_step(batch)
+                self.last_step_time = max(1e-9, time.time() - step_start)
                 epoch_loss += loss
                 epoch_steps += 1
                 
                 # Enhanced Logging
                 if self.global_step % self.config.logging_steps == 0:
                     # Log to TensorBoard
-                    self.log_metrics({
+                    batch_size = self.config.batch_size
+                    samples_per_sec = float(batch_size) / self.last_step_time if self.last_step_time else 0.0
+                    sys_metrics = self._get_gpu_metrics()
+                    tb_metrics = {
                         'train/loss': loss,
                         'train/learning_rate': self.scheduler.get_last_lr()[0],
-                        'train/epoch': epoch
-                    })
+                        'train/epoch': epoch,
+                        'train/step_time_s': self.last_step_time,
+                        'train/samples_per_sec': samples_per_sec,
+                    }
+                    # Add GPU metrics to TB if present
+                    for k, v in sys_metrics.items():
+                        tb_metrics[f'system/{k}'] = v
+                    self.log_metrics(tb_metrics)
                     
                     # Log to file and console
                     metrics = {
@@ -273,6 +330,11 @@ class HFTrainer:
                         'learning_rate': self.scheduler.get_last_lr()[0],
                         'epoch': epoch
                     }
+                    # Also report GPU mem to file logger if available
+                    if 'gpu_memory_allocated_mb' in sys_metrics:
+                        self.training_logger.log_resource_usage(
+                            gpu_memory=sys_metrics['gpu_memory_allocated_mb']
+                        )
                     self.training_logger.log_step_metrics(self.global_step, metrics, "train")
                     self.metrics_tracker.add_metric(self.global_step, "train", **metrics)
                     
@@ -369,16 +431,44 @@ class HFTrainer:
             
             # Combined loss (scale by accumulation steps)
             total_loss = (action_loss + 0.5 * price_loss) / self.config.gradient_accumulation_steps
-        
+
         # Backward pass
+        if not torch.isfinite(total_loss):
+            # Skip step on NaN/Inf loss
+            self.training_logger.logger.warning(f"Non-finite loss at step {self.global_step}: {total_loss.item()}")
+            self.optimizer.zero_grad(set_to_none=True)
+            self.global_step += 1
+            return float('inf')
+
         scaled_loss = self.mp_trainer.scale_loss(total_loss)
         scaled_loss.backward()
         
-        # Gradient clipping
+        # Unscale before any grad processing in AMP
+        if self.mp_trainer.enabled:
+            self.mp_trainer.scaler.unscale_(self.optimizer)
+
+        # Adaptive Gradient Clipping (per-parameter)
+        if getattr(self.config, 'use_adaptive_grad_clip', False):
+            adaptive_clip_grad_(
+                self.model.parameters(),
+                clip_factor=getattr(self.config, 'agc_clip_factor', 0.01),
+                eps=getattr(self.config, 'agc_eps', 1e-3)
+            )
+
+        # Global gradient clipping and norm logging
+        grad_norm = None
         if self.config.max_grad_norm > 0:
-            if self.mp_trainer.enabled:
-                self.mp_trainer.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+
+        # Guard against non-finite gradients
+        if getattr(self.config, 'skip_non_finite_grads', True):
+            if grad_norm is not None and not torch.isfinite(grad_norm):
+                self.training_logger.logger.warning(
+                    f"Non-finite grad norm at step {self.global_step}: {grad_norm} — skipping optimizer step"
+                )
+                self.optimizer.zero_grad(set_to_none=True)
+                self.global_step += 1
+                return total_loss.item() * self.config.gradient_accumulation_steps
         
         # Optimizer step only on accumulation boundary
         if (self.global_step + 1) % self.config.gradient_accumulation_steps == 0:
@@ -387,6 +477,13 @@ class HFTrainer:
         
         self.global_step += 1
         
+        # Optional: log grad norm to TensorBoard
+        if grad_norm is not None and self.global_step % max(1, self.config.logging_steps) == 0:
+            try:
+                self.writer.add_scalar('train/grad_norm', float(grad_norm), self.global_step)
+            except Exception:
+                pass
+
         return total_loss.item() * self.config.gradient_accumulation_steps  # Rescale for logging
     
     def evaluate(self, eval_loader):
@@ -400,7 +497,8 @@ class HFTrainer:
         
         with torch.no_grad():
             for batch in tqdm(eval_loader, desc="Evaluating", leave=False):
-                batch = {k: v.to(self.device) for k, v in batch.items()}
+                non_block = bool(torch.cuda.is_available())
+                batch = {k: v.to(self.device, non_blocking=non_block) for k, v in batch.items()}
                 
                 outputs = self.model(
                     batch['input_ids'],
@@ -603,7 +701,11 @@ def main():
         logging_steps=20,    # Frequent logging
         
         # Training stability
-        max_grad_norm=1.0,   # Gradient clipping
+        max_grad_norm=1.0,   # Global gradient clipping
+        use_adaptive_grad_clip=True,  # Per-parameter AGC for stability
+        agc_clip_factor=0.01,
+        agc_eps=1e-3,
+        skip_non_finite_grads=True,
         gradient_accumulation_steps=1 if device_str == "cuda" else 2,  # Less accumulation for GPU
         
         # Mixed precision for GPU

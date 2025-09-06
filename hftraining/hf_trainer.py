@@ -7,6 +7,7 @@ Implements GPro, AdamW, and other state-of-the-art algorithms
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as cp
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -184,6 +185,11 @@ class HFTrainingConfig:
     max_steps: int = 50000
     gradient_accumulation_steps: int = 4
     max_grad_norm: float = 1.0
+    # Stability: Adaptive Gradient Clipping (AGC) and guards
+    use_adaptive_grad_clip: bool = False
+    agc_clip_factor: float = 0.01
+    agc_eps: float = 1e-3
+    skip_non_finite_grads: bool = True
     
     # Optimizer settings
     optimizer_name: str = "gpro"  # gpro, adamw, adam
@@ -325,7 +331,23 @@ class TransformerTradingModel(nn.Module):
             attention_mask = attention_mask.bool()
             attention_mask = ~attention_mask  # Invert for transformer
         
-        transformer_output = self.transformer(x, src_key_padding_mask=attention_mask)
+        # Enable gradient checkpointing by applying layers manually
+        if getattr(self.config, 'use_gradient_checkpointing', False) and self.training:
+            out = x
+            for layer in self.transformer.layers:
+                if attention_mask is not None:
+                    if getattr(self.config, 'use_gradient_checkpointing', False):
+                        out = cp.checkpoint(lambda y: layer(y, src_key_padding_mask=attention_mask), out)
+                    else:
+                        out = layer(out, src_key_padding_mask=attention_mask)
+                else:
+                    out = cp.checkpoint(lambda y: layer(y), out)
+            transformer_output = out
+            # Apply final norm if present
+            if self.transformer.norm is not None:
+                transformer_output = self.transformer.norm(transformer_output)
+        else:
+            transformer_output = self.transformer(x, src_key_padding_mask=attention_mask)
         
         # Use the last token for predictions
         last_hidden = transformer_output[:, -1, :]
@@ -434,6 +456,61 @@ class MixedPrecisionTrainer:
         # Return a dummy context manager that does nothing
         from contextlib import nullcontext
         return nullcontext()
+
+
+# ============================================================================
+# GRADIENT UTILITIES (AGC, guards)
+# ============================================================================
+
+def _unitwise_norm(t: torch.Tensor) -> torch.Tensor:
+    """Compute unit-wise norms for tensors of different shapes.
+    For Linear/Conv weights, compute norm over all dims except the first (out_features/filters).
+    For biases/LayerNorm weights (1D), fall back to absolute value.
+    """
+    if t.ndim <= 1:
+        return t.abs()
+    # Norm over all dimensions except dim 0
+    dims = tuple(range(1, t.ndim))
+    return t.norm(p=2, dim=dims, keepdim=True)
+
+
+@torch.no_grad()
+def adaptive_clip_grad_(parameters, clip_factor: float = 0.01, eps: float = 1e-3):
+    """Adaptive Gradient Clipping (AGC).
+    Scales gradients so that ||g_i|| <= clip_factor * (||w_i|| + eps) per unit (row/channel).
+
+    Args:
+        parameters: Iterable of model parameters with .grad populated
+        clip_factor: Multiplicative factor against parameter unit-wise norm
+        eps: Small epsilon to avoid division by zero
+    """
+    for p in parameters:
+        if p.grad is None:
+            continue
+        g = p.grad
+        if g.is_sparse:
+            # Skip sparse to avoid surprises; uncommon here
+            continue
+        # Work in fp32 for stability
+        g_fp32 = g.detach()
+        if g_fp32.dtype in {torch.float16, torch.bfloat16}:
+            g_fp32 = g_fp32.float()
+        w = p.detach()
+        if w.dtype in {torch.float16, torch.bfloat16}:
+            w = w.float()
+
+        w_norm = _unitwise_norm(w).add_(eps)
+        g_norm = _unitwise_norm(g_fp32)
+
+        max_norm = w_norm.mul(clip_factor)
+        # Compute scaling where gradient norm exceeds threshold
+        clipped = g_fp32 * (max_norm / torch.clamp(g_norm, min=1e-12))
+        mask = (g_norm > max_norm).to(g_fp32.dtype)
+        # Broadcast-safe blend
+        g_fp32 = clipped * mask + g_fp32 * (1 - mask)
+
+        # Write back in-place, preserving original dtype
+        g.copy_(g_fp32.to(g.dtype))
 
 
 # ============================================================================

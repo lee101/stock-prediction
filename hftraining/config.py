@@ -56,6 +56,11 @@ class TrainingConfig:
     weight_decay: float = 0.01
     gradient_accumulation_steps: int = 4
     max_grad_norm: float = 1.0
+    # Stability
+    use_adaptive_grad_clip: bool = False
+    agc_clip_factor: float = 0.01
+    agc_eps: float = 1e-3
+    skip_non_finite_grads: bool = True
     
     # Learning rate scheduling
     warmup_steps: int = 1000
