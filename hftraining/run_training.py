@@ -43,6 +43,22 @@ def setup_environment(config: ExperimentConfig):
     # Set seed
     set_seed(config.system.seed)
     
+    # Resolve dirs relative to this file to avoid hftraining/hftraining nesting
+    base_dir = Path(__file__).parent
+    def _resolve_dir(path_str: str) -> Path:
+        p = Path(path_str)
+        if p.is_absolute():
+            return p
+        parts = p.parts
+        if parts and parts[0].lower() == 'hftraining':
+            p = Path(*parts[1:]) if len(parts) > 1 else Path('.')
+        return base_dir / p
+
+    # Normalize paths back into config so downstream consumers use resolved paths
+    config.output.output_dir = str(_resolve_dir(config.output.output_dir))
+    config.output.logging_dir = str(_resolve_dir(config.output.logging_dir))
+    config.output.cache_dir = str(_resolve_dir(config.output.cache_dir))
+
     # Create output directories
     Path(config.output.output_dir).mkdir(parents=True, exist_ok=True)
     Path(config.output.logging_dir).mkdir(parents=True, exist_ok=True)
@@ -67,6 +83,14 @@ def setup_environment(config: ExperimentConfig):
     print(f"Using device: {device}")
     print(f"CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
+        # Optional TF32 for faster matmul on Ampere+
+        allow_tf32 = getattr(config.system, 'allow_tf32', True)
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = bool(allow_tf32)
+            torch.backends.cudnn.allow_tf32 = bool(allow_tf32)
+            print(f"TF32 enabled: {bool(allow_tf32)}")
+        except Exception:
+            pass
         print(f"CUDA devices: {torch.cuda.device_count()}")
         for i in range(torch.cuda.device_count()):
             print(f"  Device {i}: {torch.cuda.get_device_name(i)}")

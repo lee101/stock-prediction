@@ -415,3 +415,142 @@ def get_optimizer(name: str, parameters, **kwargs):
 
 
 # GPro is already defined in hf_trainer.py, no need to import here
+
+
+class Shampoo(torch.optim.Optimizer):
+    """
+    Lightweight factored Shampoo optimizer (self-contained).
+    - For 2D tensors, maintains row/col second-moment statistics and uses
+      inverse square-root preconditioning: G_tilde = L^{-1/2} G R^{-1/2}.
+    - For 1D tensors (bias, vectors), falls back to RMSProp-like update.
+
+    Notes:
+    - This implementation targets small/medium tensors and test scenarios.
+    - For stability, adds epsilon to preconditioners and clamps eigenvalues.
+    """
+    def __init__(
+        self,
+        params,
+        lr: float = 1e-3,
+        betas=(0.9, 0.99),
+        eps: float = 1e-12,
+        weight_decay: float = 0.0,
+    ):
+        if lr <= 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if not (0.0 <= betas[0] < 1.0 and 0.0 <= betas[1] < 1.0):
+            raise ValueError(f"Invalid betas: {betas}")
+        if weight_decay < 0:
+            raise ValueError(f"Invalid weight_decay: {weight_decay}")
+
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+
+    @staticmethod
+    def _inv_sqrt(mat: torch.Tensor, eps: float) -> torch.Tensor:
+        """Compute (mat + eps I)^{-1/2} for symmetric PSD mat via eigendecomposition."""
+        # Ensure float32 for stability
+        mat = mat.float()
+        # Symmetrize just in case of numeric drift
+        mat = 0.5 * (mat + mat.transpose(-1, -2))
+        eigvals, eigvecs = torch.linalg.eigh(mat)
+        # Clamp eigenvalues to avoid negatives and add eps
+        eigvals_clamped = torch.clamp(eigvals, min=0.0) + eps
+        inv_sqrt_vals = eigvals_clamped.rsqrt()
+        # Reconstruct inverse sqrt
+        return eigvecs @ torch.diag_embed(inv_sqrt_vals) @ eigvecs.transpose(-1, -2)
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            beta1, beta2 = group['betas']
+            lr = group['lr']
+            wd = group['weight_decay']
+            eps = group['eps']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                g = p.grad.detach()
+                if g.is_sparse:
+                    raise RuntimeError("Shampoo does not support sparse gradients")
+
+                state = self.state[p]
+                # Decoupled weight decay
+                if wd != 0:
+                    p.data.mul_(1 - lr * wd)
+
+                if g.ndim >= 2:
+                    # Treat as matrix with last two dims as [rows, cols]
+                    # Flatten leading dims if present
+                    orig_shape = g.shape
+                    rows, cols = g.shape[-2], g.shape[-1]
+                    G = g.reshape(-1, rows, cols)
+
+                    if len(state) == 0:
+                        state['step'] = 0
+                        # Row and column second moment accumulators
+                        state['L'] = torch.zeros(G.shape[0], rows, rows, device=G.device, dtype=torch.float32)
+                        state['R'] = torch.zeros(G.shape[0], cols, cols, device=G.device, dtype=torch.float32)
+
+                    L = state['L']
+                    R = state['R']
+                    state['step'] += 1
+
+                    # Update factored second moments
+                    # L_t = beta2 * L + (1-beta2) * (G G^T) averaged over batch factors
+                    # R_t = beta2 * R + (1-beta2) * (G^T G)
+                    GGt = torch.matmul(G, G.transpose(-1, -2))
+                    GtG = torch.matmul(G.transpose(-1, -2), G)
+                    L.mul_(beta2).add_(GGt.mean(dim=0), alpha=(1 - beta2))
+                    R.mul_(beta2).add_(GtG.mean(dim=0), alpha=(1 - beta2))
+
+                    # Precondition: G_tilde = L^{-1/2} G R^{-1/2}
+                    L_inv_sqrt = self._inv_sqrt(L, eps)
+                    R_inv_sqrt = self._inv_sqrt(R, eps)
+                    # Apply preconditioners to each slice
+                    G_tilde = torch.matmul(L_inv_sqrt, torch.matmul(G, R_inv_sqrt))
+                    # Momentum on preconditioned grads (beta1)
+                    if 'm' not in state:
+                        state['m'] = torch.zeros_like(G_tilde)
+                    m = state['m']
+                    m.mul_(beta1).add_(G_tilde, alpha=(1 - beta1))
+                    # Update
+                    update = m
+                    p.data.add_(update.reshape(orig_shape), alpha=-lr)
+
+                else:
+                    # 1D parameters: use RMSProp-like second moment
+                    if len(state) == 0:
+                        state['step'] = 0
+                        state['v'] = torch.zeros_like(p, dtype=torch.float32)
+                        state['m'] = torch.zeros_like(p, dtype=torch.float32)
+                    v = state['v']
+                    m = state['m']
+                    state['step'] += 1
+
+                    v.mul_(beta2).addcmul_(g, g, value=(1 - beta2))
+                    precond = g / (v.sqrt() + eps)
+                    m.mul_(beta1).add_(precond, alpha=(1 - beta1))
+                    p.data.add_(m, alpha=-lr)
+
+        return loss
+
+
+# Register Shampoo in the optimizer factory (kept near class for clarity)
+def _register_shampoo():
+    old_get = get_optimizer
+
+    def _factory(name: str, parameters, **kwargs):
+        name_l = name.lower()
+        if name_l == 'shampoo':
+            return Shampoo(parameters, **kwargs)
+        return old_get(name, parameters, **kwargs)
+
+    return _factory
+
+# Monkey-patch get_optimizer to include 'shampoo'
+get_optimizer = _register_shampoo()

@@ -14,6 +14,7 @@ from tqdm import tqdm
 import json
 from datetime import datetime
 import warnings
+import random
 warnings.filterwarnings('ignore')
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, Dataset
@@ -40,6 +41,11 @@ from hf_trainer import (
 )
 from modern_optimizers import get_optimizer
 from logging_utils import get_logger, MetricsTracker
+try:
+    import psutil  # Optional for CPU metrics
+except Exception:
+    psutil = None
+from auto_tune import AutoBatchTuner
 
 
 class StockDataset(Dataset):
@@ -104,13 +110,33 @@ class HFTrainer:
         # Setup device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
+
+        # Modern CUDA math settings
+        if torch.cuda.is_available() and getattr(self.config, 'allow_tf32', True):
+            try:
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                torch.backends.cudnn.benchmark = True
+            except Exception:
+                pass
+        try:
+            torch.set_float32_matmul_precision('high')
+        except Exception:
+            pass
         
         # Setup data parallel if available
         if torch.cuda.device_count() > 1 and config.use_data_parallel:
             self.model = nn.DataParallel(self.model)
         
-        # Setup mixed precision
-        self.mp_trainer = MixedPrecisionTrainer(config.use_mixed_precision)
+        # Setup mixed precision (prefer BF16 on capable GPUs)
+        mp_dtype = None
+        if torch.cuda.is_available() and getattr(self.config, 'use_bfloat16', True):
+            try:
+                if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
+                    mp_dtype = torch.bfloat16
+            except Exception:
+                pass
+        self.mp_trainer = MixedPrecisionTrainer(config.use_mixed_precision, dtype=mp_dtype)
         
         # Setup optimizer
         self.optimizer = self._create_optimizer()
@@ -129,6 +155,14 @@ class HFTrainer:
         self.training_logger = get_logger(config.logging_dir, "training")
         self.metrics_tracker = MetricsTracker()
         
+        # Optional torch.compile (PyTorch 2.0+)
+        if getattr(self.config, 'use_compile', False):
+            try:
+                self.model = torch.compile(self.model, mode='max-autotune')
+                self.training_logger.info('Enabled torch.compile for the model')
+            except Exception as e:
+                self.training_logger.logger.warning(f'torch.compile unavailable or failed: {e}')
+
         # Setup logging (TensorBoard)
         self.setup_logging()
         
@@ -138,6 +172,8 @@ class HFTrainer:
         self.best_metric = None
         self.start_time = None
         self.last_step_time = None
+        self.cum_return_train = 0.0
+        self.train_return_steps = 0
         
     def _get_gpu_metrics(self):
         """Safely collect GPU metrics if CUDA is available."""
@@ -213,6 +249,22 @@ class HFTrainer:
     
     def setup_logging(self):
         """Setup logging directories and tensorboard"""
+        # Resolve dirs relative to this file to avoid hftraining/hftraining nesting
+        base_dir = Path(__file__).parent
+        def _resolve_dir(path_str: str) -> Path:
+            p = Path(path_str)
+            if p.is_absolute():
+                return p
+            parts = p.parts
+            if parts and parts[0].lower() == 'hftraining':
+                p = Path(*parts[1:]) if len(parts) > 1 else Path('.')
+            return base_dir / p
+
+        # Normalize paths and write back to config for consistency downstream
+        self.config.output_dir = str(_resolve_dir(self.config.output_dir))
+        self.config.logging_dir = str(_resolve_dir(self.config.logging_dir))
+        self.config.cache_dir = str(_resolve_dir(self.config.cache_dir))
+
         # Create directories
         Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
         Path(self.config.logging_dir).mkdir(parents=True, exist_ok=True)
@@ -222,6 +274,14 @@ class HFTrainer:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         log_dir = f"{self.config.logging_dir}/hf_training_{timestamp}"
         self.writer = SummaryWriter(log_dir)
+        self.tb_log_dir = log_dir
+        # Perf CSV file
+        self.perf_csv_path = Path(log_dir) / 'perf_metrics.csv'
+        try:
+            with open(self.perf_csv_path, 'w') as f:
+                f.write('step,epoch,step_time_s,samples_per_sec,lr,gpu_mem_alloc_mb\n')
+        except Exception:
+            pass
         
         self.training_logger.info(f"TensorBoard logging to: {log_dir}")
         self.training_logger.info(f"Output directory: {self.config.output_dir}")
@@ -231,6 +291,28 @@ class HFTrainer:
         
         # Start timing
         self.start_time = time.time()
+
+        # Optional auto-tuning (batch size / accumulation)
+        auto_env = os.environ.get('AUTO_TUNE', '0') == '1'
+        if getattr(self.config, 'auto_tune', False) or auto_env:
+            try:
+                pin_mem = bool(torch.cuda.is_available())
+                tuner = AutoBatchTuner(self.device, steps=int(getattr(self.config, 'tuning_steps', 10)), num_workers=0, pin_memory=pin_mem)
+                best = tuner.tune(self, self.train_dataset, self.config.batch_size)
+                old_bs = self.config.batch_size
+                self.config.batch_size = int(best.get('batch_size', old_bs))
+                # Adjust accumulation to reach target effective batch if requested
+                target_eff = getattr(self.config, 'target_effective_batch_size', None)
+                if target_eff and self.config.batch_size > 0:
+                    from math import ceil
+                    acc = max(1, ceil(target_eff / self.config.batch_size))
+                    acc = min(acc, int(getattr(self.config, 'max_gradient_accumulation', 16)))
+                    self.config.gradient_accumulation_steps = acc
+                self.training_logger.info(
+                    f"Auto-tune: batch_size {old_bs} -> {self.config.batch_size}; grad_accum={self.config.gradient_accumulation_steps}"
+                )
+            except Exception as e:
+                self.training_logger.warning(f"Auto-tune skipped due to error: {e}")
         
         # Log training start
         model_info = {
@@ -253,12 +335,17 @@ class HFTrainer:
         
         # Create data loaders
         pin_mem = bool(torch.cuda.is_available())
+        num_workers = max(0, int(getattr(self.config, 'dataloader_num_workers', 0)))
+        persistent_workers = bool(getattr(self.config, 'persistent_workers', True) and num_workers > 0)
+        prefetch_factor = int(getattr(self.config, 'prefetch_factor', 2)) if num_workers > 0 else None
         train_loader = DataLoader(
             self.train_dataset,
             batch_size=self.config.batch_size,
             shuffle=True,
-            num_workers=0,
-            pin_memory=pin_mem
+            num_workers=num_workers,
+            pin_memory=pin_mem,
+            persistent_workers=persistent_workers,
+            **({"prefetch_factor": prefetch_factor} if prefetch_factor else {})
         )
         
         eval_loader = None
@@ -267,8 +354,10 @@ class HFTrainer:
                 self.eval_dataset,
                 batch_size=self.config.batch_size,
                 shuffle=False,
-                num_workers=0,
-                pin_memory=pin_mem
+                num_workers=num_workers,
+                pin_memory=pin_mem,
+                persistent_workers=persistent_workers,
+                **({"prefetch_factor": prefetch_factor} if prefetch_factor else {})
             )
         
         # Training loop
@@ -318,25 +407,48 @@ class HFTrainer:
                         'train/epoch': epoch,
                         'train/step_time_s': self.last_step_time,
                         'train/samples_per_sec': samples_per_sec,
+                        'train/avg_return': (self.cum_return_train / max(1, self.train_return_steps)),
+                        'train/cum_return': self.cum_return_train,
                     }
                     # Add GPU metrics to TB if present
                     for k, v in sys_metrics.items():
                         tb_metrics[f'system/{k}'] = v
+                    # CPU utilization (optional)
+                    if psutil is not None:
+                        try:
+                            tb_metrics['system/cpu_percent'] = psutil.cpu_percent(interval=None)
+                        except Exception:
+                            pass
                     self.log_metrics(tb_metrics)
                     
                     # Log to file and console
                     metrics = {
                         'loss': loss,
                         'learning_rate': self.scheduler.get_last_lr()[0],
-                        'epoch': epoch
+                        'epoch': epoch,
+                        'avg_return': (self.cum_return_train / max(1, self.train_return_steps)),
                     }
                     # Also report GPU mem to file logger if available
-                    if 'gpu_memory_allocated_mb' in sys_metrics:
-                        self.training_logger.log_resource_usage(
-                            gpu_memory=sys_metrics['gpu_memory_allocated_mb']
-                        )
+                    cpu_pct = None
+                    if psutil is not None:
+                        try:
+                            cpu_pct = psutil.cpu_percent(interval=None)
+                        except Exception:
+                            cpu_pct = None
+                    self.training_logger.log_resource_usage(
+                        gpu_memory=sys_metrics.get('gpu_memory_allocated_mb'),
+                        cpu_percent=cpu_pct
+                    )
                     self.training_logger.log_step_metrics(self.global_step, metrics, "train")
                     self.metrics_tracker.add_metric(self.global_step, "train", **metrics)
+                    # Write perf CSV
+                    try:
+                        with open(self.perf_csv_path, 'a') as f:
+                            f.write(
+                                f"{self.global_step},{epoch},{self.last_step_time:.6f},{samples_per_sec:.3f},{self.scheduler.get_last_lr()[0]:.6e},{sys_metrics.get('gpu_memory_allocated_mb', 0):.1f}\n"
+                            )
+                    except Exception:
+                        pass
                     
                     # Update progress bar
                     pbar.set_description(
@@ -408,12 +520,21 @@ class HFTrainer:
         """Single training step with gradient accumulation"""
         # Only zero grad on accumulation boundary
         if self.global_step % self.config.gradient_accumulation_steps == 0:
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
         
         with self.mp_trainer.autocast():
             # Forward pass
+            inputs = batch['input_ids']
+            # Tiny input jitter augmentation on normalized inputs
+            if self.model.training and getattr(self.config, 'input_noise_std', 0.0) > 0:
+                if random.random() < getattr(self.config, 'input_noise_prob', 0.0):
+                    noise = torch.randn_like(inputs) * float(self.config.input_noise_std)
+                    max_mag = float(getattr(self.config, 'input_noise_clip', 0.02))
+                    noise = torch.clamp(noise, -max_mag, max_mag)
+                    inputs = inputs + noise
+
             outputs = self.model(
-                batch['input_ids'],
+                inputs,
                 attention_mask=batch['attention_mask']
             )
             
@@ -428,7 +549,20 @@ class HFTrainer:
                 outputs['price_predictions'],
                 batch['labels'][:, :self.config.prediction_horizon, 3]  # Close prices
             )
-            
+            # Compute simple 1-step trading return metric for this batch (no-grad)
+            batch_return = None
+            try:
+                with torch.no_grad():
+                    current_close = batch['input_ids'][:, -1, 3]
+                    next_close = batch['labels'][:, 0, 3]
+                    ret_1 = (next_close - current_close) / (current_close + 1e-8)
+                    actions = torch.argmax(outputs['action_logits'], dim=-1)
+                    mapping = torch.tensor([1.0, 0.0, -1.0], device=actions.device)
+                    signal = mapping[actions]
+                    batch_return = (signal * ret_1).mean().item()
+            except Exception:
+                pass
+
             # Combined loss (scale by accumulation steps)
             total_loss = (action_loss + 0.5 * price_loss) / self.config.gradient_accumulation_steps
 
@@ -477,6 +611,14 @@ class HFTrainer:
         
         self.global_step += 1
         
+        # Update running training return if available
+        try:
+            if batch_return is not None:
+                self.cum_return_train += float(batch_return)
+                self.train_return_steps += 1
+        except Exception:
+            pass
+
         # Optional: log grad norm to TensorBoard
         if grad_norm is not None and self.global_step % max(1, self.config.logging_steps) == 0:
             try:
@@ -494,6 +636,7 @@ class HFTrainer:
         total_action_loss = 0
         total_price_loss = 0
         total_steps = 0
+        total_return = 0.0
         
         with torch.no_grad():
             for batch in tqdm(eval_loader, desc="Evaluating", leave=False):
@@ -519,13 +662,26 @@ class HFTrainer:
                 total_action_loss += action_loss.item()
                 total_price_loss += price_loss.item()
                 total_steps += 1
+                # Compute realized 1-step return under predicted action
+                try:
+                    current_close = batch['input_ids'][:, -1, 3]
+                    next_close = batch['labels'][:, 0, 3]
+                    ret_1 = (next_close - current_close) / (current_close + 1e-8)
+                    actions = torch.argmax(outputs['action_logits'], dim=-1)
+                    mapping = torch.tensor([1.0, 0.0, -1.0], device=actions.device)
+                    signal = mapping[actions]
+                    total_return += float((signal * ret_1).mean().item())
+                except Exception:
+                    pass
         
         self.model.train()
         
         return {
             'loss': total_loss / total_steps,
             'action_loss': total_action_loss / total_steps,
-            'price_loss': total_price_loss / total_steps
+            'price_loss': total_price_loss / total_steps,
+            'avg_return': (total_return / max(1, total_steps)),
+            'cum_return': total_return
         }
     
     def log_metrics(self, metrics, prefix='train'):
@@ -707,9 +863,22 @@ def main():
         agc_eps=1e-3,
         skip_non_finite_grads=True,
         gradient_accumulation_steps=1 if device_str == "cuda" else 2,  # Less accumulation for GPU
-        
+
         # Mixed precision for GPU
         use_mixed_precision=(device_str == "cuda"),
+        use_bfloat16=True,
+        use_compile=(device_str == "cuda"),
+        allow_tf32=True,
+
+        # DataLoader perf
+        dataloader_num_workers=4 if device_str == "cuda" else 0,
+        persistent_workers=True,
+        prefetch_factor=2,
+
+        # Micro augmentation (normalized inputs)
+        input_noise_std=0.001,
+        input_noise_prob=0.5,
+        input_noise_clip=0.02,
         
         # Early stopping
         early_stopping_patience=15,

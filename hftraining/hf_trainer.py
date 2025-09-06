@@ -204,12 +204,20 @@ class HFTrainingConfig:
     save_steps: int = 1000
     logging_steps: int = 100
     
+    # DataLoader
+    dataloader_num_workers: int = 2
+    persistent_workers: bool = True
+    prefetch_factor: int = 2
+    
     # Data parameters
     sequence_length: int = 60
     prediction_horizon: int = 5
     
     # Advanced features
     use_mixed_precision: bool = True
+    use_bfloat16: bool = True
+    use_compile: bool = False
+    allow_tf32: bool = True
     use_gradient_checkpointing: bool = True
     use_data_parallel: bool = True
     
@@ -217,6 +225,11 @@ class HFTrainingConfig:
     label_smoothing: float = 0.1
     dropout_rate: float = 0.1
     layer_norm_eps: float = 1e-12
+    
+    # Light data augmentation (normalized inputs)
+    input_noise_std: float = 0.001
+    input_noise_prob: float = 0.5
+    input_noise_clip: float = 0.02
     
     # Directories
     output_dir: str = "hftraining/output"
@@ -232,6 +245,12 @@ class HFTrainingConfig:
     # Early stopping
     early_stopping_patience: int = 10
     early_stopping_threshold: float = 0.0001
+
+    # Auto-tuning (optional)
+    auto_tune: bool = False
+    target_effective_batch_size: Optional[int] = None
+    max_gradient_accumulation: int = 16
+    tuning_steps: int = 10
 
 
 # ============================================================================
@@ -430,9 +449,10 @@ def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_st
 class MixedPrecisionTrainer:
     """Mixed precision training utilities"""
     
-    def __init__(self, enabled=True):
+    def __init__(self, enabled=True, dtype: Optional[torch.dtype] = None):
         # Only enable if CUDA is available; CPU/BF16 support varies, keep safe
         self.enabled = bool(enabled and torch.cuda.is_available())
+        self.dtype = dtype if self.enabled else None
         if self.enabled:
             self.scaler = torch.cuda.amp.GradScaler()
         else:
@@ -452,6 +472,8 @@ class MixedPrecisionTrainer:
     
     def autocast(self):
         if self.enabled:
+            if self.dtype is not None:
+                return torch.cuda.amp.autocast(dtype=self.dtype)
             return torch.cuda.amp.autocast()
         # Return a dummy context manager that does nothing
         from contextlib import nullcontext

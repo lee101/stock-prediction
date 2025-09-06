@@ -172,6 +172,41 @@ def get_improved_scheduler(optimizer, scheduler_type, **kwargs):
         power = kwargs.get('power', 0.9)
         return torch.optim.lr_scheduler.PolynomialLR(optimizer, total_steps, power)
     
+    elif scheduler_type in ("muon", "warmup_hold_cosine"):
+        # Simple warmup -> hold -> cosine decay schedule often paired with
+        # modern optimizers; keeps LR steady during the bulk of training.
+        warmup_steps = kwargs.get('warmup_steps', 100)
+        hold_steps = kwargs.get('hold_steps', 400)
+        total_steps = kwargs.get('total_steps', warmup_steps + hold_steps + 500)
+        min_lr_ratio = kwargs.get('min_lr_ratio', 0.05)
+
+        class WarmupHoldCosine(_LRScheduler):
+            def __init__(self, opt):
+                self.warmup_steps = warmup_steps
+                self.hold_steps = hold_steps
+                self.total_steps = total_steps
+                self.min_lr_ratio = min_lr_ratio
+                super().__init__(opt)
+                self._last_lr = [group['lr'] for group in self.optimizer.param_groups]
+
+            def get_lr(self):
+                step = self.last_epoch
+                lrs = []
+                for base_lr in self.base_lrs:
+                    if step < self.warmup_steps:
+                        lr = base_lr * (step + 1) / max(1, self.warmup_steps)
+                    elif step < self.warmup_steps + self.hold_steps:
+                        lr = base_lr
+                    else:
+                        progress = (step - self.warmup_steps - self.hold_steps) / max(1, self.total_steps - self.warmup_steps - self.hold_steps)
+                        progress = min(1.0, max(0.0, progress))
+                        min_lr = base_lr * self.min_lr_ratio
+                        lr = min_lr + (base_lr - min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
+                    lrs.append(lr)
+                return lrs
+
+        return WarmupHoldCosine(optimizer)
+    
     else:
         # Fallback to PyTorch built-ins
         if scheduler_type == "cosine":

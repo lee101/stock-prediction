@@ -30,6 +30,7 @@ from hftraining.robust_data_pipeline import (
     AdvancedDataProcessor
 )
 from hftraining.modern_optimizers import get_optimizer
+from hftraining.improved_schedulers import get_improved_scheduler
 from hftraining.logging_utils import get_logger, MetricsTracker
 
 warnings.filterwarnings('ignore')
@@ -243,13 +244,30 @@ class ProductionTrainer:
             weight_decay=weight_decay
         )
         
-        # Setup scheduler - FIXED: Use CosineAnnealingWarmRestarts instead of OneCycleLR
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            self.optimizer,
-            T_0=500,  # Restart every 500 steps
-            T_mult=2,  # Double period after each restart
-            eta_min=1e-6
-        )
+        # Setup scheduler
+        scheduler_name = self.config.get('scheduler', 'cosine_restart')
+        scheduler_kwargs = self.config.get('scheduler_kwargs', {}) or {}
+
+        try:
+            if scheduler_name in {"cosine_restart", "linear_warmup_cosine", "cyclical", "polynomial", "muon", "warmup_hold_cosine"}:
+                # Use improved scheduler factory (supports 'muon')
+                self.scheduler = get_improved_scheduler(self.optimizer, scheduler_name, **scheduler_kwargs)
+            else:
+                # Fallback to previous default
+                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    self.optimizer,
+                    T_0=500,
+                    T_mult=2,
+                    eta_min=1e-6,
+                )
+        except Exception as e:
+            self.logger.warning(f"Failed to create scheduler '{scheduler_name}': {e}; falling back to CosineAnnealingWarmRestarts")
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                self.optimizer,
+                T_0=500,
+                T_mult=2,
+                eta_min=1e-6,
+            )
         
         # Setup mixed precision
         if self.config.get('use_mixed_precision', True) and self.device.type == 'cuda':
