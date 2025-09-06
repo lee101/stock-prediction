@@ -409,8 +409,9 @@ class MixedPrecisionTrainer:
     """Mixed precision training utilities"""
     
     def __init__(self, enabled=True):
-        self.enabled = enabled
-        if enabled:
+        # Only enable if CUDA is available; CPU/BF16 support varies, keep safe
+        self.enabled = bool(enabled and torch.cuda.is_available())
+        if self.enabled:
             self.scaler = torch.cuda.amp.GradScaler()
         else:
             self.scaler = None
@@ -430,10 +431,9 @@ class MixedPrecisionTrainer:
     def autocast(self):
         if self.enabled:
             return torch.cuda.amp.autocast()
-        else:
-            # Return a dummy context manager that does nothing
-            from contextlib import nullcontext
-            return nullcontext()
+        # Return a dummy context manager that does nothing
+        from contextlib import nullcontext
+        return nullcontext()
 
 
 # ============================================================================

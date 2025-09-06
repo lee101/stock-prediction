@@ -30,13 +30,12 @@ sys.path.append(os.path.dirname(current_dir))
 from hf_trainer import (
     HFTrainingConfig,
     TransformerTradingModel,
-    GPro,
-    AdamW,
     get_linear_schedule_with_warmup,
     get_cosine_schedule_with_warmup,
     MixedPrecisionTrainer,
     EarlyStopping
 )
+from modern_optimizers import get_optimizer
 from logging_utils import get_logger, MetricsTracker
 
 
@@ -137,25 +136,22 @@ class HFTrainer:
         self.start_time = None
         
     def _create_optimizer(self):
-        """Create optimizer based on config"""
-        if self.config.optimizer_name.lower() == "gpro":
-            return GPro(
+        """Create optimizer based on config using modern_optimizers factory"""
+        name = (self.config.optimizer_name or "adamw").lower()
+        try:
+            return get_optimizer(
+                name,
                 self.model.parameters(),
                 lr=self.config.learning_rate,
                 betas=(self.config.adam_beta1, self.config.adam_beta2),
                 eps=self.config.adam_epsilon,
                 weight_decay=self.config.weight_decay
             )
-        elif self.config.optimizer_name.lower() == "adamw":
-            return AdamW(
-                self.model.parameters(),
-                lr=self.config.learning_rate,
-                betas=(self.config.adam_beta1, self.config.adam_beta2),
-                eps=self.config.adam_epsilon,
-                weight_decay=self.config.weight_decay
-            )
-        else:
-            return torch.optim.Adam(
+        except Exception as e:
+            # Fallback to AdamW on any issue
+            if hasattr(self, 'training_logger'):
+                self.training_logger.logger.warning(f"Falling back to AdamW optimizer due to: {e}")
+            return torch.optim.AdamW(
                 self.model.parameters(),
                 lr=self.config.learning_rate,
                 betas=(self.config.adam_beta1, self.config.adam_beta2),
@@ -216,8 +212,8 @@ class HFTrainer:
             self.train_dataset,
             batch_size=self.config.batch_size,
             shuffle=True,
-            num_workers=4,
-            pin_memory=True
+            num_workers=0,
+            pin_memory=False
         )
         
         eval_loader = None
@@ -226,8 +222,8 @@ class HFTrainer:
                 self.eval_dataset,
                 batch_size=self.config.batch_size,
                 shuffle=False,
-                num_workers=4,
-                pin_memory=True
+                num_workers=0,
+                pin_memory=False
             )
         
         # Training loop
@@ -347,8 +343,10 @@ class HFTrainer:
         return self.model
     
     def training_step(self, batch):
-        """Single training step"""
-        self.optimizer.zero_grad()
+        """Single training step with gradient accumulation"""
+        # Only zero grad on accumulation boundary
+        if self.global_step % self.config.gradient_accumulation_steps == 0:
+            self.optimizer.zero_grad()
         
         with self.mp_trainer.autocast():
             # Forward pass
@@ -357,10 +355,11 @@ class HFTrainer:
                 attention_mask=batch['attention_mask']
             )
             
-            # Calculate losses
+            # Calculate losses with label smoothing for stability
             action_loss = F.cross_entropy(
                 outputs['action_logits'],
-                batch['action_labels']
+                batch['action_labels'],
+                label_smoothing=0.1  # Add label smoothing
             )
             
             price_loss = F.mse_loss(
@@ -368,8 +367,8 @@ class HFTrainer:
                 batch['labels'][:, :self.config.prediction_horizon, 3]  # Close prices
             )
             
-            # Combined loss
-            total_loss = action_loss + 0.5 * price_loss
+            # Combined loss (scale by accumulation steps)
+            total_loss = (action_loss + 0.5 * price_loss) / self.config.gradient_accumulation_steps
         
         # Backward pass
         scaled_loss = self.mp_trainer.scale_loss(total_loss)
@@ -381,13 +380,14 @@ class HFTrainer:
                 self.mp_trainer.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
         
-        # Optimizer step
-        self.mp_trainer.step_optimizer(self.optimizer)
-        self.scheduler.step()
+        # Optimizer step only on accumulation boundary
+        if (self.global_step + 1) % self.config.gradient_accumulation_steps == 0:
+            self.mp_trainer.step_optimizer(self.optimizer)
+            self.scheduler.step()
         
         self.global_step += 1
         
-        return total_loss.item()
+        return total_loss.item() * self.config.gradient_accumulation_steps  # Rescale for logging
     
     def evaluate(self, eval_loader):
         """Evaluation loop"""
@@ -466,9 +466,44 @@ def load_data():
     # Try to load real data first
     data_path = Path("../trainingdata")
     if data_path.exists():
-        # Look for CSV files
+        # Look for CSV files in train directory
+        train_path = data_path / "train"
+        if train_path.exists():
+            csv_files = list(train_path.glob("*.csv"))
+            if csv_files:
+                print(f"Found {len(csv_files)} CSV files in train directory")
+                
+                # Load and combine multiple stock files for better training
+                all_data = []
+                target_columns = 4  # OHLC only, skip volume for consistency
+                
+                for csv_file in csv_files[:50]:  # Load up to 50 stocks for more diverse data
+                    try:
+                        df = pd.read_csv(csv_file)
+                        # Expected columns: timestamp, symbol, Open, High, Low, Close
+                        if 'Open' in df.columns:
+                            # Select OHLC columns only for consistency
+                            cols = ['Open', 'High', 'Low', 'Close']
+                            if all(col in df.columns for col in cols):
+                                stock_data = df[cols].values
+                                # Convert to float and handle any non-numeric values
+                                stock_data = pd.DataFrame(stock_data).apply(pd.to_numeric, errors='coerce').ffill().fillna(0).values
+                                if len(stock_data) > 100:  # Only use stocks with enough data
+                                    all_data.append(stock_data)
+                                    print(f"  Loaded {csv_file.stem}: {stock_data.shape}")
+                    except Exception as e:
+                        print(f"  Error loading {csv_file.stem}: {e}")
+                        continue
+                
+                if all_data:
+                    # Concatenate all stock data
+                    data = np.vstack(all_data)
+                    print(f"Loaded combined real data: {data.shape}")
+                    return data
+        
+        # Fallback to root directory CSV files  
         csv_files = list(data_path.glob("*.csv"))
-        if csv_files:
+        if csv_files and csv_files[0].stem != 'data_summary':
             print(f"Found {len(csv_files)} CSV files")
             # Load first CSV as example
             df = pd.read_csv(csv_files[0])
@@ -522,27 +557,61 @@ def load_data():
 
 def main():
     """Main training function"""
+    # Check if GPU is available
+    import os
+    os.environ['LD_LIBRARY_PATH'] = '/home/lee/.pyenv/versions/3.12.7/lib/python3.12/site-packages/nvidia/nvjitlink/lib:' + os.environ.get('LD_LIBRARY_PATH', '')
+    
+    # Test GPU availability
+    try:
+        gpu_available = torch.cuda.is_available()
+        if gpu_available:
+            print(f"✅ GPU Available: {torch.cuda.get_device_name(0)}")
+            print(f"   Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+            device_str = "cuda"
+            batch_size = 128  # Larger batch for GPU
+        else:
+            print("⚠️  No GPU detected, using CPU")
+            device_str = "cpu"
+            batch_size = 64
+    except Exception as e:
+        print(f"⚠️  GPU detection failed: {e}")
+        device_str = "cpu"
+        batch_size = 64
+    
     # Configuration
     config = HFTrainingConfig(
         # Model
-        hidden_size=256,
-        num_layers=6,
-        num_heads=8,
+        hidden_size=256 if device_str == "cuda" else 128,  # Larger model for GPU
+        num_layers=6 if device_str == "cuda" else 3,       # More layers for GPU
+        num_heads=8 if device_str == "cuda" else 4,        # More heads for GPU
         
         # Training
-        learning_rate=1e-4,
-        warmup_steps=500,
-        max_steps=10000,
-        batch_size=16,
+        learning_rate=3e-4,  # Optimal LR
+        warmup_steps=100,    # Reasonable warmup
+        max_steps=5000 if device_str == "cuda" else 1000,  # More steps for GPU
+        batch_size=batch_size,
         
         # Optimizer
-        optimizer_name="gpro",
+        optimizer_name="lion" if device_str == "cuda" else "adamw",  # Lion for GPU, AdamW for CPU
         weight_decay=0.01,
+        adam_beta1=0.9,
+        adam_beta2=0.999,
         
         # Evaluation
-        eval_steps=250,
-        save_steps=500,
-        logging_steps=50,
+        eval_steps=100,      # Regular evaluation
+        save_steps=500,      # Save periodically
+        logging_steps=20,    # Frequent logging
+        
+        # Training stability
+        max_grad_norm=1.0,   # Gradient clipping
+        gradient_accumulation_steps=1 if device_str == "cuda" else 2,  # Less accumulation for GPU
+        
+        # Mixed precision for GPU
+        use_mixed_precision=(device_str == "cuda"),
+        
+        # Early stopping
+        early_stopping_patience=15,
+        early_stopping_threshold=0.001,
         
         # Output
         output_dir="hftraining/output",

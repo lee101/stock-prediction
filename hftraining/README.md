@@ -207,6 +207,11 @@ trainingdata/
 └── ...
 ```
 
+### Data Prep (from local sources)
+- Collect and consolidate existing CSVs into `hftraining/trainingdata`:
+  - `python -m hftraining.scripts.collect_training_data --sources ../trainingdata ../data --output ./hftraining/trainingdata --since 2015-01-01`
+- The loader now scans recursively, so you can also set `data_dir` to a parent folder containing nested `train/` and `test/` subfolders.
+
 ## Advanced Features
 
 ### Custom Optimizers

@@ -110,3 +110,7 @@ python-binance
 typer
 diskcache
 anthropic
+gymnasium
+stable-baselines3
+pufferlib
+openai>=1.0.0
