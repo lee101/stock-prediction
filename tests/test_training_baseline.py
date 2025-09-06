@@ -13,8 +13,13 @@ import numpy as np
 import os
 import sys
 
-# Add hftraining to path for imports
-sys.path.append(os.path.join(os.path.dirname(__file__), '../hftraining'))
+# Ensure repository root and hftraining are importable
+TEST_DIR = os.path.dirname(__file__)
+REPO_ROOT = os.path.abspath(os.path.join(TEST_DIR, '..'))
+HF_DIR = os.path.join(REPO_ROOT, 'hftraining')
+for p in [REPO_ROOT, HF_DIR]:
+    if p not in sys.path:
+        sys.path.append(p)
 
 from hftraining.hf_trainer import HFTrainingConfig, TransformerTradingModel
 
@@ -77,4 +82,3 @@ def test_baseline_training_loss_decreases():
 
     # Assert loss decreased by at least 50%
     assert loss1 < loss0 * 0.5, f"Expected loss to decrease by 50%, got {loss0:.4f} -> {loss1:.4f}"
-
