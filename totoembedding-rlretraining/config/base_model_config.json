@@ -1,0 +1,129 @@
+{
+  "model_architecture": {
+    "hidden_size": 768,
+    "num_heads": 12,
+    "num_layers": 8,
+    "intermediate_size": 3072,
+    "dropout": 0.1,
+    "attention_dropout": 0.1,
+    "layer_norm_eps": 1e-12,
+    "use_layer_norm_bias": false
+  },
+  
+  "toto_embeddings": {
+    "embedding_dim": 128,
+    "freeze_toto_embeddings": true,
+    "toto_pretrained_path": "../training/models/modern_best_sharpe.pth",
+    "use_pretrained_backbone": true,
+    "cross_asset_attention": true
+  },
+  
+  "base_model_training": {
+    "name": "universal_base_model",
+    "description": "Foundation model trained on all assets for general trading patterns",
+    "validation_split": 0.2,
+    "cross_validation_folds": 5,
+    "generalization_test": true
+  },
+  
+  "optimizer_configs": {
+    "gpro": {
+      "learning_rate": 3e-5,
+      "betas": [0.9, 0.999],
+      "eps": 1e-8,
+      "weight_decay": 0.01,
+      "projection_factor": 0.5
+    }
+  },
+  
+  "training": {
+    "num_train_epochs": 200,
+    "batch_size": 16,
+    "mini_batch_size": 4,
+    "gradient_accumulation_steps": 8,
+    "warmup_steps": 2000,
+    "max_grad_norm": 1.0,
+    "use_mixed_precision": false,
+    "gradient_checkpointing": true,
+    "save_strategy": "steps",
+    "save_steps": 1000,
+    "eval_strategy": "steps",
+    "eval_steps": 500
+  },
+  
+  "rl_specific": {
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_ratio": 0.2,
+    "value_loss_coef": 0.5,
+    "entropy_coef": 0.01,
+    "buffer_size": 200000,
+    "rollout_steps": 4096,
+    "ppo_epochs": 10,
+    "target_kl": 0.01
+  },
+  
+  "evaluation": {
+    "eval_episodes": 20,
+    "eval_on_all_assets": true,
+    "cross_asset_validation": true,
+    "profit_tracking": {
+      "initial_capital": 100000,
+      "commission": 0.001,
+      "slippage": 0.0005,
+      "max_position_size": 0.5,
+      "stop_loss": 0.02,
+      "take_profit": 0.05
+    }
+  },
+  
+  "environment": {
+    "initial_balance": 100000,
+    "max_positions": 3,
+    "max_position_size": 0.5,
+    "transaction_cost": 0.001,
+    "spread_pct": 0.0001,
+    "slippage_pct": 0.0001,
+    "min_commission": 1.0,
+    "window_size": 30,
+    "correlation_lookback": 252,
+    "rebalance_frequency": 120,
+    "confidence_threshold": 0.3,
+    "diversification_bonus": 0.001,
+    "risk_adjustment": {
+      "max_drawdown_stop": 0.15,
+      "volatility_scaling": true,
+      "correlation_penalty": 0.1
+    }
+  },
+  
+  "data": {
+    "train_dir": "../trainingdata/train",
+    "test_dir": "../trainingdata/test",
+    "symbols": [
+      "AAPL", "ADBE", "ADSK", "BTCUSD", "COIN", "COUR", "CRWD",
+      "ETHUSD", "GOOG", "LTCUSD", "MSFT", "NET", "NFLX", "NVDA",
+      "PAXGUSD", "PYPL", "SAP", "SONY", "TSLA", "U", "UNIUSD"
+    ],
+    "data_augmentation": {
+      "time_shift": true,
+      "noise_injection": 0.01,
+      "market_regime_mixing": true
+    }
+  },
+  
+  "output": {
+    "output_dir": "models/base_model",
+    "logging_dir": "logs/base_model",
+    "checkpoint_dir": "checkpoints/base_model"
+  },
+  
+  "fine_tuning": {
+    "learning_rate": 1e-5,
+    "num_epochs": 50,
+    "freeze_base_layers": 6,
+    "unfreeze_schedule": "linear",
+    "task_specific_heads": true,
+    "regularization_strength": 0.1
+  }
+}
