@@ -141,6 +141,7 @@ class SystemConfig:
     # Debugging
     debug_mode: bool = False
     profile_training: bool = False
+    allow_tf32: bool = True
 
 
 @dataclass
@@ -316,7 +317,8 @@ def get_research_config() -> ExperimentConfig:
     config.training.gradient_checkpointing = True
     
     config.system.profile_training = True
-    config.output.report_to = ["tensorboard", "wandb"]
+    # Use TensorBoard only
+    config.output.report_to = ["tensorboard"]
     
     config.experiment_name = "research_experiment"
     

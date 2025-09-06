@@ -353,7 +353,22 @@ class ImprovedTrainer:
 def load_and_prepare_data():
     """Load and prepare stock data with enhanced features"""
     try:
-        import yfinance as yf
+        try:
+            import yfinance as yf  # Optional; may be unavailable in restricted envs
+        except Exception:
+            class _YFStub:
+                @staticmethod
+                def download(*args, **kwargs):
+                    raise RuntimeError("yfinance unavailable; use local trainingdata instead")
+
+                class Ticker:
+                    def __init__(self, *args, **kwargs):
+                        pass
+
+                    def history(self, *args, **kwargs):
+                        raise RuntimeError("yfinance unavailable; use local trainingdata instead")
+
+            yf = _YFStub
         import pandas as pd
         
         # Download data for multiple stocks

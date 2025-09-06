@@ -14,6 +14,7 @@ try:
 except Exception:
     yf = None
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from hfshared import compute_training_style_features, training_feature_columns_list
 import joblib
 import warnings
 warnings.filterwarnings('ignore')
@@ -29,99 +30,14 @@ class StockDataProcessor:
         self.scalers = {}
         self.feature_names = []
         
-    def add_technical_indicators(self, df):
-        """Add technical indicators to the dataframe"""
-        
-        # Moving averages
-        for window in [5, 10, 20, 50]:
-            df[f'ma_{window}'] = df['close'].rolling(window=window).mean()
-            df[f'ema_{window}'] = df['close'].ewm(span=window).mean()
-        
-        # RSI
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
-        
-        # MACD
-        exp1 = df['close'].ewm(span=12).mean()
-        exp2 = df['close'].ewm(span=26).mean()
-        df['macd'] = exp1 - exp2
-        df['macd_signal'] = df['macd'].ewm(span=9).mean()
-        df['macd_histogram'] = df['macd'] - df['macd_signal']
-        
-        # Bollinger Bands
-        rolling_mean = df['close'].rolling(window=20).mean()
-        rolling_std = df['close'].rolling(window=20).std()
-        df['bb_upper'] = rolling_mean + (rolling_std * 2)
-        df['bb_lower'] = rolling_mean - (rolling_std * 2)
-        df['bb_width'] = df['bb_upper'] - df['bb_lower']
-        df['bb_position'] = (df['close'] - df['bb_lower']) / df['bb_width']
-        
-        # Price-based features
-        df['price_change'] = df['close'].pct_change()
-        df['price_change_2'] = df['close'].pct_change(periods=2)
-        df['price_change_5'] = df['close'].pct_change(periods=5)
-        
-        df['high_low_ratio'] = df['high'] / df['low']
-        df['close_open_ratio'] = df['close'] / df['open']
-        
-        # Volume features
-        df['volume_ma'] = df['volume'].rolling(window=20).mean()
-        df['volume_ratio'] = df['volume'] / df['volume_ma']
-        
-        # Volatility
-        df['volatility'] = df['close'].rolling(window=20).std()
-        df['volatility_ratio'] = df['volatility'] / df['volatility'].rolling(window=60).mean()
-        
-        # Support and resistance levels
-        df['resistance'] = df['high'].rolling(window=20).max()
-        df['support'] = df['low'].rolling(window=20).min()
-        df['resistance_distance'] = (df['resistance'] - df['close']) / df['close']
-        df['support_distance'] = (df['close'] - df['support']) / df['close']
-        
-        return df
-    
     def prepare_features(self, df):
         """Prepare and select features for training"""
-        
-        # Add technical indicators
-        df = self.add_technical_indicators(df)
-        
-        # Select features
-        feature_columns = []
-        
-        # Basic OHLCV
-        basic_features = ['open', 'high', 'low', 'close', 'volume']
-        feature_columns.extend(basic_features)
-        
-        # Technical indicators
-        technical_features = [
-            'ma_5', 'ma_10', 'ma_20', 'ma_50',
-            'ema_5', 'ema_10', 'ema_20', 'ema_50',
-            'rsi', 'macd', 'macd_signal', 'macd_histogram',
-            'bb_upper', 'bb_lower', 'bb_width', 'bb_position',
-            'price_change', 'price_change_2', 'price_change_5',
-            'high_low_ratio', 'close_open_ratio',
-            'volume_ratio', 'volatility', 'volatility_ratio',
-            'resistance_distance', 'support_distance'
-        ]
-        feature_columns.extend(technical_features)
-        
-        # Filter out features that don't exist
-        feature_columns = [col for col in feature_columns if col in df.columns]
-        
-        self.feature_names = feature_columns
-        
-        # Handle missing values - use forward fill then backward fill, then fill with 0
-        df_features = df[feature_columns].copy()
-        df_features = df_features.ffill().bfill()
-        
-        # For any remaining NaNs (shouldn't be many), fill with 0
-        df_features = df_features.fillna(0)
-        
-        return df_features.values
+        feats_df = compute_training_style_features(df)
+        # Keep tracked feature order for inference
+        ordered = [c for c in training_feature_columns_list() if c in feats_df.columns]
+        self.feature_names = ordered
+        feats_df = feats_df[ordered]
+        return feats_df.values
     
     def fit_scalers(self, data):
         """Fit scalers on training data"""
