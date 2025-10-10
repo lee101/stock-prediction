@@ -54,7 +54,7 @@ def _load_local_symbol_data(symbol: str, start_date: Optional[str] = None, end_d
     Returns a DataFrame or None if no matching local file is found.
     """
     try:
-        bases = [Path('trainingdata'), Path('hftraining/trainingdata')]
+        bases = [Path('trainingdata'), Path('hftraining/trainingdata'), Path('externaldata/yahoo')]
         candidates = []
         for base in bases:
             for name in [f"{symbol}.csv", f"{symbol.upper()}.csv", f"{symbol.lower()}.csv"]:
