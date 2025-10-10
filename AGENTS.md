@@ -1,0 +1,1 @@
+- use uv pip NEVER pip
