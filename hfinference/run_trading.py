@@ -155,7 +155,7 @@ class HFTrader:
         # Try local CSVs first
         from pathlib import Path as _P
         def _load_local(symbol: str):
-            for base in [_P('trainingdata'), _P('hftraining/trainingdata')]:
+            for base in [_P('trainingdata'), _P('hftraining/trainingdata'), _P('externaldata/yahoo')]:
                 for name in [f"{symbol}.csv", f"{symbol.upper()}.csv", f"{symbol.lower()}.csv"]:
                     p = base / name
                     if p.exists():
