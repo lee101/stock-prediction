@@ -45,6 +45,7 @@ class DataConfig:
     augment_data: bool = True
     noise_factor: float = 0.01
     scaling_factor: float = 0.05
+    augmentation_multiplier: int = 0  # extra augmented copies of training split
 
     # Amazon Toto integration
     use_toto_forecasts: bool = True
