@@ -1,25 +1,54 @@
-PufferLib RL Training (Stock Trading)
+PufferLib RL Training (Amazon Toto Enhanced)
+============================================
 
 Overview
+--------
 
-- Goal: Train a stock-trading RL agent using a Gymnasium-compatible environment, set up to work with GPU and PufferLib vectorization.
-- Status: Uses a clean Gymnasium env and SB3 PPO by default; integrates with PufferLib when available.
+- Multi-stage training pipeline for portfolio RL:
+  1. **Generic forecaster** trained on all equities in `trainingdata/` with Amazon Toto features.
+  2. **Per-stock specialists** fine-tuned on individual tickers.
+  3. **Differentiable portfolio RL** that allocates across stock pairs with leverage-aware profit.
+- Uses the new multi-asset Gymnasium environment backed by Torch tensors, enforcing 2× leverage limits and 6.75 % annual financing costs.
 
-Install
+Installation
+------------
 
-- Python 3.10+ recommended with GPU PyTorch installed.
-- From repo root:
-- pip install -r requirements.txt
-- Optional: verify GPU: python -c "import torch; print('CUDA:', torch.cuda.is_available())"
+- Python 3.10+ with PyTorch (GPU optional).
+- From the repo root run: `uv pip install -r requirements.txt`
+- Optional: verify GPU availability  
+  `python -c "import torch; print('CUDA:', torch.cuda.is_available())"`
+
+Data
+----
+
+- Place raw OHLCV CSVs under `trainingdata/` (one file per symbol) or provide a custom folder via `--trainingdata-dir`.
+- If files already live in `tototraining/trainingdata/train`, the trainer discovers them automatically.
+- The pipeline augments each asset with Toto forecasts (falling back to statistical features if Toto is unavailable).
 
 Quick Start
+-----------
 
-- Single stock PPO:
-- python pufferlibtraining/train_ppo.py --symbol AAPL --data-dir data --total-timesteps 500000 --device cuda
+Run the full pipeline on five base symbols, fine-tune AAPL/AMZN/MSFT, and train portfolio RL on adjacent pairs:
 
-Notes
+```
+python pufferlibtraining/train_ppo.py \
+  --base-stocks AAPL,AMZN,MSFT,NVDA,GOOGL \
+  --specialist-stocks AAPL,AMZN,MSFT \
+  --trainingdata-dir trainingdata \
+  --output-dir pufferlibtraining/models \
+  --tensorboard-dir pufferlibtraining/logs
+```
 
-- Data: expects CSVs in `data/` with OHLCV columns; picks the first matching `*{symbol}*.csv` else first CSV.
-- Outputs: models and logs saved under `pufferlibtraining/models` and `pufferlibtraining/logs` (git‑ignored).
-- PufferLib: If `pufferlib` is installed, the script will use simple vectorization hooks; otherwise it falls back to Gymnasium vector envs.
+Key Outputs
+-----------
 
+- Base, specialist, and portfolio checkpoints land in `pufferlibtraining/models/`.
+- TensorBoard logs are written to `pufferlibtraining/logs/`.
+- A JSON summary (`pipeline_summary.json`) captures all checkpoints, metrics, and configuration.
+
+Environment Highlights
+----------------------
+
+- Supports arbitrarily many assets per episode; observations include Toto features, allocations, balance ratios, and leverage.
+- Enforces 2× gross exposure, charges 6.75 % annualised borrowing costs, and tracks per-trade net profit for downstream analytics.
+- Rewards are computed with differentiable Torch operations, making the setup compatible with gradient-based optimisation outside of standard RL loops.

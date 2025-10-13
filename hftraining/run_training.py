@@ -23,6 +23,7 @@ from data_utils import load_training_data, StockDataProcessor, create_sequences,
 from train_hf import StockDataset, HFTrainer
 from hf_trainer import TransformerTradingModel
 from modern_optimizers import get_optimizer
+from toto_features import TotoOptions
 
 
 def set_seed(seed: int):
@@ -102,12 +103,25 @@ def load_and_process_data(config: ExperimentConfig):
     """Load and process training data"""
     
     print("Loading training data...")
+
+    toto_options = TotoOptions(
+        use_toto=config.data.use_toto_forecasts,
+        horizon=config.data.toto_horizon,
+        context_length=config.data.sequence_length,
+        num_samples=config.data.toto_num_samples,
+        toto_model_id=config.data.toto_model_id,
+        toto_device=config.data.toto_device,
+    )
     
     # Load raw data
     raw_data = load_training_data(
         data_dir=config.data.data_dir,
         symbols=config.data.symbols,
-        start_date=config.data.start_date
+        start_date=config.data.start_date,
+        use_toto_forecasts=config.data.use_toto_forecasts,
+        toto_options=toto_options,
+        sequence_length=config.data.sequence_length,
+        prediction_horizon=config.data.prediction_horizon,
     )
     
     print(f"Raw data shape: {raw_data.shape}")
@@ -115,7 +129,9 @@ def load_and_process_data(config: ExperimentConfig):
     # Initialize data processor
     processor = StockDataProcessor(
         sequence_length=config.data.sequence_length,
-        prediction_horizon=config.data.prediction_horizon
+        prediction_horizon=config.data.prediction_horizon,
+        use_toto_forecasts=config.data.use_toto_forecasts,
+        toto_options=toto_options,
     )
     
     # Fit scalers on training data
@@ -162,13 +178,15 @@ def load_and_process_data(config: ExperimentConfig):
     train_dataset = StockDataset(
         train_data,
         sequence_length=config.data.sequence_length,
-        prediction_horizon=config.data.prediction_horizon
+        prediction_horizon=config.data.prediction_horizon,
+        processor=processor,
     )
-    
+
     val_dataset = StockDataset(
         val_data,
         sequence_length=config.data.sequence_length,
-        prediction_horizon=config.data.prediction_horizon
+        prediction_horizon=config.data.prediction_horizon,
+        processor=processor,
     ) if len(val_data) > config.data.sequence_length + config.data.prediction_horizon else None
     
     return train_dataset, val_dataset, processor
@@ -222,7 +240,9 @@ def create_model(config: ExperimentConfig, input_dim: int):
         load_best_model_at_end=config.evaluation.load_best_model_at_end,
         
         early_stopping_patience=config.training.early_stopping_patience,
-        early_stopping_threshold=config.training.early_stopping_threshold
+        early_stopping_threshold=config.training.early_stopping_threshold,
+        profit_loss_weight=config.training.profit_loss_weight,
+        transaction_cost_bps=config.training.transaction_cost_bps,
     )
     
     model = TransformerTradingModel(hf_config, input_dim=input_dim)

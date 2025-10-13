@@ -7,11 +7,11 @@ Trains a base model on multiple stock pairs, then allows fine-tuning for individ
 import os
 import sys
 import torch
-import torch.nn as nn
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from torch.utils.data import DataLoader, random_split
+from typing import Dict, List, Optional, Sequence, Tuple
 from datetime import datetime
 import json
 from tqdm import tqdm
@@ -24,9 +24,22 @@ sys.path.append(os.path.dirname(current_dir))
 from config import create_config, ExperimentConfig
 from train_hf import HFTrainer, StockDataset
 from hf_trainer import TransformerTradingModel, HFTrainingConfig
-from data_utils import StockDataProcessor, split_data, load_local_stock_data
+from data_utils import (
+    StockDataProcessor,
+    split_data,
+    load_local_stock_data,
+    PairStockDataset,
+    MultiAssetPortfolioDataset,
+    align_on_timestamp,
+)
 from profit_tracker import ProfitTracker, integrate_profit_tracking
 from logging_utils import get_logger
+from toto_features import TotoOptions
+from portfolio_rl_trainer import (
+    PortfolioAllocationModel,
+    PortfolioRLConfig,
+    DifferentiablePortfolioTrainer,
+)
 
 
 class MultiStockDataset(torch.utils.data.Dataset):
@@ -107,7 +120,11 @@ class BaseModelTrainer:
         self,
         base_stocks: List[str] = None,
         output_dir: str = "hftraining/models",
-        tensorboard_dir: str = "hftraining/tensorboard"
+        tensorboard_dir: str = "hftraining/tensorboard",
+        use_toto_forecasts: bool = True,
+        toto_options: Optional[TotoOptions] = None,
+        data_dir: str = "trainingdata",
+        max_rows: Optional[int] = None,
     ):
         self.base_stocks = base_stocks or [
             'AAPL', 'GOOGL', 'MSFT', 'AMZN', 'TSLA',
@@ -115,6 +132,10 @@ class BaseModelTrainer:
         ]
         self.output_dir = Path(output_dir)
         self.tensorboard_dir = Path(tensorboard_dir)
+        self.use_toto_forecasts = use_toto_forecasts
+        self.toto_options = toto_options or TotoOptions()
+        self.data_dir = Path(data_dir)
+        self.max_rows = max_rows
         
         # Create directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -127,10 +148,34 @@ class BaseModelTrainer:
         self.finetuned_dir.mkdir(exist_ok=True)
         
         # Data processor
-        self.processor = StockDataProcessor()
+        self.processor = StockDataProcessor(
+            sequence_length=self.toto_options.context_length,
+            prediction_horizon=self.toto_options.horizon,
+            use_toto_forecasts=self.use_toto_forecasts,
+            toto_options=self.toto_options,
+        )
         
         # Logger
         self.logger = get_logger(str(self.output_dir / "logs"), "base_model_training")
+
+    def _configure_processor_from_config(self, data_config):
+        """Ensure processor follows the latest data configuration."""
+        toto_opts = TotoOptions(
+            use_toto=data_config.use_toto_forecasts,
+            horizon=data_config.toto_horizon,
+            context_length=data_config.sequence_length,
+            num_samples=data_config.toto_num_samples,
+            toto_model_id=data_config.toto_model_id,
+            toto_device=data_config.toto_device,
+        )
+        self.use_toto_forecasts = data_config.use_toto_forecasts
+        self.toto_options = toto_opts
+        self.processor = StockDataProcessor(
+            sequence_length=data_config.sequence_length,
+            prediction_horizon=data_config.prediction_horizon,
+            use_toto_forecasts=self.use_toto_forecasts,
+            toto_options=toto_opts,
+        )
     
     def download_all_stock_data(
         self,
@@ -138,8 +183,10 @@ class BaseModelTrainer:
         end_date: Optional[str] = None
     ) -> Dict[str, pd.DataFrame]:
         """Load local CSV data for all base stocks (no external download)"""
-        self.logger.info(f"Loading local data for {len(self.base_stocks)} stocks from trainingdata/")
-        stock_data = load_local_stock_data(self.base_stocks, data_dir="trainingdata")
+        self.logger.info(
+            f"Loading local data for {len(self.base_stocks)} stocks from {self.data_dir}/"
+        )
+        stock_data = load_local_stock_data(self.base_stocks, data_dir=str(self.data_dir))
         if not stock_data:
             self.logger.error("No local CSVs found under trainingdata/ for requested symbols")
             return {}
@@ -161,9 +208,11 @@ class BaseModelTrainer:
         
         # First pass: collect all data for fitting scalers
         for symbol, df in stock_data.items():
-            features = self.processor.prepare_features(df)
+            if self.max_rows is not None:
+                df = df.tail(self.max_rows).copy()
+            features = self.processor.prepare_features(df, symbol=symbol)
             all_data_for_scaling.append(features)
-        
+
         # Fit scalers on combined data
         combined_data = np.vstack(all_data_for_scaling)
         self.processor.fit_scalers(combined_data)
@@ -175,7 +224,9 @@ class BaseModelTrainer:
         
         # Second pass: transform all data
         for symbol, df in stock_data.items():
-            features = self.processor.prepare_features(df)
+            if self.max_rows is not None:
+                df = df.tail(self.max_rows).copy()
+            features = self.processor.prepare_features(df, symbol=symbol)
             normalized = self.processor.transform(features)
             processed_data[symbol] = normalized
         
@@ -184,9 +235,10 @@ class BaseModelTrainer:
     def train_base_model(
         self,
         config: Optional[ExperimentConfig] = None,
-        max_steps: int = 10000,
-        batch_size: int = 32,
-        learning_rate: float = 1e-4
+        max_steps: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        learning_rate: Optional[float] = None,
+        progressive_schedule: Optional[Sequence[int]] = None,
     ) -> Tuple[TransformerTradingModel, str]:
         """Train base model on all stocks"""
         
@@ -197,15 +249,41 @@ class BaseModelTrainer:
         # Configuration
         if config is None:
             config = create_config("production")
+
+        if max_steps is not None:
             config.training.max_steps = max_steps
+        if batch_size is not None:
             config.training.batch_size = batch_size
+        if learning_rate is not None:
             config.training.learning_rate = learning_rate
+
+        schedule: Optional[List[int]] = None
+        if progressive_schedule:
+            schedule = [int(step) for step in progressive_schedule if int(step) > 0]
+            if schedule:
+                config.training.max_steps = schedule[0]
+            else:
+                schedule = None
+
+        # Ensure data config reflects current Toto/settings regardless of source.
+        config.data.use_toto_forecasts = self.use_toto_forecasts
+        config.data.toto_horizon = self.toto_options.horizon
+        config.data.sequence_length = self.toto_options.context_length
+        config.data.prediction_horizon = self.toto_options.horizon
+        config.data.toto_num_samples = self.toto_options.num_samples
+        config.data.toto_model_id = self.toto_options.toto_model_id
+        config.data.toto_device = self.toto_options.toto_device
+        config.training.use_mixed_precision = False
+        config.training.gradient_checkpointing = False
         
         # Update paths for base model
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         config.output.output_dir = str(self.base_model_dir / f"base_{timestamp}")
         config.output.logging_dir = str(self.tensorboard_dir / f"base_{timestamp}")
         config.experiment_name = f"base_model_{timestamp}"
+
+        # Ensure processor matches configuration (Toto, sequence length, etc.)
+        self._configure_processor_from_config(config.data)
         
         # Download and prepare data
         stock_data = self.download_all_stock_data()
@@ -241,9 +319,16 @@ class BaseModelTrainer:
             max_steps=config.training.max_steps,
             warmup_steps=config.training.warmup_steps,
             output_dir=config.output.output_dir,
-            logging_dir=config.output.logging_dir
+            logging_dir=config.output.logging_dir,
+            profit_loss_weight=config.training.profit_loss_weight,
+            transaction_cost_bps=config.training.transaction_cost_bps,
+            use_mixed_precision=config.training.use_mixed_precision,
+            use_gradient_checkpointing=config.training.gradient_checkpointing,
         )
-        
+        hf_config.dataloader_num_workers = 0
+        hf_config.persistent_workers = False
+        hf_config.prefetch_factor = 2
+
         model = TransformerTradingModel(hf_config, input_dim=input_dim)
         
         self.logger.info(f"Created model with {sum(p.numel() for p in model.parameters()):,} parameters")
@@ -260,9 +345,25 @@ class BaseModelTrainer:
         profit_tracker = ProfitTracker()
         trainer = integrate_profit_tracking(trainer, profit_tracker)
         
-        # Train model
+        # Train model (optionally in progressive stages)
         self.logger.info("Starting training...")
-        trained_model = trainer.train()
+
+        if schedule:
+            cumulative = 0
+            for stage_idx, stage_steps in enumerate(schedule, start=1):
+                cumulative += stage_steps
+                trainer.config.max_steps = cumulative
+                trainer.config.warmup_steps = min(
+                    trainer.config.warmup_steps,
+                    max(1, cumulative // 10),
+                )
+                trainer.training_logger.info(
+                    f"Progressive base stage {stage_idx}/{len(schedule)} -> max_steps {cumulative:,}"
+                )
+                trainer.train()
+            trained_model = trainer.model
+        else:
+            trained_model = trainer.train()
         
         # Save base model checkpoint
         checkpoint_path = self.base_model_dir / f"base_checkpoint_{timestamp}.pth"
@@ -305,12 +406,14 @@ class BaseModelTrainer:
         self.logger.info(f"Loaded base model from {base_checkpoint_path}")
         
         # Load stock-specific data locally
-        stock_map = load_local_stock_data([stock_symbol], data_dir="trainingdata")
+        stock_map = load_local_stock_data([stock_symbol], data_dir=str(self.data_dir))
         if stock_symbol not in stock_map or len(stock_map[stock_symbol]) == 0:
             self.logger.error(f"No local CSV found for {stock_symbol} under trainingdata/")
             return None, None
         df = stock_map[stock_symbol]
-        features = self.processor.prepare_features(df)
+        if self.max_rows is not None:
+            df = df.tail(self.max_rows).copy()
+        features = self.processor.prepare_features(df, symbol=stock_symbol)
         normalized_data = self.processor.transform(features)
         
         # Create dataset
@@ -337,6 +440,8 @@ class BaseModelTrainer:
         finetune_config.warmup_steps = min(500, finetune_config.max_steps // 10)
         finetune_config.output_dir = str(self.finetuned_dir / f"{stock_symbol}_{timestamp}")
         finetune_config.logging_dir = str(self.tensorboard_dir / f"finetune_{stock_symbol}_{timestamp}")
+        finetune_config.dataloader_num_workers = 0
+        finetune_config.persistent_workers = False
         
         # Create trainer
         trainer = HFTrainer(
@@ -373,7 +478,10 @@ class BaseModelTrainer:
         self,
         stocks_to_finetune: Optional[List[str]] = None,
         base_training_steps: int = 10000,
-        finetune_epochs: int = 10
+        finetune_epochs: int = 10,
+        pair_symbols: Optional[List[Tuple[str, str]]] = None,
+        base_config: Optional[ExperimentConfig] = None,
+        rl_config: Optional[PortfolioRLConfig] = None,
     ):
         """Run complete base training + fine-tuning pipeline"""
         
@@ -381,6 +489,7 @@ class BaseModelTrainer:
         
         # Train base model
         base_model, base_checkpoint = self.train_base_model(
+            config=base_config,
             max_steps=base_training_steps
         )
         
@@ -406,16 +515,32 @@ class BaseModelTrainer:
                     'model': finetuned_model,
                     'path': finetuned_path
                 }
-        
+
+        # Train portfolio allocation policies for selected symbol groups
+        if pair_symbols is None:
+            default_slice = min(4, len(self.base_stocks))
+            pair_symbols = [tuple(self.base_stocks[:default_slice])]
+
+        pair_metrics: Dict[Tuple[str, ...], Dict[str, float]] = {}
+        for symbol_group in pair_symbols:
+            symbols_tuple = tuple(symbol_group)
+            try:
+                self.logger.info(f"Training portfolio RL for symbols {symbols_tuple}")
+                metrics = self.train_pair_portfolio(symbols_tuple, rl_config=rl_config)
+                pair_metrics[symbols_tuple] = metrics
+            except Exception as exc:
+                self.logger.error(f"Failed portfolio RL for {symbols_tuple}: {exc}")
+
         # Generate summary report
-        self.generate_pipeline_report(base_checkpoint, finetuned_models)
+        self.generate_pipeline_report(base_checkpoint, finetuned_models, pair_metrics)
         
-        return base_checkpoint, finetuned_models
+        return base_checkpoint, finetuned_models, pair_metrics
     
     def generate_pipeline_report(
         self,
         base_checkpoint: str,
-        finetuned_models: Dict[str, Dict]
+        finetuned_models: Dict[str, Dict],
+        pair_metrics: Optional[Dict[Tuple[str, str], Dict[str, float]]] = None,
     ):
         """Generate comprehensive training report"""
         
@@ -441,6 +566,19 @@ class BaseModelTrainer:
 - **Model Path:** {info['path']}
 - **Status:** ✅ Completed
 """
+
+        if pair_metrics:
+            report += """
+## Portfolio RL Pairs
+
+"""
+            for symbols_tuple, metrics in pair_metrics.items():
+                summary = ", ".join(f"{k}: {v:.4f}" for k, v in metrics.items())
+                title = "/".join(symbols_tuple)
+                report += f"""
+### {title}
+- **Metrics:** {summary}
+"""
         
         report += f"""
 ## Directory Structure
@@ -449,6 +587,7 @@ class BaseModelTrainer:
 {self.output_dir}/
 ├── base_models/          # Base model checkpoints
 ├── finetuned/           # Fine-tuned models per stock
+├── finetuned/portfolio_pairs/  # Differentiable portfolio RL checkpoints
 └── logs/                # Training logs
 ```
 
@@ -475,6 +614,137 @@ tensorboard --logdir {self.tensorboard_dir}
         
         self.logger.info(f"📄 Report saved to {report_path}")
 
+    def train_pair_portfolio(
+        self,
+        symbols: Sequence[str],
+        rl_config: Optional[PortfolioRLConfig] = None,
+    ) -> Dict[str, float]:
+        """Train differentiable portfolio allocation policy for one or more symbols."""
+
+        symbols = list(symbols)
+        if len(symbols) < 2:
+            raise ValueError("At least two symbols are required for portfolio training")
+        self.logger.info(f"Preparing portfolio RL training for symbols {symbols}")
+
+        if not self.processor.scalers:
+            processor_path = self.base_model_dir / "data_processor.pkl"
+            if processor_path.exists():
+                self.processor.load_scalers(str(processor_path))
+            else:
+                raise RuntimeError("Data processor scalers are not initialised. Run base training first.")
+
+        stock_map = load_local_stock_data(symbols, data_dir=str(self.data_dir))
+        for sym in symbols:
+            if sym not in stock_map:
+                raise RuntimeError(f"Missing CSV data for {sym} under {self.data_dir}/")
+
+        # Align timestamps across all assets
+        aligned_frames = []
+        for sym in symbols:
+            df = stock_map[sym]
+            if self.max_rows is not None:
+                df = df.tail(self.max_rows).copy()
+            aligned_frames.append(df)
+
+        candidate_keys = ['date', 'timestamp', 'Datetime', 'datetime']
+        key = next((col for col in candidate_keys if all(col in df.columns for df in aligned_frames)), None)
+        if key is None:
+            raise ValueError("Unable to align portfolio symbols – no shared timestamp column")
+
+        common_index = None
+        normalised_frames = []
+        for df in aligned_frames:
+            col = df[key]
+            if not pd.api.types.is_datetime64_any_dtype(col):
+                col = pd.to_datetime(col)
+            try:
+                col = col.dt.tz_localize(None)
+            except AttributeError:
+                pass
+            df = df.copy()
+            align_col = col.dt.floor("T")
+            df["__align_key"] = align_col
+            idx = pd.Index(align_col)
+            common_index = idx if common_index is None else common_index.intersection(idx)
+            normalised_frames.append(df)
+
+        if common_index is None or len(common_index) == 0:
+            raise RuntimeError("No overlapping timestamps across portfolio symbols")
+
+        common_index = pd.Index(sorted(common_index))
+        if self.max_rows is not None and len(common_index) > self.max_rows:
+            common_index = common_index[-self.max_rows:]
+
+        aligned_data = []
+        for df in normalised_frames:
+            df = df.set_index("__align_key").loc[common_index].reset_index()
+            df = df.rename(columns={"__align_key": "date"})
+            aligned_data.append(df)
+
+        asset_arrays: List[np.ndarray] = []
+        asset_close_prices: List[np.ndarray] = []
+        close_feature_index: Optional[int] = None
+        for sym, df in zip(symbols, aligned_data):
+            features = self.processor.prepare_features(df, symbol=sym)
+            feature_names = list(self.processor.feature_names)
+            if not feature_names:
+                raise RuntimeError("Processor returned empty feature name list.")
+            current_close_idx = feature_names.index('close') if 'close' in feature_names else 3
+            if close_feature_index is None:
+                close_feature_index = current_close_idx
+            elif current_close_idx != close_feature_index:
+                raise RuntimeError(
+                    f"Inconsistent close feature index across assets: {current_close_idx} vs {close_feature_index}"
+                )
+
+            normalized = self.processor.transform(features).astype(np.float32, copy=False)
+            asset_arrays.append(normalized)
+            asset_close_prices.append(features[:, close_feature_index].astype(np.float32, copy=False))
+
+        if close_feature_index is None:
+            raise RuntimeError("Unable to determine close feature index for portfolio dataset.")
+
+        dataset = MultiAssetPortfolioDataset(
+            asset_arrays,
+            symbols,
+            asset_close_prices,
+            sequence_length=self.processor.sequence_length,
+            prediction_horizon=self.processor.prediction_horizon,
+            close_feature_index=close_feature_index,
+        )
+
+        if len(dataset) < 10:
+            raise RuntimeError("Portfolio dataset too small for RL training")
+
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_ds, val_ds = random_split(dataset, [train_size, val_size])
+
+        rl_config = rl_config or PortfolioRLConfig()
+        train_loader = DataLoader(train_ds, batch_size=rl_config.batch_size, shuffle=True)
+        val_loader = DataLoader(val_ds, batch_size=rl_config.batch_size) if val_size > 0 else None
+
+        sample = dataset[0]['input_ids']
+        input_dim = sample.shape[-1]
+        num_assets = len(symbols)
+        model = PortfolioAllocationModel(input_dim=input_dim, config=rl_config, num_assets=num_assets)
+        trainer = DifferentiablePortfolioTrainer(model, rl_config, train_loader, val_loader)
+        metrics = trainer.train()
+
+        checkpoint_dir = self.finetuned_dir / "portfolio_pairs"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_name = "_".join(symbols)
+        ckpt_path = checkpoint_dir / f"{ckpt_name}_portfolio.pt"
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'config': rl_config,
+            'symbols': symbols,
+            'metrics': metrics,
+        }, ckpt_path)
+
+        self.logger.info(f"Portfolio RL model saved to {ckpt_path}")
+        return metrics
+
 
 def main():
     """Main entry point for base model training"""
@@ -487,15 +757,17 @@ def main():
     )
     
     # Run complete pipeline
-    base_checkpoint, finetuned_models = trainer.run_complete_pipeline(
+    base_checkpoint, finetuned_models, pair_metrics = trainer.run_complete_pipeline(
         stocks_to_finetune=['AAPL', 'GOOGL'],
         base_training_steps=5000,  # Reduced for testing
-        finetune_epochs=5
+        finetune_epochs=5,
+        pair_symbols=[('AAPL', 'GOOGL', 'TSLA')]
     )
     
     print(f"\n✅ Training Complete!")
     print(f"Base Model: {base_checkpoint}")
     print(f"Fine-tuned Models: {list(finetuned_models.keys())}")
+    print(f"Portfolio Pairs: {list(pair_metrics.keys())}")
 
 
 if __name__ == "__main__":

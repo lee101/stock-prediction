@@ -7,16 +7,19 @@ All requested features have been implemented and tested:
 ✅ **Profit tracking integrated with TensorBoard logging**  
 ✅ **Organized directory structure (hftraining/models, tensorboard, etc.)**  
 ✅ **Base model training on multiple stocks**  
-✅ **Fine-tuning pipeline for individual stocks**  
-✅ **Loss curves correlating to actual profit metrics**
+✅ **Fine-tuning pipeline for individual stocks & stock pairs**  
+✅ **Amazon Toto forecasts baked into every dataset**  
+✅ **Differentiable profit-loss objective driving the core trainer**  
+✅ **Portfolio RL module that learns allocations with rebalancing**
 
 ## Directory Structure
 
 ```
 hftraining/
 ├── models/
-│   ├── base/           # Base models trained on all stocks
-│   └── finetuned/      # Stock-specific fine-tuned models
+│   ├── base/               # Base models trained on all stocks
+│   ├── finetuned/          # Stock-specific fine-tuned models
+│   └── finetuned/portfolio_pairs/  # Differentiable portfolio RL checkpoints
 ├── tensorboard/
 │   ├── base/           # Base model training logs
 │   └── finetuned/      # Fine-tuning logs per stock
@@ -30,18 +33,23 @@ hftraining/
 
 ## Quick Start
 
-### 1. Train Single Stock with Profit Tracking
+### 1. Train Single Stock with Profit Tracking + Toto Features
 
 ```bash
 cd hftraining
 python train_with_profit.py --stock AAPL --steps 5000
 ```
 
-### 2. Train Base Model + Fine-tune
+### 2. Train Base Model + Fine-tune + Portfolio RL
 
 ```bash
 # Train base model on multiple stocks, then fine-tune
 python train_with_profit.py --stocks AAPL GOOGL MSFT TSLA --base-model
+
+# After base training, run pairwise portfolio optimisation
+python -c "from hftraining.base_model_trainer import BaseModelTrainer;\
+trainer = BaseModelTrainer();\
+trainer.run_complete_pipeline(pair_symbols=[('AAPL','MSFT'),('GOOGL','AMZN')])"
 ```
 
 ### 3. View Training Metrics in TensorBoard
@@ -60,7 +68,7 @@ Then open browser to http://localhost:6006
 - `profit/win_rate` - Percentage of profitable trades
 - `profit/max_drawdown` - Maximum loss from peak
 
-## Profit Tracking Features
+## Profit Tracking & Differentiable Profit Loss
 
 ### What's Being Tracked
 
@@ -74,15 +82,38 @@ During training, the system simulates trading based on model predictions:
 
 ### How It Works
 
-Every 100 training steps:
-- Model makes predictions on current batch
-- Simulated trades are executed based on predictions
-- Profit/loss is calculated with realistic commission (0.1%) and slippage
-- Metrics are logged to TensorBoard
+During training the allocation head produces continuous portfolio weights in
+[-1, 1]. Realised returns are computed from de-normalised close prices, and the
+loss function directly maximises profit while regularising with a Sharpe-like
+term. A transaction-cost penalty (configurable via `transaction_cost_bps`) is
+applied so allocations remain realistic. TensorBoard logging continues to track
+PnL, Sharpe, drawdown, and win rate.
 
-Every 500 steps:
-- Detailed profit report logged to console
-- Shows correlation between loss reduction and profit improvement
+### Amazon Toto Forecast Integration
+
+- Set `config.data.use_toto_forecasts = True` (default) to enrich every sample
+  with Toto forecast means and standard deviations for the configured horizon.
+- Additional parameters (`toto_model_id`, `toto_device`, `toto_horizon`,
+  `toto_num_samples`) live under `config.data.*`.
+- If Toto dependencies are missing, the pipeline automatically falls back to a
+  differentiable statistical approximation so training can still proceed.
+
+### Portfolio Allocation RL
+
+Use `BaseModelTrainer.train_pair_portfolio()` (passing a list/tuple of symbols)
+or the helper `run_complete_pipeline` to learn cross-asset allocations. Example:
+
+```python
+trainer.train_pair_portfolio(['AAPL', 'MSFT', 'TSLA'])
+```
+
+The differentiable RL trainer:
+
+- Consumes `PairStockDataset` (already Toto-enhanced and normalised)
+- Rebalances at the start of each horizon by emitting softmax allocation
+  weights that sum to 1
+- Optimises real profit with optional risk penalty (`PortfolioRLConfig.risk_penalty`)
+- Writes checkpoints under `hftraining/models/finetuned/portfolio_pairs/`
 
 ## Training Pipeline Options
 

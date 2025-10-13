@@ -446,6 +446,11 @@ def integrate_profit_tracking(trainer, profit_tracker: Optional[ProfitTracker] =
                     model_outputs=outputs,
                     batch=batch
                 )
+                # Expose last computed profit metrics on the trainer for downstream summaries
+                try:
+                    trainer.last_profit_metrics = metrics
+                except Exception:
+                    pass
                 
                 # Log to TensorBoard
                 profit_metrics = {

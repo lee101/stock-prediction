@@ -74,7 +74,8 @@ def setup_directories():
 def train_single_stock_with_profit(
     stock_symbol: str,
     config: dict = None,
-    dirs: dict = None
+    dirs: dict = None,
+    data_dir: str = "trainingdata"
 ):
     """Train model for single stock with profit tracking"""
     
@@ -101,9 +102,9 @@ def train_single_stock_with_profit(
     
     # Load local CSV data
     logger.info(f"Loading local CSV for {stock_symbol}...")
-    stock_map = load_local_stock_data([stock_symbol], data_dir="trainingdata")
+    stock_map = load_local_stock_data([stock_symbol], data_dir=data_dir)
     if stock_symbol not in stock_map:
-        logger.error(f"No local CSV found for {stock_symbol} under trainingdata/")
+        logger.error(f"No local CSV found for {stock_symbol} under {data_dir} (with fallbacks)")
         return None
     df = stock_map[stock_symbol]
     logger.info(f"Loaded {len(df)} records for {stock_symbol}")
@@ -125,13 +126,15 @@ def train_single_stock_with_profit(
     train_dataset = StockDataset(
         train_data,
         sequence_length=config.data.sequence_length,
-        prediction_horizon=config.data.prediction_horizon
+        prediction_horizon=config.data.prediction_horizon,
+        processor=processor,
     )
-    
+
     val_dataset = StockDataset(
         val_data,
         sequence_length=config.data.sequence_length,
-        prediction_horizon=config.data.prediction_horizon
+        prediction_horizon=config.data.prediction_horizon,
+        processor=processor,
     )
     
     logger.info(f"Dataset sizes - Train: {len(train_dataset)}, Val: {len(val_dataset)}")
@@ -148,7 +151,9 @@ def train_single_stock_with_profit(
         batch_size=config.training.batch_size,
         max_steps=config.training.max_steps,
         output_dir=config.output.output_dir,
-        logging_dir=config.output.logging_dir
+        logging_dir=config.output.logging_dir,
+        profit_loss_weight=config.training.profit_loss_weight,
+        transaction_cost_bps=config.training.transaction_cost_bps,
     )
     
     model = TransformerTradingModel(hf_config, input_dim=input_dim)
