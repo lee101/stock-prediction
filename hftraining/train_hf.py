@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
+from typing import Optional
 from pathlib import Path
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -46,55 +47,78 @@ try:
 except Exception:
     psutil = None
 from auto_tune import AutoBatchTuner
+from differentiable_profit import compute_portfolio_pnl, sharpe_like_ratio
 
 
 class StockDataset(Dataset):
-    """Dataset for stock trading data"""
-    
-    def __init__(self, data, sequence_length=60, prediction_horizon=5):
+    """Dataset for stock trading data."""
+
+    def __init__(
+        self,
+        data,
+        sequence_length: int = 60,
+        prediction_horizon: int = 5,
+        processor: Optional['StockDataProcessor'] = None,  # quote to avoid circular import
+    ):
         self.data = data
         self.sequence_length = sequence_length
         self.prediction_horizon = prediction_horizon
-        
-        # Ensure we have enough data for sequences
+        self.processor = processor
+        self.feature_names = getattr(processor, 'feature_names', None)
+        if self.feature_names and 'close' in self.feature_names:
+            self.close_index = self.feature_names.index('close')
+        else:
+            self.close_index = 3  # Fallback to traditional OHLC ordering
+
         if len(data) < sequence_length + prediction_horizon:
             raise ValueError(f"Dataset too small: {len(data)} < {sequence_length + prediction_horizon}")
-    
+
     def __len__(self):
         return len(self.data) - self.sequence_length - self.prediction_horizon + 1
-    
+
+    def _compute_future_return(self, sequence_np: np.ndarray, targets_np: np.ndarray) -> float:
+        if self.processor is not None:
+            raw_seq = self.processor.inverse_transform(sequence_np)
+            raw_targets = self.processor.inverse_transform(targets_np)
+            current_price = raw_seq[-1, self.close_index]
+            next_price = raw_targets[0, self.close_index]
+        else:
+            current_price = sequence_np[-1, self.close_index]
+            next_price = targets_np[0, self.close_index]
+
+        return float((next_price - current_price) / (current_price + 1e-8))
+
     def __getitem__(self, idx):
-        # Input sequence
         start_idx = idx
         end_idx = idx + self.sequence_length
-        
-        sequence = self.data[start_idx:end_idx]
-        
-        # Target: next price movements
+
+        sequence_np = self.data[start_idx:end_idx]
         target_start = end_idx
         target_end = target_start + self.prediction_horizon
-        targets = self.data[target_start:target_end]
-        
-        # Convert to tensors
-        sequence = torch.FloatTensor(sequence)
-        targets = torch.FloatTensor(targets)
-        
-        # Generate action labels (simplified: based on next price movement)
-        next_price = targets[0, 3] if len(targets) > 0 else sequence[-1, 3]  # Close price
-        current_price = sequence[-1, 3]
-        
-        if next_price > current_price * 1.01:  # 1% threshold
+        targets_np = self.data[target_start:target_end]
+
+        sequence = torch.from_numpy(sequence_np).float()
+        targets = torch.from_numpy(targets_np).float()
+
+        future_return = self._compute_future_return(sequence_np, targets_np)
+
+        next_price = targets_np[0, self.close_index]
+        current_price = sequence_np[-1, self.close_index]
+
+        if next_price > current_price * 1.01:
             action_label = 0  # Buy
         elif next_price < current_price * 0.99:
             action_label = 2  # Sell
         else:
             action_label = 1  # Hold
-        
+
         return {
             'input_ids': sequence,
             'labels': targets,
+            'future_returns': torch.tensor(future_return, dtype=torch.float32).unsqueeze(0),
             'action_labels': torch.tensor(action_label, dtype=torch.long),
-            'attention_mask': torch.ones(self.sequence_length)
+            'attention_mask': torch.ones(self.sequence_length),
+            'last_close': torch.tensor(sequence_np[-1, self.close_index], dtype=torch.float32),
         }
 
 
@@ -106,6 +130,7 @@ class HFTrainer:
         self.config = config
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
+        self.close_index = getattr(train_dataset, 'close_index', 3)
         
         # Setup device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -469,6 +494,16 @@ class HFTrainer:
                     # Enhanced evaluation logging
                     self.training_logger.log_step_metrics(self.global_step, eval_metrics, "eval")
                     self.metrics_tracker.add_metric(self.global_step, "eval", **eval_metrics)
+
+                    # If profit tracker provided recent metrics, print concise profit summary too
+                    try:
+                        if hasattr(self, 'last_profit_metrics') and self.last_profit_metrics is not None:
+                            pm = self.last_profit_metrics
+                            self.training_logger.info(
+                                f"   Profit: Return {pm.total_return:.2%} | Sharpe {pm.sharpe_ratio:.2f} | MaxDD {pm.max_drawdown:.2%}"
+                            )
+                    except Exception:
+                        pass
                     
                     # Early stopping check
                     metric_value = eval_metrics.get('loss', loss)
@@ -521,7 +556,9 @@ class HFTrainer:
         # Only zero grad on accumulation boundary
         if self.global_step % self.config.gradient_accumulation_steps == 0:
             self.optimizer.zero_grad(set_to_none=True)
-        
+
+        batch_return = None
+
         with self.mp_trainer.autocast():
             # Forward pass
             inputs = batch['input_ids']
@@ -542,29 +579,47 @@ class HFTrainer:
             action_loss = F.cross_entropy(
                 outputs['action_logits'],
                 batch['action_labels'],
-                label_smoothing=0.1  # Add label smoothing
+                label_smoothing=0.1
             )
-            
+
             price_loss = F.mse_loss(
                 outputs['price_predictions'],
-                batch['labels'][:, :self.config.prediction_horizon, 3]  # Close prices
+                batch['labels'][:, :self.config.prediction_horizon, self.close_index]
             )
-            # Compute simple 1-step trading return metric for this batch (no-grad)
-            batch_return = None
-            try:
-                with torch.no_grad():
-                    current_close = batch['input_ids'][:, -1, 3]
-                    next_close = batch['labels'][:, 0, 3]
-                    ret_1 = (next_close - current_close) / (current_close + 1e-8)
-                    actions = torch.argmax(outputs['action_logits'], dim=-1)
-                    mapping = torch.tensor([1.0, 0.0, -1.0], device=actions.device)
-                    signal = mapping[actions]
-                    batch_return = (signal * ret_1).mean().item()
-            except Exception:
-                pass
 
-            # Combined loss (scale by accumulation steps)
-            total_loss = (action_loss + 0.5 * price_loss) / self.config.gradient_accumulation_steps
+            future_returns = batch.get('future_returns')
+            if future_returns is None:
+                current_close = batch['input_ids'][:, -1, self.close_index]
+                next_close = batch['labels'][:, 0, self.close_index]
+                future_returns = ((next_close - current_close) / (current_close + 1e-8)).unsqueeze(-1)
+
+            future_returns = future_returns.to(outputs['action_logits'].device)
+            allocations = outputs.get('allocations')
+            transaction_cost = float(getattr(self.config, 'transaction_cost_bps', 0.0)) / 10000.0
+            pnl = compute_portfolio_pnl(allocations, future_returns, transaction_cost)
+            profit_loss = -pnl.mean()
+            sharpe_penalty = -sharpe_like_ratio(pnl)
+
+            profit_weight = float(getattr(self.config, 'profit_loss_weight', 0.0))
+            if profit_weight > 0.0:
+                warmup = int(getattr(self.config, 'profit_curriculum_warmup_steps', 0))
+                schedule = int(getattr(self.config, 'profit_curriculum_steps', 0))
+                if self.global_step < warmup:
+                    effective_profit_weight = 0.0
+                else:
+                    if schedule > 0:
+                        progress = min(1.0, (self.global_step - warmup) / float(schedule))
+                    else:
+                        progress = 1.0
+                    effective_profit_weight = profit_weight * progress
+            else:
+                effective_profit_weight = 0.0
+
+            profit_component = effective_profit_weight * (profit_loss + 0.1 * sharpe_penalty)
+
+            batch_return = pnl.mean().item()
+
+            total_loss = (action_loss + 0.5 * price_loss + profit_component) / self.config.gradient_accumulation_steps
 
         # Backward pass
         if not torch.isfinite(total_loss):
@@ -649,9 +704,22 @@ class HFTrainer:
                 )
                 price_loss = F.mse_loss(
                     outputs['price_predictions'],
-                    batch['labels'][:, :self.config.prediction_horizon, 3]
+                    batch['labels'][:, :self.config.prediction_horizon, self.close_index]
                 )
-                total_loss = action_loss + 0.5 * price_loss
+                future_returns = batch.get('future_returns')
+                if future_returns is None:
+                    current_close = batch['input_ids'][:, -1, self.close_index]
+                    next_close = batch['labels'][:, 0, self.close_index]
+                    future_returns = ((next_close - current_close) / (current_close + 1e-8)).unsqueeze(-1)
+                pnl = compute_portfolio_pnl(
+                    outputs['allocations'],
+                    future_returns.squeeze(-1),
+                    float(getattr(self.config, 'transaction_cost_bps', 0.0)) / 10000.0
+                )
+                profit_loss = -pnl.mean()
+                sharpe_penalty = -sharpe_like_ratio(pnl)
+                profit_weight = float(getattr(self.config, 'profit_loss_weight', 0.0))
+                total_loss = action_loss + 0.5 * price_loss + profit_weight * (profit_loss + 0.1 * sharpe_penalty)
             if self.mp_trainer.enabled:
                 self.mp_trainer.scaler.scale(total_loss).backward()
                 self.mp_trainer.scaler.unscale_(self.optimizer)
@@ -695,7 +763,7 @@ class HFTrainer:
                 
                 price_loss = F.mse_loss(
                     outputs['price_predictions'],
-                    batch['labels'][:, :self.config.prediction_horizon, 3]
+                    batch['labels'][:, :self.config.prediction_horizon, self.close_index]
                 )
                 
                 total_loss += action_loss.item() + 0.5 * price_loss.item()
@@ -704,13 +772,17 @@ class HFTrainer:
                 total_steps += 1
                 # Compute realized 1-step return under predicted action
                 try:
-                    current_close = batch['input_ids'][:, -1, 3]
-                    next_close = batch['labels'][:, 0, 3]
-                    ret_1 = (next_close - current_close) / (current_close + 1e-8)
-                    actions = torch.argmax(outputs['action_logits'], dim=-1)
-                    mapping = torch.tensor([1.0, 0.0, -1.0], device=actions.device)
-                    signal = mapping[actions]
-                    total_return += float((signal * ret_1).mean().item())
+                    future_returns = batch.get('future_returns')
+                    if future_returns is None:
+                        current_close = batch['input_ids'][:, -1, self.close_index]
+                        next_close = batch['labels'][:, 0, self.close_index]
+                        future_returns = ((next_close - current_close) / (current_close + 1e-8)).unsqueeze(-1)
+                    pnl = compute_portfolio_pnl(
+                        outputs['allocations'],
+                        future_returns,
+                        float(getattr(self.config, 'transaction_cost_bps', 0.0)) / 10000.0
+                    )
+                    total_return += float(pnl.mean().item())
                 except Exception:
                     pass
         

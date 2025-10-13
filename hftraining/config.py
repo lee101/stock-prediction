@@ -46,6 +46,13 @@ class DataConfig:
     noise_factor: float = 0.01
     scaling_factor: float = 0.05
 
+    # Amazon Toto integration
+    use_toto_forecasts: bool = True
+    toto_model_id: str = "Datadog/Toto-Open-Base-1.0"
+    toto_device: str = "cuda"
+    toto_horizon: int = 8
+    toto_num_samples: int = 256
+
 
 @dataclass
 class TrainingConfig:
@@ -86,6 +93,10 @@ class TrainingConfig:
     # Regularization
     dropout_rate: float = 0.1
     label_smoothing: float = 0.0
+    profit_loss_weight: float = 0.2
+    transaction_cost_bps: float = 10.0  # 1 bps = 0.0001
+    profit_curriculum_warmup_steps: int = 0
+    profit_curriculum_steps: int = 0
     
     # Early stopping
     early_stopping_patience: int = 10

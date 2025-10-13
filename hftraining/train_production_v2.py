@@ -360,11 +360,17 @@ class ProductionTrainer:
         def process_stock(symbol):
             try:
                 self.logger.info(f"Processing {symbol}")
-                # Load from trainingdata CSVs
-                base = Path('trainingdata')
-                candidates = list(base.glob(f"{symbol}.csv"))
-                if not candidates:
-                    candidates = [p for p in base.glob("*.csv") if symbol.lower() in p.stem.lower()]
+                # Load from local CSVs (trainingdata -> data -> hftraining/data/raw)
+                search_dirs = [Path('trainingdata'), Path('data'), Path('hftraining')/ 'data' / 'raw']
+                candidates = []
+                for base in search_dirs:
+                    if not base.exists():
+                        continue
+                    candidates = list(base.glob(f"{symbol}.csv"))
+                    if not candidates:
+                        candidates = [p for p in base.glob("*.csv") if symbol.lower() in p.stem.lower()]
+                    if candidates:
+                        break
                 if not candidates:
                     self.logger.warning(f"No local CSV for {symbol}")
                     return symbol, None

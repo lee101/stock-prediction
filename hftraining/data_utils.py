@@ -15,24 +15,84 @@ import joblib
 import warnings
 warnings.filterwarnings('ignore')
 
+try:
+    from .toto_features import (
+        TotoFeatureGenerator,
+        TotoOptions,
+        append_toto_columns,
+    )
+except ImportError:  # Allow running as a top-level script
+    from toto_features import (  # type: ignore
+        TotoFeatureGenerator,
+        TotoOptions,
+        append_toto_columns,
+    )
+
 
 class StockDataProcessor:
-    """Advanced stock data processor with multiple features"""
-    
-    def __init__(self, sequence_length=60, prediction_horizon=5, features=None):
+    """Advanced stock data processor with multiple features."""
+
+    def __init__(
+        self,
+        sequence_length: int = 60,
+        prediction_horizon: int = 5,
+        features: Optional[List[str]] = None,
+        use_toto_forecasts: bool = False,
+        toto_options: Optional[TotoOptions] = None,
+    ):
         self.sequence_length = sequence_length
         self.prediction_horizon = prediction_horizon
         self.features = features or ['open', 'high', 'low', 'close', 'volume']
-        self.scalers = {}
-        self.feature_names = []
-        
-    def prepare_features(self, df):
-        """Prepare and select features for training"""
+        self.scalers: Dict[str, Any] = {}
+        self.feature_names: List[str] = []
+        self.use_toto_forecasts = use_toto_forecasts
+        self._toto_generator: Optional[TotoFeatureGenerator] = None
+
+        if self.use_toto_forecasts:
+            options = toto_options or TotoOptions(
+                horizon=prediction_horizon,
+                context_length=sequence_length,
+            )
+            self._toto_generator = TotoFeatureGenerator(options)
+
+    def prepare_features(self, df: pd.DataFrame, symbol: Optional[str] = None) -> np.ndarray:
+        """Prepare and select features for training."""
         feats_df = compute_training_style_features(df)
-        # Keep tracked feature order for inference
         ordered = [c for c in training_feature_columns_list() if c in feats_df.columns]
-        self.feature_names = ordered
         feats_df = feats_df[ordered]
+
+        if self.use_toto_forecasts and self._toto_generator is not None:
+            price_columns = ['open', 'high', 'low', 'close', 'volume']
+            missing_cols = [col for col in price_columns if col not in df.columns]
+            if missing_cols:
+                for col in missing_cols:
+                    if col == 'volume':
+                        df[col] = 1.0
+                    else:
+                        raise ValueError(
+                            f"Missing required columns for Toto forecasts: {missing_cols}"
+                        )
+            price_matrix = df[price_columns].to_numpy(dtype=np.float32)
+            prefix = symbol.lower() if symbol else "toto"
+            toto_feats, toto_names = self._toto_generator.compute_features(
+                price_matrix,
+                price_columns,
+                symbol_prefix=prefix,
+            )
+            append_toto_columns(
+                feats_df,
+                toto_feats,
+                column_names=toto_names,
+            )
+
+            # Add residual features against first-step Toto mean for close price
+            mean_col = f"{prefix}_close_toto_mean_t+1"
+            if mean_col in feats_df.columns:
+                close_series = df['close'].to_numpy(dtype=np.float32)
+                residual = close_series - feats_df[mean_col].to_numpy(dtype=np.float32)
+                feats_df[f"{prefix}_close_toto_residual"] = residual
+
+        self.feature_names = list(feats_df.columns)
         return feats_df.values
     
     def fit_scalers(self, data):
@@ -90,13 +150,23 @@ def load_local_stock_data(symbols: List[str], data_dir: str = "trainingdata") ->
         symbols = [symbols]
     data: Dict[str, pd.DataFrame] = {}
     base = Path(data_dir)
+    fallbacks = [Path("data"), Path("hftraining")/"data"/"raw"]
     for sym in symbols:
+        # Try primary dir
         candidates = list(base.glob(f"{sym}.csv"))
         if not candidates:
             # Try case-insensitive / contains match
             candidates = [p for p in base.glob("*.csv") if sym.lower() in p.stem.lower()]
+        # Try fallbacks
         if not candidates:
-            print(f"Warning: no CSV found for symbol {sym} under {base}")
+            for fb in fallbacks:
+                candidates = list(fb.glob(f"{sym}.csv"))
+                if not candidates:
+                    candidates = [p for p in fb.glob("*.csv") if sym.lower() in p.stem.lower()]
+                if candidates:
+                    break
+        if not candidates:
+            print(f"Warning: no CSV found for symbol {sym} under {base} or fallbacks {fallbacks}")
             continue
         try:
             df = pd.read_csv(candidates[0])
@@ -169,6 +239,261 @@ def create_sequences(data, sequence_length, prediction_horizon, target_column='c
     return np.array(sequences), np.array(targets), np.array(action_labels)
 
 
+def align_on_timestamp(df_a: pd.DataFrame, df_b: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Align two price dataframes on their timestamp or date column.
+
+    The function performs an inner join to retain only overlapping dates and
+    returns aligned copies sorted chronologically.
+    """
+    key = None
+    for col in ['date', 'timestamp', 'Datetime', 'datetime']:
+        if col in df_a.columns and col in df_b.columns:
+            key = col
+            break
+    if key is None:
+        raise ValueError("Unable to align stock data – no common timestamp column found.")
+
+    df_a_ = df_a.copy()
+    df_b_ = df_b.copy()
+
+    # Ensure datetime dtype for alignment column.
+    from pandas.api.types import is_datetime64_any_dtype
+
+    if not is_datetime64_any_dtype(df_a_[key]):
+        df_a_[key] = pd.to_datetime(df_a_[key])
+    if not is_datetime64_any_dtype(df_b_[key]):
+        df_b_[key] = pd.to_datetime(df_b_[key])
+
+    def _try_merge(left: pd.DataFrame, right: pd.DataFrame, on: str) -> pd.DataFrame:
+        return pd.merge(
+            left,
+            right,
+            on=on,
+            suffixes=('_a', '_b'),
+            how='inner',
+        ).sort_values(on)
+
+    merged = _try_merge(df_a_, df_b_, key)
+
+    if merged.empty:
+        for freq in ['T', 'H']:
+            align_col = f"__align_{freq}"
+            df_a_[align_col] = df_a_[key].dt.floor(freq)
+            df_b_[align_col] = df_b_[key].dt.floor(freq)
+            merged = _try_merge(df_a_.drop(columns=[key]), df_b_.drop(columns=[key]), align_col)
+            if not merged.empty:
+                key = align_col
+                break
+
+    if merged.empty:
+        min_len = min(len(df_a_), len(df_b_))
+        df_a_trim = df_a_.iloc[:min_len].reset_index(drop=True)
+        df_b_trim = df_b_.iloc[:min_len].reset_index(drop=True)
+        return df_a_trim, df_b_trim
+
+    cols_a = [c for c in merged.columns if c.endswith('_a')]
+    cols_b = [c for c in merged.columns if c.endswith('_b')]
+
+    df_a_aligned = merged[[key] + cols_a].copy()
+    df_b_aligned = merged[[key] + cols_b].copy()
+
+    def _strip_suffix(name: str, suffix: str) -> str:
+        return name[:-len(suffix)] if name.endswith(suffix) else name
+
+    df_a_aligned.columns = [_strip_suffix(c, '_a') for c in df_a_aligned.columns]
+    df_b_aligned.columns = [_strip_suffix(c, '_b') for c in df_b_aligned.columns]
+
+    effective_key = key
+    if key.startswith("__align_"):
+        effective_key = "date"
+        df_a_aligned = df_a_aligned.rename(columns={key: effective_key})
+        df_b_aligned = df_b_aligned.rename(columns={key: effective_key})
+
+    if is_datetime64_any_dtype(df_a_aligned[effective_key]):
+        try:
+            df_a_aligned[effective_key] = df_a_aligned[effective_key].dt.tz_localize(None)
+            df_b_aligned[effective_key] = df_b_aligned[effective_key].dt.tz_localize(None)
+        except AttributeError:
+            # Column is already tz-naive
+            pass
+
+    return df_a_aligned.reset_index(drop=True), df_b_aligned.reset_index(drop=True)
+
+
+class PairStockDataset(torch.utils.data.Dataset):
+    """
+    Dataset that yields joint sequences for a pair of stocks so the model can
+    learn cross-asset signals as well as allocation targets.
+    """
+
+    def __init__(
+        self,
+        stock_a: np.ndarray,
+        stock_b: np.ndarray,
+        sequence_length: int,
+        prediction_horizon: int,
+        name_a: str,
+        name_b: str,
+        raw_close_a: Optional[np.ndarray] = None,
+        raw_close_b: Optional[np.ndarray] = None,
+        close_feature_index: int = 3,
+        epsilon: float = 1e-8,
+    ):
+        if len(stock_a) != len(stock_b):
+            raise ValueError("Aligned stock arrays must share the same length.")
+        if len(stock_a) < sequence_length + prediction_horizon:
+            raise ValueError(
+                f"Pair dataset too small: {len(stock_a)} < "
+                f"{sequence_length + prediction_horizon}"
+            )
+
+        if raw_close_a is None or raw_close_b is None:
+            raise ValueError(
+                "Raw close price arrays are required to compute meaningful returns."
+            )
+        if len(raw_close_a) != len(stock_a) or len(raw_close_b) != len(stock_b):
+            raise ValueError("Raw close price arrays must align with feature arrays.")
+        if close_feature_index >= stock_a.shape[1] or close_feature_index >= stock_b.shape[1]:
+            raise ValueError("close_feature_index is out of bounds for the provided features.")
+
+        self.stock_a = torch.as_tensor(stock_a, dtype=torch.float32)
+        self.stock_b = torch.as_tensor(stock_b, dtype=torch.float32)
+        self.close_a = torch.as_tensor(raw_close_a, dtype=torch.float32)
+        self.close_b = torch.as_tensor(raw_close_b, dtype=torch.float32)
+        self.sequence_length = sequence_length
+        self.prediction_horizon = prediction_horizon
+        self.name_a = name_a
+        self.name_b = name_b
+        self.close_feature_index = close_feature_index
+        self.epsilon = epsilon
+
+    def __len__(self) -> int:
+        return self.stock_a.shape[0] - self.sequence_length - self.prediction_horizon + 1
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        sl = self.sequence_length
+        ph = self.prediction_horizon
+
+        seq_a = self.stock_a[idx : idx + sl]
+        seq_b = self.stock_b[idx : idx + sl]
+
+        target_a = self.stock_a[idx + sl : idx + sl + ph]
+        target_b = self.stock_b[idx + sl : idx + sl + ph]
+
+        inputs = torch.cat([seq_a, seq_b], dim=1).contiguous()
+        price_targets = torch.stack(
+            [
+                target_a[:, self.close_feature_index],
+                target_b[:, self.close_feature_index],
+            ],
+            dim=0,
+        )
+
+        current_close = torch.stack([
+            self.close_a[idx + sl - 1],
+            self.close_b[idx + sl - 1],
+        ])
+        next_close = torch.stack([
+            self.close_a[idx + sl],
+            self.close_b[idx + sl],
+        ])
+        returns = (next_close - current_close) / (current_close + self.epsilon)
+
+        action_labels = torch.ones_like(returns, dtype=torch.long)
+        action_labels = torch.where(
+            returns > 0.01,
+            torch.zeros_like(action_labels),
+            action_labels,
+        )
+        action_labels = torch.where(
+            returns < -0.01,
+            torch.full_like(action_labels, 2, dtype=torch.long),
+            action_labels,
+        )
+
+        return {
+            'input_ids': inputs,
+            'labels': price_targets,
+            'future_returns': returns,
+            'action_labels': action_labels,
+            'attention_mask': torch.ones(self.sequence_length, dtype=torch.float32),
+        }
+
+
+class MultiAssetPortfolioDataset(torch.utils.data.Dataset):
+    """Dataset that yields aligned sequences for multiple assets."""
+
+    def __init__(
+        self,
+        asset_arrays: List[np.ndarray],
+        asset_names: List[str],
+        asset_close_prices: List[np.ndarray],
+        sequence_length: int,
+        prediction_horizon: int,
+        close_feature_index: int = 3,
+        epsilon: float = 1e-8,
+    ):
+        if len(asset_arrays) != len(asset_names):
+            raise ValueError("Asset arrays and names must be same length")
+        if len(asset_arrays) != len(asset_close_prices):
+            raise ValueError("Asset feature arrays and close price arrays must align")
+        base_len = len(asset_arrays[0])
+        for idx, arr in enumerate(asset_arrays):
+            if len(arr) != base_len:
+                raise ValueError("All assets must share identical length")
+            if len(asset_close_prices[idx]) != base_len:
+                raise ValueError("Close price arrays must match feature array length")
+        if base_len < sequence_length + prediction_horizon:
+            raise ValueError("Not enough data for requested sequence/horizon")
+        if any(close_feature_index >= arr.shape[1] for arr in asset_arrays):
+            raise ValueError("close_feature_index out of bounds for provided features")
+
+        self.asset_arrays = [
+            torch.as_tensor(arr, dtype=torch.float32) for arr in asset_arrays
+        ]
+        self.asset_close_prices = [
+            torch.as_tensor(prices, dtype=torch.float32) for prices in asset_close_prices
+        ]
+        self.asset_names = asset_names
+        self.sequence_length = sequence_length
+        self.prediction_horizon = prediction_horizon
+        self.close_feature_index = close_feature_index
+        self.epsilon = epsilon
+
+    def __len__(self) -> int:
+        return self.asset_arrays[0].shape[0] - self.sequence_length - self.prediction_horizon + 1
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        sl = self.sequence_length
+        ph = self.prediction_horizon
+        seqs = []
+        targets = []
+        future_returns = []
+
+        for features, close_prices in zip(self.asset_arrays, self.asset_close_prices):
+            seq = features[idx : idx + sl]
+            target = features[idx + sl : idx + sl + ph]
+            seqs.append(seq)
+            targets.append(target[:, self.close_feature_index])
+
+            current_price = close_prices[idx + sl - 1]
+            next_price = close_prices[idx + sl]
+            ret = (next_price - current_price) / (current_price + self.epsilon)
+            future_returns.append(ret)
+
+        combined_inputs = torch.cat(seqs, dim=1).contiguous()
+        price_targets = torch.stack(targets, dim=0)
+        future_returns = torch.stack(future_returns, dim=0)
+
+        return {
+            'input_ids': combined_inputs,
+            'labels': price_targets,
+            'future_returns': future_returns,
+            'attention_mask': torch.ones(self.sequence_length, dtype=torch.float32),
+        }
+
+
 def split_data(data, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15):
     """
     Split data into train/validation/test sets
@@ -222,7 +547,17 @@ def augment_data(data, noise_factor=0.01, scaling_factor=0.05):
     return augmented
 
 
-def load_training_data(data_dir="trainingdata", symbols=None, start_date='2015-01-01', recursive: bool = True, min_rows: int = 50):
+def load_training_data(
+    data_dir="trainingdata",
+    symbols=None,
+    start_date='2015-01-01',
+    recursive: bool = True,
+    min_rows: int = 50,
+    use_toto_forecasts: bool = False,
+    toto_options: Optional[TotoOptions] = None,
+    sequence_length: int = 60,
+    prediction_horizon: int = 5,
+) -> np.ndarray:
     """
     Load training data from various sources
     
@@ -237,6 +572,22 @@ def load_training_data(data_dir="trainingdata", symbols=None, start_date='2015-0
     
     data_path = Path(data_dir)
     
+    # Prepare shared processor configuration so Toto features stay consistent.
+    if use_toto_forecasts:
+        resolved_toto_options = toto_options or TotoOptions(
+            horizon=prediction_horizon,
+            context_length=sequence_length,
+        )
+    else:
+        resolved_toto_options = toto_options
+
+    processor_kwargs = dict(
+        use_toto_forecasts=use_toto_forecasts,
+        toto_options=resolved_toto_options,
+        sequence_length=sequence_length,
+        prediction_horizon=prediction_horizon,
+    )
+
     # Try to load from local CSV files first (supports nested folders)
     if data_path.exists():
         csv_files = list(data_path.rglob("*.csv")) if recursive else list(data_path.glob("*.csv"))
@@ -245,6 +596,7 @@ def load_training_data(data_dir="trainingdata", symbols=None, start_date='2015-0
             
             all_data = []
             loaded_files = 0
+            processor = StockDataProcessor(**processor_kwargs)
             for csv_file in csv_files:
                 try:
                     df = pd.read_csv(csv_file)
@@ -265,9 +617,7 @@ def load_training_data(data_dir="trainingdata", symbols=None, start_date='2015-0
                         continue
                     if len(df) < min_rows:
                         continue
-                    
-                    processor = StockDataProcessor()
-                    features = processor.prepare_features(df)
+                    features = processor.prepare_features(df, symbol=Path(csv_file).stem)
                     all_data.append(features)
                     loaded_files += 1
                 except Exception as e:
@@ -284,9 +634,9 @@ def load_training_data(data_dir="trainingdata", symbols=None, start_date='2015-0
         data_dict = load_local_stock_data(symbols, data_dir=str(data_path))
         if data_dict:
             all_data = []
-            processor = StockDataProcessor()
-            for _, df in data_dict.items():
-                features = processor.prepare_features(df)
+            processor = StockDataProcessor(**processor_kwargs)
+            for symbol, df in data_dict.items():
+                features = processor.prepare_features(df, symbol=symbol)
                 all_data.append(features)
             if all_data:
                 combined_data = np.vstack(all_data)

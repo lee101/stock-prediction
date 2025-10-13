@@ -1,0 +1,11 @@
+{
+  "regular_checkpoints": [
+    {
+      "path": "checkpoints/regular/checkpoint_epoch_11_step_110_20250908_233446.pth",
+      "epoch": 11,
+      "step": 110,
+      "timestamp": "20250908_233446",
+      "metrics": {
+        "train_loss": 0.02148436401039362,
+        "val_loss": 0.01569094539930423,
+        "mae": 

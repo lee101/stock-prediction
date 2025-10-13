@@ -68,3 +68,13 @@ pufferlibtraining/output
 pufferlibtraining/runs
 hftraining/output
 .coverage
+scratch.txt
+SCINet/
+algo-trading-bot/
+public-trading-bot/
+tototraining/tensorboard_logs
+tototraining/mlruns
+hftraining/tensorboard
+tototraining/temp_predictions_0.json
+tototraining/temp_predictions_15.json
+tototraining/temp_predictions_5.json

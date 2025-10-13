@@ -225,6 +225,8 @@ class HFTrainingConfig:
     label_smoothing: float = 0.1
     dropout_rate: float = 0.1
     layer_norm_eps: float = 1e-12
+    profit_loss_weight: float = 0.0
+    transaction_cost_bps: float = 10.0
     
     # Light data augmentation (normalized inputs)
     input_noise_std: float = 0.001
@@ -313,6 +315,13 @@ class TransformerTradingModel(nn.Module):
             nn.Dropout(config.dropout_rate),
             nn.Linear(config.hidden_size // 2, config.prediction_horizon)
         )
+
+        self.allocation_head = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size // 2),
+            nn.GELU(),
+            nn.Dropout(config.dropout_rate),
+            nn.Linear(config.hidden_size // 2, 1)
+        )
         
         # Initialize weights
         self.apply(self._init_weights)
@@ -375,11 +384,13 @@ class TransformerTradingModel(nn.Module):
         action_logits = self.action_head(last_hidden)
         value = self.value_head(last_hidden)
         price_predictions = self.price_prediction_head(last_hidden)
+        allocations = torch.tanh(self.allocation_head(last_hidden))
         
         return {
             'action_logits': action_logits,
             'value': value.squeeze(-1),
             'price_predictions': price_predictions,
+            'allocations': allocations.squeeze(-1),
             'hidden_states': transformer_output
         }
 
