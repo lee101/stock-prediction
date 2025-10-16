@@ -1,0 +1,29 @@
+{
+  "symbol": "NET",
+  "model": "toto",
+  "config": {
+    "name": "toto_trimmed10_128",
+    "num_samples": 128,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 16
+  },
+  "validation": {
+    "price_mae": 3.585032690488373,
+    "return_mae": 0.017036951805517946,
+    "latency_s": 35.89287640852854
+  },
+  "test": {
+    "price_mae": 4.229625093019914,
+    "return_mae": 0.019276865708217822,
+    "latency_s": 35.832040349021554
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/NET.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}
