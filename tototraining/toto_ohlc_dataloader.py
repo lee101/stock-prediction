@@ -393,10 +393,10 @@ class OHLCDataset(Dataset):
         
         # Create padding mask (all True since we don't have padding here)
         padding_mask = torch.ones(n_features, seq_len, dtype=torch.bool)
-        
+
         # Create ID mask (same ID for all features of same symbol)
-        id_mask = torch.full((n_features, 1), seq['symbol_id'], dtype=torch.long)
-        
+        id_mask = torch.full((n_features, seq_len), seq['symbol_id'], dtype=torch.long)
+
         # Create timestamps
         timestamps = torch.from_numpy(seq['timestamps']).long()
         timestamps = timestamps.unsqueeze(0).repeat(n_features, 1)
@@ -407,13 +407,17 @@ class OHLCDataset(Dataset):
         # Handle extreme values
         series = replace_extreme_values(series, replacement=0.0)
         
-        return MaskedTimeseries(
+        masked = MaskedTimeseries(
             series=series,
             padding_mask=padding_mask,
             id_mask=id_mask,
             timestamp_seconds=timestamps,
             time_interval_seconds=time_intervals
         )
+        
+        target = torch.from_numpy(seq['target']).float()
+        
+        return masked, target
     
     def get_targets(self) -> torch.Tensor:
         """Get all targets for this dataset"""
@@ -508,6 +512,25 @@ class TotoOHLCDataLoader:
         for csv_file in csv_files:
             try:
                 df = pd.read_csv(csv_file)
+
+                # Normalize column casing for OHLCV schema
+                column_renames = {}
+                for col in df.columns:
+                    col_lower = col.lower()
+                    if col_lower == "open":
+                        column_renames[col] = "Open"
+                    elif col_lower == "high":
+                        column_renames[col] = "High"
+                    elif col_lower == "low":
+                        column_renames[col] = "Low"
+                    elif col_lower == "close":
+                        column_renames[col] = "Close"
+                    elif col_lower == "volume":
+                        column_renames[col] = "Volume"
+                    elif col_lower == "timestamp":
+                        column_renames[col] = "timestamp"
+                if column_renames:
+                    df = df.rename(columns=column_renames)
                 
                 # Basic validation
                 required_cols = set(self.config.ohlc_features)

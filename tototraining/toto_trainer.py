@@ -125,6 +125,7 @@ class TrainerConfig:
     scheduler: str = "cosine"  # "cosine", "plateau", "onecycle", "none"
     gradient_clip_val: float = 1.0
     use_mixed_precision: bool = True
+    require_gpu: bool = False
     
     # Distributed training
     distributed: bool = False
@@ -138,6 +139,7 @@ class TrainerConfig:
     save_dir: str = "checkpoints"
     save_every_n_epochs: int = 5
     keep_last_n_checkpoints: int = 3
+    best_k_checkpoints: int = 1
     resume_from_checkpoint: Optional[str] = None
     
     # Validation and evaluation
@@ -186,6 +188,8 @@ class TrainerConfig:
         if self.export_pretrained_dir is None:
             self.export_pretrained_dir = str(Path(self.save_dir) / "hf_export")
         Path(self.export_pretrained_dir).mkdir(parents=True, exist_ok=True)
+        
+        self.best_k_checkpoints = max(1, int(self.best_k_checkpoints))
     
     def save(self, path: str):
         """Save configuration to JSON file"""
@@ -279,10 +283,14 @@ class MetricsTracker:
 class CheckpointManager:
     """Manages model checkpoints with automatic cleanup"""
     
-    def __init__(self, save_dir: str, keep_last_n: int = 3):
+    def __init__(self, save_dir: str, keep_last_n: int = 3, best_k: int = 1):
         self.save_dir = Path(save_dir)
         self.keep_last_n = keep_last_n
+        self.best_k = max(1, best_k)
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.best_dir = self.save_dir / "best"
+        self.best_dir.mkdir(parents=True, exist_ok=True)
+        self.best_records_path = self.save_dir / "best_records.json"
     
     def save_checkpoint(self, 
                        model: nn.Module,
@@ -293,7 +301,8 @@ class CheckpointManager:
                        best_val_loss: float,
                        metrics: Dict[str, float],
                        config: TrainerConfig,
-                       is_best: bool = False):
+                       is_best: bool = False,
+                       val_loss: Optional[float] = None):
         """Save model checkpoint"""
         checkpoint = {
             'epoch': epoch,
@@ -304,14 +313,15 @@ class CheckpointManager:
             'best_val_loss': best_val_loss,
             'metrics': metrics,
             'config': asdict(config),
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'val_loss': val_loss
         }
         
         # Save regular checkpoint
         checkpoint_path = self.save_dir / f"checkpoint_epoch_{epoch}.pt"
         torch.save(checkpoint, checkpoint_path)
         
-        # Save best model
+        # Save best model (legacy single-best)
         if is_best:
             best_path = self.save_dir / "best_model.pt"
             torch.save(checkpoint, best_path)
@@ -320,24 +330,70 @@ class CheckpointManager:
         latest_path = self.save_dir / "latest.pt"
         torch.save(checkpoint, latest_path)
         
+        # Update best-k registry
+        if val_loss is not None:
+            self._update_best_checkpoints(checkpoint_path, float(val_loss))
+        
         # Cleanup old checkpoints
         self._cleanup_checkpoints()
         
         return checkpoint_path
     
+    def _load_best_records(self) -> List[Dict[str, Any]]:
+        if self.best_records_path.exists():
+            try:
+                with self.best_records_path.open('r') as fp:
+                    records = json.load(fp)
+                if isinstance(records, list):
+                    return records
+            except Exception:
+                pass
+        return []
+    
+    def _save_best_records(self, records: List[Dict[str, Any]]) -> None:
+        with self.best_records_path.open('w') as fp:
+            json.dump(records, fp, indent=2)
+    
+    def _update_best_checkpoints(self, checkpoint_path: Path, val_loss: float) -> None:
+        records = self._load_best_records()
+        # Remove existing entry for this path if present
+        records = [r for r in records if r.get("path") != str(checkpoint_path)]
+        records.append({"path": str(checkpoint_path), "val_loss": val_loss})
+        records.sort(key=lambda r: r["val_loss"])
+        records = records[: self.best_k]
+        self._save_best_records(records)
+        
+        # Refresh best directory contents
+        for file in self.best_dir.glob("*.pt"):
+            try:
+                file.unlink()
+            except FileNotFoundError:
+                pass
+        for rank, record in enumerate(records, start=1):
+            src = Path(record["path"])
+            if not src.exists():
+                continue
+            dest_name = f"rank{rank}_val{record['val_loss']:.6f}.pt"
+            shutil.copy2(src, self.best_dir / dest_name)
+    
     def _cleanup_checkpoints(self):
         """Remove old checkpoints, keeping only the last N"""
         checkpoint_files = list(self.save_dir.glob("checkpoint_epoch_*.pt"))
         if len(checkpoint_files) > self.keep_last_n:
-            # Sort by epoch number
             checkpoint_files.sort(key=lambda x: int(x.stem.split('_')[-1]))
-            # Remove oldest files
-            for f in checkpoint_files[:-self.keep_last_n]:
-                f.unlink()
+            protected = {Path(record["path"]).resolve() for record in self._load_best_records()}
+            remove_candidates = [
+                f for f in checkpoint_files[:-self.keep_last_n] if f.resolve() not in protected
+            ]
+            for f in remove_candidates:
+                try:
+                    f.unlink()
+                except FileNotFoundError:
+                    pass
     
     def load_checkpoint(self, checkpoint_path: str) -> Dict[str, Any]:
         """Load checkpoint from file"""
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         return checkpoint
     
     def find_latest_checkpoint(self) -> Optional[str]:
@@ -383,7 +439,8 @@ class TotoTrainer:
         self.metrics_tracker = MetricsTracker()
         self.checkpoint_manager = CheckpointManager(
             config.save_dir, 
-            config.keep_last_n_checkpoints
+            config.keep_last_n_checkpoints,
+            best_k=config.best_k_checkpoints
         )
         
         # Training state
@@ -456,6 +513,8 @@ class TotoTrainer:
         self.is_main_process = True
         
         if self.config.distributed:
+            if not torch.cuda.is_available():
+                raise RuntimeError("Distributed training requires CUDA but no GPU is available.")
             if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
                 self.config.rank = int(os.environ["RANK"])
                 self.config.world_size = int(os.environ['WORLD_SIZE'])
@@ -476,6 +535,8 @@ class TotoTrainer:
     
     def _create_model(self, input_dim: int) -> nn.Module:
         """Create Toto model"""
+        if self.config.require_gpu and not torch.cuda.is_available():
+            raise RuntimeError("TrainerConfig.require_gpu is True but CUDA is not available.")
         model = Toto(
             patch_size=self.config.patch_size,
             stride=self.config.stride,
@@ -590,10 +651,25 @@ class TotoTrainer:
         
         # Determine input dimension from data loader
         sample_batch = next(iter(self.dataloaders['train']))
-        if isinstance(sample_batch, MaskedTimeseries):
-            input_dim = sample_batch.series.shape[0]  # Number of features
+        if isinstance(sample_batch, (tuple, list)):
+            primary_sample = sample_batch[0]
         else:
-            input_dim = sample_batch[0].shape[-1]  # Last dimension
+            primary_sample = sample_batch
+
+        if hasattr(primary_sample, 'series'):
+            series_sample = primary_sample.series
+            if series_sample.ndim == 3:
+                # (batch, features, sequence)
+                input_dim = series_sample.shape[1]
+            elif series_sample.ndim == 2:
+                # (features, sequence)
+                input_dim = series_sample.shape[0]
+            else:
+                raise RuntimeError(f"Unexpected series shape: {series_sample.shape}")
+        elif torch.is_tensor(primary_sample):
+            input_dim = primary_sample.shape[-1]
+        else:
+            raise RuntimeError("Unable to infer input dimension from training batch.")
         
         self.logger.info(f"Input dimension: {input_dim}")
         
@@ -654,20 +730,30 @@ class TotoTrainer:
             batch_start_time = time.time()
             
             # Prepare batch data
-            if hasattr(batch, 'series') and hasattr(batch, 'padding_mask') and hasattr(batch, 'id_mask'):
-                # Use MaskedTimeseries format (check by attributes, not type)
-                batch = batch.to(device)
-                series = batch.series
-                padding_mask = batch.padding_mask
-                id_mask = batch.id_mask
+            targets = None
+            if isinstance(batch, (tuple, list)) and batch:
+                candidate = batch[0]
+                if hasattr(candidate, 'series') and hasattr(candidate, 'padding_mask') and hasattr(candidate, 'id_mask'):
+                    masked_ts = candidate.to(device)
+                    series = masked_ts.series
+                    padding_mask = masked_ts.padding_mask
+                    id_mask = masked_ts.id_mask
+                    targets = batch[1].to(device) if len(batch) > 1 else None
+                else:
+                    x, y = batch
+                    x, y = x.to(device), y.to(device)
+                    series = x.transpose(1, 2)  # Convert to (batch, features, time)
+                    batch_size, seq_len, features = x.shape
+                    padding_mask = torch.ones(batch_size, features, seq_len, dtype=torch.bool, device=device)
+                    id_mask = torch.ones(batch_size, features, seq_len, dtype=torch.long, device=device)
+                    targets = y
+            elif hasattr(batch, 'series') and hasattr(batch, 'padding_mask') and hasattr(batch, 'id_mask'):
+                masked_ts = batch.to(device)
+                series = masked_ts.series
+                padding_mask = masked_ts.padding_mask
+                id_mask = masked_ts.id_mask
             else:
-                # Fallback to tuple format
-                x, y = batch
-                x, y = x.to(device), y.to(device)
-                series = x.transpose(1, 2)  # Convert to (batch, features, time)
-                batch_size, seq_len, features = x.shape
-                padding_mask = torch.zeros(batch_size, features, seq_len, dtype=torch.bool, device=device)
-                id_mask = torch.ones(batch_size, features, 1, dtype=torch.long, device=device)
+                raise RuntimeError("Unsupported batch format encountered in TotoTrainer.")
             
             # Forward pass with mixed precision
             with autocast(enabled=self.config.use_mixed_precision):
@@ -677,33 +763,38 @@ class TotoTrainer:
                     output = self.model.model(series, padding_mask, id_mask)
                 
                 # Extract predictions
-                if hasattr(output, 'loc'):
+                if hasattr(output, 'distribution'):
+                    predictions = output.distribution.mean
+                elif hasattr(output, 'loc'):
                     predictions = output.loc
                 elif isinstance(output, dict) and 'prediction' in output:
                     predictions = output['prediction']
                 else:
                     predictions = output
-                
-                # Compute loss (example with MSE, adjust based on your target format)
-                if hasattr(batch, 'series'):
-                    # For MaskedTimeseries, extract targets from the series
-                    # This creates a simple forecasting target by using future values
-                    batch_size, features, seq_len = series.shape
-                    prediction_length = predictions.shape[-1]
-                    
-                    # Simple example: predict the next prediction_length values of the first feature
-                    # In a real scenario, you'd have separate target data
+
+                prediction_length = predictions.shape[-1]
+
+                if targets is None:
+                    # Derive fallback targets from the last timesteps of the first feature
+                    batch_size, feature_dim, seq_len = series.shape
                     if seq_len >= prediction_length:
-                        targets = series[:, 0, -prediction_length:]  # Last prediction_length timesteps
+                        targets = series[:, 0, -prediction_length:]
                     else:
-                        # Fallback: repeat last value
                         targets = series[:, 0, -1:].repeat(1, prediction_length)
-                else:
-                    # For tuple format
-                    _, targets = batch
                     targets = targets.to(device)
-                
-                loss = F.mse_loss(predictions, targets)
+
+                predictions_close = predictions[:, :1, :]
+                targets = targets.unsqueeze(1)
+
+                if targets.shape[-1] != prediction_length:
+                    if targets.shape[-1] > prediction_length:
+                        targets = targets[..., -prediction_length:]
+                    else:
+                        pad_length = prediction_length - targets.shape[-1]
+                        padding = targets[..., -1:].repeat(1, 1, pad_length)
+                        targets = torch.cat([targets, padding], dim=-1)
+
+                loss = F.mse_loss(predictions_close, targets)
                 
                 # Scale loss for gradient accumulation
                 loss = loss / self.config.accumulation_steps
@@ -740,8 +831,8 @@ class TotoTrainer:
             
             self.metrics_tracker.update(
                 loss=loss.item() * self.config.accumulation_steps,
-                predictions=predictions if self.config.compute_train_metrics else None,
-                targets=targets if self.config.compute_train_metrics else None,
+                predictions=predictions_close.detach() if self.config.compute_train_metrics else None,
+                targets=targets.detach() if self.config.compute_train_metrics else None,
                 batch_time=batch_time,
                 learning_rate=current_lr
             )
@@ -767,19 +858,30 @@ class TotoTrainer:
         
         with torch.no_grad():
             for batch in self.dataloaders['val']:
-                # Prepare batch data (similar to training)
-                if hasattr(batch, 'series') and hasattr(batch, 'padding_mask') and hasattr(batch, 'id_mask'):
-                    batch = batch.to(device)
-                    series = batch.series
-                    padding_mask = batch.padding_mask
-                    id_mask = batch.id_mask
+                targets = None
+                if isinstance(batch, (tuple, list)) and batch:
+                    candidate = batch[0]
+                    if hasattr(candidate, 'series') and hasattr(candidate, 'padding_mask') and hasattr(candidate, 'id_mask'):
+                        masked_ts = candidate.to(device)
+                        series = masked_ts.series
+                        padding_mask = masked_ts.padding_mask
+                        id_mask = masked_ts.id_mask
+                        targets = batch[1].to(device) if len(batch) > 1 else None
+                    else:
+                        x, y = batch
+                        x, y = x.to(device), y.to(device)
+                        series = x.transpose(1, 2)
+                        batch_size, seq_len, features = x.shape
+                        padding_mask = torch.ones(batch_size, features, seq_len, dtype=torch.bool, device=device)
+                        id_mask = torch.ones(batch_size, features, seq_len, dtype=torch.long, device=device)
+                        targets = y
+                elif hasattr(batch, 'series') and hasattr(batch, 'padding_mask') and hasattr(batch, 'id_mask'):
+                    masked_ts = batch.to(device)
+                    series = masked_ts.series
+                    padding_mask = masked_ts.padding_mask
+                    id_mask = masked_ts.id_mask
                 else:
-                    x, y = batch
-                    x, y = x.to(device), y.to(device)
-                    series = x.transpose(1, 2)
-                    batch_size, seq_len, features = x.shape
-                    padding_mask = torch.zeros(batch_size, features, seq_len, dtype=torch.bool, device=device)
-                    id_mask = torch.ones(batch_size, features, 1, dtype=torch.long, device=device)
+                    raise RuntimeError("Unsupported batch format encountered during validation.")
                 
                 # Forward pass
                 with autocast(enabled=self.config.use_mixed_precision):
@@ -789,34 +891,43 @@ class TotoTrainer:
                         output = self.model.model(series, padding_mask, id_mask)
                     
                     # Extract predictions
-                    if hasattr(output, 'loc'):
+                    if hasattr(output, 'distribution'):
+                        predictions = output.distribution.mean
+                    elif hasattr(output, 'loc'):
                         predictions = output.loc
                     elif isinstance(output, dict) and 'prediction' in output:
                         predictions = output['prediction']
                     else:
                         predictions = output
-                    
-                    # Compute loss
-                    if hasattr(batch, 'series'):
-                        # Extract targets matching prediction shape
-                        batch_size, features, seq_len = series.shape
-                        prediction_length = predictions.shape[-1]
-                        
+
+                    prediction_length = predictions.shape[-1]
+
+                    if targets is None:
+                        batch_size, feature_dim, seq_len = series.shape
                         if seq_len >= prediction_length:
                             targets = series[:, 0, -prediction_length:]
                         else:
                             targets = series[:, 0, -1:].repeat(1, prediction_length)
-                    else:
-                        _, targets = batch
                         targets = targets.to(device)
-                    
-                    loss = F.mse_loss(predictions, targets)
+
+                    predictions_close = predictions[:, :1, :]
+                    targets = targets.unsqueeze(1)
+
+                    if targets.shape[-1] != prediction_length:
+                        if targets.shape[-1] > prediction_length:
+                            targets = targets[..., -prediction_length:]
+                        else:
+                            pad_length = prediction_length - targets.shape[-1]
+                            padding = targets[..., -1:].repeat(1, 1, pad_length)
+                            targets = torch.cat([targets, padding], dim=-1)
+
+                    loss = F.mse_loss(predictions_close, targets)
                 
                 # Update metrics
                 self.metrics_tracker.update(
                     loss=loss.item(),
-                    predictions=predictions if self.config.compute_val_metrics else None,
-                    targets=targets if self.config.compute_val_metrics else None
+                    predictions=predictions_close.detach() if self.config.compute_val_metrics else None,
+                    targets=targets.detach() if self.config.compute_val_metrics else None
                 )
         
         return self.metrics_tracker.compute_metrics()
@@ -879,6 +990,11 @@ class TotoTrainer:
             
             # Save checkpoint
             if epoch % self.config.save_every_n_epochs == 0 or is_best:
+                val_loss_for_checkpoint = None
+                if val_metrics and 'loss' in val_metrics:
+                    val_loss_for_checkpoint = float(val_metrics['loss'])
+                elif 'loss' in train_metrics:
+                    val_loss_for_checkpoint = float(train_metrics['loss'])
                 self.checkpoint_manager.save_checkpoint(
                     model=self.model,
                     optimizer=self.optimizer,
@@ -888,7 +1004,8 @@ class TotoTrainer:
                     best_val_loss=self.best_val_loss,
                     metrics={**train_metrics, **val_metrics},
                     config=self.config,
-                    is_best=is_best
+                    is_best=is_best,
+                    val_loss=val_loss_for_checkpoint
                 )
             
             if is_best and self.config.export_on_best:
@@ -1023,54 +1140,70 @@ class TotoTrainer:
         
         with torch.no_grad():
             for batch in self.dataloaders[dataloader_name]:
-                # Similar to validation logic
-                if hasattr(batch, 'series') and hasattr(batch, 'padding_mask') and hasattr(batch, 'id_mask'):
-                    batch = batch.to(device)
-                    series = batch.series
-                    padding_mask = batch.padding_mask
-                    id_mask = batch.id_mask
+                targets = None
+                if isinstance(batch, (tuple, list)) and batch:
+                    candidate = batch[0]
+                    if hasattr(candidate, 'series') and hasattr(candidate, 'padding_mask') and hasattr(candidate, 'id_mask'):
+                        masked_ts = candidate.to(device)
+                        series = masked_ts.series
+                        padding_mask = masked_ts.padding_mask
+                        id_mask = masked_ts.id_mask
+                        targets = batch[1].to(device) if len(batch) > 1 else None
+                    else:
+                        x, y = batch
+                        x, y = x.to(device), y.to(device)
+                        series = x.transpose(1, 2)
+                        batch_size, seq_len, features = x.shape
+                        padding_mask = torch.ones(batch_size, features, seq_len, dtype=torch.bool, device=device)
+                        id_mask = torch.ones(batch_size, features, seq_len, dtype=torch.long, device=device)
+                        targets = y
+                elif hasattr(batch, 'series') and hasattr(batch, 'padding_mask') and hasattr(batch, 'id_mask'):
+                    masked_ts = batch.to(device)
+                    series = masked_ts.series
+                    padding_mask = masked_ts.padding_mask
+                    id_mask = masked_ts.id_mask
                 else:
-                    x, y = batch
-                    x, y = x.to(device), y.to(device)
-                    series = x.transpose(1, 2)
-                    batch_size, seq_len, features = x.shape
-                    padding_mask = torch.zeros(batch_size, features, seq_len, dtype=torch.bool, device=device)
-                    id_mask = torch.ones(batch_size, features, 1, dtype=torch.long, device=device)
+                    raise RuntimeError("Unsupported batch format encountered during evaluation.")
                 
-                # Forward pass
                 if hasattr(self.model, 'module'):
                     output = self.model.module.model(series, padding_mask, id_mask)
                 else:
                     output = self.model.model(series, padding_mask, id_mask)
                 
-                # Extract predictions
-                if hasattr(output, 'loc'):
+                if hasattr(output, 'distribution'):
+                    predictions = output.distribution.mean
+                elif hasattr(output, 'loc'):
                     predictions = output.loc
                 elif isinstance(output, dict) and 'prediction' in output:
                     predictions = output['prediction']
                 else:
                     predictions = output
                 
-                # Get targets
-                if hasattr(batch, 'series'):
-                    # Extract targets matching prediction shape
-                    batch_size, features, seq_len = series.shape
-                    prediction_length = predictions.shape[-1]
-                    
+                prediction_length = predictions.shape[-1]
+                if targets is None:
+                    batch_size, feature_dim, seq_len = series.shape
                     if seq_len >= prediction_length:
                         targets = series[:, 0, -prediction_length:]
                     else:
                         targets = series[:, 0, -1:].repeat(1, prediction_length)
-                else:
-                    _, targets = batch
                     targets = targets.to(device)
                 
-                loss = F.mse_loss(predictions, targets)
+                predictions_close = predictions[:, :1, :]
+                targets = targets.unsqueeze(1)
+                if targets.shape[-1] != prediction_length:
+                    if targets.shape[-1] > prediction_length:
+                        targets = targets[..., -prediction_length:]
+                    else:
+                        pad_length = prediction_length - targets.shape[-1]
+                        padding = targets[..., -1:].repeat(1, 1, pad_length)
+                        targets = torch.cat([targets, padding], dim=-1)
+                
+                loss = F.mse_loss(predictions_close, targets)
                 
                 self.metrics_tracker.update(
                     loss=loss.item(),
-                    predictions=predictions,
-                    targets=targets
+                    predictions=predictions_close.detach(),
+                    targets=targets.detach()
                 )
         
         metrics = self.metrics_tracker.compute_metrics()
@@ -1109,6 +1242,7 @@ def main():
         scheduler="cosine",
         gradient_clip_val=1.0,
         use_mixed_precision=True,
+        require_gpu=True,
         
         # Validation
         validation_frequency=1,

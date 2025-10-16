@@ -10,7 +10,11 @@ the training pipeline remains usable even without the Toto runtime.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, Sequence, Tuple, List
+import hashlib
+import json
+import os
 
 import numpy as np
 import torch
@@ -31,12 +35,14 @@ class TotoOptions:
     use_toto: bool = True
     horizon: int = 8
     context_length: int = 60
-    num_samples: int = 256
+    num_samples: int = 2048
     toto_model_id: str = "Datadog/Toto-Open-Base-1.0"
     toto_device: str = "cuda"
     target_columns: Sequence[str] = field(
         default_factory=lambda: ("close", "open", "high", "low")
     )
+    cache_dir: Optional[str] = "hftraining/cache/toto"
+    enable_cache: bool = True
 
 
 class TotoFeatureGenerator:
@@ -52,6 +58,11 @@ class TotoFeatureGenerator:
         self.options = options
         self._target_columns = [col.lower() for col in options.target_columns]
         self._toto_model: Optional[TotoEmbeddingModel] = None
+        self._cache_dir: Optional[Path] = None
+        if self.options.enable_cache and self.options.cache_dir:
+            cache_path = Path(os.path.expanduser(self.options.cache_dir))
+            cache_path.mkdir(parents=True, exist_ok=True)
+            self._cache_dir = cache_path
 
     @property
     def uses_real_toto(self) -> bool:
@@ -128,6 +139,18 @@ class TotoFeatureGenerator:
         for column_name in active_targets:
             column_index = column_map[column_name]
 
+            cached = self._load_from_cache(
+                price_matrix,
+                column_order,
+                column_name,
+                symbol_prefix,
+            )
+            if cached is not None:
+                col_features, cached_names = cached
+                column_blocks.append(col_features)
+                column_names.extend(cached_names)
+                continue
+
             if model is None:
                 col_features, col_dim = self._compute_statistical_forecasts(
                     price_matrix, column_index
@@ -158,9 +181,91 @@ class TotoFeatureGenerator:
                     ]
                 )
 
+            self._save_to_cache(
+                price_matrix,
+                column_order,
+                column_name,
+                symbol_prefix,
+                col_features,
+                column_names[-col_features.shape[1]:] if column_names else column_names,
+            )
+
         features = np.concatenate(column_blocks, axis=1) if column_blocks else np.zeros((t_steps, 0), dtype=np.float32)
 
         return features, column_names
+
+    def _cache_key(
+        self,
+        price_matrix: np.ndarray,
+        column_order: Sequence[str],
+        column_name: str,
+        symbol_prefix: Optional[str],
+    ) -> str:
+        """Stable hash for the current feature request."""
+        payload = {
+            "columns": [col.lower() for col in column_order],
+            "target": column_name.lower(),
+            "symbol": (symbol_prefix or "").lower(),
+            "horizon": self.options.horizon,
+            "context_length": self.options.context_length,
+            "num_samples": self.options.num_samples,
+            "use_toto": self.options.use_toto,
+        }
+        hasher = hashlib.blake2b(digest_size=16)
+        hasher.update(json.dumps(payload, sort_keys=True).encode("utf-8"))
+        hasher.update(np.ascontiguousarray(price_matrix).view(np.uint8))
+        return hasher.hexdigest()
+
+    def _cache_path(
+        self,
+        price_matrix: np.ndarray,
+        column_order: Sequence[str],
+        column_name: str,
+        symbol_prefix: Optional[str],
+    ) -> Optional[Path]:
+        if not (self.options.enable_cache and self._cache_dir):
+            return None
+        key = self._cache_key(price_matrix, column_order, column_name, symbol_prefix)
+        return self._cache_dir / f"{key}.npz"
+
+    def _load_from_cache(
+        self,
+        price_matrix: np.ndarray,
+        column_order: Sequence[str],
+        column_name: str,
+        symbol_prefix: Optional[str],
+    ) -> Optional[Tuple[np.ndarray, List[str]]]:
+        cache_path = self._cache_path(price_matrix, column_order, column_name, symbol_prefix)
+        if cache_path is None or not cache_path.exists():
+            return None
+        try:
+            with np.load(cache_path, allow_pickle=True) as cached:
+                features = cached["features"]
+                names = cached["column_names"].tolist()
+            return features, names
+        except Exception:
+            return None
+
+    def _save_to_cache(
+        self,
+        price_matrix: np.ndarray,
+        column_order: Sequence[str],
+        column_name: str,
+        symbol_prefix: Optional[str],
+        features: np.ndarray,
+        names: Sequence[str],
+    ) -> None:
+        cache_path = self._cache_path(price_matrix, column_order, column_name, symbol_prefix)
+        if cache_path is None:
+            return
+        try:
+            np.savez_compressed(
+                cache_path,
+                features=features,
+                column_names=np.asarray(list(names), dtype=object),
+            )
+        except Exception:
+            pass
 
     def _compute_toto_forecasts(
         self,

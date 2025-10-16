@@ -39,13 +39,16 @@ crypto_client = CryptoHistoricalDataClient()
 
 
 def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
+    symbols_provided = symbols is not None
     if symbols is None:
         symbols = [
             'COUR', 'GOOG', 'TSLA', 'NVDA', 'AAPL', "U", "ADSK", "CRWD", "ADBE", "NET",
-            'COIN', 
-            #'MSFT', 
+            'COIN',
+            #'MSFT',
             'NFLX', 'PYPL', 'SAP', 'SONY', 'BTCUSD', 'ETHUSD',
         ]
+    else:
+        symbols = list(symbols)
 
     client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
     api = TradingClient(
@@ -82,8 +85,9 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
     alpaca_clock = api.get_clock()
     if not alpaca_clock.is_open and not all_data_force:
         logger.info("Market is closed")
-        # Only keep crypto symbols when the stock market is closed
-        symbols = [symbol for symbol in symbols if symbol in crypto_symbols]
+        if not symbols_provided:
+            # Only keep crypto symbols when using the default universe and the market is closed
+            symbols = [symbol for symbol in symbols if symbol in crypto_symbols]
 
     # Use the (potentially filtered) symbols list for downloading
     remaining_symbols = symbols

@@ -1,0 +1,31 @@
+{
+  "symbol": "GOOGL",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.16_p0.80_s192_k16_clip2_ctx256",
+    "temperature": 0.16,
+    "top_p": 0.8,
+    "top_k": 16,
+    "sample_count": 192,
+    "max_context": 256,
+    "clip": 2.0
+  },
+  "validation": {
+    "price_mae": 1.2598436915845987,
+    "return_mae": 0.016741319773875225,
+    "latency_s": 19.43412175681442
+  },
+  "test": {
+    "price_mae": 1.1092128177604976,
+    "return_mae": 0.016037697359898958,
+    "latency_s": 29.89038591599092
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

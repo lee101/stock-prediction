@@ -1,19 +1,23 @@
 """Position sizing utilities for trading operations."""
 
+from collections.abc import Sequence
 from math import floor
-from typing import List, Optional
+from typing import Any, Optional
 
 import alpaca_wrapper
 from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
+from src.portfolio_risk import get_global_risk_threshold
 from src.trading_obj_utils import filter_to_realistic_positions
 
 logger = setup_logging("sizing_utils.log")
 
+PositionLike = Any
 
-def get_current_symbol_exposure(symbol: str, positions: List) -> float:
+
+def get_current_symbol_exposure(symbol: str, positions: Sequence[PositionLike]) -> float:
     """Calculate current exposure to a symbol as percentage of total equity."""
-    total_exposure = 0
+    total_exposure = 0.0
     equity = alpaca_wrapper.equity
     
     for position in positions:
@@ -24,7 +28,7 @@ def get_current_symbol_exposure(symbol: str, positions: List) -> float:
     return (total_exposure / equity) * 100 if equity > 0 else 0
 
 
-def get_qty(symbol: str, entry_price: float, positions: Optional[List] = None) -> float:
+def get_qty(symbol: str, entry_price: float, positions: Optional[Sequence[PositionLike]] = None) -> float:
     """
     Calculate quantity with 60% max exposure check per symbol.
     
@@ -38,8 +42,8 @@ def get_qty(symbol: str, entry_price: float, positions: Optional[List] = None) -
     """
     # Get current positions to check existing exposure if not provided
     if positions is None:
-        positions = alpaca_wrapper.get_all_positions()
-        positions = filter_to_realistic_positions(positions)
+        raw_positions = alpaca_wrapper.get_all_positions()
+        positions = list(filter_to_realistic_positions(raw_positions))
     
     # Check current exposure to this symbol
     current_exposure_pct = get_current_symbol_exposure(symbol, positions)
@@ -55,15 +59,16 @@ def get_qty(symbol: str, entry_price: float, positions: Optional[List] = None) -
     remaining_exposure_pct = max_exposure_pct - current_exposure_pct
     
     # Calculate qty as 50% of available buying power, but limit by remaining exposure
-    buying_power = alpaca_wrapper.total_buying_power
-    equity = alpaca_wrapper.equity
+    buying_power = float(getattr(alpaca_wrapper, "total_buying_power", 0.0) or 0.0)
+    equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
+    risk_multiplier = get_global_risk_threshold()
     
-    # Calculate qty based on 50% of buying power
-    qty_from_buying_power = 0.50 * buying_power / entry_price
+    # Calculate qty based on 50% of buying power and risk multiplier
+    qty_from_buying_power = 0.50 * buying_power * risk_multiplier / entry_price
     
     # Calculate max qty based on remaining exposure allowance (only if equity > 0)
     if equity > 0:
-        max_additional_value = (remaining_exposure_pct / 100) * equity
+        max_additional_value = (remaining_exposure_pct / 100) * equity * risk_multiplier
         qty_from_exposure_limit = max_additional_value / entry_price
         # Use the smaller of the two
         qty = min(qty_from_buying_power, qty_from_exposure_limit)
@@ -84,9 +89,17 @@ def get_qty(symbol: str, entry_price: float, positions: Optional[List] = None) -
         return 0
     
     # Log the exposure calculation
-    future_exposure_value = sum(abs(float(p.market_value)) for p in positions if p.symbol == symbol) + (qty * entry_price)
+    future_exposure_value = sum(
+        abs(float(getattr(p, "market_value", 0))) for p in positions if getattr(p, "symbol", "") == symbol
+    ) + (qty * entry_price)
     future_exposure_pct = (future_exposure_value / equity) * 100 if equity > 0 else 0
     
-    logger.info(f"Position sizing for {symbol}: current={current_exposure_pct:.1f}%, new position will be {future_exposure_pct:.1f}% of total equity")
+    logger.debug(
+        "Position sizing for %s: current=%.1f%%, new=%.1f%% of equity with risk multiplier %.2f",
+        symbol,
+        current_exposure_pct,
+        future_exposure_pct,
+        risk_multiplier,
+    )
     
     return qty

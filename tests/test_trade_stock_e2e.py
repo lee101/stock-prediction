@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 import pytz
 
+import trade_stock_e2e as trade_module
 from trade_stock_e2e import (
     analyze_symbols,
     get_market_hours,
@@ -68,6 +69,13 @@ def stub_trading_env(
         )
         mocks["open_order"] = stack.enter_context(
             patch("trade_stock_e2e.alpaca_wrapper.open_order_at_price_or_all")
+        )
+        stack.enter_context(
+            patch.object(
+                trade_module.alpaca_wrapper,
+                "equity",
+                250000.0,
+            )
         )
         mocks["trading_day_now"] = stack.enter_context(
             patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=trading_day_now)
@@ -142,6 +150,93 @@ def test_manage_market_close(mock_logger, mock_get_positions, mock_analyze, test
     result = manage_market_close(test_data["symbols"], {}, test_data["mock_picks"])
     assert isinstance(result, dict)
     mock_logger.info.assert_called()
+
+
+def test_manage_market_close_closes_on_negative_strategy(monkeypatch):
+    position = make_position("AAPL", "buy")
+
+    monkeypatch.setattr(
+        trade_module.alpaca_wrapper,
+        "get_all_positions",
+        lambda: [position],
+    )
+    monkeypatch.setattr(trade_module, "filter_to_realistic_positions", lambda positions: positions)
+    monkeypatch.setattr(trade_module, "build_portfolio", lambda *args, **kwargs: {})
+
+    close_calls = []
+    outcome_calls = []
+    monkeypatch.setattr(trade_module, "backout_near_market", lambda symbol: close_calls.append(symbol))
+    monkeypatch.setattr(
+        trade_module,
+        "_record_trade_outcome",
+        lambda pos, reason: outcome_calls.append((pos.symbol, reason)),
+    )
+
+    monkeypatch.setattr(
+        trade_module,
+        "_get_active_trade",
+        lambda symbol, side: {"mode": "normal", "entry_strategy": "simple"},
+    )
+
+    all_results = {
+        "AAPL": {
+            "side": "buy",
+            "strategy": "simple",
+            "strategy_returns": {"simple": -0.012},
+            "avg_return": -0.012,
+            "predicted_movement": 0.001,
+            "probe_expired": False,
+        }
+    }
+    previous_picks = {
+        "AAPL": {
+            "strategy": "simple",
+            "trade_mode": "normal",
+        }
+    }
+
+    manage_market_close(["AAPL"], previous_picks, all_results)
+
+    assert close_calls == ["AAPL"]
+    assert outcome_calls == [("AAPL", "simple_strategy_loss")]
+
+
+def test_manage_market_close_skips_probe_when_negative(monkeypatch):
+    position = make_position("AAPL", "buy")
+
+    monkeypatch.setattr(trade_module.alpaca_wrapper, "get_all_positions", lambda: [position])
+    monkeypatch.setattr(trade_module, "filter_to_realistic_positions", lambda positions: positions)
+    monkeypatch.setattr(trade_module, "build_portfolio", lambda *args, **kwargs: {})
+    close_calls = []
+    monkeypatch.setattr(trade_module, "backout_near_market", lambda symbol: close_calls.append(symbol))
+    monkeypatch.setattr(trade_module, "_record_trade_outcome", lambda pos, reason: None)
+
+    monkeypatch.setattr(
+        trade_module,
+        "_get_active_trade",
+        lambda symbol, side: {"mode": "probe", "entry_strategy": "simple"},
+    )
+
+    all_results = {
+        "AAPL": {
+            "side": "buy",
+            "strategy": "simple",
+            "strategy_returns": {"simple": -0.05},
+            "avg_return": -0.05,
+            "predicted_movement": 0.002,
+            "probe_expired": False,
+        }
+    }
+    previous_picks = {
+        "AAPL": {
+            "strategy": "simple",
+            "trade_mode": "probe",
+        }
+    }
+
+    manage_market_close(["AAPL"], previous_picks, all_results)
+
+    assert close_calls == []
 
 
 def test_manage_positions_only_closes_on_opposite_forecast():

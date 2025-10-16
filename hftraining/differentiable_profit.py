@@ -15,7 +15,9 @@ def compute_portfolio_pnl(
     leverage_limit: float = 2.0,
     borrowing_cost: float = 0.0675,
     trading_days: int = 252,
-) -> torch.Tensor:
+    per_asset_costs: torch.Tensor | None = None,
+    return_per_asset: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """
     Compute per-sample profit and loss using differentiable operations.
 
@@ -41,14 +43,36 @@ def compute_portfolio_pnl(
     scale = torch.clamp(gross / leverage_limit, min=1.0)
     constrained_allocations = allocations / scale
 
-    pnl = (constrained_allocations * future_returns).sum(dim=-1)
-    trading_penalty = torch.abs(constrained_allocations) * transaction_cost
-    pnl = pnl - trading_penalty.sum(dim=-1)
+    per_asset_returns = constrained_allocations * future_returns
+
+    if per_asset_costs is not None:
+        per_asset_costs = per_asset_costs.to(
+            dtype=future_returns.dtype,
+            device=future_returns.device,
+        )
+        if per_asset_costs.dim() == 1:
+            per_asset_costs = per_asset_costs.unsqueeze(0)
+        elif per_asset_costs.dim() == 0:
+            per_asset_costs = per_asset_costs.view(1, 1)
+        per_asset_costs = per_asset_costs.expand_as(constrained_allocations)
+    else:
+        per_asset_costs = torch.full_like(constrained_allocations, float(transaction_cost))
+
+    trading_penalty = torch.abs(constrained_allocations) * per_asset_costs
+    per_asset_net = per_asset_returns - trading_penalty
 
     realised_gross = constrained_allocations.abs().sum(dim=-1)
     excess_leverage = torch.clamp(realised_gross - 1.0, min=0.0)
     financing_penalty = excess_leverage * (borrowing_cost / trading_days)
-    pnl = pnl - financing_penalty
+    if return_per_asset:
+        exposure_share = constrained_allocations.abs()
+        exposure_denominator = exposure_share.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+        exposure_share = exposure_share / exposure_denominator
+        per_asset_net = per_asset_net - exposure_share * financing_penalty.unsqueeze(-1)
+        pnl = per_asset_net.sum(dim=-1)
+        return pnl, per_asset_net
+
+    pnl = per_asset_net.sum(dim=-1) - financing_penalty
 
     return pnl
 

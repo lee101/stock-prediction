@@ -68,6 +68,7 @@ def reset_account(initial_cash: float = 100_000.0) -> None:
     state.positions.clear()
     state.open_orders.clear()
     state.take_profit_targets.clear()
+    state.fees_paid = 0.0
     state.update_market_prices()
     _sync_account_metrics(state)
 

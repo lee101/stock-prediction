@@ -1,12 +1,19 @@
-from models import data_access
-from models.models import Base
+from __future__ import annotations
 
-# data_access.engine.create_all()
-# db.session.commit()
-Base.metadata.create_all(data_access.engine)
+from typing import Optional
 
-from models.featureset import Base
+from sqlalchemy.engine import Engine
 
-# data_access.engine.create_all()
-# db.session.commit()
-Base.metadata.create_all(data_access.engine)
+from src.models.models import Base as ModelsBase
+from src.portfolio_risk import Base as PortfolioBase, _get_engine
+
+
+def create_all(engine: Optional[Engine] = None) -> None:
+    """Create all SQLAlchemy tables used by the trading system."""
+    resolved_engine = engine or _get_engine()
+    for metadata in (ModelsBase.metadata, PortfolioBase.metadata):
+        metadata.create_all(resolved_engine)
+
+
+if __name__ == "__main__":
+    create_all()

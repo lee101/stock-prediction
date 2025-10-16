@@ -33,7 +33,12 @@ def test_chronos_bolt_fix():
         print(f"✓ Success! Forecast shape: {forecast[0].numpy().shape}")
         
         # Process the forecast the same way as the original code
-        low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
+        tensor = forecast[0]
+        if hasattr(tensor, "detach"):
+            tensor = tensor.detach().cpu().numpy()
+        else:
+            tensor = np.asarray(tensor)
+        low, median, high = np.quantile(tensor, [0.1, 0.5, 0.9], axis=0)
         print(f"✓ Successfully processed forecast: low={low}, median={median}, high={high}")
         
         # Check that we can get the median value as item (as done in original code)
