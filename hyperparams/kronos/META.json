@@ -1,0 +1,31 @@
+{
+  "symbol": "META",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.14_p0.80_s200_k24_clip1.6_ctx224",
+    "temperature": 0.14,
+    "top_p": 0.8,
+    "top_k": 24,
+    "sample_count": 200,
+    "max_context": 224,
+    "clip": 1.6
+  },
+  "validation": {
+    "price_mae": 7.690499877929687,
+    "return_mae": 0.010220133608612524,
+    "latency_s": 32.147720486857
+  },
+  "test": {
+    "price_mae": 9.869259643554688,
+    "return_mae": 0.013398768123906949,
+    "latency_s": 32.63237286172807
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

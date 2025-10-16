@@ -1,33 +1,35 @@
-from pathlib import Path
+import functools
 import hashlib
 import pickle
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any, Optional, TypeVar, cast
 
 from diskcache import Cache
+
+F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
 
 cache_dir = Path(".cache")
 cache_dir.mkdir(exist_ok=True, parents=True)
 cache = Cache(str(cache_dir))
 
-import asyncio
-import functools
-from typing import Any, Callable, Optional
 
 def async_cache_decorator(
     name: Optional[str] = None,
     typed: bool = False,
     expire: Optional[int] = None,
     tag: Optional[str] = None,
-    ignore: tuple = ()
-):
+    ignore: tuple[Any, ...] = (),
+) -> Callable[[F], F]:
     """Cache decorator for async functions that works with running event loops"""
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: F) -> F:
         # Create sync function for cache key generation
         @functools.wraps(func)
         def sync_key_func(*args: Any, **kwargs: Any) -> Any:
             return args, kwargs
 
         # Apply cache to key function
-        cached_key_func = cache.memoize(
+        cached_key_func: Any = cache.memoize(
             name=name,
             typed=typed,
             expire=expire,
@@ -38,19 +40,26 @@ def async_cache_decorator(
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             # Generate a hash of the cache key to avoid "string or blob too big" error
-            cache_key = cached_key_func.__cache_key__(*args, **kwargs)
+            cache_key_fn = getattr(cached_key_func, "__cache_key__", None)
+            if cache_key_fn is None:
+                raise AttributeError("DiskCache memoize wrapper missing __cache_key__ attribute.")
+
+            cache_key = cache_key_fn(*args, **kwargs)
             key_hash = hashlib.md5(pickle.dumps(cache_key)).hexdigest()
-            
+
             result = cache.get(key_hash)
-            
+
             if result is None:
                 result = await func(*args, **kwargs)
                 cache.set(key_hash, result)
-            
+
             return result
 
         # Preserve cache key generation
-        wrapper.__cache_key__ = cached_key_func.__cache_key__
-        return wrapper
+        cache_key_fn = getattr(cached_key_func, "__cache_key__", None)
+        if cache_key_fn is None:
+            raise AttributeError("DiskCache memoize wrapper missing __cache_key__ attribute.")
+        setattr(wrapper, "__cache_key__", cache_key_fn)
+        return cast(F, wrapper)
 
     return decorator

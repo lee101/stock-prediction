@@ -1,18 +1,25 @@
 import json
-import json
 import re
 import traceback
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from time import sleep
 
 import cachetools
 import math
+import pandas as pd
 import requests.exceptions
 from alpaca.data import (
-    StockLatestQuoteRequest,
+    StockBarsRequest,
     StockHistoricalDataClient,
+    CryptoBarsRequest,
     CryptoHistoricalDataClient,
     CryptoLatestQuoteRequest,
+    StockLatestQuoteRequest,
+    TimeFrame,
+    TimeFrameUnit,
 )
+from alpaca.data.enums import DataFeed
 from alpaca.trading import OrderType, LimitOrderRequest, GetOrdersRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide
@@ -22,7 +29,7 @@ from loguru import logger
 from retry import retry
 
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT
-from typing import Iterable, Dict, Any
+from typing import Iterable, Dict, Any, List, Optional, Tuple
 from src.comparisons import is_buy_side, is_sell_side
 from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols
@@ -40,6 +47,45 @@ alpaca_api = TradingClient(
 )  # todo
 
 data_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+
+TRAININGDATA_BASE_PATH = Path(__file__).resolve().parent / "trainingdata"
+DEFAULT_HISTORY_DAYS = 365 * 4
+DEFAULT_TEST_DAYS = 30
+DEFAULT_SKIP_IF_RECENT_DAYS = 7
+
+EXTENDED_CRYPTO_SYMBOLS: List[str] = [
+    'ADAUSD', 'ALGOUSD', 'ATOMUSD', 'AVAXUSD', 'BNBUSD', 'BTCUSD', 'DOGEUSD', 'DOTUSD',
+    'ETHUSD', 'LINKUSD', 'LTCUSD', 'MATICUSD', 'PAXGUSD', 'SHIBUSD', 'SOLUSD', 'TRXUSD',
+    'UNIUSD', 'VETUSD', 'XLMUSD', 'XRPUSD',
+]
+
+EXTENDED_STOCK_SYMBOLS: List[str] = [
+    'AA', 'AAPL', 'ABBV', 'ABNB', 'ABT', 'ADBE', 'ADI', 'ADSK', 'AEP', 'AFRM', 'AIV', 'ALLY', 'AMAT',
+    'AMD', 'AMT', 'AMZN', 'APD', 'ARKG', 'ARKK', 'ARKQ', 'ARKW', 'ASML', 'ATVI', 'AVB', 'AVGO', 'AXP',
+    'AZN', 'AZO', 'BA', 'BABA', 'BAC', 'BIIB', 'BKNG', 'BKR', 'BLK', 'BNTX', 'BP', 'BSX', 'BUD', 'BXP',
+    'C', 'CAG', 'CAT', 'CCI', 'CCL', 'CHD', 'CHTR', 'CL', 'CLF', 'CLX', 'CMCSA', 'CME', 'CMG', 'CMI',
+    'CNP', 'COF', 'COIN', 'COP', 'COST', 'COUR', 'CPB', 'CPT', 'CRM', 'CRWD', 'CVS', 'CVX', 'D', 'DAL',
+    'DASH', 'DDOG', 'DE', 'DEO', 'DHR', 'DIS', 'DISH', 'DOCU', 'DOV', 'DTE', 'DUK', 'EA', 'EBAY', 'ECL',
+    'ED', 'EIX', 'EMR', 'ENB', 'ENPH', 'EOG', 'EPD', 'EQIX', 'EQR', 'ES', 'ESS', 'ESTC', 'ET', 'ETN',
+    'ETR', 'ETSY', 'EW', 'EXC', 'EXR', 'F', 'FCX', 'FDX', 'GD', 'GE', 'GILD', 'GIS', 'GM', 'GOLD',
+    'GOOG', 'GOOGL', 'GS', 'GSK', 'HAL', 'HCP', 'HD', 'HLT', 'HOLX', 'HON', 'HOOD', 'HSY', 'ICE', 'IFF',
+    'ILMN', 'INTC', 'ISRG', 'ITW', 'JNJ', 'JPM', 'K', 'KHC', 'KLAC', 'KMB', 'KMI', 'KO', 'LC', 'LIN',
+    'LLY', 'LMT', 'LOW', 'LRCX', 'LYFT', 'MA', 'MAA', 'MAR', 'MCD', 'MCO', 'MDB', 'MDT', 'MELI', 'META',
+    'MGM', 'MLM', 'MMM', 'MNST', 'MPC', 'MPWR', 'MRK', 'MRNA', 'MRVL', 'MS', 'MSFT', 'MTCH', 'MU',
+    'NDAQ', 'NEE', 'NEM', 'NET', 'NFLX', 'NI', 'NKE', 'NOC', 'NOW', 'NUE', 'NVDA', 'NVO', 'NVS', 'NXPI',
+    'O', 'OIH', 'OKTA', 'ON', 'ORCL', 'ORLY', 'OXY', 'PANW', 'PCG', 'PEP', 'PFE', 'PG', 'PH', 'PINS',
+    'PLD', 'PLTR', 'PNC', 'PPG', 'PPL', 'PSA', 'PSX', 'PTON', 'PYPL', 'QCOM', 'RBLX', 'RCL', 'REGN',
+    'RHHBY', 'ROK', 'ROKU', 'RPM', 'RS', 'RTX', 'SAP', 'SBUX', 'SCHW', 'SE', 'SEDG', 'SHEL', 'SHOP',
+    'SHW', 'SIRI', 'SJM', 'SLB', 'SNAP', 'SNOW', 'SNY', 'SO', 'SOFI', 'SONY', 'SPCE', 'SPGI', 'SPOT',
+    'SQ', 'SRE', 'STLD', 'SYK', 'T', 'TEAM', 'TFC', 'TGT', 'TJX', 'TM', 'TMO', 'TMUS', 'TRP', 'TSLA',
+    'TSM', 'TTWO', 'TWLO', 'TWTR', 'TXN', 'U', 'UAL', 'UBER', 'UDR', 'UL', 'UNH', 'UPS', 'UPST', 'USB',
+    'V', 'VEEV', 'VLO', 'VMC', 'VRTX', 'VTR', 'VZ', 'WDAY', 'WEC', 'WELL', 'WFC', 'WMB', 'WMT', 'WYNN',
+    'X', 'XEL', 'XOM', 'ZBH', 'ZM', 'ZS',
+]
+
+DEFAULT_CRYPTO_SYMBOLS: List[str] = sorted(set(crypto_symbols) | set(EXTENDED_CRYPTO_SYMBOLS))
+DEFAULT_STOCK_SYMBOLS: List[str] = sorted(set(EXTENDED_STOCK_SYMBOLS))
+DEFAULT_TRAINING_SYMBOLS: List[str] = DEFAULT_STOCK_SYMBOLS + DEFAULT_CRYPTO_SYMBOLS
 
 force_open_the_clock = False
 
@@ -279,8 +325,21 @@ def open_order_at_price_or_all(symbol, qty, side, price):
 
                 if available > 0:
                     # Calculate maximum quantity we can afford with available balance
-                    # Use 0.99 buffer and round to 6 decimal places for crypto
-                    new_qty = round(0.99 * available / price, 6)
+                    # Use a small buffer to avoid repeated insufficient balance errors.
+                    affordable_qty = 0.99 * available / price if price else 0
+
+                    # Stocks require whole-share quantities while crypto can remain fractional.
+                    is_stock_quantity = False
+                    try:
+                        is_stock_quantity = float(qty).is_integer()
+                    except (TypeError, ValueError):
+                        is_stock_quantity = False
+
+                    if is_stock_quantity:
+                        new_qty = math.floor(affordable_qty)
+                    else:
+                        new_qty = round(affordable_qty, 6)
+
                     if new_qty > 0 and new_qty != qty:
                         logger.info(f"Insufficient funds. Adjusting quantity from {qty} to {new_qty} (available: {available})")
                         qty = new_qty
@@ -842,6 +901,307 @@ def latest_data(symbol):
     return latest_multisymbol_quotes[symbol]
 
 
+def _normalize_bar_frame(symbol: str, bars: pd.DataFrame) -> pd.DataFrame:
+    if bars.empty:
+        return pd.DataFrame()
+
+    df = bars.copy()
+    if isinstance(df.index, pd.MultiIndex):
+        level_symbols = df.index.get_level_values(0)
+        primary_symbol = remap_symbols(symbol) if symbol in DEFAULT_CRYPTO_SYMBOLS else symbol
+        if primary_symbol in level_symbols:
+            df = df.xs(primary_symbol, level=0, drop_level=True)
+        elif symbol in level_symbols:
+            df = df.xs(symbol, level=0, drop_level=True)
+        else:
+            df = df.xs(level_symbols[0], level=0, drop_level=True)
+
+    df = df.reset_index()
+    if "symbol" in df.columns:
+        df = df.drop(columns=["symbol"])
+
+    df = df.rename(columns=lambda c: c.lower() if isinstance(c, str) else c)
+    if "timestamp" not in df.columns:
+        for candidate in ("time", "date"):
+            if candidate in df.columns:
+                df = df.rename(columns={candidate: "timestamp"})
+                break
+
+    if "timestamp" not in df.columns:
+        raise ValueError(f"Could not locate timestamp column for {symbol}")
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df.dropna(subset=["timestamp"])
+    df = df.sort_values("timestamp").drop_duplicates(subset="timestamp", keep="last")
+    df.set_index("timestamp", inplace=True)
+    df.index.name = "timestamp"
+    return df
+
+
+def download_symbol_history(
+    symbol: str,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    include_latest: bool = True,
+) -> pd.DataFrame:
+    symbol = symbol.upper()
+    is_crypto = symbol in DEFAULT_CRYPTO_SYMBOLS or symbol.endswith("USD")
+
+    end_dt = end or datetime.now(timezone.utc)
+    start_dt = start or (end_dt - timedelta(days=DEFAULT_HISTORY_DAYS))
+
+    try:
+        if is_crypto:
+            request = CryptoBarsRequest(
+                symbol_or_symbols=remap_symbols(symbol),
+                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                start=start_dt,
+                end=end_dt,
+            )
+            bars = crypto_client.get_crypto_bars(request).df
+        else:
+            request = StockBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                start=start_dt,
+                end=end_dt,
+                adjustment="raw",
+                feed=DataFeed.IEX,
+            )
+            bars = data_client.get_stock_bars(request).df
+    except Exception as exc:
+        logger.error(f"Failed to download historical bars for {symbol}: {exc}")
+        raise
+
+    df = _normalize_bar_frame(symbol, bars)
+    if df.empty:
+        return df
+
+    if include_latest:
+        try:
+            quote = latest_data(symbol)
+            ask_price = float(getattr(quote, "ask_price", 0) or 0)
+            bid_price = float(getattr(quote, "bid_price", 0) or 0)
+            if ask_price > 0 and bid_price > 0:
+                mid_price = (ask_price + bid_price) / 2.0
+                if "close" in df.columns:
+                    df.iloc[-1, df.columns.get_loc("close")] = mid_price
+                else:
+                    df["close"] = mid_price
+        except Exception as exc:
+            logger.warning(f"Unable to augment latest quote for {symbol}: {exc}")
+
+    df["symbol"] = symbol
+    return df
+
+
+def _split_train_test(df: pd.DataFrame, test_days: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if df.empty:
+        return df, df
+
+    ordered = df.sort_index()
+    if len(ordered) > test_days:
+        train_df = ordered.iloc[:-test_days]
+        test_df = ordered.iloc[-test_days:]
+    else:
+        split_idx = max(1, int(len(ordered) * 0.8))
+        train_df = ordered.iloc[:split_idx]
+        test_df = ordered.iloc[split_idx:]
+    return train_df, test_df
+
+
+def _persist_splits(symbol: str, train_df: pd.DataFrame, test_df: pd.DataFrame, base_path: Path) -> Tuple[Path, Path]:
+    safe_symbol = symbol.replace("/", "-")
+    train_dir = base_path / "train"
+    test_dir = base_path / "test"
+    train_dir.mkdir(parents=True, exist_ok=True)
+    test_dir.mkdir(parents=True, exist_ok=True)
+
+    train_df = train_df.copy()
+    test_df = test_df.copy()
+    train_df.index.name = "timestamp"
+    test_df.index.name = "timestamp"
+
+    train_path = train_dir / f"{safe_symbol}.csv"
+    test_path = test_dir / f"{safe_symbol}.csv"
+    train_df.to_csv(train_path)
+    test_df.to_csv(test_path)
+    return train_path, test_path
+
+
+def _load_existing_summary(symbol: str, base_path: Path) -> Optional[Dict[str, Any]]:
+    safe_symbol = symbol.replace("/", "-")
+    train_file = base_path / "train" / f"{safe_symbol}.csv"
+    test_file = base_path / "test" / f"{safe_symbol}.csv"
+
+    if not train_file.exists() or not test_file.exists():
+        return None
+
+    try:
+        train_df = pd.read_csv(train_file, index_col=0, parse_dates=True)
+        test_df = pd.read_csv(test_file, index_col=0, parse_dates=True)
+    except Exception:
+        return None
+
+    latest_values = []
+    if not train_df.empty:
+        latest_values.append(train_df.index.max())
+    if not test_df.empty:
+        latest_values.append(test_df.index.max())
+
+    if not latest_values:
+        return None
+
+    latest_ts = max(latest_values)
+    latest_ts = pd.to_datetime(latest_ts, utc=True, errors="coerce")
+    if pd.isna(latest_ts):
+        return None
+
+    return {
+        "symbol": symbol,
+        "latest": latest_ts,
+        "train_rows": len(train_df),
+        "test_rows": len(test_df),
+    }
+
+
+def _should_skip_symbol(symbol: str, base_path: Path, skip_if_recent_days: int) -> Optional[Dict[str, Any]]:
+    if skip_if_recent_days <= 0:
+        return None
+
+    summary = _load_existing_summary(symbol, base_path)
+    if not summary:
+        return None
+
+    latest_ts = summary["latest"]
+    current_time = datetime.now(timezone.utc)
+    days_old = (current_time - latest_ts).days
+    if days_old < skip_if_recent_days:
+        logger.info(f"Skipping {symbol} - latest data is {days_old} days old")
+        summary.update(
+            {
+                "status": "skipped",
+                "latest": latest_ts.isoformat(),
+            }
+        )
+        return summary
+    return None
+
+
+def _write_training_summary(base_path: Path) -> None:
+    train_dir = base_path / "train"
+    if not train_dir.exists():
+        return
+
+    test_dir = base_path / "test"
+    summary_rows = []
+    for train_file in sorted(train_dir.glob("*.csv")):
+        symbol = train_file.stem
+        test_file = test_dir / f"{symbol}.csv"
+        if not test_file.exists():
+            continue
+
+        try:
+            train_df = pd.read_csv(train_file, index_col=0, parse_dates=True)
+            test_df = pd.read_csv(test_file, index_col=0, parse_dates=True)
+        except Exception as exc:
+            logger.error(f"Unable to load training data for summary ({symbol}): {exc}")
+            continue
+
+        latest_candidates = []
+        if not train_df.empty:
+            latest_candidates.append(train_df.index.max())
+        if not test_df.empty:
+            latest_candidates.append(test_df.index.max())
+
+        latest_ts = pd.to_datetime(max(latest_candidates), utc=True, errors="coerce") if latest_candidates else None
+        summary_rows.append(
+            {
+                "symbol": symbol,
+                "latest_date": latest_ts.strftime("%Y-%m-%d") if latest_ts is not None and not pd.isna(latest_ts) else "",
+                "total_rows": len(train_df) + len(test_df),
+                "train_rows": len(train_df),
+                "test_rows": len(test_df),
+                "train_file": f"trainingdata/train/{symbol}.csv",
+                "test_file": f"trainingdata/test/{symbol}.csv",
+            }
+        )
+
+    summary_df = pd.DataFrame(summary_rows).sort_values("symbol")
+    summary_path = base_path / "data_summary.csv"
+    summary_df.to_csv(summary_path, index=False)
+    logger.info(f"Wrote training data summary to {summary_path}")
+
+
+def download_training_pairs(
+    symbols: Optional[Iterable[str]] = None,
+    output_dir: Optional[Path] = None,
+    test_days: int = DEFAULT_TEST_DAYS,
+    history_days: int = DEFAULT_HISTORY_DAYS,
+    skip_if_recent_days: int = DEFAULT_SKIP_IF_RECENT_DAYS,
+    include_latest: bool = True,
+    sleep_seconds: float = 0.0,
+) -> List[Dict[str, Any]]:
+    resolved_symbols = (
+        sorted({s.upper().replace(" ", "") for s in DEFAULT_TRAINING_SYMBOLS})
+        if symbols is None
+        else sorted({s.upper().replace(" ", "") for s in symbols})
+    )
+    base_path = Path(output_dir) if output_dir else TRAININGDATA_BASE_PATH
+    base_path.mkdir(parents=True, exist_ok=True)
+
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=history_days)
+
+    results: List[Dict[str, Any]] = []
+    for index, symbol in enumerate(resolved_symbols, start=1):
+        skip_info = _should_skip_symbol(symbol, base_path, skip_if_recent_days)
+        if skip_info:
+            results.append(skip_info)
+            continue
+
+        try:
+            df = download_symbol_history(symbol, start=start_dt, end=end_dt, include_latest=include_latest)
+        except Exception as exc:
+            logger.error(f"Download failed for {symbol}: {exc}")
+            results.append({"symbol": symbol, "status": "error", "error": str(exc)})
+            continue
+
+        if df.empty:
+            logger.warning(f"No data returned for {symbol}")
+            results.append({"symbol": symbol, "status": "empty"})
+            continue
+
+        train_df, test_df = _split_train_test(df, test_days)
+        train_path, test_path = _persist_splits(symbol, train_df, test_df, base_path)
+
+        latest_candidates = []
+        if not train_df.empty:
+            latest_candidates.append(train_df.index.max())
+        if not test_df.empty:
+            latest_candidates.append(test_df.index.max())
+
+        latest_ts = pd.to_datetime(max(latest_candidates), utc=True, errors="coerce") if latest_candidates else None
+
+        results.append(
+            {
+                "symbol": symbol,
+                "status": "ok",
+                "train_rows": len(train_df),
+                "test_rows": len(test_df),
+                "latest": latest_ts.isoformat() if latest_ts is not None and not pd.isna(latest_ts) else None,
+                "train_file": str(train_path.relative_to(base_path.parent)),
+                "test_file": str(test_path.relative_to(base_path.parent)),
+            }
+        )
+
+        if sleep_seconds and index < len(resolved_symbols):
+            sleep(sleep_seconds)
+
+    _write_training_summary(base_path)
+    return results
+
+
 @retry(delay=.1, tries=3)
 def get_account():
     return alpaca_api.get_account()
@@ -904,34 +1264,42 @@ def close_position_near_market(position, pct_above_market=0.0):
 
     result = None
     try:
+        order_payload = {
+            "symbol": remap_symbols(position.symbol),
+            "qty": abs(float(position.qty)),
+            "side": OrderSide.SELL if position.side == "long" else OrderSide.BUY,
+            "type": OrderType.LIMIT,
+            "time_in_force": "gtc",
+        }
+
         if position.side == "long":
             sell_price = price * (1 + pct_above_market)
             sell_price = str(round(sell_price, 2))
             logger.info(f"selling {position.symbol} at {sell_price}")
-            result = alpaca_api.submit_order(
-                order_data=LimitOrderRequest(
-                    symbol=remap_symbols(position.symbol),
-                    qty=abs(float(position.qty)),
-                    side=OrderSide.SELL,
-                    type=OrderType.LIMIT,
-                    time_in_force="gtc",
-                    limit_price=sell_price,
-                )
-            )
+            order_payload["limit_price"] = sell_price
         else:
             buy_price = price * (1 + pct_above_market)
             buy_price = str(round(buy_price, 2))
             logger.info(f"buying {position.symbol} at {buy_price}")
-            result = alpaca_api.submit_order(
-                order_data=LimitOrderRequest(
-                    symbol=remap_symbols(position.symbol),
-                    qty=abs(float(position.qty)),
-                    side=OrderSide.BUY,
-                    type=OrderType.LIMIT,
-                    time_in_force="gtc",
-                    limit_price=buy_price,
-                )
-            )
+            order_payload["limit_price"] = buy_price
+
+        try:
+            request = LimitOrderRequest(**order_payload)
+            if hasattr(request, "model_dump"):
+                order_data = request.model_dump()
+            elif hasattr(request, "dict"):
+                order_data = request.dict()
+            elif isinstance(request, dict):
+                order_data = request
+            else:
+                order_data = order_payload
+        except Exception:
+            order_data = order_payload
+
+        if not isinstance(order_data, dict):
+            order_data = order_payload
+
+        result = alpaca_api.submit_order(order_data=order_data)
 
     except Exception as e:
         logger.error(e)

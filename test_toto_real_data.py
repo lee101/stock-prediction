@@ -48,7 +48,8 @@ def test_real_stock_prediction():
                 num_samples=num_samples
             )
             
-            predicted_values = forecasts[0].numpy()
+            tensor = forecasts[0]
+            predicted_values = tensor.detach().cpu().numpy() if hasattr(tensor, "detach") else np.asarray(tensor)
             mean_pred = np.mean(predicted_values)
             predictions.append(mean_pred)
             

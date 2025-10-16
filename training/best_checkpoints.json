@@ -1,0 +1,6 @@
+{
+  "best_training_metric": "best_advanced_model.pth",
+  "best_sharpe": "checkpoint_ep1400.pth",
+  "best_profit": "checkpoint_ep1400.pth",
+  "best_loss": "checkpoint_ep50.pth"
+}

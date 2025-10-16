@@ -1,3 +1,4 @@
+import time
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -18,9 +19,6 @@ def log_time(prefix=""):
         end_time = datetime.now()
         logger.info("{}: end: {}".format(prefix, end_time))
         logger.info("{}: elapsed: {}".format(prefix, end_time - start_time))
-
-
-import time
 
 
 def debounce(seconds, key_func=None):

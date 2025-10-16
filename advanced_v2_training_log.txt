@@ -1,0 +1,79 @@
+2025-08-27 19:04:35,112 - INFO - Advanced model with 162,187,373 parameters (162,187,373 trainable)
+2025-08-27 19:04:36,213 - INFO - Advanced optimizer: AdamW with OneCycleLR
+2025-08-27 19:04:36,213 - INFO - Max LR: 0.0001, Total steps: 20000
+2025-08-27 19:04:36,213 - INFO - ================================================================================
+2025-08-27 19:04:36,214 - INFO - 🚀 STARTING ADVANCED TRAINING V2
+2025-08-27 19:04:36,214 - INFO - ================================================================================
+2025-08-27 19:04:36,214 - INFO - Device: cuda
+2025-08-27 19:04:36,214 - INFO - Max Steps: 20000
+2025-08-27 19:04:36,214 - INFO - EMA Decay: 0.9999
+2025-08-27 19:04:36,214 - INFO - 
+📈 EPOCH 1/100
+2025-08-27 19:04:36,214 - INFO - --------------------------------------------------
+🚀 Starting ADVANCED TRAINING SYSTEM V2
+================================================================================
+🎯 State-of-the-art techniques for maximum performance
+{
+  "hidden_size": 1024,
+  "num_heads": 16,
+  "num_layers": 12,
+  "intermediate_size": 4096,
+  "dropout": 0.15,
+  "sequence_length": 60,
+  "prediction_horizon": 5,
+  "batch_size": 16,
+  "learning_rate": 0.0001,
+  "weight_decay": 0.01,
+  "num_epochs": 100,
+  "max_steps": 20000,
+  "val_interval": 150,
+  "log_interval": 50,
+  "early_stopping_patience": 15,
+  "ema_decay": 0.9999,
+  "num_workers": 6,
+  "checkpoint_dir": "hftraining/checkpoints/advanced_v2"
+}
+
+📊 Loading enhanced dataset...
+📊 Downloading enhanced dataset...
+  • AAPL
+    Warning: Failed to process AAPL: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • GOOGL
+    Warning: Failed to process GOOGL: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • MSFT
+    Warning: Failed to process MSFT: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • TSLA
+    Warning: Failed to process TSLA: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • AMZN
+    Warning: Failed to process AMZN: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • META
+    Warning: Failed to process META: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • NFLX
+    Warning: Failed to process NFLX: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • NVDA
+    Warning: Failed to process NVDA: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • JPM
+    Warning: Failed to process JPM: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • BAC
+    Warning: Failed to process BAC: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • WMT
+    Warning: Failed to process WMT: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • JNJ
+    Warning: Failed to process JNJ: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • V
+    Warning: Failed to process V: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • PG
+    Warning: Failed to process PG: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • DIS
+    Warning: Failed to process DIS: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+  • ADBE
+    Warning: Failed to process ADBE: Cannot set a DataFrame with multiple columns to the single column volume_ratio
+⚠️ No data loaded, using fallback
+📈 Data splits: Train=(8500, 21), Val=(1000, 21), Test=(500, 21)
+
+🔄 Creating enhanced data loaders...
+
+⚙️  Setting up advanced trainer...
+
+🎯 Starting advanced training...
+Could not load symbol cudnnGetLibConfig. Error: /home/lee/code/gobed/libtorch/lib/libcudnn_graph.so.9: undefined symbol: cudnnGetLibConfig
