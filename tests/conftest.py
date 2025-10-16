@@ -6,6 +6,9 @@ import sys
 import types
 from unittest.mock import MagicMock
 
+os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
+os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
+
 import pytest
 
 # Provide a harmless env_real stub during tests so we never import the real
@@ -144,6 +147,28 @@ if "alpaca" not in sys.modules:
     sys.modules["alpaca.trading.client"] = alpaca_trading.client
     sys.modules["alpaca.trading.enums"] = alpaca_trading.enums
     sys.modules["alpaca.trading.requests"] = alpaca_trading.requests
+else:
+    alpaca_trading_mod = sys.modules.get("alpaca.trading")
+    if alpaca_trading_mod is None or not isinstance(alpaca_trading_mod, types.ModuleType):
+        alpaca_trading_mod = types.ModuleType("alpaca.trading")
+        sys.modules["alpaca.trading"] = alpaca_trading_mod
+
+    if not hasattr(alpaca_trading_mod, "Position"):
+        class _PositionStub:
+            """Minimal Alpaca Position stub used in tests."""
+
+            symbol: str
+            qty: str
+            side: str
+            market_value: str
+
+            def __init__(self, symbol="TEST", qty="0", side="long", market_value="0"):
+                self.symbol = symbol
+                self.qty = qty
+                self.side = side
+                self.market_value = market_value
+
+        alpaca_trading_mod.Position = _PositionStub  # type: ignore[attr-defined]
 
 sys.modules.setdefault("alpaca_trade_api", types.ModuleType("alpaca_trade_api"))
 alpaca_rest = sys.modules.setdefault(
@@ -200,6 +225,12 @@ if "data_curate_daily" not in sys.modules:
     def get_ask(symbol):
         return _latest_prices.get(symbol, {}).get("ask", 101.0)
 
+    def get_spread(symbol):
+        prices = _latest_prices.get(symbol, {})
+        bid = prices.get("bid", 99.0)
+        ask = prices.get("ask", 101.0)
+        return ask - bid
+
     def download_daily_stock_data(current_time, symbols):
         import pandas as pd
 
@@ -218,6 +249,7 @@ if "data_curate_daily" not in sys.modules:
     data_curate_daily_stub.download_exchange_latest_data = download_exchange_latest_data
     data_curate_daily_stub.get_bid = get_bid
     data_curate_daily_stub.get_ask = get_ask
+    data_curate_daily_stub.get_spread = get_spread
     data_curate_daily_stub.download_daily_stock_data = download_daily_stock_data
     data_curate_daily_stub.fetch_spread = fetch_spread
     sys.modules["data_curate_daily"] = data_curate_daily_stub

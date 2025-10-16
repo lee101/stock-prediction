@@ -4,15 +4,17 @@ Data utilities for HuggingFace-style training
 """
 
 import ast
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
-import torch
-import torch.nn as nn
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any, Sequence, Union, Set
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
+import torch
+import torch.nn as nn
 from hfshared import compute_training_style_features, training_feature_columns_list
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+
 import joblib
 import warnings
 warnings.filterwarnings('ignore')
@@ -35,6 +37,10 @@ try:
 except ImportError:  # pragma: no cover - script execution
     from asset_metadata import get_asset_class_id, get_trading_fee  # type: ignore
 
+try:
+    import yfinance as yf
+except ImportError:  # pragma: no cover - optional dependency for tests
+    yf = None  # type: ignore
 
 def _parse_numeric_scalar(value: Any) -> Optional[float]:
     """Best-effort conversion of Toto CSV cell contents into a scalar float."""
@@ -220,6 +226,85 @@ class StockDataProcessor:
             )
             self._toto_generator = TotoFeatureGenerator(options)
 
+    def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Append a curated set of technical indicators to the provided OHLCV frame.
+
+        The implementation favours numerically stable operations so the method
+        remains safe to call during tests when the input length is small.
+        """
+        required_cols = {'open', 'high', 'low', 'close', 'volume'}
+        frame = df.copy()
+        frame.columns = frame.columns.str.lower()
+
+        if not required_cols.issubset(frame.columns):
+            missing = required_cols - set(frame.columns)
+            raise ValueError(f"Missing required price columns: {sorted(missing)}")
+
+        close = frame['close']
+        high = frame['high']
+        low = frame['low']
+        volume = frame['volume']
+
+        def _rolling(series: pd.Series, window: int) -> pd.Series:
+            return series.rolling(window=window, min_periods=1)
+
+        for window in (5, 10, 20, 50):
+            frame[f"ma_{window}"] = _rolling(close, window).mean()
+            frame[f"ema_{window}"] = close.ewm(span=window, adjust=False).mean()
+
+        delta = close.diff().fillna(0.0)
+        gain = delta.clip(lower=0.0)
+        loss = -delta.clip(upper=0.0)
+        period = 14
+        avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0.0, np.nan)
+        frame["rsi"] = 100 - (100 / (1 + rs.replace(np.nan, 0.0)))
+
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd = ema12 - ema26
+        signal = macd.ewm(span=9, adjust=False).mean()
+        frame["macd"] = macd
+        frame["macd_signal"] = signal
+        frame["macd_histogram"] = macd - signal
+
+        bb_mid = _rolling(close, 20).mean()
+        bb_std = _rolling(close, 20).std(ddof=0).fillna(0.0)
+        frame["bb_upper"] = bb_mid + 2 * bb_std
+        frame["bb_lower"] = bb_mid - 2 * bb_std
+        frame["bb_width"] = frame["bb_upper"] - frame["bb_lower"]
+        width = frame["bb_width"].replace(0.0, np.nan)
+        frame["bb_position"] = (close - frame["bb_lower"]) / width.replace(np.nan, 1.0)
+
+        frame["price_change"] = close.pct_change().fillna(0.0)
+        frame["price_change_2"] = close.pct_change(periods=2).fillna(0.0)
+        frame["price_change_5"] = close.pct_change(periods=5).fillna(0.0)
+
+        frame["high_low_ratio"] = (high / low.replace(0.0, np.nan)).fillna(1.0)
+        frame["close_open_ratio"] = (close / frame['open'].replace(0.0, np.nan)).fillna(1.0)
+
+        frame["volume_ma"] = _rolling(volume, 20).mean()
+        frame["volume_ratio"] = (volume / frame["volume_ma"].replace(0.0, np.nan)).fillna(0.0)
+
+        returns = close.pct_change().fillna(0.0)
+        frame["volatility"] = _rolling(returns, 20).std(ddof=0).fillna(0.0)
+        mean_vol = _rolling(frame["volatility"], 20).mean().replace(0.0, np.nan)
+        frame["volatility_ratio"] = (frame["volatility"] / mean_vol).fillna(0.0)
+
+        frame["resistance"] = _rolling(high, 20).max()
+        frame["support"] = _rolling(low, 20).min()
+        frame["resistance_distance"] = ((frame["resistance"] - close) / close.replace(0.0, np.nan)).fillna(0.0)
+        frame["support_distance"] = ((close - frame["support"]) / close.replace(0.0, np.nan)).fillna(0.0)
+
+        frame.replace([np.inf, -np.inf], np.nan, inplace=True)
+        frame.bfill(inplace=True)
+        frame.ffill(inplace=True)
+        frame.fillna(0.0, inplace=True)
+
+        return frame
+
     def prepare_features(self, df: pd.DataFrame, symbol: Optional[str] = None) -> np.ndarray:
         """Prepare and select features for training."""
         normalized_df = df.copy()
@@ -228,6 +313,18 @@ class StockDataProcessor:
         feats_df = compute_training_style_features(normalized_df)
         ordered = [c for c in training_feature_columns_list() if c in feats_df.columns]
         feats_df = feats_df[ordered]
+
+        try:
+            indicator_df = self.add_technical_indicators(normalized_df)
+        except ValueError:
+            indicator_df = normalized_df.copy()
+        else:
+            indicator_cols = [col for col in indicator_df.columns if col not in normalized_df.columns]
+            if indicator_cols:
+                feats_df = pd.concat(
+                    [feats_df.reset_index(drop=True), indicator_df[indicator_cols].reset_index(drop=True)],
+                    axis=1,
+                )
 
         if self.use_toto_forecasts and self._toto_generator is not None:
             price_columns = ['open', 'high', 'low', 'close', 'volume']
@@ -421,10 +518,56 @@ def load_local_stock_data(symbols: List[str], data_dir: str = "trainingdata") ->
     return data
 
 
+def download_stock_data(
+    symbols: Union[str, Sequence[str]],
+    *,
+    start_date: Optional[Union[str, datetime]] = None,
+    end_date: Optional[Union[str, datetime]] = None,
+    auto_adjust: bool = True,
+) -> Dict[str, pd.DataFrame]:
+    """
+    Download historical OHLCV data using yfinance for the provided symbols.
+
+    Returns a dictionary keyed by the upper-cased symbol containing dataframes
+    with lowercase columns and a ``date`` column.
+    """
+    if yf is None:  # pragma: no cover - triggered when dependency missing
+        raise ImportError("yfinance is required to download stock data.")
+
+    if isinstance(symbols, str):
+        symbol_list = [symbols]
+    else:
+        symbol_list = list(symbols)
+
+    results: Dict[str, pd.DataFrame] = {}
+    for symbol in symbol_list:
+        ticker = yf.Ticker(symbol)
+        history = ticker.history(start=start_date, end=end_date, auto_adjust=auto_adjust)
+        history = history.copy()
+        if history.empty:
+            results[symbol.upper()] = pd.DataFrame(
+                columns=["date", "open", "high", "low", "close", "volume"]
+            )
+            continue
+        history.reset_index(inplace=True)
+        history.columns = history.columns.str.lower()
+        if "date" not in history.columns:
+            time_col = "datetime" if "datetime" in history.columns else history.columns[0]
+            history.rename(columns={time_col: "date"}, inplace=True)
+        history["date"] = pd.to_datetime(history["date"])
+        standard_cols = ["open", "high", "low", "close", "volume"]
+        for col in standard_cols:
+            if col not in history.columns:
+                history[col] = np.nan
+        ordered = ["date", *standard_cols] + [col for col in history.columns if col not in {"date", *standard_cols}]
+        results[symbol.upper()] = history[ordered]
+    return results
+
+
 def create_sequences(data, sequence_length, prediction_horizon, target_column='close'):
     """
     Create sequences for time series prediction
-    
+
     Args:
         data: Input data array
         sequence_length: Length of input sequences

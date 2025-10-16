@@ -11,6 +11,11 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    env:
+      MARKETSIM_ALLOW_MOCK_ANALYTICS: "1"
+      MARKETSIM_SKIP_REAL_IMPORT: "1"
+      ALP_PAPER: "1"
+      PYTHONUNBUFFERED: "1"
     strategy:
       fail-fast: false
       matrix:

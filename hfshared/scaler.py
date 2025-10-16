@@ -2,28 +2,34 @@
 """Scaler I/O helpers for loading training processors at inference."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
-def load_processor(path: str) -> Tuple[Optional[Any], List[str], Optional[int], Optional[int]]:
+def load_processor(path: str) -> Dict[str, Any]:
     """Load a training processor dump created by StockDataProcessor.save_scalers.
 
-    Returns (standard_scaler, feature_names, sequence_length, prediction_horizon)
-    where any of the first/last elements may be None if unavailable.
+    Returns a dict with keys:
+        - scalers: mapping containing the fitted scalers (may be empty)
+        - feature_names: list of feature column names used during training
+        - sequence_length: model sequence length if stored
+        - prediction_horizon: model prediction horizon if stored
+
+    Falls back to an empty structure if the payload cannot be loaded.
     """
     try:
         import joblib  # local import to avoid hard dependency
     except Exception:
-        return None, [], None, None
+        return {"scalers": {}, "feature_names": [], "sequence_length": None, "prediction_horizon": None}
 
     try:
         data: Dict[str, Any] = joblib.load(path)
-        scalers = data.get('scalers', {})
-        std = scalers.get('standard') if isinstance(scalers, dict) else None
-        feats = list(data.get('feature_names', []) or [])
-        seq_len = data.get('sequence_length')
-        horizon = data.get('prediction_horizon')
-        return std, feats, seq_len, horizon
+        scalers_obj = data.get('scalers', {})
+        feature_names = list(data.get('feature_names', []) or [])
+        return {
+            "scalers": scalers_obj if isinstance(scalers_obj, dict) else {},
+            "feature_names": feature_names,
+            "sequence_length": data.get('sequence_length'),
+            "prediction_horizon": data.get('prediction_horizon'),
+        }
     except Exception:
-        return None, [], None, None
-
+        return {"scalers": {}, "feature_names": [], "sequence_length": None, "prediction_horizon": None}

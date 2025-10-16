@@ -7,7 +7,15 @@ from pathlib import Path
 from time import sleep
 
 import torch
-from alpaca.trading import Position
+try:
+    from alpaca.trading import Position
+except ImportError:  # pragma: no cover - fallback when Alpaca SDK unavailable
+    class Position:  # type: ignore[override]
+        """Minimal stand-in for alpaca.trading.Position used in CI/unit tests."""
+
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
 from pandas import DataFrame
 
 import alpaca_wrapper
