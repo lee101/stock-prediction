@@ -1,31 +1,32 @@
 from datetime import datetime
+from typing import Optional
+from zoneinfo import ZoneInfo
 
-import pytz
-
-
-def is_nyse_trading_day_ending():
-    # Get current time in UTC
-    now_utc = datetime.now(pytz.timezone('UTC'))
-
-    # Convert to NYSE time
-    now_nyse = now_utc.astimezone(pytz.timezone('America/New_York'))
-
-    # Check if it's the end of the trading day
-    return now_nyse.hour in [14, 15, 16, 17]  # NYSE closes at 16:00 EST
+UTC = ZoneInfo("UTC")
+NEW_YORK = ZoneInfo("America/New_York")
 
 
-def is_nyse_trading_day_now():
-    # Get current time in UTC
-    now_utc = datetime.now(pytz.timezone('UTC'))
+def _timestamp_in_new_york(timestamp: Optional[datetime] = None) -> datetime:
+    """Convert timestamp to America/New_York, defaulting to current time."""
+    base = timestamp or datetime.now(tz=UTC)
+    # Ensure timezone aware before conversion
+    aware = base if base.tzinfo else base.replace(tzinfo=UTC)
+    return aware.astimezone(NEW_YORK)
 
-    # Convert to NYSE time
-    now_nyse = now_utc.astimezone(pytz.timezone('America/New_York'))
 
-    # Check if it's a weekday (Monday = 0, Sunday = 6)
+def is_nyse_trading_day_ending(timestamp: Optional[datetime] = None) -> bool:
+    """Return True when the NYSE trading day is ending (2-5pm ET)."""
+    now_nyse = _timestamp_in_new_york(timestamp)
+    return now_nyse.hour in {14, 15, 16, 17}
+
+
+def is_nyse_trading_day_now(timestamp: Optional[datetime] = None) -> bool:
+    """Return True during NYSE trading hours for the provided or current time."""
+    now_nyse = _timestamp_in_new_york(timestamp)
+
     if now_nyse.weekday() >= 5:
         return False
 
-    # Check if it's during trading hours (9:30 AM to 4:00 PM)
     market_open = now_nyse.replace(hour=9, minute=30, second=0, microsecond=0)
     market_close = now_nyse.replace(hour=16, minute=0, second=0, microsecond=0)
 

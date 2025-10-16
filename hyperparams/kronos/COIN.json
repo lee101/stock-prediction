@@ -1,0 +1,31 @@
+{
+  "symbol": "COIN",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.14_p0.80_s200_k24_clip1.6_ctx224",
+    "temperature": 0.14,
+    "top_p": 0.8,
+    "top_k": 24,
+    "sample_count": 200,
+    "max_context": 224,
+    "clip": 1.6
+  },
+  "validation": {
+    "price_mae": 5.139678955078122,
+    "return_mae": 0.016601579721371856,
+    "latency_s": 43.95568015286699
+  },
+  "test": {
+    "price_mae": 12.280493164062506,
+    "return_mae": 0.03548795247989932,
+    "latency_s": 31.74115135986358
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

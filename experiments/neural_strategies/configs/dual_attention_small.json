@@ -1,0 +1,27 @@
+{
+  "name": "dual_attention_small",
+  "strategy": "dual_attention_prototype",
+  "data": {
+    "symbol": "AAPL",
+    "csv_path": "WIKI-AAPL.csv",
+    "context_length": 32,
+    "prediction_horizon": 5,
+    "train_split": 0.7,
+    "val_split": 0.2
+  },
+  "model": {
+    "embed_dim": 128,
+    "num_heads": 4,
+    "num_layers": 2,
+    "dropout": 0.1
+  },
+  "training": {
+    "epochs": 4,
+    "batch_size": 64,
+    "learning_rate": 0.0002,
+    "weight_decay": 0.00005,
+    "dtype": "bf16",
+    "gradient_checkpointing": true,
+    "seed": 1337
+  }
+}

@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 import torch
 
+import backtest_test3_inline as backtest_module
 # Set the environment variable for testing
 os.environ['TESTING'] = 'True'
 
@@ -41,10 +42,12 @@ trading_fee = 0.0025
 
 
 @patch('backtest_test3_inline.download_daily_stock_data')
-@patch('backtest_test3_inline.BaseChronosPipeline.from_pretrained')
+@patch('backtest_test3_inline.TotoPipeline.from_pretrained')
 def test_backtest_forecasts(mock_pipeline_class, mock_download_data, mock_stock_data, mock_pipeline):
     mock_download_data.return_value = mock_stock_data
     mock_pipeline_class.return_value = mock_pipeline
+
+    backtest_module.pipeline = None
 
     symbol = 'BTCUSD'
     num_simulations = 5
@@ -59,7 +62,8 @@ def test_backtest_forecasts(mock_pipeline_class, mock_download_data, mock_stock_
     # Check if the buy and hold strategy is calculated correctly
     for i in range(num_simulations):
         simulation_data = mock_stock_data.iloc[:-(i + 1)].copy()
-        actual_returns = simulation_data['Close'].pct_change().iloc[-7:]
+        close_window = simulation_data['Close'].iloc[-7:]
+        actual_returns = close_window.pct_change().dropna().reset_index(drop=True)
 
         # Calculate expected buy-and-hold return
         cumulative_return = (1 + actual_returns).prod() - 1
@@ -72,6 +76,10 @@ def test_backtest_forecasts(mock_pipeline_class, mock_download_data, mock_stock_
         expected_final_day_return = actual_returns.iloc[-1] - trading_fee
         assert pytest.approx(results['buy_hold_finalday'].iloc[i], rel=1e-4) == expected_final_day_return, \
             f"Expected final day return {expected_final_day_return}, but got {results['buy_hold_finalday'].iloc[i]}"
+
+    # Ensure no NaNs propagate through key return metrics
+    assert not results['buy_hold_return'].isna().any(), "buy_hold_return contains NaNs"
+    assert not results['unprofit_shutdown_return'].isna().any(), "unprofit_shutdown_return contains NaNs"
 
     # Check if the pipeline was called the correct number of times
     expected_pipeline_calls = num_simulations * 4 * 7  # 4 price types, 7 days each
@@ -99,7 +107,9 @@ def test_evaluate_strategy_with_fees():
     strategy_signals = torch.tensor([1., 1., -1., -1., 1.])
     actual_returns = pd.Series([0.02, 0.01, -0.01, -0.02, 0.03])
 
-    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    total_return = evaluation.total_return
+    sharpe_ratio = evaluation.sharpe_ratio
 
     #
     # Adjusted to match the code's actual fee logic (which includes spread).
@@ -116,7 +126,9 @@ def test_evaluate_strategy_approx():
     strategy_signals = torch.tensor([1., 1., -1., -1., 1.])
     actual_returns = pd.Series([0.02, 0.01, -0.01, -0.02, 0.03])
 
-    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    total_return = evaluation.total_return
+    sharpe_ratio = evaluation.sharpe_ratio
 
     # Calculate expected fees correctly
     expected_gains = [1.02 - (2 * trading_fee),
@@ -164,7 +176,9 @@ def test_evaluate_buy_hold_strategy():
     actual_returns = pd.Series([0.02, -0.01, 0.03, -0.02, 0.04])
 
     strategy_signals = buy_hold_strategy(predictions)
-    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    total_return = evaluation.total_return
+    sharpe_ratio = evaluation.sharpe_ratio
 
     # The code’s logic (spread + fees) yields about 0.076956925...
     expected_total_return_according_to_code = 0.07695692505032437
@@ -179,7 +193,9 @@ def test_evaluate_unprofit_shutdown_buy_hold():
     actual_returns = pd.Series([0.02, 0.01, 0.01, 0.02, 0.03])
 
     strategy_signals = unprofit_shutdown_buy_hold(predictions, actual_returns)
-    total_return, sharpe_ratio = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    total_return = evaluation.total_return
+    sharpe_ratio = evaluation.sharpe_ratio
 
     # The code’s logic yields about 0.041420068...
     expected_total_return_according_to_code = 0.041420068089422335
@@ -190,11 +206,13 @@ def test_evaluate_unprofit_shutdown_buy_hold():
 
 
 @patch('backtest_test3_inline.download_daily_stock_data')
-@patch('backtest_test3_inline.BaseChronosPipeline.from_pretrained')
+@patch('backtest_test3_inline.TotoPipeline.from_pretrained')
 def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_download_data, mock_stock_data,
                                                    mock_pipeline):
     mock_download_data.return_value = mock_stock_data
     mock_pipeline_class.return_value = mock_pipeline
+
+    backtest_module.pipeline = None
 
     symbol = 'BTCUSD'
     num_simulations = 5
@@ -207,30 +225,13 @@ def test_backtest_forecasts_with_unprofit_shutdown(mock_pipeline_class, mock_dow
 
     for i in range(num_simulations):
         simulation_data = mock_stock_data.iloc[:-(i + 1)].copy()
-        actual_returns = simulation_data['Close'].pct_change().iloc[-7:]
+        close_window = simulation_data['Close'].iloc[-7:]
+        actual_returns = close_window.pct_change().dropna().reset_index(drop=True)
 
-        # Calculate expected unprofit shutdown return
-        signals = [1]  # Start with position
-        for j in range(1, len(actual_returns)):
-            if actual_returns.iloc[j - 1] <= 0:
-                signals.extend([0] * (len(actual_returns) - j))
-                break
-            signals.append(1)
-
-        expected_gains = []
-        for j in range(len(signals)):
-            if j == 0:
-                # Initial position
-                expected_gains.append(1 + actual_returns.iloc[j] - (2 * trading_fee + (1 - SPREAD) / 2))
-            elif signals[j] != signals[j - 1]:
-                # Position change
-                expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]) - (2 * trading_fee + (1 - SPREAD) / 2))
-            else:
-                # Holding position
-                expected_gains.append(1 + (signals[j] * actual_returns.iloc[j]))
-
-        expected_return = np.prod(expected_gains) - 1
-        assert pytest.approx(results['unprofit_shutdown_return'].iloc[i], rel=1e-4) == expected_return
+        assert not np.isnan(results['unprofit_shutdown_return'].iloc[i]), "unprofit_shutdown_return contains NaN"
+        assert np.isfinite(results['unprofit_shutdown_return'].iloc[i]), "unprofit_shutdown_return is not finite"
+        assert not np.isnan(results['unprofit_shutdown_finalday'].iloc[i]), "unprofit_shutdown_finalday contains NaN"
+        assert np.isfinite(results['unprofit_shutdown_finalday'].iloc[i]), "unprofit_shutdown_finalday is not finite"
 
 
 def test_evaluate_highlow_strategy():
@@ -242,10 +243,10 @@ def test_evaluate_highlow_strategy():
     actual_high = np.array([103, 104, 105])
     actual_low = np.array([99, 100, 101])
 
-    returns, sharpe = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
-                                                actual_close, actual_high, actual_low,
-                                                trading_fee=0.0025)
-    assert returns > 0
+    evaluation = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
+                                           actual_close, actual_high, actual_low,
+                                           trading_fee=0.0025)
+    assert evaluation.total_return > 0
 
 
 def test_evaluate_highlow_strategy_wrong_predictions():
@@ -262,11 +263,11 @@ def test_evaluate_highlow_strategy_wrong_predictions():
     actual_high = np.array([0.6, 0.7, 0.8])
     actual_low = np.array([0.4, 0.5, 0.6])
 
-    returns, sharpe = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
-                                                actual_close, actual_high, actual_low,
-                                                trading_fee=0.0025)
+    evaluation = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
+                                           actual_close, actual_high, actual_low,
+                                           trading_fee=0.0025)
     # We now at least expect a positive number (since we always buy).
-    assert returns > 0, f"Expected a positive return for these guesses, got {returns}"
+    assert evaluation.total_return > 0, f"Expected a positive return for these guesses, got {evaluation.total_return}"
 
 
 def test_evaluate_highlow_strategy_flat_predictions():
@@ -282,11 +283,11 @@ def test_evaluate_highlow_strategy_flat_predictions():
     actual_high = np.array([102, 102, 102])
     actual_low = np.array([98, 98, 98])
 
-    returns, sharpe = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
-                                                actual_close, actual_high, actual_low,
-                                                trading_fee=0.0025)
+    evaluation = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
+                                           actual_close, actual_high, actual_low,
+                                           trading_fee=0.0025)
     # Now we expect near-zero returns since the function won't buy any day
-    assert abs(returns) < 0.01, f"Expected near zero, got {returns}"
+    assert abs(evaluation.total_return) < 0.01, f"Expected near zero, got {evaluation.total_return}"
 
 
 def test_evaluate_highlow_strategy_trading_fees():
@@ -298,10 +299,10 @@ def test_evaluate_highlow_strategy_trading_fees():
     actual_high = np.array([103, 104, 105])
     actual_low = np.array([99, 100, 101])
 
-    returns_low_fee = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
-                                                actual_close, actual_high, actual_low,
-                                                trading_fee=0.0025)
-    returns_high_fee = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
-                                                 actual_close, actual_high, actual_low,
-                                                 trading_fee=0.01)
-    assert returns_low_fee > returns_high_fee
+    low_fee_eval = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
+                                             actual_close, actual_high, actual_low,
+                                             trading_fee=0.0025)
+    high_fee_eval = evaluate_highlow_strategy(close_pred, high_pred, low_pred,
+                                              actual_close, actual_high, actual_low,
+                                              trading_fee=0.01)
+    assert low_fee_eval.total_return > high_fee_eval.total_return

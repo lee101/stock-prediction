@@ -1,3 +1,5 @@
 pytest
 freezegun
 pytest-asyncio
+pytest-cov
+coverage

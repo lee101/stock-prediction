@@ -1,0 +1,31 @@
+{
+  "symbol": "INTC",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.148_p0.81_s240_k18_clip1.7_ctx224",
+    "temperature": 0.148,
+    "top_p": 0.81,
+    "top_k": 18,
+    "sample_count": 240,
+    "max_context": 224,
+    "clip": 1.7
+  },
+  "validation": {
+    "price_mae": 0.4270318031311035,
+    "return_mae": 0.017480450098649077,
+    "latency_s": 37.32582481158897
+  },
+  "test": {
+    "price_mae": 7.218511867523193,
+    "return_mae": 0.2107725372909779,
+    "latency_s": 37.63720704521984
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

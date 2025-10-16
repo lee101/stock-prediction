@@ -1,0 +1,46 @@
+[
+  {
+    "strategy": "magnitude_based",
+    "signal_strength": 0.09165030860841018,
+    "position_size": 3816,
+    "recommendation": "HOLD",
+    "confidence": "VERY_LOW",
+    "symbol": "ETHUSD",
+    "current_price": 3801.135,
+    "predicted_price": 3836.070556640625,
+    "timestamp": "2025-08-06T21:22:03.552926"
+  },
+  {
+    "strategy": "consensus_based",
+    "signal_strength": 0.12,
+    "position_size": 1000,
+    "recommendation": "HOLD",
+    "confidence": "VERY_LOW",
+    "symbol": "ETHUSD",
+    "current_price": 3801.135,
+    "predicted_price": 3836.070556640625,
+    "timestamp": "2025-08-06T21:22:03.553801"
+  },
+  {
+    "strategy": "volatility_adjusted",
+    "signal_strength": 0.8639222060179506,
+    "position_size": 6000,
+    "recommendation": "STRONG_BUY",
+    "confidence": "VERY_HIGH",
+    "symbol": "ETHUSD",
+    "current_price": 3801.135,
+    "predicted_price": 3836.070556640625,
+    "timestamp": "2025-08-06T21:22:03.554626"
+  },
+  {
+    "strategy": "adaptive",
+    "signal_strength": 0.3585241715421203,
+    "position_size": 1500,
+    "recommendation": "WEAK_BUY",
+    "confidence": "LOW",
+    "symbol": "ETHUSD",
+    "current_price": 3801.135,
+    "predicted_price": 3836.070556640625,
+    "timestamp": "2025-08-06T21:22:03.555841"
+  }
+]

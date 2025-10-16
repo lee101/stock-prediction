@@ -47,7 +47,7 @@ async def query_to_claude_async(
                 claude_client.messages.create(
                     max_tokens=2024,
                     messages=messages,
-                    model="claude-3-7-sonnet-20250219",
+                    model="claude-sonnet-4-5-20250929",
                     system=system_message.strip() if system_message else "",
                     stop_sequences=list(stop_sequences) if stop_sequences else [],
                 ),

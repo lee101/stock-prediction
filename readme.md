@@ -70,6 +70,24 @@ Cancel any duplicate orders/(need to run this incase of bugs):
 PYTHONPATH=$(pwd) python ./scripts/cancel_multi_orders.py
 ```
 
+### Stock CLI
+
+The `stock_cli.py` utility provides a consolidated interface for observing live risk state, probes, and portfolio history without opening dashboards.
+
+```bash
+# Show account status, positions, and risk thresholds
+PYTHONPATH=$(pwd) python stock_cli.py status
+
+# Render an ASCII portfolio value graph in the terminal
+PYTHONPATH=$(pwd) python stock_cli.py risk-text --limit 120 --width 80
+
+# Generate a PNG chart of portfolio value and global risk thresholds
+PYTHONPATH=$(pwd) python stock_cli.py plot-risk --output portfolio_risk.png
+
+# Inspect current probe trades and learning state (optionally target a specific suffix)
+PYTHONPATH=$(pwd) python stock_cli.py probe-status --tz UTC --suffix sim
+```
+
 ### Notes and todos
 
 - Proper datastores refreshed data
@@ -109,6 +127,34 @@ python trade_stock_e2e.py
 pytest .
 ```
 
+## Training Optimizer Toolkit
+
+Advanced optimizer experiments now live in `traininglib/`. The module ships with:
+
+- A registry that exposes Adam/AdamW, SGD, Lion, Adafactor, Shampoo, and Muon with sensible defaults.
+- `traininglib.benchmarking.RegressionBenchmark` for quick, repeatable regression checks (including multi-seed summaries).
+- Hugging Face helpers (`traininglib.hf_integration`) so you can wire the same optimizer choices into a `Trainer`.
+- A CLI (`python -m traininglib.benchmark_cli`) that prints aggregated losses so you can compare optimizers the moment new ideas land.
+
+Example usage inside a Hugging Face script:
+
+```python
+from transformers import Trainer, TrainingArguments
+from traininglib.hf_integration import build_hf_optimizers
+
+optimizer, scheduler = build_hf_optimizers(model, "shampoo")
+trainer = Trainer(model=model, args=training_args, optimizers=(optimizer, scheduler))
+trainer.train()
+```
+
+The accompanying tests in `tests/traininglib/` run a small benchmark to confirm Shampoo and Muon at least match AdamW before you swap anything into production training loops.
+
+You can also evaluate the wider optimizer set locally:
+
+```bash
+python -m traininglib.benchmark_cli --optimizers adamw shampoo muon lion --runs 3
+```
+
 ### Run a Simulation
 
 ```bash
@@ -127,3 +173,27 @@ You can support us by purchasing [Netwrck](https://netwrck.com/) an AI agent mak
 - Art Generator/photo editor: [AIArt-Generator.art](https://AIArt-Generator.art)
 - [Helix.app.nz](https://helix.app.nz) a dashboard builder
 - [Text-Generator.io](https://text-generator.io) an API server for vision language and speech models
+
+
+
+
+### extra stuff
+
+trade simulator
+
+TRADE_STATE_SUFFIX=sim python marketsimulator/run_trade_loop.py --symbols AAPL MSFT NVDA BTCUSD ETHUSD --steps 10 --step-size 6 --initial-cash 100000
+
+
+
+Have a thing that like a bindary step for the whole portfolil and probe trades
+  Tests
+
+  - python -m pytest tests/test_portfolio_risk.py tests/test_probe_transitions.py
+
+  Next Steps
+
+      1. Run python stock_cli.py plot-risk -o portfolio_risk.png to confirm the chart output.
+
+
+REAL_TESTING=true flag uses faster hparams and torch compile and bf16 so its faster during marketsimulator tests but its turned off for trade_stock_e2e.py
+ python stock_cli.py status

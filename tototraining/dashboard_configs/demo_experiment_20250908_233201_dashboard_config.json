@@ -1,0 +1,395 @@
+{
+  "title": "Toto Training Dashboard - demo_experiment_20250908_233201",
+  "description": "Comprehensive monitoring dashboard for Toto model training",
+  "rows": [
+    {
+      "title": "Training Metrics",
+      "panels": [
+        {
+          "title": "Training & Validation Loss",
+          "type": "graph",
+          "metrics": [
+            "train_loss",
+            "val_loss"
+          ],
+          "width": 6,
+          "height": 6,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Training and validation loss curves over time",
+          "thresholds": null,
+          "colors": [
+            "#1f77b4",
+            "#ff7f0e"
+          ]
+        },
+        {
+          "title": "Learning Rate",
+          "type": "graph",
+          "metrics": [
+            "learning_rate"
+          ],
+          "width": 6,
+          "height": 6,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Learning rate schedule over time",
+          "thresholds": null,
+          "colors": [
+            "#2ca02c"
+          ]
+        },
+        {
+          "title": "Current Epoch",
+          "type": "stat",
+          "metrics": [
+            "epoch"
+          ],
+          "width": 3,
+          "height": 4,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Current training epoch",
+          "thresholds": null,
+          "colors": null
+        },
+        {
+          "title": "Training Speed",
+          "type": "stat",
+          "metrics": [
+            "samples_per_sec"
+          ],
+          "width": 3,
+          "height": 4,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Training throughput (samples/second)",
+          "thresholds": {
+            "warning": 100,
+            "critical": 50
+          },
+          "colors": null
+        },
+        {
+          "title": "Best Validation Loss",
+          "type": "stat",
+          "metrics": [
+            "best_val_loss"
+          ],
+          "width": 3,
+          "height": 4,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Best validation loss achieved",
+          "thresholds": null,
+          "colors": [
+            "#d62728"
+          ]
+        },
+        {
+          "title": "Patience Counter",
+          "type": "stat",
+          "metrics": [
+            "early_stopping_patience"
+          ],
+          "width": 3,
+          "height": 4,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Early stopping patience counter",
+          "thresholds": {
+            "warning": 5,
+            "critical": 8
+          },
+          "colors": null
+        }
+      ],
+      "collapsed": false
+    },
+    {
+      "title": "Model Performance",
+      "panels": [
+        {
+          "title": "Gradient Norm",
+          "type": "graph",
+          "metrics": [
+            "gradient_norm"
+          ],
+          "width": 6,
+          "height": 6,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Gradient norm over time (gradient clipping indicator)",
+          "thresholds": {
+            "warning": 1.0,
+            "critical": 10.0
+          },
+          "colors": null
+        },
+        {
+          "title": "Model Accuracy",
+          "type": "graph",
+          "metrics": [
+            "train_accuracy",
+            "val_accuracy"
+          ],
+          "width": 6,
+          "height": 6,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Training and validation accuracy",
+          "thresholds": null,
+          "colors": [
+            "#1f77b4",
+            "#ff7f0e"
+          ]
+        },
+        {
+          "title": "Weight Statistics",
+          "type": "table",
+          "metrics": [
+            "weight_mean",
+            "weight_std",
+            "weight_norm"
+          ],
+          "width": 12,
+          "height": 6,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Model weight statistics by layer",
+          "thresholds": null,
+          "colors": null
+        }
+      ],
+      "collapsed": false
+    },
+    {
+      "title": "System Resources",
+      "panels": [
+        {
+          "title": "CPU Usage",
+          "type": "graph",
+          "metrics": [
+            "system_cpu_percent"
+          ],
+          "width": 3,
+          "height": 6,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "CPU utilization percentage",
+          "thresholds": {
+            "warning": 80,
+            "critical": 95
+          },
+          "colors": [
+            "#2ca02c"
+          ]
+        },
+        {
+          "title": "Memory Usage",
+          "type": "graph",
+          "metrics": [
+            "system_memory_percent"
+          ],
+          "width": 3,
+          "height": 6,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Memory utilization percentage",
+          "thresholds": {
+            "warning": 80,
+            "critical": 95
+          },
+          "colors": [
+            "#ff7f0e"
+          ]
+        },
+        {
+          "title": "GPU Utilization",
+          "type": "graph",
+          "metrics": [
+            "system_gpu_utilization"
+          ],
+          "width": 3,
+          "height": 6,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "GPU utilization percentage",
+          "thresholds": {
+            "warning": 50,
+            "critical": 30
+          },
+          "colors": [
+            "#d62728"
+          ]
+        },
+        {
+          "title": "GPU Memory",
+          "type": "graph",
+          "metrics": [
+            "system_gpu_memory_percent"
+          ],
+          "width": 3,
+          "height": 6,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "GPU memory usage percentage",
+          "thresholds": {
+            "warning": 80,
+            "critical": 95
+          },
+          "colors": [
+            "#9467bd"
+          ]
+        },
+        {
+          "title": "GPU Temperature",
+          "type": "stat",
+          "metrics": [
+            "system_gpu_temperature"
+          ],
+          "width": 4,
+          "height": 4,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "GPU temperature (\u00b0C)",
+          "thresholds": {
+            "warning": 75,
+            "critical": 85
+          },
+          "colors": null
+        },
+        {
+          "title": "Disk Usage",
+          "type": "stat",
+          "metrics": [
+            "system_disk_used_gb"
+          ],
+          "width": 4,
+          "height": 4,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Disk space used (GB)",
+          "thresholds": null,
+          "colors": null
+        },
+        {
+          "title": "Training Time",
+          "type": "stat",
+          "metrics": [
+            "training_time_hours"
+          ],
+          "width": 4,
+          "height": 4,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Total training time (hours)",
+          "thresholds": null,
+          "colors": null
+        }
+      ],
+      "collapsed": false
+    },
+    {
+      "title": "Training Analysis",
+      "panels": [
+        {
+          "title": "Loss Comparison",
+          "type": "graph",
+          "metrics": [
+            "train_loss",
+            "val_loss",
+            "loss_gap"
+          ],
+          "width": 8,
+          "height": 6,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Training vs validation loss with gap analysis",
+          "thresholds": null,
+          "colors": [
+            "#1f77b4",
+            "#ff7f0e",
+            "#2ca02c"
+          ]
+        },
+        {
+          "title": "Overfitting Indicator",
+          "type": "stat",
+          "metrics": [
+            "overfitting_score"
+          ],
+          "width": 4,
+          "height": 6,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Overfitting risk score",
+          "thresholds": {
+            "warning": 0.3,
+            "critical": 0.5
+          },
+          "colors": null
+        },
+        {
+          "title": "Training Progress",
+          "type": "graph",
+          "metrics": [
+            "progress_percent"
+          ],
+          "width": 6,
+          "height": 4,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Training progress percentage",
+          "thresholds": null,
+          "colors": null
+        },
+        {
+          "title": "ETA",
+          "type": "stat",
+          "metrics": [
+            "estimated_time_remaining"
+          ],
+          "width": 6,
+          "height": 4,
+          "refresh": "5s",
+          "time_range": "1h",
+          "aggregation": "mean",
+          "description": "Estimated time remaining",
+          "thresholds": null,
+          "colors": null
+        }
+      ],
+      "collapsed": false
+    }
+  ],
+  "refresh_interval": "5s",
+  "time_range": "1h",
+  "timezone": "browser",
+  "theme": "dark",
+  "tags": [
+    "toto",
+    "training",
+    "ml",
+    "monitoring"
+  ]
+}

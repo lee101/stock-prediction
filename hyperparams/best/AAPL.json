@@ -1,0 +1,29 @@
+{
+  "symbol": "AAPL",
+  "model": "toto",
+  "config": {
+    "name": "toto_trimmed10_128",
+    "num_samples": 128,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 16
+  },
+  "validation": {
+    "price_mae": 1.9826644073777515,
+    "return_mae": 0.015904392625782728,
+    "latency_s": 15.804720090702176
+  },
+  "test": {
+    "price_mae": 2.77513002995493,
+    "return_mae": 0.0212841356452689,
+    "latency_s": 15.18231777055189
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/AAPL.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

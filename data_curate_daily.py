@@ -6,6 +6,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import pytz
+from alpaca.common.exceptions import APIError
 from alpaca.data import CryptoBarsRequest, TimeFrame, StockBarsRequest, TimeFrameUnit, CryptoHistoricalDataClient
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.trading import TradingClient
@@ -38,14 +39,34 @@ MRNA
 crypto_client = CryptoHistoricalDataClient()
 
 
+def _load_cached_symbol(save_path: Path, symbol: str) -> DataFrame:
+    pattern = f'{symbol.replace("/", "-")}-*.csv'
+    symbol_files = sorted(save_path.glob(pattern), key=lambda p: p.stat().st_mtime)
+    if not symbol_files:
+        fallback_root = base_dir / 'data'
+        if fallback_root != save_path:
+            symbol_files = sorted(
+                fallback_root.rglob(pattern),
+                key=lambda p: p.stat().st_mtime,
+            )
+    if not symbol_files:
+        return DataFrame()
+    latest_file = symbol_files[-1]
+    logger.info(f"Using cached dataset for %s from %s", symbol, latest_file)
+    return pd.read_csv(latest_file)
+
+
 def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
+    symbols_provided = symbols is not None
     if symbols is None:
         symbols = [
             'COUR', 'GOOG', 'TSLA', 'NVDA', 'AAPL', "U", "ADSK", "CRWD", "ADBE", "NET",
-            'COIN', 
-            #'MSFT', 
+            'COIN',
+            #'MSFT',
             'NFLX', 'PYPL', 'SAP', 'SONY', 'BTCUSD', 'ETHUSD',
         ]
+    else:
+        symbols = list(symbols)
 
     client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
     api = TradingClient(
@@ -64,6 +85,28 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
     found_symbols = {}
     remaining_symbols = []
     end = datetime.datetime.now().strftime('%Y-%m-%d')
+
+    def _load_cached_or_raise() -> DataFrame:
+        for symbol in symbols:
+            cached_df = _load_cached_symbol(save_path, symbol)
+            if cached_df.empty:
+                raise RuntimeError(
+                    f"No cached data available for {symbol} under {save_path}; "
+                    "set valid Alpaca credentials to download fresh data."
+                )
+            found_symbols[symbol] = cached_df
+        return found_symbols[symbols[-1]] if symbols else DataFrame()
+
+    credential_placeholders_present = any(
+        "placeholder" in value
+        for value in (ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+    )
+    if credential_placeholders_present:
+        logger.warning(
+            "Alpaca credentials not configured — using cached datasets for %s.",
+            ", ".join(symbols),
+        )
+        return _load_cached_or_raise()
     # todo only do this in test mode
     # if False:
     #     for symbol in symbols:
@@ -78,18 +121,40 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
 
     #     if not remaining_symbols:
     #         return found_symbols[symbols[-1]] if symbols else DataFrame()
-    remaining_symbols = symbols
 
-    alpaca_clock = api.get_clock()
+    try:
+        alpaca_clock = api.get_clock()
+    except APIError as exc:
+        logger.warning(
+            "Alpaca API unavailable (%s); falling back to cached datasets for %s.",
+            exc,
+            ", ".join(symbols),
+        )
+        return _load_cached_or_raise()
     if not alpaca_clock.is_open and not all_data_force:
         logger.info("Market is closed")
-        symbols = [symbol for symbol in symbols if symbol in crypto_symbols]
+        if not symbols_provided:
+            # Only keep crypto symbols when using the default universe and the market is closed
+            symbols = [symbol for symbol in symbols if symbol in crypto_symbols]
+
+    # Use the (potentially filtered) symbols list for downloading
+    remaining_symbols = symbols
 
     # Download data for remaining symbols
     for symbol in remaining_symbols:
         start = (datetime.datetime.now() - datetime.timedelta(days=365 * 4)).strftime('%Y-%m-%d')
         end = (datetime.datetime.now()).strftime('%Y-%m-%d')
-        daily_df = download_exchange_historical_data(client, symbol)
+        try:
+            daily_df = download_exchange_historical_data(client, symbol)
+        except APIError as exc:
+            logger.warning(
+                "Failed to download historical data for %s (%s); using cached dataset.",
+                symbol,
+                exc,
+            )
+            daily_df = _load_cached_symbol(save_path, symbol)
+            if daily_df.empty:
+                raise
         try:
             minute_df_last = download_exchange_latest_data(client, symbol)
         except Exception as e:

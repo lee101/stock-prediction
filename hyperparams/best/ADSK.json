@@ -1,0 +1,29 @@
+{
+  "symbol": "ADSK",
+  "model": "toto",
+  "config": {
+    "name": "toto_trimmed10_128",
+    "num_samples": 128,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 16
+  },
+  "validation": {
+    "price_mae": 3.92768456385686,
+    "return_mae": 0.01307816711230773,
+    "latency_s": 49.35965562192723
+  },
+  "test": {
+    "price_mae": 3.1697498028094997,
+    "return_mae": 0.009991063005132514,
+    "latency_s": 54.11948650237173
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/ADSK.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

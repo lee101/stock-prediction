@@ -1,0 +1,44 @@
+{
+  "model": {
+    "hidden_size": 768,
+    "num_heads": 16,
+    "num_layers": 10,
+    "dropout": 0.2,
+    "intermediate_size": 3072
+  },
+  "data": {
+    "sequence_length": 90,
+    "prediction_horizon": 10,
+    "batch_size": 16,
+    "use_enhanced_features": true
+  },
+  "training": {
+    "optimizer": "adamw",
+    "learning_rate": 5e-05,
+    "min_lr": 1e-06,
+    "scheduler": "CosineAnnealingWarmRestarts",
+    "T_0": 1000,
+    "T_mult": 2,
+    "weight_decay": 0.05,
+    "gradient_accumulation_steps": 8,
+    "max_grad_norm": 0.5,
+    "label_smoothing": 0.1,
+    "use_profit_loss": true,
+    "profit_weight": 2.0,
+    "risk_penalty": 0.5
+  },
+  "strategy": {
+    "use_ensemble": true,
+    "num_models": 3,
+    "use_kelly_sizing": true,
+    "max_position": 0.25,
+    "stop_loss": 0.02,
+    "take_profit": 0.05
+  },
+  "validation": {
+    "eval_strategy": "steps",
+    "eval_steps": 500,
+    "metric_for_best_model": "sharpe_ratio",
+    "early_stopping_patience": 20
+  }
+}

@@ -28,17 +28,27 @@ def _retry(*a, **kw):
     return decorator
 retry_mod.retry = _retry
 sys.modules.setdefault("retry", retry_mod)
-sys.modules.setdefault("pytz", types.ModuleType("pytz"))
-pytz_mod = sys.modules["pytz"]
-def timezone(name):
-    return name
-pytz_mod.timezone = timezone
-pytz_mod.UTC = object()
-class _Exc(Exception):
-    pass
-class _Ex:
-    UnknownTimeZoneError = _Exc
-pytz_mod.exceptions = _Ex()
+try:
+    import pytz as pytz_mod  # type: ignore
+except ModuleNotFoundError:
+    pytz_mod = types.ModuleType("pytz")
+
+    def timezone(name):
+        return name
+
+    pytz_mod.timezone = timezone
+    pytz_mod.UTC = object()
+
+    class _Exc(Exception):
+        pass
+
+    class _Ex:
+        UnknownTimeZoneError = _Exc
+
+    pytz_mod.exceptions = _Ex()
+    sys.modules["pytz"] = pytz_mod
+else:
+    sys.modules["pytz"] = pytz_mod
 
 alpaca = types.ModuleType("alpaca")
 alpaca_data = types.ModuleType("alpaca.data")
@@ -51,6 +61,13 @@ alpaca_data.StockLatestQuoteRequest = MagicMock()
 alpaca_data.StockHistoricalDataClient = MagicMock()
 alpaca_data.CryptoHistoricalDataClient = MagicMock()
 alpaca_data.CryptoLatestQuoteRequest = MagicMock()
+alpaca_data.StockBarsRequest = MagicMock()
+alpaca_data.CryptoBarsRequest = MagicMock()
+alpaca_data.TimeFrame = MagicMock()
+alpaca_data.TimeFrameUnit = MagicMock()
+
+alpaca_data_enums = types.ModuleType("alpaca.data.enums")
+alpaca_data_enums.DataFeed = MagicMock()
 
 alpaca_trading.OrderType = MagicMock()
 alpaca_trading.LimitOrderRequest = MagicMock()
@@ -62,6 +79,7 @@ alpaca_trading.requests.MarketOrderRequest = MagicMock()
 
 sys.modules["alpaca"] = alpaca
 sys.modules["alpaca.data"] = alpaca_data
+sys.modules["alpaca.data.enums"] = alpaca_data_enums
 sys.modules["alpaca.trading"] = alpaca_trading
 sys.modules["alpaca.trading.client"] = alpaca_trading.client
 sys.modules["alpaca.trading.enums"] = alpaca_trading.enums
