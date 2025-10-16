@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.tensorboard import SummaryWriter
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
 
 from src.comparisons import is_buy_side
@@ -46,6 +46,107 @@ class StrategyEvaluation:
     total_return: float
     sharpe_ratio: float
     returns: ReturnSeries
+
+
+def _mean_if_exists(df: pd.DataFrame, column: Optional[str]) -> Optional[float]:
+    if not column or column not in df.columns:
+        return None
+    series = df[column]
+    if series.empty:
+        return None
+    value = float(series.mean())
+    if np.isnan(value):
+        return None
+    return value
+
+
+def _fmt_number(value: Optional[float], precision: int = 4) -> str:
+    if value is None:
+        return "-"
+    return f"{value:.{precision}f}"
+
+
+def _format_table(headers: List[str], rows: List[List[str]], indent: str = "  ") -> str:
+    if not rows:
+        return ""
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(cell))
+    header_line = indent + " ".join(
+        header.ljust(widths[idx]) for idx, header in enumerate(headers)
+    )
+    separator_line = indent + " ".join("-" * widths[idx] for idx in range(len(headers)))
+    row_lines = [
+        indent + " ".join(cell.ljust(widths[idx]) for idx, cell in enumerate(row))
+        for row in rows
+    ]
+    return "\n".join([header_line, separator_line, *row_lines])
+
+
+def _log_table(title: str, headers: List[str], rows: List[List[str]]) -> None:
+    body = _format_table(headers, rows)
+    if not body:
+        return
+    logger.info(f"\n{title}\n{body}")
+
+
+def _log_strategy_summary(results_df: pd.DataFrame, symbol: str, num_simulations: int) -> None:
+    strategy_specs = [
+        ("Simple", "simple_strategy_return", "simple_strategy_sharpe", "simple_strategy_finalday"),
+        ("All Signals", "all_signals_strategy_return", "all_signals_strategy_sharpe", "all_signals_strategy_finalday"),
+        ("Buy & Hold", "buy_hold_return", "buy_hold_sharpe", "buy_hold_finalday"),
+        (
+            "Unprofit Shutdown",
+            "unprofit_shutdown_return",
+            "unprofit_shutdown_sharpe",
+            "unprofit_shutdown_finalday",
+        ),
+        ("Entry+Takeprofit", "entry_takeprofit_return", "entry_takeprofit_sharpe", "entry_takeprofit_finalday"),
+        ("Highlow", "highlow_return", "highlow_sharpe", "highlow_finalday_return"),
+        ("CI Guard", "ci_guard_return", "ci_guard_sharpe", None),
+    ]
+
+    rows: List[List[str]] = []
+    for name, return_col, sharpe_col, final_col in strategy_specs:
+        return_val = _mean_if_exists(results_df, return_col)
+        sharpe_val = _mean_if_exists(results_df, sharpe_col)
+        final_val = _mean_if_exists(results_df, final_col) if final_col else None
+        if return_val is None and sharpe_val is None and (final_col is None or final_val is None):
+            continue
+        row = [
+            name,
+            _fmt_number(return_val),
+            _fmt_number(sharpe_val),
+            _fmt_number(final_val),
+        ]
+        rows.append(row)
+
+    if not rows:
+        return
+
+    headers = ["Strategy", "Return", "Sharpe", "FinalDay"]
+    title = f"Backtest summary for {symbol} ({num_simulations} simulations)"
+    _log_table(title, headers, rows)
+
+
+def _log_validation_losses(results_df: pd.DataFrame) -> None:
+    loss_specs = [
+        ("Close Val Loss", "close_val_loss"),
+        ("High Val Loss", "high_val_loss"),
+        ("Low Val Loss", "low_val_loss"),
+    ]
+    rows = [
+        [label, _fmt_number(_mean_if_exists(results_df, column))]
+        for label, column in loss_specs
+        if column in results_df.columns
+    ]
+    if not rows:
+        return
+    # Skip logging if every value is missing, to avoid noise.
+    if all(cell == "-" for _, cell in rows):
+        return
+    _log_table("Average validation losses", ["Metric", "Value"], rows)
 
 _BOOL_TRUE = {"1", "true", "yes", "on"}
 
@@ -581,35 +682,8 @@ def backtest_forecasts(symbol, num_simulations=100):
     tb_writer.add_scalar(f'{symbol}/final_metrics/ci_guard_avg_return', results_df['ci_guard_return'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/ci_guard_avg_sharpe', results_df['ci_guard_sharpe'].mean(), 0)
 
-    logger.info(f"\nAverage Validation Losses:")
-    logger.info(f"Close Val Loss: {results_df['close_val_loss'].mean():.4f}")
-    logger.info(f"High Val Loss: {results_df['high_val_loss'].mean():.4f}") 
-    logger.info(f"Low Val Loss: {results_df['low_val_loss'].mean():.4f}")
-
-    logger.info(f"\nBacktest results for {symbol} over {num_simulations} simulations:")
-    logger.info(f"Average Simple Strategy Return: {results_df['simple_strategy_return'].mean():.4f}")
-    logger.info(f"Average Simple Strategy Sharpe: {results_df['simple_strategy_sharpe'].mean():.4f}")
-    logger.info(f"Average Simple Strategy Final Day Return: {results_df['simple_strategy_finalday'].mean():.4f}")
-    logger.info(f"Average All Signals Strategy Return: {results_df['all_signals_strategy_return'].mean():.4f}")
-    logger.info(f"Average All Signals Strategy Sharpe: {results_df['all_signals_strategy_sharpe'].mean():.4f}")
-    logger.info(
-        f"Average All Signals Strategy Final Day Return: {results_df['all_signals_strategy_finalday'].mean():.4f}")
-    logger.info(f"Average Buy and Hold Return: {results_df['buy_hold_return'].mean():.4f}")
-    logger.info(f"Average Buy and Hold Sharpe: {results_df['buy_hold_sharpe'].mean():.4f}")
-    logger.info(f"Average Buy and Hold Final Day Return: {results_df['buy_hold_finalday'].mean():.4f}")
-    logger.info(f"Average Unprofit Shutdown Buy and Hold Return: {results_df['unprofit_shutdown_return'].mean():.4f}")
-    logger.info(f"Average Unprofit Shutdown Buy and Hold Sharpe: {results_df['unprofit_shutdown_sharpe'].mean():.4f}")
-    logger.info(
-        f"Average Unprofit Shutdown Buy and Hold Final Day Return: {results_df['unprofit_shutdown_finalday'].mean():.4f}")
-    logger.info(f"Average Entry+Takeprofit Return: {results_df['entry_takeprofit_return'].mean():.4f}")
-    logger.info(f"Average Entry+Takeprofit Sharpe: {results_df['entry_takeprofit_sharpe'].mean():.4f}")
-    logger.info(
-        f"Average Entry+Takeprofit Final Day Return: {results_df['entry_takeprofit_finalday'].mean():.4f}")
-    logger.info(f"Average Highlow Return: {results_df['highlow_return'].mean():.4f}")
-    logger.info(f"Average Highlow Sharpe: {results_df['highlow_sharpe'].mean():.4f}")
-    logger.info(f"Average Highlow Final Day Return: {results_df['highlow_finalday_return'].mean():.4f}")
-    logger.info(f"Average CI Guard Return: {results_df['ci_guard_return'].mean():.4f}")
-    logger.info(f"Average CI Guard Sharpe: {results_df['ci_guard_sharpe'].mean():.4f}")
+    _log_validation_losses(results_df)
+    _log_strategy_summary(results_df, symbol, num_simulations)
 
     # Determine which strategy is best overall
     avg_simple = results_df["simple_strategy_return"].mean()

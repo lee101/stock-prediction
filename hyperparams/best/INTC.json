@@ -1,0 +1,29 @@
+{
+  "symbol": "INTC",
+  "model": "toto",
+  "config": {
+    "name": "toto_trimmed10_128",
+    "num_samples": 128,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 16
+  },
+  "validation": {
+    "price_mae": 0.4215145303652831,
+    "return_mae": 0.017265343130560957,
+    "latency_s": 16.304540283046663
+  },
+  "test": {
+    "price_mae": 1.3857355035268335,
+    "return_mae": 0.04406649746170388,
+    "latency_s": 16.080185896717012
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/INTC.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

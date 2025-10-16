@@ -8,6 +8,10 @@ from typing import Iterable, Optional
 
 import os
 
+# Ensure the simulator defaults to mock analytics before any dependent modules load.
+os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
+os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
+
 from . import alpaca_wrapper_mock
 from . import backtest_test3_inline as backtest_module
 from . import data_curate_daily_mock
@@ -187,6 +191,18 @@ def _patch_third_party(use_mock_analytics: bool, force_kronos: bool):
 
     # Ensure downstream modules reuse the patched modules.
     importlib.invalidate_caches()
+
+    patched_alpaca = sys.modules.get("alpaca_wrapper", alpaca_wrapper_mock)
+    for module_name in (
+        "predict_stock_forecasting",
+        "predict_stock_forecasting_proxy",
+        "trade_stock_e2e",
+        "trade_stock_e2e_trained",
+        "backtest_test3_inline",
+    ):
+        module = sys.modules.get(module_name)
+        if module is not None:
+            setattr(module, "alpaca_wrapper", patched_alpaca)
 
     process_utils = importlib.import_module("src.process_utils")
     original = (

@@ -14,9 +14,10 @@ from .state import get_state
 _REAL_BACKTEST_MODULE = None
 _REAL_BACKTEST_ERROR: Optional[Exception] = None
 _DEFAULT_NUM_SIMULATIONS = int(os.getenv("MARKETSIM_NUM_SIMULATIONS", "20"))
+_SKIP_REAL_IMPORT = os.getenv("MARKETSIM_SKIP_REAL_IMPORT", "0").lower() in {"1", "true", "yes", "on"}
 
 _REAL_BACKTEST_PATH = Path(__file__).resolve().parent.parent / "backtest_test3_inline.py"
-if _REAL_BACKTEST_PATH.exists():
+if _REAL_BACKTEST_PATH.exists() and not _SKIP_REAL_IMPORT:
     try:  # pragma: no cover - integration with heavy forecasting stack
         spec = importlib.util.spec_from_file_location(
             "_marketsim_real_backtest", str(_REAL_BACKTEST_PATH)
@@ -32,6 +33,8 @@ if _REAL_BACKTEST_PATH.exists():
             "falling back to lightweight simulator analytics.",
             exc,
         )
+elif _SKIP_REAL_IMPORT:
+    logger.info("[sim] Skipping real backtest_test3_inline import (mock analytics enabled).")
 
 
 def _window_from_state(symbol: str, num_simulations: int) -> Optional[pd.DataFrame]:
