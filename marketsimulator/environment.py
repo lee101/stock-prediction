@@ -270,7 +270,6 @@ def activate_simulation(
         )
 
     kronos_sample_key = "MARKETSIM_KRONOS_SAMPLE_COUNT"
-    previous_sample_value = os.environ.get(kronos_sample_key)
     had_sample_env = kronos_sample_key in os.environ
     sample_override_applied = False
     if force_kronos and not had_sample_env:
@@ -282,8 +281,22 @@ def activate_simulation(
         os.environ[kronos_sample_key] = str(default_sample)
         sample_override_applied = True
         logger.info(
-            "[sim] Kronos sample_count override set to %d for this simulation via MARKETSIM_KRONOS_SAMPLE_COUNT.",
-            default_sample,
+            f"[sim] Kronos sample_count override set to {default_sample} via MARKETSIM_KRONOS_SAMPLE_COUNT."
+        )
+
+    backtest_sim_key = "MARKETSIM_BACKTEST_SIMULATIONS"
+    had_backtest_env = backtest_sim_key in os.environ
+    backtest_override_applied = False
+    if force_kronos and not had_backtest_env:
+        default_backtest_raw = os.getenv("MARKETSIM_FORCE_KRONOS_BACKTEST_SIMULATIONS", "20")
+        try:
+            default_backtest = max(1, int(default_backtest_raw))
+        except ValueError:
+            default_backtest = 20
+        os.environ[backtest_sim_key] = str(default_backtest)
+        backtest_override_applied = True
+        logger.info(
+            f"[sim] Backtest simulation count override set to {default_backtest} via MARKETSIM_BACKTEST_SIMULATIONS."
         )
 
     if force_kronos:
@@ -325,6 +338,8 @@ def activate_simulation(
                 sys.modules[name] = original
         if sample_override_applied and not had_sample_env:
             os.environ.pop(kronos_sample_key, None)
+        if backtest_override_applied and not had_backtest_env:
+            os.environ.pop(backtest_sim_key, None)
         if override_force_env:
             if had_force_env:
                 if previous_force_value is not None:

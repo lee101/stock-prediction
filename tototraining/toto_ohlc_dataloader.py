@@ -83,7 +83,7 @@ class DataLoaderConfig:
     prediction_length: int = 24  # Number of time steps to predict
     
     # Data preprocessing
-    normalization_method: str = "robust"  # "standard", "minmax", "robust"
+    normalization_method: str = "robust"  # "standard", "minmax", "robust", "none"
     handle_missing: str = "interpolate"  # "drop", "interpolate", "zero"
     outlier_threshold: float = 3.0  # Standard deviations for outlier detection
     
@@ -119,6 +119,9 @@ class DataLoaderConfig:
     random_seed: int = 42
     
     def __post_init__(self):
+        valid_norms = {"standard", "minmax", "robust", "none"}
+        if self.normalization_method not in valid_norms:
+            raise ValueError(f"normalization_method must be one of {valid_norms}")
         if self.ohlc_features is None:
             self.ohlc_features = ["Open", "High", "Low", "Close"]
         if self.additional_features is None:
@@ -152,8 +155,10 @@ class OHLCPreprocessor:
             self.scaler_class = StandardScaler
         elif config.normalization_method == "minmax":
             self.scaler_class = MinMaxScaler
-        else:  # robust
+        elif config.normalization_method == "robust":
             self.scaler_class = RobustScaler
+        else:  # none
+            self.scaler_class = None
     
     def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add technical indicators to the dataframe"""
@@ -209,6 +214,10 @@ class OHLCPreprocessor:
     
     def fit_scalers(self, data: Dict[str, pd.DataFrame]):
         """Fit scalers on training data"""
+        if self.scaler_class is None:
+            self.scalers = {}
+            self.fitted = True
+            return
         # Combine all training data for fitting scalers
         all_data = pd.concat(list(data.values()), ignore_index=True)
         
@@ -227,7 +236,7 @@ class OHLCPreprocessor:
     
     def transform(self, df: pd.DataFrame, symbol: str = None) -> pd.DataFrame:
         """Apply preprocessing transformations"""
-        if not self.fitted:
+        if self.scaler_class is not None and not self.fitted:
             raise ValueError("Scalers must be fitted before transformation")
         
         df = df.copy()
@@ -247,13 +256,14 @@ class OHLCPreprocessor:
         df = self.remove_outliers(df)
         
         # Apply normalization
-        for col, scaler in self.scalers.items():
-            if col in df.columns:
-                valid_mask = ~df[col].isna()
-                if valid_mask.any():
-                    df.loc[valid_mask, col] = scaler.transform(
-                        df.loc[valid_mask, col].values.reshape(-1, 1)
-                    ).flatten()
+        if self.scaler_class is not None:
+            for col, scaler in self.scalers.items():
+                if col in df.columns:
+                    valid_mask = ~df[col].isna()
+                    if valid_mask.any():
+                        df.loc[valid_mask, col] = scaler.transform(
+                            df.loc[valid_mask, col].values.reshape(-1, 1)
+                        ).flatten()
         
         # Replace extreme values
         numeric_cols = df.select_dtypes(include=[np.number]).columns
@@ -540,8 +550,9 @@ class TotoOHLCDataLoader:
                 
                 # Parse timestamp if exists
                 if 'timestamp' in df.columns:
-                    df['timestamp'] = pd.to_datetime(df['timestamp'])
-                    df = df.sort_values('timestamp').reset_index(drop=True)
+                    parsed_ts = pd.to_datetime(df['timestamp'], utc=True, errors='coerce')
+                    df['timestamp'] = parsed_ts.dt.tz_localize(None)
+                    df = df.dropna(subset=['timestamp']).sort_values('timestamp').reset_index(drop=True)
                 
                 # Filter minimum length
                 if len(df) >= self.config.min_sequence_length:
