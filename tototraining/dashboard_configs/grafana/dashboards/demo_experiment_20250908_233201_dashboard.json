@@ -1,0 +1,1480 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "Toto Training Dashboard - demo_experiment_20250908_233201",
+    "description": "Comprehensive monitoring dashboard for Toto model training",
+    "tags": [
+      "toto",
+      "training",
+      "ml",
+      "monitoring"
+    ],
+    "timezone": "browser",
+    "refresh": "5s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": [
+        "5s",
+        "10s",
+        "30s",
+        "1m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "1d"
+      ]
+    },
+    "panels": [
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 0
+        },
+        "id": 1,
+        "panels": [],
+        "title": "Training Metrics",
+        "type": "row"
+      },
+      {
+        "id": 2,
+        "title": "Training & Validation Loss",
+        "type": "graph",
+        "gridPos": {
+          "h": 6,
+          "w": 6,
+          "x": 0,
+          "y": 1
+        },
+        "options": {
+          "legend": {
+            "displayMode": "visible",
+            "placement": "bottom"
+          },
+          "tooltip": {
+            "mode": "multi"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "spanNulls": false,
+              "insertNulls": false,
+              "showPoints": "never",
+              "pointSize": 5,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "axisPlacement": "auto",
+              "axisLabel": "",
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "train_loss"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#1f77b4"
+                  }
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "val_loss"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#ff7f0e"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "targets": [
+          {
+            "expr": "train_loss{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Train Loss",
+            "refId": "A"
+          },
+          {
+            "expr": "val_loss{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Val Loss",
+            "refId": "B"
+          }
+        ],
+        "description": "Training and validation loss curves over time"
+      },
+      {
+        "id": 3,
+        "title": "Learning Rate",
+        "type": "graph",
+        "gridPos": {
+          "h": 6,
+          "w": 6,
+          "x": 6,
+          "y": 1
+        },
+        "options": {
+          "legend": {
+            "displayMode": "visible",
+            "placement": "bottom"
+          },
+          "tooltip": {
+            "mode": "multi"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "spanNulls": false,
+              "insertNulls": false,
+              "showPoints": "never",
+              "pointSize": 5,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "axisPlacement": "auto",
+              "axisLabel": "",
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "learning_rate"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#2ca02c"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "targets": [
+          {
+            "expr": "learning_rate{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Learning Rate",
+            "refId": "A"
+          }
+        ],
+        "description": "Learning rate schedule over time"
+      },
+      {
+        "id": 4,
+        "title": "Current Epoch",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 3,
+          "x": 12,
+          "y": 1
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": ""
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "epoch{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Epoch",
+            "refId": "A"
+          }
+        ],
+        "description": "Current training epoch"
+      },
+      {
+        "id": 5,
+        "title": "Training Speed",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 3,
+          "x": 15,
+          "y": 1
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": ""
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 100
+                },
+                {
+                  "color": "red",
+                  "value": 50
+                }
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "samples_per_sec{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Samples Per Sec",
+            "refId": "A"
+          }
+        ],
+        "description": "Training throughput (samples/second)"
+      },
+      {
+        "id": 6,
+        "title": "Best Validation Loss",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 3,
+          "x": 18,
+          "y": 1
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": ""
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "best_val_loss"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#d62728"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "targets": [
+          {
+            "expr": "best_val_loss{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Best Val Loss",
+            "refId": "A"
+          }
+        ],
+        "description": "Best validation loss achieved"
+      },
+      {
+        "id": 7,
+        "title": "Patience Counter",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 3,
+          "x": 21,
+          "y": 1
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": ""
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 5
+                },
+                {
+                  "color": "red",
+                  "value": 8
+                }
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "early_stopping_patience{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Early Stopping Patience",
+            "refId": "A"
+          }
+        ],
+        "description": "Early stopping patience counter"
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 7
+        },
+        "id": 8,
+        "panels": [],
+        "title": "Model Performance",
+        "type": "row"
+      },
+      {
+        "id": 9,
+        "title": "Gradient Norm",
+        "type": "graph",
+        "gridPos": {
+          "h": 6,
+          "w": 6,
+          "x": 0,
+          "y": 8
+        },
+        "options": {
+          "legend": {
+            "displayMode": "visible",
+            "placement": "bottom"
+          },
+          "tooltip": {
+            "mode": "multi"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 1.0
+                },
+                {
+                  "color": "red",
+                  "value": 10.0
+                }
+              ]
+            },
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "spanNulls": false,
+              "insertNulls": false,
+              "showPoints": "never",
+              "pointSize": 5,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "axisPlacement": "auto",
+              "axisLabel": "",
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            }
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "gradient_norm{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Gradient Norm",
+            "refId": "A"
+          }
+        ],
+        "description": "Gradient norm over time (gradient clipping indicator)"
+      },
+      {
+        "id": 10,
+        "title": "Model Accuracy",
+        "type": "graph",
+        "gridPos": {
+          "h": 6,
+          "w": 6,
+          "x": 6,
+          "y": 8
+        },
+        "options": {
+          "legend": {
+            "displayMode": "visible",
+            "placement": "bottom"
+          },
+          "tooltip": {
+            "mode": "multi"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "spanNulls": false,
+              "insertNulls": false,
+              "showPoints": "never",
+              "pointSize": 5,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "axisPlacement": "auto",
+              "axisLabel": "",
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "train_accuracy"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#1f77b4"
+                  }
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "val_accuracy"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#ff7f0e"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "targets": [
+          {
+            "expr": "train_accuracy{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Train Accuracy",
+            "refId": "A"
+          },
+          {
+            "expr": "val_accuracy{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Val Accuracy",
+            "refId": "B"
+          }
+        ],
+        "description": "Training and validation accuracy"
+      },
+      {
+        "id": 11,
+        "title": "Weight Statistics",
+        "type": "table",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 12,
+          "y": 8
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "auto",
+              "displayMode": "auto"
+            }
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "weight_mean{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Weight Mean",
+            "refId": "A"
+          },
+          {
+            "expr": "weight_std{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Weight Std",
+            "refId": "B"
+          },
+          {
+            "expr": "weight_norm{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Weight Norm",
+            "refId": "C"
+          }
+        ],
+        "description": "Model weight statistics by layer"
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 14
+        },
+        "id": 12,
+        "panels": [],
+        "title": "System Resources",
+        "type": "row"
+      },
+      {
+        "id": 13,
+        "title": "CPU Usage",
+        "type": "graph",
+        "gridPos": {
+          "h": 6,
+          "w": 3,
+          "x": 0,
+          "y": 15
+        },
+        "options": {
+          "legend": {
+            "displayMode": "visible",
+            "placement": "bottom"
+          },
+          "tooltip": {
+            "mode": "multi"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 80
+                },
+                {
+                  "color": "red",
+                  "value": 95
+                }
+              ]
+            },
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "spanNulls": false,
+              "insertNulls": false,
+              "showPoints": "never",
+              "pointSize": 5,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "axisPlacement": "auto",
+              "axisLabel": "",
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "system_cpu_percent"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#2ca02c"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "targets": [
+          {
+            "expr": "system_cpu_percent{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "System Cpu Percent",
+            "refId": "A"
+          }
+        ],
+        "description": "CPU utilization percentage"
+      },
+      {
+        "id": 14,
+        "title": "Memory Usage",
+        "type": "graph",
+        "gridPos": {
+          "h": 6,
+          "w": 3,
+          "x": 3,
+          "y": 15
+        },
+        "options": {
+          "legend": {
+            "displayMode": "visible",
+            "placement": "bottom"
+          },
+          "tooltip": {
+            "mode": "multi"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 80
+                },
+                {
+                  "color": "red",
+                  "value": 95
+                }
+              ]
+            },
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "spanNulls": false,
+              "insertNulls": false,
+              "showPoints": "never",
+              "pointSize": 5,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "axisPlacement": "auto",
+              "axisLabel": "",
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "system_memory_percent"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#ff7f0e"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "targets": [
+          {
+            "expr": "system_memory_percent{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "System Memory Percent",
+            "refId": "A"
+          }
+        ],
+        "description": "Memory utilization percentage"
+      },
+      {
+        "id": 15,
+        "title": "GPU Utilization",
+        "type": "graph",
+        "gridPos": {
+          "h": 6,
+          "w": 3,
+          "x": 6,
+          "y": 15
+        },
+        "options": {
+          "legend": {
+            "displayMode": "visible",
+            "placement": "bottom"
+          },
+          "tooltip": {
+            "mode": "multi"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 50
+                },
+                {
+                  "color": "red",
+                  "value": 30
+                }
+              ]
+            },
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "spanNulls": false,
+              "insertNulls": false,
+              "showPoints": "never",
+              "pointSize": 5,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "axisPlacement": "auto",
+              "axisLabel": "",
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "system_gpu_utilization"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#d62728"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "targets": [
+          {
+            "expr": "system_gpu_utilization{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "System Gpu Utilization",
+            "refId": "A"
+          }
+        ],
+        "description": "GPU utilization percentage"
+      },
+      {
+        "id": 16,
+        "title": "GPU Memory",
+        "type": "graph",
+        "gridPos": {
+          "h": 6,
+          "w": 3,
+          "x": 9,
+          "y": 15
+        },
+        "options": {
+          "legend": {
+            "displayMode": "visible",
+            "placement": "bottom"
+          },
+          "tooltip": {
+            "mode": "multi"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 80
+                },
+                {
+                  "color": "red",
+                  "value": 95
+                }
+              ]
+            },
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "spanNulls": false,
+              "insertNulls": false,
+              "showPoints": "never",
+              "pointSize": 5,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "axisPlacement": "auto",
+              "axisLabel": "",
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "system_gpu_memory_percent"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#9467bd"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "targets": [
+          {
+            "expr": "system_gpu_memory_percent{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "System Gpu Memory Percent",
+            "refId": "A"
+          }
+        ],
+        "description": "GPU memory usage percentage"
+      },
+      {
+        "id": 17,
+        "title": "GPU Temperature",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 4,
+          "x": 12,
+          "y": 15
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": ""
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 75
+                },
+                {
+                  "color": "red",
+                  "value": 85
+                }
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "system_gpu_temperature{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "System Gpu Temperature",
+            "refId": "A"
+          }
+        ],
+        "description": "GPU temperature (\u00b0C)"
+      },
+      {
+        "id": 18,
+        "title": "Disk Usage",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 4,
+          "x": 16,
+          "y": 15
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": ""
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "system_disk_used_gb{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "System Disk Used Gb",
+            "refId": "A"
+          }
+        ],
+        "description": "Disk space used (GB)"
+      },
+      {
+        "id": 19,
+        "title": "Training Time",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 4,
+          "x": 20,
+          "y": 15
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": ""
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "training_time_hours{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Training Time Hours",
+            "refId": "A"
+          }
+        ],
+        "description": "Total training time (hours)"
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 21
+        },
+        "id": 20,
+        "panels": [],
+        "title": "Training Analysis",
+        "type": "row"
+      },
+      {
+        "id": 21,
+        "title": "Loss Comparison",
+        "type": "graph",
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 0,
+          "y": 22
+        },
+        "options": {
+          "legend": {
+            "displayMode": "visible",
+            "placement": "bottom"
+          },
+          "tooltip": {
+            "mode": "multi"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "spanNulls": false,
+              "insertNulls": false,
+              "showPoints": "never",
+              "pointSize": 5,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "axisPlacement": "auto",
+              "axisLabel": "",
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "train_loss"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#1f77b4"
+                  }
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "val_loss"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#ff7f0e"
+                  }
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "loss_gap"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#2ca02c"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "targets": [
+          {
+            "expr": "train_loss{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Train Loss",
+            "refId": "A"
+          },
+          {
+            "expr": "val_loss{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Val Loss",
+            "refId": "B"
+          },
+          {
+            "expr": "loss_gap{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Loss Gap",
+            "refId": "C"
+          }
+        ],
+        "description": "Training vs validation loss with gap analysis"
+      },
+      {
+        "id": 22,
+        "title": "Overfitting Indicator",
+        "type": "stat",
+        "gridPos": {
+          "h": 6,
+          "w": 4,
+          "x": 8,
+          "y": 22
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": ""
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 0.3
+                },
+                {
+                  "color": "red",
+                  "value": 0.5
+                }
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "overfitting_score{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Overfitting Score",
+            "refId": "A"
+          }
+        ],
+        "description": "Overfitting risk score"
+      },
+      {
+        "id": 23,
+        "title": "Training Progress",
+        "type": "graph",
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 12,
+          "y": 22
+        },
+        "options": {
+          "legend": {
+            "displayMode": "visible",
+            "placement": "bottom"
+          },
+          "tooltip": {
+            "mode": "multi"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "spanNulls": false,
+              "insertNulls": false,
+              "showPoints": "never",
+              "pointSize": 5,
+              "stacking": {
+                "mode": "none",
+                "group": "A"
+              },
+              "axisPlacement": "auto",
+              "axisLabel": "",
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            }
+          },
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "progress_percent{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Progress Percent",
+            "refId": "A"
+          }
+        ],
+        "description": "Training progress percentage"
+      },
+      {
+        "id": 24,
+        "title": "ETA",
+        "type": "stat",
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 18,
+          "y": 22
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": ""
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "targets": [
+          {
+            "expr": "estimated_time_remaining{job=\"toto-training\"}",
+            "interval": "",
+            "legendFormat": "Estimated Time Remaining",
+            "refId": "A"
+          }
+        ],
+        "description": "Estimated time remaining"
+      }
+    ],
+    "schemaVersion": 27,
+    "version": 1
+  }
+}

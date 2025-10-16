@@ -1,0 +1,75 @@
+{
+  "exp1_lr_fix": {
+    "config": {
+      "optimizer": "adamw",
+      "base_lr": 0.0001,
+      "min_lr": 1e-06,
+      "T_0": 1000,
+      "T_mult": 2,
+      "scheduler": "CosineAnnealingWarmRestarts"
+    },
+    "sample_lrs": {
+      "step_100": 9.755282581475769e-05,
+      "step_1000": 0.0001,
+      "step_3000": 0.0001,
+      "step_4999": 5.00392699041326e-05
+    }
+  },
+  "exp2_profit_loss": {
+    "loss_components": {
+      "price_loss": 0.01065010018646717,
+      "profit_loss": -1.08513343334198,
+      "risk_loss": 0.32056450843811035,
+      "avg_return": -3.9036951065063477
+    },
+    "total_loss": -0.7539187669754028
+  },
+  "exp3_ensemble": {
+    "conservative": {
+      "buy_ratio": 0.03,
+      "sell_ratio": 0.17,
+      "hold_ratio": 0.8
+    },
+    "moderate": {
+      "buy_ratio": 0.11,
+      "sell_ratio": 0.3,
+      "hold_ratio": 0.59
+    },
+    "aggressive": {
+      "buy_ratio": 0.3,
+      "sell_ratio": 0.45,
+      "hold_ratio": 0.25
+    }
+  },
+  "exp4_features": {
+    "feature_categories": {
+      "momentum_indicators": [
+        "rate_of_change",
+        "momentum_oscillator",
+        "price_acceleration"
+      ],
+      "volatility_signals": [
+        "volatility_ratio",
+        "volatility_breakout",
+        "atr_multiplier"
+      ],
+      "market_regime": [
+        "trend_strength",
+        "market_phase",
+        "correlation_matrix"
+      ],
+      "risk_metrics": [
+        "max_drawdown",
+        "sharpe_ratio",
+        "value_at_risk"
+      ]
+    },
+    "num_new_features": 7
+  },
+  "exp5_kelly": {
+    "final_position_size": 0.14927316258819592,
+    "win_rate": 0.796,
+    "avg_win": 0.01634510996729128,
+    "avg_loss": 0.015937071094540234
+  }
+}

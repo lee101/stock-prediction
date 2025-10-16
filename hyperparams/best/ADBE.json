@@ -1,0 +1,32 @@
+{
+  "symbol": "ADBE",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.16_p0.80_s192_k16_clip2_ctx256",
+    "temperature": 0.16,
+    "top_p": 0.8,
+    "top_k": 16,
+    "sample_count": 192,
+    "max_context": 256,
+    "clip": 2.0
+  },
+  "validation": {
+    "price_mae": 4.843844604492196,
+    "return_mae": 0.013660178515102987,
+    "latency_s": 64.15091215120628
+  },
+  "test": {
+    "price_mae": 4.72278137207031,
+    "return_mae": 0.013430996406073686,
+    "latency_s": 49.31508879736066
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/kronos/ADBE.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

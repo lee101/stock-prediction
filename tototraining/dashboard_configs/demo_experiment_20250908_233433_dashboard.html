@@ -1,0 +1,275 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Toto Training Dashboard - demo_experiment_20250908_233433</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: #ffffff;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+        }
+        .row {
+            margin-bottom: 30px;
+        }
+        .row-title {
+            font-size: 1.5em;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #4CAF50;
+        }
+        .panel-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .panel {
+            background-color: #2d2d2d;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            flex: 1;
+            min-width: 300px;
+        }
+        .panel h3 {
+            margin-top: 0;
+            color: #ffffff;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        .metric-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #4CAF50;
+            text-align: center;
+        }
+        .metric-label {
+            text-align: center;
+            color: #cccccc;
+            margin-top: 5px;
+        }
+        .plot {
+            width: 100%;
+            height: 300px;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-good { background-color: #4CAF50; }
+        .status-warning { background-color: #FF9800; }
+        .status-critical { background-color: #F44336; }
+        .refresh-info {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="refresh-info">
+        <span class="status-indicator status-good"></span>
+        Auto-refresh: 5s
+    </div>
+    
+    <div class="header">
+        <h1>Toto Training Dashboard - demo_experiment_20250908_233433</h1>
+        <p>Comprehensive monitoring dashboard for Toto model training</p>
+        <p>Last updated: <span id="last-update"></span></p>
+    </div>
+    
+    <div class="row"><div class="row-title">Training Metrics</div><div class="panel-container">
+                    <div class="panel" style="flex: 0 1 50.0%;">
+                        <h3>Training & Validation Loss</h3>
+                        <div id="training-and-validation-loss-plot" class="plot"></div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 50.0%;">
+                        <h3>Learning Rate</h3>
+                        <div id="learning-rate-plot" class="plot"></div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 25.0%;">
+                        <h3>Current Epoch</h3>
+                        <div class="metric-value" id="current-epoch-value">--</div>
+                        <div class="metric-label">Current training epoch</div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 25.0%;">
+                        <h3>Training Speed</h3>
+                        <div class="metric-value" id="training-speed-value">--</div>
+                        <div class="metric-label">Training throughput (samples/second)</div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 25.0%;">
+                        <h3>Best Validation Loss</h3>
+                        <div class="metric-value" id="best-validation-loss-value">--</div>
+                        <div class="metric-label">Best validation loss achieved</div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 25.0%;">
+                        <h3>Patience Counter</h3>
+                        <div class="metric-value" id="patience-counter-value">--</div>
+                        <div class="metric-label">Early stopping patience counter</div>
+                    </div>
+                    </div></div>
+<div class="row"><div class="row-title">Model Performance</div><div class="panel-container">
+                    <div class="panel" style="flex: 0 1 50.0%;">
+                        <h3>Gradient Norm</h3>
+                        <div id="gradient-norm-plot" class="plot"></div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 50.0%;">
+                        <h3>Model Accuracy</h3>
+                        <div id="model-accuracy-plot" class="plot"></div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 100.0%;">
+                        <h3>Weight Statistics</h3>
+                        <p>Model weight statistics by layer</p>
+                    </div>
+                    </div></div>
+<div class="row"><div class="row-title">System Resources</div><div class="panel-container">
+                    <div class="panel" style="flex: 0 1 25.0%;">
+                        <h3>CPU Usage</h3>
+                        <div id="cpu-usage-plot" class="plot"></div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 25.0%;">
+                        <h3>Memory Usage</h3>
+                        <div id="memory-usage-plot" class="plot"></div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 25.0%;">
+                        <h3>GPU Utilization</h3>
+                        <div id="gpu-utilization-plot" class="plot"></div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 25.0%;">
+                        <h3>GPU Memory</h3>
+                        <div id="gpu-memory-plot" class="plot"></div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 33.33333333333333%;">
+                        <h3>GPU Temperature</h3>
+                        <div class="metric-value" id="gpu-temperature-value">--</div>
+                        <div class="metric-label">GPU temperature (°C)</div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 33.33333333333333%;">
+                        <h3>Disk Usage</h3>
+                        <div class="metric-value" id="disk-usage-value">--</div>
+                        <div class="metric-label">Disk space used (GB)</div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 33.33333333333333%;">
+                        <h3>Training Time</h3>
+                        <div class="metric-value" id="training-time-value">--</div>
+                        <div class="metric-label">Total training time (hours)</div>
+                    </div>
+                    </div></div>
+<div class="row"><div class="row-title">Training Analysis</div><div class="panel-container">
+                    <div class="panel" style="flex: 0 1 66.66666666666666%;">
+                        <h3>Loss Comparison</h3>
+                        <div id="loss-comparison-plot" class="plot"></div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 33.33333333333333%;">
+                        <h3>Overfitting Indicator</h3>
+                        <div class="metric-value" id="overfitting-indicator-value">--</div>
+                        <div class="metric-label">Overfitting risk score</div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 50.0%;">
+                        <h3>Training Progress</h3>
+                        <div id="training-progress-plot" class="plot"></div>
+                    </div>
+                    
+                    <div class="panel" style="flex: 0 1 50.0%;">
+                        <h3>ETA</h3>
+                        <div class="metric-value" id="eta-value">--</div>
+                        <div class="metric-label">Estimated time remaining</div>
+                    </div>
+                    </div></div>
+    
+    <script>
+        // Auto-refresh functionality
+        function updateTimestamp() {
+            document.getElementById('last-update').textContent = new Date().toLocaleString();
+        }
+        
+        // Simulate real-time data updates
+        function refreshData() {
+            // In a real implementation, this would fetch data from your training logger
+            updateTimestamp();
+            // Add your data fetching and chart updating logic here
+        }
+        
+        // Initialize
+        updateTimestamp();
+        setInterval(refreshData, 5000); // Refresh every 5 seconds
+        
+        // Sample data for demonstration
+        const sampleData = {
+            train_loss: [1.0, 0.9, 0.8, 0.7, 0.6, 0.5],
+            val_loss: [1.1, 1.0, 0.9, 0.8, 0.7, 0.65],
+            epochs: [1, 2, 3, 4, 5, 6]
+        };
+        
+        // Create sample plots
+        function createSamplePlots() {
+            // Loss curve
+            const lossTrace1 = {
+                x: sampleData.epochs,
+                y: sampleData.train_loss,
+                mode: 'lines+markers',
+                name: 'Training Loss',
+                line: { color: '#1f77b4' }
+            };
+            
+            const lossTrace2 = {
+                x: sampleData.epochs,
+                y: sampleData.val_loss,
+                mode: 'lines+markers',
+                name: 'Validation Loss',
+                line: { color: '#ff7f0e' }
+            };
+            
+            const lossLayout = {
+                title: '',
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#ffffff' },
+                xaxis: { title: 'Epoch', gridcolor: '#444444' },
+                yaxis: { title: 'Loss', gridcolor: '#444444' }
+            };
+            
+            Plotly.newPlot('loss-plot', [lossTrace1, lossTrace2], lossLayout);
+        }
+        
+        // Initialize plots when page loads
+        window.onload = function() {
+            createSamplePlots();
+        };
+    </script>
+</body>
+</html>

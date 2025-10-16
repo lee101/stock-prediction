@@ -1,5 +1,6 @@
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from loguru import logger
 
@@ -27,7 +28,7 @@ def backout_near_market(symbol):
 
 
 @debounce(60 * 10, key_func=lambda symbol, side, target_qty=None: f"{symbol}_{side}_{target_qty}")
-def ramp_into_position(symbol: str, side: str = "buy", target_qty: float = None):
+def ramp_into_position(symbol: str, side: str = "buy", target_qty: Optional[float] = None):
     """Ramp into a position over time using the alpaca CLI."""
     command = f"PYTHONPATH={cwd} python scripts/alpaca_cli.py ramp_into_position {symbol} --side={side}"
     if target_qty is not None:
