@@ -1,0 +1,31 @@
+{
+  "symbol": "U",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.16_p0.80_s192_k16_clip2_ctx256",
+    "temperature": 0.16,
+    "top_p": 0.8,
+    "top_k": 16,
+    "sample_count": 192,
+    "max_context": 256,
+    "clip": 2.0
+  },
+  "validation": {
+    "price_mae": 6.8277629852294925,
+    "return_mae": 0.16383924667553423,
+    "latency_s": 39.30480114975944
+  },
+  "test": {
+    "price_mae": 2.710951995849608,
+    "return_mae": 0.06315121543695412,
+    "latency_s": 51.16914386441931
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

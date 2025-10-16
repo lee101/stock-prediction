@@ -1,0 +1,29 @@
+{
+  "symbol": "U",
+  "model": "toto",
+  "config": {
+    "name": "toto_trimmed10_128",
+    "num_samples": 128,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 16
+  },
+  "validation": {
+    "price_mae": 1.1530043106812706,
+    "return_mae": 0.02824455208589924,
+    "latency_s": 22.22386470483616
+  },
+  "test": {
+    "price_mae": 1.0861859449973459,
+    "return_mae": 0.027064467413980976,
+    "latency_s": 15.600214092526585
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/U.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

@@ -1,0 +1,43 @@
+groups:
+- name: toto_training_alerts
+  rules:
+  - alert: TrainingStalled
+    annotations:
+      description: No progress in epochs for the last 10 minutes
+      summary: Training appears to be stalled
+    expr: increase(epoch[10m]) == 0
+    for: 10m
+    labels:
+      severity: warning
+  - alert: HighGPUTemperature
+    annotations:
+      description: "GPU temperature is {{ $value }}\xB0C"
+      summary: GPU temperature is critically high
+    expr: system_gpu_temperature > 85
+    for: 2m
+    labels:
+      severity: critical
+  - alert: LowGPUUtilization
+    annotations:
+      description: GPU utilization is {{ $value }}%
+      summary: Low GPU utilization detected
+    expr: system_gpu_utilization < 30
+    for: 5m
+    labels:
+      severity: warning
+  - alert: HighMemoryUsage
+    annotations:
+      description: Memory usage is {{ $value }}%
+      summary: High memory usage detected
+    expr: system_memory_percent > 90
+    for: 5m
+    labels:
+      severity: warning
+  - alert: TrainingLossIncreasing
+    annotations:
+      description: Training loss has been increasing for 30 minutes
+      summary: Training loss is increasing
+    expr: increase(train_loss[30m]) > 0
+    for: 30m
+    labels:
+      severity: warning

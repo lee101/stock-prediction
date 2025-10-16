@@ -1,0 +1,40 @@
+{
+  "model": {
+    "input_features": 21,
+    "hidden_size": 512,
+    "num_heads": 16,
+    "num_layers": 8,
+    "intermediate_size": 2048,
+    "dropout": 0.15,
+    "sequence_length": 60,
+    "prediction_horizon": 5
+  },
+  "trading": {
+    "initial_capital": 10000,
+    "max_position_size": 0.25,
+    "max_positions": 5,
+    "stop_loss": 0.02,
+    "take_profit": 0.05,
+    "confidence_threshold": 0.6,
+    "risk_per_trade": 0.02,
+    "max_daily_loss": 0.05
+  },
+  "strategy": {
+    "use_ensemble": false,
+    "use_kelly_sizing": true,
+    "kelly_fraction": 0.25,
+    "position_sizing_method": "kelly"
+  },
+  "data": {
+    "lookback_days": 100,
+    "update_interval": 60,
+    "use_technical_indicators": true,
+    "normalize_features": true
+  },
+  "logging": {
+    "log_trades": true,
+    "log_signals": true,
+    "save_metrics": true,
+    "verbose": true
+  }
+}

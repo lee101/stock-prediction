@@ -1,0 +1,31 @@
+{
+  "symbol": "COUR",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.16_p0.80_s192_k16_clip2_ctx256",
+    "temperature": 0.16,
+    "top_p": 0.8,
+    "top_k": 16,
+    "sample_count": 192,
+    "max_context": 256,
+    "clip": 2.0
+  },
+  "validation": {
+    "price_mae": 0.32188358306884773,
+    "return_mae": 0.02846642219756344,
+    "latency_s": 0.052676272578537464
+  },
+  "test": {
+    "price_mae": 0.30977187156677244,
+    "return_mae": 0.027931477045028887,
+    "latency_s": 0.052268863189965487
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

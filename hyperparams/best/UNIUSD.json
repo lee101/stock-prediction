@@ -1,0 +1,32 @@
+{
+  "symbol": "UNIUSD",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.12_p0.78_s224_k24_clip1.5_ctx224",
+    "temperature": 0.12,
+    "top_p": 0.78,
+    "top_k": 24,
+    "sample_count": 224,
+    "max_context": 224,
+    "clip": 1.5
+  },
+  "validation": {
+    "price_mae": 3.801054845110022e-06,
+    "return_mae": 0.02259682892325673,
+    "latency_s": 19.302084020338953
+  },
+  "test": {
+    "price_mae": 4.094845644447103e-06,
+    "return_mae": 0.02514520386737761,
+    "latency_s": 20.381720325443894
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/kronos/UNIUSD.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

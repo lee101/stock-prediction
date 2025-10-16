@@ -1,0 +1,11 @@
+apiVersion: 1
+providers:
+- allowUiUpdates: true
+  disableDeletion: false
+  folder: ''
+  name: toto-dashboards
+  options:
+    path: /etc/grafana/dashboards
+  orgId: 1
+  type: file
+  updateIntervalSeconds: 10

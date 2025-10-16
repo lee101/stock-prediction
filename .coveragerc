@@ -1,0 +1,29 @@
+[run]
+source = 
+    src
+    rlinference
+    hfinference
+    hftraining
+    hyperparamopt
+    totoembedding
+omit = 
+    tests/*
+    **/test_*.
+    **/*_test.py
+    **/.venv/*
+    **/venv/*
+    **/.tox/*
+    **/site-packages/*
+    **/experiments/*
+    **/reports/*
+
+[report]
+exclude_lines = 
+    pragma: no cover
+    if __name__ == .__main__.
+    @overload
+    @abstractmethod
+    @abc.abstractmethod
+precision = 1
+skip_empty = True
+
