@@ -22,3 +22,12 @@ __pycache__*
 logfile.log
 *.log
 positions_shelf.json
+quick_simulation_results_forecasts.csv
+quick_simulation_results_strategies.csv
+POSITION_SIZING_RESULTS.md
+LEVERAGE_BACKTEST_SUMMARY.md
+LEVERAGE_ANALYSIS_RESULTS.md
+BACKTESTING_SUMMARY.md
+BACKTESTING_README.md
+claudeideas.md
+simulationresults

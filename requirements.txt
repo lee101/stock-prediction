@@ -105,6 +105,8 @@ uvicorn
 # git+https://github.com/amazon-science/chronos-forecasting.git
 chronos-forecasting
 scikit-learn
+torch-optimizer
+pytorch-optimizer
 
 python-binance
 typer

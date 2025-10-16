@@ -109,6 +109,34 @@ python trade_stock_e2e.py
 pytest .
 ```
 
+## Training Optimizer Toolkit
+
+Advanced optimizer experiments now live in `traininglib/`. The module ships with:
+
+- A registry that exposes Adam/AdamW, SGD, Lion, Adafactor, Shampoo, and Muon with sensible defaults.
+- `traininglib.benchmarking.RegressionBenchmark` for quick, repeatable regression checks (including multi-seed summaries).
+- Hugging Face helpers (`traininglib.hf_integration`) so you can wire the same optimizer choices into a `Trainer`.
+- A CLI (`python -m traininglib.benchmark_cli`) that prints aggregated losses so you can compare optimizers the moment new ideas land.
+
+Example usage inside a Hugging Face script:
+
+```python
+from transformers import Trainer, TrainingArguments
+from traininglib.hf_integration import build_hf_optimizers
+
+optimizer, scheduler = build_hf_optimizers(model, "shampoo")
+trainer = Trainer(model=model, args=training_args, optimizers=(optimizer, scheduler))
+trainer.train()
+```
+
+The accompanying tests in `tests/traininglib/` run a small benchmark to confirm Shampoo and Muon at least match AdamW before you swap anything into production training loops.
+
+You can also evaluate the wider optimizer set locally:
+
+```bash
+python -m traininglib.benchmark_cli --optimizers adamw shampoo muon lion --runs 3
+```
+
 ### Run a Simulation
 
 ```bash
