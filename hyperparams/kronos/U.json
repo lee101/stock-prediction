@@ -1,5 +1,5 @@
 {
-  "symbol": "GOOGL",
+  "symbol": "U",
   "model": "kronos",
   "config": {
     "name": "kronos_temp0.16_p0.80_s192_k16_clip2_ctx256",
@@ -11,14 +11,14 @@
     "clip": 2.0
   },
   "validation": {
-    "price_mae": 1.2598436915845987,
-    "return_mae": 0.016741319773875225,
-    "latency_s": 19.43412175681442
+    "price_mae": 6.8277629852294925,
+    "return_mae": 0.16383924667553423,
+    "latency_s": 39.30480114975944
   },
   "test": {
-    "price_mae": 1.1092128177604976,
-    "return_mae": 0.016037697359898958,
-    "latency_s": 29.89038591599092
+    "price_mae": 2.710951995849608,
+    "return_mae": 0.06315121543695412,
+    "latency_s": 51.16914386441931
   },
   "windows": {
     "val_window": 20,

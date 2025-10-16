@@ -1,5 +1,5 @@
 {
-  "symbol": "AAPL",
+  "symbol": "NVDA",
   "model": "kronos",
   "config": {
     "name": "kronos_temp0.15_p0.82_s208_k16_clip1.8_ctx224",
@@ -11,14 +11,14 @@
     "clip": 1.8
   },
   "validation": {
-    "price_mae": 3.704217025424242,
-    "return_mae": 0.02910827749530858,
-    "latency_s": 30.123647243715823
+    "price_mae": 3.252337646484372,
+    "return_mae": 0.018531268007355918,
+    "latency_s": 0.051746958401054144
   },
   "test": {
-    "price_mae": 3.6636780563936213,
-    "return_mae": 0.02800849141532219,
-    "latency_s": 27.383072562050074
+    "price_mae": 4.125087738037114,
+    "return_mae": 0.02268232502961593,
+    "latency_s": 35.194033711683005
   },
   "windows": {
     "val_window": 20,
