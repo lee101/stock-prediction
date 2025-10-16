@@ -3,12 +3,31 @@
 from math import floor
 from typing import List, Optional
 
-import alpaca_wrapper
 from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
 from src.trading_obj_utils import filter_to_realistic_positions
 
 logger = setup_logging("sizing_utils.log")
+
+
+class _SimAlpacaWrapper:
+    """Fallback context to let sizing math run without live Alpaca access."""
+
+    equity: float = 100000.0
+    total_buying_power: float = 100000.0
+
+    @staticmethod
+    def get_all_positions():
+        return []
+
+
+try:
+    import alpaca_wrapper  # type: ignore
+    _HAS_ALPACA = True
+except Exception as exc:
+    logger.warning("Falling back to offline sizing because Alpaca wrapper failed to import: {}", exc)
+    alpaca_wrapper = _SimAlpacaWrapper()  # type: ignore
+    _HAS_ALPACA = False
 
 
 def get_current_symbol_exposure(symbol: str, positions: List) -> float:
