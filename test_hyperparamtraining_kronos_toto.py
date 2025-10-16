@@ -67,34 +67,34 @@ USE_COMPACT_TOTO_SWEEP = os.getenv("TOTO_COMPACT_SWEEP", "0").strip().lower() in
 if USE_COMPACT_TOTO_SWEEP:
     TOTO_TRAIN_SWEEP = (
         TotoRunConfig(
-            name="toto_trimmed10_256",
-            num_samples=256,
+            name="toto_trimmed10_128",
+            num_samples=128,
             aggregate="trimmed_mean_10",
-            samples_per_batch=32,
+            samples_per_batch=16,
         ),
         TotoRunConfig(
-            name="toto_quantile_plus_std_015_015_256",
-            num_samples=256,
+            name="toto_quantile_plus_std_015_015_128",
+            num_samples=128,
             aggregate="quantile_plus_std_0.15_0.15",
-            samples_per_batch=32,
+            samples_per_batch=16,
         ),
         TotoRunConfig(
-            name="toto_quantile_plus_std_015_012_256",
-            num_samples=256,
+            name="toto_quantile_plus_std_015_012_128",
+            num_samples=128,
             aggregate="quantile_plus_std_0.15_0.12",
-            samples_per_batch=32,
+            samples_per_batch=16,
         ),
         TotoRunConfig(
-            name="toto_mean_quantile_mix_015_030_256",
-            num_samples=256,
+            name="toto_mean_quantile_mix_015_030_128",
+            num_samples=128,
             aggregate="mean_quantile_mix_0.15_0.3",
-            samples_per_batch=32,
+            samples_per_batch=16,
         ),
         TotoRunConfig(
-            name="toto_quantile15_256",
-            num_samples=256,
+            name="toto_quantile15_128",
+            num_samples=128,
             aggregate="quantile_0.15",
-            samples_per_batch=32,
+            samples_per_batch=16,
         ),
     )
 else:
@@ -291,21 +291,26 @@ def _evaluate_symbol(symbol_path: Path) -> None:
     else:
         best_kronos_name, best_kronos_val = _select_best(kronos_val_results)
         best_kronos_cfg = next(cfg for cfg in KRONOS_TRAIN_SWEEP if cfg.name == best_kronos_name)
-        kronos_test = _sequential_kronos(df, test_indices, best_kronos_cfg)
-        config_dict, val_payload, test_payload, path = _persist_result(
-            "kronos",
-            symbol,
-            best_kronos_cfg,
-            best_kronos_val,
-            kronos_test,
-        )
-        kronos_summary = {
-            "model": "kronos",
-            "config": config_dict,
-            "validation": val_payload,
-            "test": test_payload,
-            "path": str(path),
-        }
+        kronos_test = None
+        try:
+            kronos_test = _sequential_kronos(df, test_indices, best_kronos_cfg)
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            print(f"[WARN] Kronos test evaluation failed for {symbol} ({best_kronos_cfg.name}): {exc}")
+        if kronos_test is not None:
+            config_dict, val_payload, test_payload, path = _persist_result(
+                "kronos",
+                symbol,
+                best_kronos_cfg,
+                best_kronos_val,
+                kronos_test,
+            )
+            kronos_summary = {
+                "model": "kronos",
+                "config": config_dict,
+                "validation": val_payload,
+                "test": test_payload,
+                "path": str(path),
+            }
 
     toto_val_results: Dict[str, EvaluationResult] = {}
     toto_summary: Optional[Dict[str, Any]] = None
@@ -320,21 +325,26 @@ def _evaluate_symbol(symbol_path: Path) -> None:
     else:
         best_toto_name, best_toto_val = _select_best(toto_val_results)
         best_toto_cfg = next(cfg for cfg in TOTO_TRAIN_SWEEP if cfg.name == best_toto_name)
-        toto_test = _sequential_toto(df, test_indices, best_toto_cfg)
-        config_dict, val_payload, test_payload, path = _persist_result(
-            "toto",
-            symbol,
-            best_toto_cfg,
-            best_toto_val,
-            toto_test,
-        )
-        toto_summary = {
-            "model": "toto",
-            "config": config_dict,
-            "validation": val_payload,
-            "test": test_payload,
-            "path": str(path),
-        }
+        toto_test = None
+        try:
+            toto_test = _sequential_toto(df, test_indices, best_toto_cfg)
+        except Exception as exc:
+            print(f"[WARN] Toto test evaluation failed for {symbol} ({best_toto_cfg.name}): {exc}")
+        if toto_test is not None:
+            config_dict, val_payload, test_payload, path = _persist_result(
+                "toto",
+                symbol,
+                best_toto_cfg,
+                best_toto_val,
+                toto_test,
+            )
+            toto_summary = {
+                "model": "toto",
+                "config": config_dict,
+                "validation": val_payload,
+                "test": test_payload,
+                "path": str(path),
+            }
 
     # Save overall best model selection
     selection = None

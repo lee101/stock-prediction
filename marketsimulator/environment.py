@@ -146,6 +146,15 @@ def _install_env_stub() -> None:
         typer_mod.run = run
         sys.modules["typer"] = typer_mod
 
+    # Pre-seed frequently imported trading modules with simulator stubs to avoid
+    # hitting live APIs before the full patching phase installs mocks.
+    if "alpaca_wrapper" not in sys.modules:
+        sys.modules["alpaca_wrapper"] = alpaca_wrapper_mock
+    if "data_curate_daily" not in sys.modules:
+        sys.modules["data_curate_daily"] = data_curate_daily_mock
+    os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
+    os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
+
 
 def _patch_third_party(use_mock_analytics: bool, force_kronos: bool):
     replaced_modules = {}
@@ -244,6 +253,23 @@ def activate_simulation(
             and str(previous_force_value).lower() in {"1", "true", "yes", "on"}
         )
 
+    kronos_sample_key = "MARKETSIM_KRONOS_SAMPLE_COUNT"
+    previous_sample_value = os.environ.get(kronos_sample_key)
+    had_sample_env = kronos_sample_key in os.environ
+    sample_override_applied = False
+    if force_kronos and not had_sample_env:
+        default_sample_raw = os.getenv("MARKETSIM_FORCE_KRONOS_SAMPLE_COUNT", "64")
+        try:
+            default_sample = max(1, int(default_sample_raw))
+        except ValueError:
+            default_sample = 64
+        os.environ[kronos_sample_key] = str(default_sample)
+        sample_override_applied = True
+        logger.info(
+            "[sim] Kronos sample_count override set to %d for this simulation via MARKETSIM_KRONOS_SAMPLE_COUNT.",
+            default_sample,
+        )
+
     if force_kronos:
         logger.info("[sim] Kronos-only forecasting enabled for this simulation.")
 
@@ -281,6 +307,8 @@ def activate_simulation(
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = original
+        if sample_override_applied and not had_sample_env:
+            os.environ.pop(kronos_sample_key, None)
         if override_force_env:
             if had_force_env:
                 if previous_force_value is not None:

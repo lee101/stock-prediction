@@ -14,29 +14,42 @@ from marketsimulator.state import get_state
 from .forecasting_utils import export_price_history
 
 ALLOW_MOCK_ANALYTICS = os.getenv("MARKETSIM_ALLOW_MOCK_ANALYTICS", "0").lower() in {"1", "true", "yes"}
+SKIP_REAL_IMPORT = os.getenv("MARKETSIM_SKIP_REAL_IMPORT", "0").lower() in {"1", "true", "yes"}
 
 if ALLOW_MOCK_ANALYTICS:
     from . import predict_stock_forecasting_mock as fallback_module  # pragma: no cover
 else:
     fallback_module = None  # type: ignore[assignment]
 
-try:
-    _real_module = importlib.import_module("predict_stock_forecasting")
-    _REAL_MODULE_ERROR: Optional[Exception] = None
-except Exception as exc:  # pragma: no cover - exercised when Kronos deps missing
+if ALLOW_MOCK_ANALYTICS and SKIP_REAL_IMPORT:
     _real_module = None
-    _REAL_MODULE_ERROR = exc
-    if not ALLOW_MOCK_ANALYTICS:
-        raise RuntimeError(
-            "Failed to import the real predict_stock_forecasting module. "
-            "Install its dependencies or set MARKETSIM_ALLOW_MOCK_ANALYTICS=1 to fall back "
-            "to the lightweight simulator forecasts."
-        ) from exc
-    logger.warning(
-        "[sim] Unable to import real predict_stock_forecasting module (%s); "
-        "falling back to deterministic simulator forecasts.",
-        exc,
-    )
+    _REAL_MODULE_ERROR: Optional[Exception] = None
+else:
+    try:
+        _real_module = importlib.import_module("predict_stock_forecasting")
+        _REAL_MODULE_ERROR = None
+    except Exception as exc:  # pragma: no cover - exercised when Kronos deps missing
+        _real_module = None
+        _REAL_MODULE_ERROR = exc
+        if not ALLOW_MOCK_ANALYTICS:
+            raise RuntimeError(
+                "Failed to import the real predict_stock_forecasting module. "
+                "Install its dependencies or set MARKETSIM_ALLOW_MOCK_ANALYTICS=1 to fall back "
+                "to the lightweight simulator forecasts."
+            ) from exc
+        logger.warning(
+            "[sim] Unable to import real predict_stock_forecasting module (%s); "
+            "falling back to deterministic simulator forecasts.",
+            exc,
+        )
+
+if ALLOW_MOCK_ANALYTICS and SKIP_REAL_IMPORT:
+    logger.info("[sim] Skipping real predict_stock_forecasting import (mock analytics enabled).")
+
+if _real_module is None and ALLOW_MOCK_ANALYTICS and fallback_module is None:
+    # Ensure fallback module is available when skipping import.
+    _real_module = None
+    from . import predict_stock_forecasting_mock as fallback_module  # pragma: no cover
 
 
 def _run_real_predictions(

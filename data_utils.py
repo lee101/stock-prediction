@@ -1,6 +1,35 @@
 import numpy as np
-import types
 import pandas as pd
+import types
+
+try:
+    from hftraining.data_utils import (  # type: ignore
+        DataCollator,
+        append_toto_columns,
+        create_sequences,
+        MultiAssetPortfolioDataset,
+        PairStockDataset,
+        StockDataProcessor,
+        align_on_timestamp,
+        download_stock_data,
+        generate_synthetic_data,
+        load_toto_prediction_history,
+        load_local_stock_data,
+        load_training_data,
+    )
+except Exception:  # pragma: no cover - hftraining module not available
+    DataCollator = None  # type: ignore
+    append_toto_columns = None  # type: ignore
+    create_sequences = None  # type: ignore
+    MultiAssetPortfolioDataset = None  # type: ignore
+    PairStockDataset = None  # type: ignore
+    StockDataProcessor = None  # type: ignore
+    align_on_timestamp = None  # type: ignore
+    download_stock_data = None  # type: ignore
+    generate_synthetic_data = None  # type: ignore
+    load_toto_prediction_history = None  # type: ignore
+    load_local_stock_data = None  # type: ignore
+    load_training_data = None  # type: ignore
 
 if not hasattr(pd.Series, "_bool_all_patch"):
     _original_series_bool = pd.Series.__bool__

@@ -246,3 +246,12 @@ def backtest_forecasts(symbol: str, num_simulations: int | None = None) -> pd.Da
             _REAL_BACKTEST_ERROR,
         )
     return _fallback_backtest(symbol, num_simulations)
+
+
+def release_model_resources() -> None:
+    """Match production API surface even when using simulator fallback."""
+    if _REAL_BACKTEST_MODULE and hasattr(_REAL_BACKTEST_MODULE, "release_model_resources"):
+        try:
+            _REAL_BACKTEST_MODULE.release_model_resources()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.debug("[sim] Ignored error releasing real backtest resources: %s", exc)

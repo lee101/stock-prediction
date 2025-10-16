@@ -1,6 +1,14 @@
 import uuid
 
-from alpaca.trading import Position
+try:
+    from alpaca.trading import Position
+except ImportError:  # pragma: no cover - fallback for environments without Alpaca SDK
+    class Position:  # type: ignore[override]
+        """Lightweight stand-in for alpaca.trading.Position used in CI."""
+
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
 
 
 def test_mocks():
