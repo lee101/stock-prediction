@@ -55,7 +55,7 @@ def main():
         strategies = [
             {
                 'name': 'high_growth', 
-                'symbols': ['TSLA', 'NVDA', 'NFLX', 'CRWD', 'U'],
+                'symbols': ['TSLA', 'NVDA', 'NFLX', 'MSFT', 'U'],
                 'description': 'High growth tech stocks'
             },
             {

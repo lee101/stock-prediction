@@ -409,8 +409,8 @@ def main():
     """
     # Define symbols to test (same as in trade_stock_e2e.py)
     symbols = [
-        "COUR", "GOOG", "TSLA", "NVDA", "AAPL", "U", "ADSK", "CRWD", 
-        "ADBE", "NET", "COIN", "MSFT", "NFLX", "UNIUSD", "ETHUSD", "BTCUSD"
+        "COUR", "GOOG", "TSLA", "NVDA", "AAPL", "U", "ADSK", 
+        "ADBE", "COIN", "MSFT", "NFLX", "UNIUSD", "ETHUSD", "BTCUSD"
     ]
     
     # Create backtester

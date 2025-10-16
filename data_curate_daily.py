@@ -60,9 +60,8 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
     symbols_provided = symbols is not None
     if symbols is None:
         symbols = [
-            'COUR', 'GOOG', 'TSLA', 'NVDA', 'AAPL', "U", "ADSK", "CRWD", "ADBE", "NET",
+            'COUR', 'GOOG', 'TSLA', 'NVDA', 'AAPL', "U", "ADSK", "ADBE", "MSFT",
             'COIN',
-            #'MSFT',
             'NFLX', 'PYPL', 'SAP', 'SONY', 'BTCUSD', 'ETHUSD',
         ]
     else:

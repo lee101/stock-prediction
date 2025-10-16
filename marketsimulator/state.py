@@ -8,6 +8,7 @@ import pandas as pd
 import pytz
 
 from loss_utils import CRYPTO_TRADING_FEE, TRADING_FEE
+from .execution import classify_liquidity, simulate_fill
 from src.fixtures import crypto_symbols
 
 
@@ -107,6 +108,7 @@ class TradeExecution:
     notional: float
     fee: float
     cash_delta: float
+    slip_bps: float = 0.0
 
 
 class SimulatedClock:
@@ -324,6 +326,21 @@ class SimulationState:
     def _apply_trade_cash(self, symbol: str, side: str, price: float, qty: float) -> None:
         if qty <= 0:
             return
+        intended_price = price
+        series = self.prices.get(symbol)
+        mid_price = intended_price
+        vol_bps = 0.0
+        if series is not None:
+            current_row = series.current_row
+            high = float(current_row.get("High", series.price("Close")))
+            low = float(current_row.get("Low", series.price("Close")))
+            mid_price = max(1e-9, (high + low) / 2.0)
+            if mid_price > 0:
+                vol_bps = abs(high - low) / mid_price * 1e4
+        liquidity_tier = classify_liquidity(symbol)
+        intended_notional = intended_price * qty
+        executed_price, slip_bps = simulate_fill(side, intended_price, mid_price, vol_bps, intended_notional, liquidity_tier)
+        price = executed_price
         notional = price * qty
         rate = CRYPTO_TRADING_FEE if symbol.upper() in crypto_symbols else TRADING_FEE
         fee = notional * rate
@@ -344,6 +361,7 @@ class SimulationState:
                 notional=notional,
                 fee=fee,
                 cash_delta=cash_delta,
+                slip_bps=slip_bps,
             )
         )
 

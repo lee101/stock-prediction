@@ -102,3 +102,4 @@ tototraining/artifacts/
 compiled_models/
 tototraining/checkpoints
 external/kronos/
+.tmp_bench_data
