@@ -28,7 +28,7 @@ data_dir = Path(__file__).parent.parent / 'data'
 dynamic_config_ = data_dir / "dynamic_config"
 dynamic_config_.mkdir(exist_ok=True, parents=True)
 
-crypto_symbol_to_order = FlatShelf(str(dynamic_config_ / f"crypto_symbol_to_order.db.json"))
+crypto_symbol_to_order = FlatShelf(str(dynamic_config_ / "crypto_symbol_to_order.db.json"))
 
 app = FastAPI()
 
@@ -70,7 +70,8 @@ def crypto_order_loop():
         time.sleep(10)
 
 
-thread_loop = Thread(target=crypto_order_loop).start()
+thread_loop = Thread(target=crypto_order_loop, daemon=True)
+thread_loop.start()
 
 
 class OrderRequest(BaseModel):
@@ -105,7 +106,7 @@ def stock_orders():
 
 
 @app.get("/api/v1/stock_order/{symbol}")
-def stock_order(symbol: str):
+def get_stock_order(symbol: str):
     symbol = unmap_symbols(symbol)
     return JSONResponse(crypto_symbol_to_order.get(symbol))
 

@@ -1,7 +1,9 @@
+from typing import Any, Type
+
+from sqlalchemy import Column, String, Float, Sequence, DateTime, func, BigInteger
 from sqlalchemy.ext.declarative import declarative_base
 
-Base = declarative_base()
-from sqlalchemy import Column, String, Float, Sequence, DateTime, func, BigInteger
+Base: Type[Any] = declarative_base()
 
 
 class Trade(Base):

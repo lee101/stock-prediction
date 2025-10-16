@@ -1,0 +1,29 @@
+{
+  "symbol": "NVDA",
+  "model": "toto",
+  "config": {
+    "name": "toto_trimmed10_128",
+    "num_samples": 128,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 16
+  },
+  "validation": {
+    "price_mae": 2.245211725968582,
+    "return_mae": 0.012855065820092623,
+    "latency_s": 16.20016447175294
+  },
+  "test": {
+    "price_mae": 3.344846769479608,
+    "return_mae": 0.018262418760689236,
+    "latency_s": 17.155403656885028
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/NVDA.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

@@ -1,10 +1,9 @@
 import logging
-import sys
 import os
+import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-
-import pytz
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class EDTFormatter(logging.Formatter):
@@ -12,11 +11,9 @@ class EDTFormatter(logging.Formatter):
 
     def __init__(self):
         super().__init__()
-        try:
-            self.local_tz = pytz.timezone('US/Eastern')
-        except pytz.exceptions.UnknownTimeZoneError:
-            print("Warning: US/Eastern timezone not found, falling back to UTC")
-            self.local_tz = pytz.UTC
+        self.utc_zone = ZoneInfo("UTC")
+        self.local_tz = self._load_zone("US/Eastern", self.utc_zone)
+        self.nzdt_zone = self._load_zone("Pacific/Auckland", self.utc_zone)
 
         self.level_colors = {
             "DEBUG": "\033[36m",
@@ -27,14 +24,20 @@ class EDTFormatter(logging.Formatter):
         }
         self.reset_color = "\033[0m"
 
+    @staticmethod
+    def _load_zone(name: str, fallback: ZoneInfo) -> ZoneInfo:
+        try:
+            return ZoneInfo(name)
+        except ZoneInfoNotFoundError:
+            print(f"Warning: timezone {name} not found, falling back to {fallback.key if hasattr(fallback, 'key') else 'UTC'}")
+            return fallback
+
     def format(self, record):
         try:
-            # Get UTC time
-            utc_time = datetime.fromtimestamp(record.created, pytz.UTC).strftime('%Y-%m-%d %H:%M:%S %Z')
-            # Get local time
-            local_time = datetime.now(self.local_tz).strftime('%Y-%m-%d %H:%M:%S %Z')
-            # Get NZDT time
-            nzdt_time = datetime.now(pytz.timezone('Pacific/Auckland')).strftime('%Y-%m-%d %H:%M:%S %Z')
+            record_time = datetime.fromtimestamp(record.created, tz=self.utc_zone)
+            utc_time = record_time.astimezone(self.utc_zone).strftime('%Y-%m-%d %H:%M:%S %Z')
+            local_time = record_time.astimezone(self.local_tz).strftime('%Y-%m-%d %H:%M:%S %Z')
+            nzdt_time = record_time.astimezone(self.nzdt_zone).strftime('%Y-%m-%d %H:%M:%S %Z')
 
             level_color = self.level_colors.get(record.levelname, "")
 
@@ -56,8 +59,25 @@ class EDTFormatter(logging.Formatter):
             return f"[ERROR FORMATTING LOG] {str(record.msg)} - Error: {str(e)}"
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_level(*keys: str, default: str = "INFO") -> int:
+    for key in keys:
+        value = os.getenv(key)
+        if value:
+            level = getattr(logging, value.strip().upper(), None)
+            if isinstance(level, int):
+                return level
+    return getattr(logging, default.upper(), logging.INFO)
+
+
 def setup_logging(log_file: str) -> logging.Logger:
-    """Configure logging to output to both stdout and a file with EDT formatting."""
+    """Configure logging to output to both stdout and a file with optional compact formatting."""
     try:
         # Create logger
         logger_name = os.path.splitext(os.path.basename(log_file))[0]
@@ -68,13 +88,29 @@ def setup_logging(log_file: str) -> logging.Logger:
         if logger.hasHandlers():
             logger.handlers.clear()
 
-        # Create formatters
-        formatter = EDTFormatter()
+        # Determine formatting strategy
+        compact_console = _env_flag("COMPACT_TRADING_LOGS")
+        console_formatter = (
+            logging.Formatter(
+                fmt="%(asctime)s | %(levelname)s | %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+            if compact_console
+            else EDTFormatter()
+        )
+        file_formatter = EDTFormatter()
+
+        console_level = _resolve_level(
+            f"{logger_name.upper()}_CONSOLE_LEVEL",
+            "TRADING_STDOUT_LEVEL",
+            "TRADING_CONSOLE_LEVEL",
+            default="INFO",
+        )
 
         # Create and configure stdout handler
         stdout_handler = logging.StreamHandler(sys.stdout)
-        stdout_handler.setLevel(logging.INFO)
-        stdout_handler.setFormatter(formatter)
+        stdout_handler.setLevel(console_level)
+        stdout_handler.setFormatter(console_formatter)
 
         # Create and configure file handler
         file_handler = RotatingFileHandler(
@@ -83,7 +119,7 @@ def setup_logging(log_file: str) -> logging.Logger:
             backupCount=5
         )
         file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
+        file_handler.setFormatter(file_formatter)
 
         # Add handlers to logger
         logger.addHandler(stdout_handler)

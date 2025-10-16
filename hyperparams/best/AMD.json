@@ -1,0 +1,32 @@
+{
+  "symbol": "AMD",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.12_p0.78_s224_k24_clip1.5_ctx224",
+    "temperature": 0.12,
+    "top_p": 0.78,
+    "top_k": 24,
+    "sample_count": 224,
+    "max_context": 224,
+    "clip": 1.5
+  },
+  "validation": {
+    "price_mae": 2.2909873962402343,
+    "return_mae": 0.01426148476659908,
+    "latency_s": 35.65304539445788
+  },
+  "test": {
+    "price_mae": 21.64228744506836,
+    "return_mae": 0.10380560341854206,
+    "latency_s": 34.91963101970032
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/kronos/AMD.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

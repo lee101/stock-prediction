@@ -1,0 +1,26 @@
+{
+  "name": "toto_distill_small",
+  "strategy": "toto_distillation",
+  "data": {
+    "symbol": "AAPL",
+    "csv_path": "WIKI-AAPL.csv",
+    "sequence_length": 60,
+    "prediction_horizon": 5,
+    "train_split": 0.7,
+    "val_split": 0.2
+  },
+  "model": {
+    "hidden_size": 128,
+    "num_layers": 2,
+    "dropout": 0.1
+  },
+  "training": {
+    "epochs": 3,
+    "batch_size": 128,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "dtype": "bf16",
+    "gradient_checkpointing": false,
+    "seed": 42
+  }
+}

@@ -1,33 +1,12 @@
 from src.fixtures import crypto_symbols
 
-# USD currencies
-# AAVE, BAT, BCH, BTC, DAI, ETH, GRT, LINK, LTC, MATIC, MKR, NEAR, PAXG, SHIB, SOL, UNI, USDT
-
-# supported
-supported_cryptos = [
-    'BTC',
-    'ETH',
-    'GRT',
-    'MATIC',
-    'PAXG',
-    'MKR',
-    'UNI',
-    'NEAR',
-    'MKR',
-]
+# keep the base tickers handy for downstream checks
+supported_cryptos = sorted({symbol[:-3] for symbol in crypto_symbols})
 
 
-# add paxg and mkr to get resiliency from crypto
-def remap_symbols(symbol):
-    crypto_remap = {
-        "ETHUSD": "ETH/USD",
-        "LTCUSD": "LTC/USD",
-        "BTCUSD": "BTC/USD",
-        "PAXGUSD": "PAXG/USD",
-        "UNIUSD": "UNI/USD",
-    }
+def remap_symbols(symbol: str) -> str:
     if symbol in crypto_symbols:
-        return crypto_remap[symbol]
+        return f"{symbol[:-3]}/{symbol[-3:]}"
     return symbol
 
 def pairs_equal(symbol1: str, symbol2: str) -> bool:
@@ -39,27 +18,16 @@ def pairs_equal(symbol1: str, symbol2: str) -> bool:
     return remap_symbols(s1) == remap_symbols(s2)
 
 
-def unmap_symbols(symbol):
-    crypto_remap = {
-        "ETH/USD": "ETHUSD",
-        "LTC/USD": "LTCUSD",
-        "BTC/USD": "BTCUSD",
-        "PAXG/USD": "PAXGUSD",
-        "UNI/USD": "UNIUSD",
-    }
-    if symbol in crypto_remap:
-        return crypto_remap[symbol]
+def unmap_symbols(symbol: str) -> str:
+    if "/" in symbol:
+        base, quote = symbol.split("/", 1)
+        candidate = f"{base}{quote}"
+        if candidate in crypto_symbols:
+            return candidate
     return symbol
 
 
-def binance_remap_symbols(symbol):
-    crypto_remap = {
-        "ETHUSD": "ETHUSDT",
-        "LTCUSD": "LTCUSDT",
-        "BTCUSD": "BTCUSDT",
-        "PAXGUSD": "PAXGUSDT",
-        "UNIUSD": "UNIUSDT",
-    }
+def binance_remap_symbols(symbol: str) -> str:
     if symbol in crypto_symbols:
-        return crypto_remap[symbol]
+        return f"{symbol[:-3]}USDT"
     return symbol

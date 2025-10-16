@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Optional
+
 import torch
 import numpy as np
 from chronos import BaseChronosPipeline
@@ -6,7 +10,7 @@ class ForecastingBoltWrapper:
     def __init__(self, model_name="amazon/chronos-bolt-base", device="cuda"):
         self.model_name = model_name
         self.device = device
-        self.pipeline = None
+        self.pipeline: Optional[BaseChronosPipeline] = None
     
     def load_pipeline(self):
         if self.pipeline is None:
@@ -14,7 +18,13 @@ class ForecastingBoltWrapper:
                 self.model_name,
                 device_map=self.device,
             )
-            self.pipeline.model = self.pipeline.model.eval()
+            model_attr = getattr(self.pipeline, "model", None)
+            if model_attr is not None and hasattr(model_attr, "eval"):
+                evaluated_model = model_attr.eval()
+                try:
+                    setattr(self.pipeline, "model", evaluated_model)
+                except AttributeError:
+                    pass
     
     def predict_sequence(self, context_data, prediction_length=7):
         """
@@ -28,7 +38,11 @@ class ForecastingBoltWrapper:
             list of predictions
         """
         self.load_pipeline()
-        
+
+        pipeline = self.pipeline
+        if pipeline is None:
+            raise RuntimeError("Chronos pipeline failed to load before prediction.")
+
         if not isinstance(context_data, torch.Tensor):
             context_data = torch.tensor(context_data, dtype=torch.float)
         
@@ -37,12 +51,17 @@ class ForecastingBoltWrapper:
         for pred_idx in reversed(range(1, prediction_length + 1)):
             current_context = context_data[:-pred_idx] if pred_idx > 1 else context_data
             
-            forecast = self.pipeline.predict(
+            forecast = pipeline.predict(
                 current_context,
                 prediction_length=1,
             )
             
-            low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
+            tensor = forecast[0]
+            if hasattr(tensor, "detach"):
+                tensor = tensor.detach().cpu().numpy()
+            else:
+                tensor = np.asarray(tensor)
+            low, median, high = np.quantile(tensor, [0.1, 0.5, 0.9], axis=0)
             predictions.append(median.item())
         
         return predictions
@@ -59,14 +78,23 @@ class ForecastingBoltWrapper:
             median prediction value
         """
         self.load_pipeline()
-        
+
+        pipeline = self.pipeline
+        if pipeline is None:
+            raise RuntimeError("Chronos pipeline failed to load before prediction.")
+
         if not isinstance(context_data, torch.Tensor):
             context_data = torch.tensor(context_data, dtype=torch.float)
-        
-        forecast = self.pipeline.predict(
+
+        forecast = pipeline.predict(
             context_data,
             prediction_length,
         )
         
-        low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
+        tensor = forecast[0]
+        if hasattr(tensor, "detach"):
+            tensor = tensor.detach().cpu().numpy()
+        else:
+            tensor = np.asarray(tensor)
+        low, median, high = np.quantile(tensor, [0.1, 0.5, 0.9], axis=0)
         return median.item() if prediction_length == 1 else median

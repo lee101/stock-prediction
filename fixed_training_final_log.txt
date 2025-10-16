@@ -1,0 +1,459 @@
+2025-08-25 17:55:42,739 - INFO - Model created with 25,521,772 parameters (25,521,772 trainable)
+2025-08-25 17:55:43,729 - INFO - Optimizer: AdamW, LR: 5e-05
+2025-08-25 17:55:43,729 - INFO - Scheduler: StepLR (step_size=1000, gamma=0.9)
+2025-08-25 17:55:43,729 - INFO - ================================================================================
+2025-08-25 17:55:43,729 - INFO - 🚀 STARTING FIXED TRAINING SESSION
+2025-08-25 17:55:43,729 - INFO - ================================================================================
+2025-08-25 17:55:43,729 - INFO - Device: cuda
+2025-08-25 17:55:43,729 - INFO - Max Steps: 10000
+2025-08-25 17:55:43,729 - INFO - Validation Interval: 200
+2025-08-25 17:55:43,729 - INFO - 
+📈 EPOCH 1/50
+2025-08-25 17:55:43,729 - INFO - --------------------------------------------------
+🚀 Starting Fixed Training Pipeline
+============================================================
+{
+  "hidden_size": 512,
+  "num_heads": 16,
+  "num_layers": 8,
+  "intermediate_size": 2048,
+  "dropout": 0.1,
+  "sequence_length": 60,
+  "prediction_horizon": 5,
+  "batch_size": 32,
+  "learning_rate": 5e-05,
+  "weight_decay": 0.01,
+  "num_epochs": 50,
+  "max_steps": 10000,
+  "val_interval": 200,
+  "log_interval": 50,
+  "num_workers": 4,
+  "checkpoint_dir": "hftraining/checkpoints/fixed"
+}
+
+📊 Loading data...
+Downloading stock data...
+  • AAPL
+Error loading data: Cannot set a DataFrame with multiple columns to the single column sma_5_ratio
+Data splits: Train=(4000, 21), Val=(500, 21)
+
+🔄 Creating data loaders...
+
+⚙️  Setting up trainer...
+
+🎯 Starting training...
+2025-08-25 17:55:45,826 - INFO - Step     50 | Loss: 1.6228 | LR: 5.00e-05 | Price Loss: 1.0364 | Action Loss: 0.3809
+2025-08-25 17:55:47,496 - INFO - Step    100 | Loss: 1.6039 | LR: 5.00e-05 | Price Loss: 0.9939 | Action Loss: 0.6450
+2025-08-25 17:55:48,261 - INFO - 📊 Epoch 1 complete. Avg Loss: 1.6043
+2025-08-25 17:55:49,762 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_1.pt
+2025-08-25 17:55:49,762 - INFO - 
+📈 EPOCH 2/50
+2025-08-25 17:55:49,762 - INFO - --------------------------------------------------
+2025-08-25 17:55:50,723 - INFO - Step    150 | Loss: 1.5875 | LR: 5.00e-05 | Price Loss: 1.0361 | Action Loss: 0.5950
+2025-08-25 17:55:52,433 - INFO - Step    200 | Loss: 1.5990 | LR: 5.00e-05 | Price Loss: 1.0101 | Action Loss: 0.6027
+2025-08-25 17:55:52,749 - INFO - 🔍 Validation Loss: 1.5902
+2025-08-25 17:55:54,198 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/best.pt
+2025-08-25 17:55:54,198 - INFO - 🏆 New best model saved! Loss: 1.5902
+2025-08-25 17:55:55,753 - INFO - 📊 Epoch 2 complete. Avg Loss: 1.5831
+2025-08-25 17:55:57,288 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_2.pt
+2025-08-25 17:55:57,288 - INFO - 
+📈 EPOCH 3/50
+2025-08-25 17:55:57,289 - INFO - --------------------------------------------------
+2025-08-25 17:55:57,436 - INFO - Step    250 | Loss: 1.5830 | LR: 5.00e-05 | Price Loss: 0.9812 | Action Loss: 0.6341
+2025-08-25 17:55:59,192 - INFO - Step    300 | Loss: 1.6067 | LR: 5.00e-05 | Price Loss: 0.9989 | Action Loss: 0.5456
+2025-08-25 17:56:00,887 - INFO - Step    350 | Loss: 1.5543 | LR: 5.00e-05 | Price Loss: 1.0080 | Action Loss: 0.3762
+2025-08-25 17:56:01,520 - INFO - 📊 Epoch 3 complete. Avg Loss: 1.5839
+2025-08-25 17:56:03,087 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_3.pt
+2025-08-25 17:56:03,087 - INFO - 
+📈 EPOCH 4/50
+2025-08-25 17:56:03,087 - INFO - --------------------------------------------------
+2025-08-25 17:56:04,173 - INFO - Step    400 | Loss: 1.5797 | LR: 5.00e-05 | Price Loss: 0.9705 | Action Loss: 0.6390
+2025-08-25 17:56:04,425 - INFO - 🔍 Validation Loss: 1.5899
+2025-08-25 17:56:06,134 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/best.pt
+2025-08-25 17:56:06,134 - INFO - 🏆 New best model saved! Loss: 1.5899
+2025-08-25 17:56:07,847 - INFO - Step    450 | Loss: 1.6020 | LR: 5.00e-05 | Price Loss: 0.9944 | Action Loss: 0.5640
+2025-08-25 17:56:09,315 - INFO - 📊 Epoch 4 complete. Avg Loss: 1.5857
+2025-08-25 17:56:11,013 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_4.pt
+2025-08-25 17:56:11,013 - INFO - 
+📈 EPOCH 5/50
+2025-08-25 17:56:11,013 - INFO - --------------------------------------------------
+2025-08-25 17:56:11,308 - INFO - Step    500 | Loss: 1.6314 | LR: 5.00e-05 | Price Loss: 1.0320 | Action Loss: 0.6368
+2025-08-25 17:56:13,060 - INFO - Step    550 | Loss: 1.5750 | LR: 5.00e-05 | Price Loss: 0.9960 | Action Loss: 0.8143
+2025-08-25 17:56:14,822 - INFO - Step    600 | Loss: 1.5999 | LR: 5.00e-05 | Price Loss: 1.0508 | Action Loss: 0.4836
+2025-08-25 17:56:15,089 - INFO - 🔍 Validation Loss: 1.5920
+2025-08-25 17:56:15,601 - INFO - 📊 Epoch 5 complete. Avg Loss: 1.5881
+2025-08-25 17:56:17,201 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_5.pt
+2025-08-25 17:56:17,201 - INFO - 
+📈 EPOCH 6/50
+2025-08-25 17:56:17,201 - INFO - --------------------------------------------------
+2025-08-25 17:56:18,415 - INFO - Step    650 | Loss: 1.5654 | LR: 5.00e-05 | Price Loss: 1.0047 | Action Loss: 0.4467
+2025-08-25 17:56:20,147 - INFO - Step    700 | Loss: 1.5905 | LR: 5.00e-05 | Price Loss: 1.0022 | Action Loss: 0.5782
+2025-08-25 17:56:21,465 - INFO - 📊 Epoch 6 complete. Avg Loss: 1.5840
+2025-08-25 17:56:23,254 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_6.pt
+2025-08-25 17:56:23,254 - INFO - 
+📈 EPOCH 7/50
+2025-08-25 17:56:23,254 - INFO - --------------------------------------------------
+2025-08-25 17:56:23,702 - INFO - Step    750 | Loss: 1.5518 | LR: 5.00e-05 | Price Loss: 0.9667 | Action Loss: 0.5933
+2025-08-25 17:56:25,464 - INFO - Step    800 | Loss: 1.6002 | LR: 5.00e-05 | Price Loss: 0.9876 | Action Loss: 0.4614
+2025-08-25 17:56:25,729 - INFO - 🔍 Validation Loss: 1.5870
+2025-08-25 17:56:27,515 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/best.pt
+2025-08-25 17:56:27,515 - INFO - 🏆 New best model saved! Loss: 1.5870
+2025-08-25 17:56:29,275 - INFO - Step    850 | Loss: 1.5735 | LR: 5.00e-05 | Price Loss: 1.0546 | Action Loss: 0.5653
+2025-08-25 17:56:29,654 - INFO - 📊 Epoch 7 complete. Avg Loss: 1.5808
+2025-08-25 17:56:31,309 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_7.pt
+2025-08-25 17:56:31,310 - INFO - 
+📈 EPOCH 8/50
+2025-08-25 17:56:31,310 - INFO - --------------------------------------------------
+2025-08-25 17:56:32,740 - INFO - Step    900 | Loss: 1.5722 | LR: 5.00e-05 | Price Loss: 0.9984 | Action Loss: 0.4880
+2025-08-25 17:56:34,523 - INFO - Step    950 | Loss: 1.5907 | LR: 5.00e-05 | Price Loss: 0.9610 | Action Loss: 0.5305
+2025-08-25 17:56:35,729 - INFO - 📊 Epoch 8 complete. Avg Loss: 1.5800
+2025-08-25 17:56:37,575 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_8.pt
+2025-08-25 17:56:37,576 - INFO - 
+📈 EPOCH 9/50
+2025-08-25 17:56:37,576 - INFO - --------------------------------------------------
+2025-08-25 17:56:38,180 - INFO - Step   1000 | Loss: 1.5665 | LR: 4.50e-05 | Price Loss: 0.9843 | Action Loss: 0.5684
+2025-08-25 17:56:38,417 - INFO - 🔍 Validation Loss: 1.5885
+2025-08-25 17:56:40,184 - INFO - Step   1050 | Loss: 1.5949 | LR: 4.50e-05 | Price Loss: 1.0030 | Action Loss: 0.6442
+2025-08-25 17:56:41,990 - INFO - Step   1100 | Loss: 1.5753 | LR: 4.50e-05 | Price Loss: 0.9821 | Action Loss: 0.5635
+2025-08-25 17:56:42,231 - INFO - 📊 Epoch 9 complete. Avg Loss: 1.5831
+2025-08-25 17:56:43,787 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_9.pt
+2025-08-25 17:56:43,787 - INFO - 
+📈 EPOCH 10/50
+2025-08-25 17:56:43,787 - INFO - --------------------------------------------------
+2025-08-25 17:56:45,607 - INFO - Step   1150 | Loss: 1.5737 | LR: 4.50e-05 | Price Loss: 0.9822 | Action Loss: 0.5234
+2025-08-25 17:56:47,336 - INFO - Step   1200 | Loss: 1.5752 | LR: 4.50e-05 | Price Loss: 1.0211 | Action Loss: 0.5976
+2025-08-25 17:56:47,605 - INFO - 🔍 Validation Loss: 1.5874
+2025-08-25 17:56:48,681 - INFO - 📊 Epoch 10 complete. Avg Loss: 1.5803
+2025-08-25 17:56:50,371 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_10.pt
+2025-08-25 17:56:50,371 - INFO - 
+📈 EPOCH 11/50
+2025-08-25 17:56:50,372 - INFO - --------------------------------------------------
+2025-08-25 17:56:51,093 - INFO - Step   1250 | Loss: 1.6151 | LR: 4.50e-05 | Price Loss: 1.0213 | Action Loss: 0.5693
+2025-08-25 17:56:52,872 - INFO - Step   1300 | Loss: 1.5645 | LR: 4.50e-05 | Price Loss: 0.9929 | Action Loss: 0.4957
+2025-08-25 17:56:54,662 - INFO - Step   1350 | Loss: 1.5758 | LR: 4.50e-05 | Price Loss: 0.9849 | Action Loss: 0.5448
+2025-08-25 17:56:54,765 - INFO - 📊 Epoch 11 complete. Avg Loss: 1.5790
+2025-08-25 17:56:56,505 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_11.pt
+2025-08-25 17:56:56,505 - INFO - 
+📈 EPOCH 12/50
+2025-08-25 17:56:56,505 - INFO - --------------------------------------------------
+2025-08-25 17:56:58,153 - INFO - Step   1400 | Loss: 1.5837 | LR: 4.50e-05 | Price Loss: 0.9991 | Action Loss: 0.6060
+2025-08-25 17:56:58,415 - INFO - 🔍 Validation Loss: 1.5852
+2025-08-25 17:57:00,232 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/best.pt
+2025-08-25 17:57:00,232 - INFO - 🏆 New best model saved! Loss: 1.5852
+2025-08-25 17:57:01,973 - INFO - Step   1450 | Loss: 1.5777 | LR: 4.50e-05 | Price Loss: 0.9994 | Action Loss: 0.4761
+2025-08-25 17:57:02,891 - INFO - 📊 Epoch 12 complete. Avg Loss: 1.5799
+2025-08-25 17:57:04,589 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_12.pt
+2025-08-25 17:57:04,589 - INFO - 
+📈 EPOCH 13/50
+2025-08-25 17:57:04,589 - INFO - --------------------------------------------------
+2025-08-25 17:57:05,469 - INFO - Step   1500 | Loss: 1.5851 | LR: 4.50e-05 | Price Loss: 0.9882 | Action Loss: 0.5115
+2025-08-25 17:57:07,247 - INFO - Step   1550 | Loss: 1.5853 | LR: 4.50e-05 | Price Loss: 1.0188 | Action Loss: 0.7959
+2025-08-25 17:57:08,997 - INFO - 📊 Epoch 13 complete. Avg Loss: 1.5806
+2025-08-25 17:57:10,714 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_13.pt
+2025-08-25 17:57:10,715 - INFO - 
+📈 EPOCH 14/50
+2025-08-25 17:57:10,715 - INFO - --------------------------------------------------
+2025-08-25 17:57:10,765 - INFO - Step   1600 | Loss: 1.4148 | LR: 4.50e-05 | Price Loss: 0.9754 | Action Loss: 0.4394
+2025-08-25 17:57:11,008 - INFO - 🔍 Validation Loss: 1.5936
+2025-08-25 17:57:12,830 - INFO - Step   1650 | Loss: 1.5607 | LR: 4.50e-05 | Price Loss: 0.9774 | Action Loss: 0.5661
+2025-08-25 17:57:14,561 - INFO - Step   1700 | Loss: 1.6019 | LR: 4.50e-05 | Price Loss: 1.0024 | Action Loss: 0.6086
+2025-08-25 17:57:15,313 - INFO - 📊 Epoch 14 complete. Avg Loss: 1.5780
+2025-08-25 17:57:17,184 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_14.pt
+2025-08-25 17:57:17,184 - INFO - 
+📈 EPOCH 15/50
+2025-08-25 17:57:17,184 - INFO - --------------------------------------------------
+2025-08-25 17:57:18,231 - INFO - Step   1750 | Loss: 1.5602 | LR: 4.50e-05 | Price Loss: 0.9789 | Action Loss: 0.6926
+2025-08-25 17:57:20,018 - INFO - Step   1800 | Loss: 1.5979 | LR: 4.50e-05 | Price Loss: 1.0308 | Action Loss: 0.7042
+2025-08-25 17:57:20,295 - INFO - 🔍 Validation Loss: 1.5882
+2025-08-25 17:57:21,867 - INFO - 📊 Epoch 15 complete. Avg Loss: 1.5803
+2025-08-25 17:57:23,611 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_15.pt
+2025-08-25 17:57:23,611 - INFO - 
+📈 EPOCH 16/50
+2025-08-25 17:57:23,611 - INFO - --------------------------------------------------
+2025-08-25 17:57:23,791 - INFO - Step   1850 | Loss: 1.5442 | LR: 4.50e-05 | Price Loss: 0.9885 | Action Loss: 0.6360
+2025-08-25 17:57:25,539 - INFO - Step   1900 | Loss: 1.5701 | LR: 4.50e-05 | Price Loss: 1.0110 | Action Loss: 0.5601
+2025-08-25 17:57:27,257 - INFO - Step   1950 | Loss: 1.5913 | LR: 4.50e-05 | Price Loss: 1.0021 | Action Loss: 0.4827
+2025-08-25 17:57:27,872 - INFO - 📊 Epoch 16 complete. Avg Loss: 1.5797
+2025-08-25 17:57:29,541 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_16.pt
+2025-08-25 17:57:29,541 - INFO - 
+📈 EPOCH 17/50
+2025-08-25 17:57:29,541 - INFO - --------------------------------------------------
+2025-08-25 17:57:30,710 - INFO - Step   2000 | Loss: 1.5766 | LR: 4.05e-05 | Price Loss: 1.0038 | Action Loss: 0.6834
+2025-08-25 17:57:30,983 - INFO - 🔍 Validation Loss: 1.5876
+2025-08-25 17:57:32,787 - INFO - Step   2050 | Loss: 1.5766 | LR: 4.05e-05 | Price Loss: 0.9850 | Action Loss: 0.6309
+2025-08-25 17:57:34,242 - INFO - 📊 Epoch 17 complete. Avg Loss: 1.5795
+2025-08-25 17:57:36,106 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_17.pt
+2025-08-25 17:57:36,106 - INFO - 
+📈 EPOCH 18/50
+2025-08-25 17:57:36,106 - INFO - --------------------------------------------------
+2025-08-25 17:57:36,449 - INFO - Step   2100 | Loss: 1.5918 | LR: 4.05e-05 | Price Loss: 0.9853 | Action Loss: 0.7412
+2025-08-25 17:57:38,218 - INFO - Step   2150 | Loss: 1.5941 | LR: 4.05e-05 | Price Loss: 0.9847 | Action Loss: 0.4857
+2025-08-25 17:57:39,970 - INFO - Step   2200 | Loss: 1.5729 | LR: 4.05e-05 | Price Loss: 0.9902 | Action Loss: 0.8725
+2025-08-25 17:57:40,250 - INFO - 🔍 Validation Loss: 1.5919
+2025-08-25 17:57:40,734 - INFO - 📊 Epoch 18 complete. Avg Loss: 1.5803
+2025-08-25 17:57:42,365 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_18.pt
+2025-08-25 17:57:42,365 - INFO - 
+📈 EPOCH 19/50
+2025-08-25 17:57:42,365 - INFO - --------------------------------------------------
+2025-08-25 17:57:43,680 - INFO - Step   2250 | Loss: 1.5945 | LR: 4.05e-05 | Price Loss: 0.9573 | Action Loss: 0.4561
+2025-08-25 17:57:45,501 - INFO - Step   2300 | Loss: 1.5694 | LR: 4.05e-05 | Price Loss: 0.9919 | Action Loss: 0.6406
+2025-08-25 17:57:46,828 - INFO - 📊 Epoch 19 complete. Avg Loss: 1.5789
+2025-08-25 17:57:48,630 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_19.pt
+2025-08-25 17:57:48,630 - INFO - 
+📈 EPOCH 20/50
+2025-08-25 17:57:48,630 - INFO - --------------------------------------------------
+2025-08-25 17:57:49,113 - INFO - Step   2350 | Loss: 1.5731 | LR: 4.05e-05 | Price Loss: 1.0134 | Action Loss: 0.6299
+2025-08-25 17:57:50,898 - INFO - Step   2400 | Loss: 1.5688 | LR: 4.05e-05 | Price Loss: 0.9959 | Action Loss: 0.4855
+2025-08-25 17:57:51,172 - INFO - 🔍 Validation Loss: 1.5883
+2025-08-25 17:57:53,012 - INFO - Step   2450 | Loss: 1.5957 | LR: 4.05e-05 | Price Loss: 1.0323 | Action Loss: 0.6917
+2025-08-25 17:57:53,365 - INFO - 📊 Epoch 20 complete. Avg Loss: 1.5807
+2025-08-25 17:57:55,018 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_20.pt
+2025-08-25 17:57:55,019 - INFO - 
+📈 EPOCH 21/50
+2025-08-25 17:57:55,019 - INFO - --------------------------------------------------
+2025-08-25 17:57:56,501 - INFO - Step   2500 | Loss: 1.5853 | LR: 4.05e-05 | Price Loss: 1.0199 | Action Loss: 0.5667
+2025-08-25 17:57:58,385 - INFO - Step   2550 | Loss: 1.5702 | LR: 4.05e-05 | Price Loss: 0.9918 | Action Loss: 0.5654
+2025-08-25 17:57:59,579 - INFO - 📊 Epoch 21 complete. Avg Loss: 1.5789
+2025-08-25 17:58:01,573 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_21.pt
+2025-08-25 17:58:01,573 - INFO - 
+📈 EPOCH 22/50
+2025-08-25 17:58:01,573 - INFO - --------------------------------------------------
+2025-08-25 17:58:02,497 - INFO - Step   2600 | Loss: 1.5639 | LR: 4.05e-05 | Price Loss: 1.0312 | Action Loss: 0.5613
+2025-08-25 17:58:02,747 - INFO - 🔍 Validation Loss: 1.5889
+2025-08-25 17:58:04,697 - INFO - Step   2650 | Loss: 1.5981 | LR: 4.05e-05 | Price Loss: 1.0211 | Action Loss: 0.5930
+2025-08-25 17:58:06,945 - INFO - Step   2700 | Loss: 1.5697 | LR: 4.05e-05 | Price Loss: 1.0000 | Action Loss: 0.5256
+2025-08-25 17:58:07,216 - INFO - 📊 Epoch 22 complete. Avg Loss: 1.5814
+2025-08-25 17:58:09,802 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_22.pt
+2025-08-25 17:58:09,802 - INFO - 
+📈 EPOCH 23/50
+2025-08-25 17:58:09,802 - INFO - --------------------------------------------------
+2025-08-25 17:58:11,722 - INFO - Step   2750 | Loss: 1.5906 | LR: 4.05e-05 | Price Loss: 1.0452 | Action Loss: 0.6223
+2025-08-25 17:58:13,708 - INFO - Step   2800 | Loss: 1.5681 | LR: 4.05e-05 | Price Loss: 0.9557 | Action Loss: 0.6353
+2025-08-25 17:58:13,986 - INFO - 🔍 Validation Loss: 1.5950
+2025-08-25 17:58:15,134 - INFO - 📊 Epoch 23 complete. Avg Loss: 1.5802
+2025-08-25 17:58:17,711 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_23.pt
+2025-08-25 17:58:17,711 - INFO - 
+📈 EPOCH 24/50
+2025-08-25 17:58:17,711 - INFO - --------------------------------------------------
+2025-08-25 17:58:18,573 - INFO - Step   2850 | Loss: 1.5956 | LR: 4.05e-05 | Price Loss: 0.9996 | Action Loss: 0.4310
+2025-08-25 17:58:20,634 - INFO - Step   2900 | Loss: 1.5673 | LR: 4.05e-05 | Price Loss: 0.9856 | Action Loss: 0.4874
+2025-08-25 17:58:22,634 - INFO - Step   2950 | Loss: 1.5841 | LR: 4.05e-05 | Price Loss: 1.0230 | Action Loss: 0.4783
+2025-08-25 17:58:22,725 - INFO - 📊 Epoch 24 complete. Avg Loss: 1.5795
+2025-08-25 17:58:24,705 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_24.pt
+2025-08-25 17:58:24,705 - INFO - 
+📈 EPOCH 25/50
+2025-08-25 17:58:24,705 - INFO - --------------------------------------------------
+2025-08-25 17:58:26,593 - INFO - Step   3000 | Loss: 1.5742 | LR: 3.65e-05 | Price Loss: 1.0455 | Action Loss: 0.5182
+2025-08-25 17:58:26,877 - INFO - 🔍 Validation Loss: 1.5973
+2025-08-25 17:58:28,788 - INFO - Step   3050 | Loss: 1.5719 | LR: 3.65e-05 | Price Loss: 0.9646 | Action Loss: 0.4748
+2025-08-25 17:58:29,859 - INFO - 📊 Epoch 25 complete. Avg Loss: 1.5748
+2025-08-25 17:58:32,486 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_25.pt
+2025-08-25 17:58:32,486 - INFO - 
+📈 EPOCH 26/50
+2025-08-25 17:58:32,486 - INFO - --------------------------------------------------
+2025-08-25 17:58:33,485 - INFO - Step   3100 | Loss: 1.5794 | LR: 3.65e-05 | Price Loss: 1.0403 | Action Loss: 0.5014
+2025-08-25 17:58:35,752 - INFO - Step   3150 | Loss: 1.5851 | LR: 3.65e-05 | Price Loss: 1.0017 | Action Loss: 0.7452
+2025-08-25 17:58:37,486 - INFO - 📊 Epoch 26 complete. Avg Loss: 1.5751
+2025-08-25 17:58:40,974 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_26.pt
+2025-08-25 17:58:40,975 - INFO - 
+📈 EPOCH 27/50
+2025-08-25 17:58:40,976 - INFO - --------------------------------------------------
+2025-08-25 17:58:41,113 - INFO - Step   3200 | Loss: 1.5635 | LR: 3.65e-05 | Price Loss: 0.9866 | Action Loss: 0.6122
+2025-08-25 17:58:41,369 - INFO - 🔍 Validation Loss: 1.5905
+2025-08-25 17:58:43,214 - INFO - Step   3250 | Loss: 1.5805 | LR: 3.65e-05 | Price Loss: 1.0221 | Action Loss: 0.5861
+2025-08-25 17:58:45,022 - INFO - Step   3300 | Loss: 1.5766 | LR: 3.65e-05 | Price Loss: 0.9690 | Action Loss: 0.5914
+2025-08-25 17:58:45,798 - INFO - 📊 Epoch 27 complete. Avg Loss: 1.5728
+2025-08-25 17:58:54,863 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_27.pt
+2025-08-25 17:58:54,863 - INFO - 
+📈 EPOCH 28/50
+2025-08-25 17:58:54,864 - INFO - --------------------------------------------------
+2025-08-25 17:58:55,950 - INFO - Step   3350 | Loss: 1.5619 | LR: 3.65e-05 | Price Loss: 0.9749 | Action Loss: 0.5521
+2025-08-25 17:58:57,769 - INFO - Step   3400 | Loss: 1.5759 | LR: 3.65e-05 | Price Loss: 1.0008 | Action Loss: 0.5418
+2025-08-25 17:58:58,051 - INFO - 🔍 Validation Loss: 1.6026
+2025-08-25 17:58:59,653 - INFO - 📊 Epoch 28 complete. Avg Loss: 1.5709
+2025-08-25 17:59:09,343 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_28.pt
+2025-08-25 17:59:09,343 - INFO - 
+📈 EPOCH 29/50
+2025-08-25 17:59:09,344 - INFO - --------------------------------------------------
+2025-08-25 17:59:09,597 - INFO - Step   3450 | Loss: 1.4839 | LR: 3.65e-05 | Price Loss: 0.9537 | Action Loss: 0.8780
+2025-08-25 17:59:11,382 - INFO - Step   3500 | Loss: 1.5698 | LR: 3.65e-05 | Price Loss: 0.9758 | Action Loss: 0.5876
+2025-08-25 17:59:13,187 - INFO - Step   3550 | Loss: 1.5728 | LR: 3.65e-05 | Price Loss: 0.9993 | Action Loss: 0.6787
+2025-08-25 17:59:13,804 - INFO - 📊 Epoch 29 complete. Avg Loss: 1.5693
+2025-08-25 17:59:22,391 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_29.pt
+2025-08-25 17:59:22,391 - INFO - 
+📈 EPOCH 30/50
+2025-08-25 17:59:22,391 - INFO - --------------------------------------------------
+2025-08-25 17:59:23,628 - INFO - Step   3600 | Loss: 1.5638 | LR: 3.65e-05 | Price Loss: 1.0261 | Action Loss: 0.5959
+2025-08-25 17:59:23,902 - INFO - 🔍 Validation Loss: 1.6648
+2025-08-25 17:59:25,713 - INFO - Step   3650 | Loss: 1.5719 | LR: 3.65e-05 | Price Loss: 0.9299 | Action Loss: 0.6596
+2025-08-25 17:59:27,207 - INFO - 📊 Epoch 30 complete. Avg Loss: 1.5634
+2025-08-25 17:59:44,598 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_30.pt
+2025-08-25 17:59:44,598 - INFO - 
+📈 EPOCH 31/50
+2025-08-25 17:59:44,599 - INFO - --------------------------------------------------
+2025-08-25 17:59:44,988 - INFO - Step   3700 | Loss: 1.5750 | LR: 3.65e-05 | Price Loss: 1.0010 | Action Loss: 0.6118
+2025-08-25 17:59:46,762 - INFO - Step   3750 | Loss: 1.5527 | LR: 3.65e-05 | Price Loss: 1.0048 | Action Loss: 0.6081
+2025-08-25 17:59:48,626 - INFO - Step   3800 | Loss: 1.5453 | LR: 3.65e-05 | Price Loss: 0.9922 | Action Loss: 0.4415
+2025-08-25 17:59:48,894 - INFO - 🔍 Validation Loss: 1.6091
+2025-08-25 17:59:49,377 - INFO - 📊 Epoch 31 complete. Avg Loss: 1.5537
+2025-08-25 17:59:57,025 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_31.pt
+2025-08-25 17:59:57,026 - INFO - 
+📈 EPOCH 32/50
+2025-08-25 17:59:57,026 - INFO - --------------------------------------------------
+2025-08-25 17:59:58,378 - INFO - Step   3850 | Loss: 1.5414 | LR: 3.65e-05 | Price Loss: 0.9894 | Action Loss: 0.6201
+2025-08-25 18:00:00,123 - INFO - Step   3900 | Loss: 1.5664 | LR: 3.65e-05 | Price Loss: 1.0078 | Action Loss: 0.5866
+2025-08-25 18:00:01,388 - INFO - 📊 Epoch 32 complete. Avg Loss: 1.5555
+2025-08-25 18:00:06,189 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_32.pt
+2025-08-25 18:00:06,190 - INFO - 
+📈 EPOCH 33/50
+2025-08-25 18:00:06,190 - INFO - --------------------------------------------------
+2025-08-25 18:00:06,742 - INFO - Step   3950 | Loss: 1.5725 | LR: 3.65e-05 | Price Loss: 1.0178 | Action Loss: 0.5160
+2025-08-25 18:00:08,491 - INFO - Step   4000 | Loss: 1.5278 | LR: 3.28e-05 | Price Loss: 0.9899 | Action Loss: 0.4813
+2025-08-25 18:00:08,763 - INFO - 🔍 Validation Loss: 1.6426
+2025-08-25 18:00:10,620 - INFO - Step   4050 | Loss: 1.5447 | LR: 3.28e-05 | Price Loss: 1.0237 | Action Loss: 0.7130
+2025-08-25 18:00:10,934 - INFO - 📊 Epoch 33 complete. Avg Loss: 1.5486
+2025-08-25 18:00:16,333 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_33.pt
+2025-08-25 18:00:16,334 - INFO - 
+📈 EPOCH 34/50
+2025-08-25 18:00:16,335 - INFO - --------------------------------------------------
+2025-08-25 18:00:17,889 - INFO - Step   4100 | Loss: 1.5370 | LR: 3.28e-05 | Price Loss: 0.9773 | Action Loss: 0.6396
+2025-08-25 18:00:19,673 - INFO - Step   4150 | Loss: 1.5410 | LR: 3.28e-05 | Price Loss: 1.0000 | Action Loss: 0.7276
+2025-08-25 18:00:20,808 - INFO - 📊 Epoch 34 complete. Avg Loss: 1.5494
+2025-08-25 18:00:28,135 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_34.pt
+2025-08-25 18:00:28,135 - INFO - 
+📈 EPOCH 35/50
+2025-08-25 18:00:28,135 - INFO - --------------------------------------------------
+2025-08-25 18:00:28,813 - INFO - Step   4200 | Loss: 1.5214 | LR: 3.28e-05 | Price Loss: 0.9877 | Action Loss: 0.4909
+2025-08-25 18:00:29,057 - INFO - 🔍 Validation Loss: 1.6632
+2025-08-25 18:00:30,947 - INFO - Step   4250 | Loss: 1.5390 | LR: 3.28e-05 | Price Loss: 0.9811 | Action Loss: 0.5422
+2025-08-25 18:00:32,764 - INFO - Step   4300 | Loss: 1.5583 | LR: 3.28e-05 | Price Loss: 1.0398 | Action Loss: 0.5032
+2025-08-25 18:00:32,940 - INFO - 📊 Epoch 35 complete. Avg Loss: 1.5425
+2025-08-25 18:00:38,291 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_35.pt
+2025-08-25 18:00:38,291 - INFO - 
+📈 EPOCH 36/50
+2025-08-25 18:00:38,291 - INFO - --------------------------------------------------
+2025-08-25 18:00:39,909 - INFO - Step   4350 | Loss: 1.5389 | LR: 3.28e-05 | Price Loss: 1.0081 | Action Loss: 0.8310
+2025-08-25 18:00:41,682 - INFO - Step   4400 | Loss: 1.5263 | LR: 3.28e-05 | Price Loss: 0.9528 | Action Loss: 0.5847
+2025-08-25 18:00:41,950 - INFO - 🔍 Validation Loss: 1.6735
+2025-08-25 18:00:42,962 - INFO - 📊 Epoch 36 complete. Avg Loss: 1.5388
+2025-08-25 18:00:45,549 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_36.pt
+2025-08-25 18:00:45,549 - INFO - 
+📈 EPOCH 37/50
+2025-08-25 18:00:45,549 - INFO - --------------------------------------------------
+2025-08-25 18:00:46,430 - INFO - Step   4450 | Loss: 1.5111 | LR: 3.28e-05 | Price Loss: 1.0113 | Action Loss: 0.4169
+2025-08-25 18:00:48,380 - INFO - Step   4500 | Loss: 1.5420 | LR: 3.28e-05 | Price Loss: 0.9982 | Action Loss: 0.5759
+2025-08-25 18:00:50,191 - INFO - Step   4550 | Loss: 1.5318 | LR: 3.28e-05 | Price Loss: 0.9652 | Action Loss: 0.6381
+2025-08-25 18:00:50,227 - INFO - 📊 Epoch 37 complete. Avg Loss: 1.5320
+2025-08-25 18:00:52,546 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_37.pt
+2025-08-25 18:00:52,546 - INFO - 
+📈 EPOCH 38/50
+2025-08-25 18:00:52,546 - INFO - --------------------------------------------------
+2025-08-25 18:00:54,507 - INFO - Step   4600 | Loss: 1.5148 | LR: 3.28e-05 | Price Loss: 0.9722 | Action Loss: 0.4272
+2025-08-25 18:00:54,793 - INFO - 🔍 Validation Loss: 1.6644
+2025-08-25 18:00:56,623 - INFO - Step   4650 | Loss: 1.5320 | LR: 3.28e-05 | Price Loss: 1.0040 | Action Loss: 0.5148
+2025-08-25 18:00:57,487 - INFO - 📊 Epoch 38 complete. Avg Loss: 1.5286
+2025-08-25 18:00:59,272 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_38.pt
+2025-08-25 18:00:59,272 - INFO - 
+📈 EPOCH 39/50
+2025-08-25 18:00:59,272 - INFO - --------------------------------------------------
+2025-08-25 18:01:00,233 - INFO - Step   4700 | Loss: 1.5080 | LR: 3.28e-05 | Price Loss: 1.0369 | Action Loss: 0.4570
+2025-08-25 18:01:02,079 - INFO - Step   4750 | Loss: 1.5317 | LR: 3.28e-05 | Price Loss: 0.9993 | Action Loss: 0.5219
+2025-08-25 18:01:03,785 - INFO - 📊 Epoch 39 complete. Avg Loss: 1.5249
+2025-08-25 18:01:05,699 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_39.pt
+2025-08-25 18:01:05,700 - INFO - 
+📈 EPOCH 40/50
+2025-08-25 18:01:05,700 - INFO - --------------------------------------------------
+2025-08-25 18:01:05,845 - INFO - Step   4800 | Loss: 1.4626 | LR: 3.28e-05 | Price Loss: 0.9655 | Action Loss: 0.3453
+2025-08-25 18:01:06,090 - INFO - 🔍 Validation Loss: 1.6651
+2025-08-25 18:01:08,007 - INFO - Step   4850 | Loss: 1.5103 | LR: 3.28e-05 | Price Loss: 0.9934 | Action Loss: 0.6030
+2025-08-25 18:01:09,993 - INFO - Step   4900 | Loss: 1.5234 | LR: 3.28e-05 | Price Loss: 1.0246 | Action Loss: 0.6026
+2025-08-25 18:01:10,849 - INFO - 📊 Epoch 40 complete. Avg Loss: 1.5212
+2025-08-25 18:01:12,858 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_40.pt
+2025-08-25 18:01:12,858 - INFO - 
+📈 EPOCH 41/50
+2025-08-25 18:01:12,858 - INFO - --------------------------------------------------
+2025-08-25 18:01:13,954 - INFO - Step   4950 | Loss: 1.5049 | LR: 3.28e-05 | Price Loss: 1.0338 | Action Loss: 0.4556
+2025-08-25 18:01:15,989 - INFO - Step   5000 | Loss: 1.5404 | LR: 2.95e-05 | Price Loss: 1.0186 | Action Loss: 0.6283
+2025-08-25 18:01:16,266 - INFO - 🔍 Validation Loss: 1.6703
+2025-08-25 18:01:18,153 - INFO - 📊 Epoch 41 complete. Avg Loss: 1.5242
+2025-08-25 18:01:21,034 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_41.pt
+2025-08-25 18:01:21,034 - INFO - 
+📈 EPOCH 42/50
+2025-08-25 18:01:21,034 - INFO - --------------------------------------------------
+2025-08-25 18:01:21,405 - INFO - Step   5050 | Loss: 1.5234 | LR: 2.95e-05 | Price Loss: 1.0046 | Action Loss: 0.5302
+2025-08-25 18:01:23,715 - INFO - Step   5100 | Loss: 1.4968 | LR: 2.95e-05 | Price Loss: 1.0001 | Action Loss: 0.5281
+2025-08-25 18:01:25,922 - INFO - Step   5150 | Loss: 1.5165 | LR: 2.95e-05 | Price Loss: 1.0147 | Action Loss: 0.5511
+2025-08-25 18:01:26,526 - INFO - 📊 Epoch 42 complete. Avg Loss: 1.5103
+2025-08-25 18:01:29,020 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_42.pt
+2025-08-25 18:01:29,020 - INFO - 
+📈 EPOCH 43/50
+2025-08-25 18:01:29,020 - INFO - --------------------------------------------------
+2025-08-25 18:01:30,354 - INFO - Step   5200 | Loss: 1.4879 | LR: 2.95e-05 | Price Loss: 0.9608 | Action Loss: 0.5305
+2025-08-25 18:01:30,636 - INFO - 🔍 Validation Loss: 1.6932
+2025-08-25 18:01:32,728 - INFO - Step   5250 | Loss: 1.5250 | LR: 2.95e-05 | Price Loss: 0.9921 | Action Loss: 0.5889
+2025-08-25 18:01:34,112 - INFO - 📊 Epoch 43 complete. Avg Loss: 1.5100
+2025-08-25 18:01:36,163 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_43.pt
+2025-08-25 18:01:36,163 - INFO - 
+📈 EPOCH 44/50
+2025-08-25 18:01:36,163 - INFO - --------------------------------------------------
+2025-08-25 18:01:36,678 - INFO - Step   5300 | Loss: 1.5065 | LR: 2.95e-05 | Price Loss: 0.9536 | Action Loss: 0.5880
+2025-08-25 18:01:38,932 - INFO - Step   5350 | Loss: 1.5007 | LR: 2.95e-05 | Price Loss: 0.9805 | Action Loss: 0.4793
+2025-08-25 18:01:41,099 - INFO - Step   5400 | Loss: 1.5013 | LR: 2.95e-05 | Price Loss: 0.9711 | Action Loss: 0.4308
+2025-08-25 18:01:41,376 - INFO - 🔍 Validation Loss: 1.7583
+2025-08-25 18:01:42,055 - INFO - 📊 Epoch 44 complete. Avg Loss: 1.5049
+2025-08-25 18:01:46,515 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_44.pt
+2025-08-25 18:01:46,516 - INFO - 
+📈 EPOCH 45/50
+2025-08-25 18:01:46,516 - INFO - --------------------------------------------------
+2025-08-25 18:01:47,985 - INFO - Step   5450 | Loss: 1.5062 | LR: 2.95e-05 | Price Loss: 1.0280 | Action Loss: 0.4637
+2025-08-25 18:01:49,827 - INFO - Step   5500 | Loss: 1.4842 | LR: 2.95e-05 | Price Loss: 0.9676 | Action Loss: 0.3579
+2025-08-25 18:01:51,143 - INFO - 📊 Epoch 45 complete. Avg Loss: 1.4979
+2025-08-25 18:01:53,105 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_45.pt
+2025-08-25 18:01:53,105 - INFO - 
+📈 EPOCH 46/50
+2025-08-25 18:01:53,105 - INFO - --------------------------------------------------
+2025-08-25 18:01:53,698 - INFO - Step   5550 | Loss: 1.5214 | LR: 2.95e-05 | Price Loss: 1.0369 | Action Loss: 0.6656
+2025-08-25 18:01:55,496 - INFO - Step   5600 | Loss: 1.4956 | LR: 2.95e-05 | Price Loss: 0.9774 | Action Loss: 0.4687
+2025-08-25 18:01:55,776 - INFO - 🔍 Validation Loss: 1.6938
+2025-08-25 18:01:57,622 - INFO - Step   5650 | Loss: 1.5025 | LR: 2.95e-05 | Price Loss: 1.0044 | Action Loss: 0.6079
+2025-08-25 18:01:57,915 - INFO - 📊 Epoch 46 complete. Avg Loss: 1.4997
+2025-08-25 18:01:59,821 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_46.pt
+2025-08-25 18:01:59,821 - INFO - 
+📈 EPOCH 47/50
+2025-08-25 18:01:59,821 - INFO - --------------------------------------------------
+2025-08-25 18:02:01,380 - INFO - Step   5700 | Loss: 1.5154 | LR: 2.95e-05 | Price Loss: 1.0418 | Action Loss: 0.5201
+2025-08-25 18:02:03,194 - INFO - Step   5750 | Loss: 1.4897 | LR: 2.95e-05 | Price Loss: 0.9768 | Action Loss: 0.4594
+2025-08-25 18:02:04,353 - INFO - 📊 Epoch 47 complete. Avg Loss: 1.4969
+2025-08-25 18:02:06,414 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_47.pt
+2025-08-25 18:02:06,414 - INFO - 
+📈 EPOCH 48/50
+2025-08-25 18:02:06,414 - INFO - --------------------------------------------------
+2025-08-25 18:02:07,146 - INFO - Step   5800 | Loss: 1.4946 | LR: 2.95e-05 | Price Loss: 1.0213 | Action Loss: 0.6811
+2025-08-25 18:02:07,402 - INFO - 🔍 Validation Loss: 1.7581
+2025-08-25 18:02:09,289 - INFO - Step   5850 | Loss: 1.4940 | LR: 2.95e-05 | Price Loss: 0.9595 | Action Loss: 0.4832
+2025-08-25 18:02:11,160 - INFO - Step   5900 | Loss: 1.5019 | LR: 2.95e-05 | Price Loss: 1.0336 | Action Loss: 0.4959
+2025-08-25 18:02:11,305 - INFO - 📊 Epoch 48 complete. Avg Loss: 1.4957
+2025-08-25 18:02:13,108 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_48.pt
+2025-08-25 18:02:13,108 - INFO - 
+📈 EPOCH 49/50
+2025-08-25 18:02:13,108 - INFO - --------------------------------------------------
+2025-08-25 18:02:14,862 - INFO - Step   5950 | Loss: 1.4710 | LR: 2.95e-05 | Price Loss: 1.0069 | Action Loss: 0.5785
+2025-08-25 18:02:16,729 - INFO - Step   6000 | Loss: 1.4793 | LR: 2.66e-05 | Price Loss: 0.9907 | Action Loss: 0.4595
+2025-08-25 18:02:17,014 - INFO - 🔍 Validation Loss: 1.6866
+2025-08-25 18:02:18,021 - INFO - 📊 Epoch 49 complete. Avg Loss: 1.4854
+2025-08-25 18:02:19,790 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_49.pt
+2025-08-25 18:02:19,790 - INFO - 
+📈 EPOCH 50/50
+2025-08-25 18:02:19,790 - INFO - --------------------------------------------------
+2025-08-25 18:02:20,616 - INFO - Step   6050 | Loss: 1.4995 | LR: 2.66e-05 | Price Loss: 0.9747 | Action Loss: 0.5267
+2025-08-25 18:02:22,374 - INFO - Step   6100 | Loss: 1.5017 | LR: 2.66e-05 | Price Loss: 1.0079 | Action Loss: 0.5036
+2025-08-25 18:02:24,179 - INFO - Step   6150 | Loss: 1.4524 | LR: 2.66e-05 | Price Loss: 0.9966 | Action Loss: 0.3458
+2025-08-25 18:02:24,179 - INFO - 📊 Epoch 50 complete. Avg Loss: 1.4812
+2025-08-25 18:02:26,002 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/epoch_50.pt
+2025-08-25 18:02:27,719 - INFO - 💾 Checkpoint saved: hftraining/checkpoints/fixed/final.pt
+2025-08-25 18:02:27,719 - INFO - ✅ Training completed!
+
+✅ Training completed successfully!
+
+🧪 Testing model with inference system...
+Could not test inference compatibility: No module named 'hfinference'

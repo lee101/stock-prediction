@@ -53,7 +53,6 @@ class MarketDataBundle:
                     "high_pct": float(row["high_pct"]),
                     "low_pct": float(row["low_pct"]),
                     "close_pct": float(row["close_pct"]),
-                    "close": float(row.get("close", 0.0)),
                 }
                 for _, row in frame_with_pct.iterrows()
             ]

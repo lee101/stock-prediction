@@ -1,0 +1,75 @@
+{
+  "experiment_name": "production_profit_optimized",
+  "model": {
+    "architecture": "transformer",
+    "hidden_size": 768,
+    "num_heads": 16,
+    "num_layers": 10,
+    "dropout": 0.2,
+    "activation": "gelu",
+    "use_layer_norm": true
+  },
+  "training": {
+    "batch_size": 16,
+    "learning_rate": 5e-05,
+    "min_lr": 1e-06,
+    "optimizer": "adamw",
+    "scheduler": {
+      "type": "CosineAnnealingWarmRestarts",
+      "T_0": 1000,
+      "T_mult": 2
+    },
+    "loss": {
+      "type": "profit_weighted",
+      "price_weight": 1.0,
+      "profit_weight": 2.0,
+      "risk_penalty": 0.5
+    },
+    "gradient_clip": 0.5,
+    "weight_decay": 0.05,
+    "max_steps": 10000,
+    "eval_steps": 500
+  },
+  "data": {
+    "features": [
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume",
+      "returns",
+      "log_returns",
+      "volatility",
+      "rsi",
+      "macd",
+      "bollinger_bands",
+      "momentum",
+      "trend_strength"
+    ],
+    "sequence_length": 90,
+    "prediction_horizon": 10,
+    "train_split": 0.7,
+    "val_split": 0.15,
+    "test_split": 0.15
+  },
+  "trading": {
+    "strategy": "ensemble",
+    "num_models": 3,
+    "position_sizing": "kelly",
+    "max_position": 0.25,
+    "stop_loss": 0.02,
+    "take_profit": 0.05,
+    "risk_per_trade": 0.02
+  },
+  "evaluation": {
+    "metrics": [
+      "sharpe_ratio",
+      "max_drawdown",
+      "win_rate",
+      "profit_factor",
+      "annual_return"
+    ],
+    "backtest_period": "2_years",
+    "walk_forward_windows": 12
+  }
+}

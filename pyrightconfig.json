@@ -1,0 +1,41 @@
+{
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/.mypy_cache",
+    "**/.pytest_cache",
+    ".venv",
+    ".venv311",
+    ".venv313",
+    ".venv314",
+    ".env",
+    "data",
+    "dashboards",
+    "external",
+    "experiments",
+    "hfshared",
+    "hftraining",
+    "hfinference",
+    "lightning_logs",
+    "lightning_logs2",
+    "lightning_logsminute",
+    "logs",
+    "results",
+    "tensorboard_logs",
+    "testresults",
+    "training",
+    "trainingdata"
+  ],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        "src"
+      ],
+      "pythonVersion": "3.11"
+    }
+  ],
+  "pythonVersion": "3.11"
+}

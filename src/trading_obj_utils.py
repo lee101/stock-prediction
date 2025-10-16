@@ -1,8 +1,13 @@
+from typing import Iterable, List, Any
+
 from src.fixtures import crypto_symbols
 
 
-def filter_to_realistic_positions(all_positions):
-    positions = []
+PositionLike = Any
+
+
+def filter_to_realistic_positions(all_positions: Iterable[PositionLike]) -> List[PositionLike]:
+    positions: List[PositionLike] = []
     for position in all_positions:
         if position.symbol in ['LTCUSD'] and float(position.qty) >= .1:
             positions.append(position)
