@@ -1,0 +1,68 @@
+[
+  {
+    "strategy": "magnitude_based",
+    "signal_strength": 0.06635229813802156,
+    "position_size": 3545,
+    "recommendation": "HOLD",
+    "confidence": "VERY_LOW",
+    "symbol": "BTCUSD",
+    "current_price": 100600.65,
+    "predicted_price": 101269.140625,
+    "timestamp": "2025-08-06T21:24:49.553783"
+  },
+  {
+    "strategy": "consensus_based",
+    "signal_strength": 0.48,
+    "position_size": 3500,
+    "recommendation": "WEAK_BUY",
+    "confidence": "MEDIUM",
+    "symbol": "BTCUSD",
+    "current_price": 100600.65,
+    "predicted_price": 101269.140625,
+    "timestamp": "2025-08-06T21:24:49.554629"
+  },
+  {
+    "strategy": "volatility_adjusted",
+    "signal_strength": 0.7686530707278344,
+    "position_size": 6000,
+    "recommendation": "STRONG_BUY",
+    "confidence": "HIGH",
+    "symbol": "BTCUSD",
+    "current_price": 100600.65,
+    "predicted_price": 101269.140625,
+    "timestamp": "2025-08-06T21:24:49.555381"
+  },
+  {
+    "strategy": "momentum_volatility",
+    "signal_strength": 0.10544371073495945,
+    "position_size": 1000,
+    "recommendation": "HOLD",
+    "confidence": "VERY_LOW",
+    "symbol": "BTCUSD",
+    "current_price": 100600.65,
+    "predicted_price": 101269.140625,
+    "timestamp": "2025-08-06T21:24:49.556087"
+  },
+  {
+    "strategy": "profit_target",
+    "signal_strength": 0.9999906479089901,
+    "position_size": 7500,
+    "recommendation": "STRONG_BUY",
+    "confidence": "VERY_HIGH",
+    "symbol": "BTCUSD",
+    "current_price": 100600.65,
+    "predicted_price": 101269.140625,
+    "timestamp": "2025-08-06T21:24:49.556909"
+  },
+  {
+    "strategy": "adaptive",
+    "signal_strength": 0.48408794550196105,
+    "position_size": 2500,
+    "recommendation": "WEAK_BUY",
+    "confidence": "MEDIUM",
+    "symbol": "BTCUSD",
+    "current_price": 100600.65,
+    "predicted_price": 101269.140625,
+    "timestamp": "2025-08-06T21:24:49.562887"
+  }
+]

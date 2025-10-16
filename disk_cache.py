@@ -21,12 +21,14 @@ def disk_cache(func):
         key_parts = []
         for arg in args:
             if isinstance(arg, torch.Tensor):
-                key_parts.append(hashlib.md5(arg.cpu().numpy().tobytes()).hexdigest())
+                tensor = arg.detach().cpu().numpy() if hasattr(arg, "detach") else arg.cpu().numpy()
+                key_parts.append(hashlib.md5(tensor.tobytes()).hexdigest())
             else:
                 key_parts.append(str(arg))
         for k, v in kwargs.items():
             if isinstance(v, torch.Tensor):
-                key_parts.append(f"{k}:{hashlib.md5(v.cpu().numpy().tobytes()).hexdigest()}")
+                tensor = v.detach().cpu().numpy() if hasattr(v, "detach") else v.cpu().numpy()
+                key_parts.append(f"{k}:{hashlib.md5(tensor.tobytes()).hexdigest()}")
             else:
                 key_parts.append(f"{k}:{v}")
 

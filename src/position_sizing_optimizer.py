@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import Callable, Dict, Union, Optional
+from typing import Callable, Dict, Union, Optional, cast
 
 
 Returns = Union[pd.Series, pd.DataFrame]
@@ -24,10 +24,15 @@ def volatility_scaled_sizing(predicted_returns: Returns, window: int = 5) -> Ret
     """Scale position size by the rolling standard deviation of predictions."""
     vol = predicted_returns.abs().rolling(window=window, min_periods=1).std()
     if isinstance(vol, pd.DataFrame):
-        fill_value = vol.mean().replace(0.0, np.nan).fillna(1.0)
-        vol = vol.replace(0.0, np.nan).fillna(fill_value)
+        column_means = cast(pd.Series, vol.mean(axis=0, skipna=True))
+        safe_means = column_means.replace(0.0, np.nan).fillna(1.0)
+        vol = vol.replace(0.0, np.nan).fillna(safe_means)
     else:
-        vol = vol.replace(0.0, np.nan).fillna(vol.mean() or 1.0)
+        vol = vol.replace(0.0, np.nan)
+        mean_value = float(vol.mean(skipna=True))
+        if not np.isfinite(mean_value) or mean_value == 0.0:
+            mean_value = 1.0
+        vol = vol.fillna(mean_value)
     return predicted_returns / vol
 
 

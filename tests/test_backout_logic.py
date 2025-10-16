@@ -15,6 +15,7 @@ sys.modules["alpaca_trade_api"].REST = lambda *a, **k: types.SimpleNamespace()
 
 sys.modules.setdefault("alpaca", types.ModuleType("alpaca"))
 sys.modules.setdefault("alpaca.data", types.ModuleType("alpaca.data"))
+sys.modules.setdefault("alpaca.data.enums", types.ModuleType("alpaca.data.enums"))
 sys.modules.setdefault("alpaca.trading", types.ModuleType("alpaca.trading"))
 sys.modules.setdefault("alpaca.trading.client", types.ModuleType("client"))
 sys.modules.setdefault("alpaca.trading.enums", types.ModuleType("enums"))
@@ -25,6 +26,7 @@ sys.modules["alpaca.data"].StockHistoricalDataClient = lambda *a, **k: None
 alpaca_data.StockLatestQuoteRequest = lambda *a, **k: None
 alpaca_data.CryptoHistoricalDataClient = lambda *a, **k: None
 alpaca_data.CryptoLatestQuoteRequest = lambda *a, **k: None
+sys.modules["alpaca.data.enums"].DataFeed = types.SimpleNamespace()
 alpaca_trading = sys.modules["alpaca.trading"]
 alpaca_trading.OrderType = types.SimpleNamespace(LIMIT='limit', MARKET='market')
 alpaca_trading.LimitOrderRequest = lambda **kw: kw
@@ -79,13 +81,20 @@ def _retry(*a, **kw):
     return decorator
 retry_mod.retry = _retry
 sys.modules.setdefault("retry", retry_mod)
-sys.modules.setdefault("pytz", types.ModuleType("pytz"))
-pytz_mod = sys.modules["pytz"]
-def timezone(name):
-    return name
-pytz_mod.timezone = timezone
-pytz_mod.UTC = object()
-pytz_mod.exceptions = types.SimpleNamespace(UnknownTimeZoneError=Exception)
+try:
+    import pytz as pytz_mod  # type: ignore
+except ModuleNotFoundError:
+    pytz_mod = types.ModuleType("pytz")
+
+    def timezone(name):
+        return name
+
+    pytz_mod.timezone = timezone
+    pytz_mod.UTC = object()
+    pytz_mod.exceptions = types.SimpleNamespace(UnknownTimeZoneError=Exception)
+    sys.modules["pytz"] = pytz_mod
+else:
+    sys.modules["pytz"] = pytz_mod
 env_real = types.ModuleType("env_real")
 env_real.ALP_KEY_ID = "key"
 env_real.ALP_SECRET_KEY = "secret"
