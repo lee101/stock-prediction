@@ -1,0 +1,29 @@
+{
+  "symbol": "BTCUSD",
+  "model": "toto",
+  "config": {
+    "name": "toto_trimmed10_128",
+    "num_samples": 128,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 16
+  },
+  "validation": {
+    "price_mae": 336.00598413574573,
+    "return_mae": 0.030774156781204952,
+    "latency_s": 15.038310752250254
+  },
+  "test": {
+    "price_mae": 253.38574936031372,
+    "return_mae": 0.026577278892041124,
+    "latency_s": 15.069300452247262
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/BTCUSD.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "symbol": "AMZN",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.152_p0.83_s192_k20_clip1.85_ctx232",
+    "temperature": 0.152,
+    "top_p": 0.83,
+    "top_k": 20,
+    "sample_count": 192,
+    "max_context": 232,
+    "clip": 1.85
+  },
+  "validation": {
+    "price_mae": 2.954817962646487,
+    "return_mae": 0.012870435726506336,
+    "latency_s": 31.989752459339797
+  },
+  "test": {
+    "price_mae": 2.884139251708986,
+    "return_mae": 0.012927611063163359,
+    "latency_s": 31.430711003020406
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

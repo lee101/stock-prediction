@@ -122,6 +122,93 @@ def _log_detail(message: str) -> None:
         logger.info(message)
 
 
+def _format_metric_parts(parts):
+    formatted = []
+    for name, value, digits in parts:
+        if value is None:
+            continue
+        try:
+            formatted.append(f"{name}={value:.{digits}f}")
+        except (TypeError, ValueError):
+            continue
+    return " ".join(formatted)
+
+
+def _log_analysis_summary(symbol: str, data: Dict) -> None:
+    status_line = (
+        f"{symbol} analysis -> strategy={data.get('strategy')} | side={data.get('side')} | "
+        f"mode={data.get('trade_mode', 'normal')} | blocked={data.get('trade_blocked', False)}"
+    )
+
+    strategy_returns = data.get("strategy_returns", {})
+    returns_metrics = _format_metric_parts(
+        [
+            ("avg", data.get("avg_return"), 3),
+            ("simple", data.get("simple_return"), 3),
+            ("all", strategy_returns.get("all_signals"), 3),
+            ("takeprofit", strategy_returns.get("takeprofit"), 3),
+            ("highlow", strategy_returns.get("highlow"), 3),
+            ("ci_guard", strategy_returns.get("ci_guard"), 3),
+            ("unprofit", data.get("unprofit_shutdown_return"), 3),
+            ("composite", data.get("composite_score"), 3),
+        ]
+    )
+    returns_line = f"  Returns: {returns_metrics or '-'}"
+
+    edges_metrics = _format_metric_parts(
+        [
+            ("move", data.get("predicted_movement"), 3),
+            ("expected_pct", data.get("expected_move_pct"), 5),
+            ("price_skill", data.get("price_skill"), 5),
+            ("edge_strength", data.get("edge_strength"), 5),
+            ("directional", data.get("directional_edge"), 5),
+        ]
+    )
+    edges_line = f"  Edges: {edges_metrics or '-'}"
+
+    prices_metrics = _format_metric_parts(
+        [
+            ("pred_close", data.get("predicted_close"), 3),
+            ("pred_high", data.get("predicted_high"), 3),
+            ("pred_low", data.get("predicted_low"), 3),
+            ("last_close", data.get("last_close"), 3),
+        ]
+    )
+    prices_line = f"  Prices: {prices_metrics or '-'}"
+
+    summary_lines = [status_line, returns_line, edges_line, prices_line]
+
+    if data.get("trade_blocked") and data.get("block_reason"):
+        summary_lines.append(f"  Block reason: {data['block_reason']}")
+
+    if data.get("trade_mode") == "probe":
+        probe_notes = []
+        if data.get("pending_probe"):
+            probe_notes.append("pending")
+        if data.get("probe_active"):
+            probe_notes.append("active")
+        if data.get("probe_transition_ready"):
+            probe_notes.append("transition-ready")
+        if data.get("probe_expired"):
+            probe_notes.append("expired")
+        if data.get("probe_age_seconds") is not None:
+            try:
+                probe_notes.append(f"age={int(data['probe_age_seconds'])}s")
+            except (TypeError, ValueError):
+                probe_notes.append(f"age={data['probe_age_seconds']}")
+        probe_time_info = []
+        if data.get("probe_started_at"):
+            probe_time_info.append(f"start={data['probe_started_at']}")
+        if data.get("probe_expires_at"):
+            probe_time_info.append(f"expires={data['probe_expires_at']}")
+        if probe_time_info:
+            probe_notes.extend(probe_time_info)
+        if probe_notes:
+            summary_lines.append("  Probe: " + ", ".join(str(note) for note in probe_notes))
+
+    _log_detail("\n".join(summary_lines))
+
+
 def _normalize_side_for_key(side: str) -> str:
     normalized = str(side).lower()
     if "short" in normalized or "sell" in normalized:
@@ -710,8 +797,10 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "side": position_side,
                 "predicted_movement": predicted_movement,
                 "strategy": best_strategy,
-                "predicted_high": float(last_prediction["predicted_high"]),
-                "predicted_low": float(last_prediction["predicted_low"]),
+                "predicted_high": float(predicted_high_price),
+                "predicted_low": float(predicted_low_price),
+                "predicted_close": float(predicted_close_price),
+                "last_close": float(close_price),
                 "strategy_returns": strategy_returns,
                 "simple_return": simple_return,
                 "unprofit_shutdown_return": unprofit_return,
@@ -736,29 +825,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "probe_transition_ready": block_info.get("probe_transition_ready", False),
                 "learning_state": block_info.get("learning_state", {}),
             }
-            _log_detail(
-                f"Analysis complete for {symbol}: strategy={best_strategy}, avg_return={avg_return:.3f}, "
-                f"simple={simple_return:.3f}, edge_strength={edge_strength:.5f}, composite={composite_score:.3f}, "
-                f"side={position_side}"
-            )
-            _log_detail(
-                f"Predicted movement: {predicted_movement:.3f}, expected_move_pct={expected_move_pct:.5f}, "
-                f"price_skill={price_skill:.5f}, directional_edge={directional_edge:.5f}"
-            )
-            _log_detail(
-                f"Predicted High: {last_prediction['predicted_high']:.3f}, "
-                f"Predicted Low: {last_prediction['predicted_low']:.3f}, "
-                f"Current Close: {last_prediction['close']:.3f}"
-            )
-            _log_detail(f"Predicted Close: {last_prediction['predicted_close']:.3f}")
-            if trade_blocked and block_info.get("block_reason"):
-                _log_detail(f"Trade blocked for {symbol}: {block_info['block_reason']}")
-            if block_info.get("trade_mode") == "probe":
-                _log_detail(f"Probe trade scheduled for {symbol} ({position_side}) due to recent loss")
-                if block_info.get("probe_transition_ready"):
-                    _log_detail(f"{symbol} probe eligible for transition to full sizing based on next-day signal")
-                if block_info.get("probe_expired"):
-                    _log_detail(f"{symbol} probe exceeded max duration; will trigger backout if still open")
+            _log_analysis_summary(symbol, results[symbol])
 
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {str(e)}")
@@ -882,7 +949,16 @@ def manage_positions(
         except Exception as exc:
             logger.warning("Failed to compute day P&L for risk snapshot: %s", exc)
 
-    snapshot = record_portfolio_snapshot(total_exposure_value, day_pl=day_pl_value)
+    snapshot_kwargs = {}
+    if day_pl_value is not None:
+        snapshot_kwargs["day_pl"] = day_pl_value
+    try:
+        snapshot = record_portfolio_snapshot(total_exposure_value, **snapshot_kwargs)
+    except TypeError as exc:
+        if snapshot_kwargs and "unexpected keyword argument" in str(exc):
+            snapshot = record_portfolio_snapshot(total_exposure_value)
+        else:
+            raise
     logger.info(
         f"Portfolio snapshot recorded: value=${total_exposure_value:.2f}, "
         f"global risk threshold={snapshot.risk_threshold:.2f}x"
