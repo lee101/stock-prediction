@@ -148,6 +148,28 @@ def _log_validation_losses(results_df: pd.DataFrame) -> None:
         return
     _log_table("Average validation losses", ["Metric", "Value"], rows)
 
+
+def compute_walk_forward_stats(results_df: pd.DataFrame) -> Dict[str, float]:
+    stats: Dict[str, float] = {}
+    if results_df.empty:
+        return stats
+    stats["walk_forward_oos_sharpe"] = float(results_df.get("simple_strategy_sharpe", pd.Series(dtype=float)).mean())
+    stats["walk_forward_turnover"] = float(results_df.get("simple_strategy_return", pd.Series(dtype=float)).abs().mean())
+    if "highlow_sharpe" in results_df:
+        stats["walk_forward_highlow_sharpe"] = float(results_df["highlow_sharpe"].mean())
+    if "entry_takeprofit_sharpe" in results_df:
+        stats["walk_forward_takeprofit_sharpe"] = float(results_df["entry_takeprofit_sharpe"].mean())
+    return stats
+
+
+def calibrate_signal(predictions: np.ndarray, actual_returns: np.ndarray) -> Tuple[float, float]:
+    matched = min(len(predictions), len(actual_returns))
+    if matched > 1:
+        slope, intercept = np.polyfit(predictions[:matched], actual_returns[:matched], 1)
+    else:
+        slope, intercept = 1.0, 0.0
+    return float(slope), float(intercept)
+
 _BOOL_TRUE = {"1", "true", "yes", "on"}
 
 if __name__ == "__main__" and "REAL_TESTING" not in os.environ:
@@ -260,6 +282,122 @@ def cached_predict(context, prediction_length, num_samples, samples_per_batch):
         )
 
 
+def _compute_toto_forecast(price_frame: pd.DataFrame, current_last_price: float, toto_params: dict):
+    """
+    Generate Toto forecasts for a prepared price frame.
+    Returns (predictions_tensor, band_tensor, predicted_absolute_last).
+    """
+    predictions_list: List[float] = []
+    band_list: List[float] = []
+    max_horizon = 7
+
+    if price_frame.empty:
+        return torch.zeros(1, dtype=torch.float32), torch.zeros(1, dtype=torch.float32), float(current_last_price)
+
+    # Toto expects a context vector of historical targets; walk forward to build forecasts.
+    for pred_idx in reversed(range(1, max_horizon + 1)):
+        if len(price_frame) <= pred_idx:
+            continue
+        current_context = price_frame[:-pred_idx]
+        if current_context.empty:
+            continue
+        context = torch.tensor(current_context["y"].values, dtype=torch.float32)
+        forecast = cached_predict(
+            context,
+            1,
+            num_samples=toto_params["num_samples"],
+            samples_per_batch=toto_params["samples_per_batch"],
+        )
+        tensor = forecast[0]
+        numpy_method = getattr(tensor, "numpy", None)
+        if callable(numpy_method):
+            try:
+                array_data = numpy_method()
+            except Exception:
+                array_data = None
+        else:
+            array_data = None
+
+        if array_data is None:
+            detach_method = getattr(tensor, "detach", None)
+            if callable(detach_method):
+                try:
+                    array_data = detach_method().cpu().numpy()
+                except Exception:
+                    array_data = None
+
+        if array_data is None:
+            array_data = tensor
+
+        distribution = np.asarray(array_data, dtype=np.float32).reshape(-1)
+        if distribution.size == 0:
+            distribution = np.zeros(1, dtype=np.float32)
+
+        lower_q = np.percentile(distribution, 40)
+        upper_q = np.percentile(distribution, 60)
+        band_width = float(max(upper_q - lower_q, 0.0))
+        band_list.append(band_width)
+
+        aggregated = aggregate_with_spec(distribution, toto_params["aggregate"])
+        predictions_list.append(float(np.atleast_1d(aggregated)[0]))
+
+    if not predictions_list:
+        predictions_list = [0.0]
+    if not band_list:
+        band_list = [0.0]
+
+    predictions = torch.tensor(predictions_list, dtype=torch.float32)
+    bands = torch.tensor(band_list, dtype=torch.float32)
+    predicted_absolute_last = float(current_last_price * (1.0 + predictions[-1].item()))
+    return predictions, bands, predicted_absolute_last
+
+
+def _compute_avg_dollar_volume(df: pd.DataFrame, window: int = 20) -> Optional[float]:
+    if "Close" not in df.columns or "Volume" not in df.columns:
+        return None
+    tail = df.tail(window)
+    if tail.empty:
+        return None
+    try:
+        dollar_vol = tail["Close"].astype(float) * tail["Volume"].astype(float)
+    except Exception:
+        return None
+    mean_val = dollar_vol.mean()
+    if pd.isna(mean_val):
+        return None
+    return float(mean_val)
+
+
+def _compute_atr_pct(df: pd.DataFrame, window: int = 14) -> Optional[float]:
+    required_cols = {"High", "Low", "Close"}
+    if not required_cols.issubset(df.columns):
+        return None
+    if len(df) < window + 1:
+        return None
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    close = df["Close"].astype(float)
+    previous_close = close.shift(1)
+
+    true_range = pd.concat(
+        [
+            (high - low),
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    atr_series = true_range.rolling(window=window).mean()
+    if atr_series.empty or pd.isna(atr_series.iloc[-1]):
+        return None
+    last_close = close.iloc[-1]
+    if last_close <= 0:
+        return None
+    atr_pct = float((atr_series.iloc[-1] / last_close) * 100.0)
+    return atr_pct
+
+
 TOTO_MODEL_ID = os.getenv("TOTO_MODEL_ID", "Datadog/Toto-Open-Base-1.0")
 DEFAULT_TOTO_NUM_SAMPLES = int(os.getenv("TOTO_NUM_SAMPLES", "3072"))
 DEFAULT_TOTO_SAMPLES_PER_BATCH = int(os.getenv("TOTO_SAMPLES_PER_BATCH", "384"))
@@ -333,9 +471,7 @@ def resolve_kronos_params(symbol: str) -> dict:
         else:
             if params.get("sample_count") != override:
                 logger.info(
-                    "MARKETSIM_KRONOS_SAMPLE_COUNT active — overriding sample_count to %d for %s.",
-                    override,
-                    symbol,
+                    f"MARKETSIM_KRONOS_SAMPLE_COUNT active — overriding sample_count to {override} for {symbol}."
                 )
             params["sample_count"] = override
     _kronos_params_cache[symbol] = params
@@ -636,6 +772,7 @@ def backtest_forecasts(symbol, num_simulations=100):
 
     spread = fetch_spread(symbol)
     logger.info(f"spread: {spread}")
+    global SPREAD
     SPREAD = spread  #
 
     # stock_data = load_stock_data_from_csv(csv_file)
@@ -655,10 +792,20 @@ def backtest_forecasts(symbol, num_simulations=100):
             logger.warning(f"No data left for simulation {sim_number + 1}")
             continue
 
-        result = run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_number)
+        result = run_single_simulation(
+            simulation_data,
+            symbol,
+            trading_fee,
+            is_crypto,
+            sim_number,
+            spread,
+        )
         results.append(result)
 
     results_df = pd.DataFrame(results)
+    walk_forward_stats = compute_walk_forward_stats(results_df)
+    for key, value in walk_forward_stats.items():
+        results_df[key] = value
 
     # Log final average metrics
     tb_writer.add_scalar(f'{symbol}/final_metrics/simple_avg_return', results_df['simple_strategy_return'].mean(), 0)
@@ -711,26 +858,53 @@ def backtest_forecasts(symbol, num_simulations=100):
 
 
 
-def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_idx):
+def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_idx, spread):
     last_preds = {
         'instrument': symbol,
         'close_last_price': simulation_data['Close'].iloc[-1],
     }
 
+    spread_bps_estimate = float(abs(float(spread) - 1.0) * 1e4)
+    last_preds["spread_bps_estimate"] = spread_bps_estimate
+
+    avg_dollar_vol = _compute_avg_dollar_volume(simulation_data)
+    if avg_dollar_vol is not None:
+        last_preds["dollar_vol_20d"] = avg_dollar_vol
+    atr_pct = _compute_atr_pct(simulation_data)
+    if atr_pct is not None:
+        last_preds["atr_pct_14"] = atr_pct
+
     best_model = resolve_best_model(symbol)
     use_kronos = best_model == "kronos"
-    toto_params = None
-    kronos_params = None
-    kronos_wrapper = None
-    kronos_df = None
 
-    if use_kronos:
-        kronos_params = resolve_kronos_params(symbol)
-        kronos_wrapper = load_kronos_wrapper(kronos_params)
-        kronos_df = prepare_kronos_dataframe(simulation_data)
-    else:
+    try:
         toto_params = resolve_toto_params(symbol)
-        load_toto_pipeline()
+    except Exception as exc:
+        logger.warning("Failed to resolve Toto parameters for %s: %s", symbol, exc)
+        toto_params = None
+
+    kronos_params: Optional[dict] = None
+    kronos_wrapper: Optional[KronosForecastingWrapper] = None
+    kronos_df: Optional[pd.DataFrame] = None
+    kronos_init_logged = False
+
+    def ensure_kronos_ready() -> bool:
+        nonlocal kronos_params, kronos_wrapper, kronos_df, kronos_init_logged
+        if kronos_wrapper is not None:
+            return True
+        try:
+            if kronos_params is None:
+                kronos_params = resolve_kronos_params(symbol)
+            kronos_wrapper = load_kronos_wrapper(kronos_params)
+            if kronos_df is None:
+                kronos_df = prepare_kronos_dataframe(simulation_data)
+            return True
+        except Exception as exc:
+            if not kronos_init_logged:
+                logger.warning("Failed to prepare Kronos wrapper for %s: %s", symbol, exc)
+                kronos_init_logged = True
+            kronos_wrapper = None
+            return False
 
     for key_to_predict in ['Close', 'Low', 'High', 'Open']:
         data = pre_process_data(simulation_data, key_to_predict)
@@ -749,72 +923,73 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         validation = price[-7:]
         current_last_price = float(simulation_data[key_to_predict].iloc[-1])
 
-        if use_kronos:
-            kronos_results = kronos_wrapper.predict_series(
-                data=kronos_df,
-                timestamp_col="timestamp",
-                columns=[key_to_predict],
-                pred_len=7,
-                lookback=int(kronos_params["max_context"]),
-                temperature=float(kronos_params["temperature"]),
-                top_p=float(kronos_params["top_p"]),
-                top_k=int(kronos_params["top_k"]),
-                sample_count=int(kronos_params["sample_count"]),
-            )
-            kronos_entry = kronos_results.get(key_to_predict)
-            if kronos_entry is None or len(kronos_entry.percent) == 0:
-                logger.warning("Kronos produced no forecast for %s", key_to_predict)
-                continue
-            predictions = torch.tensor(kronos_entry.percent, dtype=torch.float32)
-            predicted_absolute_last = float(kronos_entry.absolute[-1])
-        else:
-            predictions_list = []
-            band_list = []
-            for pred_idx in reversed(range(1, 8)):
-                current_context = price[:-pred_idx]
-                context = torch.tensor(current_context["y"].values, dtype=torch.float32)
-
-                forecast = cached_predict(
-                    context,
-                    1,
-                    num_samples=toto_params["num_samples"],
-                    samples_per_batch=toto_params["samples_per_batch"],
+        toto_predictions = None
+        toto_band = None
+        toto_abs = None
+        run_toto = toto_params is not None and not use_kronos
+        if run_toto:
+            try:
+                toto_predictions, toto_band, toto_abs = _compute_toto_forecast(
+                    price,
+                    current_last_price,
+                    toto_params,
                 )
-                tensor = forecast[0]
+            except Exception as exc:
+                if key_to_predict == "Close":
+                    logger.warning("Toto forecast failed for %s %s: %s", symbol, key_to_predict, exc)
+                toto_predictions = None
+                toto_band = None
+                toto_abs = None
 
-                array_data = None
-                numpy_method = getattr(tensor, "numpy", None)
-                if callable(numpy_method):
-                    try:
-                        array_data = numpy_method()
-                    except Exception:
-                        array_data = None
+        kronos_predictions = None
+        kronos_abs = None
+        need_kronos = use_kronos or key_to_predict == "Close"
+        if need_kronos and ensure_kronos_ready():
+            try:
+                kronos_results = kronos_wrapper.predict_series(
+                    data=kronos_df,
+                    timestamp_col="timestamp",
+                    columns=[key_to_predict],
+                    pred_len=7,
+                    lookback=int(kronos_params["max_context"]),
+                    temperature=float(kronos_params["temperature"]),
+                    top_p=float(kronos_params["top_p"]),
+                    top_k=int(kronos_params["top_k"]),
+                    sample_count=int(kronos_params["sample_count"]),
+                )
+                kronos_entry = kronos_results.get(key_to_predict)
+                if kronos_entry is not None and len(kronos_entry.percent) > 0:
+                    kronos_predictions = torch.tensor(kronos_entry.percent, dtype=torch.float32)
+                    kronos_abs = float(kronos_entry.absolute[-1])
+            except Exception as exc:
+                if key_to_predict == "Close":
+                    logger.warning("Kronos forecast failed for %s %s: %s", symbol, key_to_predict, exc)
+                kronos_predictions = None
+                kronos_abs = None
+                kronos_wrapper = None
 
-                if array_data is None:
-                    detach_method = getattr(tensor, "detach", None)
-                    if callable(detach_method):
-                        try:
-                            array_data = detach_method().cpu().numpy()
-                        except Exception:
-                            array_data = None
+        predictions = None
+        predictions_source = None
+        predicted_absolute_last = current_last_price
 
-                if array_data is None:
-                    array_data = tensor
-
-                distribution = np.asarray(array_data, dtype=np.float32).reshape(-1)
-                if distribution.size == 0:
-                    distribution = np.zeros(1, dtype=np.float32)
-
-                lower_q = np.percentile(distribution, 40)
-                upper_q = np.percentile(distribution, 60)
-                band_width = float(max(upper_q - lower_q, 0.0))
-                band_list.append(band_width)
-
-                aggregated = aggregate_with_spec(distribution, toto_params["aggregate"])
-                predictions_list.append(float(np.atleast_1d(aggregated)[0]))
-
-            predictions = torch.tensor(predictions_list, dtype=torch.float32)
-            predicted_absolute_last = float(current_last_price + (current_last_price * predictions[-1].item()))
+        if use_kronos and kronos_predictions is not None:
+            predictions = kronos_predictions
+            predictions_source = "kronos"
+            if kronos_abs is not None:
+                predicted_absolute_last = kronos_abs
+        elif toto_predictions is not None:
+            predictions = toto_predictions
+            predictions_source = "toto"
+            if toto_abs is not None:
+                predicted_absolute_last = toto_abs
+        elif kronos_predictions is not None:
+            predictions = kronos_predictions
+            predictions_source = "kronos"
+            if kronos_abs is not None:
+                predicted_absolute_last = kronos_abs
+        else:
+            logger.warning("No predictions produced for %s %s; skipping.", symbol, key_to_predict)
+            continue
 
         actuals = series_to_tensor(validation["y"])
         trading_preds = (predictions[:-1] > 0) * 2 - 1
@@ -833,20 +1008,42 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
         last_preds[key_to_predict.lower() + "_predictions"] = predictions[:-1].view(-1)
         if key_to_predict == "Close":
-            if use_kronos:
-                close_ci_band = torch.zeros_like(predictions)
-            else:
-                close_ci_band = torch.tensor(band_list, dtype=torch.float32)
-            last_preds["close_ci_band"] = close_ci_band
+            if toto_predictions is not None and toto_predictions.numel() > 0:
+                last_preds["toto_close_pred_pct"] = float(toto_predictions[-1].item())
+                if toto_band is not None:
+                    last_preds["close_ci_band"] = toto_band
+            if kronos_predictions is not None and kronos_predictions.numel() > 0:
+                last_preds["kronos_close_pred_pct"] = float(kronos_predictions[-1].item())
+            if "close_ci_band" not in last_preds:
+                last_preds["close_ci_band"] = torch.zeros_like(predictions)
+            last_preds["close_prediction_source"] = predictions_source or ("kronos" if use_kronos else "toto")
+            last_preds["close_raw_pred_pct"] = float(predictions[-1].item())
 
     if "close_ci_band" not in last_preds:
         base_close_preds = torch.as_tensor(last_preds.get("close_predictions", torch.zeros(1)), dtype=torch.float32)
         pad_length = int(base_close_preds.shape[0] + 1)
         last_preds["close_ci_band"] = torch.zeros(pad_length, dtype=torch.float32)
+    if "close_prediction_source" not in last_preds:
+        last_preds["close_prediction_source"] = "kronos" if use_kronos else "toto"
 
     # Calculate actual percentage returns over the validation horizon
     close_window = simulation_data["Close"].iloc[-7:]
     actual_returns = close_window.pct_change().dropna().reset_index(drop=True)
+    realized_vol_pct = float(actual_returns.std() * 100.0) if not actual_returns.empty else 0.0
+    last_preds["realized_volatility_pct"] = realized_vol_pct
+    close_pred_tensor = torch.as_tensor(last_preds.get("close_predictions", torch.zeros(1)), dtype=torch.float32)
+    try:
+        close_pred_np = close_pred_tensor.detach().cpu().numpy()
+    except AttributeError:
+        close_pred_np = np.asarray(close_pred_tensor, dtype=np.float32)
+    actual_return_np = actual_returns.to_numpy()
+    slope, intercept = calibrate_signal(close_pred_np, actual_return_np)
+    raw_expected_move_pct = float(last_preds.get("close_raw_pred_pct", 0.0))
+    calibrated_expected_move_pct = float(slope * raw_expected_move_pct + intercept)
+    last_preds["calibration_slope"] = float(slope)
+    last_preds["calibration_intercept"] = float(intercept)
+    last_preds["raw_expected_move_pct"] = raw_expected_move_pct
+    last_preds["calibrated_expected_move_pct"] = calibrated_expected_move_pct
 
     # Simple buy/sell strategy
     simple_signals = simple_buy_sell_strategy(
@@ -996,6 +1193,17 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         'predicted_close': float(last_preds['close_predicted_price_value']),
         'predicted_high': float(last_preds['high_predicted_price_value']),
         'predicted_low': float(last_preds['low_predicted_price_value']),
+        'toto_expected_move_pct': float(last_preds.get('toto_close_pred_pct', 0.0)),
+        'kronos_expected_move_pct': float(last_preds.get('kronos_close_pred_pct', 0.0)),
+        'realized_volatility_pct': float(last_preds.get('realized_volatility_pct', 0.0)),
+        'dollar_vol_20d': float(last_preds.get('dollar_vol_20d', 0.0)),
+        'atr_pct_14': float(last_preds.get('atr_pct_14', 0.0)),
+        'spread_bps_estimate': float(last_preds.get('spread_bps_estimate', 0.0)),
+        'close_prediction_source': last_preds.get('close_prediction_source', best_model),
+        'raw_expected_move_pct': float(last_preds.get('raw_expected_move_pct', 0.0)),
+        'calibrated_expected_move_pct': float(last_preds.get('calibrated_expected_move_pct', last_preds.get('raw_expected_move_pct', 0.0))),
+        'calibration_slope': float(last_preds.get('calibration_slope', 1.0)),
+        'calibration_intercept': float(last_preds.get('calibration_intercept', 0.0)),
         'simple_strategy_return': float(simple_total_return),
         'simple_strategy_sharpe': float(simple_sharpe),
         'simple_strategy_finalday': float(simple_finalday_return),

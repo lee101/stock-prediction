@@ -141,6 +141,9 @@ class TrainerConfig:
     keep_last_n_checkpoints: int = 3
     best_k_checkpoints: int = 1
     resume_from_checkpoint: Optional[str] = None
+    pretrained_model_id: Optional[str] = None
+    pretrained_checkpoint: Optional[str] = None
+    pretrained_torch_dtype: Optional[str] = None
     
     # Validation and evaluation
     validation_frequency: int = 1  # Validate every N epochs
@@ -190,6 +193,9 @@ class TrainerConfig:
         Path(self.export_pretrained_dir).mkdir(parents=True, exist_ok=True)
         
         self.best_k_checkpoints = max(1, int(self.best_k_checkpoints))
+        
+        if self.pretrained_model_id and self.pretrained_checkpoint:
+            raise ValueError("Specify at most one of pretrained_model_id or pretrained_checkpoint.")
     
     def save(self, path: str):
         """Save configuration to JSON file"""
@@ -537,27 +543,70 @@ class TotoTrainer:
         """Create Toto model"""
         if self.config.require_gpu and not torch.cuda.is_available():
             raise RuntimeError("TrainerConfig.require_gpu is True but CUDA is not available.")
-        model = Toto(
-            patch_size=self.config.patch_size,
-            stride=self.config.stride,
-            embed_dim=self.config.embed_dim,
-            num_layers=self.config.num_layers,
-            num_heads=self.config.num_heads,
-            mlp_hidden_dim=self.config.mlp_hidden_dim,
-            dropout=self.config.dropout,
-            spacewise_every_n_layers=self.config.spacewise_every_n_layers,
-            scaler_cls=self.config.scaler_cls,
-            output_distribution_classes=self.config.output_distribution_classes,
-            use_memory_efficient_attention=self.config.memory_efficient_attention
-        )
-        
-        # Enable gradient checkpointing for memory efficiency
-        if self.config.gradient_checkpointing:
-            model.gradient_checkpointing_enable()
-        
-        # Move to device
+
+        pretrained_dtype: Optional[torch.dtype] = None
+        if self.config.pretrained_torch_dtype:
+            dtype_map = {
+                "float32": torch.float32,
+                "float16": torch.float16,
+                "bfloat16": torch.bfloat16,
+            }
+            pretrained_dtype = dtype_map.get(self.config.pretrained_torch_dtype.lower())
+            if pretrained_dtype is None:
+                raise ValueError(
+                    f"Unsupported pretrained_torch_dtype '{self.config.pretrained_torch_dtype}'."
+                )
+
         device = torch.device(f'cuda:{self.config.local_rank}' if torch.cuda.is_available() else 'cpu')
-        model = model.to(device)
+
+        if self.config.pretrained_model_id:
+            map_location = str(device)
+            model = Toto.from_pretrained(
+                self.config.pretrained_model_id,
+                map_location=map_location,
+            )
+            if pretrained_dtype is not None:
+                model = model.to(device=device, dtype=pretrained_dtype)
+            else:
+                model = model.to(device)
+        else:
+            model = Toto(
+                patch_size=self.config.patch_size,
+                stride=self.config.stride,
+                embed_dim=self.config.embed_dim,
+                num_layers=self.config.num_layers,
+                num_heads=self.config.num_heads,
+                mlp_hidden_dim=self.config.mlp_hidden_dim,
+                dropout=self.config.dropout,
+                spacewise_every_n_layers=self.config.spacewise_every_n_layers,
+                scaler_cls=self.config.scaler_cls,
+                output_distribution_classes=self.config.output_distribution_classes,
+                use_memory_efficient_attention=self.config.memory_efficient_attention,
+            )
+            if pretrained_dtype is not None:
+                model = model.to(dtype=pretrained_dtype)
+            model = model.to(device)
+
+            if self.config.pretrained_checkpoint:
+                checkpoint = torch.load(
+                    self.config.pretrained_checkpoint,
+                    map_location=device,
+                    weights_only=False,
+                )
+                state_dict = checkpoint.get("model_state_dict", checkpoint)
+                missing, unexpected = model.load_state_dict(state_dict, strict=False)
+                if missing:
+                    self.logger.warning(
+                        "Missing parameters when loading pretrained checkpoint: %s", missing
+                    )
+                if unexpected:
+                    self.logger.warning(
+                        "Unexpected parameters when loading pretrained checkpoint: %s", unexpected
+                    )
+
+        # Enable gradient checkpointing for memory efficiency
+        if self.config.gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable()
         
         # Wrap with DDP if distributed
         if self.is_distributed:
@@ -610,8 +659,7 @@ class TotoTrainer:
                 self.optimizer,
                 mode='min',
                 factor=0.5,
-                patience=5,
-                verbose=True
+                patience=5
             )
         elif self.config.scheduler.lower() == "onecycle":
             scheduler = OneCycleLR(

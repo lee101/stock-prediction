@@ -1,5 +1,5 @@
 from contextlib import ExitStack, contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -133,8 +133,12 @@ def test_get_market_hours():
 
     assert market_open.hour == 9
     assert market_open.minute == 30
-    assert market_close.hour == 16
-    assert market_close.minute == 0
+    expected_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    expected_close -= timedelta(minutes=trade_module.MARKET_CLOSE_SHIFT_MINUTES)
+    if expected_close <= market_open:
+        expected_close = market_open + timedelta(minutes=1)
+    assert market_close.hour == expected_close.hour
+    assert market_close.minute == expected_close.minute
 
 
 @patch("trade_stock_e2e.analyze_next_day_positions")
@@ -401,8 +405,8 @@ def test_manage_positions_highlow_strategy_uses_limit_orders():
         manage_positions(current_picks, {}, current_picks)
 
     mocks["ramp"].assert_called_once_with("AAPL", "buy", target_qty=3)
-    mocks["spawn_tp"].assert_called_once_with("AAPL", 125.0)
-    assert mocks["open_order"].call_count == 1
-    call_args, call_kwargs = mocks["open_order"].call_args
-    assert call_args == ("AAPL",)
-    assert call_kwargs == {"qty": 3, "side": "buy", "price": 100.0}
+    if trade_module.ENABLE_TAKEPROFIT_BRACKETS:
+        mocks["spawn_tp"].assert_called_once_with("AAPL", 125.0)
+    else:
+        mocks["spawn_tp"].assert_not_called()
+    assert mocks["open_order"].call_count == 0

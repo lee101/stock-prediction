@@ -9,7 +9,6 @@
     "layer_norm_eps": 1e-12,
     "use_layer_norm_bias": false
   },
-  
   "toto_embeddings": {
     "embedding_dim": 128,
     "freeze_toto_embeddings": true,
@@ -17,7 +16,6 @@
     "use_pretrained_backbone": true,
     "cross_asset_attention": true
   },
-  
   "base_model_training": {
     "name": "universal_base_model",
     "description": "Foundation model trained on all assets for general trading patterns",
@@ -25,17 +23,18 @@
     "cross_validation_folds": 5,
     "generalization_test": true
   },
-  
   "optimizer_configs": {
     "gpro": {
-      "learning_rate": 3e-5,
-      "betas": [0.9, 0.999],
-      "eps": 1e-8,
+      "learning_rate": 3e-05,
+      "betas": [
+        0.9,
+        0.999
+      ],
+      "eps": 1e-08,
       "weight_decay": 0.01,
       "projection_factor": 0.5
     }
   },
-  
   "training": {
     "num_train_epochs": 200,
     "batch_size": 16,
@@ -50,7 +49,6 @@
     "eval_strategy": "steps",
     "eval_steps": 500
   },
-  
   "rl_specific": {
     "gamma": 0.99,
     "gae_lambda": 0.95,
@@ -62,7 +60,6 @@
     "ppo_epochs": 10,
     "target_kl": 0.01
   },
-  
   "evaluation": {
     "eval_episodes": 20,
     "eval_on_all_assets": true,
@@ -76,7 +73,6 @@
       "take_profit": 0.05
     }
   },
-  
   "environment": {
     "initial_balance": 100000,
     "max_positions": 3,
@@ -96,14 +92,29 @@
       "correlation_penalty": 0.1
     }
   },
-  
   "data": {
     "train_dir": "../trainingdata/train",
     "test_dir": "../trainingdata/test",
     "symbols": [
-      "AAPL", "ADBE", "ADSK", "BTCUSD", "COIN", "COUR", "CRWD",
-      "ETHUSD", "GOOG", "LTCUSD", "MSFT", "NET", "NFLX", "NVDA",
-      "PAXGUSD", "PYPL", "SAP", "SONY", "TSLA", "U", "UNIUSD"
+      "AAPL",
+      "ADBE",
+      "ADSK",
+      "BTCUSD",
+      "COIN",
+      "COUR",
+      "ETHUSD",
+      "GOOG",
+      "LTCUSD",
+      "MSFT",
+      "NFLX",
+      "NVDA",
+      "PAXGUSD",
+      "PYPL",
+      "SAP",
+      "SONY",
+      "TSLA",
+      "U",
+      "UNIUSD"
     ],
     "data_augmentation": {
       "time_shift": true,
@@ -111,15 +122,13 @@
       "market_regime_mixing": true
     }
   },
-  
   "output": {
     "output_dir": "models/base_model",
     "logging_dir": "logs/base_model",
     "checkpoint_dir": "checkpoints/base_model"
   },
-  
   "fine_tuning": {
-    "learning_rate": 1e-5,
+    "learning_rate": 1e-05,
     "num_epochs": 50,
     "freeze_base_layers": 6,
     "unfreeze_schedule": "linear",
