@@ -776,7 +776,7 @@ class DataProcessor:
                 normalized_close,
                 self.scaler,
                 self.feature_names,
-                column='close'
+                column_name='close'
             )
         # Otherwise fallback to per-window stats captured during normalize()
         if self._feature_mean is None or self._feature_std is None:

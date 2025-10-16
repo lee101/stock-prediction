@@ -26,6 +26,7 @@ from hyperparamstore import load_best_config, load_model_selection
 from loss_utils import percent_movements_augment
 
 SPREAD = 1.0008711461252937
+TOTO_CI_GUARD_MULTIPLIER = float(os.getenv("TOTO_CI_GUARD_MULTIPLIER", "1.0"))
 _FORCE_KRONOS_VALUES = {"1", "true", "yes", "on"}
 _forced_kronos_logged_symbols = set()
 _model_selection_log_state: Dict[str, Tuple[str, str]] = {}
@@ -47,6 +48,11 @@ class StrategyEvaluation:
     returns: ReturnSeries
 
 _BOOL_TRUE = {"1", "true", "yes", "on"}
+
+if __name__ == "__main__" and "REAL_TESTING" not in os.environ:
+    os.environ["REAL_TESTING"] = "1"
+    logger.info("REAL_TESTING not set; defaulting to enabled for standalone execution.")
+
 FAST_TESTING = os.getenv("FAST_TESTING", "0").strip().lower() in _BOOL_TRUE
 REAL_TESTING = os.getenv("REAL_TESTING", "0").strip().lower() in _BOOL_TRUE
 
@@ -133,6 +139,12 @@ def _reset_model_caches() -> None:
     _forced_kronos_logged_symbols.clear()
 
 
+def release_model_resources() -> None:
+    """Public helper to free GPU-resident inference models between runs."""
+    _drop_toto_pipeline()
+    _drop_kronos_wrappers()
+
+
 @disk_cache
 def cached_predict(context, prediction_length, num_samples, samples_per_batch):
     pipeline_instance = load_toto_pipeline()
@@ -208,6 +220,23 @@ def resolve_kronos_params(symbol: str) -> dict:
         logger.info(f"Loaded Kronos hyperparameters for {symbol} from hyperparamstore.")
     params = DEFAULT_KRONOS_PARAMS.copy()
     params.update({k: config.get(k, params[k]) for k in params})
+    env_sample_count = os.getenv("MARKETSIM_KRONOS_SAMPLE_COUNT")
+    if env_sample_count:
+        try:
+            override = max(1, int(env_sample_count))
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid MARKETSIM_KRONOS_SAMPLE_COUNT=%r; expected positive integer.",
+                env_sample_count,
+            )
+        else:
+            if params.get("sample_count") != override:
+                logger.info(
+                    "MARKETSIM_KRONOS_SAMPLE_COUNT active — overriding sample_count to %d for %s.",
+                    override,
+                    symbol,
+                )
+            params["sample_count"] = override
     _kronos_params_cache[symbol] = params
     return params.copy()
 
@@ -408,6 +437,33 @@ def unprofit_shutdown_buy_hold(predictions, actual_returns, is_crypto=False):
     return signals
 
 
+def confidence_guard_strategy(
+    close_predictions,
+    ci_band,
+    ci_multiplier: float = TOTO_CI_GUARD_MULTIPLIER,
+    is_crypto: bool = False,
+):
+    """
+    Guard entries by requiring the predicted move to exceed a confidence interval width.
+    Shorts remain disabled for crypto symbols.
+    """
+    close_predictions = torch.as_tensor(close_predictions, dtype=torch.float32)
+    ci_band = torch.as_tensor(ci_band, dtype=torch.float32)
+
+    signals = torch.zeros_like(close_predictions)
+    guard_width = torch.clamp(ci_band.abs(), min=1e-8) * float(ci_multiplier)
+
+    buy_mask = close_predictions > guard_width
+    signals = torch.where(buy_mask, torch.ones_like(signals), signals)
+
+    if is_crypto:
+        return signals
+
+    sell_mask = close_predictions < -guard_width
+    signals = torch.where(sell_mask, -torch.ones_like(signals), signals)
+    return signals
+
+
 def evaluate_strategy(strategy_signals, actual_returns, trading_fee) -> StrategyEvaluation:
     global SPREAD
     """Evaluate the performance of a strategy, factoring in trading fees."""
@@ -522,6 +578,8 @@ def backtest_forecasts(symbol, num_simulations=100):
                          results_df['entry_takeprofit_sharpe'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_return', results_df['highlow_return'].mean(), 0)
     tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_sharpe', results_df['highlow_sharpe'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/ci_guard_avg_return', results_df['ci_guard_return'].mean(), 0)
+    tb_writer.add_scalar(f'{symbol}/final_metrics/ci_guard_avg_sharpe', results_df['ci_guard_sharpe'].mean(), 0)
 
     logger.info(f"\nAverage Validation Losses:")
     logger.info(f"Close Val Loss: {results_df['close_val_loss'].mean():.4f}")
@@ -550,15 +608,20 @@ def backtest_forecasts(symbol, num_simulations=100):
     logger.info(f"Average Highlow Return: {results_df['highlow_return'].mean():.4f}")
     logger.info(f"Average Highlow Sharpe: {results_df['highlow_sharpe'].mean():.4f}")
     logger.info(f"Average Highlow Final Day Return: {results_df['highlow_finalday_return'].mean():.4f}")
+    logger.info(f"Average CI Guard Return: {results_df['ci_guard_return'].mean():.4f}")
+    logger.info(f"Average CI Guard Sharpe: {results_df['ci_guard_sharpe'].mean():.4f}")
 
     # Determine which strategy is best overall
     avg_simple = results_df["simple_strategy_return"].mean()
     avg_allsignals = results_df["all_signals_strategy_return"].mean()
     avg_takeprofit = results_df["entry_takeprofit_return"].mean()
     avg_highlow = results_df["highlow_return"].mean()
+    avg_ci_guard = results_df["ci_guard_return"].mean()
 
-    best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow)
-    if best_return == avg_highlow:
+    best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_ci_guard)
+    if best_return == avg_ci_guard:
+        best_strategy = "ci_guard"
+    elif best_return == avg_highlow:
         best_strategy = "highlow"
     elif best_return == avg_takeprofit:
         best_strategy = "takeprofit"
@@ -632,6 +695,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
             predicted_absolute_last = float(kronos_entry.absolute[-1])
         else:
             predictions_list = []
+            band_list = []
             for pred_idx in reversed(range(1, 8)):
                 current_context = price[:-pred_idx]
                 context = torch.tensor(current_context["y"].values, dtype=torch.float32)
@@ -663,8 +727,16 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
                 if array_data is None:
                     array_data = tensor
 
-                tensor = np.asarray(array_data)
-                aggregated = aggregate_with_spec(tensor, toto_params["aggregate"])
+                distribution = np.asarray(array_data, dtype=np.float32).reshape(-1)
+                if distribution.size == 0:
+                    distribution = np.zeros(1, dtype=np.float32)
+
+                lower_q = np.percentile(distribution, 40)
+                upper_q = np.percentile(distribution, 60)
+                band_width = float(max(upper_q - lower_q, 0.0))
+                band_list.append(band_width)
+
+                aggregated = aggregate_with_spec(distribution, toto_params["aggregate"])
                 predictions_list.append(float(np.atleast_1d(aggregated)[0]))
 
             predictions = torch.tensor(predictions_list, dtype=torch.float32)
@@ -686,6 +758,17 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:-1].view(-1)
         last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
         last_preds[key_to_predict.lower() + "_predictions"] = predictions[:-1].view(-1)
+        if key_to_predict == "Close":
+            if use_kronos:
+                close_ci_band = torch.zeros_like(predictions)
+            else:
+                close_ci_band = torch.tensor(band_list, dtype=torch.float32)
+            last_preds["close_ci_band"] = close_ci_band
+
+    if "close_ci_band" not in last_preds:
+        base_close_preds = torch.as_tensor(last_preds.get("close_predictions", torch.zeros(1)), dtype=torch.float32)
+        pad_length = int(base_close_preds.shape[0] + 1)
+        last_preds["close_ci_band"] = torch.zeros(pad_length, dtype=torch.float32)
 
     # Calculate actual percentage returns over the validation horizon
     close_window = simulation_data["Close"].iloc[-7:]
@@ -764,6 +847,30 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     highlow_returns = highlow_eval.returns
     highlow_finalday_return = highlow_return / len(actual_returns)
 
+    ci_guard_return = 0.0
+    ci_guard_sharpe = 0.0
+    ci_guard_finalday_return = 0.0
+    ci_guard_returns = np.zeros(len(actual_returns), dtype=np.float32)
+    ci_signals = torch.zeros_like(last_preds["close_predictions"])
+    if len(actual_returns) > 0:
+        ci_band = torch.as_tensor(last_preds["close_ci_band"][:-1], dtype=torch.float32)
+        if ci_band.numel() == len(last_preds["close_predictions"]):
+            ci_signals = confidence_guard_strategy(
+                last_preds["close_predictions"],
+                ci_band,
+                ci_multiplier=TOTO_CI_GUARD_MULTIPLIER,
+                is_crypto=is_crypto,
+            )
+            ci_eval = evaluate_strategy(ci_signals, actual_returns, trading_fee)
+            ci_guard_return = ci_eval.total_return
+            ci_guard_sharpe = ci_eval.sharpe_ratio
+            ci_guard_returns = ci_eval.returns
+            if ci_signals.numel() > 0:
+                ci_guard_finalday_return = (
+                    ci_signals[-1].item() * actual_returns.iloc[-1]
+                    - (2 * trading_fee * SPREAD)
+                )
+
     # Log strategy metrics to tensorboard
     tb_writer.add_scalar(f'{symbol}/strategies/simple/total_return', simple_total_return, sim_idx)
     tb_writer.add_scalar(f'{symbol}/strategies/simple/sharpe', simple_sharpe, sim_idx)
@@ -789,6 +896,10 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     tb_writer.add_scalar(f'{symbol}/strategies/highlow/sharpe', highlow_sharpe, sim_idx)
     tb_writer.add_scalar(f'{symbol}/strategies/highlow/finalday', highlow_finalday_return, sim_idx)
 
+    tb_writer.add_scalar(f'{symbol}/strategies/ci_guard/total_return', ci_guard_return, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/ci_guard/sharpe', ci_guard_sharpe, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/ci_guard/finalday', ci_guard_finalday_return, sim_idx)
+
     # Log returns over time
     for t, ret in enumerate(simple_returns):
         tb_writer.add_scalar(f'{symbol}/returns_over_time/simple', ret, t)
@@ -802,6 +913,8 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         tb_writer.add_scalar(f'{symbol}/returns_over_time/entry_takeprofit', ret, t)
     for t, ret in enumerate(highlow_returns):
         tb_writer.add_scalar(f'{symbol}/returns_over_time/highlow', ret, t)
+    for t, ret in enumerate(ci_guard_returns):
+        tb_writer.add_scalar(f'{symbol}/returns_over_time/ci_guard', ret, t)
 
     result = {
         'date': simulation_data.index[-1],
@@ -827,6 +940,9 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         'highlow_return': float(highlow_return),
         'highlow_sharpe': float(highlow_sharpe),
         'highlow_finalday_return': float(highlow_finalday_return),
+        'ci_guard_return': float(ci_guard_return),
+        'ci_guard_sharpe': float(ci_guard_sharpe),
+        'ci_guard_finalday': float(ci_guard_finalday_return),
         'close_val_loss': float(last_preds['close_val_loss']),
         'high_val_loss': float(last_preds['high_val_loss']),
         'low_val_loss': float(last_preds['low_val_loss']),

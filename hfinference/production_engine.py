@@ -660,7 +660,7 @@ class ProductionTradingEngine:
                     normalized_price,
                     std_scaler,
                     self.feature_names,
-                    column='close'
+                    column_name='close'
                 )
         except Exception:
             pass

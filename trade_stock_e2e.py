@@ -8,7 +8,7 @@ import pytz
 from loguru import logger
 
 import alpaca_wrapper
-from backtest_test3_inline import backtest_forecasts
+from backtest_test3_inline import backtest_forecasts, release_model_resources
 from data_curate_daily import get_bid, get_ask, download_exchange_latest_data
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from jsonshelve import FlatShelf
@@ -200,7 +200,13 @@ def _update_learning_state(symbol: str, side: str, **updates) -> Dict:
 
 
 def _mark_probe_pending(symbol: str, side: str) -> Dict:
-    return _update_learning_state(symbol, side, pending_probe=True, probe_active=False)
+    return _update_learning_state(
+        symbol,
+        side,
+        pending_probe=True,
+        probe_active=False,
+        last_probe_successful=False,
+    )
 
 
 def _mark_probe_active(symbol: str, side: str, qty: float) -> Dict:
@@ -263,6 +269,7 @@ def _mark_probe_transitioned(symbol: str, side: str, qty: float) -> Dict:
         side,
         pending_probe=False,
         probe_active=False,
+        last_probe_successful=False,
         probe_transitioned_at=datetime.now(timezone.utc).isoformat(),
         last_probe_transition_qty=qty,
     )
@@ -404,7 +411,7 @@ def _record_trade_outcome(position, reason: str) -> None:
     )
 
     if trade_mode == "probe":
-        _mark_probe_completed(position.symbol, normalized_side, successful=pnl_value >= 0)
+        _mark_probe_completed(position.symbol, normalized_side, successful=pnl_value > 0)
     elif pnl_value < 0:
         _mark_probe_pending(position.symbol, normalized_side)
     else:
@@ -447,6 +454,8 @@ def _evaluate_trade_block(symbol: str, side: str) -> Dict[str, Optional[object]]
     probe_summary = _describe_probe_state(learning_state, now_utc)
     pending_probe = bool(learning_state.get("pending_probe"))
     probe_active = bool(probe_summary.get("probe_active"))
+    last_probe_successful = bool(learning_state.get("last_probe_successful"))
+    probe_transition_ready = last_probe_successful and not pending_probe and not probe_active
     last_pnl = record.get("pnl") if record else None
     last_closed_at = _parse_timestamp(record.get("closed_at") if record else None)
     blocked = False
@@ -469,7 +478,7 @@ def _evaluate_trade_block(symbol: str, side: str) -> Dict[str, Optional[object]]
     if last_closed_at is not None:
         cooldown_expires = (last_closed_at + LOSS_BLOCK_COOLDOWN).isoformat()
     learning_state["trade_mode"] = trade_mode
-    learning_state["probe_transition_ready"] = probe_summary.get("probe_transition_ready")
+    learning_state["probe_transition_ready"] = probe_transition_ready
     learning_state["probe_expires_at"] = probe_summary.get("probe_expires_at")
     return {
         "record": record,
@@ -485,7 +494,7 @@ def _evaluate_trade_block(symbol: str, side: str) -> Dict[str, Optional[object]]
         "probe_age_seconds": probe_summary.get("probe_age_seconds"),
         "probe_expires_at": probe_summary.get("probe_expires_at"),
         "probe_expired": probe_summary.get("probe_expired"),
-        "probe_transition_ready": probe_summary.get("probe_transition_ready"),
+        "probe_transition_ready": probe_transition_ready,
         "learning_state": learning_state,
     }
 
@@ -611,6 +620,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "takeprofit": backtest_df["entry_takeprofit_return"].mean(),
                 "highlow": backtest_df["highlow_return"].mean(),
             }
+            if "ci_guard_return" in backtest_df.columns:
+                strategy_returns["ci_guard"] = backtest_df["ci_guard_return"].mean()
 
             unprofit_return = 0.0
             unprofit_sharpe = 0.0
@@ -681,11 +692,12 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             composite_score = (
                 0.2 * avg_return
-                + 0.4 * simple_return
+                + 0.35 * simple_return
                 + 0.15 * edge_strength
                 + 0.1 * unprofit_return
-                + 0.075 * takeprofit_return
-                + 0.075 * highlow_return
+                + 0.07 * takeprofit_return
+                + 0.07 * highlow_return
+                + 0.06 * strategy_returns.get("ci_guard", 0.0)
             )
 
             block_info = _evaluate_trade_block(symbol, position_side)
@@ -1478,10 +1490,13 @@ def main():
                 previous_picks = manage_market_close(symbols, previous_picks, all_analyzed_results)
                 last_market_close_run = today
 
-            sleep(60)
-
         except Exception as e:
             logger.exception(f"Error in main loop: {str(e)}")
+        finally:
+            try:
+                release_model_resources()
+            except Exception as cleanup_exc:
+                logger.debug(f"Model release failed: {cleanup_exc}")
             sleep(60)
 
 
