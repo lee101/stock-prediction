@@ -52,7 +52,7 @@ class DataConfig:
     toto_model_id: str = "Datadog/Toto-Open-Base-1.0"
     toto_device: str = "cuda"
     toto_horizon: int = 8
-    toto_num_samples: int = 256
+    toto_num_samples: int = 2048
 
 
 @dataclass

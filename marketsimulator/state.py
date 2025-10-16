@@ -7,6 +7,9 @@ from typing import Dict, Iterable, List, Optional
 import pandas as pd
 import pytz
 
+from loss_utils import CRYPTO_TRADING_FEE, TRADING_FEE
+from src.fixtures import crypto_symbols
+
 
 def _ensure_timezone(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -94,6 +97,18 @@ class TakeProfitTarget:
     qty: float
 
 
+@dataclass
+class TradeExecution:
+    timestamp: datetime
+    symbol: str
+    side: str
+    price: float
+    qty: float
+    notional: float
+    fee: float
+    cash_delta: float
+
+
 class SimulatedClock:
     def __init__(self, now: datetime):
         self.current = _ensure_timezone(now)
@@ -146,6 +161,8 @@ class SimulationState:
     open_orders: Dict[str, SimulatedOrder] = field(default_factory=dict)
     take_profit_targets: List[TakeProfitTarget] = field(default_factory=list)
     order_sequence: int = 1
+    fees_paid: float = 0.0
+    trade_log: List[TradeExecution] = field(default_factory=list)
 
     def update_market_prices(self) -> None:
         for symbol, position in self.positions.items():
@@ -157,8 +174,7 @@ class SimulationState:
 
     def _recalculate_equity(self) -> None:
         position_value = sum(pos.market_value for pos in self.positions.values())
-        unrealized = sum(pos.unrealized_pl for pos in self.positions.values())
-        self.equity = self.cash + unrealized + position_value
+        self.equity = self.cash + position_value
         self.buying_power = max(self.cash, 0.0) * 2
 
     def current_bid(self, symbol: str) -> Optional[float]:
@@ -231,12 +247,9 @@ class SimulationState:
             return
         fill_qty = qty if qty is not None else position.qty
         price = price if price is not None else position.current_price
-        proceeds = price * fill_qty
-        if position.side == "buy":
-            self.cash += proceeds
-        else:
-            cost = price * fill_qty
-            self.cash -= cost
+        fill_qty = min(fill_qty, position.qty)
+        trade_side = "sell" if position.side == "buy" else "buy"
+        self._apply_trade_cash(symbol, trade_side, price, fill_qty)
         if fill_qty >= position.qty:
             self.positions.pop(symbol, None)
         else:
@@ -253,18 +266,12 @@ class SimulationState:
                 avg_entry_price=price,
                 current_price=price,
             )
-            if side == "buy":
-                self.cash -= price * qty
-            else:
-                self.cash += price * qty
+            self._apply_trade_cash(symbol, side, price, qty)
             self.update_market_prices()
             return
 
         if position.side == side:
-            if side == "buy":
-                self.cash -= price * qty
-            else:
-                self.cash += price * qty
+            self._apply_trade_cash(symbol, side, price, qty)
             total_qty = position.qty + qty
             position.avg_entry_price = (
                 (position.avg_entry_price * position.qty) + (price * qty)
@@ -277,17 +284,17 @@ class SimulationState:
         if side == "buy":
             # buy order closes part of a short
             if qty < position.qty:
-                self.cash -= price * qty
+                self._apply_trade_cash(symbol, side, price, qty)
                 position.qty -= qty
                 self.update_market_prices()
                 return
             elif qty == position.qty:
-                self.cash -= price * qty
+                self._apply_trade_cash(symbol, side, price, qty)
                 self.positions.pop(symbol, None)
                 self.update_market_prices()
                 return
             else:
-                self.cash -= price * position.qty
+                self._apply_trade_cash(symbol, side, price, position.qty)
                 remainder = qty - position.qty
                 self.positions.pop(symbol, None)
                 self.ensure_position(symbol, remainder, side="buy", price=price)
@@ -295,17 +302,17 @@ class SimulationState:
         else:
             # sell order closes part of a long
             if qty < position.qty:
-                self.cash += price * qty
+                self._apply_trade_cash(symbol, side, price, qty)
                 position.qty -= qty
                 self.update_market_prices()
                 return
             elif qty == position.qty:
-                self.cash += price * qty
+                self._apply_trade_cash(symbol, side, price, qty)
                 self.positions.pop(symbol, None)
                 self.update_market_prices()
                 return
             else:
-                self.cash += price * position.qty
+                self._apply_trade_cash(symbol, side, price, position.qty)
                 remainder = qty - position.qty
                 self.positions.pop(symbol, None)
                 self.ensure_position(symbol, remainder, side="sell", price=price)
@@ -313,6 +320,32 @@ class SimulationState:
 
     def symbols(self) -> Iterable[str]:
         return self.prices.keys()
+
+    def _apply_trade_cash(self, symbol: str, side: str, price: float, qty: float) -> None:
+        if qty <= 0:
+            return
+        notional = price * qty
+        rate = CRYPTO_TRADING_FEE if symbol.upper() in crypto_symbols else TRADING_FEE
+        fee = notional * rate
+        cash_delta: float
+        if side == "buy":
+            cash_delta = -(notional + fee)
+        else:
+            cash_delta = notional - fee
+        self.cash += cash_delta
+        self.fees_paid += fee
+        self.trade_log.append(
+            TradeExecution(
+                timestamp=self.clock.current,
+                symbol=symbol,
+                side=side,
+                price=price,
+                qty=qty,
+                notional=notional,
+                fee=fee,
+                cash_delta=cash_delta,
+            )
+        )
 
 
 SIMULATION_STATE: Optional[SimulationState] = None

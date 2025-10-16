@@ -31,6 +31,7 @@ from data_utils import (
     PairStockDataset,
     MultiAssetPortfolioDataset,
     align_on_timestamp,
+    load_toto_prediction_history,
 )
 from profit_tracker import ProfitTracker, integrate_profit_tracking
 from logging_utils import get_logger
@@ -125,6 +126,7 @@ class BaseModelTrainer:
         toto_options: Optional[TotoOptions] = None,
         data_dir: str = "trainingdata",
         max_rows: Optional[int] = None,
+        toto_predictions_dir: Optional[str] = None,
     ):
         self.base_stocks = base_stocks or [
             'AAPL', 'GOOGL', 'MSFT', 'AMZN', 'TSLA',
@@ -136,6 +138,7 @@ class BaseModelTrainer:
         self.toto_options = toto_options or TotoOptions()
         self.data_dir = Path(data_dir)
         self.max_rows = max_rows
+        self.toto_predictions_dir = Path(toto_predictions_dir).expanduser() if toto_predictions_dir else None
         
         # Create directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -146,17 +149,49 @@ class BaseModelTrainer:
         self.finetuned_dir = self.output_dir / "finetuned"
         self.base_model_dir.mkdir(exist_ok=True)
         self.finetuned_dir.mkdir(exist_ok=True)
-        
+
+        # Logger
+        self.logger = get_logger(str(self.output_dir / "logs"), "base_model_training")
+
+        self._toto_prediction_features: Dict[str, pd.DataFrame] = {}
+        self._toto_prediction_columns: List[str] = []
+        if self.toto_predictions_dir:
+            try:
+                features, columns = load_toto_prediction_history(self.toto_predictions_dir)
+                self._toto_prediction_features = features
+                self._toto_prediction_columns = columns
+                if not features:
+                    self.logger.warning(
+                        "No Toto prediction rows found in %s; continuing without precomputed features",
+                        self.toto_predictions_dir,
+                    )
+                else:
+                    self.logger.info(
+                        "Loaded Toto prediction features for %d symbols from %s",
+                        len(features),
+                        self.toto_predictions_dir,
+                    )
+            except FileNotFoundError:
+                self.logger.warning(
+                    "Toto prediction directory '%s' not found; skipping precomputed features",
+                    self.toto_predictions_dir,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(
+                    "Failed to load Toto prediction features from %s: %s",
+                    self.toto_predictions_dir,
+                    exc,
+                )
+
         # Data processor
         self.processor = StockDataProcessor(
             sequence_length=self.toto_options.context_length,
             prediction_horizon=self.toto_options.horizon,
             use_toto_forecasts=self.use_toto_forecasts,
             toto_options=self.toto_options,
+            toto_prediction_features=self._toto_prediction_features,
+            toto_prediction_columns=self._toto_prediction_columns,
         )
-        
-        # Logger
-        self.logger = get_logger(str(self.output_dir / "logs"), "base_model_training")
 
     def _configure_processor_from_config(self, data_config):
         """Ensure processor follows the latest data configuration."""
@@ -175,6 +210,8 @@ class BaseModelTrainer:
             prediction_horizon=data_config.prediction_horizon,
             use_toto_forecasts=self.use_toto_forecasts,
             toto_options=toto_opts,
+            toto_prediction_features=self._toto_prediction_features,
+            toto_prediction_columns=self._toto_prediction_columns,
         )
     
     def download_all_stock_data(
@@ -420,7 +457,9 @@ class BaseModelTrainer:
         dataset = StockDataset(
             normalized_data,
             sequence_length=base_config.sequence_length,
-            prediction_horizon=base_config.prediction_horizon
+            prediction_horizon=base_config.prediction_horizon,
+            processor=self.processor,
+            symbol=stock_symbol,
         )
         
         # Split data

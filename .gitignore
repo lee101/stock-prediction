@@ -1,4 +1,7 @@
 .env
+.venv
+.venv313
+.venv314
 *.pt 
 *.pth
 portfolio_optimization_results*
@@ -18,6 +21,10 @@ logs
 lightning_logs
 lightning_logs*
 lightning_logsminute
+
+strategy_state/
+testresults/
+data/_simulator/
 
 
 optuna_test
@@ -78,3 +85,14 @@ hftraining/tensorboard
 tototraining/temp_predictions_0.json
 tototraining/temp_predictions_15.json
 tototraining/temp_predictions_5.json
+gymrl/artifacts/
+gymrl/runs/
+hftraining/reports/
+scratches
+stock_test.db
+stock.db
+portfolio_risk.png
+tototraining/artifacts/
+compiled_models/
+tototraining/checkpoints
+external/kronos/

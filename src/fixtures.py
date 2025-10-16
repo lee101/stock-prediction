@@ -1,1 +1,22 @@
-crypto_symbols = ['BTCUSD', 'ETHUSD', 'LTCUSD', 'PAXGUSD', 'UNIUSD', ]
+crypto_symbols = [
+    'ADAUSD',
+    'ALGOUSD',
+    'ATOMUSD',
+    'AVAXUSD',
+    'BNBUSD',
+    'BTCUSD',
+    'DOGEUSD',
+    'DOTUSD',
+    'ETHUSD',
+    'LINKUSD',
+    'LTCUSD',
+    'MATICUSD',
+    'PAXGUSD',
+    'SHIBUSD',
+    'SOLUSD',
+    'TRXUSD',
+    'UNIUSD',
+    'VETUSD',
+    'XLMUSD',
+    'XRPUSD',
+]

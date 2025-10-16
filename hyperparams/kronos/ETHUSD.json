@@ -1,0 +1,31 @@
+{
+  "symbol": "ETHUSD",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.148_p0.81_s240_k18_clip1.7_ctx224",
+    "temperature": 0.148,
+    "top_p": 0.81,
+    "top_k": 18,
+    "sample_count": 240,
+    "max_context": 224,
+    "clip": 1.7
+  },
+  "validation": {
+    "price_mae": 130.141357421875,
+    "return_mae": 0.02888201403536477,
+    "latency_s": 2.9001800450496376
+  },
+  "test": {
+    "price_mae": 187.992822265625,
+    "return_mae": 0.044426185889667805,
+    "latency_s": 0.05116876354441047
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

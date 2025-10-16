@@ -6,11 +6,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
+import os
+
 from . import alpaca_wrapper_mock
 from . import backtest_test3_inline as backtest_module
 from . import data_curate_daily_mock
-from . import predict_stock_forecasting_mock
+from . import predict_stock_forecasting_proxy as predict_stock_forecasting_module
 from . import process_utils_mock
+from .logging_utils import logger
 from .data_feed import DEFAULT_DATA_ROOT, load_price_series
 from .state import SimulationState, SimulatedClock, set_state
 
@@ -144,13 +147,36 @@ def _install_env_stub() -> None:
         sys.modules["typer"] = typer_mod
 
 
-def _patch_third_party():
-    sys.modules["alpaca_wrapper"] = alpaca_wrapper_mock
-    sys.modules["backtest_test3_inline"] = backtest_module
-    sys.modules["data_curate_daily"] = data_curate_daily_mock
-    sys.modules["predict_stock_forecasting"] = predict_stock_forecasting_mock
+def _patch_third_party(use_mock_analytics: bool, force_kronos: bool):
+    replaced_modules = {}
 
-    # Ensure downstream modules reuse the patched alpaca_wrapper.
+    def replace_module(name: str, module):
+        replaced_modules[name] = sys.modules.get(name)
+        if module is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
+
+    replace_module("alpaca_wrapper", alpaca_wrapper_mock)
+    replace_module("data_curate_daily", data_curate_daily_mock)
+
+    if use_mock_analytics:
+        replace_module("backtest_test3_inline", backtest_module)
+        replace_module("predict_stock_forecasting", predict_stock_forecasting_module)
+    else:
+        try:
+            real_backtest = importlib.import_module("backtest_test3_inline")
+        except Exception:
+            real_backtest = backtest_module
+        replace_module("backtest_test3_inline", real_backtest)
+
+        try:
+            real_forecasting = importlib.import_module("predict_stock_forecasting")
+        except Exception:
+            real_forecasting = predict_stock_forecasting_module
+        replace_module("predict_stock_forecasting", real_forecasting)
+
+    # Ensure downstream modules reuse the patched modules.
     importlib.invalidate_caches()
 
     process_utils = importlib.import_module("src.process_utils")
@@ -162,7 +188,10 @@ def _patch_third_party():
     process_utils.backout_near_market = process_utils_mock.backout_near_market
     process_utils.ramp_into_position = process_utils_mock.ramp_into_position
     process_utils.spawn_close_position_at_takeprofit = process_utils_mock.spawn_close_position_at_takeprofit
-    return {"process_utils": (process_utils, original)}
+    if force_kronos:
+        logger.info("[sim] Kronos-only forecasting flag active for simulation environment.")
+
+    return {"process_utils": (process_utils, original), "replaced_modules": replaced_modules}
 
 
 @dataclass
@@ -194,7 +223,30 @@ def activate_simulation(
     symbols: Optional[Iterable[str]] = None,
     initial_cash: float = 100_000.0,
     data_root=DEFAULT_DATA_ROOT,
+    use_mock_analytics: Optional[bool] = None,
+    force_kronos: Optional[bool] = None,
 ):
+    if use_mock_analytics is None:
+        env_flag = os.getenv("MARKETSIM_USE_MOCK_ANALYTICS", "0").lower()
+        use_mock_analytics = env_flag in {"1", "true", "yes"}
+    env_force_key = "MARKETSIM_FORCE_KRONOS"
+    previous_force_value = os.environ.get(env_force_key)
+    had_force_env = env_force_key in os.environ
+    override_force_env = force_kronos is not None
+    if override_force_env:
+        if force_kronos:
+            os.environ[env_force_key] = "1"
+        else:
+            os.environ.pop(env_force_key, None)
+    else:
+        force_kronos = (
+            previous_force_value is not None
+            and str(previous_force_value).lower() in {"1", "true", "yes", "on"}
+        )
+
+    if force_kronos:
+        logger.info("[sim] Kronos-only forecasting enabled for this simulation.")
+
     _install_env_stub()
     if not symbols:
         symbols = ["AAPL", "MSFT", "NVDA"]
@@ -210,7 +262,10 @@ def activate_simulation(
     )
     set_state(state)
     alpaca_wrapper_mock.reset_account(initial_cash)
-    restore_handles = _patch_third_party()
+    restore_handles = _patch_third_party(
+        use_mock_analytics=use_mock_analytics,
+        force_kronos=bool(force_kronos),
+    )
     controller = SimulationController(state)
     try:
         yield controller
@@ -221,11 +276,17 @@ def activate_simulation(
             process_utils.ramp_into_position,
             process_utils.spawn_close_position_at_takeprofit,
         ) = originals
-        # Best-effort clean-up so other runs can import real modules if needed.
-        for name in [
-            "alpaca_wrapper",
-            "backtest_test3_inline",
-            "data_curate_daily",
-            "predict_stock_forecasting",
-        ]:
-            sys.modules.pop(name, None)
+        for name, original in restore_handles["replaced_modules"].items():
+            if original is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
+        if override_force_env:
+            if had_force_env:
+                if previous_force_value is not None:
+                    os.environ[env_force_key] = previous_force_value
+                else:
+                    # Original environment had the key set to an empty string.
+                    os.environ[env_force_key] = ""
+            else:
+                os.environ.pop(env_force_key, None)

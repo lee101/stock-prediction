@@ -49,6 +49,13 @@ except Exception:
 from auto_tune import AutoBatchTuner
 from differentiable_profit import compute_portfolio_pnl, sharpe_like_ratio
 
+try:
+    from .asset_metadata import get_asset_class, get_asset_class_id, get_trading_fee
+except ImportError:  # pragma: no cover - script execution
+    from asset_metadata import get_asset_class, get_asset_class_id, get_trading_fee  # type: ignore
+
+from loss_utils import TRADING_FEE
+
 
 class StockDataset(Dataset):
     """Dataset for stock trading data."""
@@ -59,16 +66,34 @@ class StockDataset(Dataset):
         sequence_length: int = 60,
         prediction_horizon: int = 5,
         processor: Optional['StockDataProcessor'] = None,  # quote to avoid circular import
+        symbol: Optional[str] = None,
     ):
         self.data = data
         self.sequence_length = sequence_length
         self.prediction_horizon = prediction_horizon
         self.processor = processor
+        self.symbol = symbol.upper() if symbol else None
         self.feature_names = getattr(processor, 'feature_names', None)
         if self.feature_names and 'close' in self.feature_names:
             self.close_index = self.feature_names.index('close')
         else:
             self.close_index = 3  # Fallback to traditional OHLC ordering
+
+        asset_class = "equity"
+        default_fee = TRADING_FEE
+        class_id = 0
+        if self.symbol:
+            try:
+                asset_class = get_asset_class(self.symbol)
+                default_fee = get_trading_fee(self.symbol)
+                class_id = get_asset_class_id(self.symbol)
+            except FileNotFoundError:
+                asset_class = "equity"
+                default_fee = TRADING_FEE
+                class_id = 0
+        self.asset_class_name = asset_class
+        self.asset_class_ids = torch.tensor([class_id], dtype=torch.long)
+        self.per_asset_fees = torch.tensor([float(default_fee)], dtype=torch.float32)
 
         if len(data) < sequence_length + prediction_horizon:
             raise ValueError(f"Dataset too small: {len(data)} < {sequence_length + prediction_horizon}")
@@ -119,6 +144,8 @@ class StockDataset(Dataset):
             'action_labels': torch.tensor(action_label, dtype=torch.long),
             'attention_mask': torch.ones(self.sequence_length),
             'last_close': torch.tensor(sequence_np[-1, self.close_index], dtype=torch.float32),
+            'asset_class_ids': self.asset_class_ids.clone(),
+            'per_asset_fees': self.per_asset_fees.clone(),
         }
 
 
@@ -199,6 +226,10 @@ class HFTrainer:
         self.last_step_time = None
         self.cum_return_train = 0.0
         self.train_return_steps = 0
+        self.cum_return_equity = 0.0
+        self.cum_return_crypto = 0.0
+        self.train_equity_steps = 0
+        self.train_crypto_steps = 0
         
     def _get_gpu_metrics(self):
         """Safely collect GPU metrics if CUDA is available."""
@@ -426,14 +457,21 @@ class HFTrainer:
                     batch_size = self.config.batch_size
                     samples_per_sec = float(batch_size) / self.last_step_time if self.last_step_time else 0.0
                     sys_metrics = self._get_gpu_metrics()
+                    avg_total_return = self.cum_return_train / max(1, self.train_return_steps)
+                    equity_steps = max(1, self.train_equity_steps)
+                    crypto_steps = max(1, self.train_crypto_steps)
+                    avg_equity_return = self.cum_return_equity / equity_steps
+                    avg_crypto_return = self.cum_return_crypto / crypto_steps
                     tb_metrics = {
                         'train/loss': loss,
                         'train/learning_rate': self.scheduler.get_last_lr()[0],
                         'train/epoch': epoch,
                         'train/step_time_s': self.last_step_time,
                         'train/samples_per_sec': samples_per_sec,
-                        'train/avg_return': (self.cum_return_train / max(1, self.train_return_steps)),
+                        'train/avg_return': avg_total_return,
                         'train/cum_return': self.cum_return_train,
+                        'train/avg_return_equity': avg_equity_return,
+                        'train/avg_return_crypto': avg_crypto_return,
                     }
                     # Add GPU metrics to TB if present
                     for k, v in sys_metrics.items():
@@ -451,7 +489,9 @@ class HFTrainer:
                         'loss': loss,
                         'learning_rate': self.scheduler.get_last_lr()[0],
                         'epoch': epoch,
-                        'avg_return': (self.cum_return_train / max(1, self.train_return_steps)),
+                        'avg_return': avg_total_return,
+                        'avg_return_equity': avg_equity_return,
+                        'avg_return_crypto': avg_crypto_return,
                     }
                     # Also report GPU mem to file logger if available
                     cpu_pct = None
@@ -593,10 +633,30 @@ class HFTrainer:
                 next_close = batch['labels'][:, 0, self.close_index]
                 future_returns = ((next_close - current_close) / (current_close + 1e-8)).unsqueeze(-1)
 
-            future_returns = future_returns.to(outputs['action_logits'].device)
+            device = outputs['action_logits'].device
+            future_returns = future_returns.to(device)
             allocations = outputs.get('allocations')
             transaction_cost = float(getattr(self.config, 'transaction_cost_bps', 0.0)) / 10000.0
-            pnl = compute_portfolio_pnl(allocations, future_returns, transaction_cost)
+
+            asset_class_ids = batch.get('asset_class_ids')
+            if asset_class_ids is not None:
+                asset_class_ids = asset_class_ids.to(device)
+            per_asset_fees = batch.get('per_asset_fees')
+            if per_asset_fees is not None:
+                per_asset_fees = per_asset_fees.to(device)
+
+            pnl_result = compute_portfolio_pnl(
+                allocations,
+                future_returns,
+                transaction_cost,
+                per_asset_costs=per_asset_fees,
+                return_per_asset=True,
+            )
+            if isinstance(pnl_result, tuple):
+                pnl, per_asset_net = pnl_result
+            else:
+                pnl = pnl_result
+                per_asset_net = None
             profit_loss = -pnl.mean()
             sharpe_penalty = -sharpe_like_ratio(pnl)
 
@@ -618,6 +678,19 @@ class HFTrainer:
             profit_component = effective_profit_weight * (profit_loss + 0.1 * sharpe_penalty)
 
             batch_return = pnl.mean().item()
+            batch_equity_return = None
+            batch_crypto_return = None
+            if per_asset_net is not None and asset_class_ids is not None:
+                if asset_class_ids.dim() == 1:
+                    asset_class_ids = asset_class_ids.unsqueeze(0).expand_as(per_asset_net)
+                equity_mask = (asset_class_ids == 0).to(per_asset_net.dtype)
+                crypto_mask = (asset_class_ids == 1).to(per_asset_net.dtype)
+                if torch.count_nonzero(equity_mask).item() > 0:
+                    equity_returns = (per_asset_net * equity_mask).sum(dim=-1)
+                    batch_equity_return = equity_returns.mean().item()
+                if torch.count_nonzero(crypto_mask).item() > 0:
+                    crypto_returns = (per_asset_net * crypto_mask).sum(dim=-1)
+                    batch_crypto_return = crypto_returns.mean().item()
 
             total_loss = (action_loss + 0.5 * price_loss + profit_component) / self.config.gradient_accumulation_steps
 
@@ -632,35 +705,35 @@ class HFTrainer:
         scaled_loss = self.mp_trainer.scale_loss(total_loss)
         scaled_loss.backward()
         
-        # Unscale before any grad processing in AMP
-        if self.mp_trainer.enabled:
-            self.mp_trainer.scaler.unscale_(self.optimizer)
+        should_step = ((self.global_step + 1) % self.config.gradient_accumulation_steps == 0)
 
-        # Adaptive Gradient Clipping (per-parameter)
-        if getattr(self.config, 'use_adaptive_grad_clip', False):
-            adaptive_clip_grad_(
-                self.model.parameters(),
-                clip_factor=getattr(self.config, 'agc_clip_factor', 0.01),
-                eps=getattr(self.config, 'agc_eps', 1e-3)
-            )
-
-        # Global gradient clipping and norm logging
+        # Gradient post-processing and safety checks only when stepping
         grad_norm = None
-        if self.config.max_grad_norm > 0:
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+        if should_step:
+            if self.mp_trainer.enabled:
+                self.mp_trainer.scaler.unscale_(self.optimizer)
 
-        # Guard against non-finite gradients
-        if getattr(self.config, 'skip_non_finite_grads', True):
-            if grad_norm is not None and not torch.isfinite(grad_norm):
-                self.training_logger.logger.warning(
-                    f"Non-finite grad norm at step {self.global_step}: {grad_norm} — skipping optimizer step"
+            if getattr(self.config, 'use_adaptive_grad_clip', False):
+                adaptive_clip_grad_(
+                    self.model.parameters(),
+                    clip_factor=getattr(self.config, 'agc_clip_factor', 0.01),
+                    eps=getattr(self.config, 'agc_eps', 1e-3)
                 )
-                self.optimizer.zero_grad(set_to_none=True)
-                self.global_step += 1
-                return total_loss.item() * self.config.gradient_accumulation_steps
+
+            if self.config.max_grad_norm > 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+
+            if getattr(self.config, 'skip_non_finite_grads', True):
+                if grad_norm is not None and not torch.isfinite(grad_norm):
+                    self.training_logger.logger.warning(
+                        f"Non-finite grad norm at step {self.global_step}: {grad_norm} — skipping optimizer step"
+                    )
+                    self.optimizer.zero_grad(set_to_none=True)
+                    self.global_step += 1
+                    return total_loss.item() * self.config.gradient_accumulation_steps
         
         # Optimizer step only on accumulation boundary
-        if (self.global_step + 1) % self.config.gradient_accumulation_steps == 0:
+        if should_step:
             self.mp_trainer.step_optimizer(self.optimizer)
             self.scheduler.step()
         
@@ -671,6 +744,12 @@ class HFTrainer:
             if batch_return is not None:
                 self.cum_return_train += float(batch_return)
                 self.train_return_steps += 1
+            if batch_equity_return is not None:
+                self.cum_return_equity += float(batch_equity_return)
+                self.train_equity_steps += 1
+            if batch_crypto_return is not None:
+                self.cum_return_crypto += float(batch_crypto_return)
+                self.train_crypto_steps += 1
         except Exception:
             pass
 
@@ -711,10 +790,16 @@ class HFTrainer:
                     current_close = batch['input_ids'][:, -1, self.close_index]
                     next_close = batch['labels'][:, 0, self.close_index]
                     future_returns = ((next_close - current_close) / (current_close + 1e-8)).unsqueeze(-1)
+                device = outputs['action_logits'].device
+                future_returns = future_returns.to(device)
+                per_asset_fees = batch.get('per_asset_fees')
+                if per_asset_fees is not None:
+                    per_asset_fees = per_asset_fees.to(device)
                 pnl = compute_portfolio_pnl(
                     outputs['allocations'],
-                    future_returns.squeeze(-1),
-                    float(getattr(self.config, 'transaction_cost_bps', 0.0)) / 10000.0
+                    future_returns,
+                    float(getattr(self.config, 'transaction_cost_bps', 0.0)) / 10000.0,
+                    per_asset_costs=per_asset_fees,
                 )
                 profit_loss = -pnl.mean()
                 sharpe_penalty = -sharpe_like_ratio(pnl)
@@ -745,6 +830,8 @@ class HFTrainer:
         total_price_loss = 0
         total_steps = 0
         total_return = 0.0
+        total_return_equity = 0.0
+        total_return_crypto = 0.0
         
         with torch.no_grad():
             for batch in tqdm(eval_loader, desc="Evaluating", leave=False):
@@ -777,23 +864,47 @@ class HFTrainer:
                         current_close = batch['input_ids'][:, -1, self.close_index]
                         next_close = batch['labels'][:, 0, self.close_index]
                         future_returns = ((next_close - current_close) / (current_close + 1e-8)).unsqueeze(-1)
-                    pnl = compute_portfolio_pnl(
+                    per_asset_fees = batch.get('per_asset_fees')
+                    pnl_result = compute_portfolio_pnl(
                         outputs['allocations'],
                         future_returns,
-                        float(getattr(self.config, 'transaction_cost_bps', 0.0)) / 10000.0
+                        float(getattr(self.config, 'transaction_cost_bps', 0.0)) / 10000.0,
+                        per_asset_costs=per_asset_fees,
+                        return_per_asset=True,
                     )
+                    if isinstance(pnl_result, tuple):
+                        pnl, per_asset_net = pnl_result
+                    else:
+                        pnl = pnl_result
+                        per_asset_net = None
                     total_return += float(pnl.mean().item())
+                    if per_asset_net is not None:
+                        asset_class_ids = batch.get('asset_class_ids')
+                        if asset_class_ids is not None:
+                            if asset_class_ids.dim() == 1:
+                                asset_class_ids = asset_class_ids.unsqueeze(0).expand_as(per_asset_net)
+                            equity_mask = (asset_class_ids == 0).to(per_asset_net.dtype)
+                            crypto_mask = (asset_class_ids == 1).to(per_asset_net.dtype)
+                            if torch.count_nonzero(equity_mask).item() > 0:
+                                total_return_equity += float((per_asset_net * equity_mask).sum(dim=-1).mean().item())
+                            if torch.count_nonzero(crypto_mask).item() > 0:
+                                total_return_crypto += float((per_asset_net * crypto_mask).sum(dim=-1).mean().item())
                 except Exception:
                     pass
         
         self.model.train()
         
+        denom = max(1, total_steps)
         return {
             'loss': total_loss / total_steps,
             'action_loss': total_action_loss / total_steps,
             'price_loss': total_price_loss / total_steps,
-            'avg_return': (total_return / max(1, total_steps)),
-            'cum_return': total_return
+            'avg_return': (total_return / denom),
+            'cum_return': total_return,
+            'avg_return_equity': (total_return_equity / denom),
+            'avg_return_crypto': (total_return_crypto / denom),
+            'cum_return_equity': total_return_equity,
+            'cum_return_crypto': total_return_crypto,
         }
     
     def log_metrics(self, metrics, prefix='train'):

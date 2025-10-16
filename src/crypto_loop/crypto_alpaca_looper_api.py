@@ -146,7 +146,7 @@ def delete_stock_order(symbol):
 
 
 def delete_stock_orders():
-    url = f"http://localhost:5050/api/v1/stock_order/cancel_all"
+    url = "http://localhost:5050/api/v1/stock_order/cancel_all"
     logger.info(f"Deleting all stock orders via {url}")
     try:
         response = requests.delete(url)

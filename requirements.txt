@@ -4,14 +4,21 @@ absl-py==2.3.1
     # via tensorboard
 accelerate==1.10.1
     # via chronos-forecasting
+aioboto3==12.4.0
+    # via -r requirements.in
+aiobotocore==2.12.3
+    # via aioboto3
 aiohappyeyeballs==2.6.1
     # via aiohttp
 aiohttp==3.12.15
     # via
     #   -r requirements.in
+    #   aiobotocore
     #   alpaca-trade-api
     #   fsspec
     #   python-binance
+aioitertools==0.12.0
+    # via aiobotocore
 aiosignal==1.4.0
     # via aiohttp
 alembic==1.16.5
@@ -30,10 +37,19 @@ anyio==4.10.0
     # via
     #   anthropic
     #   httpx
+    #   jupyter-server
     #   openai
     #   starlette
+argon2-cffi==25.1.0
+    # via jupyter-server
+argon2-cffi-bindings==25.1.0
+    # via argon2-cffi
+arrow==1.3.0
+    # via isoduration
 asttokens==3.0.0
     # via stack-data
+async-lru==2.0.5
+    # via jupyterlab
 attrs==25.3.0
     # via
     #   -r requirements.in
@@ -44,8 +60,25 @@ autopage==0.5.2
     # via
     #   -r requirements.in
     #   cliff
+babel==2.17.0
+    # via jupyterlab-server
 backcall==0.2.0
     # via -r requirements.in
+beautifulsoup4==4.14.2
+    # via nbconvert
+black==24.10.0
+    # via -r requirements.in
+bleach==6.2.0
+    # via nbconvert
+boto3==1.34.69
+    # via
+    #   -r requirements.in
+    #   aiobotocore
+botocore==1.34.69
+    # via
+    #   aiobotocore
+    #   boto3
+    #   s3transfer
 cachetools==6.2.0
     # via -r requirements.in
 certifi==2025.8.3
@@ -54,6 +87,8 @@ certifi==2025.8.3
     #   httpcore
     #   httpx
     #   requests
+cffi==2.0.0
+    # via argon2-cffi-bindings
 chardet==5.2.0
     # via -r requirements.in
 charset-normalizer==3.4.3
@@ -63,6 +98,7 @@ chronos-forecasting==1.5.3
 click==8.2.1
     # via
     #   -r requirements.in
+    #   black
     #   ray
     #   typer
     #   uvicorn
@@ -84,36 +120,58 @@ colorlog==6.9.0
     # via
     #   -r requirements.in
     #   optuna
+comm==0.2.3
+    # via
+    #   ipykernel
+    #   ipywidgets
 contourpy==1.3.3
     # via matplotlib
 coreforecast==0.0.16
     # via neuralforecast
 cycler==0.12.1
     # via matplotlib
+datasets==4.2.0
+    # via -r requirements.in
 dateparser==1.2.2
     # via python-binance
+debugpy==1.8.17
+    # via ipykernel
 decorator==5.2.1
     # via
     #   -r requirements.in
     #   ipython
     #   retry
+defusedxml==0.7.1
+    # via nbconvert
 deprecation==2.1.0
     # via alpaca-trade-api
+dill==0.3.8
+    # via
+    #   -r requirements.in
+    #   datasets
+    #   multiprocess
 diskcache==5.6.3
     # via -r requirements.in
 distro==1.9.0
     # via
     #   anthropic
     #   openai
+einops==0.7.0
+    # via
+    #   -r requirements.in
+    #   rotary-embedding-torch
 executing==2.2.1
     # via stack-data
 farama-notifications==0.0.4
     # via gymnasium
 fastapi==0.116.1
     # via -r requirements.in
+fastjsonschema==2.21.2
+    # via nbformat
 filelock==3.19.1
     # via
     #   -r requirements.in
+    #   datasets
     #   huggingface-hub
     #   ray
     #   torch
@@ -122,6 +180,8 @@ fonttools==4.59.2
     # via
     #   -r requirements.in
     #   matplotlib
+fqdn==1.5.1
+    # via jsonschema
 frozenlist==1.7.0
     # via
     #   aiohttp
@@ -129,7 +189,9 @@ frozenlist==1.7.0
 fsspec==2025.9.0
     # via
     #   -r requirements.in
+    #   datasets
     #   huggingface-hub
+    #   lightning
     #   neuralforecast
     #   pytorch-lightning
     #   ray
@@ -138,6 +200,8 @@ future==1.0.0
     # via
     #   -r requirements.in
     #   hyperopt
+gluonts==0.16.2
+    # via -r requirements.in
 greenlet==3.2.4
     # via
     #   -r requirements.in
@@ -167,10 +231,13 @@ httpcore==1.0.9
 httpx==0.28.1
     # via
     #   anthropic
+    #   datasets
+    #   jupyterlab
     #   openai
 huggingface-hub==0.34.4
     # via
     #   accelerate
+    #   datasets
     #   tokenizers
     #   transformers
 hyperopt==0.2.7
@@ -180,36 +247,123 @@ idna==3.10
     #   -r requirements.in
     #   anyio
     #   httpx
+    #   jsonschema
     #   requests
     #   yarl
 iniconfig==2.1.0
-    # via -r requirements.in
+    # via
+    #   -r requirements.in
+    #   pytest
+ipykernel==7.0.1
+    # via
+    #   jupyter
+    #   jupyter-console
+    #   jupyterlab
 ipython==9.5.0
-    # via -r requirements.in
+    # via
+    #   -r requirements.in
+    #   ipykernel
+    #   ipywidgets
+    #   jupyter-console
 ipython-pygments-lexers==1.1.1
     # via ipython
+ipywidgets==8.1.7
+    # via jupyter
+isoduration==20.11.0
+    # via jsonschema
+isort==5.13.2
+    # via -r requirements.in
+jaxtyping==0.2.29
+    # via -r requirements.in
 jedi==0.19.2
     # via
     #   -r requirements.in
     #   ipython
 jinja2==3.1.6
-    # via torch
+    # via
+    #   jupyter-server
+    #   jupyterlab
+    #   jupyterlab-server
+    #   nbconvert
+    #   torch
 jiter==0.10.0
     # via
     #   anthropic
     #   openai
+jmespath==1.0.1
+    # via
+    #   boto3
+    #   botocore
 joblib==1.5.2
     # via
     #   -r requirements.in
     #   scikit-learn
+json5==0.12.1
+    # via jupyterlab-server
+jsonpointer==3.0.0
+    # via jsonschema
 jsonschema==4.25.1
-    # via ray
+    # via
+    #   jupyter-events
+    #   jupyterlab-server
+    #   nbformat
+    #   ray
 jsonschema-specifications==2025.4.1
     # via jsonschema
+jupyter==1.1.1
+    # via -r requirements.in
+jupyter-client==8.6.3
+    # via
+    #   ipykernel
+    #   jupyter-console
+    #   jupyter-server
+    #   nbclient
+jupyter-console==6.6.3
+    # via jupyter
+jupyter-core==5.8.1
+    # via
+    #   ipykernel
+    #   jupyter-client
+    #   jupyter-console
+    #   jupyter-server
+    #   jupyterlab
+    #   nbclient
+    #   nbconvert
+    #   nbformat
+jupyter-events==0.12.0
+    # via jupyter-server
+jupyter-lsp==2.3.0
+    # via jupyterlab
+jupyter-server==2.17.0
+    # via
+    #   jupyter-lsp
+    #   jupyterlab
+    #   jupyterlab-server
+    #   notebook
+    #   notebook-shim
+jupyter-server-terminals==0.5.3
+    # via jupyter-server
+jupyterlab==4.4.9
+    # via
+    #   jupyter
+    #   notebook
+jupyterlab-pygments==0.3.0
+    # via nbconvert
+jupyterlab-server==2.27.3
+    # via
+    #   jupyterlab
+    #   notebook
+jupyterlab-widgets==3.0.15
+    # via ipywidgets
 kiwisolver==1.4.9
     # via matplotlib
+lark==1.3.0
+    # via rfc3987-syntax
+lightning==2.4.0
+    # via gluonts
 lightning-utilities==0.15.2
     # via
+    #   lightning
     #   pytorch-lightning
     #   torchmetrics
 loguru==0.7.3
@@ -233,15 +387,20 @@ markupsafe==3.0.2
     #   -r requirements.in
     #   jinja2
     #   mako
+    #   nbconvert
     #   werkzeug
 matplotlib==3.10.6
     # via
     #   -r requirements.in
     #   stable-baselines3
 matplotlib-inline==0.1.7
-    # via ipython
+    # via
+    #   ipykernel
+    #   ipython
 mdurl==0.1.2
     # via markdown-it-py
+mistune==3.1.4
+    # via nbconvert
 mpmath==1.3.0
     # via sympy
 msgpack==1.0.3
@@ -255,19 +414,45 @@ multidict==6.6.4
     #   -r requirements.in
     #   aiohttp
     #   yarl
+multiprocess==0.70.16
+    # via datasets
+mypy-extensions==1.1.0
+    # via black
+nbclient==0.10.2
+    # via nbconvert
+nbconvert==7.16.6
+    # via
+    #   jupyter
+    #   jupyter-server
+nbformat==5.10.4
+    # via
+    #   jupyter-server
+    #   nbclient
+    #   nbconvert
+nest-asyncio==1.6.0
+    # via ipykernel
 networkx==3.5
     # via
     #   hyperopt
     #   torch
 neuralforecast==3.0.0
     # via -r requirements.in
-numpy==2.3.2
+notebook==7.4.7
+    # via jupyter
+notebook-shim==0.2.4
     # via
+    #   jupyterlab
+    #   notebook
+numpy==2.1.3
+    # via
+    #   -r requirements.in
     #   accelerate
     #   alpaca-trade-api
     #   cmaes
     #   contourpy
     #   coreforecast
+    #   datasets
+    #   gluonts
     #   gym
     #   gymnasium
     #   hyperopt
@@ -336,16 +521,26 @@ optuna==4.5.0
     # via
     #   -r requirements.in
     #   neuralforecast
-packaging==25.0
+packaging==24.2
     # via
     #   -r requirements.in
     #   accelerate
+    #   black
+    #   datasets
     #   deprecation
     #   gunicorn
     #   huggingface-hub
+    #   ipykernel
+    #   jupyter-events
+    #   jupyter-server
+    #   jupyterlab
+    #   jupyterlab-server
+    #   lightning
     #   lightning-utilities
     #   matplotlib
+    #   nbconvert
     #   optuna
+    #   pytest
     #   pytorch-lightning
     #   ray
     #   statsmodels
@@ -359,6 +554,8 @@ pandas==2.3.2
     #   -r requirements.in
     #   alpaca-py
     #   alpaca-trade-api
+    #   datasets
+    #   gluonts
     #   neuralforecast
     #   pandas-datareader
     #   ray
@@ -367,10 +564,14 @@ pandas==2.3.2
     #   utilsforecast
 pandas-datareader==0.10.0
     # via -r requirements.in
+pandocfilters==1.5.1
+    # via nbconvert
 parso==0.8.5
     # via
     #   -r requirements.in
     #   jedi
+pathspec==0.12.1
+    # via black
 patsy==1.0.1
     # via
     #   -r requirements.in
@@ -390,14 +591,24 @@ pillow==11.3.0
     #   tensorboard
 pip==25.2
     # via -r requirements.in
+platformdirs==4.5.0
+    # via
+    #   black
+    #   jupyter-core
 pluggy==1.6.0
-    # via -r requirements.in
+    # via
+    #   -r requirements.in
+    #   pytest
 prettytable==3.16.0
     # via
     #   -r requirements.in
     #   cliff
+prometheus-client==0.23.1
+    # via jupyter-server
 prompt-toolkit==3.0.52
-    # via ipython
+    # via
+    #   ipython
+    #   jupyter-console
 propcache==0.3.2
     # via
     #   aiohttp
@@ -408,9 +619,13 @@ protobuf==6.32.0
     #   tensorboard
     #   tensorboardx
 psutil==7.0.0
-    # via accelerate
+    # via
+    #   accelerate
+    #   ipykernel
 ptyprocess==0.7.0
-    # via pexpect
+    # via
+    #   pexpect
+    #   terminado
 pufferlib==0.1.2
     # via -r requirements.in
 pure-eval==0.2.3
@@ -422,11 +637,15 @@ py==1.11.0
 py4j==0.10.9.9
     # via hyperopt
 pyarrow==21.0.0
-    # via ray
+    # via
+    #   datasets
+    #   ray
 pyasn1==0.6.1
     # via
     #   -r requirements.in
     #   rsa
+pycparser==2.23
+    # via cffi
 pycryptodome==3.23.0
     # via python-binance
 pydantic==2.11.7
@@ -434,6 +653,7 @@ pydantic==2.11.7
     #   alpaca-py
     #   anthropic
     #   fastapi
+    #   gluonts
     #   openai
 pydantic-core==2.33.2
     # via pydantic
@@ -441,6 +661,9 @@ pygments==2.19.2
     # via
     #   ipython
     #   ipython-pygments-lexers
+    #   jupyter-console
+    #   nbconvert
+    #   pytest
     #   rich
 pyparsing==3.2.3
     # via
@@ -450,16 +673,29 @@ pyperclip==1.9.0
     # via
     #   -r requirements.in
     #   cmd2
+pytest==8.4.2
+    # via pytest-env
+pytest-env==1.1.5
+    # via -r requirements.in
 python-binance==1.0.29
     # via -r requirements.in
 python-dateutil==2.9.0.post0
     # via
     #   -r requirements.in
+    #   arrow
+    #   botocore
     #   dateparser
+    #   jupyter-client
     #   matplotlib
     #   pandas
-pytorch-lightning==2.5.5
-    # via neuralforecast
+python-json-logger==4.0.0
+    # via jupyter-events
+pytorch-lightning==2.4.0
+    # via
+    #   -r requirements.in
+    #   gluonts
+    #   lightning
+    #   neuralforecast
 pytz==2025.2
     # via
     #   -r requirements.in
@@ -470,17 +706,27 @@ pyyaml==6.0.1
     #   accelerate
     #   alpaca-trade-api
     #   cliff
+    #   datasets
     #   huggingface-hub
+    #   jupyter-events
+    #   lightning
     #   optuna
     #   pytorch-lightning
     #   ray
     #   transformers
+pyzmq==27.1.0
+    # via
+    #   ipykernel
+    #   jupyter-client
+    #   jupyter-console
+    #   jupyter-server
 ray==2.49.1
     # via neuralforecast
 referencing==0.36.2
     # via
     #   jsonschema
     #   jsonschema-specifications
+    #   jupyter-events
 regex==2025.9.1
     # via
     #   -r requirements.in
@@ -491,40 +737,60 @@ requests==2.32.5
     #   -r requirements.in
     #   alpaca-py
     #   alpaca-trade-api
+    #   datasets
     #   huggingface-hub
+    #   jupyterlab-server
     #   pandas-datareader
     #   python-binance
     #   ray
     #   transformers
 retry==0.9.2
     # via -r requirements.in
+rfc3339-validator==0.1.4
+    # via
+    #   jsonschema
+    #   jupyter-events
+rfc3986-validator==0.1.1
+    # via
+    #   jsonschema
+    #   jupyter-events
+rfc3987-syntax==1.1.0
+    # via jsonschema
 rich==14.1.0
     # via
     #   rich-argparse
     #   typer
 rich-argparse==1.7.1
     # via cmd2
+rotary-embedding-torch==0.8.6
+    # via -r requirements.in
 rpds-py==0.27.1
     # via
     #   jsonschema
     #   referencing
 rsa==4.9.1
     # via -r requirements.in
+s3transfer==0.10.4
+    # via boto3
 safetensors==0.6.2
     # via
     #   accelerate
     #   transformers
 scikit-learn==1.7.1
     # via -r requirements.in
-scipy==1.16.1
+scipy==1.15.3
     # via
+    #   gluonts
     #   hyperopt
     #   openskill
     #   scikit-learn
     #   statsmodels
+send2trash==1.8.3
+    # via jupyter-server
 setuptools==80.9.0
     # via
     #   -r requirements.in
+    #   jupyterlab
     #   lightning-utilities
     #   pbr
     #   tensorboard
@@ -538,11 +804,14 @@ six==1.17.0
     #   hyperopt
     #   python-binance
     #   python-dateutil
+    #   rfc3339-validator
 sniffio==1.3.1
     # via
     #   anthropic
     #   anyio
     #   openai
+soupsieve==2.8
+    # via beautifulsoup4
 sqlalchemy==2.0.43
     # via
     #   -r requirements.in
@@ -564,38 +833,64 @@ stevedore==5.5.0
     #   cliff
 sympy==1.14.0
     # via torch
+tabulate==0.9.0
+    # via -r requirements.in
 tensorboard==2.20.0
     # via -r requirements.in
 tensorboard-data-server==0.7.2
     # via tensorboard
 tensorboardx==2.6.4
     # via ray
+terminado==0.18.1
+    # via
+    #   jupyter-server
+    #   jupyter-server-terminals
 threadpoolctl==3.6.0
     # via
     #   -r requirements.in
     #   scikit-learn
+tinycss2==1.4.0
+    # via bleach
 tokenizers==0.22.0
     # via
     #   -r requirements.in
     #   transformers
 toml==0.10.2
     # via -r requirements.in
+toolz==0.12.1
+    # via gluonts
 torch==2.8.0
     # via
     #   -r requirements.in
     #   accelerate
     #   chronos-forecasting
+    #   gluonts
+    #   lightning
     #   neuralforecast
     #   pytorch-lightning
+    #   rotary-embedding-torch
     #   stable-baselines3
     #   torchmetrics
 torchmetrics==1.8.2
-    # via pytorch-lightning
+    # via
+    #   lightning
+    #   pytorch-lightning
+tornado==6.5.2
+    # via
+    #   ipykernel
+    #   jupyter-client
+    #   jupyter-server
+    #   jupyterlab
+    #   notebook
+    #   terminado
 tqdm==4.67.1
     # via
     #   -r requirements.in
+    #   datasets
+    #   gluonts
     #   huggingface-hub
     #   hyperopt
+    #   lightning
     #   openai
     #   optuna
     #   pytorch-lightning
@@ -603,15 +898,34 @@ tqdm==4.67.1
 traitlets==5.14.3
     # via
     #   -r requirements.in
+    #   ipykernel
     #   ipython
+    #   ipywidgets
+    #   jupyter-client
+    #   jupyter-console
+    #   jupyter-core
+    #   jupyter-events
+    #   jupyter-server
+    #   jupyterlab
     #   matplotlib-inline
+    #   nbclient
+    #   nbconvert
+    #   nbformat
 transformers==4.56.1
     # via
     #   -r requirements.in
     #   chronos-forecasting
 triton==3.4.0
     # via torch
+typeguard==2.13.3
+    # via jaxtyping
 typer==0.17.4
+    # via -r requirements.in
+types-python-dateutil==2.9.0.20251008
+    # via arrow
+types-pyyaml==6.0.12.20240917
+    # via -r requirements.in
+types-tabulate==0.9.0.20241207
     # via -r requirements.in
 typing-extensions==4.15.0
     # via
@@ -619,9 +933,12 @@ typing-extensions==4.15.0
     #   alembic
     #   anthropic
     #   anyio
+    #   beautifulsoup4
     #   fastapi
+    #   gluonts
     #   gymnasium
     #   huggingface-hub
+    #   lightning
     #   lightning-utilities
     #   openai
     #   pydantic
@@ -639,10 +956,13 @@ tzdata==2025.2
     # via pandas
 tzlocal==5.3.1
     # via dateparser
+uri-template==1.3.0
+    # via jsonschema
 urllib3==1.26.20
     # via
     #   -r requirements.in
     #   alpaca-trade-api
+    #   botocore
     #   requests
 utilsforecast==0.2.12
     # via neuralforecast
@@ -654,10 +974,17 @@ wcwidth==0.2.13
     #   cmd2
     #   prettytable
     #   prompt-toolkit
+webcolors==24.11.1
+    # via jsonschema
+webencodings==0.5.1
+    # via
+    #   bleach
+    #   tinycss2
 websocket-client==1.8.0
     # via
     #   -r requirements.in
     #   alpaca-trade-api
+    #   jupyter-server
 websockets==10.4
     # via
     #   -r requirements.in
@@ -670,6 +997,12 @@ werkzeug==3.1.3
     #   tensorboard
 wheel==0.45.1
     # via -r requirements.in
+widgetsnbextension==4.0.14
+    # via ipywidgets
+wrapt==1.17.3
+    # via aiobotocore
+xxhash==3.6.0
+    # via datasets
 yarl==1.20.1
     # via
     #   -r requirements.in

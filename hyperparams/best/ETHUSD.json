@@ -1,0 +1,29 @@
+{
+  "symbol": "ETHUSD",
+  "model": "toto",
+  "config": {
+    "name": "toto_trimmed10_3072",
+    "num_samples": 3072,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 384
+  },
+  "validation": {
+    "price_mae": 63.042316513123566,
+    "return_mae": 0.014104690753637687,
+    "latency_s": 53.02243046136573
+  },
+  "test": {
+    "price_mae": 153.12312310190106,
+    "return_mae": 0.0365409271885488,
+    "latency_s": 56.30272605270147
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/ETHUSD.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

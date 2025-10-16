@@ -50,7 +50,7 @@ class TotoEmbeddingModel(nn.Module):
         toto_device: str = 'cuda',
         series_feature_index: int = 3,  # index of 'Close' in default feature order
         toto_horizon: int = 8,
-        toto_num_samples: int = 256,
+        toto_num_samples: int = 2048,
     ):
         super().__init__()
         

@@ -31,7 +31,8 @@ def test_arithmetic_sequence():
         )
         
         # Get predictions
-        samples = forecasts[0].numpy()  # Shape: (num_samples,) for prediction_length=1
+        tensor = forecasts[0]
+        samples = tensor.detach().cpu().numpy() if hasattr(tensor, "detach") else np.asarray(tensor)
         predicted_values = samples  # Already 1D array for single prediction step
         
         # Calculate statistics

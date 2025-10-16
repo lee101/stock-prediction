@@ -431,10 +431,16 @@ def get_trading_profits_list(scaler, last_values, y_test, y_test_pred):
 
 
 def percent_movements_augment(to_scale_tensor):
-    """ scales a tensor so that each element is the percentage change from the next"""
-    to_scale_tensor[0:-1] = (to_scale_tensor[1:] - to_scale_tensor[:-1]) / to_scale_tensor[:-1]
-    to_scale_tensor[-1] = 0
-    return to_scale_tensor
+    """ scales a tensor so that the first element is baseline 1 and subsequent elements represent percentage change from the previous value"""
+    arr = np.asarray(to_scale_tensor, dtype=float).flatten()
+    values = [1.0]
+    if arr.size > 1:
+        from decimal import Decimal, ROUND_DOWN
+
+        diffs = (arr[1:] - arr[:-1]) / arr[:-1]
+        for val in diffs:
+            values.append(float(Decimal(str(float(val))).quantize(Decimal("0.000"), rounding=ROUND_DOWN)))
+    return values
     # return (to_scale_tensor - to_scale_tensor.shift(1)) / to_scale_tensor.shift(1)
 
 

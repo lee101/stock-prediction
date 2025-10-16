@@ -27,20 +27,32 @@ from sklearn.preprocessing import MinMaxScaler
 
 from torch.utils.tensorboard import SummaryWriter
 
-from src.forecasting_bolt_wrapper import ForecastingBoltWrapper
+from src.models.kronos_wrapper import KronosForecastingWrapper
 
 current_date_formatted = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 
 forecasting_wrapper = None
 
+FORECAST_HORIZON = 7
+KRONOS_SAMPLE_COUNT = 32
+KRONOS_TEMPERATURE = 0.6
+KRONOS_TOP_P = 0.85
+
 
 def load_pipeline():
     global forecasting_wrapper
     if forecasting_wrapper is None:
-        forecasting_wrapper = ForecastingBoltWrapper(
-            model_name="amazon/chronos-bolt-base",
-            device="cuda" if torch.cuda.is_available() else "cpu"
+        forecasting_wrapper = KronosForecastingWrapper(
+            model_name="NeoQuasar/Kronos-base",
+            tokenizer_name="NeoQuasar/Kronos-Tokenizer-base",
+            device="cuda:0" if torch.cuda.is_available() else "cpu",
+            max_context=512,
+            clip=5.0,
+            temperature=KRONOS_TEMPERATURE,
+            top_p=KRONOS_TOP_P,
+            top_k=0,
+            sample_count=KRONOS_SAMPLE_COUNT,
         )
 
 
@@ -132,72 +144,107 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
             last_preds = {
                 "instrument": instrument_name,
             }
-            key_to_predict = "Close"
             training_mode = "predict"
-            for key_to_predict in [
-                "Close",
-                'Low',
-                'High',
-            ]:  # , 'TakeProfit', 'StopLoss']:
-                stock_data = load_stock_data_from_csv(csv_file)
-                stock_data = stock_data.dropna()
-                if stock_data.empty:
-                    loguru_logger.info(f"Empty data for {instrument_name}")
+            stock_data = load_stock_data_from_csv(csv_file)
+            stock_data = stock_data.dropna()
+            if stock_data.empty:
+                loguru_logger.info(f"Empty data for {instrument_name}")
+                continue
+            if days_to_drop:
+                stock_data = stock_data.iloc[:-days_to_drop]
+            if stock_data.empty or len(stock_data) <= FORECAST_HORIZON:
+                loguru_logger.info(f"Not enough history for {instrument_name}")
+                continue
+
+            timestamp_col = "Timestamp" if "Timestamp" in stock_data.columns else "Date"
+            if timestamp_col not in stock_data.columns:
+                loguru_logger.warning(f"No timestamp column found for {instrument_name}")
+                continue
+
+            processed_data = stock_data.copy()
+            for column in ["High", "Low", "Open", "Close"]:
+                if column in processed_data.columns:
+                    processed_data = pre_process_data(processed_data, column)
+
+            price_template = processed_data[["Close", "High", "Low", "Open"]].copy()
+            price_template = price_template.rename(columns={"Date": "time_idx"})
+            price_template["ds"] = pd.date_range(start="1949-01-01", periods=len(price_template), freq="D").values
+            price_template['id'] = price_template.index
+            price_template['unique_id'] = 1
+
+            load_pipeline()
+            try:
+                kronos_results = forecasting_wrapper.predict_series(
+                    data=stock_data,
+                    timestamp_col=timestamp_col,
+                    columns=["Close", "High", "Low"],
+                    pred_len=FORECAST_HORIZON,
+                    lookback=getattr(forecasting_wrapper, "max_context", None),
+                )
+            except ValueError as exc:
+                loguru_logger.warning(f"Kronos forecast failed for {instrument_name}: {exc}")
+                continue
+
+            processed_keys = set()
+            for key_to_predict in ["Close", "Low", "High"]:
+                result = kronos_results.get(key_to_predict)
+                if result is None:
+                    loguru_logger.warning(f"No Kronos predictions for {instrument_name} {key_to_predict}")
                     continue
-                # drop last days_to_drop rows
-                if days_to_drop:
-                    stock_data = stock_data.iloc[:-days_to_drop]
 
-                # x_train, x_test = train_test_split(stock_data)
                 last_close_price = stock_data[key_to_predict].iloc[-1]
-                data = stock_data.copy()
-                data = pre_process_data(data, "High")
-                # todo scaler for each, this messes up the scaler
-                data = pre_process_data(data, "Low")
-                data = pre_process_data(data, "Open")
-                data = pre_process_data(data, "Close")
-                price = data[["Close", "High", "Low", "Open"]]
-
-                price = price.rename(columns={"Date": "time_idx"})
-                # not actually important what date it thinks as long as its daily i think
-                price["ds"] = pd.date_range(start="1949-01-01", periods=len(price), freq="D").values
+                price = price_template.copy()
                 price['y'] = price[key_to_predict].shift(-1)
                 price['trade_weight'] = (price["y"] > 0) * 2 - 1
-
-                price.drop(price.tail(1).index, inplace=True)  # drop last row because of percent change augmentation
-
-                price['id'] = price.index
-                # add unique_id column to price dataframe (is actually constant so not unique :/ )
-                price['unique_id'] = 1
-                # drop nan values
+                price.drop(price.tail(1).index, inplace=True)
                 price = price.dropna()
-                # final_pred_to_predict = price.tail(1)
-                # price.drop(final_pred_to_predict.index, inplace=True)  # drop last row because of percent change augmentation
-
-                # target_to_pred = "y"
-                training = price[:-7]
-                validation = price[-7:]
-                Y_train_df = training
-                Y_test_df = validation
-
-                if Y_train_df.empty:
-                    loguru_logger.info(f"No training data for {instrument_name}")
+                if price.empty or len(price) <= FORECAST_HORIZON:
+                    loguru_logger.info(f"Insufficient processed rows for {instrument_name} {key_to_predict}")
                     continue
 
-                load_pipeline()
-                predictions = []
-                # make 7 predictions - todo can batch this all in 1 go
-                for pred_idx in reversed(range(1, 8)):
-                    current_context = price[:-pred_idx]
-                    context = torch.tensor(current_context["y"].values, dtype=torch.float)
+                training = price[:-FORECAST_HORIZON]
+                validation = price[-FORECAST_HORIZON:]
+                if training.empty or validation.empty:
+                    loguru_logger.info(f"No training data for {instrument_name} {key_to_predict}")
+                    continue
 
-                    prediction_length = 1
-                    median = forecasting_wrapper.predict_single(
-                        context,
-                        prediction_length,
-                    )
-                    predictions.append(median)
-                Y_hat_df = pd.DataFrame({'y': predictions})
+                predictions_array = result.percent
+                predicted_absolute = result.absolute
+
+                error = np.array(validation["y"][:-1].values) - predictions_array[:-1]
+                mean_val_loss = np.abs(error).mean()
+                loguru_logger.info(f"{instrument_name} {key_to_predict} Kronos val loss {mean_val_loss}")
+
+                predictions = torch.tensor(predictions_array, dtype=torch.float32)
+                actuals = series_to_tensor(validation["y"])
+                trading_preds = (predictions[:-1] > 0) * 2 - 1
+                calculated_profit = calculate_trading_profit_torch(scaler, None, actuals[:-1], trading_preds).item()
+                calculated_profit_buy_only = calculate_trading_profit_torch_buy_only(
+                    scaler, None, actuals[:-1], trading_preds
+                ).item()
+                calculated_profit_values = get_trading_profits_list(scaler, None, actuals[:-1], trading_preds)
+
+                val_loss = mean_val_loss
+                last_preds[key_to_predict.lower() + "_last_price"] = last_close_price
+                last_preds[key_to_predict.lower() + "_predicted_price"] = unwrap_tensor(predictions[-1])
+                last_preds[key_to_predict.lower() + "_predicted_price_value"] = float(predicted_absolute[-1])
+                last_preds[key_to_predict.lower() + "_val_loss"] = val_loss
+                last_preds[key_to_predict.lower() + "min_loss_trading_profit"] = calculated_profit
+                last_preds[key_to_predict.lower() + "min_loss_buy_only_trading_profit"] = calculated_profit_buy_only
+                last_preds[key_to_predict.lower() + "_actual_movement_values"] = actuals[:-1].view(-1)
+                last_preds[key_to_predict.lower() + "_calculated_profit_values"] = list(
+                    calculated_profit_values.view(-1).detach().cpu().numpy()
+                )
+                last_preds[key_to_predict.lower() + "_trade_values"] = trading_preds.view(-1)
+                last_preds[key_to_predict.lower() + "_predictions"] = predictions[:-1].view(-1)
+
+                total_val_loss += val_loss
+                total_forecasted_profit += calculated_profit
+                processed_keys.add(key_to_predict)
+
+            if not {"Close", "High", "Low"}.issubset(processed_keys):
+                loguru_logger.warning(f"Skipping {instrument_name} due to incomplete Kronos predictions")
+                continue
 
                 # Y_hat_df = Y_test_df.merge(Y_hat_df, how='left', on=['unique_id', 'ds'])
                 # actuals = torch.cat([y for x, (y, weight) in iter(val_dataloader)])

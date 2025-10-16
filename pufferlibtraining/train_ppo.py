@@ -17,7 +17,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from hftraining.base_model_trainer import BaseModelTrainer, PortfolioRLConfig
 from hftraining.toto_features import TotoOptions
@@ -71,6 +71,31 @@ def _setup_logging(verbose: bool) -> None:
         level=level,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+
+
+def sync_vecnormalize_stats(source: Any, target: Any) -> None:
+    """Copy running normalisation stats from ``source`` into ``target`` if available.
+
+    Some pipelines reuse a pre-trained VecNormalize wrapper so downstream
+    environments and rollout storage share identical observation/return scaling.
+    This helper makes that copy while ensuring the target stays in eval mode.
+    """
+    copied = False
+    for attr in ("obs_rms", "ret_rms"):
+        if hasattr(source, attr) and hasattr(target, attr):
+            setattr(target, attr, getattr(source, attr))
+            copied = True
+
+    if not copied:
+        return
+
+    if hasattr(target, "set_training_mode"):
+        set_training_mode = getattr(target, "set_training_mode")
+        if callable(set_training_mode):
+            set_training_mode(False)
+
+    if hasattr(target, "training"):
+        target.training = False
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -264,8 +289,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--toto-num-samples",
         type=int,
-        default=256,
-        help="Number of forecast samples when using the Toto backend.",
+        default=2048,
+        help="Number of forecast samples when using the Toto backend (default: 2048).",
     )
     parser.add_argument(
         "--toto-model-id",
@@ -278,6 +303,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=str,
         default="close,open,high,low",
         help="Comma-separated list of price lines to feed into Toto forecasts (e.g., close,high,low).",
+    )
+    parser.add_argument(
+        "--toto-predictions-dir",
+        type=str,
+        default="",
+        help="Directory containing historical Toto strategy CSVs to use as additional features.",
     )
     parser.add_argument(
         "--disable-toto",
@@ -337,6 +368,10 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
         target_columns=toto_targets or ("close",),
     )
 
+    predictions_dir: Optional[Path] = None
+    if args.toto_predictions_dir:
+        predictions_dir = Path(args.toto_predictions_dir).expanduser().resolve()
+
     LOGGER.info("Initialising BaseModelTrainer with Toto options: %s", toto_opts)
     trainer = BaseModelTrainer(
         base_stocks=base_symbols,
@@ -345,6 +380,7 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
         use_toto_forecasts=not args.disable_toto,
         toto_options=toto_opts,
         data_dir=str(data_root),
+        toto_predictions_dir=str(predictions_dir) if predictions_dir else None,
     )
 
     progressive_schedule: Optional[List[int]] = None
@@ -367,6 +403,7 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
                 "num_samples": args.toto_num_samples,
                 "model_id": args.toto_model_id,
                 "targets": toto_targets or ("close",),
+                "predictions_dir": str(predictions_dir) if predictions_dir else None,
             },
             "rl": {
                 "transaction_cost_bps": args.transaction_cost_bps,

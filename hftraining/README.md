@@ -35,6 +35,8 @@ This directory contains a modern, HuggingFace-style training system for stock pr
 - Advanced technical indicators (MA, EMA, RSI, MACD, Bollinger Bands)
 - Uses local Alpaca-exported CSVs in `trainingdata/` (no yfinance)
 - Robust data preprocessing and normalization
+- Optional GymRL integration via `hftraining/gymrl_adapter.py` to build a `PortfolioEnv` from
+  the same feature cube and (optionally) normalize observations consistently.
 - Sequence creation for time series prediction
 - Support for multiple data sources
 
@@ -141,6 +143,28 @@ config.data.symbols = ["AAPL", "GOOGL", "MSFT", "TSLA"]
 
 # Run training
 model, trainer = run_training(config)
+
+### Using GymRL with HF Training
+
+```python
+from pathlib import Path
+from gymrl.config import FeatureBuilderConfig, PortfolioEnvConfig
+from hftraining.gymrl_adapter import build_feature_cube_from_directory, build_env_from_cube
+
+cube = build_feature_cube_from_directory(
+    Path("tototraining/trainingdata/train"),
+    feature_config=FeatureBuilderConfig(forecast_backend="bootstrap")
+)
+
+env = build_env_from_cube(cube, env_config=PortfolioEnvConfig(), normalise_obs=True)
+
+obs, _ = env.reset()
+done = False
+while not done:
+    action = env.action_space.sample()
+    obs, reward, terminated, truncated, info = env.step(action)
+    done = terminated or truncated
+```
 ```
 
 ### Custom Model Configuration

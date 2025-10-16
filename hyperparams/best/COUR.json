@@ -1,0 +1,29 @@
+{
+  "symbol": "COUR",
+  "model": "toto",
+  "config": {
+    "name": "toto_trimmed10_1024",
+    "num_samples": 1024,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 128
+  },
+  "validation": {
+    "price_mae": 0.23233012315703644,
+    "return_mae": 0.020310242772589374,
+    "latency_s": 32.37706990912557
+  },
+  "test": {
+    "price_mae": 0.2379463597623314,
+    "return_mae": 0.02139141360621496,
+    "latency_s": 32.44121310161427
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/COUR.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

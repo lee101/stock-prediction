@@ -104,15 +104,39 @@ class DifferentiablePortfolioTrainer:
 
         weights = self.model(inputs)
         transaction_cost = self.config.transaction_cost_bps / 10000.0
-        pnl = compute_portfolio_pnl(
+        per_asset_fees = batch.get('per_asset_fees')
+        if per_asset_fees is not None:
+            per_asset_fees = per_asset_fees.to(self.config.device)
+        asset_class_ids = batch.get('asset_class_ids')
+        if asset_class_ids is not None:
+            asset_class_ids = asset_class_ids.to(self.config.device)
+        pnl_result = compute_portfolio_pnl(
             weights,
             future_returns,
             transaction_cost=transaction_cost,
             leverage_limit=self.config.leverage_limit,
             borrowing_cost=self.config.borrowing_cost,
             trading_days=self.config.trading_days_per_year,
+            per_asset_costs=per_asset_fees,
+            return_per_asset=True,
         )
+        if isinstance(pnl_result, tuple):
+            pnl, per_asset_net = pnl_result
+        else:
+            pnl = pnl_result
+            per_asset_net = None
         profit = pnl.mean()
+        profit_equity = None
+        profit_crypto = None
+        if per_asset_net is not None and asset_class_ids is not None:
+            if asset_class_ids.dim() == 1:
+                asset_class_ids = asset_class_ids.unsqueeze(0).expand_as(per_asset_net)
+            equity_mask = (asset_class_ids == 0).to(per_asset_net.dtype)
+            crypto_mask = (asset_class_ids == 1).to(per_asset_net.dtype)
+            if torch.count_nonzero(equity_mask).item() > 0:
+                profit_equity = (per_asset_net * equity_mask).sum(dim=-1).mean()
+            if torch.count_nonzero(crypto_mask).item() > 0:
+                profit_crypto = (per_asset_net * crypto_mask).sum(dim=-1).mean()
         sharpe = sharpe_like_ratio(pnl)
         entropy = -(weights.clamp_min(1e-8) * weights.clamp_min(1e-8).log()).sum(dim=-1).mean()
         loss = -(profit - self.config.risk_penalty * sharpe) + self.config.entropy_coef * entropy
@@ -127,6 +151,8 @@ class DifferentiablePortfolioTrainer:
             'loss': float(loss.detach().cpu().item()),
             'profit': float(profit.detach().cpu().item()),
             'sharpe': float(sharpe.detach().cpu().item()),
+            'profit_equity': float(profit_equity.detach().cpu().item()) if profit_equity is not None else 0.0,
+            'profit_crypto': float(profit_crypto.detach().cpu().item()) if profit_crypto is not None else 0.0,
         }
 
     def train(self) -> Dict[str, float]:
@@ -135,15 +161,23 @@ class DifferentiablePortfolioTrainer:
             self.model.train()
             epoch_loss = 0.0
             epoch_profit = 0.0
+            epoch_profit_equity = 0.0
+            epoch_profit_crypto = 0.0
             for batch in self.train_loader:
                 stats = self._step(batch, training=True)
                 epoch_loss += stats['loss']
                 epoch_profit += stats['profit']
+                epoch_profit_equity += stats.get('profit_equity', 0.0)
+                epoch_profit_crypto += stats.get('profit_crypto', 0.0)
 
             epoch_loss /= max(1, len(self.train_loader))
             epoch_profit /= max(1, len(self.train_loader))
+            epoch_profit_equity /= max(1, len(self.train_loader))
+            epoch_profit_crypto /= max(1, len(self.train_loader))
             metrics[f'train/loss_epoch_{epoch}'] = epoch_loss
             metrics[f'train/profit_epoch_{epoch}'] = epoch_profit
+            metrics[f'train/profit_equity_epoch_{epoch}'] = epoch_profit_equity
+            metrics[f'train/profit_crypto_epoch_{epoch}'] = epoch_profit_crypto
 
             if self.val_loader is not None:
                 self.model.eval()
@@ -151,17 +185,25 @@ class DifferentiablePortfolioTrainer:
                     val_loss = 0.0
                     val_profit = 0.0
                     val_sharpe = 0.0
+                    val_profit_equity = 0.0
+                    val_profit_crypto = 0.0
                     for batch in self.val_loader:
                         stats = self._step(batch, training=False)
                         val_loss += stats['loss']
                         val_profit += stats['profit']
                         val_sharpe += stats['sharpe']
+                        val_profit_equity += stats.get('profit_equity', 0.0)
+                        val_profit_crypto += stats.get('profit_crypto', 0.0)
                 val_loss /= max(1, len(self.val_loader))
                 val_profit /= max(1, len(self.val_loader))
                 val_sharpe /= max(1, len(self.val_loader))
+                val_profit_equity /= max(1, len(self.val_loader))
+                val_profit_crypto /= max(1, len(self.val_loader))
                 metrics[f'val/loss_epoch_{epoch}'] = val_loss
                 metrics[f'val/profit_epoch_{epoch}'] = val_profit
                 metrics[f'val/sharpe_epoch_{epoch}'] = val_sharpe
+                metrics[f'val/profit_equity_epoch_{epoch}'] = val_profit_equity
+                metrics[f'val/profit_crypto_epoch_{epoch}'] = val_profit_crypto
 
             self.scheduler.step()
 

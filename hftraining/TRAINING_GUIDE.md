@@ -95,6 +95,8 @@ PnL, Sharpe, drawdown, and win rate.
   with Toto forecast means and standard deviations for the configured horizon.
 - Additional parameters (`toto_model_id`, `toto_device`, `toto_horizon`,
   `toto_num_samples`) live under `config.data.*`.
+- Default Toto sampling is now tuned for accuracy (`toto_num_samples = 2048`);
+  reduce this if you hit memory or latency limits.
 - If Toto dependencies are missing, the pipeline automatically falls back to a
   differentiable statistical approximation so training can still proceed.
 

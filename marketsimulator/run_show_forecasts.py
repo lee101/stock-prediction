@@ -20,6 +20,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=8, help="Number of forecast iterations to run.")
     parser.add_argument("--step-size", type=int, default=1, help="Data rows to advance between iterations.")
     parser.add_argument("--initial-cash", type=float, default=100_000.0, help="Starting cash balance.")
+    parser.add_argument(
+        "--kronos-only",
+        action="store_true",
+        help="Force Kronos forecasting pipeline even if another model is selected.",
+    )
     return parser.parse_args()
 
 
@@ -27,7 +32,11 @@ def main() -> None:
     args = parse_args()
     symbols = [args.symbol]
 
-    with activate_simulation(symbols=symbols, initial_cash=args.initial_cash) as controller:
+    with activate_simulation(
+        symbols=symbols,
+        initial_cash=args.initial_cash,
+        force_kronos=args.kronos_only,
+    ) as controller:
         alpaca_cli = importlib.import_module("scripts.alpaca_cli")
 
         for step in range(args.steps):
