@@ -1,0 +1,29 @@
+{
+  "symbol": "GOOG",
+  "model": "toto",
+  "config": {
+    "name": "toto_trimmed10_1024",
+    "num_samples": 1024,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 128
+  },
+  "validation": {
+    "price_mae": 3.351234589553459,
+    "return_mae": 0.015190194753750105,
+    "latency_s": 41.09473991347477
+  },
+  "test": {
+    "price_mae": 3.0590375695577463,
+    "return_mae": 0.012391861419731387,
+    "latency_s": 40.23962329234928
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/GOOG.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

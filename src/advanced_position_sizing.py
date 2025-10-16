@@ -4,8 +4,7 @@ Advanced position sizing strategies for comprehensive backtesting.
 
 import pandas as pd
 import numpy as np
-from typing import Union, Dict, List, Optional
-from sklearn.preprocessing import StandardScaler
+from typing import Union, Dict, Optional, Callable
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -281,7 +280,7 @@ def multi_timeframe_sizing(predicted_returns: pd.DataFrame, short_window: int = 
     return combined_signal
 
 
-def get_all_advanced_strategies() -> Dict[str, callable]:
+def get_all_advanced_strategies() -> Dict[str, Callable[[Returns], Returns]]:
     """
     Get dictionary of all advanced position sizing strategies.
     """
@@ -297,7 +296,7 @@ def get_all_advanced_strategies() -> Dict[str, callable]:
     }
 
 
-def get_dataframe_only_strategies() -> Dict[str, callable]:
+def get_dataframe_only_strategies() -> Dict[str, Callable[[pd.DataFrame], pd.DataFrame]]:
     """
     Get strategies that only work with DataFrame inputs (multi-asset).
     """
@@ -319,7 +318,8 @@ if __name__ == "__main__":
     
     # Generate correlated returns
     returns = np.random.randn(100, n_assets) * 0.02
-    returns = pd.DataFrame(returns, index=dates, columns=[f'Asset_{i}' for i in range(n_assets)])
+    asset_columns = pd.Index([f'Asset_{i}' for i in range(n_assets)])
+    returns = pd.DataFrame(returns, index=dates, columns=asset_columns)
     
     # Generate predictions (slightly correlated with future returns)
     predictions = returns.shift(1).fillna(0) + np.random.randn(100, n_assets) * 0.01

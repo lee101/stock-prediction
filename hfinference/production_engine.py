@@ -173,10 +173,12 @@ class ProductionTradingEngine:
     
     def __init__(self, 
                  checkpoint_path: str,
+                 config: Optional[Dict] = None,
                  config_path: Optional[str] = None,
                  device: str = 'auto',
                  live_trading: bool = False,
-                 paper_trading: bool = True):
+                 paper_trading: bool = True,
+                 mode: Optional[str] = None):
         """
         Initialize production trading engine
         

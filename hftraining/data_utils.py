@@ -3,12 +3,14 @@
 Data utilities for HuggingFace-style training
 """
 
+import ast
+
 import torch
 import torch.nn as nn
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Sequence, Union, Set
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from hfshared import compute_training_style_features, training_feature_columns_list
 import joblib
@@ -28,6 +30,161 @@ except ImportError:  # Allow running as a top-level script
         append_toto_columns,
     )
 
+try:
+    from .asset_metadata import get_asset_class_id, get_trading_fee
+except ImportError:  # pragma: no cover - script execution
+    from asset_metadata import get_asset_class_id, get_trading_fee  # type: ignore
+
+
+def _parse_numeric_scalar(value: Any) -> Optional[float]:
+    """Best-effort conversion of Toto CSV cell contents into a scalar float."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        if pd.isna(value):
+            return None
+        return float(value)
+
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate or candidate.lower() in {"na", "nan", "none"}:
+            return None
+
+        if candidate.startswith("tensor(") and candidate.endswith(")"):
+            candidate = candidate[len("tensor("):-1].strip()
+        if candidate.startswith("array(") and candidate.endswith(")"):
+            candidate = candidate[len("array("):-1].strip()
+
+        try:
+            parsed = ast.literal_eval(candidate)
+        except (ValueError, SyntaxError):
+            try:
+                return float(candidate)
+            except ValueError:
+                tokens = [tok.strip() for tok in candidate.strip("[]").split(",") if tok.strip()]
+                if not tokens:
+                    return None
+                try:
+                    return float(tokens[-1])
+                except ValueError:
+                    return None
+
+        if isinstance(parsed, (int, float, np.integer, np.floating)):
+            return float(parsed)
+        if isinstance(parsed, (list, tuple)):
+            for item in reversed(parsed):
+                scalar = _parse_numeric_scalar(item)
+                if scalar is not None:
+                    return scalar
+            return None
+        if isinstance(parsed, dict):
+            return None
+        try:
+            return float(parsed)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def load_toto_prediction_history(
+    predictions_dir: Union[str, Path]
+) -> Tuple[Dict[str, pd.DataFrame], List[str]]:
+    """
+    Load historical Toto strategy prediction CSVs and convert them into per-symbol feature frames.
+
+    The loader focuses on rows whose `instrument` column embeds a timestamp
+    (e.g., ``AAPL-2024-10-03 07:10:00``). Columns containing list- or tensor-type
+    payloads (``*_values``, ``*_trade_values``, ``*_predictions``) are skipped to keep
+    a consistent tabular feature shape.
+    """
+    base = Path(predictions_dir).expanduser()
+    if not base.exists():
+        raise FileNotFoundError(f"Toto prediction directory '{base}' does not exist")
+
+    feature_records: Dict[str, List[Dict[str, Any]]] = {}
+    feature_columns: Set[str] = set()
+    banned_tokens = ("values", "trade_values", "predictions")
+
+    for csv_path in sorted(base.glob("*.csv")):
+        if not csv_path.is_file():
+            continue
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception:
+            continue
+
+        if "instrument" not in df.columns:
+            continue
+
+        for idx, raw_inst in df["instrument"].dropna().items():
+            instrument = str(raw_inst)
+            if "-" not in instrument:
+                continue
+            symbol_part, ts_part = instrument.split("-", 1)
+            try:
+                timestamp = pd.to_datetime(ts_part)
+            except Exception:
+                continue
+
+            row = df.loc[idx]
+            symbol = symbol_part.strip().upper()
+            features: Dict[str, Any] = {}
+
+            for col, raw_value in row.items():
+                if col == "instrument":
+                    continue
+                lower = col.lower()
+                if any(token in lower for token in banned_tokens) or lower == "generated_at":
+                    continue
+                scalar = _parse_numeric_scalar(raw_value)
+                if scalar is None:
+                    continue
+                features[col] = float(scalar)
+
+            if not features:
+                continue
+
+            features["prediction_time"] = timestamp.tz_localize(None) if isinstance(timestamp, pd.Timestamp) else timestamp
+            features["source_file"] = csv_path.name
+
+            feature_records.setdefault(symbol, []).append(features)
+            feature_columns.update(features.keys() - {"prediction_time", "source_file"})
+
+    ordered_feature_columns = sorted(feature_columns)
+    prefixed_columns = [
+        col if col.startswith("toto_pred_") else f"toto_pred_{col}"
+        for col in ordered_feature_columns
+    ]
+
+    symbol_frames: Dict[str, pd.DataFrame] = {}
+    for symbol, rows in feature_records.items():
+        if not rows:
+            continue
+        sym_df = pd.DataFrame(rows)
+        if sym_df.empty:
+            continue
+        sym_df["prediction_time"] = pd.to_datetime(sym_df["prediction_time"])
+        sym_df["prediction_date"] = sym_df["prediction_time"].dt.normalize()
+        sym_df.sort_values("prediction_time", inplace=True)
+        sym_df = sym_df.drop_duplicates("prediction_date", keep="last")
+
+        for col in ordered_feature_columns:
+            if col not in sym_df.columns:
+                sym_df[col] = np.nan
+
+        keep_cols = ["prediction_date"] + ordered_feature_columns
+        sym_df = sym_df[keep_cols]
+        rename_map = {
+            col: col if col.startswith("toto_pred_") else f"toto_pred_{col}"
+            for col in ordered_feature_columns
+        }
+        sym_df.rename(columns=rename_map, inplace=True)
+        sym_df.set_index("prediction_date", inplace=True)
+        sym_df = sym_df.reindex(columns=prefixed_columns)
+        symbol_frames[symbol] = sym_df.sort_index()
+
+    return symbol_frames, prefixed_columns
+
 
 class StockDataProcessor:
     """Advanced stock data processor with multiple features."""
@@ -39,6 +196,8 @@ class StockDataProcessor:
         features: Optional[List[str]] = None,
         use_toto_forecasts: bool = False,
         toto_options: Optional[TotoOptions] = None,
+        toto_prediction_features: Optional[Dict[str, pd.DataFrame]] = None,
+        toto_prediction_columns: Optional[Sequence[str]] = None,
     ):
         self.sequence_length = sequence_length
         self.prediction_horizon = prediction_horizon
@@ -47,6 +206,12 @@ class StockDataProcessor:
         self.feature_names: List[str] = []
         self.use_toto_forecasts = use_toto_forecasts
         self._toto_generator: Optional[TotoFeatureGenerator] = None
+        self._toto_prediction_features: Dict[str, pd.DataFrame] = {
+            symbol.upper(): df.copy()
+            for symbol, df in (toto_prediction_features or {}).items()
+        }
+        self._toto_prediction_columns: List[str] = list(toto_prediction_columns or [])
+        self._toto_availability_column = "toto_pred_available"
 
         if self.use_toto_forecasts:
             options = toto_options or TotoOptions(
@@ -57,22 +222,25 @@ class StockDataProcessor:
 
     def prepare_features(self, df: pd.DataFrame, symbol: Optional[str] = None) -> np.ndarray:
         """Prepare and select features for training."""
-        feats_df = compute_training_style_features(df)
+        normalized_df = df.copy()
+        normalized_df.columns = normalized_df.columns.str.lower()
+
+        feats_df = compute_training_style_features(normalized_df)
         ordered = [c for c in training_feature_columns_list() if c in feats_df.columns]
         feats_df = feats_df[ordered]
 
         if self.use_toto_forecasts and self._toto_generator is not None:
             price_columns = ['open', 'high', 'low', 'close', 'volume']
-            missing_cols = [col for col in price_columns if col not in df.columns]
+            missing_cols = [col for col in price_columns if col not in normalized_df.columns]
             if missing_cols:
                 for col in missing_cols:
                     if col == 'volume':
-                        df[col] = 1.0
+                        normalized_df[col] = 1.0
                     else:
                         raise ValueError(
                             f"Missing required columns for Toto forecasts: {missing_cols}"
                         )
-            price_matrix = df[price_columns].to_numpy(dtype=np.float32)
+            price_matrix = normalized_df[price_columns].to_numpy(dtype=np.float32)
             prefix = symbol.lower() if symbol else "toto"
             toto_feats, toto_names = self._toto_generator.compute_features(
                 price_matrix,
@@ -88,12 +256,76 @@ class StockDataProcessor:
             # Add residual features against first-step Toto mean for close price
             mean_col = f"{prefix}_close_toto_mean_t+1"
             if mean_col in feats_df.columns:
-                close_series = df['close'].to_numpy(dtype=np.float32)
+                close_series = normalized_df['close'].to_numpy(dtype=np.float32)
                 residual = close_series - feats_df[mean_col].to_numpy(dtype=np.float32)
                 feats_df[f"{prefix}_close_toto_residual"] = residual
 
+        if self._toto_prediction_features and symbol:
+            feats_df = self._append_toto_prediction_features(feats_df, normalized_df, symbol)
+
         self.feature_names = list(feats_df.columns)
         return feats_df.values
+
+    def _append_toto_prediction_features(
+        self,
+        feats_df: pd.DataFrame,
+        normalized_df: pd.DataFrame,
+        symbol: str,
+    ) -> pd.DataFrame:
+        """Append precomputed Toto prediction summaries as additional features."""
+        symbol_key = symbol.upper()
+        pred_frame = self._toto_prediction_features.get(symbol_key)
+
+        target_columns: List[str] = list(self._toto_prediction_columns)
+        if not target_columns:
+            sample_frame = next(
+                (df for df in self._toto_prediction_features.values() if df is not None and not df.empty),
+                None,
+            )
+            if sample_frame is not None:
+                target_columns = list(sample_frame.columns)
+                self._toto_prediction_columns = list(target_columns)
+
+        def build_zero_frame() -> pd.DataFrame:
+            if target_columns:
+                zero = pd.DataFrame(
+                    np.zeros((len(feats_df), len(target_columns)), dtype=np.float32),
+                    columns=target_columns,
+                )
+            else:
+                zero = pd.DataFrame(index=pd.RangeIndex(len(feats_df)), dtype=np.float32)
+            zero[self._toto_availability_column] = np.zeros(len(feats_df), dtype=np.float32)
+            return zero.astype(np.float32, copy=False)
+
+        date_series: Optional[pd.Series] = None
+        for candidate in ("date", "timestamp"):
+            if candidate in normalized_df.columns:
+                date_series = pd.to_datetime(normalized_df[candidate]).dt.normalize()
+                break
+        if date_series is None:
+            aligned = build_zero_frame()
+        elif pred_frame is None or pred_frame.empty:
+            aligned = build_zero_frame()
+        else:
+            date_index = pd.DatetimeIndex(date_series)
+            aligned = pred_frame.reindex(date_index)
+            if target_columns:
+                aligned = aligned.reindex(target_columns, axis=1)
+
+            availability = (~aligned.isna()).any(axis=1).astype(np.float32)
+            aligned = aligned.fillna(0.0).astype(np.float32, copy=False)
+            aligned[self._toto_availability_column] = availability.values
+
+        if self._toto_prediction_columns and target_columns and aligned.shape[1] - int(self._toto_availability_column in aligned.columns) != len(self._toto_prediction_columns):
+            # Ensure column order matches the declared prediction column list when possible
+            aligned = aligned.reindex(columns=[*self._toto_prediction_columns, self._toto_availability_column], fill_value=0.0)
+        aligned = aligned.astype(np.float32, copy=False)
+
+        combined = pd.concat(
+            [feats_df.reset_index(drop=True), aligned.reset_index(drop=True)],
+            axis=1,
+        )
+        return combined
     
     def fit_scalers(self, data):
         """Fit scalers on training data"""
@@ -367,6 +599,14 @@ class PairStockDataset(torch.utils.data.Dataset):
         self.name_b = name_b
         self.close_feature_index = close_feature_index
         self.epsilon = epsilon
+        self.asset_class_ids = torch.tensor(
+            [get_asset_class_id(name_a), get_asset_class_id(name_b)],
+            dtype=torch.long,
+        )
+        self.per_asset_fees = torch.tensor(
+            [float(get_trading_fee(name_a)), float(get_trading_fee(name_b))],
+            dtype=torch.float32,
+        )
 
     def __len__(self) -> int:
         return self.stock_a.shape[0] - self.sequence_length - self.prediction_horizon + 1
@@ -418,6 +658,8 @@ class PairStockDataset(torch.utils.data.Dataset):
             'future_returns': returns,
             'action_labels': action_labels,
             'attention_mask': torch.ones(self.sequence_length, dtype=torch.float32),
+            'asset_class_ids': self.asset_class_ids.clone(),
+            'per_asset_fees': self.per_asset_fees.clone(),
         }
 
 
@@ -460,6 +702,14 @@ class MultiAssetPortfolioDataset(torch.utils.data.Dataset):
         self.prediction_horizon = prediction_horizon
         self.close_feature_index = close_feature_index
         self.epsilon = epsilon
+        self.asset_class_ids = torch.tensor(
+            [get_asset_class_id(name) for name in self.asset_names],
+            dtype=torch.long,
+        )
+        self.per_asset_fees = torch.tensor(
+            [float(get_trading_fee(name)) for name in self.asset_names],
+            dtype=torch.float32,
+        )
 
     def __len__(self) -> int:
         return self.asset_arrays[0].shape[0] - self.sequence_length - self.prediction_horizon + 1
@@ -491,6 +741,8 @@ class MultiAssetPortfolioDataset(torch.utils.data.Dataset):
             'labels': price_targets,
             'future_returns': future_returns,
             'attention_mask': torch.ones(self.sequence_length, dtype=torch.float32),
+            'asset_class_ids': self.asset_class_ids.clone(),
+            'per_asset_fees': self.per_asset_fees.clone(),
         }
 
 
