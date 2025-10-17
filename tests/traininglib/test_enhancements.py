@@ -1,3 +1,5 @@
+from collections import namedtuple
+
 import torch
 
 from traininglib.ema import EMA
@@ -16,6 +18,36 @@ def test_cuda_prefetcher_cpu_roundtrip():
     assert len(baseline) == len(fetched)
     for expected, actual in zip(baseline, fetched):
         assert torch.equal(expected, actual)
+
+
+def test_cuda_prefetcher_namedtuple_roundtrip():
+    Batch = namedtuple(
+        "Batch",
+        ["series", "padding_mask", "id_mask", "timestamp_seconds", "time_interval_seconds"],
+    )
+
+    def generate(idx: int) -> Batch:
+        base = torch.arange(idx, idx + 4, dtype=torch.float32).view(1, -1)
+        return Batch(
+            series=base.clone(),
+            padding_mask=torch.ones_like(base, dtype=torch.bool),
+            id_mask=torch.zeros_like(base, dtype=torch.int64),
+            timestamp_seconds=torch.arange(base.numel(), dtype=torch.int64),
+            time_interval_seconds=torch.full_like(base, 60, dtype=torch.int64),
+        )
+
+    data = [generate(idx) for idx in range(0, 12, 4)]
+    loader = torch.utils.data.DataLoader(data, batch_size=2)
+    prefetcher = CudaPrefetcher(loader, device="cpu")
+
+    baseline = list(loader)
+    fetched = list(iter(prefetcher))
+
+    assert len(baseline) == len(fetched)
+    for expected, actual in zip(baseline, fetched):
+        assert isinstance(actual, Batch)
+        for e_field, a_field in zip(expected, actual):
+            assert torch.equal(e_field, a_field)
 
 
 def test_ema_apply_restore_cycle():
