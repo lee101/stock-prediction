@@ -697,7 +697,11 @@ pyperclip==1.11.0
     #   -r requirements.in
     #   cmd2
 pytest==8.4.2
-    # via pytest-env
+    # via
+    #   pytest-asyncio
+    #   pytest-env
+pytest-asyncio==0.24.0
+    # via -r requirements.in
 pytest-env==1.1.5
     # via -r requirements.in
 python-binance==1.0.30
