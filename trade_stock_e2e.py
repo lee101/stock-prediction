@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 from datetime import datetime, timedelta, timezone
@@ -9,7 +10,20 @@ import pytz
 from loguru import logger
 
 import alpaca_wrapper
-from backtest_test3_inline import backtest_forecasts, release_model_resources
+try:
+    from backtest_test3_inline import backtest_forecasts, release_model_resources
+except Exception as import_exc:  # pragma: no cover - exercised via tests with stubs
+    logging.getLogger(__name__).warning(
+        "Falling back to stubbed backtest resources due to import failure: %s", import_exc
+    )
+
+    def backtest_forecasts(*args, **kwargs):
+        raise RuntimeError(
+            "backtest_forecasts is unavailable because backtest_test3_inline could not be imported."
+        ) from import_exc
+
+    def release_model_resources() -> None:
+        return None
 from data_curate_daily import get_bid, get_ask, download_exchange_latest_data
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from jsonshelve import FlatShelf
@@ -1739,6 +1753,10 @@ def manage_positions(
                 else:
                     logger.info(f"Entering new {data['side']} position for {symbol}")
 
+            entry_strategy = data.get("strategy")
+            is_highlow_entry = entry_strategy == "highlow" and not effective_probe
+            highlow_limit_executed = False
+
             if bid_price is not None and ask_price is not None:
                 entry_price = entry_price or (ask_price if data["side"] == "buy" else bid_price)
                 if not effective_probe:
@@ -1753,15 +1771,57 @@ def manage_positions(
                         logger.info(f"Skipping {symbol} entry after recalculated qty was non-positive.")
                         continue
                     logger.info(f"Target quantity for {symbol}: {target_qty} at price {entry_price}")
-                    ramp_into_position(symbol, data["side"], target_qty=target_qty)
+
+                    if is_highlow_entry:
+                        if is_buy_side(data["side"]):
+                            limit_reference = data.get("predicted_low")
+                        else:
+                            limit_reference = data.get("predicted_high")
+                        limit_price = coerce_numeric(limit_reference, default=float("nan"))
+                        if math.isnan(limit_price) or limit_price <= 0:
+                            logger.warning(
+                                "%s highlow entry missing limit price (predicted bound=%s); falling back to ramp",
+                                symbol,
+                                limit_reference,
+                            )
+                        else:
+                            try:
+                                logger.info(
+                                    "Submitting highlow limit order for %s %s qty=%s @ %.4f",
+                                    symbol,
+                                    data["side"],
+                                    target_qty,
+                                    limit_price,
+                                )
+                                result = alpaca_wrapper.open_order_at_price_or_all(
+                                    symbol,
+                                    target_qty,
+                                    data["side"],
+                                    limit_price,
+                                )
+                                if result is None:
+                                    logger.warning(
+                                        "Highlow limit order for %s returned None; will additionally ramp position.",
+                                        symbol,
+                                    )
+                                else:
+                                    highlow_limit_executed = True
+                                    entry_price = limit_price
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to submit highlow limit order for %s: %s; will ramp instead.",
+                                    symbol,
+                                    exc,
+                                )
                 else:
                     logger.info(f"Probe trade target quantity for {symbol}: {target_qty} at price {entry_price}")
+
+                if not highlow_limit_executed:
                     ramp_into_position(symbol, data["side"], target_qty=target_qty)
             else:
                 logger.warning(f"Could not get bid/ask prices for {symbol}, using default sizing")
-                ramp_into_position(symbol, data["side"], target_qty=target_qty if effective_probe else None)
-
-            entry_strategy = data.get("strategy")
+                if not highlow_limit_executed:
+                    ramp_into_position(symbol, data["side"], target_qty=target_qty if effective_probe else None)
 
             if transition_to_normal:
                 _mark_probe_transitioned(symbol, data["side"], target_qty)
@@ -1798,7 +1858,29 @@ def manage_positions(
                 current_abs_value = abs(current_position_value)
                 total_exposure_value = total_exposure_value - current_abs_value + projected_value
 
-            if ENABLE_TAKEPROFIT_BRACKETS:
+            if is_highlow_entry:
+                if is_buy_side(data["side"]):
+                    highlow_tp_reference = data.get("predicted_high")
+                else:
+                    highlow_tp_reference = data.get("predicted_low")
+                takeprofit_price = coerce_numeric(highlow_tp_reference, default=float("nan"))
+                if math.isnan(takeprofit_price) or takeprofit_price <= 0:
+                    logger.debug(
+                        "%s highlow takeprofit skipped due to invalid target (%s)",
+                        symbol,
+                        highlow_tp_reference,
+                    )
+                else:
+                    try:
+                        logger.info(
+                            "Scheduling highlow takeprofit for %s at %.4f",
+                            symbol,
+                            takeprofit_price,
+                        )
+                        spawn_close_position_at_takeprofit(symbol, float(takeprofit_price))
+                    except Exception as exc:
+                        logger.warning("Failed to schedule highlow takeprofit for %s: %s", symbol, exc)
+            elif ENABLE_TAKEPROFIT_BRACKETS:
                 tp_price = None
                 entry_reference = entry_price
                 if entry_reference is None and bid_price is not None and ask_price is not None:

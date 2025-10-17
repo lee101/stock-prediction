@@ -173,8 +173,7 @@ def get_all_orders(symbol: str) -> List[Dict[str, Any]]:
         raw_orders = client.get_all_orders(symbol=symbol)
     except Exception as e:
         logger.error(e)
-        empty: List[Dict[str, Any]] = []
-        return empty
+        return []
     if not isinstance(raw_orders, list):
         logger.error("Unexpected orders payload from Binance: %s", raw_orders)
         return []
@@ -194,13 +193,11 @@ def get_account_balances() -> List[Dict[str, Any]]:
         balances_obj = cast(Iterable[Dict[str, Any]] | None, account.get("balances", []))
     except Exception as e:
         logger.error(e)
-        empty: List[Dict[str, Any]] = []
-        return empty
+        return []
 
     if balances_obj is None:
         logger.error("Binance account payload missing 'balances' key: %s", account)
-        empty: List[Dict[str, Any]] = []
-        return empty
+        return []
 
     filtered: List[Dict[str, Any]] = []
     for entry in balances_obj:

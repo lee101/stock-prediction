@@ -12,7 +12,7 @@ import json
 import argparse
 import os
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -162,15 +162,22 @@ def _collect_predictions(
     return np.asarray(preds, dtype=np.float64), np.asarray(actuals, dtype=np.float64), prev_price
 
 
-def _compute_return_mae(preds: np.ndarray, actuals: np.ndarray, prev_price: float) -> float:
+def _compute_return_metrics(preds: np.ndarray, actuals: np.ndarray, prev_price: float) -> Tuple[float, float]:
     prev = prev_price
-    errors = []
+    abs_errors: list[float] = []
+    sq_errors: list[float] = []
+    eps = 1e-6
     for pred, actual in zip(preds, actuals):
-        pred_return = (pred - prev) / prev if prev != 0 else 0.0
-        actual_return = (actual - prev) / prev if prev != 0 else 0.0
-        errors.append(abs(pred_return - actual_return))
+        denom = prev if abs(prev) > eps else (eps if prev >= 0 else -eps)
+        pred_return = (pred - prev) / denom
+        actual_return = (actual - prev) / denom
+        diff = pred_return - actual_return
+        abs_errors.append(abs(diff))
+        sq_errors.append(diff * diff)
         prev = actual
-    return float(np.mean(errors))
+    mae = float(np.mean(abs_errors))
+    rmse = float(np.sqrt(np.mean(sq_errors)))
+    return mae, rmse
 
 
 def main() -> None:
@@ -304,18 +311,30 @@ def main() -> None:
 
     base_mae = float(np.mean(np.abs(actuals - base_preds)))
     our_mae = float(np.mean(np.abs(actuals - our_preds)))
+    base_mse = float(np.mean((actuals - base_preds) ** 2))
+    our_mse = float(np.mean((actuals - our_preds) ** 2))
+    base_rmse = float(np.sqrt(base_mse))
+    our_rmse = float(np.sqrt(our_mse))
 
-    base_return_mae = _compute_return_mae(base_preds, actuals, prev_price)
-    our_return_mae = _compute_return_mae(our_preds, actuals, prev_price)
+    base_pct_return_mae, base_return_rmse = _compute_return_metrics(base_preds, actuals, prev_price)
+    our_pct_return_mae, our_return_rmse = _compute_return_metrics(our_preds, actuals, prev_price)
 
     summary = {
         "evaluation_points": len(actuals),
         "base_price_mae": base_mae,
         "our_price_mae": our_mae,
         "price_mae_delta": our_mae - base_mae,
-        "base_return_mae": base_return_mae,
-        "our_return_mae": our_return_mae,
-        "return_mae_delta": our_return_mae - base_return_mae,
+        "base_price_rmse": base_rmse,
+        "our_price_rmse": our_rmse,
+        "price_rmse_delta": our_rmse - base_rmse,
+        "base_price_mse": base_mse,
+        "our_price_mse": our_mse,
+        "base_pct_return_mae": base_pct_return_mae,
+        "our_pct_return_mae": our_pct_return_mae,
+        "pct_return_mae_delta": our_pct_return_mae - base_pct_return_mae,
+        "base_return_rmse": base_return_rmse,
+        "our_return_rmse": our_return_rmse,
+        "return_rmse_delta": our_return_rmse - base_return_rmse,
         "checkpoint_path": str(checkpoint_path),
         "device": device,
         "num_samples": args.num_samples,
@@ -329,8 +348,12 @@ def main() -> None:
     print(f"Evaluation points: {summary['evaluation_points']}")
     print(f"Base Toto price MAE: {base_mae:.6f}")
     print(f"Our Toto price MAE:  {our_mae:.6f} (Δ {summary['price_mae_delta']:+.6f})")
-    print(f"Base Toto return MAE: {base_return_mae:.6f}")
-    print(f"Our Toto return MAE:  {our_return_mae:.6f} (Δ {summary['return_mae_delta']:+.6f})")
+    print(f"Base Toto price RMSE: {base_rmse:.6f}")
+    print(f"Our Toto price RMSE:  {our_rmse:.6f} (Δ {summary['price_rmse_delta']:+.6f})")
+    print(f"Base Toto return MAE: {base_pct_return_mae:.6f}")
+    print(f"Our Toto return MAE:  {our_pct_return_mae:.6f} (Δ {summary['pct_return_mae_delta']:+.6f})")
+    print(f"Base Toto return RMSE: {base_return_rmse:.6f}")
+    print(f"Our Toto return RMSE:  {our_return_rmse:.6f} (Δ {summary['return_rmse_delta']:+.6f})")
     print(f"Checkpoint: {checkpoint_path}")
     print(f"Device: {device}")
     print("\nJSON summary:")

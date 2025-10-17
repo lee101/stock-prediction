@@ -395,6 +395,130 @@ class Adan(torch.optim.Optimizer):
         return loss
 
 
+def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int) -> torch.Tensor:
+    """
+    Newton-Schulz iteration to orthogonalize matrix updates (inspired by nanochat).
+    Operates over the last two dimensions of G and preserves leading batch dims.
+    """
+    if G.ndim < 2:
+        raise ValueError("Muon requires gradients with at least 2 dimensions")
+    a, b, c = 3.4445, -4.7750, 2.0315
+    X = G.detach().to(dtype=torch.float32)
+    transposed = X.size(-2) > X.size(-1)
+    if transposed:
+        X = X.mT
+    norm = X.norm(dim=(-2, -1), keepdim=True)
+    X = X / (norm + 1e-7)
+    for _ in range(max(1, int(steps))):
+        A = X @ X.mT
+        B = b * A + c * (A @ A)
+        X = a * X + B @ X
+    if transposed:
+        X = X.mT
+    return X.to(dtype=G.dtype)
+
+
+class Muon(torch.optim.Optimizer):
+    """
+    Hybrid Muon + AdamW update.
+    - Applies orthogonalized momentum updates (Muon) to matrix parameters.
+    - Falls back to AdamW-style updates for 1D parameters (biases, norms).
+    """
+    def __init__(
+        self,
+        params,
+        lr: float = 0.02,
+        momentum: float = 0.95,
+        nesterov: bool = True,
+        ns_steps: int = 5,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        adamw_lr: Optional[float] = None,
+        weight_decay: float = 0.0,
+    ):
+        if lr <= 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if not (0.0 <= momentum < 1.0):
+            raise ValueError(f"Invalid momentum: {momentum}")
+        if ns_steps <= 0:
+            raise ValueError(f"Invalid Newton-Schulz steps: {ns_steps}")
+        defaults = dict(
+            lr=lr,
+            momentum=momentum,
+            nesterov=nesterov,
+            ns_steps=ns_steps,
+            betas=betas,
+            eps=eps,
+            adamw_lr=adamw_lr,
+            weight_decay=weight_decay,
+        )
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            momentum = group.get("momentum", self.defaults["momentum"])
+            nesterov = group.get("nesterov", self.defaults["nesterov"])
+            ns_steps = group.get("ns_steps", self.defaults["ns_steps"])
+            betas = group.get("betas", self.defaults["betas"])
+            eps = group.get("eps", self.defaults["eps"])
+            adamw_lr = group.get("adamw_lr", self.defaults.get("adamw_lr", None))
+            weight_decay = group.get("weight_decay", self.defaults["weight_decay"])
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                grad = p.grad.detach()
+                if grad.dtype in {torch.float16, torch.bfloat16}:
+                    grad = grad.float()
+                state = self.state[p]
+
+                if grad.ndim >= 2:
+                    buf = state.get("momentum_buffer")
+                    if buf is None or buf.shape != grad.shape:
+                        buf = torch.zeros_like(grad)
+                        state["momentum_buffer"] = buf
+                    buf.lerp_(grad, 1.0 - momentum)
+                    update = grad.lerp(buf, momentum) if nesterov else buf
+                    ortho = zeropower_via_newtonschulz5(update, ns_steps)
+                    if weight_decay != 0:
+                        p.data.mul_(1 - lr * weight_decay)
+                    aspect_ratio = grad.size(-2) / max(1, grad.size(-1))
+                    scale = max(1.0, aspect_ratio) ** 0.5
+                    p.data.add_(ortho.to(dtype=p.data.dtype), alpha=-lr * scale)
+                else:
+                    beta1, beta2 = betas
+                    exp_avg = state.get("exp_avg")
+                    if exp_avg is None or exp_avg.shape != grad.shape:
+                        exp_avg = torch.zeros_like(grad)
+                        state["exp_avg"] = exp_avg
+                    exp_avg_sq = state.get("exp_avg_sq")
+                    if exp_avg_sq is None or exp_avg_sq.shape != grad.shape:
+                        exp_avg_sq = torch.zeros_like(grad)
+                        state["exp_avg_sq"] = exp_avg_sq
+                    step = state.get("step", 0) + 1
+                    state["step"] = step
+
+                    exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                    exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                    denom = exp_avg_sq.sqrt().add_(eps)
+
+                    lr_adam = adamw_lr if adamw_lr is not None else lr
+                    step_size = lr_adam * (math.sqrt(1 - beta2 ** step) / (1 - beta1 ** step))
+
+                    if weight_decay != 0:
+                        p.data.mul_(1 - lr_adam * weight_decay)
+                    p.data.addcdiv_(exp_avg, denom, value=-step_size)
+
+        return loss
+
+
 def get_optimizer(name: str, parameters, **kwargs):
     """Factory function to get optimizer by name"""
     optimizers = {
@@ -404,6 +528,7 @@ def get_optimizer(name: str, parameters, **kwargs):
         'lamb': lambda p, **k: LAMB(p, **k),
         'sophia': lambda p, **k: Sophia(p, **k),
         'adan': lambda p, **k: Adan(p, **k),
+        'muon': lambda p, **k: Muon(p, **k),
         'adamw': lambda p, **k: torch.optim.AdamW(p, **k),
         'adam': lambda p, **k: torch.optim.Adam(p, **k),
         'sgd': lambda p, **k: torch.optim.SGD(p, **k),

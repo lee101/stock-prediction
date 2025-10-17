@@ -48,6 +48,31 @@ Ramp into a position:
 PYTHONPATH=$(pwd) python scripts/alpaca_cli.py ramp_into_position ETHUSD
 ```
 
+### Long-horizon RL training (torch.compile + muon)
+
+Activate the PyTorch 2.9.0 CUDA environment and launch a 400‑epoch low-cost RL run:
+
+```bash
+source .venv312uv/bin/activate
+python -m pufferlibtraining.train_ppo \
+  --skip-base \
+  --base-checkpoint pufferlibtraining/models/toto_run/base_models/base_checkpoint_20251017_162009.pth \
+  --skip-specialists \
+  --trainingdata-dir trainingdata \
+  --output-dir pufferlibtraining/models/toto_run_rl_lowcost_400 \
+  --tensorboard-dir pufferlibtraining/logs/toto_run_rl_lowcost_400 \
+  --rl-epochs 400 \
+  --rl-batch-size 256 \
+  --rl-learning-rate 7e-4 \
+  --rl-optimizer muon_mix \
+  --rl-warmup-steps 400 \
+  --rl-min-lr 1e-5 \
+  --rl-grad-clip 0.25 \
+  --transaction-cost-bps 1 \
+  --risk-penalty 0.0 \
+  --summary-path pufferlibtraining/models/toto_run_rl_lowcost_400/summary.json
+```
+
 ### Schedule Tasks
 
 Using the Linux `at` command:

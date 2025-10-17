@@ -5,6 +5,21 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 import pytz
+import sys
+import types
+
+if "backtest_test3_inline" not in sys.modules:
+    _backtest_stub = types.ModuleType("backtest_test3_inline")
+
+    def _stub_backtest_forecasts(*args, **kwargs):
+        raise RuntimeError("backtest_forecasts stub should be patched in tests")
+
+    def _stub_release_model_resources():
+        return None
+
+    _backtest_stub.backtest_forecasts = _stub_backtest_forecasts
+    _backtest_stub.release_model_resources = _stub_release_model_resources
+    sys.modules["backtest_test3_inline"] = _backtest_stub
 
 import trade_stock_e2e as trade_module
 from trade_stock_e2e import (
@@ -404,9 +419,11 @@ def test_manage_positions_highlow_strategy_uses_limit_orders():
     with stub_trading_env(positions=[], qty=3, trading_day_now=True) as mocks:
         manage_positions(current_picks, {}, current_picks)
 
-    mocks["ramp"].assert_called_once_with("AAPL", "buy", target_qty=3)
-    if trade_module.ENABLE_TAKEPROFIT_BRACKETS:
-        mocks["spawn_tp"].assert_called_once_with("AAPL", 125.0)
-    else:
-        mocks["spawn_tp"].assert_not_called()
-    assert mocks["open_order"].call_count == 0
+    mocks["ramp"].assert_not_called()
+    mocks["spawn_tp"].assert_called_once_with("AAPL", 125.0)
+    mocks["open_order"].assert_called_once()
+    args, _ = mocks["open_order"].call_args
+    assert args[0] == "AAPL"
+    assert args[1] == 3
+    assert args[2] == "buy"
+    assert args[3] == pytest.approx(100.0)

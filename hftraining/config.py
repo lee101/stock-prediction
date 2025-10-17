@@ -79,6 +79,10 @@ class TrainingConfig:
     adam_beta1: float = 0.9
     adam_beta2: float = 0.999
     adam_epsilon: float = 1e-8
+    muon_momentum: float = 0.95
+    muon_nesterov: bool = True
+    muon_ns_steps: int = 5
+    muon_adamw_lr: Optional[float] = None
     
     # Training dynamics
     num_epochs: int = 50

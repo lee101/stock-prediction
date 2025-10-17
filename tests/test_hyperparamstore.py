@@ -15,8 +15,8 @@ def test_save_and_load_hyperparams(tmp_path):
         model="toto",
         symbol="TEST",
         config={"name": "demo", "num_samples": 123},
-        validation={"price_mae": 1.0, "return_mae": 0.1, "latency_s": 0.5},
-        test={"price_mae": 2.0, "return_mae": 0.2, "latency_s": 0.6},
+        validation={"price_mae": 1.0, "pct_return_mae": 0.1, "latency_s": 0.5},
+        test={"price_mae": 2.0, "pct_return_mae": 0.2, "latency_s": 0.6},
         windows=windows,
         metadata={"source": "unit_test"},
         store=store,
@@ -26,7 +26,7 @@ def test_save_and_load_hyperparams(tmp_path):
     assert record is not None
     assert record.config["num_samples"] == 123
     assert record.validation["price_mae"] == 1.0
-    assert record.test["return_mae"] == 0.2
+    assert record.test["pct_return_mae"] == 0.2
     assert record.metadata["source"] == "unit_test"
     selection_path = save_model_selection(
         symbol="TEST",

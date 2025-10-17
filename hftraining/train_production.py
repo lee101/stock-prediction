@@ -237,11 +237,27 @@ class ProductionTrainer:
         weight_decay = self.config.get('weight_decay', 0.01)
         
         # Get optimizer
+        optimizer_kwargs = {
+            'lr': lr,
+            'weight_decay': weight_decay,
+            'betas': (
+                self.config.get('adam_beta1', 0.9),
+                self.config.get('adam_beta2', 0.999),
+            ),
+            'eps': self.config.get('adam_epsilon', 1e-8),
+        }
+        if optimizer_name.lower() == 'muon':
+            optimizer_kwargs.update({
+                'momentum': self.config.get('muon_momentum', 0.95),
+                'nesterov': self.config.get('muon_nesterov', True),
+                'ns_steps': self.config.get('muon_ns_steps', 5),
+                'adamw_lr': self.config.get('muon_adamw_lr'),
+            })
+
         self.optimizer = get_optimizer(
             optimizer_name,
             self.model.parameters(),
-            lr=lr,
-            weight_decay=weight_decay
+            **optimizer_kwargs,
         )
         
         # Setup scheduler

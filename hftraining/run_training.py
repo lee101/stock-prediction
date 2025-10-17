@@ -26,23 +26,37 @@ from modern_optimizers import get_optimizer
 from toto_features import TotoOptions
 
 
-def set_seed(seed: int):
+def set_seed(seed: int, deterministic: bool = True):
     """Set random seed for reproducibility"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
     
     if torch.cuda.is_available():
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = deterministic
+        torch.backends.cudnn.benchmark = not deterministic
+    try:
+        torch.use_deterministic_algorithms(deterministic)
+    except Exception:
+        pass
 
 
 def setup_environment(config: ExperimentConfig):
     """Setup training environment"""
+
+    # Adopt nanochat fast-allocation trick if user hasn't set a custom config
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    
+    # Respect distributed launchers that set LOCAL_RANK
+    if torch.cuda.is_available() and "LOCAL_RANK" in os.environ:
+        try:
+            torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+        except Exception:
+            pass
     
     # Set seed
-    set_seed(config.system.seed)
+    set_seed(config.system.seed, deterministic=config.system.deterministic)
     
     # Resolve dirs relative to this file to avoid hftraining/hftraining nesting
     base_dir = Path(__file__).parent
@@ -92,9 +106,18 @@ def setup_environment(config: ExperimentConfig):
             print(f"TF32 enabled: {bool(allow_tf32)}")
         except Exception:
             pass
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
         print(f"CUDA devices: {torch.cuda.device_count()}")
         for i in range(torch.cuda.device_count()):
             print(f"  Device {i}: {torch.cuda.get_device_name(i)}")
+    else:
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
     
     return device
 
@@ -217,6 +240,10 @@ def create_model(config: ExperimentConfig, input_dim: int):
         adam_beta1=config.training.adam_beta1,
         adam_beta2=config.training.adam_beta2,
         adam_epsilon=config.training.adam_epsilon,
+        muon_momentum=config.training.muon_momentum,
+        muon_nesterov=config.training.muon_nesterov,
+        muon_ns_steps=config.training.muon_ns_steps,
+        muon_adamw_lr=config.training.muon_adamw_lr,
         
         batch_size=config.training.batch_size,
         eval_steps=config.evaluation.eval_steps,

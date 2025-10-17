@@ -19,6 +19,7 @@ import json
 import shutil
 import logging
 import warnings
+import contextlib
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Union, Any
@@ -35,10 +36,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader, Dataset
-from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, OneCycleLR
-import torch.utils.checkpoint as checkpoint
+from torch.optim.lr_scheduler import ReduceLROnPlateau, OneCycleLR
+
+from traininglib.compile_wrap import maybe_compile
+from traininglib.optim_factory import make_optimizer
+from traininglib.runtime_flags import bf16_supported, enable_fast_kernels
+from traininglib.schedules import WarmupCosine
 
 # Add the toto directory to sys.path
 toto_path = Path(__file__).parent.parent / "toto" / "toto"
@@ -114,17 +119,22 @@ class TrainerConfig:
     
     # Training parameters
     learning_rate: float = 1e-4
+    min_lr: float = 0.0
     weight_decay: float = 0.01
     batch_size: int = 32
     accumulation_steps: int = 1
     max_epochs: int = 100
     warmup_epochs: int = 10
+    warmup_steps: Optional[int] = None
     
     # Optimization
     optimizer: str = "adamw"  # "adamw", "adam", "sgd"
     scheduler: str = "cosine"  # "cosine", "plateau", "onecycle", "none"
+    optimizer_betas: Tuple[float, float] = (0.9, 0.95)
+    optimizer_eps: float = 1e-8
     gradient_clip_val: float = 1.0
     use_mixed_precision: bool = True
+    compile: bool = True
     require_gpu: bool = False
     
     # Distributed training
@@ -159,7 +169,9 @@ class TrainerConfig:
     gradient_checkpointing: bool = False
     memory_efficient_attention: bool = True
     pin_memory: bool = True
-    
+    freeze_backbone: bool = False
+    trainable_param_substrings: Optional[List[str]] = None
+
     # Logging
     log_level: str = "INFO"
     log_file: Optional[str] = "training.log"
@@ -178,24 +190,32 @@ class TrainerConfig:
     def __post_init__(self):
         if self.output_distribution_classes is None:
             self.output_distribution_classes = ["model.distribution.StudentTOutput"]
-        
+
         if self.experiment_name is None:
             self.experiment_name = f"toto_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
+
         # Create save directory
         Path(self.save_dir).mkdir(parents=True, exist_ok=True)
-        
+
         if self.log_to_tensorboard and self.tensorboard_log_dir:
             Path(self.tensorboard_log_dir).mkdir(parents=True, exist_ok=True)
-        
+
         if self.export_pretrained_dir is None:
             self.export_pretrained_dir = str(Path(self.save_dir) / "hf_export")
         Path(self.export_pretrained_dir).mkdir(parents=True, exist_ok=True)
-        
+
         self.best_k_checkpoints = max(1, int(self.best_k_checkpoints))
-        
+
         if self.pretrained_model_id and self.pretrained_checkpoint:
             raise ValueError("Specify at most one of pretrained_model_id or pretrained_checkpoint.")
+
+        if self.freeze_backbone and not self.trainable_param_substrings:
+            self.trainable_param_substrings = [
+                "output_distribution",
+                "loc_proj",
+                "scale_proj",
+                "df",
+            ]
     
     def save(self, path: str):
         """Save configuration to JSON file"""
@@ -215,74 +235,88 @@ class MetricsTracker:
     
     def __init__(self):
         self.reset()
-    
+
     def reset(self):
         """Reset all metrics"""
         self.losses = []
-        self.predictions = []
-        self.targets = []
+        self.predictions = []  # percent predictions
+        self.targets = []      # percent targets
+        self.price_predictions = []
+        self.price_targets = []
         self.batch_times = []
         self.learning_rates = []
-    
-    def update(self, loss: float, predictions: torch.Tensor = None, 
-               targets: torch.Tensor = None, batch_time: float = None,
-               learning_rate: float = None):
+
+    def update(
+        self,
+        loss: float,
+        predictions: torch.Tensor | None = None,
+        targets: torch.Tensor | None = None,
+        price_predictions: torch.Tensor | None = None,
+        price_targets: torch.Tensor | None = None,
+        batch_time: float | None = None,
+        learning_rate: float | None = None,
+    ):
         """Update metrics with new batch data"""
         self.losses.append(loss)
-        
+
         if predictions is not None and targets is not None:
             self.predictions.append(predictions.detach().cpu())
             self.targets.append(targets.detach().cpu())
-        
+
+        if price_predictions is not None and price_targets is not None:
+            self.price_predictions.append(price_predictions.detach().cpu())
+            self.price_targets.append(price_targets.detach().cpu())
+
         if batch_time is not None:
             self.batch_times.append(batch_time)
-        
+
         if learning_rate is not None:
             self.learning_rates.append(learning_rate)
-    
+
     def compute_metrics(self) -> Dict[str, float]:
         """Compute and return all metrics"""
-        metrics = {}
-        
-        # Loss metrics
+        metrics: Dict[str, float] = {}
+
         if self.losses:
-            metrics['loss'] = np.mean(self.losses)
-            metrics['loss_std'] = np.std(self.losses)
-        
-        # Prediction metrics
+            metrics['loss'] = float(np.mean(self.losses))
+            metrics['loss_std'] = float(np.std(self.losses))
+
         if self.predictions and self.targets:
             all_preds = torch.cat(self.predictions, dim=0)
             all_targets = torch.cat(self.targets, dim=0)
-            
-            # MSE and RMSE
             mse = F.mse_loss(all_preds, all_targets).item()
-            metrics['mse'] = mse
-            metrics['rmse'] = math.sqrt(mse)
-            
-            # MAE
             mae = F.l1_loss(all_preds, all_targets).item()
-            metrics['mae'] = mae
-            
-            # R-squared
+            mape = torch.mean(torch.abs((all_targets - all_preds) / (all_targets.abs() + 1e-8))) * 100
             ss_res = torch.sum((all_targets - all_preds) ** 2)
             ss_tot = torch.sum((all_targets - torch.mean(all_targets)) ** 2)
-            r2 = 1 - (ss_res / ss_tot)
-            metrics['r2'] = r2.item()
-            
-            # MAPE
-            mape = torch.mean(torch.abs((all_targets - all_preds) / (all_targets + 1e-8))) * 100
-            metrics['mape'] = mape.item()
-        
-        # Timing metrics
+            r2 = (1 - ss_res / ss_tot).item() if ss_tot > 0 else float('nan')
+            metrics.update({
+                'pct_mse': mse,
+                'pct_rmse': math.sqrt(mse),
+                'pct_mae': mae,
+                'pct_mape': mape.item(),
+                'pct_r2': r2,
+            })
+
+        if self.price_predictions and self.price_targets:
+            price_preds = torch.cat(self.price_predictions, dim=0)
+            price_targets = torch.cat(self.price_targets, dim=0)
+            price_mse = F.mse_loss(price_preds, price_targets).item()
+            price_mae = F.l1_loss(price_preds, price_targets).item()
+            metrics.update({
+                'price_mse': price_mse,
+                'price_rmse': math.sqrt(price_mse),
+                'price_mae': price_mae,
+            })
+
         if self.batch_times:
-            metrics['batch_time_mean'] = np.mean(self.batch_times)
-            metrics['batch_time_std'] = np.std(self.batch_times)
-            metrics['samples_per_sec'] = len(self.losses) / sum(self.batch_times)
-        
-        # Learning rate
+            metrics['batch_time_mean'] = float(np.mean(self.batch_times))
+            metrics['batch_time_std'] = float(np.std(self.batch_times))
+            metrics['steps_per_sec'] = len(self.batch_times) / sum(self.batch_times)
+
         if self.learning_rates:
             metrics['learning_rate'] = self.learning_rates[-1]
-        
+
         return metrics
 
 
@@ -307,6 +341,7 @@ class CheckpointManager:
                        best_val_loss: float,
                        metrics: Dict[str, float],
                        config: TrainerConfig,
+                       dataloader_config: Optional[DataLoaderConfig] = None,
                        is_best: bool = False,
                        val_loss: Optional[float] = None):
         """Save model checkpoint"""
@@ -319,6 +354,7 @@ class CheckpointManager:
             'best_val_loss': best_val_loss,
             'metrics': metrics,
             'config': asdict(config),
+            'dataloader_config': asdict(dataloader_config) if dataloader_config else None,
             'timestamp': datetime.now().isoformat(),
             'val_loss': val_loss
         }
@@ -439,7 +475,9 @@ class TotoTrainer:
         self.model = None
         self.optimizer = None
         self.scheduler = None
-        self.scaler = GradScaler() if config.use_mixed_precision else None
+        self.autocast_dtype: Optional[torch.dtype] = None
+        self.scaler: Optional[GradScaler] = None
+        self._configure_precision()
         
         # Metrics and checkpointing
         self.metrics_tracker = MetricsTracker()
@@ -539,6 +577,25 @@ class TotoTrainer:
             
             self.logger.info(f"Distributed training enabled: rank {self.config.rank}/{self.config.world_size}")
     
+    def _configure_precision(self) -> None:
+        """Configure autocast dtype and gradient scaler based on hardware."""
+        self.autocast_dtype = None
+        self.scaler = None
+
+        if not self.config.use_mixed_precision:
+            return
+
+        if torch.cuda.is_available():
+            if bf16_supported():
+                self.autocast_dtype = torch.bfloat16
+                self.logger.info("Using bfloat16 autocast for CUDA training.")
+            else:
+                self.autocast_dtype = torch.float16
+                self.scaler = GradScaler()
+                self.logger.info("Using float16 autocast with GradScaler for CUDA training.")
+        else:
+            self.logger.info("Mixed precision requested but CUDA not available; defaulting to float32.")
+    
     def _create_model(self, input_dim: int) -> nn.Module:
         """Create Toto model"""
         if self.config.require_gpu and not torch.cuda.is_available():
@@ -607,71 +664,280 @@ class TotoTrainer:
         # Enable gradient checkpointing for memory efficiency
         if self.config.gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
             model.gradient_checkpointing_enable()
+
+        if self.config.freeze_backbone:
+            self._apply_parameter_freeze(model)
+
+        model = maybe_compile(model, do_compile=self.config.compile)
         
         # Wrap with DDP if distributed
         if self.is_distributed:
             model = DDP(model, device_ids=[self.config.local_rank])
         
         return model
+
+    def _apply_parameter_freeze(self, model: nn.Module) -> None:
+        substrings = self.config.trainable_param_substrings or []
+        if not substrings:
+            self.logger.warning(
+                "freeze_backbone enabled but no trainable_param_substrings provided; freezing all parameters."
+            )
+        total_params = 0
+        trainable_params = 0
+        for name, param in model.named_parameters():
+            total_params += param.numel()
+            keep_trainable = any(sub in name for sub in substrings)
+            param.requires_grad = keep_trainable
+            if keep_trainable:
+                trainable_params += param.numel()
+        self.logger.info(
+            "Backbone frozen. Trainable params: %s of %s (%.4f%%)",
+            trainable_params,
+            total_params,
+            100.0 * trainable_params / max(total_params, 1),
+        )
     
     def _create_optimizer(self) -> torch.optim.Optimizer:
         """Create optimizer"""
-        if self.config.optimizer.lower() == "adamw":
-            optimizer = torch.optim.AdamW(
-                self.model.parameters(),
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay
-            )
-        elif self.config.optimizer.lower() == "adam":
-            optimizer = torch.optim.Adam(
-                self.model.parameters(),
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay
-            )
-        elif self.config.optimizer.lower() == "sgd":
-            optimizer = torch.optim.SGD(
-                self.model.parameters(),
-                lr=self.config.learning_rate,
-                momentum=0.9,
-                weight_decay=self.config.weight_decay
-            )
-        else:
-            raise ValueError(f"Unsupported optimizer: {self.config.optimizer}")
-        
+        if not any(p.requires_grad for p in self.model.parameters()):
+            raise ValueError("No trainable parameters found for optimizer.")
+
+        optimizer = make_optimizer(
+            self.model,
+            name=self.config.optimizer,
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay,
+            betas=self.config.optimizer_betas,
+            eps=self.config.optimizer_eps,
+            fused=True,
+        )
         return optimizer
     
     def _create_scheduler(self, steps_per_epoch: int) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
         """Create learning rate scheduler"""
-        if self.config.scheduler.lower() == "none":
+        schedule_name = self.config.scheduler.lower()
+        if schedule_name == "none" or steps_per_epoch <= 0:
             return None
-        
+
         total_steps = steps_per_epoch * self.config.max_epochs
-        warmup_steps = steps_per_epoch * self.config.warmup_epochs
-        
-        if self.config.scheduler.lower() == "cosine":
-            scheduler = CosineAnnealingLR(
+        if total_steps <= 0:
+            return None
+
+        if self.config.warmup_steps is not None:
+            warmup_steps = min(int(self.config.warmup_steps), max(total_steps - 1, 0))
+        else:
+            warmup_steps = int(self.config.warmup_epochs * steps_per_epoch)
+            warmup_steps = min(warmup_steps, max(total_steps - 1, 0))
+        warmup_steps = max(0, warmup_steps)
+
+        if schedule_name == "cosine":
+            return WarmupCosine(
                 self.optimizer,
-                T_max=total_steps - warmup_steps,
-                eta_min=self.config.learning_rate * 0.01
+                warmup_steps=warmup_steps,
+                total_steps=total_steps,
+                min_lr=self.config.min_lr,
             )
-        elif self.config.scheduler.lower() == "plateau":
-            scheduler = ReduceLROnPlateau(
+        if schedule_name == "plateau":
+            return ReduceLROnPlateau(
                 self.optimizer,
-                mode='min',
+                mode="min",
                 factor=0.5,
-                patience=5
+                patience=5,
             )
-        elif self.config.scheduler.lower() == "onecycle":
-            scheduler = OneCycleLR(
+        if schedule_name == "onecycle":
+            pct_start = warmup_steps / total_steps if total_steps > 0 else 0.1
+            return OneCycleLR(
                 self.optimizer,
                 max_lr=self.config.learning_rate,
                 total_steps=total_steps,
-                pct_start=warmup_steps / total_steps
+                pct_start=pct_start,
             )
+        raise ValueError(f"Unsupported scheduler: {self.config.scheduler}")
+
+    def _forward_model(self, series: torch.Tensor, padding_mask: torch.Tensor, id_mask: torch.Tensor):
+        module = self.model.module if hasattr(self.model, "module") else self.model
+        if hasattr(module, "model"):
+            return module.model(series, padding_mask, id_mask)
+        return module(series, padding_mask, id_mask)
+
+    @staticmethod
+    def _ensure_tensor(value: Any, device: torch.device) -> Optional[torch.Tensor]:
+        if value is None:
+            return None
+        if isinstance(value, torch.Tensor):
+            return value.to(device)
+        return torch.tensor(value, dtype=torch.float32, device=device)
+
+    @staticmethod
+    def _match_prediction_length(tensor: Optional[torch.Tensor], prediction_length: int) -> Optional[torch.Tensor]:
+        if tensor is None:
+            return None
+        if tensor.ndim == 1:
+            tensor = tensor.unsqueeze(-1)
+        if tensor.ndim == 3 and tensor.shape[1] == 1:
+            tensor = tensor[:, 0, :]
+        elif tensor.ndim == 3:
+            tensor = tensor[:, 0, :]
+        if tensor.ndim == 2 and tensor.shape[-1] == prediction_length:
+            return tensor
+        if tensor.ndim != 2:
+            raise RuntimeError(f"Unsupported tensor shape for match_prediction_length: {tensor.shape}")
+        if tensor.shape[-1] > prediction_length:
+            return tensor[:, -prediction_length:]
+        pad_len = prediction_length - tensor.shape[-1]
+        pad = tensor[:, -1:].expand(-1, pad_len)
+        return torch.cat([tensor, pad], dim=-1)
+
+    def _ensure_prev_close(
+        self,
+        prev_close: Optional[torch.Tensor],
+        series: torch.Tensor,
+        prediction_length: int,
+    ) -> torch.Tensor:
+        if prev_close is None:
+            prev_close = series[:, 0, -1]
+        prev_close = prev_close.to(series.device, dtype=series.dtype)
+        if prev_close.ndim == 0:
+            prev_close = prev_close.unsqueeze(0)
+        if prev_close.ndim == 1:
+            prev_close = prev_close.unsqueeze(-1)
+        if prev_close.ndim == 2 and prev_close.shape[-1] == prediction_length:
+            return prev_close
+        if prev_close.ndim == 2 and prev_close.shape[-1] == 1:
+            return prev_close.expand(-1, prediction_length)
+        if prev_close.ndim == 2:
+            return prev_close[:, -1:].expand(-1, prediction_length)
+        raise RuntimeError(f"Unsupported prev_close shape: {prev_close.shape}")
+
+    @staticmethod
+    def _infer_target_from_series(series: torch.Tensor, prediction_length: int) -> torch.Tensor:
+        target_slice = series[:, 0, :]
+        if target_slice.shape[-1] >= prediction_length:
+            return target_slice[:, -prediction_length:]
+        pad_len = prediction_length - target_slice.shape[-1]
+        pad = target_slice[:, -1:].expand(-1, pad_len)
+        return torch.cat([target_slice, pad], dim=-1)
+
+    @staticmethod
+    def _compute_pct_delta(values: torch.Tensor, baseline: torch.Tensor) -> torch.Tensor:
+        denom = baseline.abs().clamp(min=1e-6)
+        return (values - baseline) / denom
+
+    @staticmethod
+    def _reconstruct_price(prev_close: torch.Tensor, pct: torch.Tensor) -> torch.Tensor:
+        denom = prev_close.abs().clamp(min=1e-6)
+        return pct * denom + prev_close
+
+    def _autocast_context(self, device: torch.device):
+        if self.autocast_dtype is None or device.type != "cuda":
+            return contextlib.nullcontext()
+        return torch.autocast(device_type="cuda", dtype=self.autocast_dtype)
+
+    def _extract_predictions(self, output: Any) -> torch.Tensor:
+        if hasattr(output, "distribution"):
+            return output.distribution.mean
+        if hasattr(output, "loc"):
+            return output.loc
+        if isinstance(output, dict):
+            for key in ("prediction", "predictions", "output"):
+                if key in output:
+                    return output[key]
+        if isinstance(output, torch.Tensor):
+            return output
+        raise RuntimeError("Model output does not contain predictions tensor.")
+
+    def _prepare_batch(
+        self,
+        batch: Union[MaskedTimeseries, Tuple[Any, Any], List[Any], Dict[str, Any]],
+        device: torch.device,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Dict[str, Any]]:
+        target_price: Optional[torch.Tensor] = None
+        target_pct: Optional[torch.Tensor] = None
+        prev_close: Optional[torch.Tensor] = None
+        metadata: Dict[str, Any] = {}
+
+        candidate = batch
+        extra = {}
+        if isinstance(batch, (tuple, list)) and batch:
+            candidate = batch[0]
+            if len(batch) > 1 and isinstance(batch[1], dict):
+                extra = batch[1]
+        elif isinstance(batch, dict) and "timeseries" in batch:
+            candidate = batch["timeseries"]
+            extra = {k: v for k, v in batch.items() if k != "timeseries"}
+
+        if isinstance(candidate, MaskedTimeseries):
+            masked = candidate.to(device)
+            series = masked.series
+            padding_mask = masked.padding_mask
+            id_mask = masked.id_mask
+        elif hasattr(candidate, "series") and hasattr(candidate, "padding_mask"):
+            masked = candidate.to(device) if hasattr(candidate, "to") else candidate
+            series = masked.series.to(device)
+            padding_mask = masked.padding_mask.to(device)
+            id_mask = masked.id_mask.to(device)
+        elif isinstance(candidate, tuple) and len(candidate) == 2:
+            x, y = candidate
+            series = x.to(device).transpose(1, 2)
+            batch_size, seq_len, features = x.shape
+            padding_mask = torch.ones(batch_size, features, seq_len, dtype=torch.bool, device=device)
+            id_mask = torch.zeros(batch_size, features, seq_len, dtype=torch.long, device=device)
+            target_price = self._ensure_tensor(y, device)
         else:
-            raise ValueError(f"Unsupported scheduler: {self.config.scheduler}")
-        
-        return scheduler
+            raise RuntimeError("Unsupported batch format encountered.")
+
+        if isinstance(extra, dict):
+            maybe_target_price = self._ensure_tensor(extra.get("target_price"), device)
+            if maybe_target_price is not None:
+                target_price = maybe_target_price
+            target_pct = self._ensure_tensor(extra.get("target_pct"), device)
+            prev_close = self._ensure_tensor(extra.get("prev_close"), device)
+            metadata = {k: v for k, v in extra.items() if k not in {"target_price", "target_pct", "prev_close"}}
+
+        return series, padding_mask, id_mask, target_price, target_pct, prev_close, metadata
+
+    def _forward_batch(
+        self,
+        series: torch.Tensor,
+        padding_mask: torch.Tensor,
+        id_mask: torch.Tensor,
+        target_price: Optional[torch.Tensor],
+        target_pct: Optional[torch.Tensor],
+        prev_close: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        device = series.device
+        with self._autocast_context(device):
+            output = self._forward_model(series, padding_mask, id_mask)
+            predictions = self._extract_predictions(output)
+            if predictions.ndim != 3:
+                raise RuntimeError(f"Expected 3D predictions, got shape {predictions.shape}")
+
+            price_predictions = predictions[:, 0, :].to(series.dtype)
+            prediction_length = price_predictions.shape[-1]
+
+            target_pct = self._match_prediction_length(target_pct, prediction_length)
+            prev_close_tensor = self._ensure_prev_close(prev_close, series, prediction_length)
+            matched_target_price = self._match_prediction_length(target_price, prediction_length)
+            if matched_target_price is None and target_pct is not None:
+                matched_target_price = self._reconstruct_price(prev_close_tensor, target_pct)
+            if matched_target_price is None:
+                matched_target_price = self._infer_target_from_series(series, prediction_length)
+
+            dtype = price_predictions.dtype
+            if target_pct is not None:
+                target_pct = target_pct.to(dtype)
+            prev_close_tensor = prev_close_tensor.to(dtype)
+            matched_target_price = matched_target_price.to(dtype)
+
+            if target_pct is not None:
+                targets_pct = target_pct
+            else:
+                targets_pct = self._compute_pct_delta(matched_target_price, prev_close_tensor)
+
+            predictions_pct = self._compute_pct_delta(price_predictions, prev_close_tensor)
+            loss = F.mse_loss(predictions_pct, targets_pct)
+
+        return loss, predictions_pct, targets_pct, price_predictions, matched_target_price
     
     def prepare_data(self):
         """Prepare data loaders"""
@@ -733,7 +999,8 @@ class TotoTrainer:
         self.optimizer = self._create_optimizer()
         
         # Create scheduler
-        steps_per_epoch = len(self.dataloaders['train'])
+        total_train_batches = len(self.dataloaders['train'])
+        steps_per_epoch = max(1, math.ceil(total_train_batches / max(1, self.config.accumulation_steps)))
         self.scheduler = self._create_scheduler(steps_per_epoch)
         
         self.logger.info("Model setup completed")
@@ -773,124 +1040,81 @@ class TotoTrainer:
         self.metrics_tracker.reset()
         
         device = next(self.model.parameters()).device
-        
-        for batch_idx, batch in enumerate(self.dataloaders['train']):
-            batch_start_time = time.time()
-            
-            # Prepare batch data
-            targets = None
-            if isinstance(batch, (tuple, list)) and batch:
-                candidate = batch[0]
-                if hasattr(candidate, 'series') and hasattr(candidate, 'padding_mask') and hasattr(candidate, 'id_mask'):
-                    masked_ts = candidate.to(device)
-                    series = masked_ts.series
-                    padding_mask = masked_ts.padding_mask
-                    id_mask = masked_ts.id_mask
-                    targets = batch[1].to(device) if len(batch) > 1 else None
-                else:
-                    x, y = batch
-                    x, y = x.to(device), y.to(device)
-                    series = x.transpose(1, 2)  # Convert to (batch, features, time)
-                    batch_size, seq_len, features = x.shape
-                    padding_mask = torch.ones(batch_size, features, seq_len, dtype=torch.bool, device=device)
-                    id_mask = torch.ones(batch_size, features, seq_len, dtype=torch.long, device=device)
-                    targets = y
-            elif hasattr(batch, 'series') and hasattr(batch, 'padding_mask') and hasattr(batch, 'id_mask'):
-                masked_ts = batch.to(device)
-                series = masked_ts.series
-                padding_mask = masked_ts.padding_mask
-                id_mask = masked_ts.id_mask
-            else:
-                raise RuntimeError("Unsupported batch format encountered in TotoTrainer.")
-            
-            # Forward pass with mixed precision
-            with autocast(enabled=self.config.use_mixed_precision):
-                if hasattr(self.model, 'module'):
-                    output = self.model.module.model(series, padding_mask, id_mask)
-                else:
-                    output = self.model.model(series, padding_mask, id_mask)
-                
-                # Extract predictions
-                if hasattr(output, 'distribution'):
-                    predictions = output.distribution.mean
-                elif hasattr(output, 'loc'):
-                    predictions = output.loc
-                elif isinstance(output, dict) and 'prediction' in output:
-                    predictions = output['prediction']
-                else:
-                    predictions = output
+        accumulation = max(1, self.config.accumulation_steps)
+        train_loader = self.dataloaders['train']
 
-                prediction_length = predictions.shape[-1]
+        with enable_fast_kernels():
+            for batch_idx, batch in enumerate(train_loader):
+                batch_start_time = time.time()
 
-                if targets is None:
-                    # Derive fallback targets from the last timesteps of the first feature
-                    batch_size, feature_dim, seq_len = series.shape
-                    if seq_len >= prediction_length:
-                        targets = series[:, 0, -prediction_length:]
-                    else:
-                        targets = series[:, 0, -1:].repeat(1, prediction_length)
-                    targets = targets.to(device)
+                (
+                    series,
+                    padding_mask,
+                    id_mask,
+                    target_price,
+                    target_pct,
+                    prev_close,
+                    _,
+                ) = self._prepare_batch(batch, device)
 
-                predictions_close = predictions[:, :1, :]
-                targets = targets.unsqueeze(1)
-
-                if targets.shape[-1] != prediction_length:
-                    if targets.shape[-1] > prediction_length:
-                        targets = targets[..., -prediction_length:]
-                    else:
-                        pad_length = prediction_length - targets.shape[-1]
-                        padding = targets[..., -1:].repeat(1, 1, pad_length)
-                        targets = torch.cat([targets, padding], dim=-1)
-
-                loss = F.mse_loss(predictions_close, targets)
-                
-                # Scale loss for gradient accumulation
-                loss = loss / self.config.accumulation_steps
-            
-            # Backward pass
-            if self.scaler:
-                self.scaler.scale(loss).backward()
-            else:
-                loss.backward()
-            
-            # Gradient accumulation
-            if (batch_idx + 1) % self.config.accumulation_steps == 0:
-                # Gradient clipping
-                if self.scaler:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip_val)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip_val)
-                    self.optimizer.step()
-                
-                self.optimizer.zero_grad()
-                
-                # Update scheduler
-                if self.scheduler and self.config.scheduler.lower() in ["cosine", "onecycle"]:
-                    self.scheduler.step()
-                
-                self.global_step += 1
-            
-            # Update metrics
-            batch_time = time.time() - batch_start_time
-            current_lr = self.optimizer.param_groups[0]['lr']
-            
-            self.metrics_tracker.update(
-                loss=loss.item() * self.config.accumulation_steps,
-                predictions=predictions_close.detach() if self.config.compute_train_metrics else None,
-                targets=targets.detach() if self.config.compute_train_metrics else None,
-                batch_time=batch_time,
-                learning_rate=current_lr
-            )
-            
-            # Log progress
-            if batch_idx % self.config.metrics_log_frequency == 0:
-                self.logger.info(
-                    f"Epoch {self.current_epoch}, Batch {batch_idx}/{len(self.dataloaders['train'])}, "
-                    f"Loss: {loss.item():.6f}, LR: {current_lr:.8f}"
+                loss, predictions_pct, targets_pct, price_predictions, matched_target_price = self._forward_batch(
+                    series,
+                    padding_mask,
+                    id_mask,
+                    target_price,
+                    target_pct,
+                    prev_close,
                 )
+                loss = loss / accumulation
+
+                if self.scaler:
+                    self.scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+
+                if (batch_idx + 1) % accumulation == 0:
+                    if self.config.gradient_clip_val and self.config.gradient_clip_val > 0:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip_val)
+
+                    if self.scaler:
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        self.optimizer.step()
+
+                    self.optimizer.zero_grad(set_to_none=True)
+
+                    if self.scheduler and self.config.scheduler.lower() in {"cosine", "onecycle"}:
+                        self.scheduler.step()
+
+                    self.global_step += 1
+
+                batch_time = time.time() - batch_start_time
+                current_lr = self.optimizer.param_groups[0]["lr"]
+                pct_mae = torch.mean(torch.abs(predictions_pct.detach() - targets_pct.detach())).item()
+                price_mae = torch.mean(torch.abs(price_predictions.detach() - matched_target_price.detach())).item()
+
+                self.metrics_tracker.update(
+                    loss=loss.item() * accumulation,
+                    predictions=predictions_pct.unsqueeze(1) if self.config.compute_train_metrics else None,
+                    targets=targets_pct.unsqueeze(1) if self.config.compute_train_metrics else None,
+                    price_predictions=price_predictions.unsqueeze(1) if self.config.compute_train_metrics else None,
+                    price_targets=matched_target_price.unsqueeze(1) if self.config.compute_train_metrics else None,
+                    batch_time=batch_time,
+                    learning_rate=current_lr,
+                )
+
+                if batch_idx % self.config.metrics_log_frequency == 0:
+                    self.logger.info(
+                        "Epoch %d, Batch %d/%d, Loss %.6f, pct_mae %.6f, price_mae %.2f, LR %.8f",
+                        self.current_epoch,
+                        batch_idx,
+                        len(train_loader),
+                        loss.item(),
+                        pct_mae,
+                        price_mae,
+                        current_lr,
+                    )
         
         return self.metrics_tracker.compute_metrics()
     
@@ -901,82 +1125,39 @@ class TotoTrainer:
         
         self.model.eval()
         self.metrics_tracker.reset()
-        
+
         device = next(self.model.parameters()).device
-        
+
         with torch.no_grad():
-            for batch in self.dataloaders['val']:
-                targets = None
-                if isinstance(batch, (tuple, list)) and batch:
-                    candidate = batch[0]
-                    if hasattr(candidate, 'series') and hasattr(candidate, 'padding_mask') and hasattr(candidate, 'id_mask'):
-                        masked_ts = candidate.to(device)
-                        series = masked_ts.series
-                        padding_mask = masked_ts.padding_mask
-                        id_mask = masked_ts.id_mask
-                        targets = batch[1].to(device) if len(batch) > 1 else None
-                    else:
-                        x, y = batch
-                        x, y = x.to(device), y.to(device)
-                        series = x.transpose(1, 2)
-                        batch_size, seq_len, features = x.shape
-                        padding_mask = torch.ones(batch_size, features, seq_len, dtype=torch.bool, device=device)
-                        id_mask = torch.ones(batch_size, features, seq_len, dtype=torch.long, device=device)
-                        targets = y
-                elif hasattr(batch, 'series') and hasattr(batch, 'padding_mask') and hasattr(batch, 'id_mask'):
-                    masked_ts = batch.to(device)
-                    series = masked_ts.series
-                    padding_mask = masked_ts.padding_mask
-                    id_mask = masked_ts.id_mask
-                else:
-                    raise RuntimeError("Unsupported batch format encountered during validation.")
-                
-                # Forward pass
-                with autocast(enabled=self.config.use_mixed_precision):
-                    if hasattr(self.model, 'module'):
-                        output = self.model.module.model(series, padding_mask, id_mask)
-                    else:
-                        output = self.model.model(series, padding_mask, id_mask)
-                    
-                    # Extract predictions
-                    if hasattr(output, 'distribution'):
-                        predictions = output.distribution.mean
-                    elif hasattr(output, 'loc'):
-                        predictions = output.loc
-                    elif isinstance(output, dict) and 'prediction' in output:
-                        predictions = output['prediction']
-                    else:
-                        predictions = output
+            val_loader = self.dataloaders['val']
+            with enable_fast_kernels():
+                for batch_idx, batch in enumerate(val_loader):
+                    (
+                        series,
+                        padding_mask,
+                        id_mask,
+                        target_price,
+                        target_pct,
+                        prev_close,
+                        _,
+                    ) = self._prepare_batch(batch, device)
 
-                    prediction_length = predictions.shape[-1]
+                    loss, predictions_pct, targets_pct, price_predictions, matched_target_price = self._forward_batch(
+                        series,
+                        padding_mask,
+                        id_mask,
+                        target_price,
+                        target_pct,
+                        prev_close,
+                    )
 
-                    if targets is None:
-                        batch_size, feature_dim, seq_len = series.shape
-                        if seq_len >= prediction_length:
-                            targets = series[:, 0, -prediction_length:]
-                        else:
-                            targets = series[:, 0, -1:].repeat(1, prediction_length)
-                        targets = targets.to(device)
-
-                    predictions_close = predictions[:, :1, :]
-                    targets = targets.unsqueeze(1)
-
-                    if targets.shape[-1] != prediction_length:
-                        if targets.shape[-1] > prediction_length:
-                            targets = targets[..., -prediction_length:]
-                        else:
-                            pad_length = prediction_length - targets.shape[-1]
-                            padding = targets[..., -1:].repeat(1, 1, pad_length)
-                            targets = torch.cat([targets, padding], dim=-1)
-
-                    loss = F.mse_loss(predictions_close, targets)
-                
-                # Update metrics
-                self.metrics_tracker.update(
-                    loss=loss.item(),
-                    predictions=predictions_close.detach() if self.config.compute_val_metrics else None,
-                    targets=targets.detach() if self.config.compute_val_metrics else None
-                )
+                    self.metrics_tracker.update(
+                        loss=loss.item(),
+                        predictions=predictions_pct.unsqueeze(1) if self.config.compute_val_metrics else None,
+                        targets=targets_pct.unsqueeze(1) if self.config.compute_val_metrics else None,
+                        price_predictions=price_predictions.unsqueeze(1) if self.config.compute_val_metrics else None,
+                        price_targets=matched_target_price.unsqueeze(1) if self.config.compute_val_metrics else None,
+                    )
         
         return self.metrics_tracker.compute_metrics()
     
@@ -1052,6 +1233,7 @@ class TotoTrainer:
                     best_val_loss=self.best_val_loss,
                     metrics={**train_metrics, **val_metrics},
                     config=self.config,
+                    dataloader_config=self.dataloader_config,
                     is_best=is_best,
                     val_loss=val_loss_for_checkpoint
                 )
@@ -1187,72 +1369,37 @@ class TotoTrainer:
         device = next(self.model.parameters()).device
         
         with torch.no_grad():
-            for batch in self.dataloaders[dataloader_name]:
-                targets = None
-                if isinstance(batch, (tuple, list)) and batch:
-                    candidate = batch[0]
-                    if hasattr(candidate, 'series') and hasattr(candidate, 'padding_mask') and hasattr(candidate, 'id_mask'):
-                        masked_ts = candidate.to(device)
-                        series = masked_ts.series
-                        padding_mask = masked_ts.padding_mask
-                        id_mask = masked_ts.id_mask
-                        targets = batch[1].to(device) if len(batch) > 1 else None
-                    else:
-                        x, y = batch
-                        x, y = x.to(device), y.to(device)
-                        series = x.transpose(1, 2)
-                        batch_size, seq_len, features = x.shape
-                        padding_mask = torch.ones(batch_size, features, seq_len, dtype=torch.bool, device=device)
-                        id_mask = torch.ones(batch_size, features, seq_len, dtype=torch.long, device=device)
-                        targets = y
-                elif hasattr(batch, 'series') and hasattr(batch, 'padding_mask') and hasattr(batch, 'id_mask'):
-                    masked_ts = batch.to(device)
-                    series = masked_ts.series
-                    padding_mask = masked_ts.padding_mask
-                    id_mask = masked_ts.id_mask
-                else:
-                    raise RuntimeError("Unsupported batch format encountered during evaluation.")
-                
-                if hasattr(self.model, 'module'):
-                    output = self.model.module.model(series, padding_mask, id_mask)
-                else:
-                    output = self.model.model(series, padding_mask, id_mask)
-                
-                if hasattr(output, 'distribution'):
-                    predictions = output.distribution.mean
-                elif hasattr(output, 'loc'):
-                    predictions = output.loc
-                elif isinstance(output, dict) and 'prediction' in output:
-                    predictions = output['prediction']
-                else:
-                    predictions = output
-                
-                prediction_length = predictions.shape[-1]
-                if targets is None:
-                    batch_size, feature_dim, seq_len = series.shape
-                    if seq_len >= prediction_length:
-                        targets = series[:, 0, -prediction_length:]
-                    else:
-                        targets = series[:, 0, -1:].repeat(1, prediction_length)
-                    targets = targets.to(device)
-                
-                predictions_close = predictions[:, :1, :]
-                targets = targets.unsqueeze(1)
-                if targets.shape[-1] != prediction_length:
-                    if targets.shape[-1] > prediction_length:
-                        targets = targets[..., -prediction_length:]
-                    else:
-                        pad_length = prediction_length - targets.shape[-1]
-                        padding = targets[..., -1:].repeat(1, 1, pad_length)
-                        targets = torch.cat([targets, padding], dim=-1)
-                
-                loss = F.mse_loss(predictions_close, targets)
-                
-                self.metrics_tracker.update(
-                    loss=loss.item(),
-                    predictions=predictions_close.detach(),
-                    targets=targets.detach()
-                )
+            loader = self.dataloaders[dataloader_name]
+            with enable_fast_kernels():
+                for batch in loader:
+                    batch_start_time = time.time()
+                    (
+                        series,
+                        padding_mask,
+                        id_mask,
+                        target_price,
+                        target_pct,
+                        prev_close,
+                        _,
+                    ) = self._prepare_batch(batch, device)
+
+                    loss, predictions_pct, targets_pct, price_predictions, matched_target_price = self._forward_batch(
+                        series,
+                        padding_mask,
+                        id_mask,
+                        target_price,
+                        target_pct,
+                        prev_close,
+                    )
+
+                    self.metrics_tracker.update(
+                        loss=loss.item(),
+                        predictions=predictions_pct.unsqueeze(1) if self.config.compute_val_metrics else None,
+                        targets=targets_pct.unsqueeze(1) if self.config.compute_val_metrics else None,
+                        price_predictions=price_predictions.unsqueeze(1) if self.config.compute_val_metrics else None,
+                        price_targets=matched_target_price.unsqueeze(1) if self.config.compute_val_metrics else None,
+                        batch_time=time.time() - batch_start_time,
+                    )
         
         metrics = self.metrics_tracker.compute_metrics()
         
