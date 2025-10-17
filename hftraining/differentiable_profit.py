@@ -50,11 +50,17 @@ def compute_portfolio_pnl(
             dtype=future_returns.dtype,
             device=future_returns.device,
         )
-        if per_asset_costs.dim() == 1:
-            per_asset_costs = per_asset_costs.unsqueeze(0)
-        elif per_asset_costs.dim() == 0:
+        if per_asset_costs.dim() == 0:
             per_asset_costs = per_asset_costs.view(1, 1)
-        per_asset_costs = per_asset_costs.expand_as(constrained_allocations)
+        elif per_asset_costs.dim() == 1:
+            per_asset_costs = per_asset_costs.unsqueeze(0)
+
+        if per_asset_costs.size(-1) == 1 and constrained_allocations.size(-1) > 1:
+            per_asset_costs = per_asset_costs.expand(per_asset_costs.size(0), constrained_allocations.size(-1))
+        elif per_asset_costs.size(-1) != constrained_allocations.size(-1):
+            per_asset_costs = per_asset_costs.expand(per_asset_costs.size(0), constrained_allocations.size(-1))
+        else:
+            per_asset_costs = per_asset_costs.expand_as(constrained_allocations)
     else:
         per_asset_costs = torch.full_like(constrained_allocations, float(transaction_cost))
 

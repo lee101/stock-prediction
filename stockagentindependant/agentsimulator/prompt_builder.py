@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from typing import Dict, Tuple
+from collections.abc import Sequence
 
 from .market_data import MarketDataBundle
 from ..constants import DEFAULT_SYMBOLS, SIMULATION_DAYS, TRADING_FEE, CRYPTO_TRADING_FEE
@@ -15,7 +15,7 @@ SYSTEM_PROMPT = (
 )
 
 
-def plan_response_schema() -> Dict:
+def plan_response_schema() -> dict[str, object]:
     return {
         "type": "object",
         "properties": {
@@ -69,19 +69,19 @@ def plan_response_schema() -> Dict:
 def build_daily_plan_prompt(
     market_data: MarketDataBundle,
     target_date: date,
-    symbols=None,
+    symbols: Sequence[str] | None = None,
     include_market_history: bool = True,
-) -> Tuple[str, Dict]:
-    symbols = symbols or DEFAULT_SYMBOLS
-    market_payload = market_data.to_payload() if include_market_history else {"symbols": symbols}
+) -> tuple[str, dict[str, object]]:
+    symbols = list(symbols) if symbols is not None else list(DEFAULT_SYMBOLS)
+    market_payload = market_data.to_payload() if include_market_history else {"symbols": list(symbols)}
 
     prompt = f"""
 You are devising a one-day allocation for a paper-trading benchmark on {target_date.isoformat()}.
 
 Context:
 - Usable symbols: {', '.join(symbols)}.
-- Historical payload contains the last {market_data.lookback_days} trading days of OHLC percent changes per symbol.
-- No prior portfolio exists; propose positions from scratch.
+- Historical payload contains the last {market_data.lookback_days} trading days of OHLC percent changes per symbol sourced from trainingdata/.
+- No prior portfolio exists; work entirely in a sandbox and perform capital allocation across the available cash before issuing trades.
 - Execution windows: `market_open` (09:30 ET) or `market_close` (16:00 ET). Choose one per instruction.
 - Assume round-trip trading fees of {TRADING_FEE:.4%} for equities and {CRYPTO_TRADING_FEE:.4%} for crypto, and keep the plan profitable after fees.
 - Plans will be benchmarked over {SIMULATION_DAYS} simulated days.
@@ -89,12 +89,13 @@ Context:
 Structured output requirements:
 - Follow the schema exactly.
 - Only the keys ``plan`` and ``commentary`` are allowed at the top level.
+- Record a `capital_allocation_plan` string inside `metadata` describing how funds are distributed (percentages or dollar targets per symbol).
 - Provide realistic `entry_price` / `exit_price` targets, even if you expect not to trade (use `null`).
 - Supply `exit_reason` when recommending exits; use `null` otherwise.
 - Return ONLY the JSON object—no markdown, narrative, or extra fields.
 """.strip()
 
-    user_payload = {
+    user_payload: dict[str, object] = {
         "market_data": market_payload,
         "target_date": target_date.isoformat(),
     }
@@ -106,7 +107,7 @@ def dump_prompt_package(
     market_data: MarketDataBundle,
     target_date: date,
     include_market_history: bool = True,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     prompt, user_payload = build_daily_plan_prompt(
         market_data=market_data,
         target_date=target_date,

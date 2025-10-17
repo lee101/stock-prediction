@@ -56,13 +56,22 @@ def _load_cached_symbol(save_path: Path, symbol: str) -> DataFrame:
     return pd.read_csv(latest_file)
 
 
+def _persist_cached_symbol(save_path: Path, symbol: str, df: DataFrame) -> None:
+    if df.empty:
+        return
+    end = datetime.datetime.now().strftime('%Y-%m-%d')
+    file_save_path = save_path / f'{symbol.replace("/", "-")}-{end}.csv'
+    file_save_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(file_save_path)
+
+
 def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
     symbols_provided = symbols is not None
     if symbols is None:
         symbols = [
             'COUR', 'GOOG', 'TSLA', 'NVDA', 'AAPL', "U", "ADSK", "ADBE", "MSFT",
             'COIN',
-            'NFLX', 'PYPL', 'SAP', 'SONY', 'BTCUSD', 'ETHUSD',
+            'NFLX', 'PYPL', 'SAP', 'SONY', 'BTCUSD', 'ETHUSD', 'UNIUSD',
         ]
     else:
         symbols = list(symbols)
@@ -94,6 +103,7 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
                     "set valid Alpaca credentials to download fresh data."
                 )
             found_symbols[symbol] = cached_df
+            _persist_cached_symbol(save_path, symbol, cached_df)
         return found_symbols[symbols[-1]] if symbols else DataFrame()
 
     credential_placeholders_present = any(

@@ -86,6 +86,13 @@ class DataLoaderConfig:
     normalization_method: str = "robust"  # "standard", "minmax", "robust", "none"
     handle_missing: str = "interpolate"  # "drop", "interpolate", "zero"
     outlier_threshold: float = 3.0  # Standard deviations for outlier detection
+    enable_augmentation: bool = False
+    price_noise_std: float = 0.0
+    volume_noise_std: float = 0.0
+    feature_dropout_prob: float = 0.0
+    time_mask_prob: float = 0.0
+    time_mask_max_span: int = 0
+    random_scaling_range: Tuple[float, float] = (1.0, 1.0)
     
     # Training parameters
     batch_size: int = 32
@@ -128,6 +135,16 @@ class DataLoaderConfig:
             self.additional_features = ["Volume"]
         if self.ma_periods is None:
             self.ma_periods = [5, 10, 20]
+        if not (0.0 <= self.feature_dropout_prob <= 1.0):
+            raise ValueError("feature_dropout_prob must be between 0 and 1")
+        if not (0.0 <= self.time_mask_prob <= 1.0):
+            raise ValueError("time_mask_prob must be between 0 and 1")
+        if self.time_mask_max_span < 0:
+            raise ValueError("time_mask_max_span must be non-negative")
+        if self.random_scaling_range[0] > self.random_scaling_range[1]:
+            raise ValueError("random_scaling_range must be ordered as (min, max)")
+        if self.price_noise_std < 0 or self.volume_noise_std < 0:
+            raise ValueError("noise std values must be non-negative")
     
     def save(self, path: str):
         """Save configuration to JSON file"""
@@ -149,6 +166,7 @@ class OHLCPreprocessor:
         self.config = config
         self.scalers = {}
         self.fitted = False
+        self.feature_columns: List[str] = []
         
         # Initialize scalers
         if config.normalization_method == "standard":
@@ -202,15 +220,23 @@ class OHLCPreprocessor:
             return df.fillna(0)
     
     def remove_outliers(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Remove outliers based on z-score threshold"""
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        
+        """Clip extreme values instead of dropping rows to retain alignment."""
+        threshold = self.config.outlier_threshold
+        if not np.isfinite(threshold) or threshold <= 0:
+            return df
+        numeric_cols = [c for c in df.columns if c != 'timestamp' and np.issubdtype(df[c].dtype, np.number)]
+        clipped = df.copy()
         for col in numeric_cols:
-            if col not in ['timestamp']:  # Skip timestamp column
-                z_scores = np.abs((df[col] - df[col].mean()) / df[col].std())
-                df = df[z_scores < self.config.outlier_threshold]
-        
-        return df
+            series = clipped[col]
+            mean = series.mean()
+            std = series.std()
+            if std == 0 or np.isnan(std):
+                continue
+            z = threshold
+            lower = mean - z * std
+            upper = mean + z * std
+            clipped[col] = series.clip(lower=lower, upper=upper)
+        return clipped
     
     def fit_scalers(self, data: Dict[str, pd.DataFrame]):
         """Fit scalers on training data"""
@@ -292,6 +318,7 @@ class OHLCPreprocessor:
         if not available_cols:
             raise ValueError(f"No valid feature columns found in data")
         
+        self.feature_columns = available_cols
         return df[available_cols].values.astype(np.float32)
 
 
@@ -309,9 +336,19 @@ class OHLCDataset(Dataset):
         self.mode = mode
         self.sequences = []
         self.symbol_mapping = {}
-        
         # Process and prepare sequences
         self._prepare_sequences(data)
+        self.feature_columns = list(getattr(self.preprocessor, "feature_columns", []))
+        self.price_feature_indices = [
+            self.feature_columns.index(col)
+            for col in self.config.ohlc_features
+            if col in self.feature_columns
+        ]
+        self.volume_feature_index = (
+            self.feature_columns.index("Volume")
+            if "Volume" in self.feature_columns
+            else None
+        )
         
         # Set random seed
         random.seed(config.random_seed)
@@ -346,6 +383,7 @@ class OHLCDataset(Dataset):
                 # Store symbol mapping
                 self.symbol_mapping[symbol] = symbol_id
                 
+                target_series = processed_df[self.config.target_feature].to_numpy(dtype=np.float32)
                 # Create sequences with sliding window
                 max_start_idx = len(features) - self.config.sequence_length - self.config.prediction_length
                 
@@ -354,10 +392,15 @@ class OHLCDataset(Dataset):
                     pred_end_idx = end_idx + self.config.prediction_length
                     
                     if pred_end_idx <= len(features):
+                        prev_close = float(target_series[end_idx - 1])
+                        target_prices = target_series[end_idx:pred_end_idx]
+                        denom = max(abs(prev_close), 1e-6)
+                        target_pct = ((target_prices - prev_close) / denom).astype(np.float32, copy=False)
                         sequence_data = {
                             'features': features[start_idx:end_idx],
-                            'target': features[end_idx:pred_end_idx, 
-                                            self._get_target_column_index(processed_df)],
+                            'target_price': target_prices,
+                            'target_pct': target_pct,
+                            'prev_close': prev_close,
                             'symbol_id': symbol_id,
                             'symbol_name': symbol,
                             'timestamps': timestamps[start_idx:end_idx],
@@ -393,12 +436,74 @@ class OHLCDataset(Dataset):
     def __len__(self) -> int:
         return len(self.sequences)
     
+    def _augment_series(self, series: torch.Tensor) -> torch.Tensor:
+        if self.mode != "train" or not self.config.enable_augmentation:
+            return series
+
+        seq_len = series.shape[1]
+        if seq_len <= 1:
+            return series
+
+        augmented = series.clone()
+        time_slice = slice(0, seq_len - 1)
+
+        # Random scaling applied to price features
+        min_scale, max_scale = self.config.random_scaling_range
+        if max_scale - min_scale > 1e-6 and self.price_feature_indices:
+            scale = random.uniform(min_scale, max_scale)
+            augmented[self.price_feature_indices, time_slice] *= scale
+
+        # Multiplicative gaussian noise for price features
+        if self.config.price_noise_std > 0 and self.price_feature_indices:
+            noise = torch.randn(
+                (len(self.price_feature_indices), seq_len - 1),
+                dtype=augmented.dtype,
+            ) * self.config.price_noise_std
+            augmented[self.price_feature_indices, time_slice] *= (1.0 + noise)
+
+        # Multiplicative gaussian noise for volume feature
+        if (
+            self.config.volume_noise_std > 0
+            and self.volume_feature_index is not None
+        ):
+            vol_noise = torch.randn(
+                seq_len - 1, dtype=augmented.dtype
+            ) * self.config.volume_noise_std
+            augmented[self.volume_feature_index, time_slice] *= (1.0 + vol_noise)
+
+        # Feature dropout
+        if self.config.feature_dropout_prob > 0:
+            dropout_mask = torch.rand_like(
+                augmented[:, :-1]
+            ) < self.config.feature_dropout_prob
+            augmented[:, :-1] = torch.where(
+                dropout_mask, torch.zeros_like(augmented[:, :-1]), augmented[:, :-1]
+            )
+
+        # Random time masking
+        if (
+            self.config.time_mask_prob > 0
+            and self.config.time_mask_max_span > 0
+            and random.random() < self.config.time_mask_prob
+        ):
+            max_span = min(self.config.time_mask_max_span, seq_len - 1)
+            if max_span > 0:
+                span = random.randint(1, max_span)
+                start = random.randint(0, (seq_len - 1) - span)
+                fill_values = augmented[:, time_slice].mean(dim=1, keepdim=True)
+                augmented[:, start : start + span] = fill_values
+
+        # Keep the most recent timestep exact to preserve prev_close consistency
+        augmented[:, -1] = series[:, -1]
+        return augmented
+    
     def __getitem__(self, idx: int) -> MaskedTimeseries:
         """Return a MaskedTimeseries object compatible with Toto model"""
         seq = self.sequences[idx]
         
         # Prepare tensor data
         series = torch.from_numpy(seq['features'].T).float()  # Shape: (features, time)
+        series = self._augment_series(series)
         n_features, seq_len = series.shape
         
         # Create padding mask (all True since we don't have padding here)
@@ -424,16 +529,19 @@ class OHLCDataset(Dataset):
             timestamp_seconds=timestamps,
             time_interval_seconds=time_intervals
         )
+        extra = {
+            'target_price': torch.from_numpy(seq['target_price']).float(),
+            'prev_close': torch.tensor(seq['prev_close'], dtype=torch.float32),
+            'target_pct': torch.from_numpy(seq['target_pct']).float(),
+        }
         
-        target = torch.from_numpy(seq['target']).float()
-        
-        return masked, target
+        return masked, extra
     
     def get_targets(self) -> torch.Tensor:
         """Get all targets for this dataset"""
         targets = []
         for seq in self.sequences:
-            targets.append(torch.from_numpy(seq['target']).float())
+            targets.append(torch.from_numpy(seq['target_price']).float())
         return torch.stack(targets) if targets else torch.empty(0)
 
 

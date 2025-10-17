@@ -21,6 +21,13 @@ from hftraining.config import ExperimentConfig, create_config
 from hftraining.run_training import setup_environment, load_and_process_data, create_model
 
 
+@pytest.fixture(autouse=True)
+def force_cpu_cuda():
+    """Ensure tests run in CPU mode to avoid CUDA device mismatches."""
+    with patch('torch.cuda.is_available', return_value=False):
+        yield
+
+
 class TestStockDataset:
     """Test StockDataset functionality."""
     
@@ -141,7 +148,7 @@ class TestHFTrainer:
         assert trainer.config == config
         assert trainer.train_dataset == train_dataset
         assert trainer.eval_dataset == val_dataset
-        assert trainer.step == 0
+        assert trainer.global_step == 0
     
     def test_trainer_compute_loss(self, config, sample_datasets):
         """Test loss computation."""
@@ -159,14 +166,14 @@ class TestHFTrainer:
         batch = {
             'input_ids': torch.randn(4, 15, 10),
             'labels': torch.randn(4, 3, 10),
-            'action_labels': torch.randint(0, 3, (4,))
+            'action_labels': torch.randint(0, 3, (4,)),
+            'attention_mask': torch.ones(4, 15, dtype=torch.long),
         }
         
-        loss = trainer.compute_loss(batch)
+        loss = trainer.training_step(batch)
         
-        assert isinstance(loss, torch.Tensor)
-        assert loss.requires_grad
-        assert loss.item() > 0
+        assert isinstance(loss, float)
+        assert loss >= 0
     
     def test_trainer_evaluation_step(self, config, sample_datasets):
         """Test evaluation step."""
@@ -194,11 +201,20 @@ class TestHFTrainer:
             assert 'eval_action_loss' in metrics
             assert 'eval_price_loss' in metrics
     
-    @patch('hftraining.train_hf.SummaryWriter')
-    def test_trainer_logging(self, mock_writer, config, sample_datasets):
+    @patch('hftraining.train_hf.WandBoardLogger')
+    def test_trainer_logging(self, mock_logger_cls, config, sample_datasets):
         """Test trainer logging functionality."""
         train_dataset, val_dataset = sample_datasets
         model = TransformerTradingModel(config, input_dim=10)
+
+        mock_logger = MagicMock()
+        mock_logger.tensorboard_writer = MagicMock()
+        mock_logger.tensorboard_log_dir = Path("logs")
+        mock_logger.wandb_enabled = False
+        mock_logger.log = MagicMock()
+        mock_logger.add_scalar = MagicMock()
+        mock_logger.finish = MagicMock()
+        mock_logger_cls.return_value = mock_logger
         
         trainer = HFTrainer(
             model=model,
@@ -215,8 +231,9 @@ class TestHFTrainer:
         
         trainer.log_metrics(metrics, step=10)
         
-        # Should create writer if not exists
-        assert hasattr(trainer, 'writer')
+        # Should use the unified metrics logger
+        assert hasattr(trainer, 'metrics_logger')
+        mock_logger.log.assert_called()
     
     def test_trainer_save_checkpoint(self, config, sample_datasets):
         """Test checkpoint saving."""

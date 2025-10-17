@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, cast
 
 import pandas as pd
 from loguru import logger
@@ -38,21 +38,23 @@ class MarketDataBundle:
                 return list(df.index)
         return []
 
-    def to_payload(self, limit: Optional[int] = None) -> Dict[str, List[Dict[str, float]]]:
-        payload: Dict[str, List[Dict[str, float]]] = {}
+    def to_payload(self, limit: Optional[int] = None) -> Dict[str, List[Dict[str, float | str]]]:
+        payload: Dict[str, List[Dict[str, float | str]]] = {}
         for symbol, df in self.bars.items():
             frame = df.tail(limit) if limit else df
             frame_with_pct = add_ohlc_percent_change(frame)
-            payload[symbol] = [
-                {
-                    "timestamp": row.name.isoformat(),
-                    "open_pct": float(row["open_pct"]),
-                    "high_pct": float(row["high_pct"]),
-                    "low_pct": float(row["low_pct"]),
-                    "close_pct": float(row["close_pct"]),
-                }
-                for _, row in frame_with_pct.iterrows()
-            ]
+            payload[symbol] = []
+            for _, row in frame_with_pct.iterrows():
+                timestamp = cast(pd.Timestamp, row.name)
+                payload[symbol].append(
+                    {
+                        "timestamp": timestamp.isoformat(),
+                        "open_pct": float(row["open_pct"]),
+                        "high_pct": float(row["high_pct"]),
+                        "low_pct": float(row["low_pct"]),
+                        "close_pct": float(row["close_pct"]),
+                    }
+                )
         return payload
 
 
@@ -65,7 +67,6 @@ def fetch_latest_ohlc(
 ) -> MarketDataBundle:
     symbols = [str(symbol).upper() for symbol in (symbols or DEFAULT_SYMBOLS)]
     as_of = as_of or datetime.now(timezone.utc)
-    start = as_of - timedelta(days=max(lookback_days * 2, 30))
 
     candidate_dirs: List[Path] = []
     if local_data_dir:

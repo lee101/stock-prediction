@@ -7,6 +7,7 @@ Trains a base model on multiple stock pairs, then allows fine-tuning for individ
 import os
 import sys
 import torch
+from torch.serialization import add_safe_globals
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -240,8 +241,8 @@ class BaseModelTrainer:
     ) -> Dict[str, np.ndarray]:
         """Process and normalize data for all stocks"""
         
-        processed_data = {}
-        all_data_for_scaling = []
+        processed_data: Dict[str, np.ndarray] = {}
+        all_data_for_scaling: List[np.ndarray] = []
         
         # First pass: collect all data for fitting scalers
         for symbol, df in stock_data.items():
@@ -250,9 +251,27 @@ class BaseModelTrainer:
             features = self.processor.prepare_features(df, symbol=symbol)
             all_data_for_scaling.append(features)
 
+        if not all_data_for_scaling:
+            raise ValueError("No features produced for scaling; check data preparation.")
+
+        feature_dims = [arr.shape[1] for arr in all_data_for_scaling]
+        target_dim = max(feature_dims)
+
+        def _pad_features(array: np.ndarray, dim: int) -> np.ndarray:
+            if array.shape[1] == dim:
+                return array
+            pad_width = dim - array.shape[1]
+            if pad_width <= 0:
+                return array
+            padding = np.zeros((array.shape[0], pad_width), dtype=array.dtype)
+            return np.concatenate([array, padding], axis=1)
+
+        aligned_for_scaling = [_pad_features(arr, target_dim) for arr in all_data_for_scaling]
+
         # Fit scalers on combined data
-        combined_data = np.vstack(all_data_for_scaling)
+        combined_data = np.vstack(aligned_for_scaling)
         self.processor.fit_scalers(combined_data)
+        self._feature_dim = target_dim
         
         # Save processor
         processor_path = self.base_model_dir / "data_processor.pkl"
@@ -264,6 +283,7 @@ class BaseModelTrainer:
             if self.max_rows is not None:
                 df = df.tail(self.max_rows).copy()
             features = self.processor.prepare_features(df, symbol=symbol)
+            features = _pad_features(features, target_dim)
             normalized = self.processor.transform(features)
             processed_data[symbol] = normalized
         
@@ -657,6 +677,7 @@ tensorboard --logdir {self.tensorboard_dir}
         self,
         symbols: Sequence[str],
         rl_config: Optional[PortfolioRLConfig] = None,
+        initial_checkpoint: Optional[Path] = None,
     ) -> Dict[str, float]:
         """Train differentiable portfolio allocation policy for one or more symbols."""
 
@@ -760,6 +781,9 @@ tensorboard --logdir {self.tensorboard_dir}
         train_ds, val_ds = random_split(dataset, [train_size, val_size])
 
         rl_config = rl_config or PortfolioRLConfig()
+        rl_config.logging_dir = str(self.tensorboard_dir / "portfolio")
+        if getattr(rl_config, "wandb_group", None) is None:
+            rl_config.wandb_group = "portfolio_rl"
         train_loader = DataLoader(train_ds, batch_size=rl_config.batch_size, shuffle=True)
         val_loader = DataLoader(val_ds, batch_size=rl_config.batch_size) if val_size > 0 else None
 
@@ -767,21 +791,51 @@ tensorboard --logdir {self.tensorboard_dir}
         input_dim = sample.shape[-1]
         num_assets = len(symbols)
         model = PortfolioAllocationModel(input_dim=input_dim, config=rl_config, num_assets=num_assets)
+        if initial_checkpoint:
+            add_safe_globals([PortfolioRLConfig])
+            ckpt_payload = torch.load(initial_checkpoint, map_location="cpu", weights_only=False)
+            state_dict = ckpt_payload.get("model_state_dict", ckpt_payload)
+            cleaned_state = {
+                k.replace("_orig_mod.", ""): v
+                for k, v in state_dict.items()
+            }
+            model.load_state_dict(cleaned_state)
         trainer = DifferentiablePortfolioTrainer(model, rl_config, train_loader, val_loader)
         metrics = trainer.train()
+        final_state = trainer.export_state_dict()
 
         checkpoint_dir = self.finetuned_dir / "portfolio_pairs"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         ckpt_name = "_".join(symbols)
         ckpt_path = checkpoint_dir / f"{ckpt_name}_portfolio.pt"
-        torch.save({
-            'model_state_dict': model.state_dict(),
+        payload = {
+            'model_state_dict': final_state,
             'config': rl_config,
             'symbols': symbols,
             'metrics': metrics,
-        }, ckpt_path)
+        }
+        torch.save(payload, ckpt_path)
+
+        best_state = trainer.best_state_dict()
+        best_path: Optional[Path] = None
+        if best_state is not None:
+            best_path = checkpoint_dir / f"{ckpt_name}_portfolio_best.pt"
+            best_payload = {
+                'model_state_dict': best_state,
+                'config': rl_config,
+                'symbols': symbols,
+                'metrics': metrics,
+                'best_epoch': metrics.get("best_epoch", -1),
+                'best_val_profit': metrics.get("best_val_profit"),
+            }
+            torch.save(best_payload, best_path)
+            metrics["best_checkpoint"] = str(best_path)
+        else:
+            metrics["best_checkpoint"] = None
 
         self.logger.info(f"Portfolio RL model saved to {ckpt_path}")
+        if best_path:
+            self.logger.info(f"Best validation checkpoint saved to {best_path}")
         return metrics
 
 

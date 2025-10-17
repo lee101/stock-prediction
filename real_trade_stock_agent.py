@@ -12,7 +12,7 @@ import alpaca_wrapper
 from gpt5_queries import query_gpt5_structured
 from src.logging_utils import setup_logging
 from src.process_utils import backout_near_market
-from stockagent import DEFAULT_SYMBOLS, SIMULATION_DAYS
+from stockagent import DEFAULT_SYMBOLS, DEFAULT_REASONING_EFFORT, SIMULATION_DAYS
 from stockagent.agentsimulator import (
     AgentSimulator,
     AccountSnapshot,
@@ -37,7 +37,7 @@ logger = setup_logging("trade_stock_agent.log")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stateful GPT-5 trading planner.")
     parser.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS)
-    parser.add_argument("--lookback", type=int, default=60, help="Number of recent days used in prompts.")
+    parser.add_argument("--lookback", type=int, default=30, help="Number of recent days used in prompts.")
     parser.add_argument("--live", action="store_true", help="Execute orders.")
     parser.add_argument("--skip-simulation", action="store_true")
     parser.add_argument("--print-json", action="store_true")
@@ -87,6 +87,7 @@ def request_plan(
         user_prompt=prompt_text,
         response_schema=plan_response_schema(),
         user_payload_json=json.dumps(payload),
+        reasoning_effort=DEFAULT_REASONING_EFFORT,
     )
     logger.info(f"GPT raw response: {raw_json}")
     try:

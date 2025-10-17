@@ -15,16 +15,21 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 if "openai" not in sys.modules:
     stub_module = types.ModuleType("openai")
 
+    def _not_implemented(*args, **kwargs):
+        raise RuntimeError("Stub OpenAI client cannot be used directly. Provide a monkeypatched client.")
+
     class _StubAsyncOpenAI:
         def __init__(self, api_key: str):
             self.api_key = api_key
+            self.responses = types.SimpleNamespace(create=_not_implemented)
 
-            async def _not_implemented(*args, **kwargs):
-                raise RuntimeError("Stub AsyncOpenAI cannot be used directly. Provide a monkeypatched client.")
-
+    class _StubOpenAI:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
             self.responses = types.SimpleNamespace(create=_not_implemented)
 
     stub_module.AsyncOpenAI = _StubAsyncOpenAI
+    stub_module.OpenAI = _StubOpenAI
     sys.modules["openai"] = stub_module
 
 if "diskcache" not in sys.modules:

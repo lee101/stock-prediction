@@ -128,3 +128,11 @@ compiled_models/
 tototraining/checkpoints
 external/kronos/
 .tmp_bench_data
+.venv312
+runs
+runs
+hftraining/quick_test_logs_*
+hftraining/quick_test_output*
+.venv312c
+nanochat
+marketsimulator/environment.py

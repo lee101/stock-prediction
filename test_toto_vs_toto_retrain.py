@@ -104,15 +104,15 @@ def main() -> None:
 
     base_return_errors = _compute_return_errors(preds, actuals, prev_price)
     calib_return_errors = _compute_return_errors(calibrated, actuals, prev_price)
-    base_return_mae = np.mean(np.abs(base_return_errors))
-    calib_return_mae = np.mean(np.abs(calib_return_errors))
+    base_pct_return_mae = np.mean(np.abs(base_return_errors))
+    calib_pct_return_mae = np.mean(np.abs(calib_return_errors))
 
     print("=== Toto vs Calibrated Toto (Horizon=1) ===")
     print(f"Evaluation points: {len(preds)}")
     print(f"Base Toto price MAE:        {base_mae:.6f}")
     print(f"Calibrated Toto price MAE:  {calib_mae:.6f}")
-    print(f"Base Toto return MAE:       {base_return_mae:.6f}")
-    print(f"Calibrated Toto return MAE: {calib_return_mae:.6f}")
+    print(f"Base Toto return MAE:       {base_pct_return_mae:.6f}")
+    print(f"Calibrated Toto return MAE: {calib_pct_return_mae:.6f}")
     print(f"Calibration parameters -> scale: {scale:.6f}, bias: {bias:.6f}")
 
 
