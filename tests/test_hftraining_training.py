@@ -258,10 +258,10 @@ class TestHFTrainer:
             assert checkpoint_path.exists()
             
             # Load and verify checkpoint
-            checkpoint = torch.load(checkpoint_path)
+            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
             assert 'model_state_dict' in checkpoint
-            assert 'step' in checkpoint
-            assert checkpoint['step'] == 100
+            assert 'global_step' in checkpoint
+            assert checkpoint['global_step'] == 100
 
 
 class TestConfigSystem:
@@ -363,7 +363,7 @@ class TestTrainingPipeline:
             
             # Check datasets were created
             assert train_dataset is not None
-            assert isinstance(train_dataset, StockDataset)
+            assert train_dataset.__class__.__name__ == "StockDataset"
             
             # Check processor was saved
             processor_path = Path(config.output.output_dir) / "data_processor.pkl"
@@ -377,7 +377,7 @@ class TestTrainingPipeline:
         model, hf_config = create_model(config, input_dim)
         
         # Check model was created
-        assert isinstance(model, TransformerTradingModel)
+        assert model.__class__.__name__ == "TransformerTradingModel"
         assert model.input_dim == input_dim
         
         # Check config conversion

@@ -212,6 +212,7 @@ class HFTrainingConfig:
     # Data parameters
     sequence_length: int = 60
     prediction_horizon: int = 5
+    quantile_levels: Optional[Tuple[float, ...]] = None
     
     # Advanced features
     use_mixed_precision: bool = True

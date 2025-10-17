@@ -183,29 +183,20 @@ class TradingPlan:
 @dataclass
 class TradingPlanEnvelope:
     plan: TradingPlan
-    commentary: str | None = None
 
     def to_json(self) -> str:
-        payload = {
-            "plan": self.plan.to_dict(),
-            "commentary": self.commentary,
-        }
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        return json.dumps(self.plan.to_dict(), ensure_ascii=False, indent=2)
 
     @classmethod
     def from_json(cls, raw: str) -> "TradingPlanEnvelope":
         payload = json.loads(raw)
         if not isinstance(payload, Mapping):
             raise ValueError("GPT response payload must be an object")
-        if "plan" not in payload:
-            raise ValueError("GPT response missing plan key")
-        plan_data = payload["plan"]
+        plan_data = payload.get("plan", payload)
         if not isinstance(plan_data, Mapping):
             raise ValueError("Plan payload must be a mapping")
         plan = TradingPlan.from_dict(plan_data)
-        commentary_raw = payload.get("commentary")
-        commentary = commentary_raw if isinstance(commentary_raw, str) else None
-        return cls(plan=plan, commentary=commentary)
+        return cls(plan=plan)
 
 
 @dataclass
