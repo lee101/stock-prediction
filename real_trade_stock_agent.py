@@ -3,7 +3,7 @@ import json
 from copy import deepcopy
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import pytz
 from loguru import logger
@@ -12,7 +12,7 @@ import alpaca_wrapper
 from gpt5_queries import query_gpt5_structured
 from src.logging_utils import setup_logging
 from src.process_utils import backout_near_market
-from stockagent import DEFAULT_SYMBOLS, SIMULATION_DAYS
+from stockagent import DEFAULT_SYMBOLS, DEFAULT_REASONING_EFFORT, SIMULATION_DAYS
 from stockagent.agentsimulator import (
     AgentSimulator,
     AccountSnapshot,
@@ -37,7 +37,7 @@ logger = setup_logging("trade_stock_agent.log")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stateful GPT-5 trading planner.")
     parser.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS)
-    parser.add_argument("--lookback", type=int, default=60, help="Number of recent days used in prompts.")
+    parser.add_argument("--lookback", type=int, default=30, help="Number of recent days used in prompts.")
     parser.add_argument("--live", action="store_true", help="Execute orders.")
     parser.add_argument("--skip-simulation", action="store_true")
     parser.add_argument("--print-json", action="store_true")
@@ -87,6 +87,7 @@ def request_plan(
         user_prompt=prompt_text,
         response_schema=plan_response_schema(),
         user_payload_json=json.dumps(payload),
+        reasoning_effort=DEFAULT_REASONING_EFFORT,
     )
     logger.info(f"GPT raw response: {raw_json}")
     try:
@@ -100,14 +101,33 @@ def request_plan(
 
 
 def _normalize_plan_payload(data: Dict[str, Any], target_date: date) -> Dict[str, Any]:
-    plan_block = data.get("plan", {})
-    metadata_keys = {"target_date", "instructions", "risk_notes", "focus_symbols", "stop_trading_symbols", "metadata", "execution_window"}
+    plan_source: Dict[str, Any] | None = None
+    if isinstance(data, Mapping):
+        candidate = data.get("plan")
+        if isinstance(candidate, Mapping):
+            plan_source = dict(candidate)
+        elif isinstance(data, Mapping):
+            plan_source = dict(data)
+    if plan_source is None:
+        plan_source = {}
+
+    metadata_keys = {
+        "target_date",
+        "instructions",
+        "risk_notes",
+        "focus_symbols",
+        "stop_trading_symbols",
+        "metadata",
+        "execution_window",
+    }
 
     stop_trading_symbols: List[str] = []
 
+    plan_block: Dict[str, Any] | None = plan_source
+
     if isinstance(plan_block, dict) and "instructions" not in plan_block:
         instructions = []
-        for symbol, detail in plan_block.items():
+        for symbol, detail in list(plan_block.items()):
             if symbol in metadata_keys or not isinstance(detail, dict):
                 continue
             action = detail.get("action", "hold")
@@ -149,10 +169,7 @@ def _normalize_plan_payload(data: Dict[str, Any], target_date: date) -> Dict[str
 
     plan_block["stop_trading_symbols"] = sorted(set(sym.upper() for sym in plan_block["stop_trading_symbols"]))
 
-    return {
-        "plan": plan_block,
-        "commentary": data.get("commentary"),
-    }
+    return plan_block
 
 
 def _normalize_instruction(detail: Dict[str, Any], symbol: str, action: str) -> Dict[str, Any]:
@@ -191,9 +208,7 @@ def _parse_json_response(raw_json: str) -> Dict[str, Any]:
         raise ValueError("GPT response was not valid JSON")
 
 
-def log_plan(envelope: TradingPlanEnvelope) -> None:
-    plan = envelope.plan
-    logger.info("Plan commentary: %s", envelope.commentary or "No commentary provided")
+def log_plan(plan: TradingPlan) -> None:
     for instruction in plan.instructions:
         logger.info(
             "Instruction: %s %s qty=%.4f session=%s entry=%s exit=%s notes=%s",
@@ -333,7 +348,7 @@ def main() -> None:
     if args.print_json:
         print(envelope.to_json())
 
-    log_plan(envelope)
+    log_plan(envelope.plan)
 
     if not args.skip_simulation:
         try:

@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import time
 import os
+import argparse
+import json
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple, TypeVar
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import numpy as np
 import pandas as pd
@@ -71,7 +74,7 @@ class ForecastResult:
 class ModelEvaluation:
     name: str
     price_mae: float
-    return_mae: float
+    pct_return_mae: float
     latency_s: float
     predicted_prices: np.ndarray
     predicted_returns: np.ndarray
@@ -80,6 +83,87 @@ class ModelEvaluation:
 
 
 _ConfigT = TypeVar("_ConfigT")
+ConfigUnion = Union[KronosRunConfig, TotoRunConfig]
+
+
+def _hyperparam_root() -> Path:
+    return Path(os.getenv("HYPERPARAM_ROOT", "hyperparams"))
+
+
+def _load_best_config_payload(model: str, symbol: str) -> Optional[Dict[str, Any]]:
+    root = _hyperparam_root()
+    path = root / model / f"{symbol}.json"
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as fp:
+        payload = json.load(fp)
+    payload = dict(payload)
+    payload.setdefault("config_path", str(path))
+    return payload
+
+
+def _build_hyperparam_metadata(model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = dict(payload.get("metadata") or {})
+    validation = payload.get("validation") or {}
+    test = payload.get("test") or {}
+    windows = payload.get("windows") or {}
+    enriched = {
+        "hyperparam_model": model,
+        "hyperparam_source": metadata.get("source", "hyperparamstore"),
+        "hyperparam_validation_price_mae": validation.get("price_mae"),
+        "hyperparam_validation_pct_return_mae": validation.get("pct_return_mae"),
+        "hyperparam_test_price_mae": test.get("price_mae"),
+        "hyperparam_test_pct_return_mae": test.get("pct_return_mae"),
+        "hyperparam_config_path": payload.get("config_path"),
+    }
+    if windows:
+        enriched["hyperparam_windows"] = windows
+    return {key: value for key, value in enriched.items() if value is not None}
+
+
+def _kronos_config_from_payload(payload: Dict[str, Any]) -> KronosRunConfig:
+    config = payload.get("config")
+    if not config:
+        raise ValueError("Kronos hyperparameter payload missing 'config'.")
+    return KronosRunConfig(
+        name=config.get("name", "kronos_best"),
+        temperature=float(config["temperature"]),
+        top_p=float(config["top_p"]),
+        top_k=int(config.get("top_k", 0)),
+        sample_count=int(config["sample_count"]),
+        max_context=int(config.get("max_context", 512)),
+        clip=float(config.get("clip", 5.0)),
+    )
+
+
+def _toto_config_from_payload(payload: Dict[str, Any]) -> TotoRunConfig:
+    config = payload.get("config")
+    if not config:
+        raise ValueError("Toto hyperparameter payload missing 'config'.")
+    return TotoRunConfig(
+        name=config.get("name", "toto_best"),
+        num_samples=int(config["num_samples"]),
+        aggregate=str(config.get("aggregate", "mean")),
+        samples_per_batch=int(config.get("samples_per_batch", max(1, int(config["num_samples"]) // 16))),
+    )
+
+
+def _load_best_config_from_store(
+    model: str,
+    symbol: str,
+) -> Tuple[Optional[ConfigUnion], Dict[str, Any], Dict[str, Any]]:
+    payload = _load_best_config_payload(model, symbol)
+    if payload is None:
+        return None, {}, {}
+    metadata = _build_hyperparam_metadata(model, payload)
+    windows = payload.get("windows") or {}
+    if model == "kronos":
+        config = _kronos_config_from_payload(payload)
+    elif model == "toto":
+        config = _toto_config_from_payload(payload)
+    else:
+        raise ValueError(f"Unsupported model '{model}' for hyperparameter lookup.")
+    return config, metadata, windows
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -1021,26 +1105,31 @@ def _evaluate_kronos(
     actual_prices: np.ndarray,
     actual_returns: np.ndarray,
     config: KronosRunConfig,
+    extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> ModelEvaluation:
     forecast = _forecast_with_kronos(df.copy(), config)
+    metadata = dict(forecast.metadata or {})
+    if extra_metadata:
+        metadata.update(extra_metadata)
     return ModelEvaluation(
         name=f"Kronos/{config.name}",
         price_mae=mean_absolute_error(actual_prices, forecast.prices),
-        return_mae=mean_absolute_error(actual_returns, forecast.returns),
+        pct_return_mae=mean_absolute_error(actual_returns, forecast.returns),
         latency_s=forecast.latency_s,
         predicted_prices=forecast.prices,
         predicted_returns=forecast.returns,
         config=_config_to_dict(config),
-        metadata=forecast.metadata,
+        metadata=metadata,
     )
 
 
 def _evaluate_toto(
     context: np.ndarray,
-   last_price: float,
+    last_price: float,
     actual_prices: np.ndarray,
     actual_returns: np.ndarray,
     config: TotoRunConfig,
+    extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> ModelEvaluation:
     forecast = _forecast_with_toto(context, last_price, config)
     config_dict = _config_to_dict(config)
@@ -1048,13 +1137,141 @@ def _evaluate_toto(
     dtype_value = metadata.get("torch_dtype")
     if dtype_value is not None:
         config_dict = {**config_dict, "torch_dtype": dtype_value}
+    metadata = dict(metadata)
+    if extra_metadata:
+        metadata.update(extra_metadata)
     return ModelEvaluation(
         name=f"Toto/{config.name}",
         price_mae=mean_absolute_error(actual_prices, forecast.prices),
-        return_mae=mean_absolute_error(actual_returns, forecast.returns),
+        pct_return_mae=mean_absolute_error(actual_returns, forecast.returns),
         latency_s=forecast.latency_s,
         predicted_prices=forecast.prices,
         predicted_returns=forecast.returns,
+        config=config_dict,
+        metadata=metadata,
+    )
+
+
+def _evaluate_kronos_sequential(
+    df: pd.DataFrame,
+    indices: Sequence[int],
+    config: KronosRunConfig,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> ModelEvaluation:
+    predicted_prices: List[float] = []
+    predicted_returns: List[float] = []
+    actual_prices: List[float] = []
+    actual_returns: List[float] = []
+    total_latency = 0.0
+    last_metadata: Optional[Dict[str, Any]] = None
+
+    for idx in indices:
+        if idx <= 0:
+            raise ValueError("Sequential Kronos evaluation requires indices greater than zero.")
+        sub_df = df.iloc[: idx + 1].copy()
+        forecast = _forecast_with_kronos(sub_df, config)
+        last_metadata = forecast.metadata or last_metadata
+
+        pred_prices = np.asarray(forecast.prices, dtype=np.float64)
+        pred_returns = np.asarray(forecast.returns, dtype=np.float64)
+        if pred_prices.size == 0 or pred_returns.size == 0:
+            raise RuntimeError("Kronos forecast returned empty arrays.")
+
+        predicted_prices.append(float(pred_prices[0]))
+        predicted_returns.append(float(pred_returns[0]))
+
+        actual_price = float(df["close"].iloc[idx])
+        prev_price = float(df["close"].iloc[idx - 1])
+        actual_prices.append(actual_price)
+        if prev_price == 0.0:
+            actual_returns.append(0.0)
+        else:
+            actual_returns.append((actual_price - prev_price) / prev_price)
+
+        total_latency += forecast.latency_s
+
+    price_mae = mean_absolute_error(actual_prices, predicted_prices) if actual_prices else float("nan")
+    pct_return_mae = mean_absolute_error(actual_returns, predicted_returns) if actual_returns else float("nan")
+
+    metadata = dict(last_metadata or {})
+    metadata["sequential_steps"] = len(indices)
+    metadata["total_latency_s"] = total_latency
+    metadata.setdefault("evaluation_mode", "best_sequential")
+    if extra_metadata:
+        metadata.update(extra_metadata)
+
+    return ModelEvaluation(
+        name=f"Kronos/{config.name}",
+        price_mae=price_mae,
+        pct_return_mae=pct_return_mae,
+        latency_s=total_latency,
+        predicted_prices=np.asarray(predicted_prices, dtype=np.float64),
+        predicted_returns=np.asarray(predicted_returns, dtype=np.float64),
+        config=_config_to_dict(config),
+        metadata=metadata,
+    )
+
+
+def _evaluate_toto_sequential(
+    prices: np.ndarray,
+    indices: Sequence[int],
+    config: TotoRunConfig,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> ModelEvaluation:
+    predicted_prices: List[float] = []
+    predicted_returns: List[float] = []
+    actual_prices: List[float] = []
+    actual_returns: List[float] = []
+    total_latency = 0.0
+    last_metadata: Optional[Dict[str, Any]] = None
+
+    for idx in indices:
+        if idx <= 0:
+            raise ValueError("Sequential Toto evaluation requires indices greater than zero.")
+        context = prices[:idx].astype(np.float32)
+        prev_price = float(prices[idx - 1])
+        forecast = _forecast_with_toto(context, prev_price, config)
+        last_metadata = forecast.metadata or last_metadata
+
+        pred_prices = np.asarray(forecast.prices, dtype=np.float64)
+        pred_returns = np.asarray(forecast.returns, dtype=np.float64)
+        if pred_prices.size == 0 or pred_returns.size == 0:
+            raise RuntimeError("Toto forecast returned empty arrays.")
+
+        predicted_prices.append(float(pred_prices[0]))
+        predicted_returns.append(float(pred_returns[0]))
+
+        actual_price = float(prices[idx])
+        actual_prices.append(actual_price)
+        if prev_price == 0.0:
+            actual_returns.append(0.0)
+        else:
+            actual_returns.append((actual_price - prev_price) / prev_price)
+
+        total_latency += forecast.latency_s
+
+    price_mae = mean_absolute_error(actual_prices, predicted_prices) if actual_prices else float("nan")
+    pct_return_mae = mean_absolute_error(actual_returns, predicted_returns) if actual_returns else float("nan")
+
+    metadata = dict(last_metadata or {})
+    metadata["sequential_steps"] = len(indices)
+    metadata["total_latency_s"] = total_latency
+    metadata.setdefault("evaluation_mode", "best_sequential")
+    if extra_metadata:
+        metadata.update(extra_metadata)
+
+    config_dict = _config_to_dict(config)
+    torch_dtype = metadata.get("torch_dtype")
+    if torch_dtype is not None:
+        config_dict = {**config_dict, "torch_dtype": torch_dtype}
+
+    return ModelEvaluation(
+        name=f"Toto/{config.name}",
+        price_mae=price_mae,
+        pct_return_mae=pct_return_mae,
+        latency_s=total_latency,
+        predicted_prices=np.asarray(predicted_prices, dtype=np.float64),
+        predicted_returns=np.asarray(predicted_returns, dtype=np.float64),
         config=config_dict,
         metadata=metadata,
     )
@@ -1076,17 +1293,140 @@ def _print_ranked_results(title: str, evaluations: Tuple[ModelEvaluation, ...]) 
         print(
             f"  {entry.name:<32} "
             f"price_mae={entry.price_mae:.6f} "
-            f"return_mae={entry.return_mae:.6f} "
+            f"pct_return_mae={entry.pct_return_mae:.6f} "
             f"latency={_format_seconds(entry.latency_s)} "
             f"[{cfg}]{meta}"
         )
     print()
 
 
-def main() -> None:
-    data_path = Path(__file__).parent / "trainingdata" / "BTCUSD.csv"
+def _plot_forecast_comparison(
+    timestamps: Sequence[pd.Timestamp],
+    actual_prices: np.ndarray,
+    kronos_eval: Optional[ModelEvaluation],
+    toto_eval: Optional[ModelEvaluation],
+    symbol: str,
+    output_dir: Path,
+) -> Optional[Path]:
+    if kronos_eval is None and toto_eval is None:
+        return None
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")  # Ensure headless environments work.
+        import matplotlib.pyplot as plt
+    except Exception as exc:  # pragma: no cover - plotting is auxiliary
+        print(f"[WARN] Unable to generate forecast plot (matplotlib unavailable): {exc}")
+        return None
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    actual = np.asarray(actual_prices, dtype=np.float64)
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(timestamps, actual, label="Actual close", color="#111827", linewidth=2.0)
+
+    if kronos_eval is not None:
+        kronos_prices = np.asarray(kronos_eval.predicted_prices, dtype=np.float64)
+        ax.scatter(
+            timestamps,
+            kronos_prices,
+            label=f"Kronos ({kronos_eval.name.split('/', 1)[-1]})",
+            color="#2563eb",
+            marker="o",
+            s=45,
+        )
+        ax.plot(
+            timestamps,
+            kronos_prices,
+            color="#2563eb",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.75,
+        )
+
+    if toto_eval is not None:
+        toto_prices = np.asarray(toto_eval.predicted_prices, dtype=np.float64)
+        ax.scatter(
+            timestamps,
+            toto_prices,
+            label=f"Toto ({toto_eval.name.split('/', 1)[-1]})",
+            color="#dc2626",
+            marker="x",
+            s=55,
+        )
+        ax.plot(
+            timestamps,
+            toto_prices,
+            color="#dc2626",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.75,
+        )
+
+    ax.set_title(f"{symbol} actual vs. Kronos/Toto forecasts ({len(actual)} steps)")
+    ax.set_xlabel("Timestamp")
+    ax.set_ylabel("Close price")
+    ax.grid(True, alpha=0.2)
+    ax.legend()
+    fig.autofmt_xdate()
+
+    timestamp_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    output_path = output_dir / f"{symbol}_kronos_vs_toto_{timestamp_str}.png"
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    parser = argparse.ArgumentParser(
+        description="Kronos vs Toto forecasting benchmark."
+    )
+    parser.add_argument(
+        "--symbol",
+        default="BTCUSD",
+        help="Symbol to evaluate (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        help="Explicit path to the CSV containing timestamp and close columns. Overrides --symbol lookup.",
+    )
+    parser.add_argument(
+        "--best",
+        action="store_true",
+        help="Evaluate only the best Kronos/Toto configurations stored in hyperparamstore.",
+    )
+    parser.add_argument(
+        "--plot-dir",
+        type=str,
+        default=None,
+        help="Directory to write the forecast comparison plot (default: testresults/).",
+    )
+    parser.add_argument(
+        "--skip-plot",
+        action="store_true",
+        help="Skip plot generation even when --best is supplied.",
+    )
+    args = parser.parse_args(argv)
+
+    symbol = args.symbol
+    plot_dir = Path(args.plot_dir) if args.plot_dir else Path("testresults")
+
+    if args.data_path:
+        data_path = Path(args.data_path)
+        if not data_path.exists():
+            raise FileNotFoundError(f"Data file not found at {data_path}")
+        if not symbol:
+            symbol = data_path.stem
+    else:
+        script_dir = Path(__file__).resolve().parent
+        candidate = script_dir / "trainingdata" / f"{symbol}.csv"
+        if candidate.exists():
+            data_path = candidate
+        else:
+            data_path = Path("trainingdata") / f"{symbol}.csv"
     if not data_path.exists():
-        raise FileNotFoundError(f"Expected dataset not found at {data_path}")
+        raise FileNotFoundError(f"Expected dataset for {symbol} not found at {data_path}")
 
     df = pd.read_csv(data_path)
     if "timestamp" not in df.columns:
@@ -1098,89 +1438,244 @@ def main() -> None:
 
     skip_kronos = _env_flag("SKIP_KRONOS")
     skip_toto = _env_flag("SKIP_TOTO")
-    kronos_limit = _env_int("KRONOS_SWEEP_LIMIT", default=0)
-    toto_limit = _env_int("TOTO_SWEEP_LIMIT", default=0)
 
-    kronos_configs = _limit_configs(KRONOS_SWEEP, kronos_limit)
-    toto_configs = _limit_configs(TOTO_SWEEP, toto_limit)
+    kronos_meta_map: Dict[str, Dict[str, Any]] = {}
+    toto_meta_map: Dict[str, Dict[str, Any]] = {}
+    kronos_configs: Tuple[KronosRunConfig, ...]
+    toto_configs: Tuple[TotoRunConfig, ...]
+    merged_windows: Dict[str, Any] = {}
+
+    if args.best:
+        kronos_cfg, kronos_meta, kronos_windows = _load_best_config_from_store("kronos", symbol)
+        if isinstance(kronos_cfg, KronosRunConfig):
+            kronos_configs = (kronos_cfg,)
+            if kronos_meta:
+                kronos_meta_map[kronos_cfg.name] = kronos_meta
+            for key, value in (kronos_windows or {}).items():
+                merged_windows.setdefault(key, value)
+        else:
+            kronos_configs = tuple()
+            print(f"[WARN] No Kronos hyperparameters found for {symbol} in hyperparamstore; skipping Kronos.")
+
+        toto_cfg, toto_meta, toto_windows = _load_best_config_from_store("toto", symbol)
+        if isinstance(toto_cfg, TotoRunConfig):
+            toto_configs = (toto_cfg,)
+            if toto_meta:
+                toto_meta_map[toto_cfg.name] = toto_meta
+            for key, value in (toto_windows or {}).items():
+                merged_windows.setdefault(key, value)
+        else:
+            toto_configs = tuple()
+            print(f"[WARN] No Toto hyperparameters found for {symbol} in hyperparamstore; skipping Toto.")
+    else:
+        kronos_limit = _env_int("KRONOS_SWEEP_LIMIT", default=0)
+        toto_limit = _env_int("TOTO_SWEEP_LIMIT", default=0)
+        kronos_configs = _limit_configs(KRONOS_SWEEP, kronos_limit)
+        toto_configs = _limit_configs(TOTO_SWEEP, toto_limit)
 
     kronos_evals: Tuple[ModelEvaluation, ...] = tuple()
-    if skip_kronos:
-        print("Skipping Kronos sweep (SKIP_KRONOS=1).")
-    elif kronos_configs:
-        kronos_evals = tuple(
-            _evaluate_kronos(df, actual_prices, actual_returns, cfg) for cfg in kronos_configs
-        )
-    else:
-        print("No Kronos configurations selected (KRONOS_SWEEP_LIMIT=0).")
-
-    context_series = df["close"].to_numpy(dtype=np.float64)
-    context_slice = context_series[:-FORECAST_HORIZON]
-    last_price = float(context_slice[-1])
-
     toto_evals: Tuple[ModelEvaluation, ...] = tuple()
-    if skip_toto:
-        print("Skipping Toto sweep (SKIP_TOTO=1).")
-    elif toto_configs:
-        try:
-            pipeline = _load_toto_pipeline()
-        except Exception as exc:
-            print(f"Failed to load Toto pipeline: {exc}")
-            toto_evals = tuple()
-        else:
-            print(
-                "Loaded Toto pipeline on device '%s' with dtype %s (torch.compile=%s)"
-                % (
-                    pipeline.device,
-                    getattr(pipeline, "model_dtype", "unknown"),
-                    getattr(pipeline, "_torch_compile_success", False),
+    eval_indices: Optional[List[int]] = None
+
+    if args.best:
+        price_series = df["close"].to_numpy(dtype=np.float64)
+        if price_series.size < 2:
+            raise ValueError("Sequential evaluation requires at least two price points.")
+
+        test_window = int(merged_windows.get("test_window", 20)) if merged_windows else 20
+        if test_window <= 0:
+            test_window = 1
+        if test_window >= len(df):
+            test_window = len(df) - 1
+        if test_window <= 0:
+            raise ValueError("Not enough rows to build a sequential evaluation window.")
+
+        start_index = len(df) - test_window
+        if start_index <= 0:
+            start_index = 1
+        eval_indices = list(range(start_index, len(df)))
+
+        actual_eval_prices = price_series[eval_indices]
+        actual_returns_list: List[float] = []
+        prev_price = price_series[start_index - 1]
+        for price in actual_eval_prices:
+            if prev_price == 0.0:
+                actual_returns_list.append(0.0)
+            else:
+                actual_returns_list.append((price - prev_price) / prev_price)
+            prev_price = price
+        actual_eval_returns = np.asarray(actual_returns_list, dtype=np.float64)
+
+        if skip_kronos:
+            print("Skipping Kronos evaluation (SKIP_KRONOS=1).")
+        elif kronos_configs:
+            kronos_evals = tuple(
+                _evaluate_kronos_sequential(
+                    df,
+                    eval_indices,
+                    cfg,
+                    extra_metadata=kronos_meta_map.get(cfg.name),
                 )
+                for cfg in kronos_configs
             )
-            toto_evals = tuple(
-                _evaluate_toto(context_slice, last_price, actual_prices, actual_returns, cfg)
-                for cfg in toto_configs
-            )
+        else:
+            print("No Kronos configurations available for best-mode evaluation.")
+
+        if skip_toto:
+            print("Skipping Toto evaluation (SKIP_TOTO=1).")
+        elif toto_configs:
+            try:
+                pipeline = _load_toto_pipeline()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                print(f"Failed to load Toto pipeline: {exc}")
+            else:
+                print(
+                    "Loaded Toto pipeline on device '%s' with dtype %s (torch.compile=%s)"
+                    % (
+                        pipeline.device,
+                        getattr(pipeline, "model_dtype", "unknown"),
+                        getattr(pipeline, "_torch_compile_success", False),
+                    )
+                )
+                toto_evals = tuple(
+                    _evaluate_toto_sequential(
+                        price_series,
+                        eval_indices,
+                        cfg,
+                        extra_metadata=toto_meta_map.get(cfg.name),
+                    )
+                    for cfg in toto_configs
+                )
+        else:
+            print("No Toto configurations available for best-mode evaluation.")
     else:
-        print("No Toto configurations selected (TOTO_SWEEP_LIMIT=0).")
+        actual_eval_prices = actual_prices
+        actual_eval_returns = actual_returns
+        eval_length = actual_eval_prices.shape[0]
+        eval_indices = list(range(len(df) - eval_length, len(df)))
+
+        context_series = df["close"].to_numpy(dtype=np.float64)
+        if context_series.size <= FORECAST_HORIZON:
+            raise ValueError(
+                f"Dataset length ({context_series.size}) must exceed FORECAST_HORIZON ({FORECAST_HORIZON})."
+            )
+        context_slice = context_series[:-FORECAST_HORIZON]
+        last_price = float(context_slice[-1])
+
+        if skip_kronos:
+            print("Skipping Kronos evaluation (SKIP_KRONOS=1).")
+        elif kronos_configs:
+            kronos_evals = tuple(
+                _evaluate_kronos(
+                    df,
+                    actual_eval_prices,
+                    actual_eval_returns,
+                    cfg,
+                    extra_metadata=kronos_meta_map.get(cfg.name),
+                )
+                for cfg in kronos_configs
+            )
+        else:
+            print("No Kronos configurations selected.")
+
+        if skip_toto:
+            print("Skipping Toto evaluation (SKIP_TOTO=1).")
+        elif toto_configs:
+            try:
+                pipeline = _load_toto_pipeline()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                print(f"Failed to load Toto pipeline: {exc}")
+            else:
+                print(
+                    "Loaded Toto pipeline on device '%s' with dtype %s (torch.compile=%s)"
+                    % (
+                        pipeline.device,
+                        getattr(pipeline, "model_dtype", "unknown"),
+                        getattr(pipeline, "_torch_compile_success", False),
+                    )
+                )
+                toto_evals = tuple(
+                    _evaluate_toto(
+                        context_slice,
+                        last_price,
+                        actual_eval_prices,
+                        actual_eval_returns,
+                        cfg,
+                        extra_metadata=toto_meta_map.get(cfg.name),
+                    )
+                    for cfg in toto_configs
+                )
+        else:
+            print("No Toto configurations selected.")
 
     if not kronos_evals and not toto_evals:
-        print("Nothing to evaluate. Adjust environment flags or config limits.")
+        print("Nothing to evaluate. Adjust configuration flags or ensure hyperparameters are available.")
         return
 
     print("==== Kronos vs Toto Forecast Benchmark ====")
+    print(f"Symbol: {symbol}")
+    print(f"Dataset: {data_path}")
     print(f"Forecast horizon: {FORECAST_HORIZON} steps")
     print(f"Context length: {len(df) - FORECAST_HORIZON}")
+    if args.best and eval_indices:
+        print(f"Sequential evaluation window: {len(eval_indices)} steps")
+    if merged_windows:
+        print(f"Hyperparam windows: {merged_windows}")
     print()
 
     if kronos_evals:
-        _print_ranked_results("Kronos hyperparameter sweep", kronos_evals)
+        label = "Kronos hyperparameter sweep" if not args.best else "Kronos best configuration"
+        _print_ranked_results(label, kronos_evals)
         best_kronos = min(kronos_evals, key=lambda item: item.price_mae)
         print("Best Kronos configuration (price MAE)")
         print(
             f"  {best_kronos.name}: price_mae={best_kronos.price_mae:.6f}, "
-            f"return_mae={best_kronos.return_mae:.6f}, "
+            f"pct_return_mae={best_kronos.pct_return_mae:.6f}, "
             f"latency={_format_seconds(best_kronos.latency_s)}"
         )
         print(f"  Predicted prices:  {np.round(best_kronos.predicted_prices, 4)}")
         print(f"  Predicted returns: {np.round(best_kronos.predicted_returns, 6)}")
         print()
+    else:
+        best_kronos = None
 
     if toto_evals:
-        _print_ranked_results("Toto hyperparameter sweep", toto_evals)
+        label = "Toto hyperparameter sweep" if not args.best else "Toto best configuration"
+        _print_ranked_results(label, toto_evals)
         best_toto = min(toto_evals, key=lambda item: item.price_mae)
         print("Best Toto configuration (price MAE)")
         print(
             f"  {best_toto.name}: price_mae={best_toto.price_mae:.6f}, "
-            f"return_mae={best_toto.return_mae:.6f}, "
+            f"pct_return_mae={best_toto.pct_return_mae:.6f}, "
             f"latency={_format_seconds(best_toto.latency_s)}"
         )
         print(f"  Predicted prices:  {np.round(best_toto.predicted_prices, 4)}")
         print(f"  Predicted returns: {np.round(best_toto.predicted_returns, 6)}")
         print()
+    else:
+        best_toto = None
 
-    print("Actual future prices")
-    print(f"  Prices:  {np.round(actual_prices, 4)}")
-    print(f"  Returns: {np.round(actual_returns, 6)}")
+    print("Actual evaluation prices")
+    print(f"  Prices:  {np.round(actual_eval_prices, 4)}")
+    print(f"  Returns: {np.round(actual_eval_returns, 6)}")
+
+    if args.best and not args.skip_plot and (best_kronos or best_toto):
+        if not eval_indices:
+            print("Forecast comparison plot skipped (no evaluation indices).")
+        else:
+            timestamps = pd.to_datetime(df["timestamp"].iloc[eval_indices])
+            plot_path = _plot_forecast_comparison(
+                timestamps,
+                actual_eval_prices,
+                best_kronos,
+                best_toto,
+                symbol=symbol,
+                output_dir=plot_dir,
+            )
+            if plot_path:
+                print(f"Saved forecast comparison plot -> {plot_path}")
+            else:
+                print("Forecast comparison plot skipped.")
 
 
 if __name__ == "__main__":

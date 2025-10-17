@@ -94,6 +94,20 @@
 - Detailed experiment reports generation
 - Best model tracking with automatic saving
 
+### 6. NanoChat-Inspired Acceleration (2025-10-16)
+
+**Motivation:** Borrow fast-training tricks from the `nanochat/` LLM pipeline to speed up time-series training.
+
+**Key Enhancements:**
+- Runtime bootstrap now defaults to `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` and high-precision matmuls, mirroring `nanochat.common.compute_init`.
+- Added a `muon` optimizer option that applies Muon orthogonalized updates to matrix weights and AdamW-style updates to biases, bringing Keller et al.'s optimizer to the forecasting stack.
+- Logging now records GPU-synchronized step times and derived tokens-per-second metrics (sequence length × samples/sec) for easier throughput tuning.
+
+**Usage Notes:**
+- Set `training.optimizer = "muon"` (or CLI `--optimizer muon`) to enable the new optimizer; optional hyper-parameters `muon_momentum`, `muon_ns_steps`, etc., are exposed in the config dataclasses.
+- `run_training.py` automatically configures the CUDA allocator and TF32/bfloat16-friendly matmul precision—no manual flags required.
+- TensorBoard and perf CSV outputs include `train/tokens_per_sec`, making it straightforward to compare against LLM training MFU targets.
+
 ## Experimental Validation
 
 ### Quick Test Results

@@ -246,6 +246,7 @@ class TestTotoOHLCTrainer:
     def test_model_initialization(self, mock_toto, trainer):
         """Test model initialization with mocked Toto"""
         mock_model = Mock()
+        mock_model.parameters.return_value = [torch.randn(1, requires_grad=True)]
         mock_toto.return_value = mock_model
         
         trainer.initialize_model(input_dim=5)
@@ -428,19 +429,25 @@ class TestDataLoaderIntegration:
         
         assert len(dataset) > 0
         if len(dataset) > 0:
-            sample = dataset[0]
+            masked, extra = dataset[0]
             
             # Check MaskedTimeseries structure
-            assert hasattr(sample, 'series')
-            assert hasattr(sample, 'padding_mask')
-            assert hasattr(sample, 'id_mask')
-            assert hasattr(sample, 'timestamp_seconds')
-            assert hasattr(sample, 'time_interval_seconds')
+            assert hasattr(masked, 'series')
+            assert hasattr(masked, 'padding_mask')
+            assert hasattr(masked, 'id_mask')
+            assert hasattr(masked, 'timestamp_seconds')
+            assert hasattr(masked, 'time_interval_seconds')
             
             # Check tensor properties
-            assert isinstance(sample.series, torch.Tensor)
-            assert isinstance(sample.padding_mask, torch.Tensor)
-            assert sample.series.dtype == torch.float32
+            assert isinstance(masked.series, torch.Tensor)
+            assert isinstance(masked.padding_mask, torch.Tensor)
+            assert masked.series.dtype == torch.float32
+            
+            # Ensure augmentation metadata exists
+            assert isinstance(extra, dict)
+            assert 'target_price' in extra
+            assert 'target_pct' in extra
+            assert 'prev_close' in extra
 
 
 class TestTrainingMocks:
@@ -456,7 +463,7 @@ class TestTrainingMocks:
         
         # Create a mock output with loc attribute
         mock_output = Mock()
-        mock_output.loc = torch.randn(2, 5, 1)  # batch_size, seq_len, features
+        mock_output.loc = torch.randn(2)  # batch predictions
         model.model.return_value = mock_output
         
         # Mock parameters for optimizer
@@ -479,7 +486,7 @@ class TestTrainingMocks:
         # Create mock dataloader
         batch_size = 2
         x = torch.randn(batch_size, config.sequence_length, 5)  # 5 features
-        y = torch.randn(batch_size, config.prediction_length)
+        y = torch.randn(batch_size)
         
         mock_dataloader = [(x, y)]
         
@@ -513,7 +520,7 @@ class TestTrainingMocks:
         # Create mock dataloader
         batch_size = 2
         x = torch.randn(batch_size, config.sequence_length, 5)
-        y = torch.randn(batch_size, config.prediction_length)
+        y = torch.randn(batch_size)
         
         mock_dataloader = [(x, y)]
         

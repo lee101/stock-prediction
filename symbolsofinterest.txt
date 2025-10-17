@@ -9,9 +9,7 @@ symbols = [
         "U",
         "ADSK",
         # "RBLX", # unpredictable
-        "CRWD",
         "ADBE",
-        "NET",
         'COIN', # unpredictable
         # 'QUBT',  no data
         # 'ARQQ',  no data

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from .logging_utils import logger
@@ -215,9 +217,60 @@ def _fallback_backtest(symbol: str, num_simulations: int | None = None) -> pd.Da
         len(window),
     )
 
+    def _sharpe(series: pd.Series) -> float:
+        if series.empty:
+            return 0.0
+        std = float(series.std(ddof=1))
+        if not np.isfinite(std) or std == 0.0:
+            return 0.0
+        mean = float(series.mean())
+        if not np.isfinite(mean):
+            return 0.0
+        return mean / std
+
+    def _rev(series: pd.Series) -> pd.Series:
+        return series.iloc[::-1].reset_index(drop=True)
+
+    close_series = window["Close"].astype(float)
+    high_series = window["High"].astype(float)
+    low_series = window["Low"].astype(float)
+    if "Volume" in window.columns:
+        volume_series = pd.to_numeric(window["Volume"], errors="coerce")
+    else:
+        volume_series = pd.Series(np.nan, index=window.index, dtype=float)
+    if volume_series.isna().all():
+        volume_series = pd.Series(1_000.0, index=window.index, dtype=float)
+    else:
+        volume_series = volume_series.fillna(volume_series.median())
+
+    raw_expected_move_pct = (predicted_close - close_series) / close_series.replace(0.0, np.nan)
+    adjusted_move_pct = raw_expected_move_pct.fillna(0.0)
+    default_move = window["close_return"].fillna(0.0)
+    adjusted_move_pct = adjusted_move_pct.where(adjusted_move_pct.abs() > 1e-6, default_move)
+    kronos_expected = adjusted_move_pct.ewm(span=5, adjust=False, min_periods=1).mean()
+
+    returns = close_series.pct_change().fillna(0.0)
+    realized_vol = returns.rolling(window=20, min_periods=5).std().fillna(returns.std())
+    dollar_vol = (volume_series * close_series).rolling(window=20, min_periods=1).mean()
+    atr_pct = (high_series - low_series).rolling(window=14, min_periods=1).mean() / close_series.replace(0.0, np.nan)
+    spread_bps = (
+        (high_series - low_series) / close_series.replace(0.0, np.nan)
+    ).rolling(window=5, min_periods=1).mean() * 10_000
+
+    ci_guard_series = 0.5 * (takeprofit + highlow)
+    unprofit_series = -simple.abs()
+
+    simple_sharpe_val = _sharpe(simple)
+    all_signals_sharpe_val = _sharpe(all_signals)
+    takeprofit_sharpe_val = _sharpe(takeprofit)
+    highlow_sharpe_val = _sharpe(highlow)
+    ci_guard_sharpe_val = _sharpe(ci_guard_series)
+    buy_hold_sharpe_val = _sharpe(returns)
+    unprofit_sharpe_val = _sharpe(unprofit_series)
+
     result = pd.DataFrame(
         {
-            "close": window["Close"],
+            "close": close_series,
             "predicted_close": predicted_close,
             "predicted_high": predicted_high,
             "predicted_low": predicted_low,
@@ -229,6 +282,74 @@ def _fallback_backtest(symbol: str, num_simulations: int | None = None) -> pd.Da
     )
     if "timestamp" in window.columns:
         result["timestamp"] = window["timestamp"]
+
+    result = result.iloc[::-1].reset_index(drop=True)
+
+    result["toto_expected_move_pct"] = _rev(adjusted_move_pct).fillna(0.0)
+    result["kronos_expected_move_pct"] = _rev(kronos_expected).fillna(0.0)
+    result["raw_expected_move_pct"] = _rev(raw_expected_move_pct).fillna(0.0)
+    result["calibrated_expected_move_pct"] = result["kronos_expected_move_pct"]
+    result["calibration_slope"] = 1.0
+    result["calibration_intercept"] = 0.0
+    result["close_prediction_source"] = "SIM_FALLBACK"
+
+    result["realized_volatility_pct"] = _rev(realized_vol).abs().fillna(0.0)
+    result["dollar_vol_20d"] = _rev(dollar_vol).fillna(0.0)
+    result["atr_pct_14"] = _rev(atr_pct).fillna(0.0)
+    result["spread_bps_estimate"] = _rev(spread_bps).fillna(20.0)
+
+    result["buy_hold_return"] = _rev(returns).fillna(0.0)
+    result["buy_hold_sharpe"] = buy_hold_sharpe_val
+    result["buy_hold_finalday"] = float(returns.iloc[-1]) if not returns.empty else 0.0
+
+    result["simple_strategy_sharpe"] = simple_sharpe_val
+    result["simple_strategy_finalday"] = float(simple.iloc[-1]) if not simple.empty else 0.0
+    result["all_signals_strategy_sharpe"] = all_signals_sharpe_val
+    result["all_signals_strategy_finalday"] = float(all_signals.iloc[-1]) if not all_signals.empty else 0.0
+
+    result["entry_takeprofit_sharpe"] = takeprofit_sharpe_val
+    result["entry_takeprofit_finalday"] = float(takeprofit.iloc[-1]) if not takeprofit.empty else 0.0
+    result["entry_takeprofit_turnover"] = float(takeprofit.abs().mean()) if not takeprofit.empty else 0.0
+
+    result["highlow_sharpe"] = highlow_sharpe_val
+    result["highlow_finalday_return"] = float(highlow.iloc[-1]) if not highlow.empty else 0.0
+    result["highlow_turnover"] = float(highlow.abs().mean()) if not highlow.empty else 0.0
+
+    ci_guard_rev = _rev(ci_guard_series).fillna(0.0)
+    result["ci_guard_return"] = ci_guard_rev
+    result["ci_guard_sharpe"] = ci_guard_sharpe_val
+    result["ci_guard_finalday"] = float(ci_guard_series.iloc[-1]) if not ci_guard_series.empty else 0.0
+    result["ci_guard_turnover"] = float(ci_guard_series.abs().mean()) if not ci_guard_series.empty else 0.0
+
+    unprofit_rev = _rev(unprofit_series).fillna(0.0)
+    result["unprofit_shutdown_return"] = unprofit_rev
+    result["unprofit_shutdown_sharpe"] = unprofit_sharpe_val
+    result["unprofit_shutdown_finalday"] = (
+        float(unprofit_series.iloc[-1]) if not unprofit_series.empty else 0.0
+    )
+
+    result["walk_forward_oos_sharpe"] = simple_sharpe_val
+    result["walk_forward_turnover"] = float(simple.abs().mean()) if not simple.empty else 0.0
+    result["walk_forward_highlow_sharpe"] = highlow_sharpe_val
+    result["walk_forward_takeprofit_sharpe"] = takeprofit_sharpe_val
+
+    result["close_val_loss"] = _rev((predicted_close - close_series).abs()).fillna(0.0)
+    result["high_val_loss"] = _rev((predicted_high - high_series).abs()).fillna(0.0)
+    result["low_val_loss"] = _rev((predicted_low - low_series).abs()).fillna(0.0)
+
+    result["simulated_backtest"] = True
+
+    latency_env = os.getenv("MARKETSIM_FALLBACK_INFERENCE_LATENCY")
+    if latency_env is None:
+        latency = 0.15
+    else:
+        try:
+            latency = max(0.0, float(latency_env))
+        except ValueError:
+            latency = 0.0
+    if latency > 0:
+        time.sleep(min(latency, 5.0))
+
     return result
 
 

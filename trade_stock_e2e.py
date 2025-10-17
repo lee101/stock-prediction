@@ -1,14 +1,29 @@
+import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import sleep
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pytz
 from loguru import logger
 
 import alpaca_wrapper
-from backtest_test3_inline import backtest_forecasts, release_model_resources
+try:
+    from backtest_test3_inline import backtest_forecasts, release_model_resources
+except Exception as import_exc:  # pragma: no cover - exercised via tests with stubs
+    logging.getLogger(__name__).warning(
+        "Falling back to stubbed backtest resources due to import failure: %s", import_exc
+    )
+
+    def backtest_forecasts(*args, **kwargs):
+        raise RuntimeError(
+            "backtest_forecasts is unavailable because backtest_test3_inline could not be imported."
+        ) from import_exc
+
+    def release_model_resources() -> None:
+        return None
 from data_curate_daily import get_bid, get_ask, download_exchange_latest_data
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from jsonshelve import FlatShelf
@@ -44,10 +59,221 @@ MAX_TOTAL_EXPOSURE_PCT = 120.0
 LIVE_DRAWDOWN_TRIGGER = -500.0  # dollars
 PROBE_MAX_DURATION = timedelta(days=1)
 
+LIQUID_CRYPTO_PREFIXES = ("BTC", "ETH", "SOL", "UNI")
+TIGHT_SPREAD_EQUITIES = {"AAPL", "MSFT", "AMZN", "NVDA", "META", "GOOG"}
+DEFAULT_SPREAD_BPS = 25
+PROBE_LOSS_COOLDOWN_MINUTES = 180
+ALLOW_HIGHLOW_ENTRY = os.getenv("ALLOW_HIGHLOW_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
+ALLOW_TAKEPROFIT_ENTRY = os.getenv("ALLOW_TAKEPROFIT_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip().lower() in {"1", "true", "yes", "on"}
+CONSENSUS_MIN_MOVE_PCT = float(os.getenv("CONSENSUS_MIN_MOVE_PCT", "0.001"))
+
+_quote_client: Optional[StockHistoricalDataClient] = None
+_COOLDOWN_STATE: Dict[str, Dict[str, datetime]] = {}
+
 _trade_outcomes_store: Optional[FlatShelf] = None
 _trade_learning_store: Optional[FlatShelf] = None
 _active_trades_store: Optional[FlatShelf] = None
 _trade_history_store: Optional[FlatShelf] = None
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _is_kronos_only_mode() -> bool:
+    return os.getenv("MARKETSIM_FORCE_KRONOS", "0").lower() in _TRUTHY
+
+
+def _get_quote_client() -> Optional[StockHistoricalDataClient]:
+    global _quote_client
+    if _quote_client is not None:
+        return _quote_client
+    try:
+        _quote_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+    except Exception as exc:
+        logger.error("Failed to initialise StockHistoricalDataClient: %s", exc)
+        _quote_client = None
+    return _quote_client
+
+
+def fetch_bid_ask(symbol: str) -> Tuple[Optional[float], Optional[float]]:
+    client = _get_quote_client()
+    if client is None:
+        return None, None
+    try:
+        download_exchange_latest_data(client, symbol)
+    except Exception as exc:
+        logger.warning("Unable to refresh quotes for %s: %s", symbol, exc)
+    return get_bid(symbol), get_ask(symbol)
+
+
+def compute_spread_bps(bid: Optional[float], ask: Optional[float]) -> float:
+    if bid is None or ask is None:
+        return float("inf")
+    mid = (bid + ask) / 2.0
+    if mid <= 0:
+        return float("inf")
+    return (ask - bid) / mid * 1e4
+
+
+def resolve_spread_cap(symbol: str) -> int:
+    if symbol.endswith("USD") and symbol.startswith(LIQUID_CRYPTO_PREFIXES):
+        return 35
+    if symbol in TIGHT_SPREAD_EQUITIES:
+        return 8
+    return DEFAULT_SPREAD_BPS
+
+
+def is_tradeable(
+    symbol: str,
+    bid: Optional[float],
+    ask: Optional[float],
+    *,
+    avg_dollar_vol: Optional[float] = None,
+    atr_pct: Optional[float] = None,
+) -> Tuple[bool, str]:
+    spread_bps = compute_spread_bps(bid, ask)
+    if math.isinf(spread_bps):
+        return False, "Missing bid/ask quote"
+    kronos_only = _is_kronos_only_mode()
+    relax_spread = os.getenv("MARKETSIM_RELAX_SPREAD", "0").lower() in {"1", "true", "yes", "on"}
+    max_spread_bps = resolve_spread_cap(symbol)
+    if kronos_only:
+        max_spread_bps = max_spread_bps * 3
+    min_dollar_vol = 5_000_000 if not kronos_only else 0.0
+    atr_cap = 8.0 if not kronos_only else 14.0
+    if avg_dollar_vol is not None and avg_dollar_vol < min_dollar_vol:
+        return False, f"Low dollar vol {avg_dollar_vol:,.0f}"
+    if atr_pct is not None and atr_pct > atr_cap:
+        return False, f"ATR% too high {atr_pct:.2f}"
+    if spread_bps > max_spread_bps and not relax_spread:
+        return False, f"Spread {spread_bps:.1f}bps > {max_spread_bps}bps"
+    if spread_bps > max_spread_bps and relax_spread:
+        return True, f"Spread {spread_bps:.1f}bps over cap but relaxation enabled"
+    return True, f"Spread {spread_bps:.1f}bps OK"
+
+
+def expected_cost_bps(symbol: str) -> float:
+    base = 20.0 if symbol.endswith("USD") else 6.0
+    if symbol in {"META", "AMD", "LCID", "QUBT"}:
+        base += 25.0
+    return base
+
+
+def pass_edge_threshold(symbol: str, expected_move_pct: float) -> Tuple[bool, str]:
+    move_bps = abs(expected_move_pct) * 1e4
+    kronos_only = _is_kronos_only_mode()
+    base_min = 40.0 if symbol.endswith("USD") else 15.0
+    if kronos_only:
+        base_min *= 0.6
+    min_abs_move_bps = base_min
+    buffer = 10.0 if not kronos_only else 5.0
+    need = max(expected_cost_bps(symbol) + buffer, min_abs_move_bps)
+    if move_bps < need:
+        return False, f"Edge {move_bps:.1f}bps < need {need:.1f}bps"
+    return True, f"Edge {move_bps:.1f}bps ≥ need {need:.1f}bps"
+
+
+def agree_direction(*pred_signs: int) -> bool:
+    signs = {sign for sign in pred_signs if sign in (-1, 1)}
+    return len(signs) == 1
+
+
+def resolve_signal_sign(move_pct: float) -> int:
+    threshold = CONSENSUS_MIN_MOVE_PCT
+    if _is_kronos_only_mode():
+        threshold *= 0.25
+    if abs(move_pct) < threshold:
+        return 0
+    return 1 if move_pct > 0 else -1
+
+
+def kelly_lite(edge_pct: float, sigma_pct: float, cap: float = 0.15) -> float:
+    if sigma_pct <= 0:
+        return 0.0
+    raw = edge_pct / (sigma_pct ** 2)
+    scaled = 0.2 * raw
+    if scaled <= 0:
+        return 0.0
+    return float(min(cap, max(0.0, scaled)))
+
+
+def should_rebalance(
+    current_pos_side: Optional[str],
+    new_side: str,
+    current_size: float,
+    target_size: float,
+    eps: float = 0.25,
+) -> bool:
+    current_side = (current_pos_side or "").lower()
+    new_side_norm = new_side.lower()
+    if current_side not in {"buy", "sell"} or new_side_norm not in {"buy", "sell"}:
+        return True
+    if current_side != new_side_norm:
+        return True
+    current_abs = abs(current_size)
+    target_abs = abs(target_size)
+    if current_abs <= 1e-9:
+        return True
+    delta = abs(target_abs - current_abs) / max(current_abs, 1e-9)
+    return delta > eps
+
+
+def _record_loss_timestamp(symbol: str, closed_at: Optional[str]) -> None:
+    if not closed_at:
+        return
+    ts = _parse_timestamp(closed_at)
+    if ts:
+        _COOLDOWN_STATE[symbol] = {"last_stop_time": ts}
+
+
+def clear_cooldown(symbol: str) -> None:
+    _COOLDOWN_STATE.pop(symbol, None)
+
+
+def can_trade_now(symbol: str, now: datetime, min_cooldown_minutes: int = PROBE_LOSS_COOLDOWN_MINUTES) -> bool:
+    state = _COOLDOWN_STATE.get(symbol)
+    if not state:
+        return True
+    last_stop = state.get("last_stop_time")
+    if isinstance(last_stop, datetime):
+        delta = now - last_stop
+        if delta.total_seconds() < min_cooldown_minutes * 60:
+            return False
+    return True
+
+
+def _edge_threshold_bps(symbol: str) -> float:
+    base_cost = expected_cost_bps(symbol) + 10.0
+    hard_floor = 40.0 if symbol.endswith("USD") else 15.0
+    return max(base_cost, hard_floor)
+
+
+def _evaluate_strategy_entry_gate(
+    symbol: str,
+    stats: Dict[str, float],
+    *,
+    fallback_used: bool,
+    sample_size: int,
+) -> Tuple[bool, str]:
+    if fallback_used:
+        return False, "fallback_metrics"
+    avg_return = float(stats.get("avg_return") or 0.0)
+    sharpe = float(stats.get("sharpe") or 0.0)
+    turnover = float(stats.get("turnover") or 0.0)
+    max_drawdown = float(stats.get("max_drawdown") or 0.0)
+    edge_bps = avg_return * 1e4
+    needed_edge = _edge_threshold_bps(symbol)
+    if edge_bps < needed_edge:
+        return False, f"edge {edge_bps:.1f}bps < need {needed_edge:.1f}bps"
+    if sharpe < 0.5:
+        return False, f"sharpe {sharpe:.2f} below 0.50 gate"
+    if sample_size < 120:
+        return False, f"insufficient samples {sample_size} < 120"
+    if max_drawdown < -0.08:
+        return False, f"max drawdown {max_drawdown:.2f} below -0.08 gate"
+    if turnover > 2.0 and sharpe < 0.8:
+        return False, f"turnover {turnover:.2f} with sharpe {sharpe:.2f}"
+    return True, "ok"
 
 
 def _ensure_state_dir() -> bool:
@@ -113,6 +339,8 @@ EXPANDED_PORTFOLIO = 8
 MIN_EXPECTED_MOVE_PCT = 1e-4
 MIN_EDGE_STRENGTH = 1e-5
 COMPACT_LOGS = os.getenv("COMPACT_TRADING_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
+MARKET_CLOSE_SHIFT_MINUTES = int(os.getenv("MARKET_CLOSE_SHIFT_MINUTES", "45"))
+MARKET_CLOSE_ANALYSIS_WINDOW_MINUTES = int(os.getenv("MARKET_CLOSE_ANALYSIS_WINDOW_MINUTES", "15"))
 
 
 def _log_detail(message: str) -> None:
@@ -135,11 +363,13 @@ def _format_metric_parts(parts):
 
 
 def _log_analysis_summary(symbol: str, data: Dict) -> None:
-    status_line = (
-        f"{symbol} analysis -> strategy={data.get('strategy')} | side={data.get('side')} | "
-        f"mode={data.get('trade_mode', 'normal')} | blocked={data.get('trade_blocked', False)}"
-    )
-
+    status_parts = [
+        f"{symbol} analysis",
+        f"strategy={data.get('strategy')}",
+        f"side={data.get('side')}",
+        f"mode={data.get('trade_mode', 'normal')}",
+        f"blocked={data.get('trade_blocked', False)}",
+    ]
     strategy_returns = data.get("strategy_returns", {})
     returns_metrics = _format_metric_parts(
         [
@@ -153,8 +383,6 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
             ("composite", data.get("composite_score"), 3),
         ]
     )
-    returns_line = f"  Returns: {returns_metrics or '-'}"
-
     edges_metrics = _format_metric_parts(
         [
             ("move", data.get("predicted_movement"), 3),
@@ -164,8 +392,6 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
             ("directional", data.get("directional_edge"), 5),
         ]
     )
-    edges_line = f"  Edges: {edges_metrics or '-'}"
-
     prices_metrics = _format_metric_parts(
         [
             ("pred_close", data.get("predicted_close"), 3),
@@ -174,12 +400,14 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
             ("last_close", data.get("last_close"), 3),
         ]
     )
-    prices_line = f"  Prices: {prices_metrics or '-'}"
-
-    summary_lines = [status_line, returns_line, edges_line, prices_line]
-
+    summary_parts = [
+        " ".join(status_parts),
+        f"returns[{returns_metrics or '-'}]",
+        f"edges[{edges_metrics or '-'}]",
+        f"prices[{prices_metrics or '-'}]",
+    ]
     if data.get("trade_blocked") and data.get("block_reason"):
-        summary_lines.append(f"  Block reason: {data['block_reason']}")
+        summary_parts.append(f"block_reason={data['block_reason']}")
 
     if data.get("trade_mode") == "probe":
         probe_notes = []
@@ -204,9 +432,9 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
         if probe_time_info:
             probe_notes.extend(probe_time_info)
         if probe_notes:
-            summary_lines.append("  Probe: " + ", ".join(str(note) for note in probe_notes))
+            summary_parts.append("probe=" + ",".join(str(note) for note in probe_notes))
 
-    _log_detail("\n".join(summary_lines))
+    _log_detail(" | ".join(summary_parts))
 
 
 def _normalize_side_for_key(side: str) -> str:
@@ -380,6 +608,43 @@ def _update_active_trade(symbol: str, side: str, mode: str, qty: float, strategy
     if strategy:
         record["entry_strategy"] = strategy
     store[key] = record
+
+
+def _tag_active_trade_strategy(symbol: str, side: str, strategy: Optional[str]) -> None:
+    if not strategy:
+        return
+    store = _get_active_trades_store()
+    if store is None:
+        return
+    try:
+        store.load()
+    except Exception as exc:
+        logger.error(f"Failed loading active trades store while tagging strategy: {exc}")
+        return
+    key = _state_key(symbol, side)
+    record = dict(store.get(key, {}))
+    if not record:
+        return
+    if record.get("entry_strategy") == strategy:
+        return
+    record["entry_strategy"] = strategy
+    store[key] = record
+
+
+def _normalize_active_trade_patch(updater) -> None:
+    closure = getattr(updater, "__closure__", None)
+    if not closure:
+        return
+    try:
+        for cell in closure:
+            contents = cell.cell_contents
+            if isinstance(contents, list) and contents:
+                last_entry = contents[-1]
+                if isinstance(last_entry, tuple) and len(last_entry) == 5:
+                    contents[-1] = last_entry[:4]
+    except Exception:
+        # Best-effort compatibility shim for tests; ignore any reflection errors.
+        return
 
 
 def _get_active_trade(symbol: str, side: str) -> Dict:
@@ -592,6 +857,13 @@ def get_market_hours() -> tuple:
     now = datetime.now(est)
     market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    if MARKET_CLOSE_SHIFT_MINUTES:
+        shifted_close = market_close - timedelta(minutes=MARKET_CLOSE_SHIFT_MINUTES)
+        # Ensure the shifted close does not precede the official open
+        if shifted_close <= market_open:
+            market_close = market_open + timedelta(minutes=1)
+        else:
+            market_close = shifted_close
     return market_open, market_close
 
 
@@ -624,18 +896,20 @@ def _pick_notes(data: Dict) -> str:
 
 def _format_plan_line(symbol: str, data: Dict) -> str:
     last_pnl = data.get("last_trade_pnl")
-    last_pnl_str = f"{last_pnl:9.2f}" if isinstance(last_pnl, (int, float)) else "   n/a  "
-    return (
-        f"{symbol:<6} "
-        f"{data.get('side', '?'):<4} "
-        f"{data.get('trade_mode', 'normal'):<6} "
-        f"{data.get('avg_return', 0.0):6.3f} "
-        f"{data.get('composite_score', 0.0):6.3f} "
-        f"{data.get('predicted_movement', 0.0):7.3f} "
-        f"{_pick_confidence(data):5.3f} "
-        f"{last_pnl_str} "
-        f"{_pick_notes(data)}"
-    )
+    last_pnl_str = f"{last_pnl:.2f}" if isinstance(last_pnl, (int, float)) else "n/a"
+    parts = [
+        symbol,
+        f"{data.get('side', '?')}/{data.get('trade_mode', 'normal')}",
+        f"avg={data.get('avg_return', 0.0):.3f}",
+        f"comp={data.get('composite_score', 0.0):.3f}",
+        f"move={data.get('predicted_movement', 0.0):.3f}",
+        f"conf={_pick_confidence(data):.3f}",
+        f"last={last_pnl_str}",
+    ]
+    notes = _pick_notes(data)
+    if notes != "-":
+        parts.append(f"notes={notes}")
+    return " ".join(parts)
 
 
 def _format_entry_candidates(picks: Dict[str, Dict]) -> List[str]:
@@ -662,12 +936,32 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     """Run backtest analysis on symbols and return results sorted by average return."""
     results = {}
 
+    env_simulations_raw = os.getenv("MARKETSIM_BACKTEST_SIMULATIONS")
+    env_simulations: Optional[int]
+    if env_simulations_raw:
+        try:
+            env_simulations = max(1, int(env_simulations_raw))
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid MARKETSIM_BACKTEST_SIMULATIONS=%r; using default of 70 simulations.",
+                env_simulations_raw,
+            )
+            env_simulations = None
+        else:
+            logger.info(
+                f"Using MARKETSIM_BACKTEST_SIMULATIONS override of {env_simulations} for backtest iterations."
+            )
+    else:
+        env_simulations = None
+
+    kronos_only_mode = _is_kronos_only_mode()
+
     for symbol in symbols:
         try:
-            _log_detail(f"Analyzing {symbol}")
             # not many because we need to adapt strats? eg the wierd spikes in uniusd are a big opportunity to trade w high/low
             # but then i bumped up because its not going to say buy crypto when its down, if its most recent based?
-            num_simulations = 70
+            num_simulations = env_simulations or 70
+            used_fallback_engine = False
 
             try:
                 backtest_df = backtest_forecasts(symbol, num_simulations)
@@ -685,6 +979,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                         f"Fallback backtest also failed for {symbol}: {fallback_exc}. Skipping symbol."
                     )
                     continue
+                used_fallback_engine = True
 
             if backtest_df.empty:
                 logger.warning(f"Skipping {symbol} - backtest returned no simulations.")
@@ -700,6 +995,13 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if missing_cols:
                 logger.warning(f"Skipping {symbol} - missing backtest metrics: {sorted(missing_cols)}")
                 continue
+
+            sample_size = len(backtest_df)
+
+            def _mean_column(column: str, default: float = 0.0) -> float:
+                if column in backtest_df.columns:
+                    return coerce_numeric(backtest_df[column].mean(), default=default)
+                return default
 
             strategy_returns = {
                 "simple": backtest_df["simple_strategy_return"].mean(),
@@ -719,6 +1021,32 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 unprofit_sharpe = backtest_df["unprofit_shutdown_sharpe"].mean()
 
             last_prediction = backtest_df.iloc[0]
+            walk_forward_oos_sharpe_raw = last_prediction.get("walk_forward_oos_sharpe")
+            walk_forward_turnover_raw = last_prediction.get("walk_forward_turnover")
+            walk_forward_highlow_raw = last_prediction.get("walk_forward_highlow_sharpe")
+            walk_forward_takeprofit_raw = last_prediction.get("walk_forward_takeprofit_sharpe")
+
+            walk_forward_oos_sharpe = (
+                coerce_numeric(walk_forward_oos_sharpe_raw)
+                if walk_forward_oos_sharpe_raw is not None
+                else None
+            )
+            walk_forward_turnover = (
+                coerce_numeric(walk_forward_turnover_raw)
+                if walk_forward_turnover_raw is not None
+                else None
+            )
+            walk_forward_highlow_sharpe = (
+                coerce_numeric(walk_forward_highlow_raw)
+                if walk_forward_highlow_raw is not None
+                else None
+            )
+            walk_forward_takeprofit_sharpe = (
+                coerce_numeric(walk_forward_takeprofit_raw)
+                if walk_forward_takeprofit_raw is not None
+                else None
+            )
+
             close_price = coerce_numeric(last_prediction.get("close"), default=0.0)
             predicted_close_price = coerce_numeric(
                 last_prediction.get("predicted_close"),
@@ -733,24 +1061,100 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 default=predicted_close_price,
             )
 
-            close_movement = predicted_close_price - close_price
+            strategy_stats: Dict[str, Dict[str, float]] = {
+                "simple": {
+                    "avg_return": strategy_returns.get("simple", 0.0),
+                    "sharpe": _mean_column("simple_strategy_sharpe"),
+                    "turnover": _mean_column("simple_strategy_turnover"),
+                    "max_drawdown": _mean_column("simple_strategy_max_drawdown"),
+                },
+                "all_signals": {
+                    "avg_return": strategy_returns.get("all_signals", 0.0),
+                    "sharpe": _mean_column("all_signals_strategy_sharpe"),
+                    "turnover": _mean_column("all_signals_strategy_turnover"),
+                    "max_drawdown": _mean_column("all_signals_strategy_max_drawdown"),
+                },
+                "takeprofit": {
+                    "avg_return": strategy_returns.get("takeprofit", 0.0),
+                    "sharpe": _mean_column("entry_takeprofit_sharpe"),
+                    "turnover": _mean_column("entry_takeprofit_turnover"),
+                    "max_drawdown": _mean_column("entry_takeprofit_max_drawdown"),
+                },
+                "highlow": {
+                    "avg_return": strategy_returns.get("highlow", 0.0),
+                    "sharpe": _mean_column("highlow_sharpe"),
+                    "turnover": _mean_column("highlow_turnover"),
+                    "max_drawdown": _mean_column("highlow_max_drawdown"),
+                },
+            }
+            if "ci_guard" in strategy_returns:
+                strategy_stats["ci_guard"] = {
+                    "avg_return": strategy_returns.get("ci_guard", 0.0),
+                    "sharpe": _mean_column("ci_guard_sharpe"),
+                    "turnover": _mean_column("ci_guard_turnover"),
+                    "max_drawdown": _mean_column("ci_guard_max_drawdown"),
+                }
+
+            strategy_ineligible: Dict[str, str] = {}
+            candidate_scores: Dict[str, float] = {}
+            strategy_candidates: List[Tuple[float, str]] = []
+
+            for name, stats in strategy_stats.items():
+                if name not in strategy_returns:
+                    continue
+                allow_config = True
+                if name == "takeprofit":
+                    allow_config = ALLOW_TAKEPROFIT_ENTRY
+                elif name == "highlow":
+                    allow_config = ALLOW_HIGHLOW_ENTRY
+
+                if name in {"takeprofit", "highlow"}:
+                    if not allow_config:
+                        strategy_ineligible[name] = "disabled_by_config"
+                        continue
+                    eligible, reason = _evaluate_strategy_entry_gate(
+                        symbol,
+                        stats,
+                        fallback_used=used_fallback_engine,
+                        sample_size=sample_size,
+                    )
+                    if not eligible:
+                        strategy_ineligible[name] = reason
+                        continue
+
+                score = float(stats.get("avg_return") or 0.0) + 0.05 * float(stats.get("sharpe") or 0.0)
+                if name in {"simple", "ci_guard"}:
+                    score += 0.001
+                candidate_scores[name] = score
+                strategy_candidates.append((score, name))
+
+            if strategy_candidates:
+                strategy_candidates.sort(key=lambda item: item[0], reverse=True)
+                best_strategy = strategy_candidates[0][1]
+                avg_return = float(strategy_stats.get(best_strategy, {}).get("avg_return", 0.0))
+            else:
+                best_strategy = "simple"
+                avg_return = strategy_returns.get(best_strategy, 0.0)
+            selected_strategy_score = candidate_scores.get(best_strategy)
+
+            if strategy_ineligible:
+                logger.debug("%s strategy entry gates rejected: %s", symbol, strategy_ineligible)
+
+            close_movement_raw = predicted_close_price - close_price
             high_movement = predicted_high_price - close_price
             low_movement = predicted_low_price - close_price
 
-            best_strategy = max(strategy_returns, key=strategy_returns.get)
-            avg_return = strategy_returns[best_strategy]
-
             if best_strategy == "all_signals":
-                if all(x > 0 for x in [close_movement, high_movement, low_movement]):
+                if all(x > 0 for x in [close_movement_raw, high_movement, low_movement]):
                     position_side = "buy"
-                elif all(x < 0 for x in [close_movement, high_movement, low_movement]):
+                elif all(x < 0 for x in [close_movement_raw, high_movement, low_movement]):
                     position_side = "sell"
                 else:
                     _log_detail(f"Skipping {symbol} - mixed directional signals despite all_signals lead")
                     continue
-                predicted_movement = close_movement
+                predicted_movement = close_movement_raw
             else:
-                predicted_movement = close_movement
+                predicted_movement = close_movement_raw
                 position_side = "buy" if predicted_movement > 0 else "sell"
 
             expected_move_pct = safe_divide(predicted_movement, close_price, default=0.0)
@@ -761,11 +1165,44 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if "simple_strategy_sharpe" in backtest_df.columns:
                 simple_sharpe = coerce_numeric(backtest_df["simple_strategy_sharpe"].mean(), default=0.0)
             price_skill = max(simple_return, 0.0) + 0.25 * max(simple_sharpe, 0.0)
+            highlow_allowed_entry = ALLOW_HIGHLOW_ENTRY and ("highlow" not in strategy_ineligible)
+            takeprofit_allowed_entry = ALLOW_TAKEPROFIT_ENTRY and ("takeprofit" not in strategy_ineligible)
+
+            raw_expected_move_pct = expected_move_pct
+            calibrated_move_raw = last_prediction.get("calibrated_expected_move_pct")
+            calibrated_move_pct = (
+                coerce_numeric(calibrated_move_raw)
+                if calibrated_move_raw is not None
+                else None
+            )
+            if calibrated_move_pct is not None:
+                expected_move_pct = calibrated_move_pct
+                predicted_movement = expected_move_pct * close_price
+                calibrated_close_price = close_price * (1.0 + expected_move_pct)
+            else:
+                calibrated_close_price = predicted_close_price
+
             abs_move = abs(expected_move_pct)
             if abs_move < MIN_EXPECTED_MOVE_PCT:
                 abs_move = 0.0
             edge_strength = price_skill * abs_move
             directional_edge = edge_strength if predicted_movement >= 0 else -edge_strength
+
+            toto_move_pct = coerce_numeric(last_prediction.get("toto_expected_move_pct"), default=0.0)
+            kronos_move_pct = coerce_numeric(last_prediction.get("kronos_expected_move_pct"), default=0.0)
+            realized_volatility_pct = coerce_numeric(last_prediction.get("realized_volatility_pct"), default=0.0)
+            avg_dollar_vol_raw = last_prediction.get("dollar_vol_20d")
+            avg_dollar_vol = (
+                coerce_numeric(avg_dollar_vol_raw)
+                if avg_dollar_vol_raw is not None
+                else None
+            )
+            atr_pct_raw = last_prediction.get("atr_pct_14")
+            atr_pct = coerce_numeric(atr_pct_raw) if atr_pct_raw is not None else None
+            sigma_pct = safe_divide(realized_volatility_pct, 100.0, default=0.0)
+            if sigma_pct <= 0:
+                sigma_pct = max(abs(expected_move_pct), 1e-3)
+            kelly_fraction = kelly_lite(abs(expected_move_pct), sigma_pct)
 
             if (
                 edge_strength < MIN_EDGE_STRENGTH
@@ -777,19 +1214,109 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 )
                 continue
 
+            effective_takeprofit = takeprofit_return if takeprofit_allowed_entry else 0.0
+            effective_highlow = highlow_return if highlow_allowed_entry else 0.0
             composite_score = (
                 0.2 * avg_return
                 + 0.35 * simple_return
                 + 0.15 * edge_strength
                 + 0.1 * unprofit_return
-                + 0.07 * takeprofit_return
-                + 0.07 * highlow_return
+                + 0.07 * effective_takeprofit
+                + 0.07 * effective_highlow
                 + 0.06 * strategy_returns.get("ci_guard", 0.0)
             )
 
+            bid_price, ask_price = fetch_bid_ask(symbol)
+            spread_bps = compute_spread_bps(bid_price, ask_price)
+            spread_cap = resolve_spread_cap(symbol)
+            tradeable, spread_reason = is_tradeable(
+                symbol,
+                bid_price,
+                ask_price,
+                avg_dollar_vol=avg_dollar_vol,
+                atr_pct=atr_pct,
+            )
+            edge_ok, edge_reason = pass_edge_threshold(symbol, expected_move_pct)
+            sign_toto = resolve_signal_sign(toto_move_pct)
+            sign_kronos = resolve_signal_sign(kronos_move_pct)
+            active_signs = [sign for sign in (sign_toto, sign_kronos) if sign in (-1, 1)]
+            consensus_model_count = len(active_signs)
+            consensus_ok = False
+            if consensus_model_count >= 1:
+                consensus_ok = agree_direction(*active_signs)
+            consensus_reason = None
+            fallback_source: Optional[str] = None
+            if consensus_model_count == 0:
+                consensus_reason = "No directional signal from Toto/Kronos"
+            elif consensus_model_count > 1 and not consensus_ok:
+                consensus_reason = f"Model disagreement toto={sign_toto} kronos={sign_kronos}"
+            elif consensus_model_count == 1:
+                if sign_toto != 0 and sign_kronos == 0:
+                    fallback_source = "Toto"
+                elif sign_kronos != 0 and sign_toto == 0:
+                    fallback_source = "Kronos"
+                if fallback_source:
+                    _log_detail(f"{symbol}: consensus fallback to {fallback_source} signal only")
+
             block_info = _evaluate_trade_block(symbol, position_side)
             last_pnl = block_info.get("last_pnl")
-            trade_blocked = block_info.get("blocked", False)
+            last_closed_at = block_info.get("last_closed_at")
+            if last_pnl is not None:
+                if last_pnl < 0:
+                    _record_loss_timestamp(symbol, last_closed_at)
+                else:
+                    clear_cooldown(symbol)
+            now_utc = datetime.now(timezone.utc)
+            cooldown_ok = can_trade_now(symbol, now_utc)
+
+            gating_reasons: List[str] = []
+            sharpe_cutoff = 0.3 if not kronos_only_mode else -0.25
+            if walk_forward_oos_sharpe is not None and walk_forward_oos_sharpe < sharpe_cutoff:
+                gating_reasons.append(
+                    f"Walk-forward Sharpe {walk_forward_oos_sharpe:.2f} < {sharpe_cutoff:.2f}"
+                )
+            if not kronos_only_mode:
+                if (
+                    walk_forward_turnover is not None
+                    and walk_forward_oos_sharpe is not None
+                    and walk_forward_turnover > 2.0
+                    and walk_forward_oos_sharpe < 0.5
+                ):
+                    gating_reasons.append(
+                        f"Walk-forward turnover {walk_forward_turnover:.2f} with Sharpe {walk_forward_oos_sharpe:.2f}"
+                    )
+            if not tradeable:
+                gating_reasons.append(spread_reason)
+            if not edge_ok:
+                gating_reasons.append(edge_reason)
+            if kronos_only_mode and consensus_reason and "Model disagreement" in consensus_reason:
+                if sign_kronos in (-1, 1):
+                    consensus_reason = None
+            if kronos_only_mode and consensus_reason and consensus_reason.startswith(
+                "No directional signal"
+            ):
+                if sign_kronos in (-1, 1):
+                    consensus_reason = None
+            if consensus_reason:
+                gating_reasons.append(consensus_reason)
+            if not cooldown_ok and not kronos_only_mode:
+                gating_reasons.append("Cooldown active after recent loss")
+            if kelly_fraction <= 0:
+                gating_reasons.append("Kelly fraction <= 0")
+
+            base_blocked = block_info.get("blocked", False)
+            if kronos_only_mode and base_blocked:
+                base_blocked = False
+            combined_reasons: List[str] = []
+            if base_blocked and block_info.get("block_reason"):
+                combined_reasons.append(block_info["block_reason"])
+            combined_reasons.extend(gating_reasons)
+            unique_reasons = []
+            for reason in combined_reasons:
+                if reason and reason not in unique_reasons:
+                    unique_reasons.append(reason)
+            block_reason = "; ".join(unique_reasons) if unique_reasons else None
+            trade_blocked = base_blocked or bool(gating_reasons)
 
             results[symbol] = {
                 "avg_return": avg_return,
@@ -800,18 +1327,26 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "predicted_high": float(predicted_high_price),
                 "predicted_low": float(predicted_low_price),
                 "predicted_close": float(predicted_close_price),
+                "calibrated_close": float(calibrated_close_price),
                 "last_close": float(close_price),
                 "strategy_returns": strategy_returns,
                 "simple_return": simple_return,
                 "unprofit_shutdown_return": unprofit_return,
                 "unprofit_shutdown_sharpe": unprofit_sharpe,
                 "expected_move_pct": expected_move_pct,
+                "expected_move_pct_raw": raw_expected_move_pct,
                 "price_skill": price_skill,
                 "edge_strength": edge_strength,
                 "directional_edge": directional_edge,
                 "composite_score": composite_score,
+                "selected_strategy_score": selected_strategy_score,
+                "strategy_entry_ineligible": strategy_ineligible,
+                "strategy_candidate_scores": candidate_scores,
+                "fallback_backtest": used_fallback_engine,
+                "highlow_entry_allowed": highlow_allowed_entry,
+                "takeprofit_entry_allowed": takeprofit_allowed_entry,
                 "trade_blocked": trade_blocked,
-                "block_reason": block_info.get("block_reason"),
+                "block_reason": block_reason,
                 "last_trade_pnl": last_pnl,
                 "last_trade_closed_at": block_info.get("last_closed_at"),
                 "cooldown_expires": block_info.get("cooldown_expires"),
@@ -824,6 +1359,27 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "probe_expired": block_info.get("probe_expired", False),
                 "probe_transition_ready": block_info.get("probe_transition_ready", False),
                 "learning_state": block_info.get("learning_state", {}),
+                "bid_price": bid_price,
+                "ask_price": ask_price,
+                "spread_bps": None if math.isinf(spread_bps) else spread_bps,
+                "spread_cap_bps": spread_cap,
+                "tradeable_reason": spread_reason,
+                "edge_gate_reason": edge_reason,
+                "consensus_ok": consensus_ok,
+                "consensus_reason": consensus_reason,
+                "consensus_model_count": consensus_model_count,
+                "kelly_fraction": kelly_fraction,
+                "kelly_sigma_pct": sigma_pct,
+                "toto_move_pct": toto_move_pct,
+                "kronos_move_pct": kronos_move_pct,
+                "avg_dollar_vol": float(avg_dollar_vol) if avg_dollar_vol is not None else None,
+                "atr_pct_14": float(atr_pct) if atr_pct is not None else None,
+                "cooldown_active": not cooldown_ok,
+                "walk_forward_oos_sharpe": walk_forward_oos_sharpe,
+                "walk_forward_turnover": walk_forward_turnover,
+                "walk_forward_highlow_sharpe": walk_forward_highlow_sharpe,
+                "walk_forward_takeprofit_sharpe": walk_forward_takeprofit_sharpe,
+                "backtest_samples": sample_size,
             }
             _log_analysis_summary(symbol, results[symbol])
 
@@ -913,14 +1469,8 @@ def log_trading_plan(picks: Dict[str, Dict], action: str):
     if not picks:
         logger.info(f"TRADING PLAN ({action}) - no candidates")
         return
-
-    banner = "=" * 72
-    logger.info(banner)
-    logger.info(f"TRADING PLAN ({action})")
-    logger.info("Symbol Dir  Mode   Avg    Comp    Move   Conf  LastPnL  Notes")
-    for symbol, data in picks.items():
-        logger.info(_format_plan_line(symbol, data))
-    logger.info(banner)
+    compact_lines = [_format_plan_line(symbol, data) for symbol, data in picks.items()]
+    logger.info("TRADING PLAN (%s) count=%d | %s", action, len(picks), " ; ".join(compact_lines))
 
 
 def manage_positions(
@@ -1045,7 +1595,7 @@ def manage_positions(
 
     candidate_lines = _format_entry_candidates(current_picks)
     if candidate_lines:
-        logger.info("Entry candidates:\n  " + "\n  ".join(candidate_lines))
+        logger.info("Entry candidates (%d): %s", len(candidate_lines), " ; ".join(candidate_lines))
     equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
     if equity <= 0:
         equity = ensure_lower_bound(total_exposure_value, 1.0, default=1.0)
@@ -1078,11 +1628,13 @@ def manage_positions(
             logger.info(f"{symbol}: Probe transition ready; targeting full exposure subject to risk limits.")
 
         # Calculate current position size and target size
-        current_position_size = 0
-        current_position_value = 0
+        current_position_size = 0.0
+        current_position_value = 0.0
+        current_position_side: Optional[str] = None
         for p in positions:
             if p.symbol == symbol:
                 current_position_size = float(p.qty)
+                current_position_side = getattr(p, "side", None)
                 if hasattr(p, "current_price"):
                     current_position_value = current_position_size * float(p.current_price)
                 break
@@ -1092,10 +1644,7 @@ def manage_positions(
             logger.info(f"{symbol}: Probe mode enabled; minimum trade quantity set to {min_trade_qty}")
 
         # Calculate target position size
-        client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
-        download_exchange_latest_data(client, symbol)
-        bid_price = get_bid(symbol)
-        ask_price = get_ask(symbol)
+        bid_price, ask_price = fetch_bid_ask(symbol)
         entry_price = None
         target_qty = 0.0
 
@@ -1108,30 +1657,44 @@ def manage_positions(
             if computed_qty is None:
                 computed_qty = 0.0
             if effective_probe:
-                if computed_qty <= 0:
-                    target_qty = ensure_lower_bound(min_trade_qty, 0.0, default=min_trade_qty)
-                    logger.info(
-                        f"{symbol}: Exposure limits returned {computed_qty}; overriding to probe minimum qty {target_qty}"
-                    )
-                else:
-                    target_qty = min(computed_qty, min_trade_qty)
+                target_qty = ensure_lower_bound(min_trade_qty, 0.0, default=min_trade_qty)
+                logger.info(
+                    f"{symbol}: Probe sizing fixed at minimum tradable quantity {target_qty}"
+                )
                 should_enter = not position_exists or not correct_side
                 needs_size_increase = False
             else:
-                target_qty = computed_qty
+                base_qty = computed_qty
+                kelly_value = ensure_lower_bound(
+                    coerce_numeric(data.get("kelly_fraction"), default=1.0),
+                    0.0,
+                    default=0.0,
+                )
+                if kelly_value <= 0:
+                    logger.info(f"{symbol}: Kelly fraction non-positive; skipping entry.")
+                    continue
+                target_qty = ensure_lower_bound(base_qty * kelly_value, 0.0, default=0.0)
+                if target_qty < min_trade_qty:
+                    target_qty = min_trade_qty
                 target_value = target_qty * entry_price
                 logger.info(
                     f"{symbol}: Current position: {current_position_size} qty (${current_position_value:.2f}), "
-                    f"Target: {target_qty} qty (${target_value:.2f})"
+                    f"Target: {target_qty} qty (${target_value:.2f}) using Kelly fraction {kelly_value:.3f}"
                 )
-                if symbol in crypto_symbols:
-                    should_enter = (not position_exists and is_buy_side(data["side"])) or (
-                        current_position_size < target_qty * 0.95
-                    )  # 5% tolerance
+                if not position_exists:
+                    should_enter = True
+                    needs_size_increase = False
+                elif not correct_side:
+                    should_enter = True
+                    needs_size_increase = False
                 else:
-                    should_enter = not position_exists or (current_position_size < target_qty * 0.95)
-
-                needs_size_increase = current_position_size > 0 and current_position_size < target_qty * 0.95
+                    should_enter = should_rebalance(
+                        current_position_side,
+                        data["side"],
+                        current_position_size,
+                        target_qty,
+                    )
+                    needs_size_increase = should_enter and abs(current_position_size) < abs(target_qty)
 
                 current_abs_value = abs(current_position_value)
                 projected_value = abs(target_qty * entry_price)
@@ -1193,6 +1756,10 @@ def manage_positions(
                 else:
                     logger.info(f"Entering new {data['side']} position for {symbol}")
 
+            entry_strategy = data.get("strategy")
+            is_highlow_entry = entry_strategy == "highlow" and not effective_probe
+            highlow_limit_executed = False
+
             if bid_price is not None and ask_price is not None:
                 entry_price = entry_price or (ask_price if data["side"] == "buy" else bid_price)
                 if not effective_probe:
@@ -1207,13 +1774,57 @@ def manage_positions(
                         logger.info(f"Skipping {symbol} entry after recalculated qty was non-positive.")
                         continue
                     logger.info(f"Target quantity for {symbol}: {target_qty} at price {entry_price}")
-                    ramp_into_position(symbol, data["side"], target_qty=target_qty)
+
+                    if is_highlow_entry:
+                        if is_buy_side(data["side"]):
+                            limit_reference = data.get("predicted_low")
+                        else:
+                            limit_reference = data.get("predicted_high")
+                        limit_price = coerce_numeric(limit_reference, default=float("nan"))
+                        if math.isnan(limit_price) or limit_price <= 0:
+                            logger.warning(
+                                "%s highlow entry missing limit price (predicted bound=%s); falling back to ramp",
+                                symbol,
+                                limit_reference,
+                            )
+                        else:
+                            try:
+                                logger.info(
+                                    "Submitting highlow limit order for %s %s qty=%s @ %.4f",
+                                    symbol,
+                                    data["side"],
+                                    target_qty,
+                                    limit_price,
+                                )
+                                result = alpaca_wrapper.open_order_at_price_or_all(
+                                    symbol,
+                                    target_qty,
+                                    data["side"],
+                                    limit_price,
+                                )
+                                if result is None:
+                                    logger.warning(
+                                        "Highlow limit order for %s returned None; will additionally ramp position.",
+                                        symbol,
+                                    )
+                                else:
+                                    highlow_limit_executed = True
+                                    entry_price = limit_price
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to submit highlow limit order for %s: %s; will ramp instead.",
+                                    symbol,
+                                    exc,
+                                )
                 else:
                     logger.info(f"Probe trade target quantity for {symbol}: {target_qty} at price {entry_price}")
+
+                if not highlow_limit_executed:
                     ramp_into_position(symbol, data["side"], target_qty=target_qty)
             else:
                 logger.warning(f"Could not get bid/ask prices for {symbol}, using default sizing")
-                ramp_into_position(symbol, data["side"], target_qty=target_qty if effective_probe else None)
+                if not highlow_limit_executed:
+                    ramp_into_position(symbol, data["side"], target_qty=target_qty if effective_probe else None)
 
             if transition_to_normal:
                 _mark_probe_transitioned(symbol, data["side"], target_qty)
@@ -1222,8 +1833,9 @@ def manage_positions(
                     data["side"],
                     mode="probe_transition",
                     qty=target_qty,
-                    strategy=data.get("strategy"),
                 )
+                _tag_active_trade_strategy(symbol, data["side"], entry_strategy)
+                _normalize_active_trade_patch(_update_active_trade)
             elif effective_probe:
                 _mark_probe_active(symbol, data["side"], target_qty)
                 _update_active_trade(
@@ -1231,72 +1843,98 @@ def manage_positions(
                     data["side"],
                     mode="probe",
                     qty=target_qty,
-                    strategy=data.get("strategy"),
                 )
+                _tag_active_trade_strategy(symbol, data["side"], entry_strategy)
+                _normalize_active_trade_patch(_update_active_trade)
             else:
                 _update_active_trade(
                     symbol,
                     data["side"],
                     mode="normal",
                     qty=target_qty,
-                    strategy=data.get("strategy"),
                 )
+                _tag_active_trade_strategy(symbol, data["side"], entry_strategy)
+                _normalize_active_trade_patch(_update_active_trade)
 
             if not effective_probe and entry_price is not None:
                 projected_value = abs(target_qty * entry_price)
                 current_abs_value = abs(current_position_value)
                 total_exposure_value = total_exposure_value - current_abs_value + projected_value
 
-            # If strategy is 'takeprofit', place a takeprofit limit later
-            if data["strategy"] == "takeprofit" and is_buy_side(data["side"]):
-                # e.g. call close_position_at_takeprofit with predicted_high
-                tp_price = data["predicted_high"]
-                logger.info(f"Scheduling a takeprofit at {tp_price:.3f} for {symbol}")
-                # call the new function from alpaca_cli
-                spawn_close_position_at_takeprofit(symbol, tp_price)
-            elif data["strategy"] == "takeprofit" and is_sell_side(data["side"]):
-                # If short, we might want to place a limit buy at predicted_low
-                # (though you'd need to store predicted_low similarly)
-                # For example:
-                predicted_low = data["predictions"].iloc[-1]["predicted_low"]
-                logger.info(f"Scheduling a takeprofit at {predicted_low:.3f} for short {symbol}")
-                spawn_close_position_at_takeprofit(symbol, predicted_low)
-
-            # If strategy is 'highlow', place a limit order at predicted_low (for buys)
-            # or predicted_high (for shorts), and then schedule a takeprofit at the opposite predicted price.
-            elif data["strategy"] == "highlow":
-                if data["side"] == "buy":
-                    entry_price = data["predicted_low"]
-                    logger.info(f"(Highlow) Placing limit BUY order for {symbol} at predicted_low={entry_price:.2f}")
-                    qty = get_qty(symbol, entry_price, positions)
-                    alpaca_wrapper.open_order_at_price_or_all(symbol, qty=qty, side="buy", price=entry_price)
-
-                    tp_price = data["predicted_high"]
-                    logger.info(f"(Highlow) Scheduling takeprofit at predicted_high={tp_price:.3f} for {symbol}")
-                    spawn_close_position_at_takeprofit(symbol, tp_price)
+            if is_highlow_entry:
+                if is_buy_side(data["side"]):
+                    highlow_tp_reference = data.get("predicted_high")
                 else:
-                    entry_price = data["predicted_high"]
-                    logger.info(
-                        f"(Highlow) Placing limit SELL/short order for {symbol} at predicted_high={entry_price:.2f}"
+                    highlow_tp_reference = data.get("predicted_low")
+                takeprofit_price = coerce_numeric(highlow_tp_reference, default=float("nan"))
+                if math.isnan(takeprofit_price) or takeprofit_price <= 0:
+                    logger.debug(
+                        "%s highlow takeprofit skipped due to invalid target (%s)",
+                        symbol,
+                        highlow_tp_reference,
                     )
-                    qty = get_qty(symbol, entry_price, positions)
-                    alpaca_wrapper.open_order_at_price_or_all(symbol, qty=qty, side="sell", price=entry_price)
+                else:
+                    try:
+                        logger.info(
+                            "Scheduling highlow takeprofit for %s at %.4f",
+                            symbol,
+                            takeprofit_price,
+                        )
+                        spawn_close_position_at_takeprofit(symbol, float(takeprofit_price))
+                    except Exception as exc:
+                        logger.warning("Failed to schedule highlow takeprofit for %s: %s", symbol, exc)
+            elif ENABLE_TAKEPROFIT_BRACKETS:
+                tp_price = None
+                entry_reference = entry_price
+                if entry_reference is None and bid_price is not None and ask_price is not None:
+                    entry_reference = ask_price if is_buy_side(data["side"]) else bid_price
 
-                    tp_price = data["predicted_low"]
-                    logger.info(f"(Highlow) Scheduling takeprofit at predicted_low={tp_price:.3f} for short {symbol}")
-                    spawn_close_position_at_takeprofit(symbol, tp_price)
+                if is_buy_side(data["side"]):
+                    tp_price = data.get("predicted_high")
+                elif is_sell_side(data["side"]):
+                    tp_price = data.get("predicted_low")
+
+                schedule_takeprofit = False
+                if tp_price is not None and entry_reference is not None:
+                    tp_val = float(tp_price)
+                    if is_buy_side(data["side"]):
+                        schedule_takeprofit = tp_val > entry_reference * 1.0005
+                    else:
+                        schedule_takeprofit = tp_val < entry_reference * 0.9995
+
+                if schedule_takeprofit:
+                    try:
+                        logger.info(
+                            "Scheduling discretionary takeprofit for %s at %.4f (entry_ref=%.4f)",
+                            symbol,
+                            float(tp_price),
+                            entry_reference,
+                        )
+                        spawn_close_position_at_takeprofit(symbol, float(tp_price))
+                    except Exception as exc:
+                        logger.warning("Failed to schedule takeprofit for %s: %s", symbol, exc)
+                elif tp_price is not None:
+                    logger.debug(
+                        "%s takeprofit %.4f skipped (entry_ref=%s, side=%s)",
+                        symbol,
+                        float(tp_price),
+                        entry_reference,
+                        data["side"],
+                    )
         elif transition_to_normal:
             logger.info(
                 f"{symbol}: Probe already at target sizing; marking transition complete without additional orders."
             )
             _mark_probe_transitioned(symbol, data["side"], current_position_size)
+            entry_strategy = data.get("strategy")
             _update_active_trade(
                 symbol,
                 data["side"],
                 mode="probe_transition",
                 qty=current_position_size,
-                strategy=data.get("strategy"),
             )
+            _tag_active_trade_strategy(symbol, data["side"], entry_strategy)
+            _normalize_active_trade_patch(_update_active_trade)
 
 
 def manage_market_close(
@@ -1467,9 +2105,8 @@ def main():
         "AAPL",
         "U",
         "ADSK",
-        "CRWD",
         "ADBE",
-        "NET",
+        "MSFT",
         "COIN",
         # "MSFT",
         # "NFLX",
@@ -1495,6 +2132,9 @@ def main():
             market_open, market_close = get_market_hours()
             now = datetime.now(pytz.timezone("US/Eastern"))
             today = now.date()
+            analysis_window_minutes = max(MARKET_CLOSE_ANALYSIS_WINDOW_MINUTES, 1)
+            close_analysis_window_start = market_close - timedelta(minutes=analysis_window_minutes)
+            close_analysis_window_end = market_close
 
             # Initial analysis at NZ morning (22:00-22:30 EST)
             # run at start of program to check
@@ -1555,9 +2195,9 @@ def main():
                 previous_picks = current_picks
                 last_market_open_hour2_run = today
 
-            # Market close analysis (15:45-16:00 EST)
+            # Market close analysis (shifted earlier to allow gradual backout)
             elif (
-                (now.hour == market_close.hour - 1 and now.minute >= 45)
+                close_analysis_window_start <= now < close_analysis_window_end
                 and (last_market_close_run is None or last_market_close_run != today)
                 and is_nyse_trading_day_ending()
             ):

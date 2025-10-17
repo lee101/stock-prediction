@@ -111,12 +111,23 @@ def series_to_df(series_pd):
     return pd.DataFrame(series_pd.values, columns=series_pd.columns)
 
 
-def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_wrapper=None):
+def make_predictions(
+    input_data_path=None,
+    pred_name='',
+    retrain=False,
+    alpaca_wrapper=None,
+    symbols=None,
+):
     """
     Make predictions for all csv files in directory.
     """
     results_dir = base_dir / "results"
     results_dir.mkdir(exist_ok=True)
+
+    if alpaca_wrapper is None:
+        import importlib
+        alpaca_wrapper = importlib.import_module("alpaca_wrapper")
+
     time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     save_file_name = results_dir / f"predictions-{time}.csv"
 
@@ -131,11 +142,14 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
         input_data_files = base_dir / "data"
     loguru_logger.info(f"input_data_files {input_data_files}")
 
+    allowed_symbols = {symbol.upper() for symbol in symbols} if symbols else None
     csv_files = list(input_data_files.glob("*.csv"))
     alpaca_clock = alpaca_wrapper.get_clock()
     for days_to_drop in [0]:  # [1,2,3,4,5,6,7,8,9,10,11]:
         for csv_file in csv_files:
             instrument_name = csv_file.stem.split('-')[0]
+            if allowed_symbols and instrument_name.upper() not in allowed_symbols:
+                continue
             # only trade crypto or stocks currently being traded - dont bother forecasting things that cant be traded.
             if not alpaca_clock.is_open:
                 # remove all stock pairs but not crypto

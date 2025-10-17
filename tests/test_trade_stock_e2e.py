@@ -1,10 +1,25 @@
 from contextlib import ExitStack, contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
 import pytz
+import sys
+import types
+
+if "backtest_test3_inline" not in sys.modules:
+    _backtest_stub = types.ModuleType("backtest_test3_inline")
+
+    def _stub_backtest_forecasts(*args, **kwargs):
+        raise RuntimeError("backtest_forecasts stub should be patched in tests")
+
+    def _stub_release_model_resources():
+        return None
+
+    _backtest_stub.backtest_forecasts = _stub_backtest_forecasts
+    _backtest_stub.release_model_resources = _stub_release_model_resources
+    sys.modules["backtest_test3_inline"] = _backtest_stub
 
 import trade_stock_e2e as trade_module
 from trade_stock_e2e import (
@@ -133,8 +148,12 @@ def test_get_market_hours():
 
     assert market_open.hour == 9
     assert market_open.minute == 30
-    assert market_close.hour == 16
-    assert market_close.minute == 0
+    expected_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    expected_close -= timedelta(minutes=trade_module.MARKET_CLOSE_SHIFT_MINUTES)
+    if expected_close <= market_open:
+        expected_close = market_open + timedelta(minutes=1)
+    assert market_close.hour == expected_close.hour
+    assert market_close.minute == expected_close.minute
 
 
 @patch("trade_stock_e2e.analyze_next_day_positions")
@@ -400,9 +419,11 @@ def test_manage_positions_highlow_strategy_uses_limit_orders():
     with stub_trading_env(positions=[], qty=3, trading_day_now=True) as mocks:
         manage_positions(current_picks, {}, current_picks)
 
-    mocks["ramp"].assert_called_once_with("AAPL", "buy", target_qty=3)
+    mocks["ramp"].assert_not_called()
     mocks["spawn_tp"].assert_called_once_with("AAPL", 125.0)
-    assert mocks["open_order"].call_count == 1
-    call_args, call_kwargs = mocks["open_order"].call_args
-    assert call_args == ("AAPL",)
-    assert call_kwargs == {"qty": 3, "side": "buy", "price": 100.0}
+    mocks["open_order"].assert_called_once()
+    args, _ = mocks["open_order"].call_args
+    assert args[0] == "AAPL"
+    assert args[1] == 3
+    assert args[2] == "buy"
+    assert args[3] == pytest.approx(100.0)
