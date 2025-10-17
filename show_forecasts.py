@@ -27,12 +27,17 @@ def show_forecasts(symbol):
     # For stocks, only get fresh data if market is open, otherwise use cached data
     if is_crypto or is_market_open:
         try:
+            target_symbols = [symbol.upper()]
             # Download the latest data
             current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
-            data_df = download_daily_stock_data(current_time_formatted)
+            data_df = download_daily_stock_data(current_time_formatted, symbols=target_symbols)
             
             # Make predictions
-            predictions = make_predictions(current_time_formatted, alpaca_wrapper=alpaca_wrapper)
+            predictions = make_predictions(
+                current_time_formatted,
+                alpaca_wrapper=alpaca_wrapper,
+                symbols=target_symbols,
+            )
             
             # Filter predictions for the given symbol
             symbol_predictions = predictions[predictions['instrument'] == symbol]

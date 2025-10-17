@@ -2,6 +2,7 @@
   "include": [
     "src"
   ],
+  "stubPath": "typings",
   "exclude": [
     "**/__pycache__",
     "**/.mypy_cache",
@@ -34,8 +35,8 @@
       "extraPaths": [
         "src"
       ],
-      "pythonVersion": "3.11"
+      "pythonVersion": "3.13"
     }
   ],
-  "pythonVersion": "3.11"
+  "pythonVersion": "3.13"
 }
