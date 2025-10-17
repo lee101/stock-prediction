@@ -735,6 +735,7 @@ def train_realistic_rl(max_minutes=2):
     start_time = time.time()
     best_sharpe = -float('inf')
     best_model_state = None
+    val_metrics: BacktestMetrics = BacktestMetrics()
     episode = 0
     
     logger.info(f"Starting realistic RL training for {max_minutes} minutes...")
