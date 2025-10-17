@@ -68,10 +68,16 @@ def test_trading_plan_and_envelope_round_trip() -> None:
     serialized = plan.to_dict()
     assert serialized["metadata"] == {"source": "unit"}
 
-    envelope = TradingPlanEnvelope(plan=plan, commentary=None)
-    round_trip = TradingPlanEnvelope.from_json(envelope.to_json())
+    envelope = TradingPlanEnvelope(plan=plan)
+    payload = json.loads(envelope.to_json())
+    assert payload["execution_window"] == "market_close"
+
+    round_trip = TradingPlanEnvelope.from_json(json.dumps(payload))
     assert round_trip.plan.to_dict() == serialized
-    assert round_trip.commentary is None
+
+    legacy_payload = {"plan": raw, "commentary": "legacy"}
+    legacy_round_trip = TradingPlanEnvelope.from_json(json.dumps(legacy_payload))
+    assert legacy_round_trip.plan.to_dict() == serialized
 
     with pytest.raises(ValueError):
         TradingPlan.from_dict({"target_date": "", "instructions": []})

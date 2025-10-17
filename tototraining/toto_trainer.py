@@ -22,7 +22,7 @@ import warnings
 import contextlib
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Union, Any
+from typing import Dict, List, Tuple, Optional, Union, Any, Sequence
 from dataclasses import dataclass, asdict
 from collections import defaultdict
 import random
@@ -44,6 +44,11 @@ from traininglib.compile_wrap import maybe_compile
 from traininglib.optim_factory import make_optimizer
 from traininglib.runtime_flags import bf16_supported, enable_fast_kernels
 from traininglib.schedules import WarmupCosine
+from traininglib.prof import maybe_profile
+from traininglib.prefetch import CudaPrefetcher
+from traininglib.ema import EMA
+from traininglib.losses import huber_loss, heteroscedastic_gaussian_nll, pinball_loss
+from hftraining.metrics import crps_from_quantiles, dm_test
 
 # Add the toto directory to sys.path
 toto_path = Path(__file__).parent.parent / "toto" / "toto"
@@ -122,6 +127,8 @@ class TrainerConfig:
     min_lr: float = 0.0
     weight_decay: float = 0.01
     batch_size: int = 32
+    device_batch_size: Optional[int] = None
+    global_batch_size: Optional[int] = None
     accumulation_steps: int = 1
     max_epochs: int = 100
     warmup_epochs: int = 10
@@ -136,7 +143,9 @@ class TrainerConfig:
     use_mixed_precision: bool = True
     compile: bool = True
     require_gpu: bool = False
-    
+    use_cuda_graphs: bool = False
+    cuda_graph_warmup: int = 3
+
     # Distributed training
     distributed: bool = False
     world_size: int = 1
@@ -171,6 +180,7 @@ class TrainerConfig:
     pin_memory: bool = True
     freeze_backbone: bool = False
     trainable_param_substrings: Optional[List[str]] = None
+    prefetch_to_device: bool = True
 
     # Logging
     log_level: str = "INFO"
@@ -186,6 +196,17 @@ class TrainerConfig:
     
     # Random seed
     random_seed: int = 42
+
+    # Loss & EMA
+    loss_type: str = "huber"  # "huber", "mse", "heteroscedastic", "quantile"
+    huber_delta: float = 0.01
+    quantile_levels: Optional[List[float]] = None
+    ema_decay: Optional[float] = 0.999
+    ema_eval: bool = True
+
+    # Profiling
+    profile: bool = False
+    profile_log_dir: str = "runs/prof"
     
     def __post_init__(self):
         if self.output_distribution_classes is None:
@@ -199,6 +220,22 @@ class TrainerConfig:
 
         if self.log_to_tensorboard and self.tensorboard_log_dir:
             Path(self.tensorboard_log_dir).mkdir(parents=True, exist_ok=True)
+
+        if self.device_batch_size is not None and self.device_batch_size <= 0:
+            raise ValueError("device_batch_size must be positive when provided.")
+        if self.global_batch_size is not None and self.global_batch_size <= 0:
+            raise ValueError("global_batch_size must be positive when provided.")
+        if self.ema_decay is not None and not (0.0 < self.ema_decay < 1.0):
+            raise ValueError("ema_decay must lie in (0, 1) when enabled.")
+        if self.cuda_graph_warmup < 0:
+            raise ValueError("cuda_graph_warmup must be non-negative.")
+
+        valid_losses = {"huber", "mse", "heteroscedastic", "quantile"}
+        self.loss_type = self.loss_type.lower()
+        if self.loss_type not in valid_losses:
+            raise ValueError(f"Unsupported loss_type '{self.loss_type}'.")
+        if self.quantile_levels is None:
+            self.quantile_levels = [0.1, 0.5, 0.9]
 
         if self.export_pretrained_dir is None:
             self.export_pretrained_dir = str(Path(self.save_dir) / "hf_export")
@@ -245,6 +282,10 @@ class MetricsTracker:
         self.price_targets = []
         self.batch_times = []
         self.learning_rates = []
+        self.price_mae_samples: List[np.ndarray] = []
+        self.naive_mae_samples: List[np.ndarray] = []
+        self.crps_samples: List[float] = []
+        self.quantile_levels: Optional[Sequence[float]] = None
 
     def update(
         self,
@@ -255,6 +296,9 @@ class MetricsTracker:
         price_targets: torch.Tensor | None = None,
         batch_time: float | None = None,
         learning_rate: float | None = None,
+        prev_close: torch.Tensor | None = None,
+        quantile_predictions: torch.Tensor | None = None,
+        quantile_levels: Sequence[float] | None = None,
     ):
         """Update metrics with new batch data"""
         self.losses.append(loss)
@@ -263,15 +307,54 @@ class MetricsTracker:
             self.predictions.append(predictions.detach().cpu())
             self.targets.append(targets.detach().cpu())
 
+        targets_cpu = None
         if price_predictions is not None and price_targets is not None:
-            self.price_predictions.append(price_predictions.detach().cpu())
-            self.price_targets.append(price_targets.detach().cpu())
+            preds_cpu = price_predictions.detach().cpu()
+            targets_cpu = price_targets.detach().cpu()
+            if preds_cpu.ndim == 3 and preds_cpu.shape[1] == 1:
+                preds_cpu = preds_cpu[:, 0, :]
+            if targets_cpu.ndim == 3 and targets_cpu.shape[1] == 1:
+                targets_cpu = targets_cpu[:, 0, :]
+            self.price_predictions.append(preds_cpu)
+            self.price_targets.append(targets_cpu)
+            mae_batch = torch.mean(torch.abs(preds_cpu - targets_cpu), dim=1)
+            self.price_mae_samples.append(mae_batch.numpy())
+            if prev_close is not None:
+                base = prev_close.detach().cpu()
+                if base.ndim == 1:
+                    base = base.unsqueeze(-1).expand_as(targets_cpu)
+                elif base.ndim == 2 and base.shape[1] != targets_cpu.shape[1]:
+                    base = base[:, -1:].expand_as(targets_cpu)
+                elif base.ndim == 3 and base.shape[1] == 1:
+                    base = base[:, 0, :]
+                if base.ndim == 2:
+                    naive_mae = torch.mean(torch.abs(base - targets_cpu), dim=1)
+                    self.naive_mae_samples.append(naive_mae.numpy())
 
         if batch_time is not None:
             self.batch_times.append(batch_time)
 
         if learning_rate is not None:
             self.learning_rates.append(learning_rate)
+
+        if (
+            targets_cpu is not None
+            and quantile_predictions is not None
+            and quantile_levels is not None
+        ):
+            q_pred = quantile_predictions.detach().cpu()
+            if q_pred.ndim == 4 and q_pred.shape[1] == 1:
+                q_pred = q_pred[:, 0, :, :]
+            if q_pred.ndim == 3 and q_pred.shape[1] != targets_cpu.shape[1] and q_pred.shape[2] == targets_cpu.shape[1]:
+                q_pred = q_pred.transpose(1, 2)
+            taus = torch.tensor(list(quantile_levels), dtype=targets_cpu.dtype)
+            try:
+                crps_val = crps_from_quantiles(targets_cpu, q_pred, taus)
+                self.crps_samples.append(float(crps_val))
+                self.quantile_levels = quantile_levels
+            except Exception:
+                # Ignore numerical issues; CRPS simply not logged for this batch.
+                pass
 
     def compute_metrics(self) -> Dict[str, float]:
         """Compute and return all metrics"""
@@ -308,6 +391,19 @@ class MetricsTracker:
                 'price_rmse': math.sqrt(price_mse),
                 'price_mae': price_mae,
             })
+
+        if self.price_mae_samples:
+            mae_array = np.concatenate(self.price_mae_samples)
+            metrics['price_mae'] = float(np.mean(mae_array))
+            if self.naive_mae_samples:
+                naive_array = np.concatenate(self.naive_mae_samples)
+                metrics['naive_mae'] = float(np.mean(naive_array))
+                dm_stat, dm_p = dm_test(mae_array, naive_array)
+                metrics['dm_stat_vs_naive'] = float(dm_stat)
+                metrics['dm_pvalue_vs_naive'] = float(dm_p)
+
+        if self.crps_samples:
+            metrics['price_crps'] = float(np.mean(self.crps_samples))
 
         if self.batch_times:
             metrics['batch_time_mean'] = float(np.mean(self.batch_times))
@@ -470,6 +566,8 @@ class TotoTrainer:
         
         # Setup distributed training
         self._setup_distributed()
+        self.device_batch_size: Optional[int] = None
+        self._configure_batches()
         
         # Initialize components
         self.model = None
@@ -494,9 +592,11 @@ class TotoTrainer:
         self.patience_counter = 0
         self.best_export_metric = float('inf')
         self.training_start_time = None
-        
+
         # Data loaders
         self.dataloaders = {}
+        self.ema: Optional[EMA] = None
+        self._ema_module: Optional[nn.Module] = None
         
         # Export directory for HuggingFace-compatible checkpoints
         self.export_dir = Path(self.config.export_pretrained_dir)
@@ -555,7 +655,7 @@ class TotoTrainer:
         """Setup distributed training if enabled"""
         self.is_distributed = False
         self.is_main_process = True
-        
+
         if self.config.distributed:
             if not torch.cuda.is_available():
                 raise RuntimeError("Distributed training requires CUDA but no GPU is available.")
@@ -574,8 +674,46 @@ class TotoTrainer:
             
             self.is_distributed = True
             self.is_main_process = self.config.rank == 0
-            
+
             self.logger.info(f"Distributed training enabled: rank {self.config.rank}/{self.config.world_size}")
+
+    def _configure_batches(self) -> None:
+        per_device = self.config.device_batch_size
+        if per_device is None:
+            if hasattr(self.dataloader_config, "batch_size") and self.dataloader_config.batch_size:
+                per_device = self.dataloader_config.batch_size
+            else:
+                per_device = self.config.batch_size
+
+        if per_device <= 0:
+            raise ValueError("Per-device batch size must be positive.")
+
+        if hasattr(self.dataloader_config, "batch_size"):
+            self.dataloader_config.batch_size = per_device
+
+        world = self.config.world_size if self.is_distributed else 1
+        if self.config.global_batch_size is not None:
+            denom = per_device * world
+            if denom == 0 or self.config.global_batch_size % denom != 0:
+                raise ValueError(
+                    "global_batch_size must be divisible by per-device batch size times world size."
+                )
+            self.config.accumulation_steps = max(1, self.config.global_batch_size // denom)
+
+        self.device_batch_size = per_device
+        effective_global = per_device * max(1, self.config.accumulation_steps) * world
+        self.logger.info(
+            "Effective batches -> per-device %d, grad_accum %d, world %d (global %d)",
+            per_device,
+            max(1, self.config.accumulation_steps),
+            world,
+            effective_global,
+        )
+
+    def _prefetch_loader(self, loader: DataLoader, device: torch.device):
+        if self.config.prefetch_to_device and device.type == "cuda":
+            return CudaPrefetcher(loader, device=device)
+        return loader
     
     def _configure_precision(self) -> None:
         """Configure autocast dtype and gradient scaler based on hardware."""
@@ -595,6 +733,33 @@ class TotoTrainer:
                 self.logger.info("Using float16 autocast with GradScaler for CUDA training.")
         else:
             self.logger.info("Mixed precision requested but CUDA not available; defaulting to float32.")
+
+    def _ema_target_module(self) -> nn.Module:
+        if self.model is None:
+            raise RuntimeError("Model not initialized before accessing EMA module.")
+        return self.model.module if hasattr(self.model, "module") else self.model
+
+    def _maybe_init_ema(self) -> None:
+        if self.config.ema_decay is None:
+            self.ema = None
+            self._ema_module = None
+            return
+
+        module = self._ema_target_module()
+        self.ema = EMA(module, decay=self.config.ema_decay)
+        self._ema_module = module
+
+    @contextlib.contextmanager
+    def _ema_eval_context(self):
+        if self.ema is None or not self.config.ema_eval:
+            yield
+            return
+        target_module = self._ema_module or self._ema_target_module()
+        self.ema.apply_to(target_module)
+        try:
+            yield
+        finally:
+            self.ema.restore(target_module)
     
     def _create_model(self, input_dim: int) -> nn.Module:
         """Create Toto model"""
@@ -672,8 +837,21 @@ class TotoTrainer:
         
         # Wrap with DDP if distributed
         if self.is_distributed:
-            model = DDP(model, device_ids=[self.config.local_rank])
-        
+            ddp_kwargs = dict(
+                device_ids=[self.config.local_rank],
+                output_device=self.config.local_rank,
+                gradient_as_bucket_view=True,
+                broadcast_buffers=False,
+                find_unused_parameters=False,
+            )
+            if self.config.use_cuda_graphs:
+                ddp_kwargs["static_graph"] = True
+            try:
+                model = DDP(model, **ddp_kwargs)
+            except TypeError:
+                ddp_kwargs.pop("static_graph", None)
+                model = DDP(model, **ddp_kwargs)
+
         return model
 
     def _apply_parameter_freeze(self, model: nn.Module) -> None:
@@ -787,6 +965,51 @@ class TotoTrainer:
         pad_len = prediction_length - tensor.shape[-1]
         pad = tensor[:, -1:].expand(-1, pad_len)
         return torch.cat([tensor, pad], dim=-1)
+
+    @staticmethod
+    def _match_quantile_length(tensor: torch.Tensor, prediction_length: int) -> torch.Tensor:
+        if tensor.shape[1] == prediction_length:
+            return tensor
+        if tensor.shape[1] > prediction_length:
+            return tensor[:, -prediction_length:, :]
+        pad_len = prediction_length - tensor.shape[1]
+        pad = tensor[:, -1:, :].expand(-1, pad_len, -1)
+        return torch.cat([tensor, pad], dim=1)
+
+    def _get_quantile_predictions(
+        self,
+        output: Any,
+        levels: Sequence[float],
+        device: torch.device,
+        dtype: torch.dtype,
+        prediction_length: int,
+    ) -> Optional[torch.Tensor]:
+        if not levels:
+            return None
+
+        quantiles = None
+        if isinstance(output, dict):
+            for key in ("quantiles", "quantile_predictions", "quantile_outputs"):
+                if key in output:
+                    quantiles = output[key]
+                    break
+
+        if quantiles is None:
+            return None
+
+        q_tensor = quantiles.to(device=device, dtype=dtype)
+        if q_tensor.ndim == 3:
+            if q_tensor.shape[1] == len(levels):
+                aligned = q_tensor.transpose(1, 2)  # [B, H, Q]
+            elif q_tensor.shape[2] == len(levels):
+                aligned = q_tensor  # [B, H, Q]
+            else:
+                return None
+        else:
+            return None
+
+        aligned = self._match_quantile_length(aligned, prediction_length)
+        return aligned
 
     def _ensure_prev_close(
         self,
@@ -904,7 +1127,7 @@ class TotoTrainer:
         target_price: Optional[torch.Tensor],
         target_pct: Optional[torch.Tensor],
         prev_close: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         device = series.device
         with self._autocast_context(device):
             output = self._forward_model(series, padding_mask, id_mask)
@@ -914,6 +1137,18 @@ class TotoTrainer:
 
             price_predictions = predictions[:, 0, :].to(series.dtype)
             prediction_length = price_predictions.shape[-1]
+            levels = self.config.quantile_levels or []
+            quantile_tensor = (
+                self._get_quantile_predictions(
+                    output,
+                    levels,
+                    price_predictions.device,
+                    price_predictions.dtype,
+                    prediction_length,
+                )
+                if levels
+                else None
+            )
 
             target_pct = self._match_prediction_length(target_pct, prediction_length)
             prev_close_tensor = self._ensure_prev_close(prev_close, series, prediction_length)
@@ -935,9 +1170,103 @@ class TotoTrainer:
                 targets_pct = self._compute_pct_delta(matched_target_price, prev_close_tensor)
 
             predictions_pct = self._compute_pct_delta(price_predictions, prev_close_tensor)
-            loss = F.mse_loss(predictions_pct, targets_pct)
+            loss = self._compute_loss(
+                predictions_pct,
+                targets_pct,
+                price_predictions,
+                matched_target_price,
+                output,
+                quantile_tensor,
+            )
 
-        return loss, predictions_pct, targets_pct, price_predictions, matched_target_price
+        return (
+            loss,
+            predictions_pct,
+            targets_pct,
+            price_predictions,
+            matched_target_price,
+            prev_close_tensor,
+            quantile_tensor,
+        )
+
+    def _compute_loss(
+        self,
+        predictions_pct: torch.Tensor,
+        targets_pct: torch.Tensor,
+        price_predictions: torch.Tensor,
+        matched_target_price: torch.Tensor,
+        output: Any,
+        quantile_tensor: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        loss_type = self.config.loss_type
+        if targets_pct is None:
+            raise RuntimeError("Targets required for loss computation.")
+
+        if loss_type == "mse":
+            return F.mse_loss(predictions_pct, targets_pct)
+        if loss_type == "huber":
+            return huber_loss(predictions_pct, targets_pct, delta=self.config.huber_delta)
+        if loss_type == "heteroscedastic":
+            log_sigma = None
+            if isinstance(output, dict):
+                if "log_sigma" in output:
+                    log_sigma = output["log_sigma"]
+                elif "sigma" in output:
+                    sigma = output["sigma"]
+                    log_sigma = sigma.clamp_min(1e-5).log()
+            if log_sigma is None and hasattr(output, "distribution"):
+                dist = output.distribution
+                if hasattr(dist, "scale"):
+                    scale = dist.scale
+                    if torch.is_tensor(scale):
+                        if scale.ndim == 3:
+                            log_sigma = scale[:, 0, :].clamp_min(1e-5).log()
+                        else:
+                            log_sigma = scale.clamp_min(1e-5).log()
+                if log_sigma is None and hasattr(dist, "log_scale"):
+                    log_sigma = dist.log_scale
+            if log_sigma is None:
+                raise RuntimeError("heteroscedastic loss requires log_sigma or distribution scale outputs.")
+            log_sigma = log_sigma.to(price_predictions.device, price_predictions.dtype)
+            if log_sigma.ndim == 3:
+                log_sigma = log_sigma[:, 0, :]
+            log_sigma = self._match_prediction_length(log_sigma, price_predictions.shape[-1])
+            return heteroscedastic_gaussian_nll(price_predictions, log_sigma, matched_target_price)
+        if loss_type == "quantile":
+            levels = self.config.quantile_levels or [0.1, 0.5, 0.9]
+            aligned = quantile_tensor
+            if aligned is None:
+                aligned = self._get_quantile_predictions(
+                    output,
+                    levels,
+                    price_predictions.device,
+                    price_predictions.dtype,
+                    price_predictions.shape[-1],
+                )
+            if aligned is not None:
+                losses = [
+                    pinball_loss(aligned[:, :, idx], matched_target_price, q, reduction="mean")
+                    for idx, q in enumerate(levels)
+                ]
+                return sum(losses) / len(losses)
+            if hasattr(output, "distribution") and hasattr(output.distribution, "icdf"):
+                dist = output.distribution
+                losses = []
+                for q in levels:
+                    prob = torch.full_like(price_predictions, float(q))
+                    try:
+                        quantile_vals = dist.icdf(prob.unsqueeze(1))
+                    except Exception as exc:
+                        raise RuntimeError("Distribution icdf evaluation failed for quantile loss.") from exc
+                    if quantile_vals.ndim == 4:
+                        quantile_vals = quantile_vals[:, 0, 0, :]
+                    elif quantile_vals.ndim == 3:
+                        quantile_vals = quantile_vals[:, 0, :]
+                    losses.append(pinball_loss(quantile_vals, matched_target_price, q, reduction="mean"))
+                return sum(losses) / len(losses)
+            raise RuntimeError("Quantile loss requires model outputs with quantile predictions or icdf support.")
+
+        raise AssertionError(f"Unhandled loss_type {loss_type}.")
     
     def prepare_data(self):
         """Prepare data loaders"""
@@ -1002,8 +1331,9 @@ class TotoTrainer:
         total_train_batches = len(self.dataloaders['train'])
         steps_per_epoch = max(1, math.ceil(total_train_batches / max(1, self.config.accumulation_steps)))
         self.scheduler = self._create_scheduler(steps_per_epoch)
-        
+
         self.logger.info("Model setup completed")
+        self._maybe_init_ema()
     
     def load_checkpoint(self, checkpoint_path: str):
         """Load model from checkpoint"""
@@ -1019,7 +1349,7 @@ class TotoTrainer:
         
         # Load optimizer state
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        
+
         # Load scheduler state
         if self.scheduler and checkpoint['scheduler_state_dict']:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
@@ -1031,8 +1361,10 @@ class TotoTrainer:
         # Load training state
         self.current_epoch = checkpoint['epoch']
         self.best_val_loss = checkpoint['best_val_loss']
-        
+
         self.logger.info(f"Checkpoint loaded: epoch {self.current_epoch}, best val loss: {self.best_val_loss:.6f}")
+        if self.config.ema_decay is not None:
+            self._maybe_init_ema()
     
     def train_epoch(self) -> Dict[str, float]:
         """Train for one epoch"""
@@ -1042,9 +1374,10 @@ class TotoTrainer:
         device = next(self.model.parameters()).device
         accumulation = max(1, self.config.accumulation_steps)
         train_loader = self.dataloaders['train']
+        iterable = self._prefetch_loader(train_loader, device)
 
         with enable_fast_kernels():
-            for batch_idx, batch in enumerate(train_loader):
+            for batch_idx, batch in enumerate(iterable):
                 batch_start_time = time.time()
 
                 (
@@ -1057,7 +1390,15 @@ class TotoTrainer:
                     _,
                 ) = self._prepare_batch(batch, device)
 
-                loss, predictions_pct, targets_pct, price_predictions, matched_target_price = self._forward_batch(
+                (
+                    loss,
+                    predictions_pct,
+                    targets_pct,
+                    price_predictions,
+                    matched_target_price,
+                    prev_close_tensor,
+                    quantile_tensor,
+                ) = self._forward_batch(
                     series,
                     padding_mask,
                     id_mask,
@@ -1084,6 +1425,10 @@ class TotoTrainer:
 
                     self.optimizer.zero_grad(set_to_none=True)
 
+                    if self.ema is not None:
+                        target_module = self._ema_module or self._ema_target_module()
+                        self.ema.update(target_module)
+
                     if self.scheduler and self.config.scheduler.lower() in {"cosine", "onecycle"}:
                         self.scheduler.step()
 
@@ -1102,6 +1447,9 @@ class TotoTrainer:
                     price_targets=matched_target_price.unsqueeze(1) if self.config.compute_train_metrics else None,
                     batch_time=batch_time,
                     learning_rate=current_lr,
+                    prev_close=prev_close_tensor if self.config.compute_train_metrics else None,
+                    quantile_predictions=quantile_tensor if (self.config.compute_train_metrics and quantile_tensor is not None) else None,
+                    quantile_levels=self.config.quantile_levels if (self.config.compute_train_metrics and quantile_tensor is not None) else None,
                 )
 
                 if batch_idx % self.config.metrics_log_frequency == 0:
@@ -1130,19 +1478,29 @@ class TotoTrainer:
 
         with torch.no_grad():
             val_loader = self.dataloaders['val']
-            with enable_fast_kernels():
-                for batch_idx, batch in enumerate(val_loader):
-                    (
-                        series,
-                        padding_mask,
-                        id_mask,
-                        target_price,
+            iterable = self._prefetch_loader(val_loader, device)
+            with self._ema_eval_context():
+                with enable_fast_kernels():
+                    for batch_idx, batch in enumerate(iterable):
+                        (
+                            series,
+                            padding_mask,
+                            id_mask,
+                            target_price,
                         target_pct,
                         prev_close,
                         _,
                     ) = self._prepare_batch(batch, device)
 
-                    loss, predictions_pct, targets_pct, price_predictions, matched_target_price = self._forward_batch(
+                    (
+                        loss,
+                        predictions_pct,
+                        targets_pct,
+                        price_predictions,
+                        matched_target_price,
+                        prev_close_tensor,
+                        quantile_tensor,
+                    ) = self._forward_batch(
                         series,
                         padding_mask,
                         id_mask,
@@ -1157,6 +1515,9 @@ class TotoTrainer:
                         targets=targets_pct.unsqueeze(1) if self.config.compute_val_metrics else None,
                         price_predictions=price_predictions.unsqueeze(1) if self.config.compute_val_metrics else None,
                         price_targets=matched_target_price.unsqueeze(1) if self.config.compute_val_metrics else None,
+                        prev_close=prev_close_tensor if self.config.compute_val_metrics else None,
+                        quantile_predictions=quantile_tensor if (self.config.compute_val_metrics and quantile_tensor is not None) else None,
+                        quantile_levels=self.config.quantile_levels if (self.config.compute_val_metrics and quantile_tensor is not None) else None,
                     )
         
         return self.metrics_tracker.compute_metrics()
@@ -1172,81 +1533,83 @@ class TotoTrainer:
         elif self.checkpoint_manager.find_latest_checkpoint():
             self.load_checkpoint(self.checkpoint_manager.find_latest_checkpoint())
         
-        # Training loop
-        for epoch in range(self.current_epoch, self.config.max_epochs):
-            self.current_epoch = epoch
-            epoch_start_time = time.time()
-            
-            self.logger.info(f"Epoch {epoch + 1}/{self.config.max_epochs}")
-            
-            # Train epoch
-            train_metrics = self.train_epoch()
-            
-            # Validation epoch
-            val_metrics = {}
-            if epoch % self.config.validation_frequency == 0:
-                val_metrics = self.validate_epoch()
-            
-            # Update scheduler
-            if self.scheduler and self.config.scheduler.lower() == "plateau":
-                val_loss = val_metrics.get('loss', train_metrics['loss'])
-                self.scheduler.step(val_loss)
-            
-            epoch_time = time.time() - epoch_start_time
-            current_lr = self.optimizer.param_groups[0]['lr'] if self.optimizer else 0.0
-            
-            # Log to monitoring systems
-            self._log_epoch(epoch, train_metrics, val_metrics, epoch_time, current_lr)
-            
-            # Log metrics
-            self._log_metrics(epoch, train_metrics, val_metrics)
-            
-            # Determine if this is the best model so far
-            metric_for_patience = None
-            if val_metrics and 'loss' in val_metrics:
-                metric_for_patience = val_metrics['loss']
-            elif 'loss' in train_metrics:
-                metric_for_patience = train_metrics['loss']
-            
-            is_best = False
-            if metric_for_patience is not None:
-                if metric_for_patience < self.best_val_loss - self.config.early_stopping_delta:
-                    self.best_val_loss = metric_for_patience
-                    self.patience_counter = 0
-                    is_best = True
-                else:
-                    self.patience_counter += 1
-            
-            # Save checkpoint
-            if epoch % self.config.save_every_n_epochs == 0 or is_best:
-                val_loss_for_checkpoint = None
+        profile_ctx = maybe_profile(self.config.profile, self.config.profile_log_dir)
+        with profile_ctx:
+            # Training loop
+            for epoch in range(self.current_epoch, self.config.max_epochs):
+                self.current_epoch = epoch
+                epoch_start_time = time.time()
+                
+                self.logger.info(f"Epoch {epoch + 1}/{self.config.max_epochs}")
+                
+                # Train epoch
+                train_metrics = self.train_epoch()
+                
+                # Validation epoch
+                val_metrics = {}
+                if epoch % self.config.validation_frequency == 0:
+                    val_metrics = self.validate_epoch()
+                
+                # Update scheduler
+                if self.scheduler and self.config.scheduler.lower() == "plateau":
+                    val_loss = val_metrics.get('loss', train_metrics['loss'])
+                    self.scheduler.step(val_loss)
+                
+                epoch_time = time.time() - epoch_start_time
+                current_lr = self.optimizer.param_groups[0]['lr'] if self.optimizer else 0.0
+                
+                # Log to monitoring systems
+                self._log_epoch(epoch, train_metrics, val_metrics, epoch_time, current_lr)
+                
+                # Log metrics
+                self._log_metrics(epoch, train_metrics, val_metrics)
+                
+                # Determine if this is the best model so far
+                metric_for_patience = None
                 if val_metrics and 'loss' in val_metrics:
-                    val_loss_for_checkpoint = float(val_metrics['loss'])
+                    metric_for_patience = val_metrics['loss']
                 elif 'loss' in train_metrics:
-                    val_loss_for_checkpoint = float(train_metrics['loss'])
-                self.checkpoint_manager.save_checkpoint(
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    scheduler=self.scheduler,
-                    scaler=self.scaler,
-                    epoch=epoch,
-                    best_val_loss=self.best_val_loss,
-                    metrics={**train_metrics, **val_metrics},
-                    config=self.config,
-                    dataloader_config=self.dataloader_config,
-                    is_best=is_best,
-                    val_loss=val_loss_for_checkpoint
-                )
+                    metric_for_patience = train_metrics['loss']
             
-            if is_best and self.config.export_on_best:
-                self._export_pretrained(epoch, train_metrics, val_metrics)
-            
-            # Early stopping
-            if (self.config.early_stopping_patience > 0 and
-                metric_for_patience is not None and
-                self.patience_counter >= self.config.early_stopping_patience):
-                self.logger.info(f"Early stopping triggered after {self.patience_counter} epochs without improvement")
-                break
+                is_best = False
+                if metric_for_patience is not None:
+                    if metric_for_patience < self.best_val_loss - self.config.early_stopping_delta:
+                        self.best_val_loss = metric_for_patience
+                        self.patience_counter = 0
+                        is_best = True
+                    else:
+                        self.patience_counter += 1
+                
+                # Save checkpoint
+                if epoch % self.config.save_every_n_epochs == 0 or is_best:
+                    val_loss_for_checkpoint = None
+                    if val_metrics and 'loss' in val_metrics:
+                        val_loss_for_checkpoint = float(val_metrics['loss'])
+                    elif 'loss' in train_metrics:
+                        val_loss_for_checkpoint = float(train_metrics['loss'])
+                    self.checkpoint_manager.save_checkpoint(
+                        model=self.model,
+                        optimizer=self.optimizer,
+                        scheduler=self.scheduler,
+                        scaler=self.scaler,
+                        epoch=epoch,
+                        best_val_loss=self.best_val_loss,
+                        metrics={**train_metrics, **val_metrics},
+                        config=self.config,
+                        dataloader_config=self.dataloader_config,
+                        is_best=is_best,
+                        val_loss=val_loss_for_checkpoint
+                    )
+                
+                if is_best and self.config.export_on_best:
+                    self._export_pretrained(epoch, train_metrics, val_metrics)
+                
+                # Early stopping
+                if (self.config.early_stopping_patience > 0 and
+                    metric_for_patience is not None and
+                    self.patience_counter >= self.config.early_stopping_patience):
+                    self.logger.info(f"Early stopping triggered after {self.patience_counter} epochs without improvement")
+                    break
         
         total_time = time.time() - self.training_start_time if self.training_start_time else 0.0
         self.logger.info(f"Training completed! Total time: {total_time / 60:.2f} minutes.")
@@ -1370,20 +1733,30 @@ class TotoTrainer:
         
         with torch.no_grad():
             loader = self.dataloaders[dataloader_name]
-            with enable_fast_kernels():
-                for batch in loader:
-                    batch_start_time = time.time()
-                    (
-                        series,
-                        padding_mask,
-                        id_mask,
-                        target_price,
+            iterable = self._prefetch_loader(loader, device)
+            with self._ema_eval_context():
+                with enable_fast_kernels():
+                    for batch in iterable:
+                        batch_start_time = time.time()
+                        (
+                            series,
+                            padding_mask,
+                            id_mask,
+                            target_price,
                         target_pct,
                         prev_close,
                         _,
                     ) = self._prepare_batch(batch, device)
 
-                    loss, predictions_pct, targets_pct, price_predictions, matched_target_price = self._forward_batch(
+                    (
+                        loss,
+                        predictions_pct,
+                        targets_pct,
+                        price_predictions,
+                        matched_target_price,
+                        prev_close_tensor,
+                        quantile_tensor,
+                    ) = self._forward_batch(
                         series,
                         padding_mask,
                         id_mask,
@@ -1399,6 +1772,9 @@ class TotoTrainer:
                         price_predictions=price_predictions.unsqueeze(1) if self.config.compute_val_metrics else None,
                         price_targets=matched_target_price.unsqueeze(1) if self.config.compute_val_metrics else None,
                         batch_time=time.time() - batch_start_time,
+                        prev_close=prev_close_tensor if self.config.compute_val_metrics else None,
+                        quantile_predictions=quantile_tensor if (self.config.compute_val_metrics and quantile_tensor is not None) else None,
+                        quantile_levels=self.config.quantile_levels if (self.config.compute_val_metrics and quantile_tensor is not None) else None,
                     )
         
         metrics = self.metrics_tracker.compute_metrics()

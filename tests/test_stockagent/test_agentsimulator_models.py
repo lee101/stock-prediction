@@ -82,14 +82,16 @@ def test_trading_plan_parsing_and_envelope_round_trip() -> None:
     assert serialized_plan["target_date"] == "2025-02-05"
     assert serialized_plan["instructions"][0]["symbol"] == "MSFT"
 
-    envelope = TradingPlanEnvelope(plan=plan, commentary="Looks solid")
+    envelope = TradingPlanEnvelope(plan=plan)
     payload = json.loads(envelope.to_json())
-    assert payload["commentary"] == "Looks solid"
-    assert payload["plan"]["instructions"][0]["symbol"] == "MSFT"
+    assert payload["instructions"][0]["symbol"] == "MSFT"
 
     round_trip = TradingPlanEnvelope.from_json(json.dumps(payload))
     assert round_trip.plan.to_dict() == serialized_plan
-    assert round_trip.commentary == "Looks solid"
+
+    legacy_payload = {"plan": raw_plan, "commentary": "legacy comment"}
+    legacy_round_trip = TradingPlanEnvelope.from_json(json.dumps(legacy_payload))
+    assert legacy_round_trip.plan.to_dict() == serialized_plan
 
     with pytest.raises(ValueError):
         TradingPlan.from_dict({"target_date": "bad-date", "instructions": []})

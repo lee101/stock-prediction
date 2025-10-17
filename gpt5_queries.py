@@ -240,14 +240,24 @@ def collect_structured_payload_issues(payload: Dict[str, Any], schema: Dict[str,
             for issue in _issues_from_jsonschema_error(error):
                 add_issue(issue)
 
-    plan = payload.get("plan")
+    plan_prefix: Tuple[Any, ...] = ()
+    plan_display_prefix = ""
+    plan_candidate = payload.get("plan") if isinstance(payload, dict) else None
+    if isinstance(plan_candidate, dict):
+        plan = plan_candidate
+        plan_prefix = ("plan",)
+        plan_display_prefix = "plan."
+    else:
+        plan = payload
+
     if not isinstance(plan, dict):
+        display = "plan" if plan_display_prefix else "<root>"
         add_issue(
             ValidationIssue(
-                path=("plan",),
-                path_display="plan",
-                message="plan must be an object",
-                fix_hint="Return 'plan' as an object with target_date, instructions, and optional metadata.",
+                path=plan_prefix or ("<root>",),
+                path_display=display,
+                message=f"{display} must be an object",
+                fix_hint="Return the trading plan as an object with target_date, instructions, and optional metadata.",
                 issue_type="business_structure",
                 value_snippet=_summarize_fragment(plan),
             ),
@@ -257,12 +267,14 @@ def collect_structured_payload_issues(payload: Dict[str, Any], schema: Dict[str,
 
     instructions = plan.get("instructions")
     if not isinstance(instructions, list):
+        path = plan_prefix + ("instructions",)
+        display = f"{plan_display_prefix}instructions"
         add_issue(
             ValidationIssue(
-                path=("plan", "instructions"),
-                path_display="plan.instructions",
-                message="plan.instructions must be an array",
-                fix_hint="Provide plan.instructions as an array of instruction objects.",
+                path=path,
+                path_display=display,
+                message=f"{display} must be an array",
+                fix_hint="Provide instructions as an array of instruction objects.",
                 issue_type="business_structure",
                 value_snippet=_summarize_fragment(instructions),
             ),
@@ -272,11 +284,13 @@ def collect_structured_payload_issues(payload: Dict[str, Any], schema: Dict[str,
 
     for idx, instruction in enumerate(instructions):
         if not isinstance(instruction, dict):
+            path = plan_prefix + ("instructions", idx)
+            display = f"{plan_display_prefix}instructions[{idx}]"
             add_issue(
                 ValidationIssue(
-                    path=("plan", "instructions", idx),
-                    path_display=f"plan.instructions[{idx}]",
-                    message=f"plan.instructions[{idx}] must be an object",
+                    path=path,
+                    path_display=display,
+                    message=f"{display} must be an object",
                     fix_hint="Ensure each instruction is an object with symbol/action/quantity/etc.",
                     issue_type="business_structure",
                     value_snippet=_summarize_fragment(instruction),
@@ -287,11 +301,13 @@ def collect_structured_payload_issues(payload: Dict[str, Any], schema: Dict[str,
 
         quantity = instruction.get("quantity")
         if quantity is None:
+            path = plan_prefix + ("instructions", idx, "quantity")
+            display = f"{plan_display_prefix}instructions[{idx}].quantity"
             add_issue(
                 ValidationIssue(
-                    path=("plan", "instructions", idx, "quantity"),
-                    path_display=f"plan.instructions[{idx}].quantity",
-                    message=f"plan.instructions[{idx}] is missing quantity",
+                    path=path,
+                    path_display=display,
+                    message=f"{display} is missing quantity",
                     fix_hint="Add a numeric quantity matching the planned action.",
                     issue_type="missing_required",
                     value_snippet=_summarize_fragment(instruction),
@@ -304,11 +320,13 @@ def collect_structured_payload_issues(payload: Dict[str, Any], schema: Dict[str,
         try:
             quantity_val = float(quantity)
         except (TypeError, ValueError):
+            path = plan_prefix + ("instructions", idx, "quantity")
+            display = f"{plan_display_prefix}instructions[{idx}].quantity"
             add_issue(
                 ValidationIssue(
-                    path=("plan", "instructions", idx, "quantity"),
-                    path_display=f"plan.instructions[{idx}].quantity",
-                    message=f"plan.instructions[{idx}].quantity must be numeric",
+                    path=path,
+                    path_display=display,
+                    message=f"{display} must be numeric",
                     fix_hint="Set quantity to a numeric value (integer or float).",
                     issue_type="type_mismatch",
                     value_snippet=_summarize_fragment(quantity),
@@ -320,11 +338,13 @@ def collect_structured_payload_issues(payload: Dict[str, Any], schema: Dict[str,
         action_raw = instruction.get("action")
         action = str(action_raw).lower() if action_raw is not None else ""
         if action in {"buy", "sell"} and quantity_val <= 0.0:
+            path = plan_prefix + ("instructions", idx, "quantity")
+            display = f"{plan_display_prefix}instructions[{idx}].quantity"
             add_issue(
                 ValidationIssue(
-                    path=("plan", "instructions", idx, "quantity"),
-                    path_display=f"plan.instructions[{idx}].quantity",
-                    message=f"plan.instructions[{idx}].quantity must be greater than zero for action '{action}'",
+                    path=path,
+                    path_display=display,
+                    message=f"{display} must be greater than zero for action '{action}'",
                     fix_hint="Use a strictly positive quantity when action is buy/sell.",
                     issue_type="business_rule",
                     value_snippet=_summarize_fragment(instruction),

@@ -303,6 +303,7 @@ def get_production_config() -> ExperimentConfig:
     ]
     
     config.training.num_epochs = 100
+    config.training.max_steps = 50000
     config.training.batch_size = 16
     config.training.learning_rate = 5e-5
     config.training.warmup_steps = 2000

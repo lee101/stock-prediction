@@ -23,8 +23,8 @@ import pandas as pd
 import torch
 import torch.utils.data
 from torch.utils.data import DataLoader, Dataset
-from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import RobustScaler, StandardScaler, MinMaxScaler
+from hftraining.validation import purged_kfold_indices
 
 # Add the toto directory to sys.path
 toto_path = Path(__file__).parent.parent / "toto"
@@ -118,9 +118,11 @@ class DataLoaderConfig:
     ma_periods: List[int] = None
     
     # Data loading
-    num_workers: int = 2
+    num_workers: int = -1
     pin_memory: bool = True
     drop_last: bool = True
+    prefetch_factor: int = 4
+    persistent_workers: bool = True
     
     # Random seed
     random_seed: int = 42
@@ -145,6 +147,13 @@ class DataLoaderConfig:
             raise ValueError("random_scaling_range must be ordered as (min, max)")
         if self.price_noise_std < 0 or self.volume_noise_std < 0:
             raise ValueError("noise std values must be non-negative")
+        if self.num_workers <= 0:
+            cpu_count = os.cpu_count() or 1
+            self.num_workers = max(4, cpu_count // 2)
+        if self.prefetch_factor <= 0:
+            self.prefetch_factor = 2
+        if self.prefetch_factor < 2 and self.num_workers > 0:
+            raise ValueError("prefetch_factor must be >=2 when using worker processes.")
     
     def save(self, path: str):
         """Save configuration to JSON file"""
@@ -717,7 +726,21 @@ class TotoOHLCDataLoader:
         val_data = {s: train_data[s] for s in val_symbols}
         
         return new_train_data, val_data
-    
+
+    def _dataloader_kwargs(self, *, shuffle: bool, drop_last: bool) -> Dict[str, Union[int, bool]]:
+        num_workers = max(0, self.config.num_workers)
+        kwargs: Dict[str, Union[int, bool]] = {
+            "batch_size": self.config.batch_size,
+            "shuffle": shuffle,
+            "num_workers": num_workers,
+            "pin_memory": self.config.pin_memory and torch.cuda.is_available(),
+            "drop_last": drop_last,
+        }
+        if num_workers > 0:
+            kwargs["prefetch_factor"] = self.config.prefetch_factor
+            kwargs["persistent_workers"] = self.config.persistent_workers
+        return kwargs
+
     def prepare_dataloaders(self) -> Dict[str, DataLoader]:
         """Prepare PyTorch DataLoaders for training"""
         # Load data
@@ -737,33 +760,21 @@ class TotoOHLCDataLoader:
             datasets['train'] = OHLCDataset(train_data, self.config, self.preprocessor, 'train')
             dataloaders['train'] = DataLoader(
                 datasets['train'],
-                batch_size=self.config.batch_size,
-                shuffle=True,
-                num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory,
-                drop_last=self.config.drop_last
+                **self._dataloader_kwargs(shuffle=True, drop_last=self.config.drop_last)
             )
-        
+
         if val_data:
             datasets['val'] = OHLCDataset(val_data, self.config, self.preprocessor, 'val')
             dataloaders['val'] = DataLoader(
                 datasets['val'],
-                batch_size=self.config.batch_size,
-                shuffle=False,
-                num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory,
-                drop_last=self.config.drop_last
+                **self._dataloader_kwargs(shuffle=False, drop_last=self.config.drop_last)
             )
-        
+
         if test_data:
             datasets['test'] = OHLCDataset(test_data, self.config, self.preprocessor, 'test')
             dataloaders['test'] = DataLoader(
                 datasets['test'],
-                batch_size=self.config.batch_size,
-                shuffle=False,
-                num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory,
-                drop_last=False
+                **self._dataloader_kwargs(shuffle=False, drop_last=False)
             )
         
         self.logger.info(f"Created dataloaders: {list(dataloaders.keys())}")
@@ -778,57 +789,60 @@ class TotoOHLCDataLoader:
         return dataloaders
     
     def get_cross_validation_splits(self, n_splits: int = None) -> List[Tuple[DataLoader, DataLoader]]:
-        """Generate cross-validation splits for time series data"""
+        """Generate leakage-safe Purged K-Fold cross-validation splits."""
         if n_splits is None:
             n_splits = self.config.cv_folds
-        
+
         if not self.train_data:
             raise ValueError("No training data loaded!")
-        
-        cv_splits = []
-        # Note: gap parameter may not be available in older sklearn versions
-        try:
-            tscv = TimeSeriesSplit(n_splits=n_splits, gap=self.config.cv_gap)
-        except TypeError:
-            # Fallback for older sklearn versions
-            tscv = TimeSeriesSplit(n_splits=n_splits)
-        
-        # Combine all data for CV splitting
-        all_symbols = list(self.train_data.keys())
-        
-        for fold, (train_indices, val_indices) in enumerate(tscv.split(all_symbols)):
-            train_symbols = [all_symbols[i] for i in train_indices]
-            val_symbols = [all_symbols[i] for i in val_indices]
-            
-            fold_train_data = {s: self.train_data[s] for s in train_symbols}
-            fold_val_data = {s: self.train_data[s] for s in val_symbols}
-            
-            # Create datasets for this fold
-            train_dataset = OHLCDataset(fold_train_data, self.config, self.preprocessor, 'train')
-            val_dataset = OHLCDataset(fold_val_data, self.config, self.preprocessor, 'val')
-            
+
+        base_dataset = OHLCDataset(self.train_data, self.config, self.preprocessor, 'train')
+        eval_dataset = OHLCDataset(self.train_data, self.config, self.preprocessor, 'val')
+
+        if len(base_dataset) == 0:
+            raise ValueError("Training dataset is empty; cannot create CV splits.")
+
+        ordering = sorted(
+            enumerate(base_dataset.sequences),
+            key=lambda item: (item[1]['symbol_id'], item[1]['start_idx']),
+        )
+        ordered_indices = [idx for idx, _ in ordering]
+        total_sequences = len(ordered_indices)
+
+        if total_sequences <= 2:
+            raise ValueError("Not enough sequences to perform cross-validation.")
+
+        effective_splits = min(max(n_splits, 2), total_sequences - 1)
+        embargo = max(int(self.config.cv_gap), 0)
+        split_indices = list(
+            purged_kfold_indices(total_sequences, n_splits=effective_splits, embargo=embargo)
+        )
+
+        cv_splits: List[Tuple[DataLoader, DataLoader]] = []
+        for fold_idx, (train_idx, val_idx) in enumerate(split_indices, start=1):
+            train_abs = [ordered_indices[i] for i in train_idx]
+            val_abs = [ordered_indices[i] for i in val_idx]
+
+            train_subset = torch.utils.data.Subset(base_dataset, sorted(train_abs))
+            val_subset = torch.utils.data.Subset(eval_dataset, sorted(val_abs))
+
             train_loader = DataLoader(
-                train_dataset,
-                batch_size=self.config.batch_size,
-                shuffle=True,
-                num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory,
-                drop_last=self.config.drop_last
+                train_subset,
+                **self._dataloader_kwargs(shuffle=True, drop_last=self.config.drop_last)
             )
-            
             val_loader = DataLoader(
-                val_dataset,
-                batch_size=self.config.batch_size,
-                shuffle=False,
-                num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory,
-                drop_last=self.config.drop_last
+                val_subset,
+                **self._dataloader_kwargs(shuffle=False, drop_last=False)
             )
-            
+
             cv_splits.append((train_loader, val_loader))
-            self.logger.info(f"CV Fold {fold + 1}: {len(train_loader.dataset)} train, "
-                           f"{len(val_loader.dataset)} val samples")
-        
+            self.logger.info(
+                "Purged CV Fold %d: %d train sequences, %d val sequences",
+                fold_idx,
+                len(train_subset),
+                len(val_subset),
+            )
+
         return cv_splits
     
     def get_feature_info(self) -> Dict:

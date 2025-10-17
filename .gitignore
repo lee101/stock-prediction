@@ -136,3 +136,5 @@ hftraining/quick_test_output*
 .venv312c
 nanochat
 marketsimulator/environment.py
+tmp
+stock_trading_suite.egg-info

@@ -135,6 +135,7 @@ def is_tradeable(
     if math.isinf(spread_bps):
         return False, "Missing bid/ask quote"
     kronos_only = _is_kronos_only_mode()
+    relax_spread = os.getenv("MARKETSIM_RELAX_SPREAD", "0").lower() in {"1", "true", "yes", "on"}
     max_spread_bps = resolve_spread_cap(symbol)
     if kronos_only:
         max_spread_bps = max_spread_bps * 3
@@ -144,8 +145,10 @@ def is_tradeable(
         return False, f"Low dollar vol {avg_dollar_vol:,.0f}"
     if atr_pct is not None and atr_pct > atr_cap:
         return False, f"ATR% too high {atr_pct:.2f}"
-    if spread_bps > max_spread_bps:
+    if spread_bps > max_spread_bps and not relax_spread:
         return False, f"Spread {spread_bps:.1f}bps > {max_spread_bps}bps"
+    if spread_bps > max_spread_bps and relax_spread:
+        return True, f"Spread {spread_bps:.1f}bps over cap but relaxation enabled"
     return True, f"Spread {spread_bps:.1f}bps OK"
 
 

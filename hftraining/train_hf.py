@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
-from typing import Optional
+from typing import Optional, List
 from pathlib import Path
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -59,13 +59,13 @@ except ImportError:  # pragma: no cover - script execution
 from loss_utils import TRADING_FEE
 
 from traininglib import (
-    enable_fast_kernels,
     bf16_supported,
-    maybe_compile,
     make_optimizer,
     WarmupCosine,
     write_report_markdown,
 )
+from hftraining.engine_speed import compile_model as compile_for_speed, fast_context
+from hftraining.metrics import crps_from_quantiles, dm_test
 
 
 class StockDataset(Dataset):
@@ -174,11 +174,7 @@ class HFTrainer:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
         self._fast_ctx = contextlib.ExitStack()
-        self._fast_ctx.enter_context(enable_fast_kernels())
-        try:
-            torch.set_float32_matmul_precision('high')
-        except Exception:
-            pass
+        self._fast_ctx.enter_context(fast_context())
         
         # Setup data parallel if available
         if torch.cuda.device_count() > 1 and config.use_data_parallel:
@@ -186,7 +182,8 @@ class HFTrainer:
         
         compile_requested = bool(getattr(self.config, 'use_compile', False))
         original_model_ref = self.model
-        self.model = maybe_compile(self.model, do_compile=compile_requested)
+        if compile_requested:
+            self.model = compile_for_speed(self.model, dynamic=True)
         self._compile_enabled = compile_requested and self.model is not original_model_ref
 
         # Setup mixed precision (prefer BF16 on capable GPUs)
@@ -718,7 +715,20 @@ class HFTrainer:
 
         self._fast_ctx.close()
         return self.model
-    
+
+    def evaluation_step(self):
+        """Execute a validation pass and return aggregated metrics."""
+        if self.eval_dataset is None:
+            return {}
+        eval_loader = DataLoader(
+            self.eval_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=False,
+            num_workers=self.config.dataloader_num_workers,
+            pin_memory=torch.cuda.is_available(),
+        )
+        return self.evaluate(eval_loader)
+
     def training_step(self, batch):
         """Single training step with gradient accumulation"""
         # Only zero grad on accumulation boundary
@@ -950,42 +960,70 @@ class HFTrainer:
         return loss_val
     
     def evaluate(self, eval_loader):
-        """Evaluation loop"""
+        """Evaluation loop."""
         self.model.eval()
-        
-        total_loss = 0
-        total_action_loss = 0
-        total_price_loss = 0
+
+        total_loss = 0.0
+        total_action_loss = 0.0
+        total_price_loss = 0.0
         total_steps = 0
         total_return = 0.0
         total_return_equity = 0.0
         total_return_crypto = 0.0
-        
+        mae_samples: List[np.ndarray] = []
+        baseline_mae_samples: List[np.ndarray] = []
+        sum_squared_error = 0.0
+        total_points = 0
+        crps_values: List[float] = []
+        quantile_levels = getattr(self.config, "quantile_levels", None)
+        tau_tensor = None
+
         with torch.no_grad():
             for batch in tqdm(eval_loader, desc="Evaluating", leave=False):
                 non_block = bool(torch.cuda.is_available())
                 batch = {k: v.to(self.device, non_blocking=non_block) for k, v in batch.items()}
-                
+
                 outputs = self.model(
                     batch['input_ids'],
                     attention_mask=batch['attention_mask']
                 )
-                
+
                 action_loss = F.cross_entropy(
                     outputs['action_logits'],
                     batch['action_labels']
                 )
-                
-                price_loss = F.mse_loss(
-                    outputs['price_predictions'],
-                    batch['labels'][:, :self.config.prediction_horizon, self.close_index]
-                )
-                
+
+                targets = batch['labels'][:, :self.config.prediction_horizon, self.close_index]
+                preds = outputs['price_predictions']
+
+                price_loss = F.mse_loss(preds, targets)
+
                 total_loss += action_loss.item() + 0.5 * price_loss.item()
                 total_action_loss += action_loss.item()
                 total_price_loss += price_loss.item()
                 total_steps += 1
-                # Compute realized 1-step return under predicted action
+
+                mae_batch = torch.mean(torch.abs(preds - targets), dim=1)
+                mae_samples.append(mae_batch.detach().cpu().numpy())
+
+                baseline = batch['input_ids'][:, -1, self.close_index].unsqueeze(1).expand_as(targets)
+                baseline_mae = torch.mean(torch.abs(baseline - targets), dim=1)
+                baseline_mae_samples.append(baseline_mae.detach().cpu().numpy())
+
+                sum_squared_error += torch.sum((preds - targets) ** 2).item()
+                total_points += int(preds.numel())
+
+                price_quantiles = outputs.get('price_quantiles')
+                if price_quantiles is not None and quantile_levels:
+                    if tau_tensor is None:
+                        tau_tensor = torch.tensor(
+                            quantile_levels,
+                            device=price_quantiles.device,
+                            dtype=price_quantiles.dtype,
+                        )
+                    crps_val = crps_from_quantiles(targets, price_quantiles, tau_tensor)
+                    crps_values.append(float(crps_val.detach().cpu()))
+
                 try:
                     future_returns = batch.get('future_returns')
                     if future_returns is None:
@@ -1019,14 +1057,14 @@ class HFTrainer:
                                 total_return_crypto += float((per_asset_net * crypto_mask).sum(dim=-1).mean().item())
                 except Exception:
                     pass
-        
+
         self.model.train()
-        
+
         denom = max(1, total_steps)
-        return {
-            'loss': total_loss / total_steps,
-            'action_loss': total_action_loss / total_steps,
-            'price_loss': total_price_loss / total_steps,
+        metrics = {
+            'loss': total_loss / max(total_steps, 1),
+            'action_loss': total_action_loss / max(total_steps, 1),
+            'price_loss': total_price_loss / max(total_steps, 1),
             'avg_return': (total_return / denom),
             'cum_return': total_return,
             'avg_return_equity': (total_return_equity / denom),
@@ -1034,6 +1072,22 @@ class HFTrainer:
             'cum_return_equity': total_return_equity,
             'cum_return_crypto': total_return_crypto,
         }
+
+        if mae_samples:
+            mae_array = np.concatenate(mae_samples)
+            baseline_mae_array = np.concatenate(baseline_mae_samples)
+            metrics['mae'] = float(mae_array.mean())
+            metrics['baseline_mae'] = float(baseline_mae_array.mean())
+            if total_points > 0:
+                metrics['rmse'] = float(math.sqrt(sum_squared_error / total_points))
+            dm_stat, dm_p = dm_test(mae_array, baseline_mae_array)
+            metrics['dm_stat_vs_naive'] = float(dm_stat)
+            metrics['dm_pvalue_vs_naive'] = float(dm_p)
+
+        if crps_values:
+            metrics['crps'] = float(np.mean(crps_values))
+
+        return metrics
     
     def log_metrics(self, metrics, prefix='train', step=None, commit=None):
         """Log metrics to the unified experiment tracker."""

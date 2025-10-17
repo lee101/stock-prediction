@@ -11,6 +11,7 @@ configuration is missing, the logger silently falls back to TensorBoard-only mod
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from contextlib import AbstractContextManager
@@ -109,6 +110,8 @@ class WandBoardLogger(AbstractContextManager):
         log_dir: Optional[Union[str, Path]] = None,
         tensorboard_subdir: Optional[str] = None,
         settings: Optional[Mapping[str, Any]] = None,
+        log_metrics: bool = False,
+        metric_log_level: Union[int, str] = logging.DEBUG,
     ) -> None:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.run_name = run_name or f"run_{timestamp}"
@@ -119,6 +122,8 @@ class WandBoardLogger(AbstractContextManager):
         self.notes = notes
         self.mode = (mode or os.getenv("WANDB_MODE") or "auto").lower()
         self.settings = dict(settings or {})
+        self._log_metrics = bool(log_metrics)
+        self._metric_log_level = _coerce_log_level(metric_log_level)
 
         self._last_error: Optional[Exception] = None
         self._wandb_run = None
@@ -128,6 +133,19 @@ class WandBoardLogger(AbstractContextManager):
         subdir = tensorboard_subdir or self.run_name
         self.tensorboard_log_dir = _ensure_dir(root_dir / subdir)
         self.tensorboard_writer = SummaryWriter(log_dir=str(self.tensorboard_log_dir))
+        logger.debug(
+            "Initialised WandBoardLogger run=%s tensorboard_dir=%s wandb_project=%s",
+            self.run_name,
+            self.tensorboard_log_dir,
+            self.project or "<unset>",
+        )
+        if self._log_metrics:
+            logger.log(
+                self._metric_log_level,
+                "Metric mirroring enabled for run=%s at level=%s",
+                self.run_name,
+                logging.getLevelName(self._metric_log_level),
+            )
 
         if enable_wandb and not _WANDB_AVAILABLE:
             logger.info("wandb package not available; continuing with TensorBoard only.")
@@ -158,6 +176,14 @@ class WandBoardLogger(AbstractContextManager):
                 self._wandb_run = None
                 self._wandb_enabled = False
                 logger.warning("Failed to initialise wandb run; falling back to TensorBoard only: %s", exc)
+        else:
+            logger.debug(
+                "wandb disabled for run=%s (available=%s project_configured=%s enable_flag=%s)",
+                self.run_name,
+                _WANDB_AVAILABLE,
+                bool(self.project),
+                enable_wandb,
+            )
 
     # ------------------------------------------------------------------ #
     # Logging helpers
@@ -179,6 +205,13 @@ class WandBoardLogger(AbstractContextManager):
     ) -> None:
         """Log scalar metrics to both backends."""
         if not metrics:
+            if self._log_metrics:
+                logger.log(
+                    self._metric_log_level,
+                    "No metrics provided to log for run=%s step=%s",
+                    self.run_name,
+                    step if step is not None else "<auto>",
+                )
             return
 
         scalars: Dict[str, float] = {}
@@ -191,7 +224,26 @@ class WandBoardLogger(AbstractContextManager):
                 continue
 
         if not scalars:
+            if self._log_metrics:
+                preview_keys = _format_metric_keys(metrics.keys(), limit=8)
+                logger.log(
+                    self._metric_log_level,
+                    "Metrics payload for run=%s step=%s contained no scalar values (keys=%s)",
+                    self.run_name,
+                    step if step is not None else "<auto>",
+                    preview_keys,
+                )
             return
+
+        if self._log_metrics:
+            metrics_preview = _format_metric_preview(scalars)
+            logger.log(
+                self._metric_log_level,
+                "Mirror metrics run=%s step=%s -> %s",
+                self.run_name,
+                step if step is not None else "<auto>",
+                metrics_preview,
+            )
 
         if self.tensorboard_writer is not None:
             for key, value in scalars.items():
@@ -271,6 +323,7 @@ class WandBoardLogger(AbstractContextManager):
 
     def finish(self) -> None:
         """Flush and close both backends."""
+        logger.debug("Closing WandBoardLogger run=%s", self.run_name)
         if self.tensorboard_writer is not None:
             try:
                 self.tensorboard_writer.flush()
@@ -292,6 +345,48 @@ class WandBoardLogger(AbstractContextManager):
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.finish()
+
+
+def _coerce_log_level(level: Union[int, str]) -> int:
+    if isinstance(level, int):
+        return level
+    if isinstance(level, str):
+        candidate = getattr(logging, level.strip().upper(), None)
+        if isinstance(candidate, int):
+            return candidate
+    raise ValueError(f"Unsupported log level: {level!r}")
+
+
+def _format_metric_preview(metrics: Mapping[str, float], *, max_items: int = 10) -> str:
+    items = list(metrics.items())
+    limited = items[:max_items]
+    formatted_parts = []
+    for key, value in limited:
+        formatted_parts.append(f"{key}={_format_metric_value(value)}")
+    preview = ", ".join(formatted_parts) if formatted_parts else "<empty>"
+    remaining = len(items) - len(limited)
+    if remaining > 0:
+        preview += f" (+{remaining} more)"
+    return preview
+
+
+def _format_metric_value(value: float) -> str:
+    if math.isnan(value) or math.isinf(value):
+        return str(value)
+    try:
+        return f"{value:.6g}"
+    except Exception:
+        return str(value)
+
+
+def _format_metric_keys(keys: Iterable[Any], *, limit: int = 8) -> str:
+    items = [str(key) for key in keys]
+    limited = items[:limit]
+    preview = ", ".join(limited) if limited else "<none>"
+    remaining = len(items) - len(limited)
+    if remaining > 0:
+        preview += f" (+{remaining} more)"
+    return preview
 
 
 __all__ = ["WandBoardLogger"]

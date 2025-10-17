@@ -10,58 +10,46 @@ from .market_data import MarketDataBundle
 from ..constants import DEFAULT_SYMBOLS, SIMULATION_DAYS, TRADING_FEE, CRYPTO_TRADING_FEE
 
 
-SYSTEM_PROMPT = (
-    "You are GPT-5, a benchmark trading planner. Always respond with the enforced JSON schema."
-)
+SYSTEM_PROMPT = "You are GPT-5, a benchmark trading planner. Always respond with the enforced JSON schema."
 
 
 def plan_response_schema() -> dict[str, object]:
+    instruction_schema: dict[str, object] = {
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string"},
+            "action": {"type": "string", "enum": ["buy", "sell", "exit", "hold"]},
+            "quantity": {"type": "number", "minimum": 0},
+            "execution_session": {"type": "string", "enum": ["market_open", "market_close"]},
+            "entry_price": {"type": ["number", "null"]},
+            "exit_price": {"type": ["number", "null"]},
+            "exit_reason": {"type": ["string", "null"]},
+            "notes": {"type": ["string", "null"]},
+        },
+        "required": [
+            "symbol",
+            "action",
+            "quantity",
+            "execution_session",
+            "entry_price",
+            "exit_price",
+            "exit_reason",
+            "notes",
+        ],
+        "additionalProperties": False,
+    }
     return {
         "type": "object",
         "properties": {
-            "plan": {
-                "type": "object",
-                "properties": {
-                    "target_date": {"type": "string", "format": "date"},
-                    "instructions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "symbol": {"type": "string"},
-                                "action": {"type": "string", "enum": ["buy", "sell", "exit", "hold"]},
-                                "quantity": {"type": "number", "minimum": 0},
-                                "execution_session": {"type": "string", "enum": ["market_open", "market_close"]},
-                                "entry_price": {"type": ["number", "null"]},
-                                "exit_price": {"type": ["number", "null"]},
-                                "exit_reason": {"type": ["string", "null"]},
-                                "notes": {"type": ["string", "null"]},
-                            },
-                            "required": [
-                                "symbol",
-                                "action",
-                                "quantity",
-                                "execution_session",
-                                "entry_price",
-                                "exit_price",
-                                "exit_reason",
-                                "notes",
-                            ],
-                            "additionalProperties": False,
-                        },
-                    },
-                    "risk_notes": {"type": ["string", "null"]},
-                    "focus_symbols": {"type": "array", "items": {"type": "string"}},
-                    "stop_trading_symbols": {"type": "array", "items": {"type": "string"}},
-                    "execution_window": {"type": "string", "enum": ["market_open", "market_close"]},
-                    "metadata": {"type": "object"},
-                },
-                "required": ["target_date", "instructions"],
-                "additionalProperties": False,
-            },
-            "commentary": {"type": ["string", "null"]},
+            "target_date": {"type": "string", "format": "date"},
+            "instructions": {"type": "array", "items": instruction_schema},
+            "risk_notes": {"type": ["string", "null"]},
+            "focus_symbols": {"type": "array", "items": {"type": "string"}},
+            "stop_trading_symbols": {"type": "array", "items": {"type": "string"}},
+            "execution_window": {"type": "string", "enum": ["market_open", "market_close"]},
+            "metadata": {"type": "object"},
         },
-        "required": ["plan"],
+        "required": ["target_date", "instructions"],
         "additionalProperties": False,
     }
 
@@ -76,10 +64,10 @@ def build_daily_plan_prompt(
     market_payload = market_data.to_payload() if include_market_history else {"symbols": list(symbols)}
 
     prompt = f"""
-You are devising a one-day allocation for a paper-trading benchmark on {target_date.isoformat()}.
+You are devising a one-day allocation for a paper-trading benchmark.
 
 Context:
-- Usable symbols: {', '.join(symbols)}.
+- Usable symbols: {", ".join(symbols)}.
 - Historical payload contains the last {market_data.lookback_days} trading days of OHLC percent changes per symbol sourced from trainingdata/.
 - No prior portfolio exists; work entirely in a sandbox and perform capital allocation across the available cash before issuing trades.
 - Execution windows: `market_open` (09:30 ET) or `market_close` (16:00 ET). Choose one per instruction.
@@ -88,7 +76,7 @@ Context:
 
 Structured output requirements:
 - Follow the schema exactly.
-- Only the keys ``plan`` and ``commentary`` are allowed at the top level.
+- Return a single JSON object containing the plan fields at the top level—do not wrap the payload under `plan` or include `commentary`.
 - Record a `capital_allocation_plan` string inside `metadata` describing how funds are distributed (percentages or dollar targets per symbol).
 - Provide realistic `entry_price` / `exit_price` targets, even if you expect not to trade (use `null`).
 - Supply `exit_reason` when recommending exits; use `null` otherwise.
