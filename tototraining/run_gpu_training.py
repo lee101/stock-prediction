@@ -12,7 +12,19 @@ from pathlib import Path
 
 import torch
 
-from toto_trainer import TrainerConfig, DataLoaderConfig, TotoTrainer
+try:
+    from .toto_trainer import TrainerConfig, DataLoaderConfig, TotoTrainer
+except ImportError:
+    # Fallback for script-style execution when package-relative imports are unavailable
+    import sys
+
+    package_dir = Path(__file__).resolve().parent
+    parent_dir = package_dir.parent
+    for path in (package_dir, parent_dir):
+        str_path = str(path)
+        if str_path not in sys.path:
+            sys.path.insert(0, str_path)
+    from toto_trainer import TrainerConfig, DataLoaderConfig, TotoTrainer
 
 
 def main() -> None:
