@@ -3,7 +3,7 @@ GymRL package: tooling for reinforcement-learning experiments on the stock bot.
 
 The package bundles feature engineering utilities, the Gymnasium environment,
 baseline behaviour policies, and offline dataset helpers that mirror the live
-trading pipeline (Toto/Chronos forecasts feeding an allocator).
+trading pipeline (Toto/Kronos forecasts feeding an allocator).
 """
 
 from .config import FeatureBuilderConfig, OfflineDatasetConfig, PortfolioEnvConfig

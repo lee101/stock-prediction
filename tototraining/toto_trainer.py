@@ -1081,7 +1081,20 @@ class TotoTrainer:
 
         candidate = batch
         extra = {}
-        if isinstance(batch, (tuple, list)) and batch:
+        masked_field_names = {"series", "padding_mask", "id_mask", "timestamp_seconds", "time_interval_seconds"}
+
+        if hasattr(batch, "_fields"):
+            field_names = getattr(batch, "_fields", ())
+            if "timeseries" in field_names:
+                candidate = getattr(batch, "timeseries")
+                extra = {
+                    name: getattr(batch, name)
+                    for name in field_names
+                    if name not in {"timeseries"} and name not in masked_field_names
+                }
+            else:
+                candidate = batch
+        elif isinstance(batch, (tuple, list)) and batch:
             candidate = batch[0]
             if len(batch) > 1 and isinstance(batch[1], dict):
                 extra = batch[1]

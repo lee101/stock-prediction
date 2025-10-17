@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, ContextManager, Dict, List, Optional, Tuple, TYPE_CHECKING, Union, cast
@@ -13,8 +14,23 @@ from typing import Any, ContextManager, Dict, List, Optional, Tuple, TYPE_CHECKI
 import numpy as np
 import torch
 
-# need to uv pip install -e . in here after dl toto
-sys.path.insert(0, "/mnt/fast/code/chronos-forecasting/toto")
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_CANDIDATE_PATHS = [
+    _REPO_ROOT / "toto",
+    _REPO_ROOT / "toto" / "src",
+    _REPO_ROOT / "toto" / "build" / "lib",
+    _REPO_ROOT / "toto" / "toto",
+    _REPO_ROOT / "totoembedding",
+]
+_LEGACY_PATH = Path("/mnt/fast/code/chronos-forecasting/toto")
+if _LEGACY_PATH.exists():
+    _CANDIDATE_PATHS.append(_LEGACY_PATH)
+
+for _path in _CANDIDATE_PATHS:
+    if _path.exists():
+        path_str = str(_path)
+        if path_str not in sys.path:
+            sys.path.insert(0, path_str)
 
 _IMPORT_ERROR: Optional[Exception] = None
 
