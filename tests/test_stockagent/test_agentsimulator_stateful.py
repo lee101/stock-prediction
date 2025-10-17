@@ -77,6 +77,9 @@ def test_build_daily_plan_prompt_includes_account_percent_history() -> None:
     )
 
     assert "percent changes per symbol" in prompt
+    assert "capital allocation" in prompt.lower()
+    assert "capital_allocation_plan" in prompt
+    assert "trainingdata/" in prompt
     assert str(bundle.lookback_days) in prompt
     assert payload["account"]["equity"] == account_payload["equity"]
     history = payload["market_data"]["AAPL"]

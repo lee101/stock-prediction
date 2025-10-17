@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, List, Tuple
 
 from .data_models import TradingInstruction
 
@@ -14,8 +13,8 @@ class DaySummary:
     date: date
     realized_pnl: float
     total_equity: float
-    trades: List[Dict[str, float]]
-    per_symbol_direction: Dict[Tuple[str, str], float]
+    trades: list[dict[str, float]]
+    per_symbol_direction: dict[tuple[str, str], float]
 
 
 class BaseRiskStrategy:
@@ -30,16 +29,10 @@ class BaseRiskStrategy:
         *,
         day_index: int,
         date: date,
-        instructions: List[TradingInstruction],
-        simulator: "AgentSimulator",
-    ) -> List[TradingInstruction]:
+        instructions: list[TradingInstruction],
+        simulator: object,
+    ) -> list[TradingInstruction]:
         return instructions
 
     def after_day(self, summary: DaySummary) -> None:
         """Hook invoked after the day completes."""
-
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:  # pragma: no cover
-    from .simulator import AgentSimulator

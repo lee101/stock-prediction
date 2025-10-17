@@ -23,7 +23,7 @@ from stockagentindependant.agentsimulator import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stateless GPT-5 trading planner.")
     parser.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS)
-    parser.add_argument("--lookback", type=int, default=60)
+    parser.add_argument("--lookback", type=int, default=30)
     history = parser.add_mutually_exclusive_group()
     history.add_argument("--include-history", dest="include_history", action="store_true", help="Include percent-change history (default).")
     history.add_argument("--no-history", dest="include_history", action="store_false", help="Omit history payload.")

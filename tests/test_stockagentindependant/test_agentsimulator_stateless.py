@@ -62,6 +62,9 @@ def test_build_daily_plan_prompt_stateless_payload() -> None:
 
     assert "paper-trading benchmark" in prompt
     assert "percent changes per symbol" in prompt
+    assert "capital allocation" in prompt.lower()
+    assert "capital_allocation_plan" in prompt
+    assert "trainingdata/" in prompt
     assert "market_data" in payload
     assert "account" not in payload
     history = payload["market_data"]["MSFT"]

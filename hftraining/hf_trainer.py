@@ -4,6 +4,7 @@ HuggingFace-style Training Script with Modern Optimizers
 Implements GPro, AdamW, and other state-of-the-art algorithms
 """
 
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,7 +18,6 @@ import json
 from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
-from torch.utils.tensorboard import SummaryWriter
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
 import math
@@ -220,6 +220,10 @@ class HFTrainingConfig:
     allow_tf32: bool = True
     use_gradient_checkpointing: bool = True
     use_data_parallel: bool = True
+    muon_momentum: float = 0.95
+    muon_nesterov: bool = True
+    muon_ns_steps: int = 5
+    muon_adamw_lr: Optional[float] = None
     
     # Regularization
     label_smoothing: float = 0.1
@@ -237,6 +241,20 @@ class HFTrainingConfig:
     output_dir: str = "hftraining/output"
     logging_dir: str = "hftraining/logs"
     cache_dir: str = "hftraining/cache"
+
+    # Experiment tracking
+    use_wandb: bool = field(
+        default_factory=lambda: os.getenv("WANDB_DISABLED", "0").lower() not in {"1", "true", "yes"}
+    )
+    wandb_project: Optional[str] = None
+    wandb_entity: Optional[str] = None
+    wandb_run_name: Optional[str] = None
+    wandb_group: Optional[str] = None
+    wandb_notes: Optional[str] = None
+    wandb_tags: Tuple[str, ...] = field(default_factory=tuple)
+    wandb_mode: str = "auto"
+    wandb_settings: Optional[Dict[str, Any]] = None
+    tensorboard_subdir: Optional[str] = None
     
     # Evaluation
     evaluation_strategy: str = "steps"

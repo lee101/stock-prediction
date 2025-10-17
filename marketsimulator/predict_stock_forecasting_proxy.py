@@ -56,6 +56,7 @@ def _run_real_predictions(
     pred_name: str = "",
     retrain: bool = False,
     alpaca_wrapper=None,
+    symbols=None,
 ) -> Optional[pd.DataFrame]:
     if _real_module is None:
         return None
@@ -73,6 +74,7 @@ def _run_real_predictions(
             pred_name=pred_name,
             retrain=retrain,
             alpaca_wrapper=alpaca_wrapper,
+            symbols=symbols,
         )
     except Exception as exc:  # pragma: no cover - depends on external deps
         logger.warning(
@@ -87,6 +89,7 @@ def make_predictions(
     pred_name: str = "",
     retrain: bool = False,
     alpaca_wrapper=None,
+    symbols=None,
 ) -> pd.DataFrame:
     """
     Proxy to the real ``predict_stock_forecasting`` module when available,
@@ -102,6 +105,7 @@ def make_predictions(
         pred_name=pred_name,
         retrain=retrain,
         alpaca_wrapper=alpaca_wrapper,
+        symbols=symbols,
     )
     if real_results is not None:
         return real_results
@@ -121,4 +125,5 @@ def make_predictions(
         pred_name=pred_name,
         retrain=retrain,
         alpaca_wrapper=alpaca_wrapper,
+        symbols=symbols,
     )
