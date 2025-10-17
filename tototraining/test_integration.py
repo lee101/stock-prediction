@@ -19,7 +19,7 @@ import warnings
 
 # Import modules under test
 from toto_ohlc_trainer import TotoOHLCConfig, TotoOHLCTrainer
-from toto_ohlc_dataloader import DataLoaderConfig, TotoOHLCDataLoader
+from toto_ohlc_dataloader import DataLoaderConfig, OHLCPreprocessor, TotoOHLCDataLoader
 from enhanced_trainer import EnhancedTotoTrainer
 
 # Suppress warnings during testing

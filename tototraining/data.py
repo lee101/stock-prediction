@@ -21,9 +21,11 @@ def _load_close_prices(path: Path) -> np.ndarray:
             return next(iter(data.values())).astype(np.float32)
     if path.suffix == ".csv":
         df = pd.read_csv(path)
-        if "Close" not in df.columns:
+        columns = {col.lower(): col for col in df.columns}
+        close_key = columns.get("close")
+        if close_key is None:
             raise ValueError(f"'Close' column missing in {path}")
-        return df["Close"].to_numpy(dtype=np.float32)
+        return df[close_key].to_numpy(dtype=np.float32)
     raise ValueError(f"Unsupported file format: {path}")
 
 

@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from datetime import datetime
 import json
 from tqdm import tqdm
+from dataclasses import fields
 
 # Add current directory to path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -140,6 +141,7 @@ class BaseModelTrainer:
         self.data_dir = Path(data_dir)
         self.max_rows = max_rows
         self.toto_predictions_dir = Path(toto_predictions_dir).expanduser() if toto_predictions_dir else None
+        self._feature_dim: Optional[int] = None
         
         # Create directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -288,6 +290,14 @@ class BaseModelTrainer:
             processed_data[symbol] = normalized
         
         return processed_data
+
+    def _ensure_hf_config_defaults(self, config: HFTrainingConfig) -> HFTrainingConfig:
+        """Backfill missing HF config attributes for backwards compatibility."""
+        defaults = HFTrainingConfig()
+        for field in fields(HFTrainingConfig):
+            if not hasattr(config, field.name):
+                setattr(config, field.name, getattr(defaults, field.name))
+        return config
     
     def train_base_model(
         self,
@@ -453,7 +463,7 @@ class BaseModelTrainer:
         
         # Load base model
         checkpoint = torch.load(base_checkpoint_path, weights_only=False)
-        base_config = checkpoint['config']
+        base_config = self._ensure_hf_config_defaults(checkpoint['config'])
         input_dim = checkpoint['input_dim']
         
         # Create model and load weights

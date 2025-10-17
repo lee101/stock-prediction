@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from traininglib.ema import EMA
@@ -71,3 +72,12 @@ def test_heteroscedastic_nll_clamp_matches_floor():
     loss.sum().backward()
     assert log_sigma.grad is not None
     assert torch.all(torch.isfinite(log_sigma.grad))
+    assert (log_sigma.grad > 0).all()
+
+
+def test_heteroscedastic_nll_requires_positive_floor():
+    mean = torch.tensor([0.0])
+    target = torch.tensor([0.0])
+    log_sigma = torch.tensor([0.1])
+    with pytest.raises(ValueError):
+        heteroscedastic_gaussian_nll(mean, log_sigma, target, min_sigma=0.0)

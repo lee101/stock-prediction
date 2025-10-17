@@ -1,6 +1,6 @@
 # GymRL Experiment Overview
 
-The `gymrl/` package contains a reinforcement-learning experiment that builds on the existing forecasting stack (`predict_stock_forecasting.py`, Toto, Chronos) and the live trading loop (`predict_stock_e2e.py`). It introduces:
+The `gymrl/` package contains a reinforcement-learning experiment that builds on the existing forecasting stack (`predict_stock_forecasting.py`, Toto, Kronos) and the live trading loop (`predict_stock_e2e.py`). It introduces:
 
 - **Feature engineering** that compresses probabilistic forecasts and realised market context into a dense tensor (`FeatureBuilder`).
 - **A Gymnasium environment** (`PortfolioEnv`) that converts those features into a reward signal aligned with portfolio growth, turnover, and optional risk penalties (CVaR, forecast uncertainty).
@@ -16,7 +16,7 @@ All dependencies are listed in `requirements.in`. If you only need the RL stack,
 uv pip install gymnasium stable-baselines3 d3rlpy
 ```
 
-The feature builder will automatically try Toto first, then Chronos, then fall back to a bootstrap sampler. To use Toto or Chronos you must have their assets available locally (the existing repo already vendors Chronos; Toto should be placed under `/mnt/fast/code/chronos-forecasting/toto` as per `src/models/toto_wrapper.py`).
+The feature builder will automatically try Toto first, then Kronos, then fall back to Chronos and finally a bootstrap sampler. To use Toto or Kronos you must have their assets available locally (the repo already vendors Kronos under `external/kronos`; Toto should be installed via `uv pip install -e toto` as per `src/models/toto_wrapper.py`).
 
 ## Quick Start
 
@@ -31,7 +31,7 @@ The feature builder will automatically try Toto first, then Chronos, then fall b
 
    This script:
    - Reads the per-symbol CSV history under `tototraining/trainingdata/train`.
-   - Generates forecast statistics via Toto/Chronos/bootstrap.
+   - Generates forecast statistics via Toto/Kronos/Chronos/bootstrap.
    - Creates the Gym environment and trains a PPO allocator.
    - Saves checkpoints under `gymrl/artifacts/` and writes training metadata for reproducibility.
 

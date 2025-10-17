@@ -4,7 +4,7 @@ Gymnasium environment for reinforcement-learning-based portfolio allocation.
 The environment consumes feature cubes produced by ``gymrl.feature_pipeline`` and
 emits observations suitable for Stable-Baselines3 style agents. It tracks trading
 costs, turnover penalties, drawdown, and optional risk terms such as predicted CVaR
-or forecast uncertainty derived from Toto/Chronos distributions.
+or forecast uncertainty derived from Toto/Kronos distributions.
 """
 
 from __future__ import annotations
@@ -47,6 +47,14 @@ class EnvStepInfo:
     drawdown: float
     cvar_penalty: float
     uncertainty_penalty: float
+    step_return_crypto: float = 0.0
+    step_return_non_crypto: float = 0.0
+    trading_cost_crypto: float = 0.0
+    trading_cost_non_crypto: float = 0.0
+    net_return_crypto: float = 0.0
+    net_return_non_crypto: float = 0.0
+    weight_crypto: float = 0.0
+    weight_non_crypto: float = 0.0
 
     def to_dict(self) -> Dict[str, float]:
         return {
@@ -58,6 +66,14 @@ class EnvStepInfo:
             "drawdown": self.drawdown,
             "cvar_penalty": self.cvar_penalty,
             "uncertainty_penalty": self.uncertainty_penalty,
+            "step_return_crypto": self.step_return_crypto,
+            "step_return_non_crypto": self.step_return_non_crypto,
+            "trading_cost_crypto": self.trading_cost_crypto,
+            "trading_cost_non_crypto": self.trading_cost_non_crypto,
+            "net_return_crypto": self.net_return_crypto,
+            "net_return_non_crypto": self.net_return_non_crypto,
+            "weight_crypto": self.weight_crypto,
+            "weight_non_crypto": self.weight_non_crypto,
         }
 
 
@@ -161,10 +177,12 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
 
             self.symbols = list(self.symbols) + ["CASH"]
 
+        crypto_set = {symbol.upper() for symbol in crypto_symbols}
+        self.crypto_mask = np.array([symbol.upper() in crypto_set for symbol in self.symbols], dtype=bool)
+
         self.T, self.N, self.F = self.features.shape
 
         base_costs = np.full(self.N, TRADING_FEE, dtype=np.float32)
-        crypto_set = {symbol.upper() for symbol in crypto_symbols}
         for idx, symbol in enumerate(self.symbols):
             if symbol.upper() in crypto_set:
                 base_costs[idx] = CRYPTO_TRADING_FEE
@@ -187,7 +205,6 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             base_costs = per_asset
 
         self.costs_vector = base_costs
-
         self.start_index = start_index
         self.episode_length = episode_length or (self.T - start_index - 1)
         if self.episode_length <= 0:
@@ -323,12 +340,23 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
         return weights
 
     def _transition(self, new_weights: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict[str, float]]:
-        turnover = float(np.abs(new_weights - self._weights).sum())
-        trading_cost = float(np.dot(np.abs(new_weights - self._weights), self.costs_vector))
+        deltas = np.abs(new_weights - self._weights)
+        turnover = float(deltas.sum())
+        trading_cost = float(np.dot(deltas, self.costs_vector))
+
+        crypto_cost = float(np.dot(deltas[self.crypto_mask], self.costs_vector[self.crypto_mask])) if np.any(self.crypto_mask) else 0.0
+        non_crypto_cost = trading_cost - crypto_cost
 
         realized_vector = self.realized_returns[self._index]
-        step_return = float(np.dot(new_weights, realized_vector))
+        asset_returns = new_weights * realized_vector
+        crypto_return = float(asset_returns[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
+        step_return = float(asset_returns.sum())
+        non_crypto_return = step_return - crypto_return
         net_return = step_return - trading_cost
+        net_crypto_return = crypto_return - crypto_cost
+        net_non_crypto_return = net_return - net_crypto_return
+        weight_crypto = float(new_weights[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
+        weight_non_crypto = float(new_weights[~self.crypto_mask].sum()) if np.any(~self.crypto_mask) else 0.0
         net_multiplier = max(1e-8, 1.0 + net_return)
 
         self._portfolio_value *= net_multiplier
@@ -369,6 +397,14 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             drawdown=drawdown,
             cvar_penalty=cvar_penalty,
             uncertainty_penalty=uncertainty_penalty,
+            step_return_crypto=crypto_return,
+            step_return_non_crypto=non_crypto_return,
+            trading_cost_crypto=crypto_cost,
+            trading_cost_non_crypto=non_crypto_cost,
+            net_return_crypto=net_crypto_return,
+            net_return_non_crypto=net_non_crypto_return,
+            weight_crypto=weight_crypto,
+            weight_non_crypto=weight_non_crypto,
         ).to_dict()
 
         observation = self._get_observation() if not terminated else np.zeros(self.observation_space.shape, dtype=np.float32)

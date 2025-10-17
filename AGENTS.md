@@ -1,4 +1,5 @@
 use uv pip NEVER just pip
+dont use timeouts as we want to train long
 
 fully finish tasks eg if it means install uv pip packages, write the tests and run them then run the related benchmarks for real with long timeouts - dont give up
 

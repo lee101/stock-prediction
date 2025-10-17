@@ -18,7 +18,8 @@ from .state import SimulationState, SimulatedClock, set_state
 
 def _install_env_stub() -> None:
     os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
-    os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
+    os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "0")
+    os.environ.setdefault("MARKETSIM_RELAX_SPREAD", "1")
 
     if "env_real" in sys.modules:
         pass
@@ -286,8 +287,6 @@ def activate_simulation(
     had_relax_env = relax_spread_key in os.environ
     if use_mock_analytics:
         os.environ[relax_spread_key] = "1"
-    elif not had_relax_env:
-        os.environ[relax_spread_key] = "0"
 
     env_force_key = "MARKETSIM_FORCE_KRONOS"
     previous_force_value = os.environ.get(env_force_key)

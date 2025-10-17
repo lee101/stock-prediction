@@ -57,7 +57,7 @@ class FeatureBuilderConfig:
         prediction_length: Forecast horizon in steps (1 = next period).
         realized_horizon: Horizon over which realized returns are computed.
         resample_rule: Optional pandas offset alias to resample source data.
-        forecast_backend: Identifier for forecasting backend ("toto", "chronos", or "bootstrap").
+        forecast_backend: Identifier for forecasting backend ("auto", "toto", "kronos", "chronos", or "bootstrap").
         num_samples: Number of Monte Carlo samples to draw from the forecasting backend.
         min_history: Minimum observations required before emitting the first feature row.
         lookahead_buffer: Extra steps dropped from the tail to avoid lookahead bias.
@@ -73,7 +73,7 @@ class FeatureBuilderConfig:
     prediction_length: int = 1
     realized_horizon: int = 1
     resample_rule: Optional[str] = None
-    forecast_backend: str = "chronos"
+    forecast_backend: str = "auto"
     num_samples: int = 512
     min_history: int = 256
     lookahead_buffer: int = 0
@@ -107,4 +107,3 @@ class OfflineDatasetConfig:
     shard_limit: Optional[int] = None
     compress: bool = True
     metadata_only: bool = False
-
