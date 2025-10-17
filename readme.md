@@ -222,3 +222,39 @@ Have a thing that like a bindary step for the whole portfolil and probe trades
 
 REAL_TESTING=true flag uses faster hparams and torch compile and bf16 so its faster during marketsimulator tests but its turned off for trade_stock_e2e.py
  python stock_cli.py status
+
+trainings:
+add training data in traininddata/ dir - we have a script for this
+
+source .venv312uv/bin/activate
+
+    python -m pufferlibtraining.train_ppo \
+      --skip-base \
+      --base-checkpoint pufferlibtraining/models/toto_run/base_models/base_checkpoint_20251017_162009.pth \
+      --skip-specialists \
+      --trainingdata-dir trainingdata \
+      --output-dir pufferlibtraining/models/toto_run_rl_lowcost_resume \
+      --tensorboard-dir pufferlibtraining/logs/toto_run_rl_lowcost_resume \
+      --rl-epochs 200 \
+      --rl-batch-size 256 \
+      --rl-learning-rate 3e-4 \
+      --rl-optimizer muon_mix \
+      --rl-warmup-steps 200 \
+      --rl-min-lr 1e-5 \
+      --rl-grad-clip 0.25 \
+      --transaction-cost-bps 1 \
+      --risk-penalty 0.0 \
+      --rl-initial-checkpoint-dir pufferlibtraining/models/toto_run_rl_lowcost_400v2/finetuned/portfolio_pairs \
+      --summary-path pufferlibtraining/models/toto_run_rl_lowcost_resume/summary.json
+
+train a new toto
+
+uv run python -m tototraining.run_gpu_training \
+  --compile \
+  --optim muon_mix \
+  --device_bs 4 \
+  --grad_accum 4 \
+  --lr 3e-4 \
+  --warmup_steps 2000 \
+  --max_epochs 24 \
+  --report runs/toto_gpu_report.md

@@ -8,14 +8,8 @@ from typing import Iterable, Optional
 
 import os
 
-# Ensure the simulator defaults to mock analytics before any dependent modules load.
-os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
-os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
-
 from . import alpaca_wrapper_mock
-from . import backtest_test3_inline as backtest_module
 from . import data_curate_daily_mock
-from . import predict_stock_forecasting_proxy as predict_stock_forecasting_module
 from . import process_utils_mock
 from .logging_utils import logger
 from .data_feed import DEFAULT_DATA_ROOT, load_price_series
@@ -23,6 +17,9 @@ from .state import SimulationState, SimulatedClock, set_state
 
 
 def _install_env_stub() -> None:
+    os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
+    os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
+
     if "env_real" in sys.modules:
         pass
     else:
@@ -160,6 +157,18 @@ def _install_env_stub() -> None:
     os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
 
 
+def _load_mock_backtest_module():
+    from . import backtest_test3_inline as module
+
+    return module
+
+
+def _load_mock_forecasting_module():
+    from . import predict_stock_forecasting_proxy as module
+
+    return module
+
+
 def _patch_third_party(use_mock_analytics: bool, force_kronos: bool):
     replaced_modules = {}
 
@@ -174,19 +183,21 @@ def _patch_third_party(use_mock_analytics: bool, force_kronos: bool):
     replace_module("data_curate_daily", data_curate_daily_mock)
 
     if use_mock_analytics:
-        replace_module("backtest_test3_inline", backtest_module)
-        replace_module("predict_stock_forecasting", predict_stock_forecasting_module)
+        mock_backtest = _load_mock_backtest_module()
+        mock_forecasting = _load_mock_forecasting_module()
+        replace_module("backtest_test3_inline", mock_backtest)
+        replace_module("predict_stock_forecasting", mock_forecasting)
     else:
         try:
             real_backtest = importlib.import_module("backtest_test3_inline")
         except Exception:
-            real_backtest = backtest_module
+            real_backtest = _load_mock_backtest_module()
         replace_module("backtest_test3_inline", real_backtest)
 
         try:
             real_forecasting = importlib.import_module("predict_stock_forecasting")
         except Exception:
-            real_forecasting = predict_stock_forecasting_module
+            real_forecasting = _load_mock_forecasting_module()
         replace_module("predict_stock_forecasting", real_forecasting)
 
     # Ensure downstream modules reuse the patched modules.
@@ -254,6 +265,30 @@ def activate_simulation(
     if use_mock_analytics is None:
         env_flag = os.getenv("MARKETSIM_USE_MOCK_ANALYTICS", "0").lower()
         use_mock_analytics = env_flag in {"1", "true", "yes"}
+
+    allow_env_key = "MARKETSIM_ALLOW_MOCK_ANALYTICS"
+    skip_env_key = "MARKETSIM_SKIP_REAL_IMPORT"
+    previous_allow_value = os.environ.get(allow_env_key)
+    previous_skip_value = os.environ.get(skip_env_key)
+    had_allow_env = allow_env_key in os.environ
+    had_skip_env = skip_env_key in os.environ
+
+    if use_mock_analytics:
+        os.environ[allow_env_key] = "1"
+        os.environ[skip_env_key] = "1"
+    else:
+        if not had_allow_env:
+            os.environ[allow_env_key] = "1"
+        os.environ[skip_env_key] = "0"
+
+    relax_spread_key = "MARKETSIM_RELAX_SPREAD"
+    previous_relax_value = os.environ.get(relax_spread_key)
+    had_relax_env = relax_spread_key in os.environ
+    if use_mock_analytics:
+        os.environ[relax_spread_key] = "1"
+    elif not had_relax_env:
+        os.environ[relax_spread_key] = "0"
+
     env_force_key = "MARKETSIM_FORCE_KRONOS"
     previous_force_value = os.environ.get(env_force_key)
     had_force_env = env_force_key in os.environ
@@ -349,3 +384,24 @@ def activate_simulation(
                     os.environ[env_force_key] = ""
             else:
                 os.environ.pop(env_force_key, None)
+        if had_allow_env:
+            if previous_allow_value is not None:
+                os.environ[allow_env_key] = previous_allow_value
+            else:
+                os.environ.pop(allow_env_key, None)
+        else:
+            os.environ.pop(allow_env_key, None)
+        if had_skip_env:
+            if previous_skip_value is not None:
+                os.environ[skip_env_key] = previous_skip_value
+            else:
+                os.environ.pop(skip_env_key, None)
+        else:
+            os.environ.pop(skip_env_key, None)
+        if had_relax_env:
+            if previous_relax_value is not None:
+                os.environ[relax_spread_key] = previous_relax_value
+            else:
+                os.environ.pop(relax_spread_key, None)
+        else:
+            os.environ.pop(relax_spread_key, None)

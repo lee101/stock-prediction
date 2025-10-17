@@ -22,52 +22,42 @@ SYSTEM_PROMPT = (
 
 
 def plan_response_schema() -> dict[str, Any]:
+    instruction_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string"},
+            "action": {"type": "string", "enum": ["buy", "sell", "exit", "hold"]},
+            "quantity": {"type": "number", "minimum": 0},
+            "execution_session": {"type": "string", "enum": ["market_open", "market_close"]},
+            "entry_price": {"type": ["number", "null"]},
+            "exit_price": {"type": ["number", "null"]},
+            "exit_reason": {"type": ["string", "null"]},
+            "notes": {"type": ["string", "null"]},
+        },
+        "required": [
+            "symbol",
+            "action",
+            "quantity",
+            "execution_session",
+            "entry_price",
+            "exit_price",
+            "exit_reason",
+            "notes",
+        ],
+        "additionalProperties": False,
+    }
     return {
         "type": "object",
         "properties": {
-            "plan": {
-                "type": "object",
-                "properties": {
-                    "target_date": {"type": "string", "format": "date"},
-                    "instructions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "symbol": {"type": "string"},
-                                "action": {"type": "string", "enum": ["buy", "sell", "exit", "hold"]},
-                                "quantity": {"type": "number", "minimum": 0},
-                                "execution_session": {"type": "string", "enum": ["market_open", "market_close"]},
-                                "entry_price": {"type": ["number", "null"]},
-                                "exit_price": {"type": ["number", "null"]},
-                                "exit_reason": {"type": ["string", "null"]},
-                                "notes": {"type": ["string", "null"]},
-                            },
-                            "required": [
-                                "symbol",
-                                "action",
-                                "quantity",
-                                "execution_session",
-                                "entry_price",
-                                "exit_price",
-                                "exit_reason",
-                                "notes",
-                            ],
-                            "additionalProperties": False,
-                        },
-                    },
-                    "risk_notes": {"type": ["string", "null"]},
-                    "focus_symbols": {"type": "array", "items": {"type": "string"}},
-                    "stop_trading_symbols": {"type": "array", "items": {"type": "string"}},
-                    "execution_window": {"type": "string", "enum": ["market_open", "market_close"]},
-                    "metadata": {"type": "object"},
-                },
-                "required": ["target_date", "instructions"],
-                "additionalProperties": False,
-            },
-            "commentary": {"type": ["string", "null"]},
+            "target_date": {"type": "string", "format": "date"},
+            "instructions": {"type": "array", "items": instruction_schema},
+            "risk_notes": {"type": ["string", "null"]},
+            "focus_symbols": {"type": "array", "items": {"type": "string"}},
+            "stop_trading_symbols": {"type": "array", "items": {"type": "string"}},
+            "execution_window": {"type": "string", "enum": ["market_open", "market_close"]},
+            "metadata": {"type": "object"},
         },
-        "required": ["plan"],
+        "required": ["target_date", "instructions"],
         "additionalProperties": False,
     }
 
@@ -242,7 +232,7 @@ Context:
 
 Structured output requirements:
 - Produce JSON matching the provided schema exactly.
-- The top-level object must contain only the keys ``plan`` and ``commentary``.
+- Return a single JSON object containing the plan fields at the top level—do not wrap the payload under `plan` or include `commentary`.
 - Use `exit` to close positions you no longer want, specifying the quantity to exit (0 = all) and an `exit_reason`.
 - Provide realistic limit prices using `entry_price` / `exit_price` fields reflecting desired fills for the session.
 - Include `risk_notes` summarizing risk considerations in under 3 sentences.

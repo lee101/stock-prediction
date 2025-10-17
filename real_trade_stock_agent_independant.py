@@ -2,7 +2,7 @@ import argparse
 import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import pytz
 from loguru import logger
@@ -83,13 +83,32 @@ def request_plan(
 
 
 def _normalize_plan_payload(data: Dict[str, Any], target_date: date) -> Dict[str, Any]:
-    plan_block = data.get("plan", {})
-    metadata_keys = {"target_date", "instructions", "risk_notes", "focus_symbols", "stop_trading_symbols", "metadata", "execution_window"}
+    plan_source: Dict[str, Any] | None = None
+    if isinstance(data, Mapping):
+        candidate = data.get("plan")
+        if isinstance(candidate, Mapping):
+            plan_source = dict(candidate)
+        else:
+            plan_source = dict(data)
+    if plan_source is None:
+        plan_source = {}
+
+    metadata_keys = {
+        "target_date",
+        "instructions",
+        "risk_notes",
+        "focus_symbols",
+        "stop_trading_symbols",
+        "metadata",
+        "execution_window",
+    }
     stop_trading_symbols: List[str] = []
+
+    plan_block: Dict[str, Any] | None = plan_source
 
     if isinstance(plan_block, dict) and "instructions" not in plan_block:
         instructions = []
-        for symbol, detail in plan_block.items():
+        for symbol, detail in list(plan_block.items()):
             if symbol in metadata_keys or not isinstance(detail, dict):
                 continue
             action = detail.get("action", "hold")
@@ -130,7 +149,7 @@ def _normalize_plan_payload(data: Dict[str, Any], target_date: date) -> Dict[str
         }
 
     plan_block["stop_trading_symbols"] = sorted(set(sym.upper() for sym in plan_block["stop_trading_symbols"]))
-    return {"plan": plan_block, "commentary": data.get("commentary")}
+    return plan_block
 
 
 def _normalize_instruction(detail: Dict[str, Any], symbol: str, action: str) -> Dict[str, Any]:
@@ -169,9 +188,8 @@ def _parse_json_response(raw_json: str) -> Dict[str, Any]:
         raise ValueError("GPT response was not valid JSON")
 
 
-def log_plan(envelope: TradingPlanEnvelope) -> None:
-    logger.info("Plan commentary: %s", envelope.commentary or "No commentary provided")
-    for instruction in envelope.plan.instructions:
+def log_plan(plan: TradingPlan) -> None:
+    for instruction in plan.instructions:
         logger.info(
             "Instruction: %s %s qty=%.4f session=%s entry=%s exit=%s notes=%s",
             instruction.action.value,
@@ -202,7 +220,7 @@ def main() -> None:
     if args.print_json:
         print(envelope.to_json())
 
-    log_plan(envelope)
+    log_plan(envelope.plan)
 
 
 if __name__ == "__main__":
