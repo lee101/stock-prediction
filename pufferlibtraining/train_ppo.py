@@ -238,6 +238,48 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Batch size for portfolio RL.",
     )
     parser.add_argument(
+        "--rl-optimizer",
+        type=str,
+        default="adamw",
+        choices=["adamw", "lion", "adan", "shampoo", "adafactor", "muon", "muon_mix"],
+        help="Optimizer used for the allocation transformer.",
+    )
+    parser.add_argument(
+        "--rl-weight-decay",
+        type=float,
+        default=0.01,
+        help="Weight decay applied to RL optimiser parameter groups.",
+    )
+    parser.add_argument(
+        "--rl-warmup-steps",
+        type=int,
+        default=500,
+        help="Warmup steps for the RL cosine schedule.",
+    )
+    parser.add_argument(
+        "--rl-min-lr",
+        type=float,
+        default=0.0,
+        help="Minimum learning rate for the RL cosine schedule.",
+    )
+    parser.add_argument(
+        "--rl-initial-checkpoint-dir",
+        type=str,
+        default="",
+        help="Optional directory containing per-pair RL checkpoints (<SYMA>_<SYMB>_portfolio_best.pt) to resume from.",
+    )
+    parser.add_argument(
+        "--rl-grad-clip",
+        type=float,
+        default=1.0,
+        help="Gradient clipping norm for RL training.",
+    )
+    parser.add_argument(
+        "--rl-no-compile",
+        action="store_true",
+        help="Disable torch.compile for the allocation transformer.",
+    )
+    parser.add_argument(
         "--transaction-cost-bps",
         type=float,
         default=10.0,
@@ -411,6 +453,7 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
                 "leverage_limit": args.leverage_limit,
                 "borrowing_cost": args.borrowing_cost,
                 "trading_days_per_year": args.trading_days_per_year,
+                "initial_checkpoint_dir": args.rl_initial_checkpoint_dir,
             },
             "progressive_base_steps": progressive_schedule,
         },
@@ -489,11 +532,24 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
             leverage_limit=args.leverage_limit,
             borrowing_cost=args.borrowing_cost,
             trading_days_per_year=args.trading_days_per_year,
+            optimizer=args.rl_optimizer,
+            weight_decay=args.rl_weight_decay,
+            compile=not args.rl_no_compile,
+            grad_clip=args.rl_grad_clip,
+            warmup_steps=args.rl_warmup_steps,
+            min_learning_rate=args.rl_min_lr,
         )
         pair_metrics: Dict[str, Dict[str, float]] = {}
+        initial_dir = Path(args.rl_initial_checkpoint_dir).expanduser().resolve() if args.rl_initial_checkpoint_dir else None
         for sym_a, sym_b in pairs:
             LOGGER.info("Training allocation policy for pair %s/%s", sym_a, sym_b)
-            metrics = trainer.train_pair_portfolio((sym_a, sym_b), rl_config=rl_config)
+            init_ckpt = None
+            if initial_dir:
+                candidate = initial_dir / f"{sym_a}_{sym_b}_portfolio_best.pt"
+                if candidate.exists():
+                    init_ckpt = candidate
+                    LOGGER.info("Resuming pair %s/%s from %s", sym_a, sym_b, candidate)
+            metrics = trainer.train_pair_portfolio((sym_a, sym_b), rl_config=rl_config, initial_checkpoint=init_ckpt)
             pair_metrics[f"{sym_a}_{sym_b}"] = metrics
             LOGGER.info("Pair %s/%s metrics: %s", sym_a, sym_b, metrics)
         summary["portfolio_pairs"] = pair_metrics

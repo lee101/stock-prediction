@@ -19,7 +19,13 @@ def load_stock_data_from_csv(csv_file_path: Path) -> pd.DataFrame:
     return df
 
 
-def make_predictions(input_data_path: Optional[str] = None, pred_name: str = "", retrain: bool = False, alpaca_wrapper=None) -> pd.DataFrame:
+def make_predictions(
+    input_data_path: Optional[str] = None,
+    pred_name: str = "",
+    retrain: bool = False,
+    alpaca_wrapper=None,
+    symbols=None,
+) -> pd.DataFrame:
     state = get_state()
     records = []
     for symbol, series in state.prices.items():

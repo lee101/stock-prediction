@@ -8,7 +8,7 @@ from typing import Iterable, List, Optional
 
 import math
 
-import pytz
+from zoneinfo import ZoneInfo
 from sqlalchemy import DateTime, Float, Integer, create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -89,7 +89,7 @@ def _select_latest_snapshot(session: Session) -> Optional[PortfolioSnapshot]:
 
 
 def _select_reference_snapshot(session: Session, observed_at: datetime) -> Optional[PortfolioSnapshot]:
-    est = pytz.timezone("US/Eastern")
+    est = ZoneInfo("America/New_York")
     local_date = observed_at.astimezone(est).date()
     local_start = datetime.combine(local_date, time.min, tzinfo=est)
     local_start_utc = local_start.astimezone(timezone.utc)

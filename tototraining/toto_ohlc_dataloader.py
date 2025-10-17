@@ -23,8 +23,8 @@ import pandas as pd
 import torch
 import torch.utils.data
 from torch.utils.data import DataLoader, Dataset
-from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import RobustScaler, StandardScaler, MinMaxScaler
+from hftraining.validation import purged_kfold_indices
 
 # Add the toto directory to sys.path
 toto_path = Path(__file__).parent.parent / "toto"
@@ -83,9 +83,16 @@ class DataLoaderConfig:
     prediction_length: int = 24  # Number of time steps to predict
     
     # Data preprocessing
-    normalization_method: str = "robust"  # "standard", "minmax", "robust"
+    normalization_method: str = "robust"  # "standard", "minmax", "robust", "none"
     handle_missing: str = "interpolate"  # "drop", "interpolate", "zero"
     outlier_threshold: float = 3.0  # Standard deviations for outlier detection
+    enable_augmentation: bool = False
+    price_noise_std: float = 0.0
+    volume_noise_std: float = 0.0
+    feature_dropout_prob: float = 0.0
+    time_mask_prob: float = 0.0
+    time_mask_max_span: int = 0
+    random_scaling_range: Tuple[float, float] = (1.0, 1.0)
     
     # Training parameters
     batch_size: int = 32
@@ -111,20 +118,42 @@ class DataLoaderConfig:
     ma_periods: List[int] = None
     
     # Data loading
-    num_workers: int = 2
+    num_workers: int = -1
     pin_memory: bool = True
     drop_last: bool = True
+    prefetch_factor: int = 4
+    persistent_workers: bool = True
     
     # Random seed
     random_seed: int = 42
     
     def __post_init__(self):
+        valid_norms = {"standard", "minmax", "robust", "none"}
+        if self.normalization_method not in valid_norms:
+            raise ValueError(f"normalization_method must be one of {valid_norms}")
         if self.ohlc_features is None:
             self.ohlc_features = ["Open", "High", "Low", "Close"]
         if self.additional_features is None:
             self.additional_features = ["Volume"]
         if self.ma_periods is None:
             self.ma_periods = [5, 10, 20]
+        if not (0.0 <= self.feature_dropout_prob <= 1.0):
+            raise ValueError("feature_dropout_prob must be between 0 and 1")
+        if not (0.0 <= self.time_mask_prob <= 1.0):
+            raise ValueError("time_mask_prob must be between 0 and 1")
+        if self.time_mask_max_span < 0:
+            raise ValueError("time_mask_max_span must be non-negative")
+        if self.random_scaling_range[0] > self.random_scaling_range[1]:
+            raise ValueError("random_scaling_range must be ordered as (min, max)")
+        if self.price_noise_std < 0 or self.volume_noise_std < 0:
+            raise ValueError("noise std values must be non-negative")
+        if self.num_workers <= 0:
+            cpu_count = os.cpu_count() or 1
+            self.num_workers = max(4, cpu_count // 2)
+        if self.prefetch_factor <= 0:
+            self.prefetch_factor = 2
+        if self.prefetch_factor < 2 and self.num_workers > 0:
+            raise ValueError("prefetch_factor must be >=2 when using worker processes.")
     
     def save(self, path: str):
         """Save configuration to JSON file"""
@@ -146,14 +175,17 @@ class OHLCPreprocessor:
         self.config = config
         self.scalers = {}
         self.fitted = False
+        self.feature_columns: List[str] = []
         
         # Initialize scalers
         if config.normalization_method == "standard":
             self.scaler_class = StandardScaler
         elif config.normalization_method == "minmax":
             self.scaler_class = MinMaxScaler
-        else:  # robust
+        elif config.normalization_method == "robust":
             self.scaler_class = RobustScaler
+        else:  # none
+            self.scaler_class = None
     
     def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add technical indicators to the dataframe"""
@@ -197,18 +229,30 @@ class OHLCPreprocessor:
             return df.fillna(0)
     
     def remove_outliers(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Remove outliers based on z-score threshold"""
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        
+        """Clip extreme values instead of dropping rows to retain alignment."""
+        threshold = self.config.outlier_threshold
+        if not np.isfinite(threshold) or threshold <= 0:
+            return df
+        numeric_cols = [c for c in df.columns if c != 'timestamp' and np.issubdtype(df[c].dtype, np.number)]
+        clipped = df.copy()
         for col in numeric_cols:
-            if col not in ['timestamp']:  # Skip timestamp column
-                z_scores = np.abs((df[col] - df[col].mean()) / df[col].std())
-                df = df[z_scores < self.config.outlier_threshold]
-        
-        return df
+            series = clipped[col]
+            mean = series.mean()
+            std = series.std()
+            if std == 0 or np.isnan(std):
+                continue
+            z = threshold
+            lower = mean - z * std
+            upper = mean + z * std
+            clipped[col] = series.clip(lower=lower, upper=upper)
+        return clipped
     
     def fit_scalers(self, data: Dict[str, pd.DataFrame]):
         """Fit scalers on training data"""
+        if self.scaler_class is None:
+            self.scalers = {}
+            self.fitted = True
+            return
         # Combine all training data for fitting scalers
         all_data = pd.concat(list(data.values()), ignore_index=True)
         
@@ -227,7 +271,7 @@ class OHLCPreprocessor:
     
     def transform(self, df: pd.DataFrame, symbol: str = None) -> pd.DataFrame:
         """Apply preprocessing transformations"""
-        if not self.fitted:
+        if self.scaler_class is not None and not self.fitted:
             raise ValueError("Scalers must be fitted before transformation")
         
         df = df.copy()
@@ -247,13 +291,14 @@ class OHLCPreprocessor:
         df = self.remove_outliers(df)
         
         # Apply normalization
-        for col, scaler in self.scalers.items():
-            if col in df.columns:
-                valid_mask = ~df[col].isna()
-                if valid_mask.any():
-                    df.loc[valid_mask, col] = scaler.transform(
-                        df.loc[valid_mask, col].values.reshape(-1, 1)
-                    ).flatten()
+        if self.scaler_class is not None:
+            for col, scaler in self.scalers.items():
+                if col in df.columns:
+                    valid_mask = ~df[col].isna()
+                    if valid_mask.any():
+                        df.loc[valid_mask, col] = scaler.transform(
+                            df.loc[valid_mask, col].values.reshape(-1, 1)
+                        ).flatten()
         
         # Replace extreme values
         numeric_cols = df.select_dtypes(include=[np.number]).columns
@@ -282,6 +327,7 @@ class OHLCPreprocessor:
         if not available_cols:
             raise ValueError(f"No valid feature columns found in data")
         
+        self.feature_columns = available_cols
         return df[available_cols].values.astype(np.float32)
 
 
@@ -299,9 +345,19 @@ class OHLCDataset(Dataset):
         self.mode = mode
         self.sequences = []
         self.symbol_mapping = {}
-        
         # Process and prepare sequences
         self._prepare_sequences(data)
+        self.feature_columns = list(getattr(self.preprocessor, "feature_columns", []))
+        self.price_feature_indices = [
+            self.feature_columns.index(col)
+            for col in self.config.ohlc_features
+            if col in self.feature_columns
+        ]
+        self.volume_feature_index = (
+            self.feature_columns.index("Volume")
+            if "Volume" in self.feature_columns
+            else None
+        )
         
         # Set random seed
         random.seed(config.random_seed)
@@ -336,6 +392,7 @@ class OHLCDataset(Dataset):
                 # Store symbol mapping
                 self.symbol_mapping[symbol] = symbol_id
                 
+                target_series = processed_df[self.config.target_feature].to_numpy(dtype=np.float32)
                 # Create sequences with sliding window
                 max_start_idx = len(features) - self.config.sequence_length - self.config.prediction_length
                 
@@ -344,10 +401,15 @@ class OHLCDataset(Dataset):
                     pred_end_idx = end_idx + self.config.prediction_length
                     
                     if pred_end_idx <= len(features):
+                        prev_close = float(target_series[end_idx - 1])
+                        target_prices = target_series[end_idx:pred_end_idx]
+                        denom = max(abs(prev_close), 1e-6)
+                        target_pct = ((target_prices - prev_close) / denom).astype(np.float32, copy=False)
                         sequence_data = {
                             'features': features[start_idx:end_idx],
-                            'target': features[end_idx:pred_end_idx, 
-                                            self._get_target_column_index(processed_df)],
+                            'target_price': target_prices,
+                            'target_pct': target_pct,
+                            'prev_close': prev_close,
                             'symbol_id': symbol_id,
                             'symbol_name': symbol,
                             'timestamps': timestamps[start_idx:end_idx],
@@ -383,12 +445,74 @@ class OHLCDataset(Dataset):
     def __len__(self) -> int:
         return len(self.sequences)
     
+    def _augment_series(self, series: torch.Tensor) -> torch.Tensor:
+        if self.mode != "train" or not self.config.enable_augmentation:
+            return series
+
+        seq_len = series.shape[1]
+        if seq_len <= 1:
+            return series
+
+        augmented = series.clone()
+        time_slice = slice(0, seq_len - 1)
+
+        # Random scaling applied to price features
+        min_scale, max_scale = self.config.random_scaling_range
+        if max_scale - min_scale > 1e-6 and self.price_feature_indices:
+            scale = random.uniform(min_scale, max_scale)
+            augmented[self.price_feature_indices, time_slice] *= scale
+
+        # Multiplicative gaussian noise for price features
+        if self.config.price_noise_std > 0 and self.price_feature_indices:
+            noise = torch.randn(
+                (len(self.price_feature_indices), seq_len - 1),
+                dtype=augmented.dtype,
+            ) * self.config.price_noise_std
+            augmented[self.price_feature_indices, time_slice] *= (1.0 + noise)
+
+        # Multiplicative gaussian noise for volume feature
+        if (
+            self.config.volume_noise_std > 0
+            and self.volume_feature_index is not None
+        ):
+            vol_noise = torch.randn(
+                seq_len - 1, dtype=augmented.dtype
+            ) * self.config.volume_noise_std
+            augmented[self.volume_feature_index, time_slice] *= (1.0 + vol_noise)
+
+        # Feature dropout
+        if self.config.feature_dropout_prob > 0:
+            dropout_mask = torch.rand_like(
+                augmented[:, :-1]
+            ) < self.config.feature_dropout_prob
+            augmented[:, :-1] = torch.where(
+                dropout_mask, torch.zeros_like(augmented[:, :-1]), augmented[:, :-1]
+            )
+
+        # Random time masking
+        if (
+            self.config.time_mask_prob > 0
+            and self.config.time_mask_max_span > 0
+            and random.random() < self.config.time_mask_prob
+        ):
+            max_span = min(self.config.time_mask_max_span, seq_len - 1)
+            if max_span > 0:
+                span = random.randint(1, max_span)
+                start = random.randint(0, (seq_len - 1) - span)
+                fill_values = augmented[:, time_slice].mean(dim=1, keepdim=True)
+                augmented[:, start : start + span] = fill_values
+
+        # Keep the most recent timestep exact to preserve prev_close consistency
+        augmented[:, -1] = series[:, -1]
+        return augmented
+    
     def __getitem__(self, idx: int) -> MaskedTimeseries:
         """Return a MaskedTimeseries object compatible with Toto model"""
         seq = self.sequences[idx]
         
         # Prepare tensor data
         series = torch.from_numpy(seq['features'].T).float()  # Shape: (features, time)
+        series = self._augment_series(series)
         n_features, seq_len = series.shape
         
         # Create padding mask (all True since we don't have padding here)
@@ -414,16 +538,19 @@ class OHLCDataset(Dataset):
             timestamp_seconds=timestamps,
             time_interval_seconds=time_intervals
         )
+        extra = {
+            'target_price': torch.from_numpy(seq['target_price']).float(),
+            'prev_close': torch.tensor(seq['prev_close'], dtype=torch.float32),
+            'target_pct': torch.from_numpy(seq['target_pct']).float(),
+        }
         
-        target = torch.from_numpy(seq['target']).float()
-        
-        return masked, target
+        return masked, extra
     
     def get_targets(self) -> torch.Tensor:
         """Get all targets for this dataset"""
         targets = []
         for seq in self.sequences:
-            targets.append(torch.from_numpy(seq['target']).float())
+            targets.append(torch.from_numpy(seq['target_price']).float())
         return torch.stack(targets) if targets else torch.empty(0)
 
 
@@ -540,8 +667,9 @@ class TotoOHLCDataLoader:
                 
                 # Parse timestamp if exists
                 if 'timestamp' in df.columns:
-                    df['timestamp'] = pd.to_datetime(df['timestamp'])
-                    df = df.sort_values('timestamp').reset_index(drop=True)
+                    parsed_ts = pd.to_datetime(df['timestamp'], utc=True, errors='coerce')
+                    df['timestamp'] = parsed_ts.dt.tz_localize(None)
+                    df = df.dropna(subset=['timestamp']).sort_values('timestamp').reset_index(drop=True)
                 
                 # Filter minimum length
                 if len(df) >= self.config.min_sequence_length:
@@ -598,7 +726,21 @@ class TotoOHLCDataLoader:
         val_data = {s: train_data[s] for s in val_symbols}
         
         return new_train_data, val_data
-    
+
+    def _dataloader_kwargs(self, *, shuffle: bool, drop_last: bool) -> Dict[str, Union[int, bool]]:
+        num_workers = max(0, self.config.num_workers)
+        kwargs: Dict[str, Union[int, bool]] = {
+            "batch_size": self.config.batch_size,
+            "shuffle": shuffle,
+            "num_workers": num_workers,
+            "pin_memory": self.config.pin_memory and torch.cuda.is_available(),
+            "drop_last": drop_last,
+        }
+        if num_workers > 0:
+            kwargs["prefetch_factor"] = self.config.prefetch_factor
+            kwargs["persistent_workers"] = self.config.persistent_workers
+        return kwargs
+
     def prepare_dataloaders(self) -> Dict[str, DataLoader]:
         """Prepare PyTorch DataLoaders for training"""
         # Load data
@@ -618,33 +760,21 @@ class TotoOHLCDataLoader:
             datasets['train'] = OHLCDataset(train_data, self.config, self.preprocessor, 'train')
             dataloaders['train'] = DataLoader(
                 datasets['train'],
-                batch_size=self.config.batch_size,
-                shuffle=True,
-                num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory,
-                drop_last=self.config.drop_last
+                **self._dataloader_kwargs(shuffle=True, drop_last=self.config.drop_last)
             )
-        
+
         if val_data:
             datasets['val'] = OHLCDataset(val_data, self.config, self.preprocessor, 'val')
             dataloaders['val'] = DataLoader(
                 datasets['val'],
-                batch_size=self.config.batch_size,
-                shuffle=False,
-                num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory,
-                drop_last=self.config.drop_last
+                **self._dataloader_kwargs(shuffle=False, drop_last=self.config.drop_last)
             )
-        
+
         if test_data:
             datasets['test'] = OHLCDataset(test_data, self.config, self.preprocessor, 'test')
             dataloaders['test'] = DataLoader(
                 datasets['test'],
-                batch_size=self.config.batch_size,
-                shuffle=False,
-                num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory,
-                drop_last=False
+                **self._dataloader_kwargs(shuffle=False, drop_last=False)
             )
         
         self.logger.info(f"Created dataloaders: {list(dataloaders.keys())}")
@@ -659,57 +789,60 @@ class TotoOHLCDataLoader:
         return dataloaders
     
     def get_cross_validation_splits(self, n_splits: int = None) -> List[Tuple[DataLoader, DataLoader]]:
-        """Generate cross-validation splits for time series data"""
+        """Generate leakage-safe Purged K-Fold cross-validation splits."""
         if n_splits is None:
             n_splits = self.config.cv_folds
-        
+
         if not self.train_data:
             raise ValueError("No training data loaded!")
-        
-        cv_splits = []
-        # Note: gap parameter may not be available in older sklearn versions
-        try:
-            tscv = TimeSeriesSplit(n_splits=n_splits, gap=self.config.cv_gap)
-        except TypeError:
-            # Fallback for older sklearn versions
-            tscv = TimeSeriesSplit(n_splits=n_splits)
-        
-        # Combine all data for CV splitting
-        all_symbols = list(self.train_data.keys())
-        
-        for fold, (train_indices, val_indices) in enumerate(tscv.split(all_symbols)):
-            train_symbols = [all_symbols[i] for i in train_indices]
-            val_symbols = [all_symbols[i] for i in val_indices]
-            
-            fold_train_data = {s: self.train_data[s] for s in train_symbols}
-            fold_val_data = {s: self.train_data[s] for s in val_symbols}
-            
-            # Create datasets for this fold
-            train_dataset = OHLCDataset(fold_train_data, self.config, self.preprocessor, 'train')
-            val_dataset = OHLCDataset(fold_val_data, self.config, self.preprocessor, 'val')
-            
+
+        base_dataset = OHLCDataset(self.train_data, self.config, self.preprocessor, 'train')
+        eval_dataset = OHLCDataset(self.train_data, self.config, self.preprocessor, 'val')
+
+        if len(base_dataset) == 0:
+            raise ValueError("Training dataset is empty; cannot create CV splits.")
+
+        ordering = sorted(
+            enumerate(base_dataset.sequences),
+            key=lambda item: (item[1]['symbol_id'], item[1]['start_idx']),
+        )
+        ordered_indices = [idx for idx, _ in ordering]
+        total_sequences = len(ordered_indices)
+
+        if total_sequences <= 2:
+            raise ValueError("Not enough sequences to perform cross-validation.")
+
+        effective_splits = min(max(n_splits, 2), total_sequences - 1)
+        embargo = max(int(self.config.cv_gap), 0)
+        split_indices = list(
+            purged_kfold_indices(total_sequences, n_splits=effective_splits, embargo=embargo)
+        )
+
+        cv_splits: List[Tuple[DataLoader, DataLoader]] = []
+        for fold_idx, (train_idx, val_idx) in enumerate(split_indices, start=1):
+            train_abs = [ordered_indices[i] for i in train_idx]
+            val_abs = [ordered_indices[i] for i in val_idx]
+
+            train_subset = torch.utils.data.Subset(base_dataset, sorted(train_abs))
+            val_subset = torch.utils.data.Subset(eval_dataset, sorted(val_abs))
+
             train_loader = DataLoader(
-                train_dataset,
-                batch_size=self.config.batch_size,
-                shuffle=True,
-                num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory,
-                drop_last=self.config.drop_last
+                train_subset,
+                **self._dataloader_kwargs(shuffle=True, drop_last=self.config.drop_last)
             )
-            
             val_loader = DataLoader(
-                val_dataset,
-                batch_size=self.config.batch_size,
-                shuffle=False,
-                num_workers=self.config.num_workers,
-                pin_memory=self.config.pin_memory,
-                drop_last=self.config.drop_last
+                val_subset,
+                **self._dataloader_kwargs(shuffle=False, drop_last=False)
             )
-            
+
             cv_splits.append((train_loader, val_loader))
-            self.logger.info(f"CV Fold {fold + 1}: {len(train_loader.dataset)} train, "
-                           f"{len(val_loader.dataset)} val samples")
-        
+            self.logger.info(
+                "Purged CV Fold %d: %d train sequences, %d val sequences",
+                fold_idx,
+                len(train_subset),
+                len(val_subset),
+            )
+
         return cv_splits
     
     def get_feature_info(self) -> Dict:

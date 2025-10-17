@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, cast
 
 import pandas as pd
 from loguru import logger
@@ -41,21 +41,23 @@ class MarketDataBundle:
                 return list(df.index)
         return []
 
-    def to_payload(self, limit: Optional[int] = None) -> Dict[str, List[Dict[str, float]]]:
-        payload: Dict[str, List[Dict[str, float]]] = {}
+    def to_payload(self, limit: Optional[int] = None) -> Dict[str, List[Dict[str, float | str]]]:
+        payload: Dict[str, List[Dict[str, float | str]]] = {}
         for symbol, df in self.bars.items():
             frame = df.tail(limit) if limit else df
             frame_with_pct = add_ohlc_percent_change(frame)
-            payload[symbol] = [
-                {
-                    "timestamp": row.name.isoformat(),
-                    "open_pct": float(row["open_pct"]),
-                    "high_pct": float(row["high_pct"]),
-                    "low_pct": float(row["low_pct"]),
-                    "close_pct": float(row["close_pct"]),
-                }
-                for _, row in frame_with_pct.iterrows()
-            ]
+            payload[symbol] = []
+            for _, row in frame_with_pct.iterrows():
+                timestamp = cast(pd.Timestamp, row.name)
+                payload[symbol].append(
+                    {
+                        "timestamp": timestamp.isoformat(),
+                        "open_pct": float(row["open_pct"]),
+                        "high_pct": float(row["high_pct"]),
+                        "low_pct": float(row["low_pct"]),
+                        "close_pct": float(row["close_pct"]),
+                    }
+                )
         return payload
 
 
@@ -146,6 +148,7 @@ def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
 def _download_remote_bars(symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
     try:
         from alpaca.data import CryptoBarsRequest, StockBarsRequest, TimeFrame, TimeFrameUnit
+        from alpaca.data.enums import Adjustment
         from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
         from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
     except Exception as exc:
@@ -155,10 +158,11 @@ def _download_remote_bars(symbol: str, start: datetime, end: datetime) -> pd.Dat
     try:
         stock_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
         crypto_client = CryptoHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+        day_unit = cast(TimeFrameUnit, TimeFrameUnit.Day)
         if symbol in crypto_symbols:
             request = CryptoBarsRequest(
                 symbol_or_symbols=remap_symbols(symbol),
-                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                timeframe=TimeFrame(1, day_unit),
                 start=start,
                 end=end,
             )
@@ -168,10 +172,10 @@ def _download_remote_bars(symbol: str, start: datetime, end: datetime) -> pd.Dat
         else:
             request = StockBarsRequest(
                 symbol_or_symbols=symbol,
-                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                timeframe=TimeFrame(1, day_unit),
                 start=start,
                 end=end,
-                adjustment="raw",
+                adjustment=Adjustment.RAW,
             )
             df = stock_client.get_stock_bars(request).df
             if isinstance(df.index, pd.MultiIndex):

@@ -1,22 +1,23 @@
-"""
-Utilities for experimenting with optimizer configurations in isolation before
-integrating them into the wider training pipeline.
-
-The package exposes a small registry that keeps advanced optimizers such as
-Shampoo and Muon side-by-side with baseline choices like AdamW.  The registry
-is intentionally lightweight so the same builders can be reused both inside
-unit tests/benchmarks and within Hugging Face `Trainer` entry points.
-"""
-
-from .optimizers import OptimizerRegistry, optimizer_registry
-from .optimizers import create_optimizer  # noqa: F401  (re-export for convenience)
-from .benchmarking import RegressionBenchmark  # noqa: F401
-from .hf_integration import build_hf_optimizers  # noqa: F401
+from .runtime_flags import enable_fast_kernels, bf16_supported
+from .compile_wrap import maybe_compile
+from .optim_factory import make_optimizer, MultiOptim
+from .schedules import WarmupCosine
+from .report import write_report_markdown
+from .prof import maybe_profile
+from .prefetch import CudaPrefetcher
+from .ema import EMA
+from . import losses
 
 __all__ = [
-    "OptimizerRegistry",
-    "optimizer_registry",
-    "create_optimizer",
-    "RegressionBenchmark",
-    "build_hf_optimizers",
+    "enable_fast_kernels",
+    "bf16_supported",
+    "maybe_compile",
+    "make_optimizer",
+    "MultiOptim",
+    "WarmupCosine",
+    "write_report_markdown",
+    "maybe_profile",
+    "CudaPrefetcher",
+    "EMA",
+    "losses",
 ]

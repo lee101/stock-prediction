@@ -8,7 +8,7 @@ import logging
 import sys
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import Any, ContextManager, Dict, List, Optional, Tuple, TYPE_CHECKING, Union, cast
 
 import numpy as np
 import torch
@@ -17,6 +17,15 @@ import torch
 sys.path.insert(0, "/mnt/fast/code/chronos-forecasting/toto")
 
 _IMPORT_ERROR: Optional[Exception] = None
+
+if TYPE_CHECKING:
+    from toto.data.util.dataset import MaskedTimeseries as MaskedTimeseriesType
+    from toto.inference.forecaster import TotoForecaster as TotoForecasterType
+    from toto.model.toto import Toto as TotoModelType
+else:
+    MaskedTimeseriesType = Any
+    TotoForecasterType = Any
+    TotoModelType = Any
 
 try:
     from toto.data.util.dataset import MaskedTimeseries
@@ -80,23 +89,23 @@ def _maybe_empty_cuda_cache(device: str) -> None:
             logger.debug("Failed to empty CUDA cache after OOM: %s", cache_exc)
 
 
-def _inference_context():
+def _inference_context() -> ContextManager[None]:
     """Return the best available inference context manager (inference_mode or no_grad)."""
     context_ctor = getattr(torch, "inference_mode", None)
     if callable(context_ctor):
-        return context_ctor()
-    return torch.no_grad()
+        return cast(ContextManager[None], context_ctor())
+    return cast(ContextManager[None], torch.no_grad())
 
 
-def _autocast_context(device: str, dtype: Optional[torch.dtype]):
+def _autocast_context(device: str, dtype: Optional[torch.dtype]) -> ContextManager[None]:
     if dtype is None:
-        return nullcontext()
+        return cast(ContextManager[None], nullcontext())
     if device.startswith("cuda"):
         autocast_fn = getattr(torch, "autocast", None)
         if callable(autocast_fn):
-            return autocast_fn(device_type="cuda", dtype=dtype)
-        return torch.cuda.amp.autocast(dtype=dtype)
-    return nullcontext()
+            return cast(ContextManager[None], autocast_fn(device_type="cuda", dtype=dtype))
+        return cast(ContextManager[None], torch.cuda.amp.autocast(dtype=dtype))
+    return cast(ContextManager[None], nullcontext())
 
 
 def _forecast_with_retries(
@@ -181,7 +190,7 @@ class TotoPipeline:
 
     def __init__(
         self,
-        model: Toto,
+        model: TotoModelType,
         device: str = "cuda",
         *,
         torch_dtype: Optional[torch.dtype] = None,
@@ -204,7 +213,7 @@ class TotoPipeline:
         self.min_samples_per_batch = max(1, int(min_samples_per_batch))
         self.min_num_samples = max(1, int(min_num_samples))
 
-        target_kwargs = {"device": self.device}
+        target_kwargs: Dict[str, Any] = {"device": self.device}
         if torch_dtype is not None:
             target_kwargs["dtype"] = torch_dtype
 
@@ -281,7 +290,9 @@ class TotoPipeline:
             except Exception as exc:
                 logger.debug("Could not compile Toto model: %s", exc)
 
-        self.forecaster = TotoForecaster(self.model.model)
+        model_core = cast(Any, self.model)
+        forecaster_ctor = cast(Any, TotoForecaster)
+        self.forecaster = cast(TotoForecasterType, forecaster_ctor(model_core.model))
         self._last_run_metadata: Optional[dict] = None
 
     @property
@@ -306,7 +317,7 @@ class TotoPipeline:
         amp_dtype: Optional[torch.dtype] = torch.float16,
         torch_compile: bool = False,
         compile_backend: Optional[str] = None,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> "TotoPipeline":
         """
         Load a pretrained Toto model and build a pipeline around it.
@@ -318,23 +329,23 @@ class TotoPipeline:
 
         device = device_map if device_map != "mps" else "cpu"
 
-        extra_kwargs = dict(kwargs)
-        pipeline_kwargs = {}
+        extra_kwargs: Dict[str, Any] = dict(kwargs)
+        pipeline_kwargs: Dict[str, Any] = {}
         for key in ("max_oom_retries", "min_samples_per_batch", "min_num_samples"):
             if key in extra_kwargs:
                 pipeline_kwargs[key] = extra_kwargs.pop(key)
 
-        model_kwargs = extra_kwargs
-        model = Toto.from_pretrained(model_id, **model_kwargs)
+        model_kwargs: Dict[str, Any] = extra_kwargs
+        model = cast(TotoModelType, Toto.from_pretrained(model_id, **model_kwargs))
 
         return cls(
             model,
             device=device,
             torch_dtype=torch_dtype,
             amp_dtype=amp_dtype,
-            max_oom_retries=pipeline_kwargs.get("max_oom_retries", 2),
-            min_samples_per_batch=pipeline_kwargs.get("min_samples_per_batch", 32),
-            min_num_samples=pipeline_kwargs.get("min_num_samples", 256),
+            max_oom_retries=int(pipeline_kwargs.get("max_oom_retries", 2)),
+            min_samples_per_batch=int(pipeline_kwargs.get("min_samples_per_batch", 32)),
+            min_num_samples=int(pipeline_kwargs.get("min_num_samples", 256)),
             compile_model=compile_model,
             torch_compile=torch_compile,
             compile_mode=compile_mode,
@@ -349,12 +360,15 @@ class TotoPipeline:
         temperature: float = 1.0,
         top_k: Optional[int] = None,
         top_p: Optional[float] = None,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> List[TotoForecast]:
         """
         Generate forecasts using Toto with Chronos-compatible semantics.
         """
         _ = temperature, top_k, top_p  # Compatibility placeholders.
+
+        if MaskedTimeseries is None:
+            raise RuntimeError("Toto dependencies are not available; cannot build MaskedTimeseries inputs.")
 
         if isinstance(context, (list, np.ndarray)):
             context = torch.tensor(context, dtype=torch.float32)
