@@ -39,6 +39,7 @@ gpt5_client: Optional[AsyncOpenAI] = _ASYNC_CLIENT
 MODEL_ID = os.getenv("GPT5_MODEL", "gpt-5")
 MAX_ATTEMPTS = int(os.getenv("GPT5_MAX_ATTEMPTS", "3"))
 _STRUCTURED_CACHE_NAMESPACE = "gpt5_structured_v3"
+_STRUCTURED_MAX_TOKEN_CAP = 16384
 STRUCTURED_DEFAULT_REASONING = os.getenv("GPT5_STRUCTURED_REASONING", "high")
 
 REPROMPT_TEMPLATE = (
@@ -449,18 +450,44 @@ def _extract_output_text(response: Any) -> str:
     return combined
 
 
+def _schema_digest(schema: Dict[str, Any]) -> str:
+    serialized = json.dumps(schema, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()[:16]
+
+
+def _normalize_schema(node: Any) -> Any:
+    if isinstance(node, dict):
+        normalized: Dict[str, Any] = {}
+        for key, value in node.items():
+            normalized[key] = _normalize_schema(value)
+        if normalized.get("type") == "object" and "additionalProperties" not in normalized:
+            normalized["additionalProperties"] = False
+        return normalized
+    if isinstance(node, list):
+        return [_normalize_schema(item) for item in node]
+    return node
+
+
 def _send_structured_request(
     client: OpenAI,
     messages: List[Dict[str, str]],
     temperature: Optional[float],
     max_output_tokens: int,
+    response_schema: Dict[str, Any],
     reasoning_effort: Optional[str],
 ) -> Any:
+    normalized_schema = _normalize_schema(response_schema)
+    schema_name = f"schema_{_schema_digest(normalized_schema)}"
+    text_format: Dict[str, Any] = {
+        "type": "json_schema",
+        "name": schema_name,
+        "schema": normalized_schema,
+    }
     kwargs = {
         "model": MODEL_ID,
         "input": messages,
         "max_output_tokens": max_output_tokens,
-        "response_format": {"type": "json_object"},
+        "text": {"format": text_format},
     }
     effort = _coerce_reasoning_effort(reasoning_effort or STRUCTURED_DEFAULT_REASONING)
     kwargs["reasoning"] = {"effort": effort}
@@ -529,8 +556,34 @@ def query_gpt5_structured(
     messages = _build_messages(system_message, user_prompt, user_payload_json)
 
     last_error: Optional[str] = None
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        response = _send_structured_request(client, messages, temperature, max_output_tokens, reasoning_effort)
+    current_max_tokens = max_output_tokens
+    attempt = 1
+    while attempt <= MAX_ATTEMPTS:
+        response = _send_structured_request(
+            client,
+            messages,
+            temperature,
+            current_max_tokens,
+            response_schema,
+            reasoning_effort,
+        )
+
+        status = getattr(response, "status", None)
+        if status == "incomplete":
+            incomplete = getattr(response, "incomplete_details", None)
+            reason = getattr(incomplete, "reason", None) if incomplete else None
+            if reason == "max_output_tokens" and current_max_tokens < _STRUCTURED_MAX_TOKEN_CAP:
+                next_tokens = min(
+                    _STRUCTURED_MAX_TOKEN_CAP,
+                    max(current_max_tokens * 2, current_max_tokens + 128),
+                )
+                logger.info(
+                    "GPT-5 structured response truncated at %d tokens. Retrying with max_output_tokens=%d.",
+                    current_max_tokens,
+                    next_tokens,
+                )
+                current_max_tokens = next_tokens
+                continue
 
         refusal_reason = _extract_refusal(response)
         if refusal_reason:
@@ -538,6 +591,7 @@ def query_gpt5_structured(
             if attempt == MAX_ATTEMPTS:
                 raise RuntimeError(f"GPT-5 refused the request: {refusal_reason}")
             messages.append({"role": "user", "content": REFUSAL_TEMPLATE.format(reason=refusal_reason)})
+            attempt += 1
             continue
 
         raw_text = _extract_output_text(response)
@@ -554,6 +608,7 @@ def query_gpt5_structured(
                     "content": f"{REPROMPT_TEMPLATE.format(error=exc)}\n\nPrevious response:\n{snippet}",
                 }
             )
+            attempt += 1
             continue
 
         payload = json.loads(raw_text)
@@ -566,6 +621,7 @@ def query_gpt5_structured(
                 raise ValueError(f"GPT response failed schema validation: {joined}")
             reprompt = _build_schema_retry_message(issues, raw_text=raw_text)
             messages.append({"role": "user", "content": reprompt})
+            attempt += 1
             continue
 
         cache.set((_STRUCTURED_CACHE_NAMESPACE, cache_key), raw_text)
