@@ -112,6 +112,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-days", type=int, default=21, help="Number of trailing daily steps reserved for validation-only evaluation.")
     parser.add_argument("--features-cache", type=Path, default=None, help="Path to a cached feature NPZ file to load instead of rebuilding.")
     parser.add_argument("--cache-features-to", type=Path, default=None, help="Optional path to persist the generated feature cube for reuse.")
+    parser.add_argument("--symbols", type=str, default=None, help="Optional comma-separated subset of symbols to load from the dataset.")
     parser.add_argument("--costs-bps", type=float, default=3.0, help="Baseline proportional trading cost in basis points.")
     parser.add_argument("--turnover-penalty", type=float, default=5e-4, help="Penalty applied to portfolio turnover in the reward.")
     parser.add_argument("--drawdown-penalty", type=float, default=0.0, help="Penalty applied to running drawdown.")
@@ -268,6 +269,10 @@ def main() -> None:
         fill_method=fill_method,
     )
 
+    selected_symbols = None
+    if args.symbols:
+        selected_symbols = [symbol.strip() for symbol in str(args.symbols).split(",") if symbol.strip()]
+
     cube_loaded_from_cache = False
     extra_meta: Dict[str, object] = {}
     backend_label: Optional[str] = builder_config.forecast_backend
@@ -275,6 +280,7 @@ def main() -> None:
 
     if args.features_cache:
         cube, extra_meta = load_feature_cache(args.features_cache)
+        extra_meta = dict(extra_meta)
         cube_loaded_from_cache = True
         cached_backend = extra_meta.get("backend_name")
         if isinstance(cached_backend, str):
@@ -284,15 +290,32 @@ def main() -> None:
             backend_errors = [str(item) for item in cached_errors]
         elif cached_errors is not None:
             backend_errors = [str(cached_errors)]
+
+        if selected_symbols:
+            symbol_lookup = {sym.upper(): idx for idx, sym in enumerate(cube.symbols)}
+            missing_symbols = [sym for sym in selected_symbols if sym.upper() not in symbol_lookup]
+            if missing_symbols:
+                raise ValueError(
+                    f"Requested symbols {missing_symbols} not present in feature cube (available: {cube.symbols})"
+                )
+            indices = [symbol_lookup[sym.upper()] for sym in selected_symbols]
+            cube.features = cube.features[:, indices, :]
+            cube.realized_returns = cube.realized_returns[:, indices]
+            if cube.forecast_cvar is not None:
+                cube.forecast_cvar = cube.forecast_cvar[:, indices]
+            if cube.forecast_uncertainty is not None:
+                cube.forecast_uncertainty = cube.forecast_uncertainty[:, indices]
+            cube.symbols = [cube.symbols[idx] for idx in indices]
     else:
         builder = FeatureBuilder(config=builder_config, backend_kwargs=backend_kwargs)
-        cube = builder.build_from_directory(args.data_dir)
+        cube = builder.build_from_directory(args.data_dir, symbols=selected_symbols)
         backend_label = builder.backend_name or builder_config.forecast_backend
         backend_errors = builder.backend_errors
         extra_meta = {
             "builder_config": asdict(builder_config),
             "backend_name": backend_label,
             "backend_errors": backend_errors,
+            "selected_symbols": selected_symbols,
         }
         if args.cache_features_to:
             save_feature_cache(Path(args.cache_features_to), cube, extra_metadata=extra_meta)
@@ -301,6 +324,11 @@ def main() -> None:
         extra_meta["backend_name"] = backend_label
     if "backend_errors" not in extra_meta:
         extra_meta["backend_errors"] = backend_errors
+
+    if selected_symbols is not None:
+        extra_meta["selected_symbols"] = selected_symbols
+    else:
+        extra_meta.setdefault("selected_symbols", list(cube.symbols))
 
     cube_meta = {
         "feature_names": cube.feature_names,

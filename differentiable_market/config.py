@@ -16,6 +16,7 @@ class DataConfig:
     normalize: Literal["standard", "log", "none"] = "log"
     # Exclude symbols explicitly if they should never appear in train/eval splits.
     exclude_symbols: tuple[str, ...] = field(default_factory=tuple)
+    min_timesteps: int = 512
 
 
 @dataclass(slots=True)
@@ -29,6 +30,7 @@ class EnvironmentConfig:
     wealth_objective: Literal["log", "sharpe"] = "log"
     sharpe_ema_alpha: float = 0.01
     epsilon_stability: float = 1e-8
+    drawdown_lambda: float = 0.0
 
 
 @dataclass(slots=True)
@@ -38,6 +40,7 @@ class TrainingConfig:
     lookback: int = 128
     rollout_groups: int = 4
     batch_windows: int = 64
+    microbatch_windows: int | None = None
     epochs: int = 2000
     eval_interval: int = 100
     device: Literal["auto", "cpu", "cuda"] = "auto"
@@ -69,4 +72,3 @@ class EvaluationConfig:
     report_dir: Path = Path("differentiable_market") / "evals"
     store_trades: bool = True
     bootstrap_samples: int = 0
-
