@@ -155,7 +155,9 @@ exclude = [
 
 [tool.uv]
 extra-index-url = ["https://download.pytorch.org/whl/cu128"]
+cache-dir = "/vfast/data/uv-cache"
 index-strategy = "unsafe-best-match"
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 [tool.uv.sources]
 toto = { path = "toto", editable = true }
