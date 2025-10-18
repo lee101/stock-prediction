@@ -123,6 +123,10 @@ dependencies = [
     "qlib",
 ]
 
+[project.scripts]
+diff-market-train = "differentiable_market.train:main"
+diff-market-backtest = "differentiable_market.marketsimulator.run:main"
+
 [project.optional-dependencies]
 dev = [
     "black==24.10.0",

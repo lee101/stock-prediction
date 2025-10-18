@@ -22,6 +22,39 @@ _Adan = _maybe_import("torch_optimizer", "Adan")
 _Muon = _maybe_import("muon", "Muon")
 
 
+def _patch_muon_single_process() -> None:
+    if _Muon is None:
+        return
+    try:
+        import muon  # type: ignore
+        import torch.distributed as dist_mod
+    except Exception:
+        return
+
+    if getattr(muon, "_single_process_patched", False):
+        return
+
+    if getattr(dist_mod, "is_available", lambda: False)() and getattr(dist_mod, "is_initialized", lambda: False)():
+        return
+
+    class _SingleProcessDist:
+        def get_world_size(self) -> int:
+            return 1
+
+        def get_rank(self) -> int:
+            return 0
+
+        def all_gather(self, output, tensor) -> None:
+            if isinstance(output, (list, tuple)):
+                for out in output:
+                    out.copy_(tensor)
+            else:
+                output.copy_(tensor)
+
+    muon.dist = _SingleProcessDist()  # type: ignore[attr-defined]
+    muon._single_process_patched = True  # type: ignore[attr-defined]
+
+
 def _no_decay(name: str) -> bool:
     name = name.lower()
     if name.endswith("bias"):
@@ -61,8 +94,9 @@ class MultiOptim(torch.optim.Optimizer):
     """
 
     def __init__(self, optimizers: List[Optimizer]):
-        super().__init__([{"params": []}], {})
         self.optimizers = optimizers
+        self._manual_param_groups = []
+        super().__init__([{"params": []}], {})
 
     @property
     def param_groups(self):
@@ -71,12 +105,26 @@ class MultiOptim(torch.optim.Optimizer):
             groups.extend(opt.param_groups)
         return groups
 
+    @param_groups.setter
+    def param_groups(self, value):  # pragma: no cover - setter required for torch internals
+        self._manual_param_groups = value
+
     def state_dict(self):
         return {"optimizers": [opt.state_dict() for opt in self.optimizers]}
 
     def load_state_dict(self, state_dict):
-        for opt, sd in zip(self.optimizers, state_dict["optimizers"]):
-            opt.load_state_dict(sd)
+        if "optimizers" in state_dict and isinstance(state_dict["optimizers"], list):
+            for opt, sd in zip(self.optimizers, state_dict["optimizers"]):
+                opt.load_state_dict(sd)
+            return
+
+        # Backwards compatibility: allow loading a single optimizer state dict.
+        if len(self.optimizers) == 1:
+            self.optimizers[0].load_state_dict(state_dict)
+            return
+
+        for opt in self.optimizers:
+            opt.load_state_dict(state_dict)
 
     def zero_grad(self, set_to_none: bool | None = None):
         for opt in self.optimizers:
@@ -141,12 +189,14 @@ def make_optimizer(
         if _Muon is None:
             warnings.warn("Muon not available; falling back to AdamW.")
             return torch.optim.AdamW(groups, lr=lr, betas=betas, eps=eps, fused=fused and _fused_ok())
+        _patch_muon_single_process()
         return _Muon(groups, lr=lr, weight_decay=weight_decay)
 
     if name in {"muon_mix", "muon+adamw"}:
         if _Muon is None:
             warnings.warn("Muon not available; falling back to AdamW.")
             return torch.optim.AdamW(groups, lr=lr, betas=betas, eps=eps, fused=fused and _fused_ok())
+        _patch_muon_single_process()
 
         muon_groups, adam_groups = [], []
         for g in groups:
@@ -160,7 +210,21 @@ def make_optimizer(
             if others:
                 adam_groups.append({"params": others, "weight_decay": g["weight_decay"]})
 
-        muon_opt = _Muon(muon_groups, lr=lr, weight_decay=weight_decay) if muon_groups else None
+        muon_opt = None
+        if muon_groups:
+            unique_wds = {mg["weight_decay"] for mg in muon_groups}
+            muon_opts = []
+            for wd in unique_wds:
+                params = []
+                for mg in muon_groups:
+                    if mg["weight_decay"] == wd:
+                        params.extend(mg["params"])
+                if not params:
+                    continue
+                muon_opts.append(_Muon(params, lr=lr, weight_decay=wd))
+            if muon_opts:
+                muon_opt = muon_opts[0] if len(muon_opts) == 1 else MultiOptim(muon_opts)
+
         adam_opt = torch.optim.AdamW(adam_groups, lr=lr, betas=betas, eps=eps, fused=fused and _fused_ok()) if adam_groups else None
         optimizers = [opt for opt in (muon_opt, adam_opt) if opt is not None]
         if len(optimizers) == 1:
