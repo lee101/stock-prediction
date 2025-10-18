@@ -9,7 +9,8 @@ modular so it can be invoked from CI, notebooks, or future
 
 Usage example:
 
-    uv pip install stable-baselines3 gymnasium torch pandas chronos
+    uv pip install stable-baselines3 gymnasium torch pandas
+    uv pip install -e toto  # Kronos users should also install external/kronos requirements
     python -m gymrl.train_ppo_allocator \
         --data-dir tototraining/trainingdata/train \
         --output-dir gymrl/artifacts \
@@ -21,8 +22,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from dataclasses import asdict
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -46,11 +48,29 @@ logger = logging.getLogger("gymrl.train")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
+def optional_float(value: str) -> Optional[float]:
+    """Parse float arguments that may accept 'none'."""
+    if isinstance(value, str) and value.strip().lower() in {"none", "null", "nan"}:
+        return None
+    return float(value)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train PPO allocator with GymRL.")
     parser.add_argument("--data-dir", type=Path, default=Path("tototraining/trainingdata/train"), help="Directory of per-symbol CSV files.")
-    parser.add_argument("--forecast-backend", type=str, default="auto", choices=["auto", "toto", "chronos", "bootstrap"], help="Forecasting backend used to build features.")
-    parser.add_argument("--num-samples", type=int, default=2048, help="Number of forecast samples per step (2048 recommended for Toto/Chronos).")
+    parser.add_argument(
+        "--forecast-backend",
+        type=str,
+        default="auto",
+        choices=["auto", "toto", "kronos", "chronos", "bootstrap"],
+        help="Forecasting backend used to build features.",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=2048,
+        help="Number of forecast samples per step (Toto recommends >=2048; Kronos uses deterministic tiling).",
+    )
     parser.add_argument("--context-window", type=int, default=192, help="History length provided to the forecaster.")
     parser.add_argument("--prediction-length", type=int, default=1, help="Forecast horizon in steps.")
     parser.add_argument("--realized-horizon", type=int, default=1, help="Realised return horizon for rewards.")
@@ -69,7 +89,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--behaviour-dataset", type=Path, default=None, help="Optional path to save offline behaviour dataset (.npz).")
     parser.add_argument("--behaviour-policy", type=str, default="topk", choices=["topk", "kelly", "blended"], help="Behaviour policy flavour for offline dataset.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
-    parser.add_argument("--device-map", type=str, default=None, help="Device override for Toto/Chronos (e.g., 'cuda', 'cpu').")
+    parser.add_argument(
+        "--device-map",
+        type=str,
+        default=None,
+        help="Device override for Toto/Kronos (e.g., 'cuda', 'cpu').",
+    )
+    parser.add_argument("--kronos-device", type=str, default=None, help="Device override for Kronos forecasts (defaults to cuda:0 if available).")
+    parser.add_argument("--kronos-temperature", type=float, default=None, help="Sampling temperature passed to Kronos (defaults to wrapper setting).")
+    parser.add_argument("--kronos-top-p", type=float, default=None, help="Top-p nucleus sampling parameter for Kronos.")
+    parser.add_argument("--kronos-top-k", type=int, default=None, help="Top-k sampling parameter for Kronos.")
+    parser.add_argument("--kronos-sample-count", type=int, default=None, help="Number of autoregressive samples Kronos draws before averaging.")
+    parser.add_argument("--kronos-max-context", type=int, default=None, help="Maximum context tokens when running Kronos.")
+    parser.add_argument("--kronos-clip", type=float, default=None, help="Clipping applied to Kronos inputs (default 5.0).")
+    parser.add_argument("--kronos-oom-retries", type=int, default=None, help="OOM retry count when forecasting with Kronos.")
+    parser.add_argument("--kronos-jitter-std", type=float, default=None, help="Optional Gaussian noise (std) added to Kronos forecasts before feature stats.")
     parser.add_argument("--enforce-common-index", action="store_true", help="Require identical timestamps across all symbols (default: union with forward-fill).")
     parser.add_argument("--fill-method", type=str, default="ffill", help="Optional pandas fillna method when aligning timestamps (default: ffill).")
     parser.add_argument("--topk-checkpoints", type=int, default=3, help="Number of top evaluation models to keep during training.")
@@ -78,6 +112,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-days", type=int, default=21, help="Number of trailing daily steps reserved for validation-only evaluation.")
     parser.add_argument("--features-cache", type=Path, default=None, help="Path to a cached feature NPZ file to load instead of rebuilding.")
     parser.add_argument("--cache-features-to", type=Path, default=None, help="Optional path to persist the generated feature cube for reuse.")
+    parser.add_argument("--costs-bps", type=float, default=3.0, help="Baseline proportional trading cost in basis points.")
+    parser.add_argument("--turnover-penalty", type=float, default=5e-4, help="Penalty applied to portfolio turnover in the reward.")
+    parser.add_argument("--drawdown-penalty", type=float, default=0.0, help="Penalty applied to running drawdown.")
+    parser.add_argument("--cvar-penalty", type=float, default=0.0, help="Penalty weight for predicted CVaR inputs.")
+    parser.add_argument("--uncertainty-penalty", type=float, default=0.0, help="Penalty weight for forecast dispersion inputs.")
+    parser.add_argument("--weight-cap", type=optional_float, default=0.35, help="Maximum per-asset allocation; pass 'none' to disable.")
+    parser.add_argument("--allow-short", action="store_true", help="Enable long/short allocations with symmetric leverage.")
+    parser.add_argument("--leverage-cap", type=float, default=1.0, help="Gross leverage cap when shorting is enabled.")
+    parser.add_argument("--include-cash", dest="include_cash", action="store_true", help="Include a synthetic cash asset (default).")
+    parser.add_argument("--no-include-cash", dest="include_cash", action="store_false", help="Disable the synthetic cash asset.")
+    parser.add_argument("--cash-return", type=float, default=0.0, help="Per-step deterministic return of the synthetic cash asset.")
+    parser.add_argument("--device", type=str, default="auto", help="Device to use for Stable-Baselines3 (e.g., 'cpu', 'cuda', or 'auto').")
+    parser.set_defaults(include_cash=True)
     return parser.parse_args()
 
 
@@ -186,7 +233,27 @@ def main() -> None:
 
     np.random.seed(args.seed)
 
-    backend_kwargs = {"device_map": args.device_map} if args.device_map else {}
+    backend_kwargs: Dict[str, object] = {}
+    if args.device_map:
+        backend_kwargs["device_map"] = args.device_map
+    if args.kronos_device:
+        backend_kwargs["kronos_device"] = args.kronos_device
+    if args.kronos_temperature is not None:
+        backend_kwargs["kronos_temperature"] = args.kronos_temperature
+    if args.kronos_top_p is not None:
+        backend_kwargs["kronos_top_p"] = args.kronos_top_p
+    if args.kronos_top_k is not None:
+        backend_kwargs["kronos_top_k"] = args.kronos_top_k
+    if args.kronos_sample_count is not None:
+        backend_kwargs["kronos_sample_count"] = args.kronos_sample_count
+    if args.kronos_max_context is not None:
+        backend_kwargs["kronos_max_context"] = args.kronos_max_context
+    if args.kronos_clip is not None:
+        backend_kwargs["kronos_clip"] = args.kronos_clip
+    if args.kronos_oom_retries is not None:
+        backend_kwargs["kronos_oom_retries"] = args.kronos_oom_retries
+    if args.kronos_jitter_std is not None:
+        backend_kwargs["kronos_jitter_std"] = args.kronos_jitter_std
     fill_method = None
     if args.fill_method:
         fill_method = None if args.fill_method.lower() == "none" else args.fill_method
@@ -203,14 +270,37 @@ def main() -> None:
 
     cube_loaded_from_cache = False
     extra_meta: Dict[str, object] = {}
+    backend_label: Optional[str] = builder_config.forecast_backend
+    backend_errors: List[str] = []
+
     if args.features_cache:
         cube, extra_meta = load_feature_cache(args.features_cache)
         cube_loaded_from_cache = True
+        cached_backend = extra_meta.get("backend_name")
+        if isinstance(cached_backend, str):
+            backend_label = cached_backend
+        cached_errors = extra_meta.get("backend_errors")
+        if isinstance(cached_errors, list):
+            backend_errors = [str(item) for item in cached_errors]
+        elif cached_errors is not None:
+            backend_errors = [str(cached_errors)]
     else:
         builder = FeatureBuilder(config=builder_config, backend_kwargs=backend_kwargs)
         cube = builder.build_from_directory(args.data_dir)
+        backend_label = builder.backend_name or builder_config.forecast_backend
+        backend_errors = builder.backend_errors
+        extra_meta = {
+            "builder_config": asdict(builder_config),
+            "backend_name": backend_label,
+            "backend_errors": backend_errors,
+        }
         if args.cache_features_to:
-            save_feature_cache(Path(args.cache_features_to), cube, extra_metadata={"builder_config": builder_config.__dict__})
+            save_feature_cache(Path(args.cache_features_to), cube, extra_metadata=extra_meta)
+
+    if backend_label is not None and "backend_name" not in extra_meta:
+        extra_meta["backend_name"] = backend_label
+    if "backend_errors" not in extra_meta:
+        extra_meta["backend_errors"] = backend_errors
 
     cube_meta = {
         "feature_names": cube.feature_names,
@@ -224,27 +314,36 @@ def main() -> None:
         logger.info("Loaded feature cube from cache %s", args.features_cache)
     elif args.cache_features_to:
         logger.info("Saved feature cube to %s", args.cache_features_to)
+    else:
+        logger.info("Built feature cube from %s", args.data_dir)
+
+    if backend_label:
+        logger.info("Feature backend: %s", backend_label)
+    if backend_errors:
+        logger.warning("Forecast backend issues: %s", "; ".join(backend_errors))
+
+    env_config = PortfolioEnvConfig(
+        costs_bps=args.costs_bps,
+        turnover_penalty=args.turnover_penalty,
+        drawdown_penalty=args.drawdown_penalty,
+        cvar_penalty=args.cvar_penalty,
+        uncertainty_penalty=args.uncertainty_penalty,
+        weight_cap=args.weight_cap,
+        allow_short=args.allow_short,
+        leverage_cap=args.leverage_cap,
+        include_cash=args.include_cash,
+        cash_return=args.cash_return,
+    )
 
     if args.behaviour_dataset:
         dataset_config = OfflineDatasetConfig(output_path=str(args.behaviour_dataset), compress=True)
         build_offline_dataset(
             cube,
-            env_config=PortfolioEnvConfig(),
+            env_config=env_config,
             dataset_config=dataset_config,
             behaviour_policy=args.behaviour_policy,
         )
         logger.info("Saved behaviour dataset to %s", args.behaviour_dataset)
-
-    env_config = PortfolioEnvConfig(
-        costs_bps=3.0,
-        turnover_penalty=5e-4,
-        drawdown_penalty=0.0,
-        cvar_penalty=0.0,
-        uncertainty_penalty=0.0,
-        weight_cap=0.35,
-        allow_short=False,
-        include_cash=True,
-    )
 
     total_steps = cube.features.shape[0]
     train_steps, eval_start, validation_steps = slice_indices(total_steps, args.train_fraction, args.validation_days)
@@ -272,6 +371,7 @@ def main() -> None:
         train_env,
         verbose=1,
         tensorboard_log=str(args.tensorboard_log),
+        device=args.device,
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
         n_steps=args.n_steps,
@@ -309,7 +409,7 @@ def main() -> None:
         args.num_timesteps,
         train_steps,
         eval_start,
-        builder_config.forecast_backend,
+        backend_label,
     )
 
     model.learn(total_timesteps=args.num_timesteps, callback=[checkpoint_callback, eval_callback, topk_callback])
@@ -366,6 +466,8 @@ def main() -> None:
         "features_cache_path": str(args.features_cache) if args.features_cache else None,
         "features_cache_written": str(args.cache_features_to) if args.cache_features_to else None,
         "feature_extra_metadata": extra_meta,
+        "forecast_backend_used": backend_label,
+        "forecast_backend_errors": backend_errors,
     }
     with metadata_path.open("w", encoding="utf-8") as f:
         json.dump(metadata_payload, f, indent=2)
