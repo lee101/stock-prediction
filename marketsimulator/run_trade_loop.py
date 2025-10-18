@@ -30,9 +30,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--real-analytics",
+        dest="real_analytics",
         action="store_true",
         help="Use the full forecasting/backtest stack instead of simulator mocks.",
     )
+    parser.add_argument(
+        "--mock-analytics",
+        dest="real_analytics",
+        action="store_false",
+        help="Force lightweight simulator analytics (skips heavy forecasting models).",
+    )
+    parser.set_defaults(real_analytics=True)
     parser.add_argument(
         "--compact-logs",
         action="store_true",
@@ -83,6 +91,8 @@ def _configure_compact_logging_post(enabled: bool) -> None:
 def main() -> None:
     args = parse_args()
     _configure_compact_logging_pre(args.compact_logs)
+    mode = "real" if args.real_analytics else "mock"
+    logger.info(f"[sim] Analytics mode set to {mode.upper()} forecasting stack.")
 
     with activate_simulation(
         symbols=args.symbols,

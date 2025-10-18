@@ -1,7 +1,7 @@
 """
 Utilities for serialising and loading GymRL feature cubes on disk.
 
-Feature caches make Toto/Chronos preprocessing a one-off cost; subsequent
+Feature caches make Toto/Kronos preprocessing a one-off cost; subsequent
 training or evaluation scripts can skip the expensive sampling step.
 """
 
@@ -101,4 +101,3 @@ def load_feature_cache(cache_path: Path) -> Tuple[FeatureCube, Dict[str, object]
 
 
 __all__ = ["save_feature_cache", "load_feature_cache"]
-

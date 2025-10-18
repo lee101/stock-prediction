@@ -12,7 +12,7 @@ dependencies = [
     "wandb>=0.22.2",
     "weave>=0.52.10",
     "pandas_datareader",
-    "torch==2.9.0",
+    "torch==2.9.0+cu128",
     "pandas",
     "numpy==2.1.3",
     "loguru",

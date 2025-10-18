@@ -13,7 +13,19 @@ import time
 from pathlib import Path
 
 import torch
-from torch.cuda.amp import GradScaler, autocast
+try:  # PyTorch ≥ 2.1 uses torch.amp
+    from torch.amp import GradScaler as _GradScaler  # type: ignore[attr-defined]
+    from torch.amp import autocast as _amp_autocast  # type: ignore[attr-defined]
+
+    def autocast_context(device_type: str, *, enabled: bool = True):
+        return _amp_autocast(device_type, enabled=enabled)
+
+except ImportError:  # pragma: no cover - PyTorch < 2.1 fallback
+    from torch.cuda.amp import GradScaler as _GradScaler  # type: ignore
+    from torch.cuda.amp import autocast as _amp_autocast  # type: ignore
+
+    def autocast_context(device_type: str, *, enabled: bool = True):
+        return _amp_autocast(device_type=device_type, enabled=enabled)
 from torch.optim import AdamW
 import torch.nn.functional as F
 
@@ -167,7 +179,7 @@ def run_standard_epoch(
     for step, (context, target) in enumerate(iterable, start=1):
         context = context.to(device=device, dtype=torch.float32)
         target = target.to(device=device, dtype=torch.float32)
-        with autocast(device_type=device.type, enabled=amp_enabled):
+        with autocast_context(device.type, enabled=amp_enabled):
             distr = forward_pass(context, target)
             loss = compute_batch_loss(distr, context, target, args)
         loss = loss / args.grad_accum
@@ -332,7 +344,7 @@ def train() -> None:
     )
 
     amp_enabled = device.type == "cuda" and not args.cuda_graphs
-    scaler = GradScaler(enabled=amp_enabled)
+    scaler = _GradScaler(enabled=amp_enabled)
 
     ema = None
     if args.ema_decay and 0.0 < args.ema_decay < 1.0:

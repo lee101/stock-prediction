@@ -209,6 +209,7 @@ class StockDataProcessor:
         self.prediction_horizon = prediction_horizon
         self.features = features or ['open', 'high', 'low', 'close', 'volume']
         self.scalers: Dict[str, Any] = {}
+        self._expected_dim: Optional[int] = None
         self.feature_names: List[str] = []
         self.use_toto_forecasts = use_toto_forecasts
         self._toto_generator: Optional[TotoFeatureGenerator] = None
@@ -435,6 +436,7 @@ class StockDataProcessor:
         
         # Fit standard scaler on all features
         self.scalers['standard'].fit(data)
+        self._expected_dim = int(self.scalers['standard'].mean_.shape[0])
         
         return self
     
@@ -442,12 +444,17 @@ class StockDataProcessor:
         """Transform data using fitted scalers"""
         if 'standard' not in self.scalers:
             raise ValueError("Scalers not fitted. Call fit_scalers first.")
-        
-        return self.scalers['standard'].transform(data)
+
+        aligned = self._align_feature_matrix(data)
+        return self.scalers['standard'].transform(aligned)
     
     def inverse_transform(self, data):
         """Inverse transform data"""
-        return self.scalers['standard'].inverse_transform(data)
+        if 'standard' not in self.scalers:
+            raise ValueError("Scalers not fitted. Call fit_scalers first.")
+
+        aligned = self._align_feature_matrix(data)
+        return self.scalers['standard'].inverse_transform(aligned)
     
     def save_scalers(self, path):
         """Save scalers to disk"""
@@ -466,7 +473,31 @@ class StockDataProcessor:
         self.feature_names = data['feature_names']
         self.sequence_length = data['sequence_length']
         self.prediction_horizon = data['prediction_horizon']
+        standard = self.scalers.get('standard')
+        if standard is not None and hasattr(standard, "mean_"):
+            self._expected_dim = int(standard.mean_.shape[0])
         return self
+
+    def _align_feature_matrix(self, data: np.ndarray) -> np.ndarray:
+        """Ensure feature matrices match the scaler dimensionality."""
+        expected_dim = self._expected_dim
+        if expected_dim is None:
+            standard = self.scalers.get('standard')
+            if standard is None or not hasattr(standard, "mean_"):
+                return data
+            expected_dim = int(standard.mean_.shape[0])
+            self._expected_dim = expected_dim
+
+        current_dim = data.shape[1]
+        if current_dim == expected_dim:
+            return data
+        if current_dim > expected_dim:
+            return data[:, :expected_dim]
+        pad_width = expected_dim - current_dim
+        if pad_width <= 0:
+            return data
+        padding = np.zeros((data.shape[0], pad_width), dtype=data.dtype)
+        return np.concatenate([data, padding], axis=1)
 
 
 def load_local_stock_data(symbols: List[str], data_dir: str = "trainingdata") -> Dict[str, pd.DataFrame]:
