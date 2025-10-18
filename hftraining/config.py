@@ -38,6 +38,7 @@ class DataConfig:
     start_date: str = "2015-01-01"
     end_date: Optional[str] = None
     data_dir: str = "trainingdata"
+    validation_data_dir: Optional[str] = None
     
     # Preprocessing
     use_technical_indicators: bool = True

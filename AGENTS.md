@@ -1,4 +1,11 @@
 use uv pip NEVER just pip
+
+try not use uv run though just activate the python env then use normal python/pytest
+
+this is a monorepo for trading experiments 
+
+we have a few python envs .venv .venv312 etc we try to get them all working as ideally we would be on latest as we can able to use latest tech but sometimes we cant for some experiments
+
 dont use timeouts as we want to train long
 
 fully finish tasks eg if it means install uv pip packages, write the tests and run them then run the related benchmarks for real with long timeouts - dont give up
