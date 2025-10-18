@@ -83,6 +83,12 @@ PYTHONPATH=$(pwd) python scripts/alpaca_cli.py ramp_into_position ETHUSD
     --summary-path pufferlibtraining/models/toto_run_rl_lowcost_400/summary.json
   ```
 
+### TensorBoard Logs
+
+- Launch dashboards with the helper script so the open-file ceiling is raised automatically: `./scripts/run_tensorboard.sh --logdir logs`.
+- Override the default 65 536 descriptor target by exporting `TENSORBOARD_MAX_OPEN_FILES` before running the script if you need an even higher ceiling.
+- Older TensorBoard runs (everything prior to October 11 2025) have been archived under `/vfast/data/logs/`; keep the `logs/` directory focused on the latest week for quicker indexing.
+
 ### HFTraining RL + Kronos adapters
 
 - Quick CPU/GPU smoke test (validated on October 18 2025 at 08:51 NZDT) that runs 10 short episodes against `trainingdata/SPY.csv` and prints validation metrics:
@@ -386,6 +392,40 @@ uv run python -m tototraining.run_gpu_training \
   - Smoke testing without GPU: follow the inline stub recipe in `stockagentcombined/results.md` (uses synthetic Toto/Kronos adapters and runs entirely on CPU).
 - **Record outcomes**
   - Persist headline metrics and command lines in `stockagentcombined/results.md`. The file currently captures the 2025-10-17 stub run used while drafting this guide.
+- **2025-10-18 regression check (offline)**
+  - Tests: `PYTHONPATH=. uv run pytest tests/test_stockagentcombined.py tests/test_stockagentcombined_plans.py tests/test_stockagentcombined_entrytakeprofit.py tests/test_stockagentcombined_profit_shutdown.py -q`
+  - Offline sim (symbols AAPL/MSFT, lookback 120, last three trading days, `error_multiplier=0.25`, `base_quantity=10`, `min_quantity=1`) finished with ending equity $249 996.67 on $250 000 start, realized P&L −$0.27, fees $6.13 across four trades:
+    ```bash
+    PYTHONPATH=. uv run python - <<'PY'
+    from datetime import datetime, timezone
+    from stockagent.agentsimulator import fetch_latest_ohlc, ProbeTradeStrategy, ProfitShutdownStrategy
+    from stockagentcombined.simulation import CombinedPlanBuilder, SimulationConfig, run_simulation
+    from stockagentcombined.forecaster import CombinedForecastGenerator
+
+    symbols = ["AAPL", "MSFT"]
+    config = SimulationConfig(
+        symbols=symbols,
+        lookback_days=120,
+        simulation_days=3,
+        min_history=10,
+        min_signal=0.0,
+        error_multiplier=0.25,
+        base_quantity=10.0,
+        min_quantity=1.0,
+    )
+    bundle = fetch_latest_ohlc(symbols=symbols, lookback_days=config.lookback_days, as_of=datetime.now(timezone.utc), allow_remote_download=False)
+    trading_days = list(bundle.trading_days())[-config.simulation_days:]
+    builder = CombinedPlanBuilder(generator=CombinedForecastGenerator(), config=config)
+    result = run_simulation(
+        builder=builder,
+        market_frames=bundle.bars,
+        trading_days=trading_days,
+        starting_cash=250_000.0,
+        strategies=[ProbeTradeStrategy(), ProfitShutdownStrategy()],
+    )
+    print(result.to_dict())
+    PY
+    ```
 
 ### `stockagent2` (Black–Litterman allocator)
 
@@ -419,3 +459,71 @@ uv run python -m tototraining.run_gpu_training \
   - Both agents share `stockagent.agentsimulator.AgentSimulator`. You can pass the trading plans emitted by `PipelinePlanBuilder` straight into it to benchmark execution paths side-by-side.
 - **Document results**
   - Append the latest allocator runs to `stockagent2/results.md`. The current entry shows the CPU-only stub run (net-neutral configuration) executed on 2025-10-17; swap the stub adapters with real models when running in production.
+- **2025-10-18 regression check (offline)**
+  - Tests: `PYTHONPATH=. uv run pytest tests/test_stockagent2 -q`
+  - Pipeline sim (AAPL/MSFT, lookback 120, three trading days) with relaxed caps (`long_cap=short_cap=0.8`, `min_weight=-0.8`, `max_weight=0.8`) and lower `risk_aversion=1.5` generated four trades, ending equity $253 026.98, realized P&L $1 520.36, fees $279.95, and residual long exposure (~1.52 k AAPL / 0.52 k MSFT):
+    ```bash
+    PYTHONPATH=. uv run python - <<'PY'
+    from stockagent2.agentsimulator.runner import run_pipeline_simulation, RunnerConfig
+    from stockagent2.config import OptimizationConfig, PipelineConfig
+    import json
+
+    simulator = run_pipeline_simulation(
+        runner_config=RunnerConfig(
+            symbols=("AAPL", "MSFT"),
+            lookback_days=120,
+            simulation_days=3,
+            starting_cash=250_000.0,
+            allow_remote_data=False,
+        ),
+        optimisation_config=OptimizationConfig(
+            net_exposure_target=1.0,
+            gross_exposure_limit=1.6,
+            long_cap=0.8,
+            short_cap=0.8,
+            min_weight=-0.8,
+            max_weight=0.8,
+            transaction_cost_bps=5.0,
+            turnover_penalty_bps=1.5,
+        ),
+        pipeline_config=PipelineConfig(
+            tau=0.05,
+            shrinkage=0.1,
+            annualisation_periods=120,
+            chronos_weight=0.7,
+            timesfm_weight=0.3,
+            risk_aversion=1.5,
+            market_prior_weight=0.35,
+        ),
+    )
+    print(json.dumps(simulator.equity_curve[-3:], indent=2))
+    PY
+    ```
+
+### Market simulator smoke (2025-10-18)
+
+- Prefer the mock analytics fast path for local validation: set `MARKETSIM_USE_MOCK_ANALYTICS=1 FAST_TESTING=1`.
+- Sample run (AAPL/MSFT, one simulated day, step size 4) returned final equity $100 007.63 on $100 000 start, one MSFT probe short trade, fees $0.10:
+  ```bash
+  MARKETSIM_USE_MOCK_ANALYTICS=1 FAST_TESTING=1 PYTHONPATH=. uv run python - <<'PY'
+  from pathlib import Path
+  from marketsimulator.runner import simulate_strategy
+  import json
+
+  report = simulate_strategy(
+      symbols=["AAPL", "MSFT"],
+      days=1,
+      step_size=4,
+      initial_cash=100_000.0,
+      top_k=2,
+      output_dir=Path("testresults/codex_marketsim_mockjson"),
+  )
+  print(json.dumps({
+      "initial_cash": report.initial_cash,
+      "final_equity": report.final_equity,
+      "total_return": report.total_return,
+      "fees_paid": report.fees_paid,
+      "trades_executed": report.trades_executed,
+  }, indent=2))
+  PY
+  ```

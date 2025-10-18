@@ -151,7 +151,15 @@ def _create_masks(series: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 def _save_model(model: Toto, output_dir: Path, checkpoint_name: str) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     save_path = output_dir / checkpoint_name
-    model.save_pretrained(save_path)
+    try:
+        model.save_pretrained(save_path)
+    except NotImplementedError:
+        fallback = save_path.with_suffix(".pth")
+        torch.save(model.state_dict(), fallback)
+        (output_dir / f"{fallback.name}.meta").write_text(
+            "Saved state_dict fallback because save_pretrained is not implemented.\n",
+            encoding="utf-8",
+        )
 
 
 def _train_iterable(loader, device, args):
