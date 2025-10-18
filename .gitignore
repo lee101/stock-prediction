@@ -141,3 +141,4 @@ stock_trading_suite.egg-info
 pynvml
 kronostraining/artifacts/checkpoints
 kronostraining/artifacts
+metric_history.json
