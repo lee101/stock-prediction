@@ -23,6 +23,7 @@ import pandas as pd
 import torch
 import torch.utils.data
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.data._utils.collate import collate, default_collate, default_collate_fn_map
 from sklearn.preprocessing import RobustScaler, StandardScaler, MinMaxScaler
 from hftraining.validation import purged_kfold_indices
 
@@ -59,7 +60,7 @@ except ImportError:
                 timestamp_seconds=self.timestamp_seconds.to(device),
                 time_interval_seconds=self.time_interval_seconds.to(device),
             )
-    
+
     def replace_extreme_values(t: torch.Tensor, replacement: float = 0.0) -> torch.Tensor:
         """Replace extreme values with replacement value"""
         is_extreme = torch.logical_or(
@@ -67,6 +68,116 @@ except ImportError:
             t.abs() >= 1e10
         )
         return torch.where(is_extreme, torch.tensor(replacement, dtype=t.dtype, device=t.device), t)
+
+
+class TotoBatchSample:
+    """
+    Container that bundles a MaskedTimeseries together with training targets.
+
+    The object behaves like MaskedTimeseries for attribute access so existing code
+    and tests that expect ``batch.series`` or ``batch.padding_mask`` continue to work.
+
+    It also supports tuple-like unpacking where ``sample[0]`` / ``sample.timeseries`` returns the
+    MaskedTimeseries and ``sample[1]`` yields a metadata dictionary containing the target tensors.
+    """
+
+    __slots__ = ("timeseries", "target_price", "prev_close", "target_pct")
+
+    def __init__(
+        self,
+        *,
+        timeseries: MaskedTimeseries,
+        target_price: torch.Tensor,
+        prev_close: torch.Tensor,
+        target_pct: torch.Tensor,
+    ):
+        self.timeseries = timeseries
+        self.target_price = target_price
+        self.prev_close = prev_close
+        self.target_pct = target_pct
+
+    def metadata(self) -> Dict[str, torch.Tensor]:
+        """Return per-sample metadata dictionary."""
+        return {
+            "target_price": self.target_price,
+            "prev_close": self.prev_close,
+            "target_pct": self.target_pct,
+        }
+
+    def to(self, device: torch.device) -> "TotoBatchSample":
+        """Move contained tensors to the requested device."""
+        moved_timeseries = (
+            self.timeseries.to(device) if hasattr(self.timeseries, "to") else self.timeseries
+        )
+        return TotoBatchSample(
+            timeseries=moved_timeseries,
+            target_price=self.target_price.to(device),
+            prev_close=self.prev_close.to(device),
+            target_pct=self.target_pct.to(device),
+        )
+
+    # Tuple-style helpers -------------------------------------------------
+    def __iter__(self):
+        yield self.timeseries
+        yield self.metadata()
+
+    def __len__(self) -> int:
+        return 2
+
+    def __getitem__(self, index: int):
+        if index == 0:
+            return self.timeseries
+        if index == 1:
+            return self.metadata()
+        raise IndexError("TotoBatchSample supports only indices 0 and 1")
+
+    # Attribute delegation ------------------------------------------------
+    def __getattr__(self, name: str):
+        """Delegate unknown attribute access to the underlying MaskedTimeseries."""
+        if name in self.__slots__:
+            raise AttributeError(name)
+        timeseries = object.__getattribute__(self, "timeseries")
+        try:
+            return getattr(timeseries, name)
+        except AttributeError as exc:
+            raise AttributeError(name) from exc
+
+    def __repr__(self) -> str:
+        return (
+            "TotoBatchSample("
+            f"timeseries={self.timeseries!r}, "
+            f"target_price=Tensor(shape={tuple(self.target_price.shape)}), "
+            f"prev_close=Tensor(shape={tuple(self.prev_close.shape)}), "
+            f"target_pct=Tensor(shape={tuple(self.target_pct.shape)})"
+            ")"
+        )
+
+
+def _collate_toto_batch(
+    batch: List["TotoBatchSample"],
+    collate_fn_map=None,
+) -> TotoBatchSample:
+    """Custom collate function that preserves TotoBatchSample semantics."""
+    if collate_fn_map is None:
+        collate_fn_map = default_collate_fn_map
+
+    timeseries_batch = collate(
+        [sample.timeseries for sample in batch],
+        collate_fn_map=collate_fn_map,
+    )
+    metadata_batch = collate(
+        [sample.metadata() for sample in batch],
+        collate_fn_map=collate_fn_map,
+    )
+    return TotoBatchSample(
+        timeseries=timeseries_batch,
+        target_price=metadata_batch["target_price"],
+        prev_close=metadata_batch["prev_close"],
+        target_pct=metadata_batch["target_pct"],
+    )
+
+
+default_collate_fn_map[TotoBatchSample] = _collate_toto_batch
 
 
 @dataclass
@@ -538,13 +649,12 @@ class OHLCDataset(Dataset):
             timestamp_seconds=timestamps,
             time_interval_seconds=time_intervals
         )
-        extra = {
-            'target_price': torch.from_numpy(seq['target_price']).float(),
-            'prev_close': torch.tensor(seq['prev_close'], dtype=torch.float32),
-            'target_pct': torch.from_numpy(seq['target_pct']).float(),
-        }
-        
-        return masked, extra
+        return TotoBatchSample(
+            timeseries=masked,
+            target_price=torch.from_numpy(seq["target_price"]).float(),
+            prev_close=torch.tensor(seq["prev_close"], dtype=torch.float32),
+            target_pct=torch.from_numpy(seq["target_pct"]).float(),
+        )
     
     def get_targets(self) -> torch.Tensor:
         """Get all targets for this dataset"""

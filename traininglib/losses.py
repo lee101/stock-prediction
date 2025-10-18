@@ -32,8 +32,15 @@ def heteroscedastic_gaussian_nll(
     min_sigma: float = 1e-5,
 ) -> torch.Tensor:
     """Negative log-likelihood for Gaussian with learned variance."""
-    sigma = torch.exp(log_sigma).clamp_min(min_sigma)
-    nll = 0.5 * ((target - mean) ** 2 / (sigma**2) + 2 * log_sigma)
+    if min_sigma <= 0:
+        raise ValueError("min_sigma must be positive.")
+
+    sigma_unclamped = torch.exp(log_sigma)
+    sigma_clamped = sigma_unclamped.clamp_min(min_sigma)
+    sigma = sigma_clamped.detach() + sigma_unclamped - sigma_unclamped.detach()
+    safe_log_sigma = torch.log(sigma_clamped)
+    safe_log_sigma = safe_log_sigma.detach() + log_sigma - log_sigma.detach()
+    nll = 0.5 * ((target - mean) ** 2 / (sigma**2) + 2 * safe_log_sigma)
     return _reduce(nll, reduction)
 
 

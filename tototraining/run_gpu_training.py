@@ -18,6 +18,14 @@ import torch
 try:
     from .toto_trainer import TrainerConfig, DataLoaderConfig, TotoTrainer
 except ImportError:  # pragma: no cover - fallback for script execution from repo root
+    import sys
+
+    package_dir = Path(__file__).resolve().parent
+    parent_dir = package_dir.parent
+    for path in (package_dir, parent_dir):
+        str_path = str(path)
+        if str_path not in sys.path:
+            sys.path.insert(0, str_path)
     from toto_trainer import TrainerConfig, DataLoaderConfig, TotoTrainer
 
 

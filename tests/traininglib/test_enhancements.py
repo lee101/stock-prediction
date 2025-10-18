@@ -1,5 +1,6 @@
 from collections import namedtuple
 
+import pytest
 import torch
 
 from traininglib.ema import EMA
@@ -81,9 +82,34 @@ def test_losses_behave_expected():
     log_sigma = torch.log(torch.tensor([1.0, 2.0]))
     target_val = torch.tensor([0.0, 0.0])
     hetero = heteroscedastic_gaussian_nll(mean, log_sigma, target_val)
-    manual = 0.5 * ((target_val - mean) ** 2 / (torch.exp(log_sigma) ** 2) + 2 * log_sigma)
+    sigma = torch.exp(log_sigma)
+    manual = 0.5 * ((target_val - mean) ** 2 / (sigma**2) + 2 * torch.log(sigma))
     assert torch.isclose(hetero, manual.mean())
 
     quant = pinball_loss(torch.tensor([1.0, 3.0]), torch.tensor([2.0, 2.0]), 0.7)
     manual_pinball = (0.7 * (2.0 - 1.0) + (0.7 - 1) * (2.0 - 3.0)) / 2
     assert torch.isclose(quant, torch.tensor(manual_pinball))
+
+
+def test_heteroscedastic_nll_clamp_matches_floor():
+    mean = torch.tensor([0.0])
+    target = torch.tensor([0.0])
+    min_sigma = 1e-4
+    # Force the clamp to engage by providing a very small log_sigma.
+    log_sigma = torch.tensor([-20.0], requires_grad=True)
+    loss = heteroscedastic_gaussian_nll(mean, log_sigma, target, reduction="none", min_sigma=min_sigma)
+    expected_sigma = torch.tensor([min_sigma], dtype=mean.dtype)
+    expected = 0.5 * ((target - mean) ** 2 / (expected_sigma**2) + 2 * torch.log(expected_sigma))
+    assert torch.allclose(loss, expected)
+    loss.sum().backward()
+    assert log_sigma.grad is not None
+    assert torch.all(torch.isfinite(log_sigma.grad))
+    assert (log_sigma.grad > 0).all()
+
+
+def test_heteroscedastic_nll_requires_positive_floor():
+    mean = torch.tensor([0.0])
+    target = torch.tensor([0.0])
+    log_sigma = torch.tensor([0.1])
+    with pytest.raises(ValueError):
+        heteroscedastic_gaussian_nll(mean, log_sigma, target, min_sigma=0.0)

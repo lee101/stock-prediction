@@ -1,10 +1,10 @@
 """
 Feature construction pipeline for the GymRL experiment.
 
-This module converts historical OHLCV data plus Toto/Chronos forecasts into a
+This module converts historical OHLCV data plus Toto/Kronos forecasts into a
 feature cube suitable for the ``PortfolioEnv``. It optionally persists
 intermediate artefacts for inspection and can fall back to bootstrap sampling
-when neither Toto nor Chronos are available in the runtime.
+when neither Toto nor Kronos are available in the runtime.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ class FeatureBuilder:
 
     The builder orchestrates three steps:
         1. Load OHLCV data per symbol (optionally resampled / filtered).
-        2. Produce probabilistic forecasts using Toto, Chronos, or bootstrap.
+        2. Produce probabilistic forecasts using Toto, Kronos, Chronos, or bootstrap.
         3. Aggregate forecast statistics and realized market features into a cube.
     """
 
@@ -199,7 +199,13 @@ class FeatureBuilder:
             future_price = close[idx + horizon]
             realized_return = future_price / current_price - 1.0
 
-            samples = self._generate_samples(context_prices)
+            samples = self._generate_samples(
+                context_prices,
+                symbol=symbol,
+                full_history=df,
+                current_index=idx,
+                price_column=price_column,
+            )
             forecast_stats = self._compute_forecast_statistics(
                 samples=samples,
                 current_price=current_price,
@@ -291,6 +297,16 @@ class FeatureBuilder:
             forecast_uncertainty=forecast_uncertainty,
         )
 
+    @property
+    def backend_name(self) -> Optional[str]:
+        """Return the identifier of the active forecasting backend."""
+        return self._backend_name
+
+    @property
+    def backend_errors(self) -> List[str]:
+        """Return backend initialisation errors encountered during setup."""
+        return list(self._backend_errors)
+
     # Forecasting backends ----------------------------------------------------------
     def _initialise_backend(self) -> None:
         backend_name = self.config.forecast_backend.lower()
@@ -304,6 +320,14 @@ class FeatureBuilder:
                 return
             tried_backends.append("toto")
 
+        if backend_name in ("kronos", "auto"):
+            backend = self._make_kronos_backend()
+            if backend:
+                self._backend_call = backend
+                self._backend_name = "kronos"
+                return
+            tried_backends.append("kronos")
+
         if backend_name in ("chronos", "auto"):
             backend = self._make_chronos_backend()
             if backend:
@@ -315,11 +339,21 @@ class FeatureBuilder:
         tried_backends.append("bootstrap")
         self._backend_call = self._make_bootstrap_backend()
         self._backend_name = "bootstrap"
-        logger.warning(
+        message = (
             "Falling back to bootstrap forecast backend (tried: %s). "
-            "Install Toto or Chronos to enable model-based forecasting.",
-            ", ".join(tried_backends),
+            "Install Toto or Kronos to enable model-based forecasting."
         )
+        if self._backend_errors:
+            logger.warning(
+                message + " Backend errors: %s",
+                ", ".join(tried_backends),
+                "; ".join(self._backend_errors),
+            )
+        else:
+            logger.warning(
+                message,
+                ", ".join(tried_backends),
+            )
 
     def _make_toto_backend(self) -> Optional[Callable[[np.ndarray, int, int], np.ndarray]]:
         try:
@@ -340,14 +374,21 @@ class FeatureBuilder:
             logger.warning("Could not initialise Toto backend: %s", exc)
             return None
 
-        def _backend(context: np.ndarray, prediction_length: int, num_samples: int) -> np.ndarray:
+        def _backend(
+            context: np.ndarray,
+            prediction_length: int,
+            num_samples: int,
+            **_: object,
+        ) -> np.ndarray:
             forecasts = pipeline.predict(
                 context=context,
                 prediction_length=prediction_length,
                 num_samples=num_samples,
             )
             first = forecasts[0]
-            if torch.is_tensor(first):
+            if hasattr(first, "numpy"):
+                samples = np.asarray(first.numpy())
+            elif torch.is_tensor(first):
                 # Ensure CPU before converting to NumPy to avoid CUDA -> NumPy errors
                 samples = first.detach().cpu().numpy()
             else:
@@ -363,6 +404,101 @@ class FeatureBuilder:
                 # Toto-style: (prediction_length, num_samples)
                 return np.swapaxes(samples, 0, 1)
             raise ValueError(f"Unexpected Toto sample shape: {samples.shape}")
+
+        return _backend
+
+    def _make_kronos_backend(self) -> Optional[Callable[[np.ndarray, int, int], np.ndarray]]:
+        try:
+            from src.models.kronos_wrapper import KronosForecastingWrapper
+        except Exception as exc:
+            self._backend_errors.append(f"Kronos backend unavailable: {exc}")
+            logger.debug("Failed to import KronosForecastingWrapper: %s", exc)
+            return None
+
+        device = self.backend_kwargs.get("kronos_device")
+        if device is None:
+            device = self.backend_kwargs.get("device_map")
+        if device is None:
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        device_str = str(device)
+
+        wrapper_kwargs = {
+            "model_name": self.backend_kwargs.get("kronos_model_name", "NeoQuasar/Kronos-base"),
+            "tokenizer_name": self.backend_kwargs.get("kronos_tokenizer_name", "NeoQuasar/Kronos-Tokenizer-base"),
+            "device": device_str,
+            "max_context": int(self.backend_kwargs.get("kronos_max_context", 512)),
+            "clip": float(self.backend_kwargs.get("kronos_clip", 5.0)),
+            "temperature": float(self.backend_kwargs.get("kronos_temperature", 0.75)),
+            "top_p": float(self.backend_kwargs.get("kronos_top_p", 0.9)),
+            "top_k": int(self.backend_kwargs.get("kronos_top_k", 0)),
+            "sample_count": int(self.backend_kwargs.get("kronos_sample_count", 8)),
+            "oom_retries": int(self.backend_kwargs.get("kronos_oom_retries", 2)),
+        }
+
+        try:
+            wrapper = KronosForecastingWrapper(**wrapper_kwargs)
+        except Exception as exc:
+            self._backend_errors.append(f"Kronos initialisation error: {exc}")
+            logger.warning("Could not initialise Kronos backend: %s", exc)
+            return None
+
+        jitter_std = float(self.backend_kwargs.get("kronos_jitter_std", 0.0))
+
+        def _backend(
+            context: np.ndarray,
+            prediction_length: int,
+            num_samples: int,
+            **kwargs: object,
+        ) -> np.ndarray:
+            full_history = kwargs.get("full_history")
+            current_index = kwargs.get("current_index")
+            price_column = kwargs.get("price_column", "close")
+
+            if not isinstance(full_history, pd.DataFrame) or not isinstance(current_index, int):
+                raise ValueError("Kronos backend requires full_history dataframe and current_index integer.")
+
+            context_len = len(context)
+            context_start = max(0, current_index - context_len)
+            context_df = full_history.iloc[context_start:current_index]
+            target_df = full_history.iloc[current_index : current_index + prediction_length]
+
+            if len(context_df) < context_len:
+                raise ValueError("Insufficient context history supplied for Kronos backend.")
+            if len(target_df) < prediction_length:
+                raise ValueError("Insufficient future rows available for Kronos forecast horizon.")
+
+            combined = pd.concat([context_df, target_df])
+            data = combined.reset_index().rename(columns={"index": "timestamp"})
+
+            try:
+                results = wrapper.predict_series(
+                    data=data,
+                    timestamp_col="timestamp",
+                    columns=[price_column],
+                    pred_len=prediction_length,
+                    lookback=context_len,
+                )
+            except Exception as exc:  # pragma: no cover - surfaced when Kronos fails after init
+                raise RuntimeError(f"Kronos forecast failed: {exc}") from exc
+
+            result = results.get(price_column)
+            if result is None:
+                raise RuntimeError(f"Kronos did not return forecasts for column '{price_column}'.")
+
+            base_path = np.asarray(result.absolute, dtype=np.float32).reshape(1, -1)
+            if base_path.shape[1] != prediction_length:
+                raise RuntimeError(
+                    f"Kronos returned unexpected horizon {base_path.shape[1]} (expected {prediction_length})."
+                )
+
+            repeats = max(1, int(np.ceil(num_samples / base_path.shape[0])))
+            tiled = np.tile(base_path, (repeats, 1))[:num_samples]
+
+            if jitter_std > 0.0:
+                noise = np.random.normal(loc=0.0, scale=jitter_std, size=tiled.shape).astype(np.float32)
+                tiled = np.clip(tiled + noise, a_min=1e-6, a_max=None)
+
+            return tiled
 
         return _backend
 
@@ -387,7 +523,12 @@ class FeatureBuilder:
             logger.warning("Could not initialise Chronos backend: %s", exc)
             return None
 
-        def _backend(context: np.ndarray, prediction_length: int, num_samples: int) -> np.ndarray:
+        def _backend(
+            context: np.ndarray,
+            prediction_length: int,
+            num_samples: int,
+            **_: object,
+        ) -> np.ndarray:
             context_tensor = torch.as_tensor(context, dtype=torch.float32)
             forecast = pipeline.predict(context_tensor, prediction_length=prediction_length)
             samples = forecast.cpu().numpy()
@@ -419,7 +560,12 @@ class FeatureBuilder:
     def _make_bootstrap_backend(self) -> Callable[[np.ndarray, int, int], np.ndarray]:
         block_size = self.config.bootstrap_block_size
 
-        def _backend(context: np.ndarray, prediction_length: int, num_samples: int) -> np.ndarray:
+        def _backend(
+            context: np.ndarray,
+            prediction_length: int,
+            num_samples: int,
+            **_: object,
+        ) -> np.ndarray:
             returns = np.diff(np.log(context + 1e-8))
             if len(returns) < block_size:
                 block = np.tile(returns, int(math.ceil(block_size / len(returns))))
@@ -439,12 +585,28 @@ class FeatureBuilder:
 
         return _backend
 
-    def _generate_samples(self, context: np.ndarray) -> np.ndarray:
+    def _generate_samples(
+        self,
+        context: np.ndarray,
+        *,
+        symbol: Optional[str] = None,
+        full_history: Optional[pd.DataFrame] = None,
+        current_index: Optional[int] = None,
+        price_column: str = "close",
+    ) -> np.ndarray:
         if self._backend_call is None:
             raise RuntimeError("Forecast backend not initialised.")
         prediction_length = self.config.prediction_length
         num_samples = self.config.num_samples
-        return self._backend_call(context, prediction_length, num_samples)
+        return self._backend_call(
+            context,
+            prediction_length,
+            num_samples,
+            symbol=symbol,
+            full_history=full_history,
+            current_index=current_index,
+            price_column=price_column,
+        )
 
     # Statistics --------------------------------------------------------------------
     def _compute_forecast_statistics(
