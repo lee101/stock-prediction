@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from differentiable_market import (
+    DataConfig,
+    DifferentiableMarketTrainer,
+    EnvironmentConfig,
+    EvaluationConfig,
+    TrainingConfig,
+)
+from differentiable_market.data import load_aligned_ohlc
+from differentiable_market.marketsimulator import DifferentiableMarketBacktester
+
+
+def _write_synthetic_ohlc(root: Path, symbols: tuple[str, ...] = ("AAA", "BBB", "CCC"), steps: int = 64) -> None:
+    rng = np.random.default_rng(1234)
+    dates = pd.date_range("2022-01-01", periods=steps, freq="D")
+    for symbol in symbols:
+        base = 100 + rng.standard_normal(steps).cumsum()
+        open_prices = base
+        close = base + rng.normal(0, 0.5, steps)
+        high = np.maximum(open_prices, close) + rng.uniform(0.1, 0.5, steps)
+        low = np.minimum(open_prices, close) - rng.uniform(0.1, 0.5, steps)
+        volume = rng.uniform(1e5, 2e5, steps)
+        df = pd.DataFrame(
+            {
+                "timestamp": dates,
+                "open": open_prices,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+            }
+        )
+        df.to_csv(root / f"{symbol}.csv", index=False)
+
+
+def test_load_aligned_ohlc(tmp_path: Path) -> None:
+    _write_synthetic_ohlc(tmp_path)
+    cfg = DataConfig(root=tmp_path, glob="*.csv")
+    ohlc, symbols, index = load_aligned_ohlc(cfg)
+    assert ohlc.shape[-1] == 4
+    assert len(symbols) == 3
+    assert ohlc.shape[0] == len(index)
+
+
+def test_trainer_fit_creates_checkpoints(tmp_path: Path) -> None:
+    _write_synthetic_ohlc(tmp_path, steps=80)
+    data_cfg = DataConfig(root=tmp_path, glob="*.csv")
+    env_cfg = EnvironmentConfig(transaction_cost=1e-4, risk_aversion=0.0)
+    train_cfg = TrainingConfig(
+        lookback=16,
+        rollout_groups=2,
+        batch_windows=4,
+        microbatch_windows=2,
+        epochs=3,
+        eval_interval=1,
+        save_dir=tmp_path / "runs",
+        device="cpu",
+        dtype="float32",
+        use_muon=False,
+        use_compile=False,
+        bf16_autocast=False,
+    )
+    eval_cfg = EvaluationConfig(report_dir=tmp_path / "evals", store_trades=False)
+
+    trainer = DifferentiableMarketTrainer(data_cfg, env_cfg, train_cfg, eval_cfg)
+    trainer.fit()
+
+    run_dirs = sorted((tmp_path / "runs").glob("*"))
+    assert run_dirs, "Expected at least one training run directory"
+    ckpt_dir = run_dirs[0] / "checkpoints"
+    assert (ckpt_dir / "latest.pt").exists()
+    assert (ckpt_dir / "best.pt").exists()
+    metrics_path = run_dirs[0] / "metrics.jsonl"
+    with metrics_path.open() as handle:
+        records = [json.loads(line) for line in handle]
+    assert any(rec["phase"] == "eval" for rec in records)
+    train_records = [rec for rec in records if rec["phase"] == "train"]
+    assert train_records, "Expected at least one train metric row"
+    assert train_records[0]["microbatch"] == 2
+    assert "peak_mem_gb" in train_records[0]
+
+
+def test_backtester_generates_reports(tmp_path: Path) -> None:
+    _write_synthetic_ohlc(tmp_path, steps=80)
+    data_cfg = DataConfig(root=tmp_path, glob="*.csv")
+    env_cfg = EnvironmentConfig(transaction_cost=1e-4, risk_aversion=0.0)
+    train_cfg = TrainingConfig(
+        lookback=16,
+        rollout_groups=2,
+        batch_windows=4,
+        microbatch_windows=2,
+        epochs=2,
+        eval_interval=1,
+        save_dir=tmp_path / "runs",
+        device="cpu",
+        dtype="float32",
+        use_muon=False,
+        use_compile=False,
+        bf16_autocast=False,
+    )
+    eval_cfg = EvaluationConfig(report_dir=tmp_path / "evals", store_trades=False, window_length=32, stride=16)
+
+    trainer = DifferentiableMarketTrainer(data_cfg, env_cfg, train_cfg, eval_cfg)
+    trainer.fit()
+    run_dir = sorted((tmp_path / "runs").glob("*"))[0]
+    best_ckpt = run_dir / "checkpoints" / "best.pt"
+    backtester = DifferentiableMarketBacktester(data_cfg, env_cfg, eval_cfg)
+    metrics = backtester.run(best_ckpt)
+    report = eval_cfg.report_dir / "report.json"
+    windows = eval_cfg.report_dir / "windows.json"
+    assert report.exists()
+    assert windows.exists()
+    assert metrics["windows"] >= 1
