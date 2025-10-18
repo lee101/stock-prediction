@@ -122,6 +122,24 @@ class GymRLTrainingTests(unittest.TestCase):
             self.assertGreater(cube.features.shape[0], 0)
             self.assertEqual(kronos_mock.call_count, 1)
 
+    def test_portfolio_env_fallback_imports_trading_fees(self) -> None:
+        import importlib
+        import sys
+
+        import gymrl
+        from stockagent import constants as stock_constants
+
+        sys.modules.pop("gymrl.portfolio_env", None)
+        with mock.patch.dict(sys.modules, {"loss_utils": None}):
+            module = importlib.import_module("gymrl.portfolio_env")
+            self.assertEqual(module.TRADING_FEE, stock_constants.TRADING_FEE)
+            self.assertEqual(module.CRYPTO_TRADING_FEE, stock_constants.CRYPTO_TRADING_FEE)
+
+        sys.modules.pop("gymrl.portfolio_env", None)
+        restored = importlib.import_module("gymrl.portfolio_env")
+        importlib.reload(gymrl)
+        self.assertEqual(getattr(restored, "TRADING_FEE"), stock_constants.TRADING_FEE)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -23,7 +23,16 @@ except ImportError as exc:  # pragma: no cover - Gymnasium is an explicit depend
         "Install it via `uv pip install gymnasium`."
     ) from exc
 
-from loss_utils import CRYPTO_TRADING_FEE, TRADING_FEE
+try:
+    from loss_utils import CRYPTO_TRADING_FEE, TRADING_FEE
+except ImportError:
+    try:
+        from stockagent.constants import CRYPTO_TRADING_FEE, TRADING_FEE
+    except ImportError as exc:
+        raise ImportError(
+            "Trading fee constants not available. Ensure either loss_utils.py or "
+            "stockagent.constants is importable before using gymrl.PortfolioEnv."
+        ) from exc
 from src.fixtures import crypto_symbols
 from .config import PortfolioEnvConfig
 
