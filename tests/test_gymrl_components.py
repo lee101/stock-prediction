@@ -113,3 +113,32 @@ def test_feature_cache_round_trip(tmp_path):
     assert loaded_cube.realized_returns.shape == cube.realized_returns.shape
     assert loaded_cube.feature_names == cube.feature_names
     assert meta.get("note") == "unit_test"
+
+
+def test_portfolio_env_info_crypto_breakdown():
+    T, N, F = 5, 2, 3
+    features = np.zeros((T, N, F), dtype=np.float32)
+    realized_returns = np.zeros((T, N), dtype=np.float32)
+    realized_returns[:, 0] = 0.01
+    realized_returns[:, 1] = 0.05
+
+    env = PortfolioEnv(
+        features,
+        realized_returns,
+        config=PortfolioEnvConfig(include_cash=False),
+        symbols=["AAPL", "BTCUSD"],
+    )
+
+    obs, _ = env.reset()
+    assert obs.shape[0] == env.observation_space.shape[0]
+    action = np.zeros(env.action_space.shape)
+    _, _, terminated, _, info = env.step(action)
+    assert not terminated
+    assert "step_return_crypto" in info
+    assert "step_return_non_crypto" in info
+    assert "net_return_crypto" in info
+    assert "weight_crypto" in info
+    assert info["weight_crypto"] == pytest.approx(0.5, rel=1e-3)
+    assert info["weight_non_crypto"] == pytest.approx(0.5, rel=1e-3)
+    assert info["step_return_crypto"] >= 0.0
+    assert info["step_return_non_crypto"] >= 0.0

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Dict, Iterable, Optional, Sequence
 
 import torch
 
@@ -29,8 +30,11 @@ except ImportError:  # pragma: no cover - fallback for script execution from rep
     from toto_trainer import TrainerConfig, DataLoaderConfig, TotoTrainer
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__ or "Toto training launcher.")
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=__doc__ or "Toto training launcher.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument(
         "--compile",
         dest="compile",
@@ -44,27 +48,65 @@ def parse_args() -> argparse.Namespace:
         help="Disable torch.compile even if CUDA is available.",
     )
     parser.set_defaults(compile=None)
-    parser.add_argument("--optim", default=None, help="Optimizer name to use (e.g. muon_mix, adamw).")
-    parser.add_argument("--device_bs", type=int, default=None, help="Per-device batch size.")
-    parser.add_argument("--grad_accum", type=int, default=None, help="Gradient accumulation steps.")
-    parser.add_argument("--lr", type=float, default=None, help="Learning rate.")
-    parser.add_argument("--warmup_steps", type=int, default=None, help="Number of warmup steps.")
-    parser.add_argument("--max_epochs", type=int, default=None, help="Maximum training epochs.")
+    parser.add_argument(
+        "--optim",
+        "--optimizer",
+        dest="optimizer",
+        type=str,
+        help="Optimizer name to use (e.g. muon_mix, adamw).",
+    )
+    parser.add_argument(
+        "--device-bs",
+        "--device_bs",
+        dest="device_batch_size",
+        type=int,
+        help="Per-device batch size.",
+    )
+    parser.add_argument(
+        "--grad-accum",
+        "--grad_accum",
+        dest="accumulation_steps",
+        type=int,
+        help="Gradient accumulation steps.",
+    )
+    parser.add_argument(
+        "--lr",
+        "--learning-rate",
+        dest="learning_rate",
+        type=float,
+        help="Learning rate.",
+    )
+    parser.add_argument(
+        "--warmup-steps",
+        "--warmup_steps",
+        dest="warmup_steps",
+        type=int,
+        help="Number of warmup steps.",
+    )
+    parser.add_argument(
+        "--max-epochs",
+        "--max_epochs",
+        dest="max_epochs",
+        type=int,
+        help="Maximum training epochs.",
+    )
     parser.add_argument(
         "--report",
+        "--report-path",
+        dest="report_path",
         type=Path,
-        default=None,
         help="Optional path to write a Markdown training summary report.",
     )
     parser.add_argument(
         "--run-name",
-        default=None,
+        dest="run_name",
+        type=str,
         help="Override experiment name used in logs and checkpoints.",
     )
     parser.add_argument(
         "--save-dir",
+        dest="save_dir",
         type=Path,
-        default=None,
         help="Optional override for checkpoint directory.",
     )
     parser.add_argument(
@@ -74,14 +116,47 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--resume-from",
+        dest="resume_from",
         type=Path,
-        default=None,
         help="Resume from a specific checkpoint path.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--metrics-frequency",
+        "--metrics_frequency",
+        dest="metrics_log_frequency",
+        type=int,
+        help="Log train metrics every N batches.",
+    )
+    parser.add_argument(
+        "--no-freeze-backbone",
+        dest="freeze_backbone",
+        action="store_false",
+        help="Unfreeze the Toto backbone for finetuning.",
+    )
+    parser.add_argument(
+        "--freeze-backbone",
+        dest="freeze_backbone",
+        action="store_true",
+        help="Freeze the Toto backbone during finetuning.",
+    )
+    parser.add_argument(
+        "--seed",
+        "--random-seed",
+        dest="random_seed",
+        type=int,
+        help="Override the random seed.",
+    )
+    parser.add_argument(
+        "--summary-only",
+        dest="summary_only",
+        action="store_true",
+        help="Print the effective configuration and exit without training.",
+    )
+    parser.set_defaults(freeze_backbone=None)
+    return parser
 
 
-def _format_metric_table(metrics: dict[str, float]) -> Sequence[str]:
+def _format_metric_table(metrics: Dict[str, float]) -> Sequence[str]:
     if not metrics:
         return ["(no metrics recorded)"]
     rows = ["| metric | value |", "| --- | --- |"]
@@ -90,8 +165,105 @@ def _format_metric_table(metrics: dict[str, float]) -> Sequence[str]:
     return rows
 
 
-def main() -> None:
-    args = parse_args()
+def _apply_overrides(trainer_config: TrainerConfig, args: argparse.Namespace) -> None:
+    overrides: Dict[str, Optional[object]] = {
+        "compile": args.compile,
+        "optimizer": args.optimizer,
+        "accumulation_steps": args.accumulation_steps,
+        "learning_rate": args.learning_rate,
+        "warmup_steps": args.warmup_steps,
+        "max_epochs": args.max_epochs,
+        "metrics_log_frequency": args.metrics_log_frequency,
+        "random_seed": args.random_seed,
+    }
+
+    for field_name, maybe_value in overrides.items():
+        if maybe_value is not None:
+            setattr(trainer_config, field_name, maybe_value)
+
+    if args.device_batch_size is not None:
+        trainer_config.batch_size = args.device_batch_size
+        trainer_config.device_batch_size = args.device_batch_size
+
+    if args.freeze_backbone is not None:
+        trainer_config.freeze_backbone = args.freeze_backbone
+
+
+def _print_run_header(
+    save_dir: Path,
+    trainer_config: TrainerConfig,
+    loader_config: DataLoaderConfig,
+) -> None:
+    effective_global = (
+        trainer_config.batch_size
+        * max(1, trainer_config.accumulation_steps)
+        * (trainer_config.world_size if trainer_config.distributed else 1)
+    )
+
+    header_lines = [
+        "================ Toto GPU Training ================",
+        f"Timestamp             : {datetime.now().isoformat(timespec='seconds')}",
+        f"Checkpoints Directory : {save_dir}",
+        f"torch.compile         : {trainer_config.compile}",
+        f"Optimizer             : {trainer_config.optimizer}",
+        f"Learning Rate         : {trainer_config.learning_rate}",
+        f"Warmup Steps          : {trainer_config.warmup_steps}",
+        f"Max Epochs            : {trainer_config.max_epochs}",
+        f"Per-Device Batch Size : {trainer_config.batch_size}",
+        f"Grad Accumulation     : {trainer_config.accumulation_steps}",
+        f"Effective Global Batch: {effective_global}",
+        f"Freeze Backbone       : {trainer_config.freeze_backbone}",
+        f"Training Data Path    : {loader_config.train_data_path}",
+        f"Test Data Path        : {loader_config.test_data_path}",
+        "====================================================",
+    ]
+    print("\n".join(header_lines))
+
+
+def _write_markdown_report(
+    report_path: Path,
+    experiment_name: str,
+    device_label: str,
+    trainer_config: TrainerConfig,
+    val_metrics: Dict[str, float],
+    test_metrics: Dict[str, float],
+) -> None:
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.utcnow().isoformat(timespec="seconds")
+    lines = [
+        f"# Toto Training Summary — {experiment_name}",
+        "",
+        f"- Timestamp (UTC): {timestamp}",
+        f"- Device: {device_label}",
+        f"- torch.compile: {trainer_config.compile}",
+        f"- Optimizer: {trainer_config.optimizer}",
+        f"- Learning rate: {trainer_config.learning_rate}",
+        f"- Batch size: {trainer_config.batch_size}",
+        f"- Grad accumulation: {trainer_config.accumulation_steps}",
+        f"- Max epochs: {trainer_config.max_epochs}",
+        "",
+        "## Trainer Configuration",
+        "",
+    ]
+
+    excluded_keys: Iterable[str] = {"save_dir", "log_file", "export_pretrained_dir"}
+    for key, value in sorted(asdict(trainer_config).items()):
+        if key in excluded_keys:
+            continue
+        lines.append(f"- **{key}**: {value}")
+
+    lines.extend(["", "## Validation Metrics"])
+    lines.extend(_format_metric_table(val_metrics))
+    lines.extend(["", "## Test Metrics"])
+    lines.extend(_format_metric_table(test_metrics))
+
+    report_path.write_text("\n".join(lines) + "\n")
+    print(f"Wrote Markdown report to {report_path}")
+
+
+def main(argv: Optional[Iterable[str]] = None) -> None:
+    parser = _build_parser()
+    args = parser.parse_args(list(argv) if argv is not None else None)
 
     has_cuda = torch.cuda.is_available()
     if not has_cuda:
@@ -106,22 +278,24 @@ def main() -> None:
     default_warmup_steps = 2000
     default_max_epochs = 24
 
-    batch_size = args.device_bs if args.device_bs is not None else default_batch_size
-    accumulation_steps = args.grad_accum if args.grad_accum is not None else default_grad_accum
-    learning_rate = args.lr if args.lr is not None else default_lr
+    batch_size = (
+        args.device_batch_size if args.device_batch_size is not None else default_batch_size
+    )
+    accumulation_steps = (
+        args.accumulation_steps if args.accumulation_steps is not None else default_grad_accum
+    )
+    learning_rate = args.learning_rate if args.learning_rate is not None else default_lr
     warmup_steps = args.warmup_steps if args.warmup_steps is not None else default_warmup_steps
     max_epochs = args.max_epochs if args.max_epochs is not None else default_max_epochs
-    optimizer = args.optim if args.optim is not None else "muon_mix"
-    compile_flag = (
-        has_cuda if args.compile is None else args.compile
-    )
+    optimizer = args.optimizer if args.optimizer is not None else "muon_mix"
+    compile_flag = has_cuda if args.compile is None else args.compile
 
     if not has_cuda:
-        if args.device_bs is None:
+        if args.device_batch_size is None:
             batch_size = max(1, min(batch_size, 2))
-        if args.grad_accum is None:
+        if args.accumulation_steps is None:
             accumulation_steps = max(1, accumulation_steps // 2)
-        if args.lr is None:
+        if args.learning_rate is None:
             learning_rate = min(learning_rate, 2e-4)
         if args.warmup_steps is None:
             warmup_steps = min(warmup_steps, 500)
@@ -134,22 +308,33 @@ def main() -> None:
     default_dir_name = "gpu_run" if has_cuda else "cpu_run"
     timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     base_dir = args.save_dir or (Path("tototraining") / "checkpoints" / default_dir_name)
-    if args.resume:
+
+    resume_flag = bool(args.resume or args.resume_from)
+    if resume_flag:
         save_dir = base_dir
     else:
-        if base_dir.exists():
+        if args.save_dir is None or (base_dir.exists() and base_dir.is_dir()):
             save_dir = base_dir / timestamp
         else:
             save_dir = base_dir
+
+    save_dir.parent.mkdir(parents=True, exist_ok=True)
     save_dir.mkdir(parents=True, exist_ok=True)
-    if not args.resume:
-        latest_symlink = base_dir / "latest"
+
+    if not resume_flag and save_dir.parent != save_dir:
+        latest_symlink = save_dir.parent / "latest"
         try:
             if latest_symlink.is_symlink() or latest_symlink.exists():
                 latest_symlink.unlink()
             latest_symlink.symlink_to(save_dir)
         except OSError:
             pass
+
+    metrics_frequency = (
+        args.metrics_log_frequency if args.metrics_log_frequency is not None else 10
+    )
+    seed = args.random_seed if args.random_seed is not None else 1337
+    device_label = "CUDA" if has_cuda else "CPU"
 
     trainer_config = TrainerConfig(
         patch_size=64,
@@ -166,6 +351,7 @@ def main() -> None:
         min_lr=1e-6,
         weight_decay=0.01,
         batch_size=batch_size,
+        device_batch_size=batch_size,
         accumulation_steps=accumulation_steps,
         max_epochs=max_epochs,
         warmup_epochs=0,
@@ -186,7 +372,7 @@ def main() -> None:
         early_stopping_delta=1e-4,
         compute_train_metrics=True,
         compute_val_metrics=True,
-        metrics_log_frequency=10,
+        metrics_log_frequency=metrics_frequency,
         gradient_checkpointing=False,
         memory_efficient_attention=False,
         pin_memory=has_cuda,
@@ -198,12 +384,14 @@ def main() -> None:
         tensorboard_log_dir="tensorboard_logs",
         export_pretrained_dir=str(save_dir / "hf_export"),
         export_on_best=False,
-        random_seed=1337,
+        random_seed=seed,
         pretrained_model_id="Datadog/Toto-Open-Base-1.0",
         freeze_backbone=True,
         trainable_param_substrings=["output_distribution", "loc_proj", "scale_proj", "df"],
         resume_from_checkpoint=str(args.resume_from) if args.resume_from else None,
     )
+
+    _apply_overrides(trainer_config, args)
 
     loader_config = DataLoaderConfig(
         train_data_path="trainingdata/train",
@@ -238,16 +426,31 @@ def main() -> None:
         num_workers=4 if has_cuda else max(1, min(2, (torch.get_num_threads() or 2))),
         pin_memory=has_cuda,
         drop_last=False,
-        random_seed=1337,
+        random_seed=seed,
     )
+
+    loader_config.batch_size = trainer_config.batch_size
+    loader_config.random_seed = trainer_config.random_seed
+
+    if args.summary_only:
+        summary = {
+            "save_dir": str(save_dir),
+            "device": device_label,
+            "trainer_config": asdict(trainer_config),
+            "loader_config": asdict(loader_config),
+        }
+        print(json.dumps(summary, indent=2))
+        return
+
+    _print_run_header(save_dir, trainer_config, loader_config)
 
     trainer = TotoTrainer(trainer_config, loader_config)
     trainer.prepare_data()
     trainer.setup_model()
     trainer.train()
 
-    val_metrics = trainer.evaluate("val")
-    test_metrics = trainer.evaluate("test")
+    val_metrics = trainer.evaluate("val") or {}
+    test_metrics = trainer.evaluate("test") or {}
 
     summary_path = save_dir / "final_metrics.json"
     summary_path.write_text(
@@ -263,29 +466,15 @@ def main() -> None:
     print("FINAL_TEST_METRICS", test_metrics)
     print(f"Saved metrics summary to {summary_path}")
 
-    if args.report:
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.utcnow().isoformat(timespec="seconds")
-        lines = [
-            f"# Toto Training Summary — {experiment_name}",
-            "",
-            f"- Timestamp (UTC): {timestamp}",
-            f"- Device: {'CUDA' if has_cuda else 'CPU'}",
-            f"- torch.compile: {trainer_config.compile}",
-            f"- Optimizer: {trainer_config.optimizer}",
-            f"- Learning rate: {trainer_config.learning_rate}",
-            f"- Batch size: {trainer_config.batch_size}",
-            f"- Grad accumulation: {trainer_config.accumulation_steps}",
-            f"- Max epochs: {trainer_config.max_epochs}",
-            "",
-            "## Validation Metrics",
-        ]
-        lines.extend(_format_metric_table(val_metrics))
-        lines.extend(["", "## Test Metrics"])
-        lines.extend(_format_metric_table(test_metrics))
-        report_content = "\n".join(lines) + "\n"
-        args.report.write_text(report_content)
-        print(f"Wrote Markdown report to {args.report}")
+    if args.report_path:
+        _write_markdown_report(
+            args.report_path,
+            experiment_name,
+            device_label,
+            trainer_config,
+            val_metrics,
+            test_metrics,
+        )
 
 
 if __name__ == "__main__":

@@ -84,10 +84,10 @@ except ImportError as e:
 
 # Import our dataloader
 try:
-    from .toto_ohlc_dataloader import TotoOHLCDataLoader, DataLoaderConfig
+    from .toto_ohlc_dataloader import TotoOHLCDataLoader, DataLoaderConfig, TotoBatchSample
 except ImportError:
     try:
-        from toto_ohlc_dataloader import TotoOHLCDataLoader, DataLoaderConfig  # type: ignore
+        from toto_ohlc_dataloader import TotoOHLCDataLoader, DataLoaderConfig, TotoBatchSample  # type: ignore
     except ImportError:
         warnings.warn("TotoOHLCDataLoader not found, creating minimal fallback")
         class TotoOHLCDataLoader:
@@ -95,9 +95,12 @@ except ImportError:
                 self.config = config
             def prepare_dataloaders(self):
                 return {}
-        
+
         @dataclass
         class DataLoaderConfig:
+            pass
+
+        class TotoBatchSample:  # type: ignore
             pass
 
 try:
@@ -637,19 +640,30 @@ class TotoTrainer:
     
     def _setup_logging(self):
         """Setup logging configuration"""
-        log_level = getattr(logging, self.config.log_level.upper())
-        
-        handlers = [logging.StreamHandler()]
+        log_level = getattr(logging, self.config.log_level.upper(), logging.INFO)
+
+        handlers = [logging.StreamHandler(stream=sys.stdout)]
         if self.config.log_file:
-            handlers.append(logging.FileHandler(self.config.log_file))
-        
-        logging.basicConfig(
-            level=log_level,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=handlers
-        )
-        
+            log_path = Path(self.config.log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            handlers.append(logging.FileHandler(log_path))
+
+        basic_config_kwargs = {
+            "level": log_level,
+            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            "handlers": handlers,
+        }
+
+        try:
+            logging.basicConfig(force=True, **basic_config_kwargs)
+        except TypeError:
+            root_logger = logging.getLogger()
+            for handler in list(root_logger.handlers):
+                root_logger.removeHandler(handler)
+            logging.basicConfig(**basic_config_kwargs)
+
         self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(log_level)
     
     def _setup_distributed(self):
         """Setup distributed training if enabled"""
@@ -833,6 +847,10 @@ class TotoTrainer:
         if self.config.freeze_backbone:
             self._apply_parameter_freeze(model)
 
+        if self.config.compile:
+            self.logger.info(
+                "torch.compile enabled; the first few batches may spend extra time compiling kernels."
+            )
         model = maybe_compile(model, do_compile=self.config.compile)
         
         # Wrap with DDP if distributed
@@ -1079,28 +1097,41 @@ class TotoTrainer:
         prev_close: Optional[torch.Tensor] = None
         metadata: Dict[str, Any] = {}
 
-        candidate = batch
-        extra = {}
         masked_field_names = {"series", "padding_mask", "id_mask", "timestamp_seconds", "time_interval_seconds"}
+        toto_batch_type = globals().get("TotoBatchSample")
 
-        if hasattr(batch, "_fields"):
-            field_names = getattr(batch, "_fields", ())
-            if "timeseries" in field_names:
-                candidate = getattr(batch, "timeseries")
-                extra = {
-                    name: getattr(batch, name)
-                    for name in field_names
-                    if name not in {"timeseries"} and name not in masked_field_names
-                }
+        if toto_batch_type is not None and isinstance(batch, toto_batch_type):
+            candidate = batch.timeseries
+            if hasattr(batch, "metadata"):
+                extra = dict(batch.metadata())
             else:
-                candidate = batch
-        elif isinstance(batch, (tuple, list)) and batch:
-            candidate = batch[0]
-            if len(batch) > 1 and isinstance(batch[1], dict):
-                extra = batch[1]
-        elif isinstance(batch, dict) and "timeseries" in batch:
-            candidate = batch["timeseries"]
-            extra = {k: v for k, v in batch.items() if k != "timeseries"}
+                extra = {
+                    "target_price": getattr(batch, "target_price", None),
+                    "target_pct": getattr(batch, "target_pct", None),
+                    "prev_close": getattr(batch, "prev_close", None),
+                }
+        else:
+            candidate = batch
+            extra = {}
+
+            if hasattr(batch, "_fields"):
+                field_names = getattr(batch, "_fields", ())
+                if "timeseries" in field_names:
+                    candidate = getattr(batch, "timeseries")
+                    extra = {
+                        name: getattr(batch, name)
+                        for name in field_names
+                        if name not in {"timeseries"} and name not in masked_field_names
+                    }
+                else:
+                    candidate = batch
+            elif isinstance(batch, (tuple, list)) and batch:
+                candidate = batch[0]
+                if len(batch) > 1 and isinstance(batch[1], dict):
+                    extra = batch[1]
+            elif isinstance(batch, dict) and "timeseries" in batch:
+                candidate = batch["timeseries"]
+                extra = {k: v for k, v in batch.items() if k != "timeseries"}
 
         if isinstance(candidate, MaskedTimeseries):
             masked = candidate.to(device)
@@ -1361,7 +1392,14 @@ class TotoTrainer:
             self.model.load_state_dict(checkpoint['model_state_dict'])
         
         # Load optimizer state
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        try:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        except (KeyError, ValueError) as exc:
+            self.logger.warning(
+                "Optimizer state in %s is incompatible with current configuration; proceeding with freshly initialized optimizer (%s)",
+                checkpoint_path,
+                exc,
+            )
 
         # Load scheduler state
         if self.scheduler and checkpoint['scheduler_state_dict']:

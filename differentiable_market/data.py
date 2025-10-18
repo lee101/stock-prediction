@@ -26,6 +26,7 @@ def _discover_files(cfg: DataConfig) -> List[Path]:
 
 def _load_csv(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
+    df.columns = [str(col).strip().lower() for col in df.columns]
     if "timestamp" not in df.columns:
         raise ValueError(f"{path} missing 'timestamp' column")
     missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
@@ -74,14 +75,7 @@ def _cache_path(cfg: DataConfig) -> Path | None:
 
 
 def load_aligned_ohlc(cfg: DataConfig) -> tuple[torch.Tensor, List[str], pd.DatetimeIndex]:
-    """
-    Load OHLC tensors aligned across symbols.
-
-    Returns:
-        ohlc: tensor shaped [T, A, 4]
-        symbols: list of symbol names ordered as in tensor
-        index: pandas DatetimeIndex shared across symbols
-    """
+    """Load OHLC tensors aligned across symbols with sufficient overlap."""
     cache_path = _cache_path(cfg)
     if cache_path and cache_path.exists():
         payload = torch.load(cache_path)
@@ -89,27 +83,43 @@ def load_aligned_ohlc(cfg: DataConfig) -> tuple[torch.Tensor, List[str], pd.Date
 
     files = _discover_files(cfg)
     symbols_and_paths = _filter_symbols(files, cfg)
-    frames: list[pd.DataFrame] = []
-    symbols: list[str] = []
-    common_index: pd.Index | None = None
+    assets: list[tuple[str, pd.DataFrame]] = []
     for symbol, path in symbols_and_paths:
         df = _load_csv(path)
-        if common_index is None:
-            common_index = df.index
-        else:
-            common_index = common_index.intersection(df.index)
-        frames.append(df)
+        if len(df) >= cfg.min_timesteps:
+            assets.append((symbol, df))
+    if not assets:
+        raise ValueError("No assets meet minimum timestep requirement")
+
+    assets.sort(key=lambda item: len(item[1]), reverse=True)
+
+    symbols: list[str] = []
+    aligned_frames: list[pd.DataFrame] = []
+    common_index: pd.Index | None = None
+    for symbol, df in assets:
+        candidate_index = df.index if common_index is None else common_index.intersection(df.index)
+        if len(candidate_index) < cfg.min_timesteps:
+            continue
+        # Reindex existing frames to the candidate intersection
+        if common_index is not None and candidate_index is not common_index:
+            aligned_frames = [frame.reindex(candidate_index) for frame in aligned_frames]
+        frame = df.reindex(candidate_index)
+        aligned_frames.append(frame)
         symbols.append(symbol)
-    assert common_index is not None
-    if len(common_index) < 10:
+        common_index = candidate_index
+        if cfg.max_assets is not None and len(symbols) >= cfg.max_assets:
+            break
+
+    if common_index is None or len(common_index) < cfg.min_timesteps:
         raise ValueError("Not enough overlapping timestamps across symbols")
+    if not aligned_frames:
+        raise ValueError("Failed to align any assets with sufficient overlap")
+
     aligned = []
-    for df in frames:
-        aligned_df = df.reindex(common_index)
-        if aligned_df.isna().any().any():
-            aligned_df = aligned_df.interpolate(method="time").ffill().bfill()
-        aligned.append(aligned_df.to_numpy(dtype=np.float32))
-    # shape [A, T, 4] -> transpose to [T, A, 4]
+    for frame in aligned_frames:
+        filled = frame.interpolate(method="time").ffill().bfill()
+        aligned.append(filled.to_numpy(dtype=np.float32))
+
     stacked = np.stack(aligned, axis=0).transpose(1, 0, 2)
     ohlc = torch.from_numpy(stacked)
     index = pd.DatetimeIndex(common_index)

@@ -55,6 +55,7 @@ class DirichletGRUPolicy(nn.Module):
             raise ValueError("Input asset/feature dims do not match policy configuration")
 
         flat = x.reshape(B, T, A * F)
+        flat = flat.float()
         flat = self.in_norm(flat)
         if self.gradient_checkpointing and self.training:
             gru_out = torch.utils.checkpoint.checkpoint(self._gru_forward, flat)
@@ -63,4 +64,3 @@ class DirichletGRUPolicy(nn.Module):
         logits = self.head(gru_out)
         alpha = self.softplus(logits.float()) + self.alpha_bias
         return alpha
-
