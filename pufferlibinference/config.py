@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Sequence, Union
 
+from src.leverage_settings import get_leverage_settings
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - import used for type checking only
@@ -75,10 +76,10 @@ class PufferInferenceConfig:
     checkpoint_path: PathLike
     processor_path: Optional[PathLike] = None
     device: str = "auto"
-    leverage_limit: float = 2.0
+    leverage_limit: float = field(default_factory=lambda: get_leverage_settings().max_gross_leverage)
     transaction_cost_bps: float = 10.0
-    borrowing_cost: float = 0.0675
-    trading_days_per_year: int = 252
+    borrowing_cost: float = field(default_factory=lambda: get_leverage_settings().annual_cost)
+    trading_days_per_year: int = field(default_factory=lambda: get_leverage_settings().trading_days_per_year)
     allow_short: bool = True
     enforce_leverage_limit: bool = True
     clamp_action: Optional[float] = None
