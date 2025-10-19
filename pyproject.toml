@@ -9,118 +9,50 @@ description = "Production trading bot and research environment."
 readme = "readme.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "wandb>=0.22.2",
-    "weave>=0.52.10",
-    "pandas_datareader",
-    "torch==2.9.0+cu128",
-    "pandas",
     "numpy==2.1.3",
-    "loguru",
-    "matplotlib",
-    "mlflow>=3.4.1,<3.6",
-    "neuralforecast",
-    "retry",
-    "hyperopt",
-    "alpaca-trade-api",
-    "SQLAlchemy",
-    "websocket-client",
-    "py",
-    "future",
-    "Pillow",
-    "ipython",
-    "pbr",
-    "setuptools",
-    "six",
-    "wheel",
-    "pip",
-    "tqdm",
-    "optuna",
-    "filelock",
-    "transformers",
-    "huggingface_hub",
-    "safetensors",
-    "click",
-    "requests",
-    "joblib",
-    "aiohttp",
-    "tensorboard",
-    "msgpack",
-    "urllib3",
-    "rsa",
-    "pyasn1",
-    "attrs",
-    "wcwidth",
-    "cmd2",
-    "pyperclip",
-    "fsspec",
-    "packaging",
-    "parso",
-    "jedi",
-    "lxml",
-    "Mako",
-    "MarkupSafe",
-    "pytz",
-    "toml",
-    "idna",
-    "multidict",
-    "cliff",
-    "stevedore",
-    "autopage",
-    "prettytable",
-    "certifi",
-    "patsy",
-    "regex",
-    "cachetools",
+    "pandas>=2.2.3",
+    "pandas_datareader",
     "python-dateutil",
-    "cmaes",
-    "alembic",
-    "colorlog",
-    "traitlets",
-    "decorator",
-    "backcall",
-    "pickleshare",
-    "pluggy",
-    "iniconfig",
-    "yarl",
-    "chardet",
-    "threadpoolctl",
-    "greenlet",
-    "Markdown",
-    "oauthlib",
-    "Werkzeug",
-    "fonttools",
-    "pyparsing",
-    "websockets",
-    "statsmodels",
-    "tokenizers",
-    "alpaca-py",
-    "fastapi",
-    "gunicorn",
-    "uvicorn",
-    "chronos-forecasting",
-    "scikit-learn",
-    "cvxpy",
-    "python-binance",
-    "typer",
-    "diskcache",
-    "anthropic",
-    "gymnasium",
-    "stable-baselines3",
-    "pufferlib",
-    "openai>=1.0.0",
+    "pytz",
+    "requests>=2.32,<3",
+    "aiohttp>=3.10",
+    "tqdm>=4.66",
+    "loguru>=0.7.2",
+    "retry>=0.9",
+    "diskcache>=5.6.3",
+    "cachetools>=6.2",
+    "typer>=0.12",
+    "SQLAlchemy>=2.0",
+    "cvxpy>=1.4",
+    "scikit-learn>=1.5",
+    "matplotlib>=3.9",
+    "seaborn>=0.13",
+    "mplfinance>=0.12",
+    "psutil>=5.9",
+    "ta>=0.11",
+    "scipy>=1.13",
+    "yfinance>=0.2.44",
+    "beautifulsoup4>=4.12",
+    "PyYAML>=6.0,<6.1",
+    "jsonschema>=4.19",
+    "pydantic>=2.9",
+    "torch==2.9.0+cu128",
     "pytorch-lightning>=2.4.0,<2.5",
-    "torch-optimizer",
-    "pytorch-optimizer",
+    "torch-optimizer>=0.3",
+    "pytorch-optimizer>=2.11",
+    "dill==0.3.8",
     "aioboto3==12.4.0",
     "boto3==1.34.69",
-    "datasets==4.2.0",
-    "dill==0.3.8",
-    "einops==0.7.0",
-    "gluonts[torch]==0.16.2",
-    "jaxtyping==0.2.29",
-    "rotary-embedding-torch==0.8.6",
-    "tabulate==0.9.0",
-    "qlib",
+    "python-binance>=1.0.21",
+    "alpaca-trade-api>=3.1",
+    "alpaca-py>=0.42",
+    "tensorboard>=2.17",
+    "filelock>=3.15",
+    "joblib>=1.4",
+    "fsspec>=2024.9",
+    "yarl>=1.9",
+    "websocket-client>=1.7",
+    "websockets>=9,<11",
 ]
 
 [project.scripts]
@@ -129,14 +61,73 @@ diff-market-backtest = "differentiable_market.marketsimulator.run:main"
 
 [project.optional-dependencies]
 dev = [
+    ".[all]",
     "black==24.10.0",
     "isort==5.13.2",
     "jupyter==1.1.1",
     "pytest>=8.3.3",
     "pytest-env==1.1.5",
-    "pytest-timeout>=2.3.1",
+    "pytest-asyncio==0.24.0",
     "types-tabulate==0.9.0.20241207",
     "types-PyYAML==6.0.12.20240917",
+]
+
+forecasting = [
+    "chronos-forecasting>=1.5.3",
+    "neuralforecast>=3.1",
+    "gluonts[torch]==0.16.2",
+]
+
+hf = [
+    "transformers>=4.50",
+    "datasets>=2.17",
+    "accelerate>=1.10.1",
+    "huggingface_hub>=0.24",
+    "safetensors>=0.4",
+    "einops==0.7.0",
+    "jaxtyping==0.2.29",
+    "rotary-embedding-torch==0.8.6",
+]
+
+rl = [
+    "stable-baselines3>=2.3",
+    "gymnasium>=0.29",
+    "pufferlib>=0.4",
+]
+
+mlops = [
+    "mlflow>=3.4.1,<3.6",
+    "wandb>=0.22.2",
+    "weave>=0.52.10",
+]
+
+opt = [
+    "optuna>=3.6",
+    "hyperopt>=0.2.7",
+    "cmaes>=0.10",
+]
+
+llm = [
+    "anthropic>=0.71.0",
+    "openai>=1.0.0",
+]
+
+serving = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "gunicorn>=23.0",
+]
+
+automation = [
+    "selenium>=4.15",
+]
+
+boosting = [
+    "xgboost>=2.1.1",
+]
+
+all = [
+    ".[forecasting,hf,rl,mlops,opt,llm,serving,automation,boosting]",
 ]
 
 [tool.setuptools.packages.find]
@@ -154,11 +145,38 @@ exclude = [
 ]
 
 [tool.uv]
-extra-index-url = [
-    "https://download.pytorch.org/whl/cu128",
-    "https://download.pytorch.org/whl/cpu",
+default-groups = []
+environments = ["sys_platform == 'linux'"]
+
+[tool.uv.workspace]
+members = [
+    "differentiable_market",
+    "gymrl",
+    "hfshared",
+    "hfinference",
+    "hftraining",
+    "marketsimulator",
+    "pufferlibinference",
+    "pufferlibtraining",
+    "toto",
+    "traininglib",
 ]
-index-strategy = "unsafe-best-match"
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.pip]
+torch-backend = "auto"
 
 [tool.uv.sources]
-toto = { path = "toto", editable = true }
+toto = { workspace = true }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
