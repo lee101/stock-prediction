@@ -14,7 +14,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Sequence
 
-import torch
+try:
+    from .injection import get_torch
+except Exception:  # pragma: no cover - script execution fallback
+    try:
+        from injection import get_torch  # type: ignore
+    except Exception:
+        def get_torch():
+            import torch as _torch  # type: ignore
+
+            return _torch
+
+torch = get_torch()
 
 try:
     from .toto_trainer import TrainerConfig, DataLoaderConfig, TotoTrainer

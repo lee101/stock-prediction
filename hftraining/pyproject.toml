@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hftraining"
+version = "0.0.0"
+requires-python = ">=3.11,<3.14"
+description = "Hugging Face model training utilities."
+dependencies = [
+  "numpy",
+  "datasets",
+  "transformers",
+  "accelerate",
+  "safetensors",
+  "huggingface_hub",
+]
+
+[dependency-groups]
+dev = ["pytest", "ruff", "mypy"]
+
+[tool.uv.sources]
+traininglib = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["hftraining"]

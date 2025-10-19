@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "traininglib"
+version = "0.0.0"
+requires-python = ">=3.11,<3.14"
+description = "Shared training utilities."
+dependencies = [
+  "numpy",
+  "pandas",
+]
+
+[dependency-groups]
+dev = ["pytest", "ruff", "mypy"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["traininglib"]

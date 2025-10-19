@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "marketsimulator"
+version = "0.0.0"
+requires-python = ">=3.11,<3.14"
+description = "Market simulation components and utilities."
+dependencies = [
+  "numpy",
+  "pandas",
+  "cvxpy",
+]
+
+[dependency-groups]
+dev = ["pytest", "ruff", "mypy"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["marketsimulator"]

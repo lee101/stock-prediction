@@ -9,6 +9,9 @@ try:
     from nanochat.nanochat.muon import Muon
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     Muon = None  # type: ignore
+except RuntimeError:  # pragma: no cover - optional dependency
+    # torch.compile is not yet available on Python 3.14+, so skip Muon when import hooks fail
+    Muon = None  # type: ignore
 
 
 @dataclass(slots=True)

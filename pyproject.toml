@@ -154,13 +154,39 @@ exclude = [
 ]
 
 [tool.uv]
-extra-index-url = [
-    "https://download.pytorch.org/whl/cu128",
-    "https://download.pytorch.org/whl/cpu",
-]
-cache-dir = "/vfast/data/uv-cache"
-index-strategy = "unsafe-best-match"
+# Keep cache local to the repo to avoid shared cache corruption and to maximize
+# hardlink performance with the project's `.venv*`.
+cache-dir = ".uvcache"
+# Prefer faster, deterministic lookup; avoid scanning across indexes.
+index-strategy = "first-index"
+# Restrict solves to our actual target to speed locking.
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# Do not install dev groups by default; opt-in when needed.
+default-groups = []
+
+[tool.uv.workspace]
+# Explicit workspace members for per-package installs. Add more as they stabilize.
+members = [
+    "gymrl",
+    "pufferlibtraining",
+    "hftraining",
+    "traininglib",
+    "marketsimulator",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.uv.sources]
 toto = { path = "toto", editable = true }
+# Route PyTorch packages to the correct index so uv doesn't scan multiple indexes.
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }

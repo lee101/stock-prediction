@@ -35,14 +35,13 @@ class DifferentiableMarketBacktester:
         env_cfg: EnvironmentConfig,
         eval_cfg: EvaluationConfig,
         use_eval_split: bool = True,
+        include_cash_override: bool | None = None,
     ):
         self.data_cfg = data_cfg
         self.env_cfg = env_cfg
         self.eval_cfg = eval_cfg
         self.use_eval_split = use_eval_split
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.env = DifferentiableMarketEnv(env_cfg)
+        self._include_cash_override = include_cash_override
 
         ohlc_all, symbols, index = load_aligned_ohlc(data_cfg)
         self.symbols = symbols
@@ -53,9 +52,15 @@ class DifferentiableMarketBacktester:
         else:
             eval_tensor = ohlc_all
             self.eval_start_idx = 0
-        features, returns = ohlc_to_features(eval_tensor)
-        self.eval_features = features.to(self.device, non_blocking=True)
-        self.eval_returns = returns.to(self.device, non_blocking=True)
+        self.eval_tensor = eval_tensor
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.env = DifferentiableMarketEnv(env_cfg)
+
+        features, returns = self._prepare_features(add_cash=data_cfg.include_cash)
+        self.eval_features = features
+        self.eval_returns = returns
+        self.asset_names = list(self.symbols) + (["CASH"] if data_cfg.include_cash else [])
 
     def run(self, checkpoint_path: Path) -> Dict[str, float]:
         payload = torch.load(checkpoint_path, map_location="cpu")
@@ -63,6 +68,17 @@ class DifferentiableMarketBacktester:
         # Basic validation to ensure compatibility
         if str(data_cfg["root"]) != str(self.data_cfg.root):
             print("Warning: checkpoint data root differs from current configuration.")
+
+        ckpt_train_cfg = payload["config"].get("train", {})
+        ckpt_data_cfg = payload["config"].get("data", {})
+        include_cash_config = bool(ckpt_train_cfg.get("include_cash") or ckpt_data_cfg.get("include_cash"))
+        if self._include_cash_override is not None:
+            include_cash = self._include_cash_override
+        else:
+            include_cash = include_cash_config or self.data_cfg.include_cash
+
+        self.eval_features, self.eval_returns = self._prepare_features(add_cash=include_cash)
+        self.asset_names = list(self.symbols) + (["CASH"] if include_cash else [])
 
         asset_count = self.eval_features.shape[1]
         feature_dim = self.eval_features.shape[-1]
@@ -102,6 +118,13 @@ class DifferentiableMarketBacktester:
         (report_dir / "report.json").write_text(json.dumps(aggregate, indent=2))
         (report_dir / "windows.json").write_text(json.dumps([asdict(m) for m in metrics], indent=2))
         return aggregate
+
+    def _prepare_features(self, add_cash: bool) -> tuple[torch.Tensor, torch.Tensor]:
+        features, returns = ohlc_to_features(self.eval_tensor, add_cash=add_cash)
+        return (
+            features.to(self.device, non_blocking=True),
+            returns.to(self.device, non_blocking=True),
+        )
 
     def _simulate_window(
         self,

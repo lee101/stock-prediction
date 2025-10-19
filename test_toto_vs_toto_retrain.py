@@ -58,6 +58,49 @@ def _load_checkpoint_config(checkpoint_path: Path) -> Tuple[Dict, Dict[str, torc
     return config, state_dict
 
 
+class SeriesScaler:
+    def __init__(self, scaler):
+        self.scaler = scaler
+
+    def transform(self, arr):
+        import numpy as np
+        arr2 = np.asarray(arr, dtype=np.float32)
+        original_shape = arr2.shape
+        transformed = self.scaler.transform(arr2.reshape(-1, 1))
+        return transformed.reshape(original_shape)
+
+    def inverse_transform(self, arr):
+        import numpy as np
+        arr2 = np.asarray(arr, dtype=np.float32)
+        original_shape = arr2.shape
+        inverted = self.scaler.inverse_transform(arr2.reshape(-1, 1))
+        return inverted.reshape(original_shape)
+
+
+class ScalerBundle:
+    def __init__(self, scaler_map):
+        self.scaler_map = scaler_map
+
+    @classmethod
+    def load(cls, path):
+        import torch
+        from torch.serialization import add_safe_globals
+        try:
+            from sklearn.preprocessing import RobustScaler, StandardScaler, MinMaxScaler
+            add_safe_globals([RobustScaler, StandardScaler, MinMaxScaler])
+        except Exception:
+            pass
+        data = torch.load(path, map_location="cpu", weights_only=False)
+        scalers = data.get("scalers", {})
+        return cls(scalers)
+
+    def get_close_scaler(self):
+        for key in ("Close", "close"):
+            if key in self.scaler_map:
+                return SeriesScaler(self.scaler_map[key])
+        return None
+
+
 def _build_pipeline_from_checkpoint(
     checkpoint_path: Path,
     device: str,
@@ -69,6 +112,11 @@ def _build_pipeline_from_checkpoint(
 ) -> TotoPipeline:
     config, state_dict = _load_checkpoint_config(checkpoint_path)
     pretrained_model_id = config.get("pretrained_model_id") or BASELINE_MODEL_ID
+
+    # torch.compile checkpoints may prefix parameters with '_orig_mod.'; strip it if present.
+    if any(key.startswith('_orig_mod.') for key in state_dict.keys()):
+        state_dict = {key.replace('_orig_mod.', '', 1): value for key, value in state_dict.items()}
+
     base_model = Toto.from_pretrained(pretrained_model_id, map_location="cpu")
     missing, unexpected = base_model.load_state_dict(state_dict, strict=False)
     if missing:
@@ -94,6 +142,7 @@ def _collect_predictions(
     samples_per_batch: int,
     quantile: float,
     std_scale: float,
+    scaler: Optional[SeriesScaler] = None,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     preds: list[float] = []
     actuals: list[float] = []
@@ -108,6 +157,8 @@ def _collect_predictions(
     first_idx: Optional[int] = None
     for idx in range(start, len(prices)):
         context = prices[:idx].astype(np.float32)
+        if scaler is not None:
+            context = scaler.transform(context).astype(np.float32)
         if patch_size > 1 and context.shape[0] >= patch_size:
             remainder = context.shape[0] % patch_size
             if remainder:
@@ -122,6 +173,9 @@ def _collect_predictions(
             samples_per_batch=samples_per_batch,
         )
         samples = forecast[0].samples if hasattr(forecast[0], "samples") else forecast[0]
+        samples = np.asarray(samples, dtype=np.float32)
+        if scaler is not None:
+            samples = scaler.inverse_transform(samples)
         aggregated = aggregate_quantile_plus_std(samples, quantile=quantile, std_scale=std_scale)
         preds.append(float(np.atleast_1d(aggregated)[0]))
         actuals.append(float(prices[idx]))
@@ -193,6 +247,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA_PATH, help="CSV with timestamp/close columns")
     parser.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION_FILE, help="Calibration JSON (scale/bias)")
     parser.add_argument("--checkpoint", type=Path, help="Optional fine-tuned Toto checkpoint (.pt)")
+    parser.add_argument("--preprocessor", type=Path, help="Optional path to saved preprocessor (defaults to alongside checkpoint)")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--torch-dtype", choices=["float32", "float16", "bfloat16", None], default=None)
     parser.add_argument("--eval-points", type=int, default=DEFAULT_EVAL_POINTS)
@@ -259,6 +314,26 @@ def main() -> None:
         elif (args.checkpoint_dir / "latest.pt").exists():
             retrained_checkpoint = args.checkpoint_dir / "latest.pt"
 
+    preprocessor_path = args.preprocessor
+    if retrained_checkpoint is not None and preprocessor_path is None:
+        candidate = retrained_checkpoint.parent / "preprocessor.pt"
+        if not candidate.exists():
+            candidate = retrained_checkpoint.parent.parent / "preprocessor.pt"
+        preprocessor_path = candidate
+
+    scaler_wrapper = None
+    if preprocessor_path is not None and Path(preprocessor_path).exists():
+        try:
+            bundle = ScalerBundle.load(preprocessor_path)
+            scaler_wrapper = bundle.get_close_scaler()
+            if scaler_wrapper is None:
+                print(f"Warning: no 'Close' scaler found in {preprocessor_path}; continuing without scaling.")
+        except Exception as exc:
+            print(f"Warning: failed to load preprocessor {preprocessor_path}: {exc}")
+            scaler_wrapper = None
+    elif preprocessor_path is not None:
+        print(f"Warning: preprocessor {preprocessor_path} not found; continuing without scaling.")
+
     if retrained_checkpoint is not None and retrained_checkpoint.exists():
         print(f"Loading retrained checkpoint: {retrained_checkpoint}")
         retrained_pipeline = _build_pipeline_from_checkpoint(
@@ -277,6 +352,7 @@ def main() -> None:
             samples_per_batch=args.samples_per_batch,
             quantile=args.quantile,
             std_scale=args.std_scale,
+            scaler=scaler_wrapper,
         )
         retrained_metrics = _summarise(retrained_preds, actuals, prev_price)
         del retrained_pipeline
@@ -325,6 +401,7 @@ def main() -> None:
         "calibrated": calib_metrics,
         "retrained_checkpoint": str(retrained_checkpoint) if retrained_checkpoint else None,
         "retrained": retrained_metrics,
+        "preprocessor": str(preprocessor_path) if preprocessor_path and Path(preprocessor_path).exists() else None,
     }
 
     if args.output:
