@@ -91,7 +91,11 @@ class DifferentiableMarketTrainer:
 
         self._train_step_impl = self._build_train_step()
         if train_cfg.use_compile and hasattr(torch, "compile"):
-            self._train_step = torch.compile(self._train_step_impl, mode=train_cfg.torch_compile_mode)
+            try:
+                self._train_step = torch.compile(self._train_step_impl, mode=train_cfg.torch_compile_mode)
+            except RuntimeError:
+                # torch.compile currently raises on Python 3.14+, so gracefully fall back to eager mode
+                self._train_step = self._train_step_impl
         else:
             self._train_step = self._train_step_impl
 
