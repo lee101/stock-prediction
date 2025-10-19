@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hfshared"
+version = "0.1.0"
+description = "Shared feature engineering utilities for HuggingFace model training."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "joblib>=1.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]

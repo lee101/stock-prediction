@@ -1,19 +1,48 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_backtest_module_from_path():
+    module_path = _REPO_ROOT / "backtest_test3_inline.py"
+    root_str = str(_REPO_ROOT)
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+    spec = importlib.util.spec_from_file_location("backtest_test3_inline", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load backtest_test3_inline from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["backtest_test3_inline"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _fresh_module():
-    module = importlib.reload(importlib.import_module("backtest_test3_inline"))
+    try:
+        base_module = importlib.import_module("backtest_test3_inline")
+    except ModuleNotFoundError:
+        module = _load_backtest_module_from_path()
+    else:
+        try:
+            module = importlib.reload(base_module)
+        except ModuleNotFoundError:
+            importlib.invalidate_caches()
+            module = _load_backtest_module_from_path()
     # Ensure globals start from a clean state even if cache clearing helpers are added later.
     if hasattr(module, "_reset_model_caches"):
         module._reset_model_caches()
     else:  # pragma: no cover - exercised pre-implementation
-        module.pipeline = None
-        module.kronos_wrapper_cache.clear()
+        reason = getattr(module, "__import_error__", None)
+        pytest.skip(f"backtest_test3_inline unavailable: {reason!r}")
     return module
 
 
@@ -170,3 +199,23 @@ def test_load_toto_clears_kronos_cache(monkeypatch):
     module.load_toto_pipeline()
     assert module.pipeline is dummy_pipeline
     assert module.kronos_wrapper_cache == {}
+
+
+def test_require_cuda_raises_without_fallback(monkeypatch):
+    module = _fresh_module()
+    monkeypatch.setattr(module.torch.cuda, "is_available", lambda: False)
+    monkeypatch.delenv("MARKETSIM_ALLOW_CPU_FALLBACK", raising=False)
+
+    with pytest.raises(RuntimeError, match="requires a CUDA-capable GPU"):
+        module._require_cuda("Toto forecasting", symbol="ETHUSD")
+
+
+def test_require_cuda_warns_when_fallback_enabled(monkeypatch, caplog):
+    module = _fresh_module()
+    monkeypatch.setattr(module.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setenv("MARKETSIM_ALLOW_CPU_FALLBACK", "1")
+
+    with caplog.at_level("WARNING"):
+        module._require_cuda("Toto forecasting", symbol="ETHUSD")
+
+    assert ("Toto forecasting", "ETHUSD") in module._cpu_fallback_log_state

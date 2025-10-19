@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hftraining"
+version = "0.1.0"
+description = "HuggingFace training pipelines and experiment harnesses for the trading workspace."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "stock-trading-suite",
+    "hfshared",
+    "traininglib",
+    "gymrl",
+    "torch==2.9.0+cu128",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "scikit-learn>=1.5",
+    "matplotlib>=3.9",
+    "tqdm>=4.66",
+    "datasets>=2.19",
+    "accelerate>=1.10",
+    "transformers>=4.50",
+    "peft>=0.13",
+    "wandb>=0.22",
+    "yfinance>=0.2",
+    "joblib>=1.4",
+    "ta>=0.11",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[tool.uv.sources]
+stock-trading-suite = { workspace = true }
+hfshared = { workspace = true }
+traininglib = { workspace = true }
+gymrl = { workspace = true }

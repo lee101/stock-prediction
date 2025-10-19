@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hfinference"
+version = "0.1.0"
+description = "Inference runtimes for HuggingFace forecasting and trading models."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "stock-trading-suite",
+    "hfshared",
+    "hftraining",
+    "traininglib",
+    "torch==2.9.0+cu128",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "joblib>=1.4",
+    "yfinance>=0.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[tool.uv.sources]
+stock-trading-suite = { workspace = true }
+hfshared = { workspace = true }
+hftraining = { workspace = true }
+traininglib = { workspace = true }

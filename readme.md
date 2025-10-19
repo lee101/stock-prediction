@@ -28,6 +28,35 @@ sudo apt-get install libxml2-dev
 sudo apt-get install libxslt1-dev
 ```
 
+## UV Workspace Layout (Updated October 19, 2025)
+
+- The root `stock-trading-suite` package now installs only the production trading core (data pipelines, execution bridges, cvxpy optimisers, Torch 2.9). Experimental stacks live behind optional extras so UV resolves faster and environments stay lean.
+- Workspace members: `toto/`, `pufferlibtraining/`, and `pufferlibinference/` each ship their own `pyproject.toml`. Install them on demand with `uv pip install -e <path>` whenever you need their tooling.
+- Optional extras:
+  - `forecasting` → Chronos, NeuralForecast, GluonTS (grab with `uv pip sync --extra forecasting`).
+  - `hf` → Hugging Face toolchain (Transformers, Accelerate, etc.).
+  - `rl` → Stable-Baselines3, Gymnasium, PufferLib runtime.
+  - `mlops` → MLflow, Weights & Biases, Weave telemetry.
+  - `opt` → Optuna/Hyperopt/CMA-ES search stack.
+  - `llm` → Anthropic + OpenAI SDKs for hybrid strategies.
+  - `serving` → FastAPI + ASGI workers for REST services.
+  - `automation` → Selenium harness used by legacy scraping scripts.
+  - `boosting` → XGBoost (falls back to scikit-learn if omitted).
+- Recommended flow for a fresh Python 3.12 shell:
+
+```bash
+uv venv .venv312
+source .venv312/bin/activate
+uv pip sync                                  # core trading stack only
+uv pip sync --extra forecasting --extra hf   # opt in per experiment
+
+# Install workspace projects when needed
+uv pip install -e pufferlibtraining
+uv pip install -e pufferlibinference
+```
+
+The `dev` extra now pulls every stack plus formatting and typing tools, so `uv pip sync --extra dev` reproduces the previous “kitchen sink” environment without slowing down the default sync path.
+
 ### Scripts
 
 Clear out positions at bid/ask (much more cost-effective than market orders):
