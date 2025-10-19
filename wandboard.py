@@ -32,6 +32,9 @@ Number = Union[int, float]
 Scalar = Union[int, float, bool]
 logger = logging.getLogger(__name__)
 
+DEFAULT_WANDB_PROJECT = "stock"
+DEFAULT_WANDB_ENTITY = "lee101p"
+
 
 def _ensure_dir(path: Union[str, Path]) -> Path:
     """Create `path` if needed and return it as a Path object."""
@@ -115,8 +118,17 @@ class WandBoardLogger(AbstractContextManager):
     ) -> None:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.run_name = run_name or f"run_{timestamp}"
-        self.project = project or os.getenv("WANDB_PROJECT")
-        self.entity = entity or os.getenv("WANDB_ENTITY")
+        if project is not None:
+            self.project = project
+        else:
+            env_project = os.getenv("WANDB_PROJECT")
+            self.project = env_project if env_project is not None else DEFAULT_WANDB_PROJECT
+
+        if entity is not None:
+            self.entity = entity
+        else:
+            env_entity = os.getenv("WANDB_ENTITY")
+            self.entity = env_entity if env_entity is not None else DEFAULT_WANDB_ENTITY
         self.tags = tuple(tags) if tags else tuple()
         self.group = group
         self.notes = notes
