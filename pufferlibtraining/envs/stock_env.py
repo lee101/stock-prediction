@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from src.leverage_settings import get_leverage_settings
+
 
 class StockTradingEnv(gym.Env):
     """
@@ -27,12 +29,12 @@ class StockTradingEnv(gym.Env):
         asset_frames: Dict[str, pd.DataFrame],
         window_size: int = 30,
         initial_balance: float = 100_000.0,
-        leverage_limit: float = 2.0,
-        borrowing_cost_annual: float = 0.0675,
+        leverage_limit: Optional[float] = None,
+        borrowing_cost_annual: Optional[float] = None,
         transaction_cost_bps: float = 10.0,
         spread_bps: float = 1.0,
         feature_columns: Optional[Sequence[str]] = None,
-        trading_days_per_year: int = 252,
+        trading_days_per_year: Optional[int] = None,
         device: Optional[torch.device] = None,
     ):
         super().__init__()
@@ -43,14 +45,19 @@ class StockTradingEnv(gym.Env):
         if window_size < 2:
             raise ValueError("window_size must be >= 2 to build contextual observations.")
 
+        settings = get_leverage_settings()
+        resolved_leverage_limit = settings.max_gross_leverage if leverage_limit is None else float(leverage_limit)
+        resolved_borrowing_cost = settings.annual_cost if borrowing_cost_annual is None else float(borrowing_cost_annual)
+        resolved_trading_days = settings.trading_days_per_year if trading_days_per_year is None else int(trading_days_per_year)
+
         self.asset_symbols = sorted(asset_frames.keys())
         self.window_size = int(window_size)
         self.initial_balance = float(initial_balance)
-        self.leverage_limit = float(leverage_limit)
-        self.borrowing_cost_annual = float(borrowing_cost_annual)
+        self.leverage_limit = float(resolved_leverage_limit)
+        self.borrowing_cost_annual = float(resolved_borrowing_cost)
         self.transaction_cost = float(transaction_cost_bps) / 10_000.0
         self.spread_cost = float(spread_bps) / 10_000.0
-        self.trading_days_per_year = int(trading_days_per_year)
+        self.trading_days_per_year = int(resolved_trading_days)
         self.borrowing_cost_daily = self.borrowing_cost_annual / self.trading_days_per_year
         self.device = device or torch.device("cpu")
 

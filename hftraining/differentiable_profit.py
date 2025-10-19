@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import torch
 
+from src.leverage_settings import get_leverage_settings
+
 
 def compute_portfolio_pnl(
     allocations: torch.Tensor,
     future_returns: torch.Tensor,
     transaction_cost: float = 0.0001,
-    leverage_limit: float = 2.0,
-    borrowing_cost: float = 0.0675,
-    trading_days: int = 252,
+    leverage_limit: float | None = None,
+    borrowing_cost: float | None = None,
+    trading_days: int | None = None,
     per_asset_costs: torch.Tensor | None = None,
     return_per_asset: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
@@ -32,6 +34,11 @@ def compute_portfolio_pnl(
     Returns:
         Tensor with per-sample pnl values.
     """
+    settings = get_leverage_settings()
+    leverage_limit = float(leverage_limit if leverage_limit is not None else settings.max_gross_leverage)
+    borrowing_cost = float(borrowing_cost if borrowing_cost is not None else settings.annual_cost)
+    trading_days = int(trading_days if trading_days is not None else settings.trading_days_per_year)
+
     if allocations.dim() == 1:
         allocations = allocations.unsqueeze(0)
     if future_returns.dim() == 1:

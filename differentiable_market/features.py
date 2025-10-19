@@ -3,12 +3,13 @@ from __future__ import annotations
 import torch
 
 
-def ohlc_to_features(ohlc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def ohlc_to_features(ohlc: torch.Tensor, add_cash: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Convert OHLC data into model features and next-step log returns.
 
     Args:
         ohlc: Tensor shaped [T, A, 4] with columns (open, high, low, close)
+        add_cash: When True, append a cash asset with zero return for de-risking.
 
     Returns:
         features: Tensor shaped [T-1, A, F=4]
@@ -35,5 +36,13 @@ def ohlc_to_features(ohlc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         dim=-1,
     )
     forward_returns = torch.log(torch.clamp(C[1:] / C[:-1], min=eps))
-    return features[:-1], forward_returns
 
+    features = features[:-1]
+    if add_cash:
+        Tm1 = features.shape[0]
+        cash_feat = torch.zeros((Tm1, 1, features.shape[-1]), dtype=features.dtype, device=features.device)
+        features = torch.cat([features, cash_feat], dim=1)
+        cash_returns = torch.zeros((forward_returns.shape[0], 1), dtype=forward_returns.dtype, device=forward_returns.device)
+        forward_returns = torch.cat([forward_returns, cash_returns], dim=1)
+
+    return features, forward_returns

@@ -19,6 +19,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from src.leverage_settings import get_leverage_settings
 from hftraining.base_model_trainer import BaseModelTrainer, PortfolioRLConfig
 from hftraining.toto_features import TotoOptions
 
@@ -102,6 +103,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the full multi-stage Toto-enhanced RL training pipeline."
     )
+
+    leverage_defaults = get_leverage_settings()
 
     parser.add_argument(
         "--base-stocks",
@@ -294,19 +297,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--leverage-limit",
         type=float,
-        default=2.0,
+        default=leverage_defaults.max_gross_leverage,
         help="Maximum gross exposure for the RL allocation head.",
     )
     parser.add_argument(
         "--borrowing-cost",
         type=float,
-        default=0.0675,
+        default=leverage_defaults.annual_cost,
         help="Annualised borrowing cost applied to leverage above 1×.",
     )
     parser.add_argument(
         "--trading-days-per-year",
         type=int,
-        default=252,
+        default=leverage_defaults.trading_days_per_year,
         help="Trading days per year used to annualise borrowing cost.",
     )
 

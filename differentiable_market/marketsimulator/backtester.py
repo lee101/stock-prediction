@@ -46,9 +46,11 @@ class DifferentiableMarketBacktester:
         self.symbols = symbols
         self.index = index
         if use_eval_split:
-            _, eval_tensor = split_train_eval(ohlc_all)
+            train_tensor, eval_tensor = split_train_eval(ohlc_all)
+            self.eval_start_idx = train_tensor.shape[0]
         else:
             eval_tensor = ohlc_all
+            self.eval_start_idx = 0
         self.eval_features, self.eval_returns = ohlc_to_features(eval_tensor)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.env = DifferentiableMarketEnv(env_cfg)
@@ -122,8 +124,13 @@ class DifferentiableMarketBacktester:
             cumulative += reward.item()
             wealth.append(math.exp(cumulative))
             if trade_handle is not None:
+                timestamp_idx = self.eval_start_idx + start + idx + 1
+                if timestamp_idx >= len(self.index):
+                    raise IndexError(
+                        f"Computed trade timestamp index {timestamp_idx} exceeds available history ({len(self.index)})"
+                    )
                 entry = {
-                    "timestamp": str(self.index[start + idx + 1]),
+                    "timestamp": str(self.index[timestamp_idx]),
                     "weights": w_t.tolist(),
                     "reward": reward.item(),
                 }
