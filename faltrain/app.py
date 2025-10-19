@@ -20,7 +20,8 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from importlib import import_module
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import fal
 from pydantic import BaseModel, Field
@@ -28,6 +29,12 @@ from pydantic import BaseModel, Field
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOG = logging.getLogger("faltrain.app")
 LOG.setLevel(logging.INFO)
+
+_TRAINING_INJECTION_MODULES: Tuple[str, ...] = (
+    "hftraining.injection",
+    "tototraining.injection",
+    "pufferlibtraining.injection",
+)
 
 
 def _env(key: str, default: Optional[str] = None) -> str:
@@ -81,6 +88,23 @@ def _maybe_seed(seed: Optional[int]) -> int:
     value = seed if seed is not None else random.randint(1, 10_000_000)
     random.seed(value)
     return value
+
+
+def _inject_training_modules(
+    torch_mod: Any,
+    numpy_mod: Any,
+    *,
+    module_names: Iterable[str] = _TRAINING_INJECTION_MODULES,
+) -> None:
+    for mod_path in module_names:
+        try:
+            module = import_module(mod_path)
+        except ImportError:
+            continue
+        setup_fn = getattr(module, "setup_training_imports", None)
+        if callable(setup_fn):
+            setup_fn(torch_mod, numpy_mod)
+            LOG.info("Injected torch/numpy into %s", mod_path)
 
 
 def _grid(space: "SweepSpace") -> List[Dict[str, Any]]:
@@ -203,19 +227,7 @@ class StockTrainerApp(
         LOG.info("torch version: %s", _torch.__version__)
 
         # Offer dependency injection to the in-repo training stacks.
-        for mod_path in (
-            "hftraining.injection",
-            "tototraining.injection",
-            "pufferlibtraining.injection",
-        ):
-            try:
-                module = __import__(mod_path, fromlist=["setup_training_imports"])
-            except ImportError:
-                continue
-            setup_fn = getattr(module, "setup_training_imports", None)
-            if callable(setup_fn):
-                setup_fn(_torch, _np)
-                LOG.info("Injected torch/numpy into %s", mod_path)
+        _inject_training_modules(_torch, _np)
 
         _ensure_dir(Path("/data"))
         _ensure_dir(Path("/data/trainingdata"))
@@ -506,4 +518,10 @@ class StockTrainerApp(
         )
 
 
-app = StockTrainerApp()
+def create_app() -> StockTrainerApp:
+    if os.getenv("IS_ISOLATE_AGENT"):
+        return StockTrainerApp()
+    return StockTrainerApp(_allow_init=True)
+
+
+app = create_app()

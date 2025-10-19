@@ -139,6 +139,7 @@ nanochat
 marketsimulator/environment.py
 tmp
 stock_trading_suite.egg-info
+gymrl/gymrl.egg-info/
 pynvml
 kronostraining/artifacts/checkpoints
 kronostraining/artifacts
@@ -154,3 +155,4 @@ differentiable_market/evals
 .envrc
 allresults.md
 reports
+wandb

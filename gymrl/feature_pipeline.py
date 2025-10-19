@@ -432,8 +432,9 @@ class FeatureBuilder:
             "top_p": float(self.backend_kwargs.get("kronos_top_p", 0.9)),
             "top_k": int(self.backend_kwargs.get("kronos_top_k", 0)),
             "sample_count": int(self.backend_kwargs.get("kronos_sample_count", 8)),
-            "oom_retries": int(self.backend_kwargs.get("kronos_oom_retries", 2)),
         }
+        # Kronos wrapper currently manages its own retry logic; discard legacy knobs silently.
+        wrapper_kwargs.pop("oom_retries", None)
 
         try:
             wrapper = KronosForecastingWrapper(**wrapper_kwargs)
