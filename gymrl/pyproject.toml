@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gymrl"
+version = "0.0.0"
+requires-python = ">=3.11,<3.14"
+description = "RL environments and helpers built around Gymnasium."
+dependencies = [
+  "numpy",
+  "pandas",
+  "gymnasium",
+]
+
+[dependency-groups]
+dev = ["pytest", "ruff", "mypy"]
+
+[tool.uv.sources]
+traininglib = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["gymrl"]
