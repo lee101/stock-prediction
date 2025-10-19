@@ -153,4 +153,6 @@ differentiable_market/evals
 .env.local
 .envrc
 allresults.md
+gymrl/gymrl.egg-info/
+wandb/
 reports
