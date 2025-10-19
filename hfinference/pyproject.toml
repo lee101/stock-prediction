@@ -13,7 +13,7 @@ dependencies = [
     "hfshared",
     "hftraining",
     "traininglib",
-    "torch==2.9.0+cu128",
+    "torch==2.9.0",
     "numpy>=1.26",
     "pandas>=2.2",
     "joblib>=1.4",

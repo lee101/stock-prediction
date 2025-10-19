@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import os
 from pathlib import Path
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from typing import Any, ContextManager, Dict, List, Optional, Tuple, TYPE_CHECKI
 
 import numpy as np
 import torch
+from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CANDIDATE_PATHS = [
@@ -316,6 +318,39 @@ class TotoPipeline:
         """Return True if any compile step succeeded."""
         return self._compiled or self._torch_compile_success
 
+    # ------------------------------------------------------------------ #
+    # Internal warm-up helpers
+    # ------------------------------------------------------------------ #
+    def _warmup(
+        self,
+        *,
+        sequence_length: int,
+        prediction_length: int = 8,
+        num_samples: int = 64,
+        samples_per_batch: Optional[int] = None,
+    ) -> None:
+        """
+        Execute a lightweight forward pass to pre-populate torch.compile / inductor caches.
+        """
+        if sequence_length <= 0:
+            return
+        samples_per_batch = samples_per_batch or min(num_samples, 64)
+        try:
+            context = torch.zeros(sequence_length, dtype=self.model_dtype, device=self.device)
+        except Exception as exc:  # pragma: no cover - defensive against device issues
+            logger.debug("Skipping Toto warmup due to tensor allocation failure: %s", exc)
+            return
+
+        try:
+            self.predict(
+                context=context,
+                prediction_length=prediction_length,
+                num_samples=num_samples,
+                samples_per_batch=samples_per_batch,
+            )
+        except Exception as exc:  # pragma: no cover - warmup best effort
+            logger.debug("Toto warmup prediction failed (best effort): %s", exc)
+
     @property
     def last_run_metadata(self) -> Optional[dict]:
         """Return details captured during the most recent forecast execution."""
@@ -333,6 +368,10 @@ class TotoPipeline:
         amp_dtype: Optional[torch.dtype] = torch.float16,
         torch_compile: bool = False,
         compile_backend: Optional[str] = None,
+        cache_policy: str = "prefer",
+        warmup_sequence: int = 512,
+        force_refresh: bool = False,
+        cache_manager: Optional[ModelCacheManager] = None,
         **kwargs: Any,
     ) -> "TotoPipeline":
         """
@@ -343,6 +382,13 @@ class TotoPipeline:
                 "Toto dependencies are not available; ensure toto and its requirements are installed"
             ) from _IMPORT_ERROR
 
+        policy = cache_policy.lower()
+        if policy not in {"prefer", "never", "only"}:
+            raise ValueError(f"Unrecognised cache policy '{cache_policy}'. Expected 'prefer', 'never', or 'only'.")
+
+        manager = cache_manager or ModelCacheManager("toto")
+        dtype_token = dtype_to_token(torch_dtype)
+        amp_token = dtype_to_token(amp_dtype)
         device = device_map if device_map != "mps" else "cpu"
 
         extra_kwargs: Dict[str, Any] = dict(kwargs)
@@ -352,21 +398,110 @@ class TotoPipeline:
                 pipeline_kwargs[key] = extra_kwargs.pop(key)
 
         model_kwargs: Dict[str, Any] = extra_kwargs
-        model = cast(TotoModelType, Toto.from_pretrained(model_id, **model_kwargs))
+        metadata_requirements = {
+            "model_id": model_id,
+            "dtype": dtype_token,
+            "amp_dtype": amp_token,
+            "compile_mode": (compile_mode or "none"),
+            "compile_backend": (compile_backend or "none"),
+            "torch_version": torch.__version__,
+        }
 
-        return cls(
-            model,
-            device=device,
-            torch_dtype=torch_dtype,
-            amp_dtype=amp_dtype,
-            max_oom_retries=int(pipeline_kwargs.get("max_oom_retries", 2)),
-            min_samples_per_batch=int(pipeline_kwargs.get("min_samples_per_batch", 32)),
-            min_num_samples=int(pipeline_kwargs.get("min_num_samples", 256)),
-            compile_model=compile_model,
-            torch_compile=torch_compile,
-            compile_mode=compile_mode,
-            compile_backend=compile_backend,
-        )
+        use_cache = policy != "never"
+        loaded_from_cache = False
+        with manager.compilation_env(model_id, dtype_token):
+            metadata = manager.load_metadata(model_id, dtype_token) if use_cache else None
+            model: TotoModelType
+            if (
+                use_cache
+                and not force_refresh
+                and metadata
+                and manager.metadata_matches(metadata, metadata_requirements)
+            ):
+                cache_path = manager.load_pretrained_path(model_id, dtype_token)
+                if cache_path is not None:
+                    try:
+                        model = cast(
+                            TotoModelType,
+                            Toto.from_pretrained(str(cache_path), **model_kwargs),
+                        )
+                        loaded_from_cache = True
+                        logger.info(
+                            "Loaded Toto model '%s' (%s) from compiled cache.",
+                            model_id,
+                            dtype_token,
+                        )
+                    except Exception as exc:  # pragma: no cover - backstop for unexpected load failures
+                        loaded_from_cache = False
+                        logger.warning(
+                            "Failed to load cached Toto weights from %s: %s",
+                            cache_path,
+                            exc,
+                        )
+            if policy == "only" and not loaded_from_cache:
+                raise RuntimeError(
+                    f"Compiled Toto cache unavailable for model '{model_id}' and dtype '{dtype_token}'. "
+                    "Run the model pre-warming utilities to generate cached weights."
+                )
+
+            if not loaded_from_cache:
+                model = cast(TotoModelType, Toto.from_pretrained(model_id, **model_kwargs))
+                logger.info(
+                    "Loaded Toto model '%s' from source (cache_policy=%s).",
+                    model_id,
+                    policy,
+                )
+
+            pipeline = cls(
+                model,
+                device=device,
+                torch_dtype=torch_dtype,
+                amp_dtype=amp_dtype,
+                max_oom_retries=int(pipeline_kwargs.get("max_oom_retries", 2)),
+                min_samples_per_batch=int(pipeline_kwargs.get("min_samples_per_batch", 32)),
+                min_num_samples=int(pipeline_kwargs.get("min_num_samples", 256)),
+                compile_model=compile_model,
+                torch_compile=torch_compile,
+                compile_mode=compile_mode,
+                compile_backend=compile_backend,
+            )
+
+            should_warmup = (
+                warmup_sequence > 0
+                and (compile_model or torch_compile or pipeline.compiled)
+                and not loaded_from_cache
+            )
+            if should_warmup:
+                pipeline._warmup(sequence_length=warmup_sequence)
+
+            if use_cache and (force_refresh or not loaded_from_cache):
+                model_obj = getattr(pipeline, "model", None)
+                if model_obj is not None:
+                    metadata_payload = {
+                        **metadata_requirements,
+                        "device": device,
+                        "compile_model": bool(pipeline._compiled),
+                        "torch_compile": bool(pipeline._torch_compile_success),
+                        "warmup_sequence": int(warmup_sequence),
+                    }
+                    try:
+                        manager.persist_model_state(
+                            model_id=model_id,
+                            dtype_token=dtype_token,
+                            model=model_obj,
+                            metadata=metadata_payload,
+                            force=force_refresh,
+                        )
+                    except ModelCacheError as exc:
+                        logger.warning(
+                            "Failed to persist Toto cache for model '%s': %s",
+                            model_id,
+                            exc,
+                        )
+                else:
+                    logger.debug("Toto pipeline model attribute missing; skipping cache persistence.")
+
+        return pipeline
 
     def predict(
         self,

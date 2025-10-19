@@ -8,6 +8,7 @@ from typing import Iterable, Optional
 
 import os
 
+from src.leverage_settings import get_leverage_settings
 from . import alpaca_wrapper_mock
 from . import data_curate_daily_mock
 from . import process_utils_mock
@@ -342,12 +343,14 @@ def activate_simulation(
     prices = load_price_series(symbols, data_root=data_root)
     first_timestamp = min(series.timestamp for series in prices.values())
     clock = SimulatedClock(first_timestamp)
+    leverage_settings = get_leverage_settings()
+    alpaca_wrapper_mock.margin_multiplier = leverage_settings.max_gross_leverage
     state = SimulationState(
         clock=clock,
         prices=prices,
         cash=initial_cash,
-        buying_power=initial_cash * alpaca_wrapper_mock.margin_multiplier,
         equity=initial_cash,
+        leverage_settings=leverage_settings,
     )
     set_state(state)
     alpaca_wrapper_mock.reset_account(initial_cash)

@@ -15,7 +15,7 @@ dependencies = [
     "gymnasium>=0.29",
     "stable-baselines3>=2.3",
     "chronos-forecasting>=1.5.3",
-    "torch==2.9.0+cu128",
+    "torch==2.9.0",
 ]
 
 [project.optional-dependencies]
