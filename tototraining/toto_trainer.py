@@ -582,6 +582,8 @@ class TotoTrainer:
         
         # Metrics and checkpointing
         self.metrics_tracker = MetricsTracker()
+        self.preprocessor_save_path = Path(self.config.save_dir) / 'preprocessor.pt'
+        self.data_module = None
         self.checkpoint_manager = CheckpointManager(
             config.save_dir, 
             config.keep_last_n_checkpoints,
@@ -1318,6 +1320,7 @@ class TotoTrainer:
         
         # Create OHLC data loader
         dataloader = TotoOHLCDataLoader(self.dataloader_config)
+        self.data_module = dataloader
         self.dataloaders = dataloader.prepare_dataloaders()
         
         if not self.dataloaders:
@@ -1328,6 +1331,18 @@ class TotoTrainer:
         # Log dataset sizes
         for split, loader in self.dataloaders.items():
             self.logger.info(f"{split}: {len(loader.dataset)} samples, {len(loader)} batches")
+
+        if (self.data_module is not None and
+                getattr(self.data_module.preprocessor, 'scaler_class', None) is not None and
+                self.data_module.preprocessor.scaler_class is not None):
+            try:
+                self.preprocessor_save_path.parent.mkdir(parents=True, exist_ok=True)
+                self.data_module.save_preprocessor(str(self.preprocessor_save_path))
+                self.logger.info(
+                    "Saved preprocessor metadata to %s", self.preprocessor_save_path
+                )
+            except Exception as exc:
+                self.logger.warning("Failed to save preprocessor: %s", exc)
     
     def setup_model(self):
         """Setup model, optimizer, and scheduler"""

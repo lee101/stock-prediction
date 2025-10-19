@@ -7,7 +7,7 @@ name = "hftraining"
 version = "0.1.0"
 description = "HuggingFace training pipelines and experiment harnesses for the trading workspace."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "stock-trading-suite",
     "hfshared",
