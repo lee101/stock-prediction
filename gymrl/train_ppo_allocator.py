@@ -20,6 +20,7 @@ Usage example:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 from dataclasses import asdict
@@ -40,6 +41,7 @@ from gymrl import (
     PortfolioEnvConfig,
     build_offline_dataset,
 )
+import torch
 from gymrl.cache_utils import load_feature_cache, save_feature_cache
 from gymrl.config import OfflineDatasetConfig
 from gymrl.eval_utils import evaluate_trained_policy
@@ -124,6 +126,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-cash", dest="include_cash", action="store_true", help="Include a synthetic cash asset (default).")
     parser.add_argument("--no-include-cash", dest="include_cash", action="store_false", help="Disable the synthetic cash asset.")
     parser.add_argument("--cash-return", type=float, default=0.0, help="Per-step deterministic return of the synthetic cash asset.")
+    parser.add_argument("--enable-loss-shutdown", action="store_true", help="Enable cooldown gating after unprofitable trades.")
+    parser.add_argument("--loss-shutdown-probe-weight", type=float, default=0.05, help="Maximum allocation magnitude allowed during cooldown (probe trade size).")
+    parser.add_argument("--loss-shutdown-cooldown", type=int, default=3, help="Number of steps to retain the loss shutdown gate after a loss.")
+    parser.add_argument("--loss-shutdown-penalty", type=float, default=0.0, help="Penalty multiplier applied to weights kept in cooldown.")
+    parser.add_argument("--loss-shutdown-min-position", type=float, default=1e-4, help="Minimum absolute weight considered active for the shutdown logic.")
+    parser.add_argument(
+        "--loss-shutdown-return-tolerance",
+        type=float,
+        default=1e-5,
+        help="Absolute net return threshold treated as neutral when updating cooldown state.",
+    )
+    parser.add_argument(
+        "--policy-dtype",
+        type=str,
+        default="float32",
+        choices=["float32", "bfloat16"],
+        help="Torch dtype used for PPO policy forward/backward passes (bfloat16 enables autocast).",
+    )
     parser.add_argument("--device", type=str, default="auto", help="Device to use for Stable-Baselines3 (e.g., 'cpu', 'cuda', or 'auto').")
     parser.set_defaults(include_cash=True)
     return parser.parse_args()
@@ -358,6 +378,12 @@ def main() -> None:
         uncertainty_penalty=args.uncertainty_penalty,
         weight_cap=args.weight_cap,
         allow_short=args.allow_short,
+        loss_shutdown_enabled=args.enable_loss_shutdown,
+        loss_shutdown_cooldown=args.loss_shutdown_cooldown,
+        loss_shutdown_probe_weight=args.loss_shutdown_probe_weight,
+        loss_shutdown_penalty=args.loss_shutdown_penalty,
+        loss_shutdown_min_position=args.loss_shutdown_min_position,
+        loss_shutdown_return_tolerance=args.loss_shutdown_return_tolerance,
         leverage_cap=args.leverage_cap,
         include_cash=args.include_cash,
         cash_return=args.cash_return,
@@ -410,6 +436,23 @@ def main() -> None:
         seed=args.seed,
     )
 
+    if args.policy_dtype == "bfloat16":
+        try:
+            torch.ones(1, device=model.device, dtype=torch.bfloat16)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"policy-dtype bfloat16 requested but not supported on device {model.device}"
+            ) from exc
+        logger.info("Enabling bfloat16 autocast for PPO policy (device=%s).", model.device)
+    else:
+        logger.info("Using float32 policy dtype (device=%s).", model.device)
+
+    def _autocast_context() -> contextlib.AbstractContextManager:
+        if args.policy_dtype == "bfloat16":
+            device_type = "cuda" if model.device.type == "cuda" else "cpu"
+            return torch.autocast(device_type=device_type, dtype=torch.bfloat16)
+        return contextlib.nullcontext()
+
     checkpoint_callback = CheckpointCallback(
         save_freq=max(args.save_frequency // args.n_steps, 1),
         save_path=str(args.output_dir),
@@ -440,7 +483,8 @@ def main() -> None:
         backend_label,
     )
 
-    model.learn(total_timesteps=args.num_timesteps, callback=[checkpoint_callback, eval_callback, topk_callback])
+    with _autocast_context():
+        model.learn(total_timesteps=args.num_timesteps, callback=[checkpoint_callback, eval_callback, topk_callback])
     model_path = args.output_dir / "ppo_allocator_final.zip"
     model.save(str(model_path))
     logger.info("Saved final PPO model to %s", model_path)
@@ -453,7 +497,8 @@ def main() -> None:
         start_index=eval_start,
         episode_length=eval_episode_len,
     )()
-    validation_metrics = evaluate_trained_policy(model, rollout_env)
+    with _autocast_context():
+        validation_metrics = evaluate_trained_policy(model, rollout_env)
     logger.info(
         "Validation (last %d days) -> final value: %.4f, cumulative return: %.2f%%, avg turnover: %.4f, avg trading cost: %.6f",
         validation_steps,
@@ -481,7 +526,7 @@ def main() -> None:
     }
     metadata_payload = {
         "args": args_serializable,
-        "env_config": env_config.__dict__,
+        "env_config": asdict(env_config),
         "train_steps": train_steps,
         "eval_start": eval_start,
         "validation_steps": validation_steps,
@@ -496,6 +541,7 @@ def main() -> None:
         "feature_extra_metadata": extra_meta,
         "forecast_backend_used": backend_label,
         "forecast_backend_errors": backend_errors,
+        "policy_dtype": args.policy_dtype,
     }
     with metadata_path.open("w", encoding="utf-8") as f:
         json.dump(metadata_payload, f, indent=2)

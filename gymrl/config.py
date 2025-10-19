@@ -31,6 +31,17 @@ class PortfolioEnvConfig:
         include_cash: If True, a synthetic cash asset is appended with deterministic return.
         cash_return: Deterministic return for the synthetic cash asset per step.
         forecast_cvar_alpha: Alpha level assumed when interpreting CVaR forecast inputs.
+        loss_shutdown_enabled: Enable cooldown gating when recent trades in an asset/direction
+            were unprofitable.
+        loss_shutdown_cooldown: Number of steps an asset/direction remains in cooldown after a loss.
+        loss_shutdown_probe_weight: Maximum weight magnitude allowed while an asset/direction is
+            in cooldown. Acts as the "probe trade" size.
+        loss_shutdown_penalty: Additional reward penalty applied to allocations that remain in
+            cooldown, proportional to absolute weight.
+        loss_shutdown_min_position: Minimum absolute weight treated as an active position for the
+            shutdown logic to avoid noise from tiny allocations.
+        loss_shutdown_return_tolerance: Absolute return threshold below which outcomes are treated
+            as neutral (neither profit nor loss) for cooldown updates.
     """
 
     costs_bps: float = 3.0
@@ -41,6 +52,12 @@ class PortfolioEnvConfig:
     uncertainty_penalty: float = 0.0
     weight_cap: Optional[float] = 0.3
     allow_short: bool = False
+    loss_shutdown_enabled: bool = False
+    loss_shutdown_cooldown: int = 3
+    loss_shutdown_probe_weight: float = 0.05
+    loss_shutdown_penalty: float = 0.0
+    loss_shutdown_min_position: float = 1e-4
+    loss_shutdown_return_tolerance: float = 1e-5
     leverage_cap: float = 1.0
     include_cash: bool = True
     cash_return: float = 0.0

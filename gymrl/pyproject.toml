@@ -23,3 +23,7 @@ dev = ["pytest>=8.3"]
 
 [tool.uv.sources]
 stock-trading-suite = { workspace = true }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gymrl", "gymrl.*"]

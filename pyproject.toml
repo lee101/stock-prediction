@@ -210,9 +210,7 @@ explicit = true
 torch-backend = "auto"
 
 [tool.uv.sources]
-stock-trading-suite = { path = ".", editable = true }
-toto = { path = "toto", editable = true }
-# Route PyTorch packages to the correct index so uv doesn't scan multiple indexes.
+toto = { workspace = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }

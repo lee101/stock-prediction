@@ -64,6 +64,10 @@ class EnvStepInfo:
     net_return_non_crypto: float = 0.0
     weight_crypto: float = 0.0
     weight_non_crypto: float = 0.0
+    loss_shutdown_penalty: float = 0.0
+    loss_shutdown_active_long: float = 0.0
+    loss_shutdown_active_short: float = 0.0
+    loss_shutdown_clipped: float = 0.0
 
     def to_dict(self) -> Dict[str, float]:
         return {
@@ -83,6 +87,10 @@ class EnvStepInfo:
             "net_return_non_crypto": self.net_return_non_crypto,
             "weight_crypto": self.weight_crypto,
             "weight_non_crypto": self.weight_non_crypto,
+            "loss_shutdown_penalty": self.loss_shutdown_penalty,
+            "loss_shutdown_active_long": self.loss_shutdown_active_long,
+            "loss_shutdown_active_short": self.loss_shutdown_active_short,
+            "loss_shutdown_clipped": self.loss_shutdown_clipped,
         }
 
 
@@ -240,6 +248,16 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
         else:
             self.action_space = spaces.Box(low=-8.0, high=8.0, shape=(self.N,), dtype=np.float32)
 
+        # Loss shutdown state ----------------------------------------------------
+        self._loss_shutdown_penalty_term: float = 0.0
+        self._loss_shutdown_clipped_amount: float = 0.0
+        self._loss_shutdown_active_long: float = 0.0
+        self._loss_shutdown_active_short: float = 0.0
+        self._loss_shutdown_counters_long: Optional[np.ndarray] = None
+        self._loss_shutdown_counters_short: Optional[np.ndarray] = None
+        if self.config.loss_shutdown_enabled:
+            self._ensure_loss_shutdown_buffers()
+
     # Gymnasium API -----------------------------------------------------------------
     def reset(
         self,
@@ -267,6 +285,15 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
         self._peak_value = 1.0
         self._step_count = 0
         self._index = self.start_index
+        self._loss_shutdown_penalty_term = 0.0
+        self._loss_shutdown_clipped_amount = 0.0
+        self._loss_shutdown_active_long = 0.0
+        self._loss_shutdown_active_short = 0.0
+        if self.config.loss_shutdown_enabled:
+            self._ensure_loss_shutdown_buffers()
+            self._loss_shutdown_counters_long.fill(0)
+            if self._loss_shutdown_counters_short is not None:
+                self._loss_shutdown_counters_short.fill(0)
 
         observation = self._get_observation()
         return observation, {}
@@ -313,7 +340,8 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             gross = np.sum(np.abs(weights))
             if gross > self.config.leverage_cap:
                 weights *= self.config.leverage_cap / max(gross, 1e-6)
-            return weights.astype(np.float32)
+            weights = self._apply_loss_shutdown(weights)
+            return weights.astype(np.float32, copy=False)
 
         weights = _softmax(action)
         if self.config.weight_cap is not None:
@@ -323,7 +351,8 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
                 weights = np.full_like(weights, 1.0 / weights.size)
             else:
                 weights = capped / capped_sum
-        return weights.astype(np.float32)
+        weights = self._apply_loss_shutdown(weights)
+        return weights.astype(np.float32, copy=False)
 
     def _normalise_long_only(self, weights: np.ndarray) -> np.ndarray:
         weights = np.asarray(weights, dtype=np.float32)
@@ -346,10 +375,106 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
                 weights = np.full(self.N, 1.0 / self.N, dtype=np.float32)
             else:
                 weights = weights / normaliser
+        weights = self._apply_loss_shutdown(weights)
         return weights
 
+    def _ensure_loss_shutdown_buffers(self) -> None:
+        if not self.config.loss_shutdown_enabled:
+            return
+        if self._loss_shutdown_counters_long is None or self._loss_shutdown_counters_long.shape[0] != self.N:
+            self._loss_shutdown_counters_long = np.zeros(self.N, dtype=np.int32)
+        if self.config.allow_short:
+            if self._loss_shutdown_counters_short is None or self._loss_shutdown_counters_short.shape[0] != self.N:
+                self._loss_shutdown_counters_short = np.zeros(self.N, dtype=np.int32)
+        else:
+            self._loss_shutdown_counters_short = None
+
+    def _apply_loss_shutdown(self, proposed: np.ndarray) -> np.ndarray:
+        proposed = np.asarray(proposed, dtype=np.float32)
+        if not self.config.loss_shutdown_enabled:
+            self._loss_shutdown_penalty_term = 0.0
+            self._loss_shutdown_clipped_amount = 0.0
+            return proposed
+
+        self._ensure_loss_shutdown_buffers()
+        weights = proposed.copy()
+        min_pos = float(self.config.loss_shutdown_min_position)
+        probe = float(np.clip(self.config.loss_shutdown_probe_weight, 0.0, 1.0))
+
+        active_long = self._loss_shutdown_counters_long > 0
+        active_short = None
+        if self.config.allow_short and self._loss_shutdown_counters_short is not None:
+            active_short = self._loss_shutdown_counters_short > 0
+
+        if np.any(active_long):
+            positive_mask = weights > min_pos
+            exceed_long = active_long & positive_mask & (weights > probe)
+            if np.any(exceed_long):
+                weights[exceed_long] = probe
+
+        if active_short is not None and np.any(active_short):
+            negative_mask = weights < -min_pos
+            exceed_short = active_short & negative_mask & (np.abs(weights) > probe)
+            if np.any(exceed_short):
+                weights[exceed_short] = -probe if probe > 0.0 else 0.0
+
+        diff = np.maximum(0.0, np.abs(proposed) - np.abs(weights))
+        self._loss_shutdown_clipped_amount = float(diff.sum())
+
+        penalty_scale = float(self.config.loss_shutdown_penalty)
+        if penalty_scale > 0.0:
+            penalty_contrib = 0.0
+            if np.any(active_long):
+                penalty_contrib += float(np.sum(np.abs(weights[active_long & (weights > min_pos)])))
+            if active_short is not None and np.any(active_short):
+                penalty_contrib += float(np.sum(np.abs(weights[active_short & (weights < -min_pos)])))
+            self._loss_shutdown_penalty_term = penalty_scale * penalty_contrib
+        else:
+            self._loss_shutdown_penalty_term = 0.0
+
+        return weights.astype(np.float32, copy=False)
+
+    def _update_loss_shutdown_counters(self, executed_weights: np.ndarray, net_asset_returns: np.ndarray) -> None:
+        if not self.config.loss_shutdown_enabled:
+            self._loss_shutdown_active_long = 0.0
+            self._loss_shutdown_active_short = 0.0
+            return
+
+        self._ensure_loss_shutdown_buffers()
+
+        cooldown = int(max(1, self.config.loss_shutdown_cooldown))
+        min_pos = float(self.config.loss_shutdown_min_position)
+        tolerance = float(self.config.loss_shutdown_return_tolerance)
+
+        long_counts = self._loss_shutdown_counters_long
+        long_counts[:] = np.maximum(long_counts - 1, 0)
+        positive_mask = executed_weights > min_pos
+        loss_long = positive_mask & (net_asset_returns < -tolerance)
+        profit_long = positive_mask & (net_asset_returns > tolerance)
+        if np.any(loss_long):
+            long_counts[loss_long] = cooldown
+        if np.any(profit_long):
+            long_counts[profit_long] = 0
+
+        if self.config.allow_short and self._loss_shutdown_counters_short is not None:
+            short_counts = self._loss_shutdown_counters_short
+            short_counts[:] = np.maximum(short_counts - 1, 0)
+            negative_mask = executed_weights < -min_pos
+            loss_short = negative_mask & (net_asset_returns < -tolerance)
+            profit_short = negative_mask & (net_asset_returns > tolerance)
+            if np.any(loss_short):
+                short_counts[loss_short] = cooldown
+            if np.any(profit_short):
+                short_counts[profit_short] = 0
+            self._loss_shutdown_active_short = float(np.count_nonzero(short_counts))
+        else:
+            self._loss_shutdown_active_short = 0.0
+
+        self._loss_shutdown_active_long = float(np.count_nonzero(long_counts))
+
     def _transition(self, new_weights: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict[str, float]]:
-        deltas = np.abs(new_weights - self._weights)
+        previous_weights = self._weights.copy()
+        deltas = np.abs(new_weights - previous_weights)
         turnover = float(deltas.sum())
         trading_cost = float(np.dot(deltas, self.costs_vector))
 
@@ -358,6 +483,8 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
 
         realized_vector = self.realized_returns[self._index]
         asset_returns = new_weights * realized_vector
+        per_asset_cost = deltas * self.costs_vector
+        net_asset_returns_vector = asset_returns - per_asset_cost
         crypto_return = float(asset_returns[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
         step_return = float(asset_returns.sum())
         non_crypto_return = step_return - crypto_return
@@ -388,11 +515,18 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
         reward -= self.config.drawdown_penalty * drawdown
         reward -= cvar_penalty
         reward -= uncertainty_penalty
+        reward -= self._loss_shutdown_penalty_term
+        loss_shutdown_penalty = self._loss_shutdown_penalty_term
 
-        self._last_weights = self._weights.copy()
+        self._last_weights = previous_weights
         self._weights = new_weights.astype(np.float32)
         self._index += 1
         self._step_count += 1
+
+        self._update_loss_shutdown_counters(new_weights, net_asset_returns_vector)
+        loss_shutdown_active_long = self._loss_shutdown_active_long
+        loss_shutdown_active_short = self._loss_shutdown_active_short
+        loss_shutdown_clipped = self._loss_shutdown_clipped_amount
 
         terminated = self._index >= self._max_index
         truncated = False
@@ -414,6 +548,10 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             net_return_non_crypto=net_non_crypto_return,
             weight_crypto=weight_crypto,
             weight_non_crypto=weight_non_crypto,
+            loss_shutdown_penalty=loss_shutdown_penalty,
+            loss_shutdown_active_long=loss_shutdown_active_long,
+            loss_shutdown_active_short=loss_shutdown_active_short,
+            loss_shutdown_clipped=loss_shutdown_clipped,
         ).to_dict()
 
         observation = self._get_observation() if not terminated else np.zeros(self.observation_space.shape, dtype=np.float32)
