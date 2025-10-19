@@ -123,8 +123,8 @@ def train_base_model(
     sequence_length: int = 60,
     prediction_horizon: int = 5,
     max_files: Optional[int] = None,
-) -> Tuple[str, HFTrainingConfig, np.ndarray, np.ndarray, List[str]]:
-    """Train on all trainingdata/train and return (final_ckpt_path, config, mean, std, symbols)."""
+) -> Tuple[str, HFTrainingConfig, np.ndarray, np.ndarray, List[str], str]:
+    """Train on all trainingdata/train and return (final_ckpt_path, config, mean, std, symbols, device)."""
     data_root = find_trainingdata_root()
     data_all, symbols = load_all_training_data(data_root, max_files=max_files)
     seq_len = sequence_length
@@ -175,13 +175,15 @@ def train_base_model(
     model = TransformerTradingModel(config, input_dim=data_all.shape[1])
     trainer = HFTrainer(model=model, config=config, train_dataset=train_ds, eval_dataset=val_ds)
     trainer.train()
+    actual_device = getattr(trainer, "device", torch.device(device_str))
     final_ckpt = Path(config.output_dir) / 'final_model.pth'
     stats_path = base_output_dir / 'normalization_stats.npz'
     try:
         np.savez(stats_path, mean=mean, std=std)
     except Exception as exc:
         print(f"Warning: failed to persist normalization stats to {stats_path}: {exc}")
-    return str(final_ckpt), config, mean, std, symbols
+    actual_device_str = actual_device.type if hasattr(actual_device, "type") else str(actual_device)
+    return str(final_ckpt), config, mean, std, symbols, actual_device_str
 
 
 def finetune_symbol(csv_path: Path, base_ckpt: str, base_config: HFTrainingConfig, mean: np.ndarray, std: np.ndarray,
@@ -210,7 +212,7 @@ def finetune_symbol(csv_path: Path, base_ckpt: str, base_config: HFTrainingConfi
     model = TransformerTradingModel(cfg, input_dim=norm.shape[1])
     # Load base weights
     try:
-        state = torch.load(base_ckpt, map_location='cpu')
+        state = torch.load(base_ckpt, map_location='cpu', weights_only=False)
         state_dict = state.get('model_state_dict', state)
         if all(k.startswith('module.') for k in state_dict.keys()):
             state_dict = {k[len('module.'):]: v for k, v in state_dict.items()}
@@ -332,7 +334,7 @@ def main(argv: Optional[List[str]] = None):
     base_out.mkdir(parents=True, exist_ok=True)
 
     print(f"Training base model on aggregated trainingdata → {base_out}")
-    base_ckpt, base_cfg, mean, std, base_symbols = train_base_model(
+    base_ckpt, base_cfg, mean, std, base_symbols, actual_device = train_base_model(
         base_out,
         device_str=device_str,
         max_steps=args.max_base_steps,
@@ -350,7 +352,7 @@ def main(argv: Optional[List[str]] = None):
         "symbols": base_symbols,
         "sequence_length": base_cfg.sequence_length,
         "prediction_horizon": base_cfg.prediction_horizon,
-        "device": device_str,
+        "device": actual_device,
         "max_steps": base_cfg.max_steps,
     }
     try:
@@ -403,14 +405,14 @@ def main(argv: Optional[List[str]] = None):
             cfg.logging_dir = str(out_dir / 'logs')
             model = TransformerTradingModel(cfg, input_dim=norm.shape[1])
             try:
-                state = torch.load(ckpt, map_location='cpu')
+                state = torch.load(ckpt, map_location='cpu', weights_only=False)
                 state_dict = state.get('model_state_dict', state)
                 if all(k.startswith('module.') for k in state_dict.keys()):
                     state_dict = {k[len('module.'):]: v for k, v in state_dict.items()}
                 model.load_state_dict(state_dict, strict=False)
             except Exception as e:
                 print(f"  Warning: failed to load fine-tuned weights for {sym}: {e}")
-            metrics = compute_pnl_for_dataset(model, test_ds, device=torch.device(device_str))
+            metrics = compute_pnl_for_dataset(model, test_ds, device=torch.device(actual_device))
             metrics_rows.append({'symbol': sym, **metrics})
             print(f"  {sym} PnL — total_return: {metrics['total_return']*100:.2f}% final_equity: ${metrics['final_equity']:.2f} sharpe: {metrics['sharpe']:.2f} mdd: {metrics['max_drawdown']*100:.2f}% trades: {metrics['num_trades']} win_rate: {metrics['win_rate']*100:.1f}%")
         except Exception as e:
