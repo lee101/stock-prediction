@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.tensorboard import SummaryWriter
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 from dataclasses import dataclass
 
 from src.comparisons import is_buy_side
@@ -35,10 +35,47 @@ _model_selection_cache: Dict[str, str] = {}
 _toto_params_cache: Dict[str, dict] = {}
 _kronos_params_cache: Dict[str, dict] = {}
 
+_BOOL_TRUE = {"1", "true", "yes", "on"}
+_GPU_FALLBACK_ENV = "MARKETSIM_ALLOW_CPU_FALLBACK"
+_cpu_fallback_log_state: Set[Tuple[str, Optional[str]]] = set()
+
 pipeline: Optional[TotoPipeline] = None
 kronos_wrapper_cache: Dict[tuple, KronosForecastingWrapper] = {}
 
 ReturnSeries = Union[np.ndarray, pd.Series]
+
+
+def _cpu_fallback_enabled() -> bool:
+    value = os.getenv(_GPU_FALLBACK_ENV)
+    if value is None:
+        return False
+    return value.strip().lower() in _BOOL_TRUE
+
+
+def _require_cuda(feature: str, *, symbol: Optional[str] = None, allow_cpu_fallback: bool = True) -> None:
+    if torch.cuda.is_available():
+        return
+    if allow_cpu_fallback and _cpu_fallback_enabled():
+        key = (feature, symbol)
+        if key not in _cpu_fallback_log_state:
+            target = f"{feature} ({symbol})" if symbol else feature
+            logger.warning(
+                "%s requires CUDA but only CPU is available; %s=1 detected so continuing in CPU fallback mode. "
+                "Expect slower execution and reduced model fidelity.",
+                target,
+                _GPU_FALLBACK_ENV,
+            )
+            _cpu_fallback_log_state.add(key)
+        return
+    target = f"{feature} ({symbol})" if symbol else feature
+    message = (
+        f"{target} requires a CUDA-capable GPU. Install PyTorch 2.9 with CUDA 12.8 via "
+        f"'uv pip install torch --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio' "
+        "and verify drivers are configured."
+    )
+    if allow_cpu_fallback:
+        message += f" You may set {_GPU_FALLBACK_ENV}=1 to run CPU-only for testing."
+    raise RuntimeError(message)
 
 
 @dataclass(frozen=True)
@@ -170,8 +207,6 @@ def calibrate_signal(predictions: np.ndarray, actual_returns: np.ndarray) -> Tup
         slope, intercept = 1.0, 0.0
     return float(slope), float(intercept)
 
-_BOOL_TRUE = {"1", "true", "yes", "on"}
-
 if __name__ == "__main__" and "REAL_TESTING" not in os.environ:
     os.environ["REAL_TESTING"] = "1"
     logger.info("REAL_TESTING not set; defaulting to enabled for standalone execution.")
@@ -260,6 +295,7 @@ def _reset_model_caches() -> None:
     _model_selection_log_state.clear()
     _toto_params_log_state.clear()
     _forced_kronos_logged_symbols.clear()
+    _cpu_fallback_log_state.clear()
 
 
 def release_model_resources() -> None:
@@ -531,6 +567,7 @@ def load_toto_pipeline() -> TotoPipeline:
     global pipeline
     _drop_kronos_wrappers()
     if pipeline is None:
+        _require_cuda("Toto forecasting pipeline")
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Loading Toto pipeline '{TOTO_MODEL_ID}' on {device}")
 
@@ -576,8 +613,7 @@ def load_toto_pipeline() -> TotoPipeline:
 
 def load_kronos_wrapper(params: Dict[str, float]) -> KronosForecastingWrapper:
     _drop_toto_pipeline()
-    if not torch.cuda.is_available():
-        raise RuntimeError("Kronos inference requires a CUDA-capable GPU.")
+    _require_cuda("Kronos inference", allow_cpu_fallback=False)
     key = (
         params["temperature"],
         params["top_p"],
@@ -876,6 +912,10 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
 
     best_model = resolve_best_model(symbol)
     use_kronos = best_model == "kronos"
+    if use_kronos:
+        _require_cuda("Kronos forecasting", symbol=symbol, allow_cpu_fallback=False)
+    else:
+        _require_cuda("Toto forecasting", symbol=symbol)
 
     try:
         toto_params = resolve_toto_params(symbol)

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
 os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
+os.environ.setdefault("MARKETSIM_ALLOW_CPU_FALLBACK", "1")
 
 import pytest
 

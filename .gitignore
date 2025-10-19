@@ -143,3 +143,10 @@ pynvml
 kronostraining/artifacts/checkpoints
 kronostraining/artifacts
 metric_history.json
+
+# Allow tracked source model implementations while keeping build artifacts ignored
+!src/models/
+src/models/__pycache__/
+src/models/__pycache__/**
+!src/models/*.py
+!src/models/**/*.py
