@@ -52,6 +52,17 @@ def _cpu_fallback_enabled() -> bool:
     return value.strip().lower() in _BOOL_TRUE
 
 
+def _in_test_mode() -> bool:
+    """Return True when unit-test machinery requests lightweight behavior."""
+    test_flag = os.getenv("TESTING")
+    if test_flag is not None and test_flag.strip().lower() in _BOOL_TRUE:
+        return True
+    mock_flag = os.getenv("MARKETSIM_ALLOW_MOCK_ANALYTICS")
+    if mock_flag is not None and mock_flag.strip().lower() in _BOOL_TRUE:
+        return True
+    return False
+
+
 def _require_cuda(feature: str, *, symbol: Optional[str] = None, allow_cpu_fallback: bool = True) -> None:
     if torch.cuda.is_available():
         return
@@ -515,6 +526,16 @@ def resolve_kronos_params(symbol: str) -> dict:
 
 
 def resolve_best_model(symbol: str) -> str:
+    if _in_test_mode():
+        cached = _model_selection_cache.get(symbol)
+        if cached == "toto":
+            return cached
+        _model_selection_cache[symbol] = "toto"
+        state = ("test-mode", "toto")
+        if _model_selection_log_state.get(symbol) != state:
+            logger.info("TESTING mode active — forcing Toto model for %s.", symbol)
+            _model_selection_log_state[symbol] = state
+        return "toto"
     if _is_force_kronos_enabled():
         _model_selection_cache.pop(symbol, None)
         if symbol not in _forced_kronos_logged_symbols:
@@ -806,91 +827,95 @@ def backtest_forecasts(symbol, num_simulations=100):
     base_dir = Path(__file__).parent
     data_dir = base_dir / "data" / current_time_formatted
 
+    global SPREAD
     spread = fetch_spread(symbol)
     logger.info(f"spread: {spread}")
-    global SPREAD
+    previous_spread = SPREAD
     SPREAD = spread  #
 
     # stock_data = load_stock_data_from_csv(csv_file)
 
-    if len(stock_data) < num_simulations:
-        logger.warning(
-            f"Not enough historical data for {num_simulations} simulations. Using {len(stock_data)} instead.")
-        num_simulations = len(stock_data)
+    try:
+        if len(stock_data) < num_simulations:
+            logger.warning(
+                f"Not enough historical data for {num_simulations} simulations. Using {len(stock_data)} instead.")
+            num_simulations = len(stock_data)
 
-    results = []
+        results = []
 
-    is_crypto = symbol in crypto_symbols
+        is_crypto = symbol in crypto_symbols
 
-    for sim_number in range(num_simulations):
-        simulation_data = stock_data.iloc[:-(sim_number + 1)].copy(deep=True)
-        if simulation_data.empty:
-            logger.warning(f"No data left for simulation {sim_number + 1}")
-            continue
+        for sim_number in range(num_simulations):
+            simulation_data = stock_data.iloc[:-(sim_number + 1)].copy(deep=True)
+            if simulation_data.empty:
+                logger.warning(f"No data left for simulation {sim_number + 1}")
+                continue
 
-        result = run_single_simulation(
-            simulation_data,
-            symbol,
-            trading_fee,
-            is_crypto,
-            sim_number,
-            spread,
-        )
-        results.append(result)
+            result = run_single_simulation(
+                simulation_data,
+                symbol,
+                trading_fee,
+                is_crypto,
+                sim_number,
+                spread,
+            )
+            results.append(result)
 
-    results_df = pd.DataFrame(results)
-    walk_forward_stats = compute_walk_forward_stats(results_df)
-    for key, value in walk_forward_stats.items():
-        results_df[key] = value
+        results_df = pd.DataFrame(results)
+        walk_forward_stats = compute_walk_forward_stats(results_df)
+        for key, value in walk_forward_stats.items():
+            results_df[key] = value
 
-    # Log final average metrics
-    tb_writer.add_scalar(f'{symbol}/final_metrics/simple_avg_return', results_df['simple_strategy_return'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/simple_avg_sharpe', results_df['simple_strategy_sharpe'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_return',
-                         results_df['all_signals_strategy_return'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_sharpe',
-                         results_df['all_signals_strategy_sharpe'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/buy_hold_avg_return', results_df['buy_hold_return'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/buy_hold_avg_sharpe', results_df['buy_hold_sharpe'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_return',
-                         results_df['unprofit_shutdown_return'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_sharpe',
-                         results_df['unprofit_shutdown_sharpe'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_return',
-                         results_df['entry_takeprofit_return'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_sharpe',
-                         results_df['entry_takeprofit_sharpe'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_return', results_df['highlow_return'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_sharpe', results_df['highlow_sharpe'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/ci_guard_avg_return', results_df['ci_guard_return'].mean(), 0)
-    tb_writer.add_scalar(f'{symbol}/final_metrics/ci_guard_avg_sharpe', results_df['ci_guard_sharpe'].mean(), 0)
+        # Log final average metrics
+        tb_writer.add_scalar(f'{symbol}/final_metrics/simple_avg_return', results_df['simple_strategy_return'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/simple_avg_sharpe', results_df['simple_strategy_sharpe'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_return',
+                             results_df['all_signals_strategy_return'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_sharpe',
+                             results_df['all_signals_strategy_sharpe'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/buy_hold_avg_return', results_df['buy_hold_return'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/buy_hold_avg_sharpe', results_df['buy_hold_sharpe'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_return',
+                             results_df['unprofit_shutdown_return'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_sharpe',
+                             results_df['unprofit_shutdown_sharpe'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_return',
+                             results_df['entry_takeprofit_return'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_sharpe',
+                             results_df['entry_takeprofit_sharpe'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_return', results_df['highlow_return'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_sharpe', results_df['highlow_sharpe'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/ci_guard_avg_return', results_df['ci_guard_return'].mean(), 0)
+        tb_writer.add_scalar(f'{symbol}/final_metrics/ci_guard_avg_sharpe', results_df['ci_guard_sharpe'].mean(), 0)
 
-    _log_validation_losses(results_df)
-    _log_strategy_summary(results_df, symbol, num_simulations)
+        _log_validation_losses(results_df)
+        _log_strategy_summary(results_df, symbol, num_simulations)
 
-    # Determine which strategy is best overall
-    avg_simple = results_df["simple_strategy_return"].mean()
-    avg_allsignals = results_df["all_signals_strategy_return"].mean()
-    avg_takeprofit = results_df["entry_takeprofit_return"].mean()
-    avg_highlow = results_df["highlow_return"].mean()
-    avg_ci_guard = results_df["ci_guard_return"].mean()
+        # Determine which strategy is best overall
+        avg_simple = results_df["simple_strategy_return"].mean()
+        avg_allsignals = results_df["all_signals_strategy_return"].mean()
+        avg_takeprofit = results_df["entry_takeprofit_return"].mean()
+        avg_highlow = results_df["highlow_return"].mean()
+        avg_ci_guard = results_df["ci_guard_return"].mean()
 
-    best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_ci_guard)
-    if best_return == avg_ci_guard:
-        best_strategy = "ci_guard"
-    elif best_return == avg_highlow:
-        best_strategy = "highlow"
-    elif best_return == avg_takeprofit:
-        best_strategy = "takeprofit"
-    elif best_return == avg_allsignals:
-        best_strategy = "all_signals"
-    else:
-        best_strategy = "simple"
+        best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_ci_guard)
+        if best_return == avg_ci_guard:
+            best_strategy = "ci_guard"
+        elif best_return == avg_highlow:
+            best_strategy = "highlow"
+        elif best_return == avg_takeprofit:
+            best_strategy = "takeprofit"
+        elif best_return == avg_allsignals:
+            best_strategy = "all_signals"
+        else:
+            best_strategy = "simple"
 
-    # Record which strategy is best for this symbol & day
-    set_strategy_for_symbol(symbol, best_strategy)
+        # Record which strategy is best for this symbol & day
+        set_strategy_for_symbol(symbol, best_strategy)
 
-    return results_df
+        return results_df
+    finally:
+        SPREAD = previous_spread
 
 
 
