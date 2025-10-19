@@ -396,36 +396,12 @@ uv run python -m tototraining.run_gpu_training \
   - Tests: `PYTHONPATH=. uv run pytest tests/test_stockagentcombined.py tests/test_stockagentcombined_plans.py tests/test_stockagentcombined_entrytakeprofit.py tests/test_stockagentcombined_profit_shutdown.py -q`
   - Offline sim (symbols AAPL/MSFT, lookback 120, last three trading days, `error_multiplier=0.25`, `base_quantity=10`, `min_quantity=1`) finished with ending equity $249 996.67 on $250 000 start, realized P&L −$0.27, fees $6.13 across four trades:
     ```bash
-    PYTHONPATH=. uv run python - <<'PY'
-    from datetime import datetime, timezone
-    from stockagent.agentsimulator import fetch_latest_ohlc, ProbeTradeStrategy, ProfitShutdownStrategy
-    from stockagentcombined.simulation import CombinedPlanBuilder, SimulationConfig, run_simulation
-    from stockagentcombined.forecaster import CombinedForecastGenerator
-
-    symbols = ["AAPL", "MSFT"]
-    config = SimulationConfig(
-        symbols=symbols,
-        lookback_days=120,
-        simulation_days=3,
-        min_history=10,
-        min_signal=0.0,
-        error_multiplier=0.25,
-        base_quantity=10.0,
-        min_quantity=1.0,
-    )
-    bundle = fetch_latest_ohlc(symbols=symbols, lookback_days=config.lookback_days, as_of=datetime.now(timezone.utc), allow_remote_download=False)
-    trading_days = list(bundle.trading_days())[-config.simulation_days:]
-    builder = CombinedPlanBuilder(generator=CombinedForecastGenerator(), config=config)
-    result = run_simulation(
-        builder=builder,
-        market_frames=bundle.bars,
-        trading_days=trading_days,
-        starting_cash=250_000.0,
-        strategies=[ProbeTradeStrategy(), ProfitShutdownStrategy()],
-    )
-    print(result.to_dict())
-    PY
+    PYTHONPATH=. uv run python -m stockagentcombined.simulation \
+      --preset offline-regression \
+      --symbols AAPL MSFT \
+      --lookback-days 120
     ```
+    The `offline-regression` preset pins `simulation_days=3`, `starting_cash=250000`, `min_history=10`, `min_signal=0.0`, `error_multiplier=0.25`, `base_quantity=10`, and `min_quantity=1` while leaving other flags overridable on the command line.
 
 ### `stockagent2` (Black–Litterman allocator)
 

@@ -5,6 +5,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from src.leverage_settings import LeverageSettings, reset_leverage_settings, set_leverage_settings
+
+
+@pytest.fixture(autouse=True)
+def leverage_override():
+    set_leverage_settings(LeverageSettings())
+    yield
+    reset_leverage_settings()
+
 
 @pytest.fixture
 def risk_module(tmp_path, monkeypatch):
@@ -30,7 +39,7 @@ def test_risk_threshold_updates_with_portfolio_performance(risk_module):
     assert snap1.risk_threshold == pytest.approx(risk_module.DEFAULT_MIN_RISK_THRESHOLD)
 
     snap2 = risk_module.record_portfolio_snapshot(1100.0, observed_at=day2)
-    assert snap2.risk_threshold == pytest.approx(risk_module.MAX_RISK_THRESHOLD)
+    assert snap2.risk_threshold == pytest.approx(risk_module.get_configured_max_risk_threshold())
 
     snap3 = risk_module.record_portfolio_snapshot(900.0, observed_at=day3)
     assert snap3.risk_threshold == pytest.approx(risk_module.DEFAULT_MIN_RISK_THRESHOLD)
@@ -80,4 +89,4 @@ def test_day_pl_overrides_reference_logic(risk_module):
     assert snap1.risk_threshold == pytest.approx(risk_module.DEFAULT_MIN_RISK_THRESHOLD)
 
     snap2 = risk_module.record_portfolio_snapshot(900.0, observed_at=day2, day_pl=25.0)
-    assert snap2.risk_threshold == pytest.approx(risk_module.MAX_RISK_THRESHOLD)
+    assert snap2.risk_threshold == pytest.approx(risk_module.get_configured_max_risk_threshold())

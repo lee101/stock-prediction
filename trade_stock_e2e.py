@@ -1164,7 +1164,14 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             simple_sharpe = 0.0
             if "simple_strategy_sharpe" in backtest_df.columns:
                 simple_sharpe = coerce_numeric(backtest_df["simple_strategy_sharpe"].mean(), default=0.0)
-            price_skill = max(simple_return, 0.0) + 0.25 * max(simple_sharpe, 0.0)
+            kronos_profit_raw = last_prediction.get("closemin_loss_trading_profit")
+            kronos_profit = coerce_numeric(kronos_profit_raw) if kronos_profit_raw is not None else 0.0
+            if _is_kronos_only_mode():
+                if kronos_profit > simple_return:
+                    simple_return = kronos_profit
+                if kronos_profit > avg_return:
+                    avg_return = kronos_profit
+            price_skill = max(simple_return, 0.0) + 0.25 * max(simple_sharpe, 0.0) + 0.15 * max(kronos_profit, 0.0)
             highlow_allowed_entry = ALLOW_HIGHLOW_ENTRY and ("highlow" not in strategy_ineligible)
             takeprofit_allowed_entry = ALLOW_TAKEPROFIT_ENTRY and ("takeprofit" not in strategy_ineligible)
 
@@ -1181,6 +1188,26 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 calibrated_close_price = close_price * (1.0 + expected_move_pct)
             else:
                 calibrated_close_price = predicted_close_price
+
+            if predicted_movement == 0.0:
+                _log_detail(f"Skipping {symbol} - calibrated move collapsed to zero.")
+                continue
+            if predicted_movement > 0 and position_side == "sell":
+                if _is_kronos_only_mode():
+                    position_side = "buy"
+                else:
+                    _log_detail(
+                        f"Skipping {symbol} - calibrated move flipped sign negative to positive for sell setup."
+                    )
+                    continue
+            if predicted_movement < 0 and position_side == "buy":
+                if _is_kronos_only_mode():
+                    position_side = "sell"
+                else:
+                    _log_detail(
+                        f"Skipping {symbol} - calibrated move flipped sign positive to negative for buy setup."
+                    )
+                    continue
 
             abs_move = abs(expected_move_pct)
             if abs_move < MIN_EXPECTED_MOVE_PCT:
@@ -1206,7 +1233,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             if (
                 edge_strength < MIN_EDGE_STRENGTH
-                and max(avg_return, simple_return, takeprofit_return, highlow_return) <= 0
+                and max(avg_return, simple_return, takeprofit_return, highlow_return, kronos_profit) <= 0
             ):
                 _log_detail(
                     f"Skipping {symbol} - no actionable price edge "
@@ -1216,14 +1243,15 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             effective_takeprofit = takeprofit_return if takeprofit_allowed_entry else 0.0
             effective_highlow = highlow_return if highlow_allowed_entry else 0.0
+            kronos_contrib = max(kronos_profit, 0.0)
             composite_score = (
-                0.2 * avg_return
-                + 0.35 * simple_return
+                0.18 * avg_return
+                + 0.25 * simple_return
+                + 0.22 * kronos_contrib
                 + 0.15 * edge_strength
                 + 0.1 * unprofit_return
-                + 0.07 * effective_takeprofit
-                + 0.07 * effective_highlow
-                + 0.06 * strategy_returns.get("ci_guard", 0.0)
+                + 0.05 * effective_takeprofit
+                + 0.05 * effective_highlow
             )
 
             bid_price, ask_price = fetch_bid_ask(symbol)

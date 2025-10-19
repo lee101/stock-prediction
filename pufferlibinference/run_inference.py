@@ -28,8 +28,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resample", type=str, default=None, help="Optional pandas resample rule (e.g., '1D').")
     parser.add_argument("--initial-value", type=float, default=1.0, help="Initial portfolio value for simulation.")
     parser.add_argument("--transaction-cost-bps", type=float, default=10.0, help="Extra transaction cost in basis points.")
-    parser.add_argument("--leverage-limit", type=float, default=2.0, help="Maximum gross leverage.")
-    parser.add_argument("--borrowing-cost", type=float, default=0.0675, help="Annualised borrowing cost above 1× leverage.")
+    defaults = get_leverage_settings()
+    parser.add_argument("--leverage-limit", type=float, default=defaults.max_gross_leverage, help="Maximum gross leverage.")
+    parser.add_argument("--borrowing-cost", type=float, default=defaults.annual_cost, help="Annualised borrowing cost above 1× leverage.")
+    parser.add_argument("--trading-days", type=int, default=defaults.trading_days_per_year, help="Trading days per year for financing cost.")
     parser.add_argument("--device", type=str, default="auto", help="'auto', 'cpu', or 'cuda'.")
     parser.add_argument("--output-json", type=Path, help="Optional path to write summary metrics as JSON.")
     parser.add_argument("--decisions-csv", type=Path, help="Optional path to export allocation decisions.")
@@ -63,6 +65,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         transaction_cost_bps=args.transaction_cost_bps,
         leverage_limit=args.leverage_limit,
         borrowing_cost=args.borrowing_cost,
+        trading_days_per_year=args.trading_days,
     )
 
     engine = PortfolioRLInferenceEngine(inference_cfg, data_cfg)

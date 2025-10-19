@@ -28,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-checkpointing", action="store_true", help="Enable GRU gradient checkpointing to save memory")
     parser.add_argument("--risk-aversion", type=float, default=None, help="Override risk aversion penalty")
     parser.add_argument("--drawdown-lambda", type=float, default=None, help="Penalty weight for maximum drawdown in objective")
+    parser.add_argument("--include-cash", action="store_true", help="Append a zero-return cash asset to allow explicit de-risking")
     return parser.parse_args()
 
 
@@ -59,6 +60,7 @@ def main() -> None:
         use_compile=not args.no_compile,
         microbatch_windows=args.microbatch_windows,
         gradient_checkpointing=args.gradient_checkpointing,
+        include_cash=args.include_cash,
     )
     eval_cfg = EvaluationConfig(report_dir=Path("differentiable_market") / "evals")
 

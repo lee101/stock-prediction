@@ -396,6 +396,7 @@ class OHLCPreprocessor:
         df = self.add_technical_indicators(df)
         
         # Handle missing values
+        df = df.infer_objects(copy=False)
         df = self.handle_missing_values(df)
         
         # Remove outliers

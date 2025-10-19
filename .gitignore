@@ -1,5 +1,6 @@
 .env
 .venv
+.venv314a
 .venv313
 .venv314
 *.pt 
@@ -142,3 +143,7 @@ pynvml
 kronostraining/artifacts/checkpoints
 kronostraining/artifacts
 metric_history.json
+differentiable_market/evals
+.env.local
+.envrc
+allresults.md

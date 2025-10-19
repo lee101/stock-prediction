@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 
 from differentiable_market import (
     DataConfig,
@@ -69,6 +70,8 @@ def test_trainer_fit_creates_checkpoints(tmp_path: Path) -> None:
     )
     eval_cfg = EvaluationConfig(report_dir=tmp_path / "evals", store_trades=False)
 
+    train_cfg.include_cash = True
+    data_cfg.include_cash = True
     trainer = DifferentiableMarketTrainer(data_cfg, env_cfg, train_cfg, eval_cfg)
     trainer.fit()
 
@@ -118,3 +121,32 @@ def test_backtester_generates_reports(tmp_path: Path) -> None:
     assert report.exists()
     assert windows.exists()
     assert metrics["windows"] >= 1
+
+
+def test_backtester_trade_timestamps_use_eval_offset(tmp_path: Path) -> None:
+    _write_synthetic_ohlc(tmp_path, steps=10)
+    data_cfg = DataConfig(root=tmp_path, glob="*.csv")
+    data_cfg.min_timesteps = 1
+    env_cfg = EnvironmentConfig(transaction_cost=0.0, risk_aversion=0.0)
+    eval_cfg = EvaluationConfig(report_dir=tmp_path / "evals", store_trades=True, window_length=1, stride=1)
+
+    backtester = DifferentiableMarketBacktester(data_cfg, env_cfg, eval_cfg)
+    eval_cfg.report_dir.mkdir(parents=True, exist_ok=True)
+    trade_path = eval_cfg.report_dir / "trades.jsonl"
+
+    returns = backtester.eval_returns[:1]
+    weights = torch.full(
+        (1, returns.shape[1]),
+        1.0 / returns.shape[1],
+        dtype=returns.dtype,
+        device=returns.device,
+    )
+
+    with trade_path.open("w", encoding="utf-8") as handle:
+        backtester._simulate_window(weights, returns, start=0, end=1, trade_handle=handle)
+
+    records = [json.loads(line) for line in trade_path.read_text(encoding="utf-8").splitlines() if line]
+    assert records, "Expected at least one logged trade"
+    first_timestamp = records[0]["timestamp"]
+    expected_timestamp = str(backtester.index[backtester.eval_start_idx + 1])
+    assert first_timestamp == expected_timestamp

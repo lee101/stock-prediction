@@ -17,6 +17,7 @@ class DataConfig:
     # Exclude symbols explicitly if they should never appear in train/eval splits.
     exclude_symbols: tuple[str, ...] = field(default_factory=tuple)
     min_timesteps: int = 512
+    include_cash: bool = False
 
 
 @dataclass(slots=True)
@@ -60,6 +61,7 @@ class TrainingConfig:
     save_dir: Path = Path("differentiable_market") / "runs"
     max_eval_windows: int | None = None
     resume: bool = False
+    include_cash: bool = False
 
 
 @dataclass(slots=True)

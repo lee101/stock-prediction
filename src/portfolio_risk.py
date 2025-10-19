@@ -8,13 +8,22 @@ from typing import Iterable, List, Optional
 
 import math
 
+from src.leverage_settings import get_leverage_settings
 from zoneinfo import ZoneInfo
 from sqlalchemy import DateTime, Float, Integer, create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 DEFAULT_MIN_RISK_THRESHOLD = 0.01
-MAX_RISK_THRESHOLD = 1.5
+
+def get_configured_max_risk_threshold() -> float:
+    settings = get_leverage_settings()
+    return max(DEFAULT_MIN_RISK_THRESHOLD, float(settings.max_gross_leverage))
+
+
+def _clamp_threshold(value: float) -> float:
+    configured_max = get_configured_max_risk_threshold()
+    return min(max(DEFAULT_MIN_RISK_THRESHOLD, float(value)), configured_max)
 
 
 def _resolve_database_path() -> Path:
@@ -117,7 +126,7 @@ def record_portfolio_snapshot(
         portfolio_value: Current portfolio or exposure value being tracked.
         observed_at: Optional timestamp for the snapshot. Defaults to now in UTC.
         day_pl: Optional realised or unrealised day P&L. When provided, the risk threshold
-            will be set to MAX_RISK_THRESHOLD when the value is non-negative and
+            will be set to the configured maximal leverage when the value is non-negative and
             DEFAULT_MIN_RISK_THRESHOLD when the value is negative. If omitted or invalid,
             the threshold falls back to comparing the portfolio value against the
             reference snapshot.
@@ -129,6 +138,7 @@ def record_portfolio_snapshot(
 
     with Session(_get_engine()) as session:
         reference = _select_reference_snapshot(session, observed_at)
+        configured_max = get_configured_max_risk_threshold()
         effective_day_pl: Optional[float]
         if day_pl is None:
             effective_day_pl = None
@@ -142,11 +152,13 @@ def record_portfolio_snapshot(
                     effective_day_pl = None
 
         if effective_day_pl is not None:
-            risk_threshold = MAX_RISK_THRESHOLD if effective_day_pl >= 0 else DEFAULT_MIN_RISK_THRESHOLD
+            risk_threshold = configured_max if effective_day_pl >= 0 else DEFAULT_MIN_RISK_THRESHOLD
         elif reference is None:
             risk_threshold = DEFAULT_MIN_RISK_THRESHOLD
         else:
-            risk_threshold = MAX_RISK_THRESHOLD if portfolio_value >= reference.portfolio_value else DEFAULT_MIN_RISK_THRESHOLD
+            risk_threshold = configured_max if portfolio_value >= reference.portfolio_value else DEFAULT_MIN_RISK_THRESHOLD
+
+        risk_threshold = _clamp_threshold(risk_threshold)
 
         snapshot = PortfolioSnapshot(
             observed_at=observed_at,
@@ -157,11 +169,12 @@ def record_portfolio_snapshot(
         session.commit()
         session.refresh(snapshot)
 
-    _current_risk_threshold = float(snapshot.risk_threshold)
+    clamped = _clamp_threshold(snapshot.risk_threshold)
+    _current_risk_threshold = clamped
     return PortfolioSnapshotRecord(
         observed_at=snapshot.observed_at,
         portfolio_value=snapshot.portfolio_value,
-        risk_threshold=snapshot.risk_threshold,
+        risk_threshold=clamped,
     )
 
 
@@ -177,7 +190,7 @@ def get_global_risk_threshold() -> float:
         if latest is None:
             _current_risk_threshold = DEFAULT_MIN_RISK_THRESHOLD
         else:
-            _current_risk_threshold = float(latest.risk_threshold)
+            _current_risk_threshold = _clamp_threshold(latest.risk_threshold)
     return _current_risk_threshold
 
 
@@ -193,7 +206,7 @@ def fetch_snapshots(limit: Optional[int] = None) -> List[PortfolioSnapshotRecord
         PortfolioSnapshotRecord(
             observed_at=row.observed_at,
             portfolio_value=row.portfolio_value,
-            risk_threshold=row.risk_threshold,
+            risk_threshold=_clamp_threshold(row.risk_threshold),
         )
         for row in rows
     ]
@@ -209,7 +222,7 @@ def fetch_latest_snapshot() -> Optional[PortfolioSnapshotRecord]:
         return PortfolioSnapshotRecord(
             observed_at=latest.observed_at,
             portfolio_value=latest.portfolio_value,
-            risk_threshold=latest.risk_threshold,
+            risk_threshold=_clamp_threshold(latest.risk_threshold),
         )
 
 
