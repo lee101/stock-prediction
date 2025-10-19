@@ -188,6 +188,17 @@ def _apply_overrides(trainer_config: TrainerConfig, args: argparse.Namespace) ->
     if args.freeze_backbone is not None:
         trainer_config.freeze_backbone = args.freeze_backbone
 
+    if trainer_config.freeze_backbone:
+        if not getattr(trainer_config, "trainable_param_substrings", None):
+            trainer_config.trainable_param_substrings = [
+                "output_distribution",
+                "loc_proj",
+                "scale_proj",
+                "df",
+            ]
+    else:
+        trainer_config.trainable_param_substrings = None
+
 
 def _print_run_header(
     save_dir: Path,
@@ -336,6 +347,24 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     seed = args.random_seed if args.random_seed is not None else 1337
     device_label = "CUDA" if has_cuda else "CPU"
 
+    resume_checkpoint = str(args.resume_from) if args.resume_from else None
+    worker_count = 4 if has_cuda else max(1, min(2, torch.get_num_threads() or 2))
+    pin_memory_flag = has_cuda
+    if has_cuda:
+        price_noise_std = 0.0125
+        volume_noise_std = 0.05
+        feature_dropout_prob = 0.02
+        time_mask_prob = 0.1
+        time_mask_max_span = 6
+        scaling_range = (0.995, 1.005)
+    else:
+        price_noise_std = 0.006
+        volume_noise_std = 0.02
+        feature_dropout_prob = 0.01
+        time_mask_prob = 0.05
+        time_mask_max_span = 4
+        scaling_range = (0.9975, 1.0025)
+
     trainer_config = TrainerConfig(
         patch_size=64,
         stride=64,
@@ -375,7 +404,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         metrics_log_frequency=metrics_frequency,
         gradient_checkpointing=False,
         memory_efficient_attention=False,
-        pin_memory=has_cuda,
+        pin_memory=pin_memory_flag,
         log_level="INFO",
         log_file=str(save_dir / "training.log"),
         wandb_project=None,
@@ -386,9 +415,9 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         export_on_best=False,
         random_seed=seed,
         pretrained_model_id="Datadog/Toto-Open-Base-1.0",
-        freeze_backbone=True,
-        trainable_param_substrings=["output_distribution", "loc_proj", "scale_proj", "df"],
-        resume_from_checkpoint=str(args.resume_from) if args.resume_from else None,
+        freeze_backbone=False,
+        trainable_param_substrings=None,
+        resume_from_checkpoint=resume_checkpoint,
     )
 
     _apply_overrides(trainer_config, args)
@@ -400,7 +429,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         stride=trainer_config.stride,
         sequence_length=192,
         prediction_length=24,
-        normalization_method="none",
+        normalization_method="robust",
         handle_missing="interpolate",
         outlier_threshold=3.0,
         batch_size=trainer_config.batch_size,
@@ -417,14 +446,14 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         rsi_period=14,
         ma_periods=[5, 10],
         enable_augmentation=True,
-        price_noise_std=0.0125,
-        volume_noise_std=0.05,
-        feature_dropout_prob=0.02,
-        time_mask_prob=0.1,
-        time_mask_max_span=6,
-        random_scaling_range=(0.995, 1.005),
-        num_workers=4 if has_cuda else max(1, min(2, (torch.get_num_threads() or 2))),
-        pin_memory=has_cuda,
+        price_noise_std=price_noise_std,
+        volume_noise_std=volume_noise_std,
+        feature_dropout_prob=feature_dropout_prob,
+        time_mask_prob=time_mask_prob,
+        time_mask_max_span=time_mask_max_span,
+        random_scaling_range=scaling_range,
+        num_workers=worker_count,
+        pin_memory=pin_memory_flag,
         drop_last=False,
         random_seed=seed,
     )

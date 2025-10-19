@@ -9,6 +9,7 @@ description = "RL training pipelines and utilities for the workspace PufferLib e
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+    "stock-trading-suite[rl,hf,mlops,opt]",
     "gymrl",
     "hftraining",
 ]
@@ -21,3 +22,4 @@ dev = [
 [tool.uv.sources]
 gymrl = { workspace = true }
 hftraining = { workspace = true }
+stock-trading-suite = { workspace = true }

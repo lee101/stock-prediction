@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List, Optional
 import pandas as pd
 import pytz
 
+from src.leverage_settings import LeverageSettings, get_leverage_settings
 from loss_utils import CRYPTO_TRADING_FEE, TRADING_FEE
 from .execution import classify_liquidity, simulate_fill
 from src.fixtures import crypto_symbols
@@ -157,14 +158,52 @@ class SimulationState:
     clock: SimulatedClock
     prices: Dict[str, PriceSeries]
     cash: float = 100_000.0
-    buying_power: float = 100_000.0
+    buying_power: float = 0.0
     equity: float = 100_000.0
+    leverage_settings: LeverageSettings = field(default_factory=get_leverage_settings)
+    gross_exposure: float = 0.0
+    financing_cost_paid: float = 0.0
+    last_financing_timestamp: Optional[datetime] = None
     positions: Dict[str, SimulatedPosition] = field(default_factory=dict)
     open_orders: Dict[str, SimulatedOrder] = field(default_factory=dict)
     take_profit_targets: List[TakeProfitTarget] = field(default_factory=list)
     order_sequence: int = 1
     fees_paid: float = 0.0
     trade_log: List[TradeExecution] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.leverage_settings is None:
+            self.leverage_settings = get_leverage_settings()
+        if self.last_financing_timestamp is None:
+            self.last_financing_timestamp = self.clock.current
+        self._recalculate_equity()
+
+    def _gross_exposure(self) -> float:
+        return sum(abs(pos.current_price * pos.qty) for pos in self.positions.values())
+
+    def _accrue_financing_cost(self, delta_seconds: float, gross_exposure: Optional[float] = None) -> None:
+        if delta_seconds <= 0:
+            self.last_financing_timestamp = self.clock.current
+            return
+        gross = self._gross_exposure() if gross_exposure is None else gross_exposure
+        if gross <= 0:
+            self.last_financing_timestamp = self.clock.current
+            return
+        base_equity = max(self.equity, 0.0)
+        borrow_notional = max(0.0, gross - base_equity)
+        if borrow_notional <= 0:
+            self.last_financing_timestamp = self.clock.current
+            return
+        day_fraction = delta_seconds / 86400.0
+        daily_rate = self.leverage_settings.daily_cost
+        cost = borrow_notional * daily_rate * day_fraction
+        if cost <= 0:
+            self.last_financing_timestamp = self.clock.current
+            return
+        self.cash -= cost
+        self.fees_paid += cost
+        self.financing_cost_paid += cost
+        self.last_financing_timestamp = self.clock.current
 
     def update_market_prices(self) -> None:
         for symbol, position in self.positions.items():
@@ -175,9 +214,12 @@ class SimulationState:
         self._recalculate_equity()
 
     def _recalculate_equity(self) -> None:
-        position_value = sum(pos.market_value for pos in self.positions.values())
-        self.equity = self.cash + position_value
-        self.buying_power = max(self.cash, 0.0) * 2
+        net_position_value = sum(pos.market_value for pos in self.positions.values())
+        gross_value = self._gross_exposure()
+        self.gross_exposure = gross_value
+        self.equity = self.cash + net_position_value
+        max_gross_allowed = self.leverage_settings.max_gross_leverage * max(self.equity, 0.0)
+        self.buying_power = max(0.0, max_gross_allowed - gross_value)
 
     def current_bid(self, symbol: str) -> Optional[float]:
         series = self.prices.get(symbol)
@@ -215,11 +257,15 @@ class SimulationState:
             self.open_orders.pop(oid, None)
 
     def advance_time(self, steps: int = 1) -> None:
+        previous_time = self.clock.current
+        previous_gross = self._gross_exposure()
         for series in self.prices.values():
             series.advance(steps)
         timestamps = [series.timestamp for series in self.prices.values()]
         if timestamps:
             self.clock.set(min(timestamps))
+        delta_seconds = max(0.0, (self.clock.current - previous_time).total_seconds())
+        self._accrue_financing_cost(delta_seconds, gross_exposure=previous_gross)
         self.update_market_prices()
         self._apply_take_profit_targets()
 

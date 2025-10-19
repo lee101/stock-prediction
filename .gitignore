@@ -1,5 +1,6 @@
 .env
 .venv
+.venv314a
 .venv313
 .venv314
 *.pt 
@@ -35,7 +36,6 @@ __pycache__*
 logfile.log
 *.log
 positions_shelf.json
-<<<<<<< HEAD
 *.pt
 trainingdata
 trainingdata2/
@@ -143,10 +143,13 @@ pynvml
 kronostraining/artifacts/checkpoints
 kronostraining/artifacts
 metric_history.json
-
 # Allow tracked source model implementations while keeping build artifacts ignored
 !src/models/
 src/models/__pycache__/
 src/models/__pycache__/**
 !src/models/*.py
 !src/models/**/*.py
+differentiable_market/evals
+.env.local
+.envrc
+allresults.md
