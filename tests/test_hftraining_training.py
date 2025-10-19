@@ -22,10 +22,29 @@ from hftraining.run_training import setup_environment, load_and_process_data, cr
 
 
 @pytest.fixture(autouse=True)
-def force_cpu_cuda():
-    """Ensure tests run in CPU mode to avoid CUDA device mismatches."""
-    with patch('torch.cuda.is_available', return_value=False):
+def force_gpu_cuda():
+    """Ensure tests execute with CUDA enabled and restore SDP kernel toggles."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA GPU required for hftraining tests")
+
+    try:
+        flash_enabled = torch.backends.cuda.flash_sdp_enabled()
+        mem_enabled = torch.backends.cuda.mem_efficient_sdp_enabled()
+        math_enabled = torch.backends.cuda.math_sdp_enabled()
+    except AttributeError:
         yield
+        return
+
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    torch.backends.cuda.enable_math_sdp(True)
+
+    try:
+        yield
+    finally:
+        torch.backends.cuda.enable_flash_sdp(flash_enabled)
+        torch.backends.cuda.enable_mem_efficient_sdp(mem_enabled)
+        torch.backends.cuda.enable_math_sdp(math_enabled)
 
 
 class TestStockDataset:
@@ -118,7 +137,9 @@ class TestHFTrainer:
             sequence_length=15,
             prediction_horizon=3,
             learning_rate=1e-3,
-            warmup_steps=10
+            warmup_steps=10,
+            dropout=0.0,
+            dropout_rate=0.0
         )
     
     @pytest.fixture

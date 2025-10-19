@@ -36,8 +36,8 @@ dependencies = [
     "PyYAML>=6.0,<6.1",
     "jsonschema>=4.19",
     "pydantic>=2.9",
-    "torch==2.9.0+cu128",
-    "pytorch-lightning>=2.4.0,<2.5",
+    "torch==2.9.0",
+    "pytorch-lightning>=2.4.0,<3.0",
     "torch-optimizer>=0.3",
     "pytorch-optimizer>=2.11",
     "dill==0.3.8",
@@ -61,7 +61,7 @@ diff-market-backtest = "differentiable_market.marketsimulator.run:main"
 
 [project.optional-dependencies]
 dev = [
-    ".[all]",
+    "stock-trading-suite[all]",
     "black==24.10.0",
     "isort==5.13.2",
     "jupyter==1.1.1",
@@ -75,7 +75,7 @@ dev = [
 forecasting = [
     "chronos-forecasting>=1.5.3",
     "neuralforecast>=3.1",
-    "gluonts[torch]==0.16.2",
+    "gluonts[torch]>=0.15.1",
 ]
 
 hf = [
@@ -92,7 +92,7 @@ hf = [
 rl = [
     "stable-baselines3>=2.3",
     "gymnasium>=0.29",
-    "pufferlib>=0.4",
+    "pufferlib>=2.0.2",
 ]
 
 mlops = [
@@ -127,7 +127,33 @@ boosting = [
 ]
 
 all = [
-    ".[forecasting,hf,rl,mlops,opt,llm,serving,automation,boosting]",
+    "chronos-forecasting>=1.5.3",
+    "neuralforecast>=3.1",
+    "gluonts[torch]==0.16.2",
+    "transformers>=4.50",
+    "datasets>=2.17",
+    "accelerate>=1.10.1",
+    "huggingface_hub>=0.24",
+    "safetensors>=0.4",
+    "einops==0.7.0",
+    "jaxtyping==0.2.29",
+    "rotary-embedding-torch==0.8.6",
+    "stable-baselines3>=2.3",
+    "gymnasium>=0.29",
+    "pufferlib>=2.0.2",
+    "mlflow>=3.4.1,<3.6",
+    "wandb>=0.22.2",
+    "weave>=0.52.10",
+    "optuna>=3.6",
+    "hyperopt>=0.2.7",
+    "cmaes>=0.10",
+    "anthropic>=0.71.0",
+    "openai>=1.0.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "gunicorn>=23.0",
+    "selenium>=4.15",
+    "xgboost>=2.1.1",
 ]
 
 [tool.setuptools.packages.find]
@@ -147,6 +173,8 @@ exclude = [
 [tool.uv]
 default-groups = []
 environments = ["sys_platform == 'linux'"]
+cache-dir = "/vfast/data/uv-cache"
+index-strategy = "unsafe-best-match"
 
 [tool.uv.workspace]
 members = [
@@ -161,7 +189,6 @@ members = [
     "toto",
     "traininglib",
 ]
-
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"

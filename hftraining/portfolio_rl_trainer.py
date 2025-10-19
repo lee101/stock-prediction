@@ -20,6 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from src.leverage_settings import get_leverage_settings
 from traininglib import (
     enable_fast_kernels,
     bf16_supported,
@@ -50,9 +51,9 @@ class PortfolioRLConfig:
     risk_penalty: float = 0.1
     entropy_coef: float = 0.01
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    leverage_limit: float = 2.0
-    borrowing_cost: float = 0.0675
-    trading_days_per_year: int = 252
+    leverage_limit: float = field(default_factory=lambda: get_leverage_settings().max_gross_leverage)
+    borrowing_cost: float = field(default_factory=lambda: get_leverage_settings().annual_cost)
+    trading_days_per_year: int = field(default_factory=lambda: get_leverage_settings().trading_days_per_year)
     optimizer: str = "adamw"
     weight_decay: float = 0.01
     compile: bool = True

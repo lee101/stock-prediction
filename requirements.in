@@ -26,8 +26,8 @@ beautifulsoup4>=4.12
 PyYAML>=6.0,<6.1
 jsonschema>=4.19
 pydantic>=2.9
-torch==2.9.0+cu128
-pytorch-lightning>=2.4.0,<2.5
+torch==2.9.0
+pytorch-lightning>=2.4.0,<3.0
 torch-optimizer>=0.3
 pytorch-optimizer>=2.11
 chronos-forecasting>=1.5.3

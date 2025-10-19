@@ -1092,7 +1092,7 @@ tokenizers==0.22.1
     # via transformers
 toolz==0.12.1
     # via gluonts
-torch==2.9.0+cu128
+torch==2.9.0
     # via
     #   -r requirements.in
     #   accelerate

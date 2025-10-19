@@ -19,8 +19,18 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from hftraining.base_model_trainer import BaseModelTrainer, PortfolioRLConfig
-from hftraining.toto_features import TotoOptions
+from src.leverage_settings import get_leverage_settings
+
+try:  # Defer heavy hftraining imports until the optional extras are installed.
+    from hftraining.base_model_trainer import BaseModelTrainer, PortfolioRLConfig
+    from hftraining.toto_features import TotoOptions
+except Exception as exc:  # pragma: no cover - triggered when extras missing
+    BaseModelTrainer = None  # type: ignore[assignment]
+    PortfolioRLConfig = None  # type: ignore[assignment]
+    TotoOptions = None  # type: ignore[assignment]
+    _HFTRAINING_IMPORT_ERROR: Exception | None = exc
+else:  # pragma: no cover - exercised when extras present
+    _HFTRAINING_IMPORT_ERROR = None
 
 
 LOGGER = logging.getLogger("pufferlibtraining.pipeline")
@@ -102,6 +112,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the full multi-stage Toto-enhanced RL training pipeline."
     )
+
+    leverage_defaults = get_leverage_settings()
 
     parser.add_argument(
         "--base-stocks",
@@ -294,19 +306,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--leverage-limit",
         type=float,
-        default=2.0,
+        default=leverage_defaults.max_gross_leverage,
         help="Maximum gross exposure for the RL allocation head.",
     )
     parser.add_argument(
         "--borrowing-cost",
         type=float,
-        default=0.0675,
+        default=leverage_defaults.annual_cost,
         help="Annualised borrowing cost applied to leverage above 1×.",
     )
     parser.add_argument(
         "--trading-days-per-year",
         type=int,
-        default=252,
+        default=leverage_defaults.trading_days_per_year,
         help="Trading days per year used to annualise borrowing cost.",
     )
 
@@ -374,6 +386,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
+    if _HFTRAINING_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hftraining optional dependencies are unavailable. Install with `uv pip sync --extra hf --extra rl --extra mlops` "
+            "or install the workspace package via `uv pip install -e pufferlibtraining`."
+        ) from _HFTRAINING_IMPORT_ERROR
+
     data_root = Path(args.trainingdata_dir).expanduser().resolve()
     if not data_root.exists():
         fallback = Path("tototraining") / "trainingdata" / "train"

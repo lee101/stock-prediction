@@ -52,8 +52,9 @@ class DifferentiableMarketTrainer:
         self.index = index
 
         train_tensor, eval_tensor = split_train_eval(ohlc_all)
-        self.train_features, self.train_returns = ohlc_to_features(train_tensor)
-        self.eval_features, self.eval_returns = ohlc_to_features(eval_tensor)
+        add_cash = self.train_cfg.include_cash or self.data_cfg.include_cash
+        self.train_features, self.train_returns = ohlc_to_features(train_tensor, add_cash=add_cash)
+        self.eval_features, self.eval_returns = ohlc_to_features(eval_tensor, add_cash=add_cash)
 
         if self.train_features.shape[0] <= train_cfg.lookback:
             raise ValueError("Training data shorter than lookback window")

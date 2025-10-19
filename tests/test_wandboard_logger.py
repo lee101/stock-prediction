@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 import tempfile
 import unittest
+import os
 from pathlib import Path
 
 import wandboard
 from wandboard import WandBoardLogger
+from unittest.mock import patch
 
 
 class WandBoardLoggerLoggingTests(unittest.TestCase):
@@ -42,6 +44,30 @@ class WandBoardLoggerLoggingTests(unittest.TestCase):
 
         mirror_messages = [message for message in captured.output if "Mirror metrics" in message]
         self.assertFalse(mirror_messages, "Metrics mirroring logs should be absent when logging is disabled.")
+
+    def test_defaults_populate_project_and_entity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(os.environ, {}, clear=True):
+            log_dir = Path(tmp_dir)
+            with WandBoardLogger(
+                enable_wandb=False,
+                log_dir=log_dir,
+                tensorboard_subdir="defaults_populated",
+            ) as tracker:
+                self.assertEqual(tracker.project, "stock")
+                self.assertEqual(tracker.entity, "lee101p")
+
+    def test_blank_project_and_entity_respected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(os.environ, {}, clear=True):
+            log_dir = Path(tmp_dir)
+            with WandBoardLogger(
+                enable_wandb=False,
+                log_dir=log_dir,
+                tensorboard_subdir="blank_config",
+                project="",
+                entity="",
+            ) as tracker:
+                self.assertEqual(tracker.project, "")
+                self.assertEqual(tracker.entity, "")
 
 
 if __name__ == "__main__":

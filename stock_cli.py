@@ -16,7 +16,9 @@ from src.portfolio_risk import (
     fetch_latest_snapshot,
     fetch_snapshots,
     get_global_risk_threshold,
+    get_configured_max_risk_threshold,
 )
+from src.leverage_settings import get_leverage_settings
 from src.trading_obj_utils import filter_to_realistic_positions
 from stock.state_utils import StateLoadError, collect_probe_statuses, render_ascii_line
 
@@ -101,6 +103,8 @@ def status(
     """Show live account, position, and risk metadata."""
     typer.echo("== Portfolio Status ==")
 
+    leverage_settings = get_leverage_settings()
+
     # Global risk snapshot
     try:
         risk_threshold = get_global_risk_threshold()
@@ -116,7 +120,8 @@ def status(
 
     typer.echo(":: Global Risk")
     if risk_threshold is not None:
-        typer.echo(f"  Threshold: {risk_threshold:.2f}x")
+        configured_cap = get_configured_max_risk_threshold()
+        typer.echo(f"  Threshold: {risk_threshold:.2f}x (cap {configured_cap:.2f}x)")
     else:
         typer.echo("  Threshold: n/a")
     if latest_snapshot:

@@ -9,6 +9,7 @@ description = "Inference utilities for deploying PufferLib portfolio allocators.
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+    "stock-trading-suite[rl,hf]",
     "hfinference",
 ]
 
@@ -19,3 +20,4 @@ dev = [
 
 [tool.uv.sources]
 hfinference = { workspace = true }
+stock-trading-suite = { workspace = true }

@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from .model_cache import ModelCacheManager, dtype_to_token
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _KRONOS_CANDIDATES = [
     _REPO_ROOT / "external" / "kronos",
@@ -72,6 +74,7 @@ class KronosForecastingWrapper:
 
         self._device = device
         self._predictor = None
+        self._preferred_dtype = self._compute_preferred_dtype(device)
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -196,6 +199,16 @@ class KronosForecastingWrapper:
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _compute_preferred_dtype(device: str) -> Optional[torch.dtype]:
+        if not device.startswith("cuda"):
+            return None
+        if not torch.cuda.is_available():
+            return None
+        if hasattr(torch.cuda, "is_bf16_supported") and torch.cuda.is_bf16_supported():
+            return torch.bfloat16  # pragma: no cover - depends on hardware
+        return None
+
     def _ensure_predictor(self):
         if self._predictor is not None:
             return self._predictor
@@ -213,8 +226,18 @@ class KronosForecastingWrapper:
             device = "cpu"
         self._device = device
 
-        tokenizer = KronosTokenizer.from_pretrained(self.tokenizer_name, cache_dir=self.cache_dir)
-        model = Kronos.from_pretrained(self.model_name, cache_dir=self.cache_dir)
+        cache_manager = ModelCacheManager("kronos")
+        dtype_token = dtype_to_token(self._preferred_dtype or torch.float32)
+        with cache_manager.compilation_env(self.model_name, dtype_token):
+            tokenizer = KronosTokenizer.from_pretrained(self.tokenizer_name, cache_dir=self.cache_dir)
+            model = Kronos.from_pretrained(self.model_name, cache_dir=self.cache_dir)
+
+        if self._preferred_dtype is not None:
+            try:
+                model = model.to(dtype=self._preferred_dtype)  # type: ignore[attr-defined]
+            except Exception as exc:  # pragma: no cover - dtype conversions may fail on older checkpoints
+                logger.debug("Unable to convert Kronos model to dtype %s: %s", self._preferred_dtype, exc)
+
         predictor = KronosPredictor(
             model=model,
             tokenizer=tokenizer,
@@ -222,6 +245,11 @@ class KronosForecastingWrapper:
             max_context=self.max_context,
             clip=self.clip,
         )
+        if self._preferred_dtype is not None:
+            try:
+                predictor.model = predictor.model.to(dtype=self._preferred_dtype)  # type: ignore[attr-defined]
+            except Exception as exc:  # pragma: no cover - predictor may not expose .model
+                logger.debug("Failed to set Kronos predictor dtype: %s", exc)
         predictor.model = predictor.model.eval()
         self._predictor = predictor
         return predictor
