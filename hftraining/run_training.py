@@ -7,10 +7,27 @@ import argparse
 import sys
 import os
 from pathlib import Path
-import torch
 import random
-import numpy as np
 from datetime import datetime
+
+try:  # Prefer injected heavy dependencies when available.
+    from .injection import get_numpy, get_torch
+except Exception:  # pragma: no cover - script execution fallback
+    try:
+        from injection import get_numpy, get_torch  # type: ignore
+    except Exception:  # pragma: no cover - direct imports as last resort
+        def get_torch():
+            import torch as _torch  # type: ignore
+
+            return _torch
+
+        def get_numpy():
+            import numpy as _np  # type: ignore
+
+            return _np
+
+torch = get_torch()
+np = get_numpy()
 
 # Add current directory to path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))

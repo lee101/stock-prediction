@@ -44,6 +44,7 @@ def _write_synthetic_ohlc(root: Path, symbols: tuple[str, ...] = ("AAA", "BBB", 
 def test_load_aligned_ohlc(tmp_path: Path) -> None:
     _write_synthetic_ohlc(tmp_path)
     cfg = DataConfig(root=tmp_path, glob="*.csv")
+    cfg.min_timesteps = 32
     ohlc, symbols, index = load_aligned_ohlc(cfg)
     assert ohlc.shape[-1] == 4
     assert len(symbols) == 3
@@ -53,6 +54,7 @@ def test_load_aligned_ohlc(tmp_path: Path) -> None:
 def test_trainer_fit_creates_checkpoints(tmp_path: Path) -> None:
     _write_synthetic_ohlc(tmp_path, steps=80)
     data_cfg = DataConfig(root=tmp_path, glob="*.csv")
+    data_cfg.min_timesteps = 32
     env_cfg = EnvironmentConfig(transaction_cost=1e-4, risk_aversion=0.0)
     train_cfg = TrainingConfig(
         lookback=16,
@@ -93,6 +95,7 @@ def test_trainer_fit_creates_checkpoints(tmp_path: Path) -> None:
 def test_backtester_generates_reports(tmp_path: Path) -> None:
     _write_synthetic_ohlc(tmp_path, steps=80)
     data_cfg = DataConfig(root=tmp_path, glob="*.csv")
+    data_cfg.min_timesteps = 32
     env_cfg = EnvironmentConfig(transaction_cost=1e-4, risk_aversion=0.0)
     train_cfg = TrainingConfig(
         lookback=16,
@@ -121,6 +124,41 @@ def test_backtester_generates_reports(tmp_path: Path) -> None:
     assert report.exists()
     assert windows.exists()
     assert metrics["windows"] >= 1
+
+
+def test_backtester_respects_include_cash(tmp_path: Path) -> None:
+    _write_synthetic_ohlc(tmp_path, steps=96)
+    data_cfg = DataConfig(root=tmp_path, glob="*.csv")
+    data_cfg.min_timesteps = 32
+    env_cfg = EnvironmentConfig(transaction_cost=1e-4, risk_aversion=0.0)
+    train_cfg = TrainingConfig(
+        lookback=16,
+        rollout_groups=2,
+        batch_windows=4,
+        microbatch_windows=2,
+        epochs=3,
+        eval_interval=1,
+        save_dir=tmp_path / "runs",
+        device="cpu",
+        dtype="float32",
+        use_muon=False,
+        use_compile=False,
+        bf16_autocast=False,
+        include_cash=True,
+    )
+    eval_cfg = EvaluationConfig(report_dir=tmp_path / "evals", store_trades=False, window_length=32, stride=16)
+
+    trainer = DifferentiableMarketTrainer(data_cfg, env_cfg, train_cfg, eval_cfg)
+    trainer.fit()
+
+    run_dir = sorted((tmp_path / "runs").glob("*"))[0]
+    best_ckpt = run_dir / "checkpoints" / "best.pt"
+
+    backtester = DifferentiableMarketBacktester(data_cfg, env_cfg, eval_cfg)
+    metrics = backtester.run(best_ckpt)
+
+    assert metrics["windows"] >= 1
+    assert backtester.eval_features.shape[1] == len(backtester.symbols) + 1
 
 
 def test_backtester_trade_timestamps_use_eval_offset(tmp_path: Path) -> None:
