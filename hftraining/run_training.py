@@ -136,8 +136,8 @@ def load_and_process_data(config: ExperimentConfig):
         toto_device=config.data.toto_device,
     )
     
-    # Load raw data
-    raw_data = load_training_data(
+    # Load raw training data
+    raw_train_data = load_training_data(
         data_dir=config.data.data_dir,
         symbols=config.data.symbols,
         start_date=config.data.start_date,
@@ -147,7 +147,7 @@ def load_and_process_data(config: ExperimentConfig):
         prediction_horizon=config.data.prediction_horizon,
     )
     
-    print(f"Raw data shape: {raw_data.shape}")
+    print(f"Training raw data shape: {raw_train_data.shape}")
     
     # Initialize data processor
     processor = StockDataProcessor(
@@ -158,26 +158,49 @@ def load_and_process_data(config: ExperimentConfig):
     )
     
     # Fit scalers on training data
-    train_end = int(len(raw_data) * config.data.train_ratio)
-    processor.fit_scalers(raw_data[:train_end])
+    total_train_len = len(raw_train_data)
+    min_required = config.data.sequence_length + config.data.prediction_horizon
+    train_cutoff = int(total_train_len * config.data.train_ratio)
+    if train_cutoff <= 0:
+        train_cutoff = total_train_len
+    if total_train_len >= min_required:
+        train_cutoff = max(train_cutoff, min_required)
+    else:
+        train_cutoff = total_train_len
+    train_cutoff = min(train_cutoff, total_train_len)
+    processor.fit_scalers(raw_train_data[:train_cutoff])
     
     # Transform data
-    normalized_data = processor.transform(raw_data)
+    normalized_train_data = processor.transform(raw_train_data)
     
     # Save processor
     processor_path = Path(config.output.output_dir) / "data_processor.pkl"
     processor.save_scalers(str(processor_path))
     print(f"Data processor saved to: {processor_path}")
     
-    # Split data
-    train_data, val_data, test_data = split_data(
-        normalized_data,
-        train_ratio=config.data.train_ratio,
-        val_ratio=config.data.val_ratio,
-        test_ratio=config.data.test_ratio
-    )
-    
-    print(f"Data splits - Train: {len(train_data)}, Val: {len(val_data)}, Test: {len(test_data)}")
+    val_data = None
+    if config.data.validation_data_dir:
+        raw_val_data = load_training_data(
+            data_dir=config.data.validation_data_dir,
+            symbols=config.data.symbols,
+            start_date=config.data.start_date,
+            use_toto_forecasts=config.data.use_toto_forecasts,
+            toto_options=toto_options,
+            sequence_length=config.data.sequence_length,
+            prediction_horizon=config.data.prediction_horizon,
+        )
+        print(f"Validation raw data shape: {raw_val_data.shape}")
+        val_data = processor.transform(raw_val_data)
+        train_data = normalized_train_data[:train_cutoff]
+        print(f"Data splits - Train: {len(train_data)}, External Val: {len(val_data)}")
+    else:
+        train_data, val_data, _ = split_data(
+            normalized_train_data,
+            train_ratio=config.data.train_ratio,
+            val_ratio=config.data.val_ratio,
+            test_ratio=config.data.test_ratio
+        )
+        print(f"Data splits - Train: {len(train_data)}, Val: {len(val_data)} (split)")
     
     # Create sequences
     print("Creating sequences...")
@@ -188,14 +211,18 @@ def load_and_process_data(config: ExperimentConfig):
         config.data.prediction_horizon
     )
     
-    val_sequences, val_targets, val_actions = create_sequences(
-        val_data,
-        config.data.sequence_length,
-        config.data.prediction_horizon
-    )
-    
     print(f"Training sequences: {train_sequences.shape}")
-    print(f"Validation sequences: {val_sequences.shape}")
+    val_dataset = None
+    if val_data is not None and len(val_data) > config.data.sequence_length + config.data.prediction_horizon:
+        val_sequences, val_targets, val_actions = create_sequences(
+            val_data,
+            config.data.sequence_length,
+            config.data.prediction_horizon
+        )
+        print(f"Validation sequences: {val_sequences.shape}")
+    else:
+        print("Validation set too small to create sequences; skipping validation dataset.")
+        val_data = None
     
     # Create datasets
     train_dataset = StockDataset(
@@ -205,12 +232,13 @@ def load_and_process_data(config: ExperimentConfig):
         processor=processor,
     )
 
-    val_dataset = StockDataset(
-        val_data,
-        sequence_length=config.data.sequence_length,
-        prediction_horizon=config.data.prediction_horizon,
-        processor=processor,
-    ) if len(val_data) > config.data.sequence_length + config.data.prediction_horizon else None
+    if val_data is not None:
+        val_dataset = StockDataset(
+            val_data,
+            sequence_length=config.data.sequence_length,
+            prediction_horizon=config.data.prediction_horizon,
+            processor=processor,
+        )
     
     return train_dataset, val_dataset, processor
 

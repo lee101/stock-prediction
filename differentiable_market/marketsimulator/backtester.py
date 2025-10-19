@@ -5,7 +5,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence
 
-import math
 import torch
 
 from ..config import DataConfig, EnvironmentConfig, EvaluationConfig
@@ -42,6 +41,9 @@ class DifferentiableMarketBacktester:
         self.eval_cfg = eval_cfg
         self.use_eval_split = use_eval_split
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.env = DifferentiableMarketEnv(env_cfg)
+
         ohlc_all, symbols, index = load_aligned_ohlc(data_cfg)
         self.symbols = symbols
         self.index = index
@@ -51,9 +53,9 @@ class DifferentiableMarketBacktester:
         else:
             eval_tensor = ohlc_all
             self.eval_start_idx = 0
-        self.eval_features, self.eval_returns = ohlc_to_features(eval_tensor)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.env = DifferentiableMarketEnv(env_cfg)
+        features, returns = ohlc_to_features(eval_tensor)
+        self.eval_features = features.to(self.device, non_blocking=True)
+        self.eval_returns = returns.to(self.device, non_blocking=True)
 
     def run(self, checkpoint_path: Path) -> Dict[str, float]:
         payload = torch.load(checkpoint_path, map_location="cpu")
@@ -62,7 +64,7 @@ class DifferentiableMarketBacktester:
         if str(data_cfg["root"]) != str(self.data_cfg.root):
             print("Warning: checkpoint data root differs from current configuration.")
 
-        asset_count = len(self.symbols)
+        asset_count = self.eval_features.shape[1]
         feature_dim = self.eval_features.shape[-1]
 
         policy = DirichletGRUPolicy(
@@ -82,11 +84,11 @@ class DifferentiableMarketBacktester:
         trades_path = ensure_dir(self.eval_cfg.report_dir) / "trades.jsonl"
         trade_handle = trades_path.open("w", encoding="utf-8") if self.eval_cfg.store_trades else None
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for start in range(0, self.eval_features.shape[0] - window_length + 1, stride):
                 end = start + window_length
-                x_window = self.eval_features[start:end].unsqueeze(0).to(self.device)
-                r_window = self.eval_returns[start:end].to(self.device)
+                x_window = self.eval_features[start:end].unsqueeze(0)
+                r_window = self.eval_returns[start:end]
                 alpha = policy(x_window).float().squeeze(0)
                 weights = alpha / alpha.sum(dim=-1, keepdim=True)
                 window_metrics = self._simulate_window(weights, r_window, start, end, trade_handle)
@@ -114,15 +116,15 @@ class DifferentiableMarketBacktester:
         rewards = []
         turnovers = []
         wealth = []
-        cumulative = 0.0
+        cumulative = torch.zeros((), dtype=weights.dtype, device=weights.device)
         for idx in range(steps):
             w_t = weights[idx].to(torch.float32)
             r_next = returns[idx]
             reward = self.env.step(w_t, r_next, w_prev)
             rewards.append(reward)
             turnovers.append(smooth_abs(w_t - w_prev, self.env_cfg.smooth_abs_eps).sum())
-            cumulative += reward.item()
-            wealth.append(math.exp(cumulative))
+            cumulative = cumulative + reward
+            wealth.append(torch.exp(cumulative))
             if trade_handle is not None:
                 timestamp_idx = self.eval_start_idx + start + idx + 1
                 if timestamp_idx >= len(self.index):
@@ -143,9 +145,9 @@ class DifferentiableMarketBacktester:
         mean_reward = reward_tensor.mean()
         std_reward = reward_tensor.std(unbiased=False).clamp_min(1e-8)
         sharpe = mean_reward / std_reward
-        cumulative_return = float(math.exp(reward_tensor.sum().item()) - 1.0)
+        cumulative_return = torch.expm1(reward_tensor.sum()).item()
 
-        wealth_tensor = torch.tensor(wealth)
+        wealth_tensor = torch.stack(wealth)
         roll, _ = torch.cummax(wealth_tensor, dim=0)
         drawdown = 1.0 - wealth_tensor / roll.clamp_min(1e-12)
         max_drawdown = float(drawdown.max().item())

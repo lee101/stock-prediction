@@ -15,6 +15,8 @@ def _to_device(batch: Any, device: torch.device | str, *, non_blocking: bool) ->
     if isinstance(batch, Mapping):
         return {k: _to_device(v, device, non_blocking=non_blocking) for k, v in batch.items()}
     if isinstance(batch, Sequence) and not isinstance(batch, (str, bytes)):
+        if hasattr(batch, "_fields"):  # NamedTuple (e.g., MaskedTimeseries)
+            return type(batch)._make(_to_device(v, device, non_blocking=non_blocking) for v in batch)
         return type(batch)(_to_device(v, device, non_blocking=non_blocking) for v in batch)
     return batch
 

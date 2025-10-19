@@ -33,7 +33,8 @@
     "toto_model_id": "Datadog/Toto-Open-Base-1.0",
     "toto_device": "cuda",
     "toto_horizon": 8,
-    "toto_num_samples": 2048
+    "toto_num_samples": 2048,
+    "validation_data_dir": "trainingdata2/validation"
   },
   "training": {
     "learning_rate": 0.0001,
