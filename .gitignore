@@ -39,6 +39,7 @@ positions_shelf.json
 <<<<<<< HEAD
 *.pt
 trainingdata
+trainingdata2/
 traininglogs
 traininglogs_temp
 training_log.txt

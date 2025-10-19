@@ -30,7 +30,7 @@ class MockAccount:
     cash: float
     equity: float
     buying_power: float
-    multiplier: float = margin_multiplier
+    multiplier: float
 
 
 @dataclass
@@ -88,10 +88,13 @@ def get_clock() -> MockClock:
 def get_account() -> MockAccount:
     state = get_state()
     _sync_account_metrics(state)
+    settings = state.leverage_settings or get_leverage_settings()
+    current_multiplier = getattr(settings, "max_gross_leverage", margin_multiplier)
     return MockAccount(
         cash=state.cash,
         equity=state.equity,
         buying_power=state.buying_power,
+        multiplier=current_multiplier,
     )
 
 
