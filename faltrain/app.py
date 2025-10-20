@@ -26,8 +26,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import fal
 from pydantic import BaseModel, Field
 
-from .artifacts import load_artifact_specs, sync_artifacts
-from .batch_size_tuner import auto_tune_batch_sizes
+from faltrain.artifacts import load_artifact_specs, sync_artifacts
+from faltrain.batch_size_tuner import auto_tune_batch_sizes
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOG = logging.getLogger("faltrain.app")
 LOG.setLevel(logging.INFO)
@@ -211,7 +211,20 @@ class StockTrainerApp(
         "xformers",
         "wandb",
     ]
-    local_python_modules: List[str] = []
+    local_python_modules: List[str] = [
+        "faltrain",
+        "hftraining",
+        "hfshared",
+        "hfinference",
+        "traininglib",
+        "marketsimulator",
+        "differentiable_market",
+        "toto",
+        "pufferlibtraining",
+        "pufferlibinference",
+        "gymrl",
+        "src",
+    ]
 
     def setup(self) -> None:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
