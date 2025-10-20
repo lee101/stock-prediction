@@ -1250,9 +1250,9 @@ def main():
         num_heads=8 if device_str == "cuda" else 4,        # More heads for GPU
         
         # Training
-        learning_rate=3e-4,  # Optimal LR
-        warmup_steps=100,    # Reasonable warmup
-        max_steps=5000 if device_str == "cuda" else 1000,  # More steps for GPU
+        learning_rate=1e-4,
+        warmup_steps=400,
+        max_steps=20000 if device_str == "cuda" else 4000,
         batch_size=batch_size,
         
         # Optimizer
@@ -1262,9 +1262,9 @@ def main():
         adam_beta2=0.999,
         
         # Evaluation
-        eval_steps=100,      # Regular evaluation
-        save_steps=500,      # Save periodically
-        logging_steps=20,    # Frequent logging
+        eval_steps=200,
+        save_steps=800,
+        logging_steps=20,
         
         # Training stability
         max_grad_norm=1.0,   # Global gradient clipping
@@ -1286,9 +1286,9 @@ def main():
         prefetch_factor=2,
 
         # Micro augmentation (normalized inputs)
-        input_noise_std=0.001,
-        input_noise_prob=0.5,
-        input_noise_clip=0.02,
+        input_noise_std=0.0005,
+        input_noise_prob=0.2,
+        input_noise_clip=0.015,
         
         # Early stopping
         early_stopping_patience=15,
@@ -1296,7 +1296,11 @@ def main():
         
         # Output
         output_dir="hftraining/output",
-        logging_dir="hftraining/logs"
+        logging_dir="hftraining/logs",
+        wandb_project="hftraining",
+        wandb_entity="stock",
+        wandb_group="hftraining_longrun",
+        wandb_tags=("hftraining", "supervised"),
     )
     
     # Load data

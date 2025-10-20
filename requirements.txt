@@ -209,7 +209,7 @@ docstring-parser==0.17.0
     #   cyclopts
 docutils==0.22.2
     # via rich-rst
-einops==0.7.0
+einops>=0.8.1,<0.9
     # via
     #   -r requirements.in
     #   rotary-embedding-torch

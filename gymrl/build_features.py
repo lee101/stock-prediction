@@ -29,6 +29,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fill-method", type=str, default="ffill", help="Optional fill method when aligning timestamps (e.g., ffill, bfill, none).")
     parser.add_argument("--device-map", type=str, default=None, help="Device override for Toto/Kronos (e.g., 'cuda', 'cpu').")
     parser.add_argument("--kronos-device", type=str, default=None, help="Device override specifically for Kronos forecasts.")
+    parser.add_argument(
+        "--enforce-common-index",
+        action="store_true",
+        help="Require identical timestamps across all symbols (defaults to union with forward-fill).",
+    )
     parser.add_argument("--kronos-temperature", type=float, default=None, help="Sampling temperature passed to Kronos.")
     parser.add_argument("--kronos-top-p", type=float, default=None, help="Top-p nucleus sampling parameter for Kronos.")
     parser.add_argument("--kronos-top-k", type=int, default=None, help="Top-k sampling parameter for Kronos.")
@@ -75,6 +80,7 @@ def main() -> None:
         prediction_length=args.prediction_length,
         realized_horizon=args.realized_horizon,
         fill_method=fill_method,
+        enforce_common_index=args.enforce_common_index,
     )
 
     logger.info("Building feature cube (backend=%s, samples=%d) ...", args.forecast_backend, args.num_samples)

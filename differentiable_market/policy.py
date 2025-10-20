@@ -58,7 +58,7 @@ class DirichletGRUPolicy(nn.Module):
         flat = flat.float()
         flat = self.in_norm(flat)
         if self.gradient_checkpointing and self.training:
-            gru_out = torch.utils.checkpoint.checkpoint(self._gru_forward, flat)
+            gru_out = torch.utils.checkpoint.checkpoint(self._gru_forward, flat, use_reentrant=False)
         else:
             gru_out = self._gru_forward(flat)
         logits = self.head(gru_out)

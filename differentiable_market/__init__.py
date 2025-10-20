@@ -6,10 +6,18 @@ policies, and training utilities for reinforcement learning based trading.
 """
 
 from .config import DataConfig, EnvironmentConfig, TrainingConfig, EvaluationConfig
-from .trainer import DifferentiableMarketTrainer
 from .policy import DirichletGRUPolicy
+from .trainer import DifferentiableMarketTrainer
 from .env import DifferentiableMarketEnv
 from .optim import CombinedOptimizer, MuonConfig, build_muon_optimizer
+from .differentiable_utils import (
+    TradeMemoryState,
+    haar_wavelet_pyramid,
+    risk_budget_mismatch,
+    soft_drawdown,
+    taylor_time_encoding,
+    trade_memory_update,
+)
 
 __all__ = [
     "DataConfig",
@@ -22,4 +30,10 @@ __all__ = [
     "CombinedOptimizer",
     "MuonConfig",
     "build_muon_optimizer",
+    "taylor_time_encoding",
+    "haar_wavelet_pyramid",
+    "soft_drawdown",
+    "risk_budget_mismatch",
+    "TradeMemoryState",
+    "trade_memory_update",
 ]

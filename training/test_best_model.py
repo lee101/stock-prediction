@@ -7,15 +7,40 @@ Handles dimension mismatches gracefully
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-import yfinance as yf
-from datetime import datetime
+import pandas as pd
+from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore')
 
 
-def test_model_simple(model_path='models/checkpoint_ep1400.pth', 
-                      stock='AAPL', 
-                      start='2023-06-01', 
+DATA_ROOT = Path(__file__).resolve().parents[1] / "trainingdata"
+
+
+def _load_price_history(stock: str, start: str, end: str) -> pd.DataFrame:
+    """Load OHLCV history for `stock` from the local trainingdata directory."""
+    symbol = stock.upper()
+    data_path = DATA_ROOT / f"{symbol}.csv"
+    if not data_path.exists():
+        raise FileNotFoundError(
+            f"Missing cached data for {symbol} at {data_path}. "
+            "Sync trainingdata/ before running this check."
+        )
+
+    df = pd.read_csv(data_path, parse_dates=["timestamp"])
+    df = df.set_index("timestamp").sort_index()
+    window = (df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end))
+    filtered = df.loc[window]
+    if filtered.empty:
+        raise ValueError(
+            f"No rows for {symbol} between {start} and {end}. "
+            f"Available span: {df.index.min().date()} to {df.index.max().date()}."
+        )
+    return filtered.rename(columns=str.title)
+
+
+def test_model_simple(model_path='models/checkpoint_ep1400.pth',
+                      stock='AAPL',
+                      start='2023-06-01',
                       end='2024-01-01'):
     """Simple test of model on stock data"""
     
@@ -31,8 +56,7 @@ def test_model_simple(model_path='models/checkpoint_ep1400.pth',
     print(f"Best metric: {checkpoint.get('metric_type', 'unknown')} = {checkpoint.get('metric_value', 0):.4f}")
     
     # Load stock data
-    ticker = yf.Ticker(stock)
-    df = ticker.history(start=start, end=end)
+    df = _load_price_history(stock, start, end)
     
     print(f"Loaded {len(df)} days of {stock} data")
     print(f"Price range: ${df['Close'].min():.2f} - ${df['Close'].max():.2f}")
@@ -53,6 +77,10 @@ def test_model_simple(model_path='models/checkpoint_ep1400.pth',
     # Simple momentum strategy as placeholder
     # (since we can't load the complex model easily)
     window = 20
+    if len(prices) <= window:
+        raise ValueError(
+            f"Not enough data points ({len(prices)}) to evaluate momentum window {window}."
+        )
     
     for i in range(window, len(prices)):
         # Calculate simple signals
