@@ -55,6 +55,8 @@ uv pip install -e pufferlibtraining
 uv pip install -e pufferlibinference
 ```
 
+> Already have the environment activated? You can drop the `uv run` prefix shown in later examples and call `python ...` or `pytest ...` directly from the shell.
+
 The `dev` extra now pulls every stack plus formatting and typing tools, so `uv pip sync --extra dev` reproduces the previous “kitchen sink” environment without slowing down the default sync path.
 
 ### Scripts
@@ -75,6 +77,18 @@ Ramp into a position:
 
 ```bash
 PYTHONPATH=$(pwd) python scripts/alpaca_cli.py ramp_into_position ETHUSD
+```
+
+Auto-cancel duplicate orders continuously:
+
+```bash
+PYTHONPATH=$(pwd) python scripts/cancel_multi_orders.py
+```
+
+Progressively deleverage into the close (enforces <=1.94x gross leverage, switches to market exits inside five minutes of the bell):
+
+```bash
+PYTHONPATH=$(pwd) python scripts/deleverage_account_day_end.py
 ```
 
 ## Training Pipelines
@@ -254,19 +268,22 @@ Crypto can only be traded non-margin for some time, cant be shorted in alpaca, s
 ### Install Requirements
 
 ```bash
-uv pip install requirements.txt
+source .venv312/bin/activate
+uv pip install -r requirements.txt
 ```
 
 ### Run the Stock Trading Bot
 
 ```bash
-python trade_stock_e2e.py
+source .venv312/bin/activate
+PYTHONPATH=$(pwd) python trade_stock_e2e.py
 ```
 
 ### Run the Tests
 
 ```bash
-pytest .
+source .venv312/bin/activate
+PYTHONPATH=$(pwd) pytest .
 ```
 
 ## Training Optimizer Toolkit
