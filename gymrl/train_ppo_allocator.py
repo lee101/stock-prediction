@@ -50,6 +50,30 @@ from gymrl.eval_utils import evaluate_trained_policy
 logger = logging.getLogger("gymrl.train")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+DEFAULT_SYMBOLS = [
+    "COUR",
+    "GOOG",
+    "TSLA",
+    "NVDA",
+    "AAPL",
+    "U",
+    "ADSK",
+    "CRWD",
+    "ADBE",
+    "NET",
+    "COIN",
+    "META",
+    "AMZN",
+    "AMD",
+    "INTC",
+    "LCID",
+    "QUBT",
+    "BTCUSD",
+    "ETHUSD",
+    "UNIUSD",
+]
+DEFAULT_SYMBOL_ARG = ",".join(DEFAULT_SYMBOLS)
+
 
 def optional_float(value: str) -> Optional[float]:
     """Parse float arguments that may accept 'none'."""
@@ -121,7 +145,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--drawdown-penalty", type=float, default=0.0, help="Penalty applied to running drawdown.")
     parser.add_argument("--cvar-penalty", type=float, default=0.0, help="Penalty weight for predicted CVaR inputs.")
     parser.add_argument("--uncertainty-penalty", type=float, default=0.0, help="Penalty weight for forecast dispersion inputs.")
-    parser.add_argument("--weight-cap", type=optional_float, default=0.35, help="Maximum per-asset allocation; pass 'none' to disable.")
+    parser.add_argument("--weight-cap", type=optional_float, default=None, help="Maximum per-asset allocation; pass 'none' to disable.")
     parser.add_argument("--allow-short", action="store_true", help="Enable long/short allocations with symmetric leverage.")
     parser.add_argument("--leverage-cap", type=float, default=1.0, help="Gross leverage cap when shorting is enabled.")
     parser.add_argument("--include-cash", dest="include_cash", action="store_true", help="Include a synthetic cash asset (default).")
@@ -146,7 +170,21 @@ def parse_args() -> argparse.Namespace:
         help="Torch dtype used for PPO policy forward/backward passes (bfloat16 enables autocast).",
     )
     parser.add_argument("--device", type=str, default="auto", help="Device to use for Stable-Baselines3 (e.g., 'cpu', 'cuda', or 'auto').")
-    parser.set_defaults(include_cash=True)
+    parser.add_argument(
+        "--symbols",
+        type=str,
+        default=DEFAULT_SYMBOL_ARG,
+        help="Comma-separated list of symbols to include (defaults to curated multi-asset basket).",
+    )
+    parser.add_argument("--base-gross-exposure", type=float, default=1.0, help="Gross exposure that does not accrue financing cost.")
+    parser.add_argument("--max-gross-leverage", type=float, default=2.0, help="End-of-day gross leverage cap.")
+    parser.add_argument("--intraday-leverage-cap", type=float, default=4.0, help="Intraday gross leverage ceiling.")
+    parser.add_argument("--daily-leverage-rate", type=float, default=None, help="Explicit daily borrowing rate; overrides annual conversion.")
+    parser.add_argument("--no-leverage-head", dest="leverage_head", action="store_false", help="Disable the leverage head in the action space.")
+    parser.add_argument("--leverage-head", dest="leverage_head", action="store_true", help="Enable the leverage head in the action space.")
+    parser.add_argument("--no-enforce-eod-cap", dest="enforce_eod_cap", action="store_false", help="Skip automatic end-of-day clamping to max gross leverage.")
+    parser.add_argument("--enforce-eod-cap", dest="enforce_eod_cap", action="store_true", help="Force end-of-day clamp to max gross leverage (default).")
+    parser.set_defaults(include_cash=True, leverage_head=True, enforce_eod_cap=True)
     return parser.parse_args()
 
 
@@ -351,6 +389,15 @@ def main() -> None:
     else:
         extra_meta.setdefault("selected_symbols", list(cube.symbols))
 
+    extra_meta["leverage_config"] = {
+        "base": args.base_gross_exposure,
+        "max": args.max_gross_leverage,
+        "intraday": args.intraday_leverage_cap,
+        "daily_rate": args.daily_leverage_rate,
+        "enforce_eod_cap": args.enforce_eod_cap,
+        "leverage_head": args.leverage_head,
+    }
+
     cube_meta = {
         "feature_names": cube.feature_names,
         "symbols": cube.symbols,
@@ -388,6 +435,12 @@ def main() -> None:
         leverage_cap=args.leverage_cap,
         include_cash=args.include_cash,
         cash_return=args.cash_return,
+        leverage_head=args.leverage_head,
+        base_gross_exposure=args.base_gross_exposure,
+        max_gross_leverage=args.max_gross_leverage,
+        intraday_leverage_cap=args.intraday_leverage_cap,
+        daily_leverage_rate=args.daily_leverage_rate,
+        enforce_end_of_day_cap=args.enforce_eod_cap,
     )
 
     if args.behaviour_dataset:

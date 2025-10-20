@@ -1,0 +1,42 @@
+[[pattern]]
+name = "Toto best checkpoints"
+base = "tototraining"
+glob = "**/best_model.pt"
+remote_prefix = "checkpoints/tototraining"
+required = true
+
+[[pattern]]
+name = "Toto compiled Simple checkpoints directory"
+base = "tototraining"
+glob = "simple_checkpoints"
+remote_prefix = "checkpoints/tototraining"
+recursive = true
+required = false
+
+[[pattern]]
+name = "HF training finetuned portfolios"
+base = "hftraining/models"
+glob = "**/*.pt"
+remote_prefix = "checkpoints/hftraining"
+required = false
+
+[[pattern]]
+name = "PufferLib RL best portfolios"
+base = "pufferlibtraining/models"
+glob = "**/*_best.pt"
+remote_prefix = "checkpoints/pufferlibtraining"
+required = false
+
+[[pattern]]
+name = "GymRL allocator exports"
+base = "gymrl/artifacts"
+glob = "**/*.zip"
+remote_prefix = "checkpoints/gymrl"
+required = false
+
+[[artifact]]
+name = "Chronos compiled models"
+source = "compiled_models"
+remote = "compiled_models"
+recursive = true
+required = false
