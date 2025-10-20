@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 
 @dataclass(slots=True)
@@ -62,6 +62,31 @@ class TrainingConfig:
     max_eval_windows: int | None = None
     resume: bool = False
     include_cash: bool = False
+    init_checkpoint: Path | None = None
+    use_wandb: bool = False
+    wandb_project: str | None = None
+    wandb_entity: str | None = None
+    wandb_tags: tuple[str, ...] = ()
+    wandb_group: str | None = None
+    wandb_notes: str | None = None
+    wandb_mode: str = "auto"
+    wandb_run_name: str | None = None
+    wandb_settings: dict[str, Any] = field(default_factory=dict)
+    wandb_log_metrics: bool = False
+    wandb_metric_log_level: str = "DEBUG"
+    tensorboard_root: Path | None = Path("tensorboard_logs")
+    tensorboard_subdir: str | None = None
+    soft_drawdown_lambda: float = 0.0
+    risk_budget_lambda: float = 0.0
+    risk_budget_target: tuple[float, ...] = ()
+    trade_memory_lambda: float = 0.0
+    trade_memory_ema_decay: float = 0.95
+    use_taylor_features: bool = False
+    taylor_order: int = 4
+    taylor_scale: float = 32.0
+    use_wavelet_features: bool = False
+    wavelet_levels: int = 1
+    wavelet_padding_mode: Literal["reflect", "replicate", "constant"] = "reflect"
 
 
 @dataclass(slots=True)

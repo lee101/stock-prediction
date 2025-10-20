@@ -47,9 +47,10 @@ datasets>=2.17
 accelerate>=1.10.1
 huggingface_hub>=0.24
 safetensors>=0.4
-einops==0.7.0
+einops>=0.8.1,<0.9
 jaxtyping==0.2.29
 rotary-embedding-torch==0.8.6
+flash-attn>=2.8.3; platform_system == "Linux" and platform_machine == "x86_64"
 gluonts[torch]==0.16.2
 dill==0.3.8
 anthropic>=0.71.0

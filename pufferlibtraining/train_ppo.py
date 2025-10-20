@@ -329,6 +329,48 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Torch device string for Toto forecasts and RL training.",
     )
     parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default="pufferlib",
+        help="Weights & Biases project name for RL runs (default: 'pufferlib').",
+    )
+    parser.add_argument(
+        "--wandb-entity",
+        type=str,
+        default="stock",
+        help="Weights & Biases entity/organisation (default: 'stock').",
+    )
+    parser.add_argument(
+        "--wandb-group",
+        type=str,
+        default="portfolio-rl",
+        help="Optional group label for Weights & Biases.",
+    )
+    parser.add_argument(
+        "--wandb-tags",
+        type=str,
+        default="pufferlib,rl",
+        help="Comma-separated list of Weights & Biases tags.",
+    )
+    parser.add_argument(
+        "--wandb-run-name",
+        type=str,
+        default="",
+        help="Override the auto-generated Weights & Biases run name.",
+    )
+    parser.add_argument(
+        "--wandb-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "online", "offline", "disabled"],
+        help="Set the Weights & Biases logging mode.",
+    )
+    parser.add_argument(
+        "--disable-wandb",
+        action="store_true",
+        help="Disable Weights & Biases logging while keeping TensorBoard.",
+    )
+    parser.add_argument(
         "--sequence-length",
         type=int,
         default=60,
@@ -473,6 +515,15 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
                 "trading_days_per_year": args.trading_days_per_year,
                 "initial_checkpoint_dir": args.rl_initial_checkpoint_dir,
             },
+            "wandb": {
+                "enabled": not args.disable_wandb,
+                "project": args.wandb_project or None,
+                "entity": args.wandb_entity or None,
+                "group": args.wandb_group or None,
+                "tags": [tag.strip() for tag in args.wandb_tags.split(",") if tag.strip()],
+                "mode": args.wandb_mode,
+                "run_name": args.wandb_run_name or None,
+            },
             "progressive_base_steps": progressive_schedule,
         },
     }
@@ -556,6 +607,14 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
             grad_clip=args.rl_grad_clip,
             warmup_steps=args.rl_warmup_steps,
             min_learning_rate=args.rl_min_lr,
+            use_wandb=not args.disable_wandb,
+            wandb_project=args.wandb_project or None,
+            wandb_entity=args.wandb_entity or None,
+            wandb_group=args.wandb_group or None,
+            wandb_tags=tuple(tag.strip() for tag in args.wandb_tags.split(",") if tag.strip()),
+            wandb_run_name=args.wandb_run_name or None,
+            wandb_mode=args.wandb_mode,
+            tensorboard_subdir=args.wandb_run_name or None,
         )
         pair_metrics: Dict[str, Dict[str, float]] = {}
         initial_dir = Path(args.rl_initial_checkpoint_dir).expanduser().resolve() if args.rl_initial_checkpoint_dir else None

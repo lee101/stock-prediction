@@ -13,6 +13,7 @@ from ..env import DifferentiableMarketEnv, smooth_abs
 from ..features import ohlc_to_features
 from ..policy import DirichletGRUPolicy
 from ..utils import ensure_dir
+from ..differentiable_utils import augment_market_features
 
 
 @dataclass(slots=True)
@@ -57,7 +58,7 @@ class DifferentiableMarketBacktester:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.env = DifferentiableMarketEnv(env_cfg)
 
-        features, returns = self._prepare_features(add_cash=data_cfg.include_cash)
+        features, returns = self._prepare_features(add_cash=data_cfg.include_cash, feature_cfg=None)
         self.eval_features = features
         self.eval_returns = returns
         self.asset_names = list(self.symbols) + (["CASH"] if data_cfg.include_cash else [])
@@ -77,7 +78,10 @@ class DifferentiableMarketBacktester:
         else:
             include_cash = include_cash_config or self.data_cfg.include_cash
 
-        self.eval_features, self.eval_returns = self._prepare_features(add_cash=include_cash)
+        self.eval_features, self.eval_returns = self._prepare_features(
+            add_cash=include_cash,
+            feature_cfg=ckpt_train_cfg,
+        )
         self.asset_names = list(self.symbols) + (["CASH"] if include_cash else [])
 
         asset_count = self.eval_features.shape[1]
@@ -119,8 +123,19 @@ class DifferentiableMarketBacktester:
         (report_dir / "windows.json").write_text(json.dumps([asdict(m) for m in metrics], indent=2))
         return aggregate
 
-    def _prepare_features(self, add_cash: bool) -> tuple[torch.Tensor, torch.Tensor]:
+    def _prepare_features(self, add_cash: bool, feature_cfg: Dict | None) -> tuple[torch.Tensor, torch.Tensor]:
         features, returns = ohlc_to_features(self.eval_tensor, add_cash=add_cash)
+        cfg = feature_cfg or {}
+        features = augment_market_features(
+            features,
+            returns,
+            use_taylor=bool(cfg.get("use_taylor_features", False)),
+            taylor_order=int(cfg.get("taylor_order", 0) or 0),
+            taylor_scale=float(cfg.get("taylor_scale", 32.0)),
+            use_wavelet=bool(cfg.get("use_wavelet_features", False)),
+            wavelet_levels=int(cfg.get("wavelet_levels", 0) or 0),
+            padding_mode=str(cfg.get("wavelet_padding_mode", "reflect")),
+        )
         return (
             features.to(self.device, non_blocking=True),
             returns.to(self.device, non_blocking=True),
