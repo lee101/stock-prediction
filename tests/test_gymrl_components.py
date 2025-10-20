@@ -69,7 +69,7 @@ def test_portfolio_env_cost_vector_handles_crypto_and_cash():
     T, N, F = 12, 2, 4
     features = np.zeros((T, N, F), dtype=np.float32)
     realized_returns = np.zeros((T, N), dtype=np.float32)
-    config = PortfolioEnvConfig(costs_bps=5.0, include_cash=True)
+    config = PortfolioEnvConfig(costs_bps=5.0, include_cash=True, leverage_head=False, weight_cap=None)
 
     env = PortfolioEnv(
         features,
@@ -125,7 +125,7 @@ def test_portfolio_env_info_crypto_breakdown():
     env = PortfolioEnv(
         features,
         realized_returns,
-        config=PortfolioEnvConfig(include_cash=False),
+        config=PortfolioEnvConfig(include_cash=False, leverage_head=False, weight_cap=None),
         symbols=["AAPL", "BTCUSD"],
     )
 

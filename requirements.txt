@@ -300,7 +300,6 @@ gunicorn==23.0.0
     # via
     #   -r requirements.in
     #   mlflow
-gym==0.23.0
     # via
     #   pufferlib
     #   shimmy

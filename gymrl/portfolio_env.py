@@ -34,6 +34,14 @@ except ImportError:
             "stockagent.constants is importable before using gymrl.PortfolioEnv."
         ) from exc
 from src.fixtures import crypto_symbols
+from src.alpaca_utils import (
+    BASE_GROSS_EXPOSURE,
+    INTRADAY_GROSS_EXPOSURE,
+    MAX_GROSS_EXPOSURE,
+    clamp_end_of_day_weights,
+    leverage_penalty,
+)
+from src.leverage_settings import get_leverage_settings
 from .config import PortfolioEnvConfig
 
 
@@ -42,6 +50,11 @@ def _softmax(x: np.ndarray) -> np.ndarray:
     z = x - np.max(x)
     e = np.exp(z)
     return e / (np.sum(e) + 1e-8)
+
+
+def _sigmoid(value: float) -> float:
+    """Logistic squashing."""
+    return float(1.0 / (1.0 + np.exp(-float(value))))
 
 
 @dataclass
@@ -68,6 +81,10 @@ class EnvStepInfo:
     loss_shutdown_active_long: float = 0.0
     loss_shutdown_active_short: float = 0.0
     loss_shutdown_clipped: float = 0.0
+    gross_exposure: float = 0.0
+    post_close_gross_exposure: float = 0.0
+    leverage_penalty: float = 0.0
+    deleverage_turnover: float = 0.0
 
     def to_dict(self) -> Dict[str, float]:
         return {
@@ -91,6 +108,10 @@ class EnvStepInfo:
             "loss_shutdown_active_long": self.loss_shutdown_active_long,
             "loss_shutdown_active_short": self.loss_shutdown_active_short,
             "loss_shutdown_clipped": self.loss_shutdown_clipped,
+            "gross_exposure": self.gross_exposure,
+            "post_close_gross_exposure": self.post_close_gross_exposure,
+            "leverage_penalty": self.leverage_penalty,
+            "deleverage_turnover": self.deleverage_turnover,
         }
 
 
@@ -242,11 +263,42 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             obs_dim += self.N + 1  # current weights + portfolio multiplier
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
 
+        leverage_settings = get_leverage_settings()
+        self._use_leverage_head = bool(getattr(self.config, "leverage_head", False))
+        base_gross = getattr(self.config, "base_gross_exposure", BASE_GROSS_EXPOSURE)
+        max_gross_default = getattr(leverage_settings, "max_gross_leverage", MAX_GROSS_EXPOSURE)
+        max_gross = getattr(self.config, "max_gross_leverage", max_gross_default)
+        intraday_cap = getattr(self.config, "intraday_leverage_cap", INTRADAY_GROSS_EXPOSURE)
+
+        self._base_gross = max(1.0, float(base_gross))
+        self._max_gross = max(self._base_gross, float(max_gross))
+        self._intraday_cap = max(self._max_gross, float(intraday_cap))
+        self._enforce_eod_cap = bool(getattr(self.config, "enforce_end_of_day_cap", True))
+
+        daily_rate = getattr(self.config, "daily_leverage_rate", None)
+        if daily_rate is None:
+            annual_rate = getattr(
+                self.config,
+                "leverage_penalty_annual_rate",
+                getattr(leverage_settings, "annual_cost", None),
+            )
+            if annual_rate is None:
+                annual_rate = leverage_settings.annual_cost if leverage_settings else 0.0675
+            trading_days = getattr(
+                self.config,
+                "leverage_penalty_trading_days",
+                getattr(leverage_settings, "trading_days_per_year", 252),
+            )
+            trading_days = max(1, int(trading_days))
+            daily_rate = annual_rate / float(trading_days)
+        self._daily_leverage_rate = float(daily_rate)
+
         if self.config.allow_short:
             action_dim = self.N * 2
             self.action_space = spaces.Box(low=-8.0, high=8.0, shape=(action_dim,), dtype=np.float32)
         else:
-            self.action_space = spaces.Box(low=-8.0, high=8.0, shape=(self.N,), dtype=np.float32)
+            action_len = self.N + (1 if self._use_leverage_head else 0)
+            self.action_space = spaces.Box(low=-8.0, high=8.0, shape=(action_len,), dtype=np.float32)
 
         # Loss shutdown state ----------------------------------------------------
         self._loss_shutdown_penalty_term: float = 0.0
@@ -343,14 +395,39 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             weights = self._apply_loss_shutdown(weights)
             return weights.astype(np.float32, copy=False)
 
-        weights = _softmax(action)
-        if self.config.weight_cap is not None:
-            capped = np.minimum(weights, self.config.weight_cap)
-            capped_sum = capped.sum()
-            if capped_sum <= 1e-6:
-                weights = np.full_like(weights, 1.0 / weights.size)
+        if self._use_leverage_head:
+            if action.shape[0] != self.N + 1:
+                raise ValueError(
+                    f"Expected action of length {self.N + 1} when leverage head is enabled; received {action.shape[0]}"
+                )
+            logits = action[:-1]
+            leverage_logit = float(action[-1])
+        else:
+            if action.shape[0] != self.N:
+                raise ValueError(f"Expected action of length {self.N}; received {action.shape[0]}")
+            logits = action
+            leverage_logit = None
+
+        weights = _softmax(logits)
+        gross_target = self._base_gross
+        if leverage_logit is not None:
+            leverage_scale = _sigmoid(leverage_logit)
+            gross_target = self._base_gross + leverage_scale * (self._intraday_cap - self._base_gross)
+        gross_target = float(np.clip(gross_target, self._base_gross, self._intraday_cap))
+        weights = weights * gross_target
+
+        cap_setting = getattr(self.config, "weight_cap", None)
+        if cap_setting is not None:
+            cap_setting = float(cap_setting)
+            per_asset_cap = cap_setting if cap_setting > 1.0 else cap_setting * gross_target
+            weights = np.minimum(weights, per_asset_cap)
+            total = weights.sum()
+            if total <= 1e-6:
+                weights = np.full(self.N, gross_target / self.N, dtype=np.float32)
             else:
-                weights = capped / capped_sum
+                weights = weights * (gross_target / total)
+            weights = np.minimum(weights, per_asset_cap)
+
         weights = self._apply_loss_shutdown(weights)
         return weights.astype(np.float32, copy=False)
 
@@ -474,25 +551,56 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
 
     def _transition(self, new_weights: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict[str, float]]:
         previous_weights = self._weights.copy()
-        deltas = np.abs(new_weights - previous_weights)
+        executed_weights = new_weights.astype(np.float32, copy=False)
+        deltas = np.abs(executed_weights - previous_weights)
         turnover = float(deltas.sum())
-        trading_cost = float(np.dot(deltas, self.costs_vector))
-
-        crypto_cost = float(np.dot(deltas[self.crypto_mask], self.costs_vector[self.crypto_mask])) if np.any(self.crypto_mask) else 0.0
-        non_crypto_cost = trading_cost - crypto_cost
+        trading_cost_components = deltas * self.costs_vector
 
         realized_vector = self.realized_returns[self._index]
-        asset_returns = new_weights * realized_vector
-        per_asset_cost = deltas * self.costs_vector
+        asset_returns = executed_weights * realized_vector
+
+        gross_exposure = float(np.sum(np.abs(executed_weights)))
+        leverage_cost = leverage_penalty(
+            gross_exposure,
+            base_exposure=self._base_gross,
+            daily_rate=self._daily_leverage_rate,
+        )
+
+        per_asset_cost = trading_cost_components.copy()
+        trading_cost = float(per_asset_cost.sum())
+
+        crypto_cost = float(per_asset_cost[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
+        non_crypto_cost = trading_cost - crypto_cost
+
+        end_of_day_weights = executed_weights
+        deleverage_turnover = 0.0
+        extra_crypto_cost = 0.0
+        if self._enforce_eod_cap:
+            clamped, forced_turnover = clamp_end_of_day_weights(executed_weights, max_gross=self._max_gross)
+            if forced_turnover > 1e-9:
+                forced_deltas = np.abs(executed_weights - clamped)
+                forced_cost = forced_deltas * self.costs_vector
+                per_asset_cost += forced_cost
+                turnover += float(forced_turnover)
+                trading_cost += float(forced_cost.sum())
+                extra_crypto_cost = float(forced_cost[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
+                end_of_day_weights = clamped
+                deleverage_turnover = float(forced_turnover)
+            else:
+                end_of_day_weights = clamped
+
+        crypto_cost += extra_crypto_cost
+        non_crypto_cost = trading_cost - crypto_cost
+
         net_asset_returns_vector = asset_returns - per_asset_cost
         crypto_return = float(asset_returns[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
         step_return = float(asset_returns.sum())
         non_crypto_return = step_return - crypto_return
-        net_return = step_return - trading_cost
+        net_return = step_return - trading_cost - leverage_cost
         net_crypto_return = crypto_return - crypto_cost
         net_non_crypto_return = net_return - net_crypto_return
-        weight_crypto = float(new_weights[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
-        weight_non_crypto = float(new_weights[~self.crypto_mask].sum()) if np.any(~self.crypto_mask) else 0.0
+        weight_crypto = float(end_of_day_weights[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
+        weight_non_crypto = float(end_of_day_weights[~self.crypto_mask].sum()) if np.any(~self.crypto_mask) else 0.0
         net_multiplier = max(1e-8, 1.0 + net_return)
 
         self._portfolio_value *= net_multiplier
@@ -519,11 +627,11 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
         loss_shutdown_penalty = self._loss_shutdown_penalty_term
 
         self._last_weights = previous_weights
-        self._weights = new_weights.astype(np.float32)
+        self._weights = end_of_day_weights.astype(np.float32)
         self._index += 1
         self._step_count += 1
 
-        self._update_loss_shutdown_counters(new_weights, net_asset_returns_vector)
+        self._update_loss_shutdown_counters(executed_weights, net_asset_returns_vector)
         loss_shutdown_active_long = self._loss_shutdown_active_long
         loss_shutdown_active_short = self._loss_shutdown_active_short
         loss_shutdown_clipped = self._loss_shutdown_clipped_amount
@@ -552,6 +660,10 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             loss_shutdown_active_long=loss_shutdown_active_long,
             loss_shutdown_active_short=loss_shutdown_active_short,
             loss_shutdown_clipped=loss_shutdown_clipped,
+            gross_exposure=gross_exposure,
+            post_close_gross_exposure=float(np.sum(np.abs(self._weights))),
+            leverage_penalty=leverage_cost,
+            deleverage_turnover=deleverage_turnover,
         ).to_dict()
 
         observation = self._get_observation() if not terminated else np.zeros(self.observation_space.shape, dtype=np.float32)
