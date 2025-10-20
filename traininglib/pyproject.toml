@@ -18,3 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3"]
+
+[tool.setuptools]
+packages = ["traininglib"]
+
+[tool.setuptools.package-dir]
+traininglib = "."

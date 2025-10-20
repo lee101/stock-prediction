@@ -23,6 +23,7 @@ import argparse
 import contextlib
 import json
 import logging
+import types
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -453,6 +454,33 @@ def main() -> None:
             return torch.autocast(device_type=device_type, dtype=torch.bfloat16)
         return contextlib.nullcontext()
 
+    if args.policy_dtype == "bfloat16":
+        original_forward = model.policy.forward
+        original_predict_values = model.policy.predict_values
+        original_predict = model.policy._predict
+        original_evaluate_actions = model.policy.evaluate_actions
+
+        def _forward_with_cast(self, obs, deterministic: bool = False):
+            actions, values, log_prob = original_forward(obs, deterministic=deterministic)
+            return actions.to(torch.float32), values.to(torch.float32), log_prob.to(torch.float32)
+
+        def _predict_values_with_cast(self, obs):
+            values = original_predict_values(obs)
+            return values.to(torch.float32)
+
+        def _evaluate_actions_with_cast(self, obs, actions):
+            values, log_prob, entropy = original_evaluate_actions(obs, actions)
+            return values.to(torch.float32), log_prob.to(torch.float32), entropy.to(torch.float32)
+
+        def _predict_with_cast(self, obs, deterministic: bool = False):
+            actions = original_predict(obs, deterministic=deterministic)
+            return actions.to(torch.float32)
+
+        model.policy.forward = types.MethodType(_forward_with_cast, model.policy)
+        model.policy.predict_values = types.MethodType(_predict_values_with_cast, model.policy)
+        model.policy._predict = types.MethodType(_predict_with_cast, model.policy)
+        model.policy.evaluate_actions = types.MethodType(_evaluate_actions_with_cast, model.policy)
+
     checkpoint_callback = CheckpointCallback(
         save_freq=max(args.save_frequency // args.n_steps, 1),
         save_path=str(args.output_dir),
@@ -500,10 +528,11 @@ def main() -> None:
     with _autocast_context():
         validation_metrics = evaluate_trained_policy(model, rollout_env)
     logger.info(
-        "Validation (last %d days) -> final value: %.4f, cumulative return: %.2f%%, avg turnover: %.4f, avg trading cost: %.6f",
+        "Validation (last %d days) -> final value: %.4f, cumulative return: %.2f%%, annualized return: %.2f%%, avg turnover: %.4f, avg trading cost: %.6f",
         validation_steps,
         validation_metrics["final_portfolio_value"],
         validation_metrics["cumulative_return"] * 100.0,
+        validation_metrics["annualized_return"] * 100.0,
         validation_metrics["average_turnover"],
         validation_metrics["average_trading_cost"],
     )

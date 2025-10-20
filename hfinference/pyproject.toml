@@ -28,3 +28,9 @@ stock-trading-suite = { workspace = true }
 hfshared = { workspace = true }
 hftraining = { workspace = true }
 traininglib = { workspace = true }
+
+[tool.setuptools]
+packages = ["hfinference"]
+
+[tool.setuptools.package-dir]
+hfinference = "."
