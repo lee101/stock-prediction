@@ -168,9 +168,44 @@ def update_loss_shutdown_state(
     return LossShutdownState(long_counters=long_counters.to(dtype=dtype), short_counters=None if short_counters is None else short_counters.to(dtype=dtype))
 
 
+def compute_step_net_return(
+    prev_weights: torch.Tensor,
+    new_weights: torch.Tensor,
+    realized_returns: torch.Tensor,
+    cost_vector: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute net return, turnover, and trading cost for a single step.
+
+    Args:
+        prev_weights: Allocations before executing the trade (shape [..., N]).
+        new_weights: Allocations after executing the trade (shape [..., N]).
+        realized_returns: Per-asset realised returns for the step (shape [..., N]).
+        cost_vector: Per-asset trading costs (shape [N]).
+
+    Returns:
+        net_return: Scalar net portfolio return after costs (shape [...]).
+        turnover: Total turnover (L1 change in weights).
+        trading_cost: Scalar cost paid for the rebalance.
+    """
+
+    prev_weights = prev_weights.to(dtype=new_weights.dtype, device=new_weights.device)
+    realized_returns = realized_returns.to(dtype=new_weights.dtype, device=new_weights.device)
+    cost_vector = cost_vector.to(dtype=new_weights.dtype, device=new_weights.device)
+
+    weight_deltas = torch.abs(new_weights - prev_weights)
+    turnover = torch.sum(weight_deltas, dim=-1)
+    trading_cost = torch.sum(weight_deltas * cost_vector, dim=-1)
+
+    step_return = torch.sum(new_weights * realized_returns, dim=-1)
+    net_return = step_return - trading_cost
+    return net_return, turnover, trading_cost
+
+
 __all__ = [
     "LossShutdownParams",
     "LossShutdownState",
     "loss_shutdown_adjust",
     "update_loss_shutdown_state",
+    "compute_step_net_return",
 ]

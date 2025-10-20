@@ -70,3 +70,28 @@ def test_loss_shutdown_torch_utils_behaviour():
     new_state = update_loss_shutdown_state(adjusted, net_returns, state, params, allow_short=True)
     assert torch.equal(new_state.long_counters, torch.tensor([params.cooldown_steps, 0], dtype=torch.int32))
     assert torch.equal(new_state.short_counters, torch.tensor([0, 0], dtype=torch.int32))
+
+
+def test_compute_step_net_return_matches_env_costs():
+    T, N, F = 4, 2, 1
+    features = np.zeros((T, N, F), dtype=np.float32)
+    realized_returns = np.array([[0.02, -0.01], [0.015, -0.005], [0.0, 0.0], [0.0, 0.0]], dtype=np.float32)
+    config = PortfolioEnvConfig(include_cash=False)
+    env = PortfolioEnv(features, realized_returns, config=config, symbols=["AAPL", "BTCUSD"])
+    env.reset()
+
+    action = np.array([2.0, -2.0], dtype=np.float32)
+    _, _, _, _, info = env.step(action)
+
+    prev_weights = torch.from_numpy(env.last_weights.copy())
+    new_weights = torch.from_numpy(env.current_weights.copy())
+    realized = torch.from_numpy(realized_returns[env.start_index].copy())
+    cost_vector = torch.from_numpy(env.costs_vector.copy())
+
+    from gymrl.differentiable_utils import compute_step_net_return
+
+    net_return, turnover, trading_cost = compute_step_net_return(prev_weights, new_weights, realized, cost_vector)
+
+    assert net_return.item() == pytest.approx(info["net_return"], rel=1e-6)
+    assert turnover.item() == pytest.approx(info["turnover"], rel=1e-6)
+    assert trading_cost.item() == pytest.approx(info["trading_cost"], rel=1e-6)
