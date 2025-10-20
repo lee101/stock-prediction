@@ -12,6 +12,13 @@ from .portfolio_env import PortfolioEnv
 from .wrappers import ObservationNormalizer, NormalizerConfig
 from .behaviour import topk_equal_weight, kelly_fractional, blend_policies
 from .offline_dataset import build_offline_dataset, generate_behaviour_weights
+from .differentiable_utils import (
+    LossShutdownParams,
+    LossShutdownState,
+    compute_step_net_return,
+    loss_shutdown_adjust,
+    update_loss_shutdown_state,
+)
 
 __all__ = [
     "FeatureBuilderConfig",
@@ -27,4 +34,9 @@ __all__ = [
     "blend_policies",
     "build_offline_dataset",
     "generate_behaviour_weights",
+    "LossShutdownParams",
+    "LossShutdownState",
+    "compute_step_net_return",
+    "loss_shutdown_adjust",
+    "update_loss_shutdown_state",
 ]

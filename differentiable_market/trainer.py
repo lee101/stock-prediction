@@ -5,7 +5,7 @@ import math
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -167,6 +167,9 @@ class DifferentiableMarketTrainer:
         self.metrics_path = self.run_dir / "metrics.jsonl"
         self._write_config_snapshot(log_data_preview(ohlc_all, symbols, index))
         self.metrics_logger = self._init_metrics_logger()
+        self.best_k = max(1, int(self.train_cfg.best_k_checkpoints))
+        self._topk_records: List[Dict[str, Any]] = []
+        self.topk_index_path = self.run_dir / "topk_checkpoints.json"
 
         self._augmented_losses = (
             self.train_cfg.soft_drawdown_lambda > 0.0
@@ -344,6 +347,62 @@ class DifferentiableMarketTrainer:
             return float("nan")
         return float(math.expm1(mean_log_return * periods_per_year))
 
+    def _remove_topk_step(self, step: int) -> None:
+        for idx, record in enumerate(list(self._topk_records)):
+            if int(record.get("step", -1)) == int(step):
+                path_str = record.get("path")
+                if isinstance(path_str, str):
+                    path = Path(path_str)
+                    if not path.is_absolute():
+                        path = self.run_dir / path
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        pass
+                self._topk_records.pop(idx)
+                break
+
+    def _update_topk(self, eval_loss: float, step: int, payload: Dict[str, Any]) -> None:
+        if self.best_k <= 0:
+            return
+        if self._topk_records and len(self._topk_records) >= self.best_k:
+            worst_loss = float(self._topk_records[-1]["loss"])
+            if eval_loss >= worst_loss:
+                return
+        self._remove_topk_step(step)
+        ckpt_name = f"best_step{step:06d}_loss{eval_loss:.6f}.pt"
+        ckpt_path = self.ckpt_dir / ckpt_name
+        torch.save(payload, ckpt_path)
+        try:
+            relative_path = ckpt_path.relative_to(self.run_dir)
+            path_str = str(relative_path)
+        except ValueError:
+            path_str = str(ckpt_path)
+        record = {
+            "loss": float(eval_loss),
+            "step": int(step),
+            "path": path_str,
+        }
+        self._topk_records.append(record)
+        self._topk_records.sort(key=lambda item: float(item["loss"]))
+        while len(self._topk_records) > self.best_k:
+            removed = self._topk_records.pop(-1)
+            path_str = removed.get("path")
+            if isinstance(path_str, str):
+                path = Path(path_str)
+                if not path.is_absolute():
+                    path = self.run_dir / path
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+        for rank, rec in enumerate(self._topk_records, start=1):
+            rec["rank"] = rank
+        try:
+            self.topk_index_path.write_text(json.dumps(self._topk_records, indent=2))
+        except Exception as exc:
+            print(f"Failed to update top-k checkpoint index: {exc}")
+
     def _init_metrics_logger(self) -> Optional[WandBoardLogger]:
         enable_tb = self.train_cfg.tensorboard_root is not None
         enable_wandb = self.train_cfg.use_wandb
@@ -400,6 +459,12 @@ class DifferentiableMarketTrainer:
         logger = getattr(self, "metrics_logger", None)
         if logger is None:
             return
+        if self._topk_records:
+            topk_metrics = {
+                f"run/topk_loss_{int(rec.get('rank', idx + 1))}": float(rec["loss"])
+                for idx, rec in enumerate(self._topk_records)
+            }
+            logger.log(topk_metrics, step=self.state.step, commit=False)
         summary: Dict[str, object] = {"run/epochs_completed": self.state.step}
         if math.isfinite(self.state.best_eval_loss):
             summary["run/best_eval_loss"] = self.state.best_eval_loss
@@ -710,3 +775,4 @@ class DifferentiableMarketTrainer:
             self.state.best_eval_loss = eval_loss
             self.state.best_step = step
             print(f"[step {step}] new best eval loss {eval_loss:.4f}")
+        self._update_topk(eval_loss, step, payload)

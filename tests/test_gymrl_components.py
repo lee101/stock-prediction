@@ -142,3 +142,7 @@ def test_portfolio_env_info_crypto_breakdown():
     assert info["weight_non_crypto"] == pytest.approx(0.5, rel=1e-3)
     assert info["step_return_crypto"] >= 0.0
     assert info["step_return_non_crypto"] >= 0.0
+    assert info["loss_shutdown_penalty"] == pytest.approx(0.0)
+    assert info["loss_shutdown_active_long"] == pytest.approx(0.0)
+    assert info["loss_shutdown_active_short"] == pytest.approx(0.0)
+    assert info["loss_shutdown_clipped"] == pytest.approx(0.0)
