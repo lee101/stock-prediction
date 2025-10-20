@@ -22,4 +22,10 @@ dev = [
 [tool.uv.sources]
 gymrl = { workspace = true }
 hftraining = { workspace = true }
+
+[tool.setuptools]
+packages = ["pufferlibtraining"]
+
+[tool.setuptools.package-dir]
+pufferlibtraining = "."
 stock-trading-suite = { workspace = true }

@@ -38,3 +38,9 @@ stock-trading-suite = { workspace = true }
 hfshared = { workspace = true }
 traininglib = { workspace = true }
 gymrl = { workspace = true }
+
+[tool.setuptools]
+packages = ["hftraining"]
+
+[tool.setuptools.package-dir]
+hftraining = "."
