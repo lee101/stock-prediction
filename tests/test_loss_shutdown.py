@@ -24,6 +24,8 @@ def test_loss_shutdown_env_probe_and_release():
         loss_shutdown_penalty=0.5,
         loss_shutdown_min_position=1e-5,
         loss_shutdown_return_tolerance=1e-6,
+        leverage_head=False,
+        weight_cap=None,
     )
 
     env = PortfolioEnv(features, realized_returns, config=config, symbols=["AAPL"])
@@ -76,7 +78,7 @@ def test_compute_step_net_return_matches_env_costs():
     T, N, F = 4, 2, 1
     features = np.zeros((T, N, F), dtype=np.float32)
     realized_returns = np.array([[0.02, -0.01], [0.015, -0.005], [0.0, 0.0], [0.0, 0.0]], dtype=np.float32)
-    config = PortfolioEnvConfig(include_cash=False)
+    config = PortfolioEnvConfig(include_cash=False, leverage_head=False)
     env = PortfolioEnv(features, realized_returns, config=config, symbols=["AAPL", "BTCUSD"])
     env.reset()
 

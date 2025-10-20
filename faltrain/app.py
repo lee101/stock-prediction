@@ -26,6 +26,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import fal
 from pydantic import BaseModel, Field
 
+from .artifacts import load_artifact_specs, sync_artifacts
+from .batch_size_tuner import auto_tune_batch_sizes
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOG = logging.getLogger("faltrain.app")
 LOG.setLevel(logging.INFO)
@@ -109,8 +111,15 @@ def _inject_training_modules(
 
 def _grid(space: "SweepSpace") -> List[Dict[str, Any]]:
     grid: List[Dict[str, Any]] = []
+    batch_sizes = auto_tune_batch_sizes(
+        candidates=space.batch_sizes,
+        context_lengths=space.context_lengths,
+        horizons=space.horizons,
+        auto_tune=space.auto_tune_batch_size,
+        safety_margin=space.batch_size_safety_margin,
+    )
     for lr in space.learning_rates:
-        for bs in space.batch_sizes:
+        for bs in batch_sizes:
             for cl in space.context_lengths:
                 for horizon in space.horizons:
                     for loss in space.loss:
@@ -135,6 +144,8 @@ class SweepSpace(BaseModel):
     horizons: List[int] = [30, 60]
     loss: List[str] = ["mse"]
     crypto_enabled: List[bool] = [False, True]
+    auto_tune_batch_size: bool = True
+    batch_size_safety_margin: float = 0.8
 
 
 class TrainRequest(BaseModel):
@@ -232,6 +243,37 @@ class StockTrainerApp(
         _ensure_dir(Path("/data"))
         _ensure_dir(Path("/data/trainingdata"))
         _ensure_dir(Path("/data/experiments"))
+        self._prefetch_reference_artifacts()
+
+    def _prefetch_reference_artifacts(self) -> None:
+        try:
+            endpoint = _env("R2_ENDPOINT")
+        except RuntimeError as exc:
+            LOG.warning("Skipping reference artifact download (missing endpoint): %s", exc)
+            return
+
+        bucket = os.getenv("R2_BUCKET", "models")
+        try:
+            specs = load_artifact_specs(repo_root=REPO_ROOT)
+        except Exception as exc:
+            LOG.warning("Failed to load artifact manifest: %s", exc)
+            return
+
+        if not specs:
+            LOG.info("No artifact specs configured; skipping reference fetch")
+            return
+
+        try:
+            sync_artifacts(
+                specs,
+                direction="download",
+                bucket=bucket,
+                endpoint_url=endpoint,
+                local_root=REPO_ROOT,
+                skip_existing=True,
+            )
+        except Exception as exc:
+            LOG.warning("Failed to prefetch reference artifacts: %s", exc)
 
     def _run_hf_once(
         self, workdir: Path, req: TrainRequest, cfg: Dict[str, Any]

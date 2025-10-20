@@ -101,7 +101,7 @@ def simulate_pair(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Simulate all unordered pairs with PufferLib env mechanics.")
-    ap.add_argument("--symbols", type=str, default=",").
+    ap.add_argument("--symbols", type=str, default=",")
     ap.add_argument("--trainingdata-dir", type=str, default="trainingdata/train")
     ap.add_argument("--trade-timing", choices=["open", "close"], default="open")
     ap.add_argument("--risk-scale", type=float, default=1.0)
@@ -136,4 +136,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

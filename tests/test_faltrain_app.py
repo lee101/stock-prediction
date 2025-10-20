@@ -148,3 +148,57 @@ def test_setup_injects_training_modules(monkeypatch):
         (name, torch_stub, numpy_stub) for name in fal_app._TRAINING_INJECTION_MODULES
     ]
     assert calls == expected
+
+
+def test_auto_tune_batch_sizes_prefers_feasible_candidate(monkeypatch):
+    import faltrain.batch_size_tuner as tuner
+
+    props = SimpleNamespace(total_memory=8 * 1024**3)
+
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def current_device():
+            return 0
+
+        @staticmethod
+        def get_device_name(_):
+            return "FakeGPU"
+
+        @staticmethod
+        def get_device_properties(_):
+            return props
+
+    torch_stub = SimpleNamespace(cuda=FakeCuda)
+
+    monkeypatch.setattr(tuner, "_CACHE", {})
+    monkeypatch.setattr(tuner, "_load_torch", lambda: torch_stub)
+
+    result = tuner.auto_tune_batch_sizes(
+        candidates=[64, 128, 192, 256],
+        context_lengths=[1024],
+        horizons=[60],
+        auto_tune=True,
+        safety_margin=0.8,
+    )
+
+    assert result == [128]
+
+
+def test_auto_tune_can_be_disabled(monkeypatch):
+    import faltrain.batch_size_tuner as tuner
+
+    monkeypatch.setattr(tuner, "_CACHE", {})
+    monkeypatch.setattr(tuner, "_load_torch", lambda: None)
+
+    result = tuner.auto_tune_batch_sizes(
+        candidates=[32, 16, 8],
+        context_lengths=[10],
+        horizons=[1],
+        auto_tune=False,
+        safety_margin=0.5,
+    )
+    assert result == [8, 16, 32]
