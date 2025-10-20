@@ -53,6 +53,12 @@ def parse_args() -> argparse.Namespace:
         help="Padding mode used when building Haar wavelet pyramid",
     )
     parser.add_argument("--init-checkpoint", type=Path, default=None, help="Optional policy checkpoint to warm-start training")
+    parser.add_argument(
+        "--best-k-checkpoints",
+        type=int,
+        default=3,
+        help="Number of top evaluation checkpoints to keep on disk",
+    )
     parser.add_argument("--use-wandb", action="store_true", help="Mirror metrics to Weights & Biases via wandboard logger")
     parser.add_argument("--wandb-project", type=str, default=None, help="Weights & Biases project name")
     parser.add_argument("--wandb-entity", type=str, default=None, help="Weights & Biases entity/team")
@@ -98,6 +104,7 @@ def main() -> None:
         gradient_checkpointing=args.gradient_checkpointing,
         include_cash=args.include_cash,
         init_checkpoint=args.init_checkpoint,
+        best_k_checkpoints=max(1, args.best_k_checkpoints),
         use_wandb=args.use_wandb,
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
@@ -108,7 +115,7 @@ def main() -> None:
         wandb_run_name=args.wandb_run_name,
         wandb_log_metrics=args.wandb_log_metrics,
         wandb_metric_log_level=args.wandb_metric_log_level,
-        tensorboard_root=args.tensorboard_root,
+        tensorboard_root=args.tensorboard_root if args.tensorboard_root is not None else Path("tensorboard_logs"),
         tensorboard_subdir=args.tensorboard_subdir,
     )
     if args.soft_drawdown_lambda is not None:

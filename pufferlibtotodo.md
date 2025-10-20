@@ -99,3 +99,15 @@ Simulator inputs used `transaction_cost_bps=1`, `leverage_limit=1.5`, `borrowing
 | 20251020_puffer_rl400_lr2e4_adamw | AMZN_MSFT | 317 | 0.000388 | 0.1026 | 0.1111 |
 
 (`aggregate_pufferlib_metrics.csv` contains the raw calculations.)
+
+## HFTraining Long Run (Synthetic Data, CPU)
+- Script: `hftraining/train_hf.py` (patched CPU SDPA fallback).
+- Config highlights: LR `1e-4`, warmup `400`, max steps `4,000`, batch size `64`, gradient checkpointing on, project `stock/hftraining`.
+- Runtime: 17m07s on CPU only. Best eval loss `0.7968` at step `3000`; final training loss `0.7914`.
+- Average per-step return (synthetic data): `0.03883` ⇒ implied annual (252×) `14779.52` (inflated due to synthetic random-walk data; do not treat as production PnL).
+- Artifacts:
+  - Checkpoint: `hftraining/output/checkpoint_step_4000.pth`
+  - Metrics log: `hftraining/logs/training_metrics_20251020_164518.jsonl`
+  - TensorBoard: `hftraining/logs/hf_training_20251020_164518`
+  - Run report: `hftraining/output/run_report.md`
+  - W&B: `https://wandb.ai/stock/hftraining/runs/t4lrstkm` (falls back to offline if permissions block).

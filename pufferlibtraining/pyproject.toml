@@ -19,17 +19,19 @@ dev = [
     "pytest>=8.3.3",
 ]
 
+[tool.uv.sources]
+stock-trading-suite = { workspace = true }
+gymrl = { workspace = true }
+hftraining = { workspace = true }
+
 [tool.setuptools]
-package-dir = {"pufferlibtraining" = "."}
 packages = ["pufferlibtraining"]
+
+[tool.setuptools.package-dir]
+pufferlibtraining = "."
 
 [tool.setuptools.package-data]
 pufferlibtraining = [
     "envs/**/*.json",
     "logs/**/*.json",
 ]
-
-[tool.uv.sources]
-gymrl = { workspace = true }
-hftraining = { workspace = true }
-stock-trading-suite = { workspace = true }

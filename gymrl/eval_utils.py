@@ -73,6 +73,10 @@ def evaluate_trained_policy(model, env: PortfolioEnv) -> Dict[str, float]:
     max_drawdown = float(drawdowns.max()) if drawdowns.size else 0.0
     avg_reward = float(rewards.mean()) if rewards.size else 0.0
     total_steps = rewards.size
+    if total_steps > 0:
+        annualised_return = float(np.power(max(final_value, 1e-12), 365.0 / total_steps) - 1.0)
+    else:
+        annualised_return = 0.0
 
     final_crypto_value = float(crypto_values[-1])
     final_non_crypto_value = float(non_crypto_values[-1])
@@ -95,6 +99,7 @@ def evaluate_trained_policy(model, env: PortfolioEnv) -> Dict[str, float]:
         "average_net_return_crypto": avg_crypto_net,
         "average_net_return_non_crypto": avg_non_crypto_net,
         "average_crypto_weight": avg_crypto_weight,
+        "annualized_return": annualised_return,
     }
 
 

@@ -20,5 +20,7 @@ dependencies = [
 dev = ["pytest>=8.3"]
 
 [tool.setuptools]
-package-dir = {"traininglib" = "."}
 packages = ["traininglib"]
+
+[tool.setuptools.package-dir]
+traininglib = "."
