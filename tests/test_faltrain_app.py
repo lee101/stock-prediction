@@ -1,13 +1,42 @@
 import json
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+if "fal" not in sys.modules:
+    class _FalAppMeta(type):
+        def __new__(mcls, cls_name, bases, namespace, **kwargs):
+            cls = super().__new__(mcls, cls_name, bases, dict(namespace))
+            cls._fal_options = kwargs
+            return cls
+
+    class _FalApp(metaclass=_FalAppMeta):
+        def __init__(self, *args, **kwargs):
+            pass
+
+        @classmethod
+        def endpoint(cls, path: str):
+            def decorator(func):
+                return func
+
+            return decorator
+
+    def _fal_endpoint(path: str):
+        def decorator(func):
+            return func
+
+        return decorator
+
+    fal_stub = ModuleType("fal")
+    fal_stub.App = _FalApp
+    fal_stub.endpoint = _fal_endpoint
+    sys.modules["fal"] = fal_stub
 
 import faltrain.app as fal_app
 
