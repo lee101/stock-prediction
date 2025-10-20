@@ -33,6 +33,18 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.3"]
 
+[tool.setuptools]
+package-dir = {"hftraining" = "."}
+packages = ["hftraining"]
+
+[tool.setuptools.package-data]
+hftraining = [
+    "configs/**/*.json",
+    "experiments/**/*.json",
+    "data/**/*.json",
+    "data/**/*.yaml",
+]
+
 [tool.uv.sources]
 stock-trading-suite = { workspace = true }
 hfshared = { workspace = true }

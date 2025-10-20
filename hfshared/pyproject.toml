@@ -16,3 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3"]
+
+[tool.setuptools]
+package-dir = {"hfshared" = "."}
+packages = ["hfshared"]

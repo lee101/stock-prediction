@@ -188,3 +188,41 @@ def test_backtester_trade_timestamps_use_eval_offset(tmp_path: Path) -> None:
     first_timestamp = records[0]["timestamp"]
     expected_timestamp = str(backtester.index[backtester.eval_start_idx + 1])
     assert first_timestamp == expected_timestamp
+
+
+def test_trainer_supports_augmented_losses(tmp_path: Path) -> None:
+    _write_synthetic_ohlc(tmp_path, steps=72)
+    data_cfg = DataConfig(root=tmp_path, glob="*.csv")
+    data_cfg.min_timesteps = 32
+    env_cfg = EnvironmentConfig(transaction_cost=1e-4, risk_aversion=0.0)
+    train_cfg = TrainingConfig(
+        lookback=16,
+        rollout_groups=2,
+        batch_windows=4,
+        microbatch_windows=2,
+        epochs=2,
+        eval_interval=1,
+        save_dir=tmp_path / "runs",
+        device="cpu",
+        dtype="float32",
+        use_muon=False,
+        use_compile=False,
+        bf16_autocast=False,
+        soft_drawdown_lambda=0.1,
+        risk_budget_lambda=0.05,
+        risk_budget_target=(1.0, 1.0, 1.0),
+        trade_memory_lambda=0.2,
+        use_taylor_features=True,
+        taylor_order=2,
+        taylor_scale=8.0,
+        use_wavelet_features=True,
+        wavelet_levels=1,
+    )
+    eval_cfg = EvaluationConfig(report_dir=tmp_path / "evals", store_trades=False)
+
+    trainer = DifferentiableMarketTrainer(data_cfg, env_cfg, train_cfg, eval_cfg)
+    state = trainer.fit()
+    assert state.step == train_cfg.epochs
+    metrics = list((tmp_path / "runs").glob("*/metrics.jsonl"))
+    assert metrics, "Expected metrics to be written"
+    assert trainer.train_features.shape[-1] == 8

@@ -100,6 +100,11 @@ training/training/improvement_cycles
 training/training/traininglogs
 training/training/visualizations
 training/differentiable_training_history.png
+#
+# Differentiable Market experiment artifacts
+differentiable_market/experiment_runs/
+differentiable_market/experiment_runs_*/
+differentiable_market/runs/
 pufferlibtraining/logs
 pufferlibtraining/models
 pufferlibtraining/cache
@@ -156,3 +161,4 @@ differentiable_market/evals
 allresults.md
 reports
 wandb
+tensorboard_logs/

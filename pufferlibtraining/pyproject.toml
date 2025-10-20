@@ -19,6 +19,16 @@ dev = [
     "pytest>=8.3.3",
 ]
 
+[tool.setuptools]
+package-dir = {"pufferlibtraining" = "."}
+packages = ["pufferlibtraining"]
+
+[tool.setuptools.package-data]
+pufferlibtraining = [
+    "envs/**/*.json",
+    "logs/**/*.json",
+]
+
 [tool.uv.sources]
 gymrl = { workspace = true }
 hftraining = { workspace = true }
