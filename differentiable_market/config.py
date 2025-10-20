@@ -63,6 +63,7 @@ class TrainingConfig:
     resume: bool = False
     include_cash: bool = False
     init_checkpoint: Path | None = None
+    best_k_checkpoints: int = 3
     use_wandb: bool = False
     wandb_project: str | None = None
     wandb_entity: str | None = None
