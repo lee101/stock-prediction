@@ -46,6 +46,14 @@ def build_deepseek_messages(
         symbols=symbols,
         include_market_history=include_market_history,
     )
+    leverage_guidance = (
+        "\nLeverage guidance:\n"
+        "- You may scale gross exposure up to 4× intraday when conviction is high, but positions must be reduced to ≤2× gross leverage by the market close.\n"
+        "- Borrowed capital accrues interest at an annualized rate of 6.75%; weigh expected alpha against the carrying cost.\n"
+        "- Outline how you will ramp leverage intraday, monitor drawdowns, and auto-deleverage into the close if exposures exceed 2×."
+    )
+    if leverage_guidance not in prompt_text:
+        prompt_text = f"{prompt_text}{leverage_guidance}"
     payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
 
     return [

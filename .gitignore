@@ -145,6 +145,7 @@ marketsimulator/environment.py
 tmp
 stock_trading_suite.egg-info
 gymrl/gymrl.egg-info/
+*.egg-info/
 pynvml
 kronostraining/artifacts/checkpoints
 kronostraining/artifacts

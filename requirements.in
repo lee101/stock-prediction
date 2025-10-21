@@ -1,3 +1,6 @@
+# Ensure GPU-enabled PyTorch wheels are preferred to satisfy flash-attn
+--extra-index-url https://download.pytorch.org/whl/cu126
+
 # Core runtime dependencies (mirrors pyproject.toml)
 numpy==2.1.3
 pandas>=2.2.3

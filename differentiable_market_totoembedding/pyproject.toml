@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "differentiable-market-totoembedding"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "differentiable-market",
+    "stock-trading-suite",
+]
+
+[tool.uv.sources]
+differentiable-market = { workspace = true }
+stock-trading-suite = { workspace = true }
+
+[tool.setuptools]
+packages = ["differentiable_market_totoembedding"]
+
+[tool.setuptools.package-dir]
+differentiable_market_totoembedding = "."

@@ -485,20 +485,16 @@ def make_predictions(
                                                                                   ).item()
             loguru_logger.info(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
             last_preds['maxdiffprofit_profit'] = calculated_profit
-            last_preds['maxdiffprofit_profit_values'] = list(calculate_profit_torch_with_entry_buysell_profit_values(
-                last_preds[
-                    "close_actual_movement_values"],
-                maxdiff_trades,
-                last_preds[
-                    "high_actual_movement_values"] + close_to_high,
-                last_preds[
-                    "high_predictions"] + close_to_high,
-                last_preds[
-                    "low_actual_movement_values"] - close_to_low,
-                last_preds[
-                    "low_predictions"] - close_to_low,
-
-            ).detach().cpu().numpy())
+            last_preds['maxdiffprofit_profit_values'] = list(
+                calculate_profit_torch_with_entry_buysell_profit_values(
+                    last_preds["close_actual_movement_values"],
+                    last_preds["high_actual_movement_values"] + close_to_high,
+                    last_preds["high_predictions"] + close_to_high,
+                    last_preds["low_actual_movement_values"] - close_to_low,
+                    last_preds["low_predictions"] - close_to_low,
+                    maxdiff_trades,
+                ).detach().cpu().numpy()
+            )
             latest_close_to_low = abs(1 - (last_preds['low_predicted_price_value'] / last_preds['close_last_price']))
             last_preds['latest_low_diff'] = latest_close_to_low
 
@@ -569,19 +565,16 @@ def make_predictions(
                                                                                   ).item()
             loguru_logger.info(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
             last_preds['entry_takeprofit_profit'] = calculated_profit
-            last_preds['entry_takeprofit_profit_values'] = list(calculate_profit_torch_with_entry_buysell_profit_values(
-                last_preds["close_actual_movement_values"],
-                last_preds["close_trade_values"],
-                last_preds[
-                    "high_actual_movement_values"] + close_to_high,
-                last_preds[
-                    "high_predictions"] + close_to_high,
-                last_preds[
-                    "low_actual_movement_values"] - close_to_low,
-                last_preds[
-                    "low_predictions"] - close_to_low,
-
-            ).detach().cpu().numpy())
+            last_preds['entry_takeprofit_profit_values'] = list(
+                calculate_profit_torch_with_entry_buysell_profit_values(
+                    last_preds["close_actual_movement_values"],
+                    last_preds["high_actual_movement_values"] + close_to_high,
+                    last_preds["high_predictions"] + close_to_high,
+                    last_preds["low_actual_movement_values"] - close_to_low,
+                    last_preds["low_predictions"] - close_to_low,
+                    last_preds["close_trade_values"],
+                ).detach().cpu().numpy()
+            )
 
             # todo margin allocation tests
             current_profit = calculated_profit
