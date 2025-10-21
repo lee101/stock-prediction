@@ -48,7 +48,13 @@ def test_auto_tune_persists_and_reuses(monkeypatch, tmp_path):
         context_lengths=[512],
         horizons=[30],
     )
-    assert result == [512]
+    assert isinstance(result, bst.BatchSizeSelection)
+    assert result.selected == 512
+    assert result.signature is not None
+    assert result.fallback_values() == [512, 256, 128]
+    meta = result.meta()
+    assert meta["candidates_desc"] == [1024, 512, 256, 128]
+    assert meta["candidates_user"] == [128, 256, 512, 1024]
     assert persist_path.exists()
 
     with persist_path.open("r") as handle:
@@ -73,4 +79,6 @@ def test_auto_tune_persists_and_reuses(monkeypatch, tmp_path):
         context_lengths=[512],
         horizons=[30],
     )
-    assert reused == [512]
+    assert isinstance(reused, bst.BatchSizeSelection)
+    assert reused.selected == 512
+    assert reused.descending_candidates == (1024, 512, 256, 128)

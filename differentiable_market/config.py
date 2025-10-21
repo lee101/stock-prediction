@@ -32,6 +32,8 @@ class EnvironmentConfig:
     sharpe_ema_alpha: float = 0.01
     epsilon_stability: float = 1e-8
     drawdown_lambda: float = 0.0
+    max_intraday_leverage: float = 1.0
+    max_overnight_leverage: float = 1.0
 
 
 @dataclass(slots=True)
@@ -88,6 +90,9 @@ class TrainingConfig:
     use_wavelet_features: bool = False
     wavelet_levels: int = 1
     wavelet_padding_mode: Literal["reflect", "replicate", "constant"] = "reflect"
+    enable_shorting: bool = False
+    max_intraday_leverage: float = 1.0
+    max_overnight_leverage: float = 1.0
 
 
 @dataclass(slots=True)
