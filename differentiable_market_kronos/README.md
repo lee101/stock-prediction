@@ -1,41 +1,57 @@
-# Differentiable Market Kronos
+# Differentiable Market + Kronos
 
-`differentiable_market_kronos` extends the base differentiable market RL trainer with
-frozen Kronos embeddings. A pre-trained Kronos tokenizer/model encodes rolling
-windows of OHLCV data to provide rich context features while the downstream RL
-policy remains fully differentiable.
+This module fuses the differentiable market research stack with frozen Kronos
+forecasts. Kronos provides Monte Carlo path statistics while the downstream head
+(trainable RL or differentiable Sharpe optimisation) remains lightweight,
+stable, and fully differentiable.
 
-## Key Features
+## Components
 
-- Frozen Kronos tokenizer/model: no gradient updates during RL training.
-- Configurable context length, embedding mode (`context`, `bits`, `both`), and
-  batching device used for Kronos inference.
-- Seamless reuse of the differentiable market environment, policy, and
-  evaluation pipeline; only the feature builder is replaced.
+- **`kronos_embedder.py`** – wraps the upstream Kronos tokenizer/model, samples
+  price paths, and summarises them into rich features (mu/sigma/quantiles/path
+  stats) for multiple horizons.
+- **`adapter.py`** – aligns Kronos features with the multi-asset
+  `differentiable_market` trainer so the GRPO policy sees both classic OHLC
+  features and Kronos-derived summaries.
+- **`envs/dm_env.py`** – minimal Gymnasium environment for single-asset RL
+  experiments over Kronos features.
+- **`train_sb3.py` / `eval_sb3.py`** – PPO training + evaluation with Stable
+  Baselines3.
+- **`train_sharpe_diff.py`** – optional differentiable Sharpe objective without
+  RL, useful for ablations.
+- **`speedrun.sh`** – nanochat-style end-to-end script using `uv` environments.
 
 ## Quick Start
 
 ```bash
 uv sync
 source .venv/bin/activate
-python -m differentiable_market_kronos.train \
-  --data-root trainingdata \
-  --lookback 192 \
-  --kronos-model NeoQuasar/Kronos-small \
-  --kronos-tokenizer NeoQuasar/Kronos-Tokenizer-base \
-  --kronos-context 192 \
-  --save-dir differentiable_market_kronos/runs
+uv pip install -e .[hf,sb3]
+python -m differentiable_market_kronos.train_sb3 --ohlcv data/BTCUSD.csv --save-dir runs/dmk_ppo
 ```
 
-Use `--kronos-device cuda` to run Kronos embedding extraction on GPU while the
-policy can remain on a different device if needed.
+To plug Kronos into the differentiable market trainer:
+
+```python
+from differentiable_market_kronos import KronosFeatureConfig, DifferentiableMarketKronosTrainer
+from differentiable_market import config
+
+trainer = DifferentiableMarketKronosTrainer(
+    data_cfg=config.DataConfig(root=Path("trainingdata")),
+    env_cfg=config.EnvironmentConfig(),
+    train_cfg=config.TrainingConfig(lookback=192, batch_windows=64),
+    eval_cfg=config.EvaluationConfig(),
+    kronos_cfg=KronosFeatureConfig(model_path="NeoQuasar/Kronos-small", horizons=(1, 12, 48)),
+)
+trainer.fit()
+```
 
 ## Testing
 
+Lightweight tests live under `tests/differentiable_market_kronos`. They stub the
+Kronos embedder to keep runtime manageable while exercising the feature plumbing
+into the differentiable market trainer. Run them via:
+
 ```bash
-source .venv/bin/activate
 pytest tests/differentiable_market_kronos -q
 ```
-
-The tests monkeypatch Kronos components with lightweight stubs so they remain
-fast and deterministic.

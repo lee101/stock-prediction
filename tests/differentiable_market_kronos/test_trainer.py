@@ -2,68 +2,40 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import torch
 
 from differentiable_market.config import DataConfig, EnvironmentConfig, EvaluationConfig, TrainingConfig
 from differentiable_market.data import load_aligned_ohlc, split_train_eval
+from differentiable_market.trainer import DifferentiableMarketTrainer
+
 from differentiable_market_kronos.config import KronosFeatureConfig
 from differentiable_market_kronos.trainer import DifferentiableMarketKronosTrainer
 
 
-class DummyTokenizer:
-    codebook_dim = 6
+class StubAdapter:
+    def __init__(self, total_len: int, asset_count: int) -> None:
+        base = torch.linspace(0, total_len * asset_count - 1, total_len * asset_count)
+        self.base = base.view(total_len, asset_count, 1)
 
-    def to(self, *_args, **_kwargs):
-        return self
-
-    def eval(self) -> None:
-        return None
-
-    def encode(self, x: torch.Tensor, half: bool = True):
-        tokens = torch.arange(x.shape[1], device=x.device, dtype=torch.long).unsqueeze(0)
-        tokens = tokens.repeat(x.shape[0], 1)
-        return [tokens, tokens]
-
-    def indices_to_bits(self, token_pair, half: bool = True) -> torch.Tensor:
-        tokens = token_pair[0].to(torch.float32)
-        bits = torch.stack([tokens, torch.ones_like(tokens), -torch.ones_like(tokens)], dim=-1)
-        return bits
-
-
-class DummyKronosModel:
-    d_model = 4
-
-    def to(self, *_args, **_kwargs):
-        return self
-
-    def eval(self) -> None:
-        return None
-
-    def parameters(self):
-        return []
-
-    def decode_s1(self, s1_ids: torch.Tensor, s2_ids: torch.Tensor, stamp: torch.Tensor | None = None):
-        batch, seq_len = s1_ids.shape
-        context = torch.arange(batch * seq_len, device=s1_ids.device, dtype=torch.float32)
-        context = context.view(batch, seq_len, 1).repeat(1, 1, self.d_model)
-        logits = torch.zeros(batch, seq_len, 1, device=s1_ids.device)
-        return logits, context
+    def features_tensor(self, add_cash: bool, dtype: torch.dtype = torch.float32) -> torch.Tensor:
+        tensor = self.base.to(dtype=dtype)
+        if add_cash:
+            zeros = torch.zeros(tensor.shape[0], 1, tensor.shape[2], dtype=dtype)
+            tensor = torch.cat([tensor, zeros], dim=1)
+        return tensor
 
 
 @pytest.fixture(autouse=True)
-def kronos_stubs(monkeypatch):
-    def _tokenizer_from_pretrained(_name: str):
-        return DummyTokenizer()
+def kronos_stub(monkeypatch):
+    def _ensure_adapter(self):
+        return StubAdapter(total_len=len(self.index), asset_count=len(self.symbols))
 
-    def _model_from_pretrained(_name: str):
-        return DummyKronosModel()
-
-    monkeypatch.setattr("external.kronos.model.KronosTokenizer.from_pretrained", _tokenizer_from_pretrained)
-    monkeypatch.setattr("external.kronos.model.Kronos.from_pretrained", _model_from_pretrained)
+    monkeypatch.setattr(DifferentiableMarketKronosTrainer, "_ensure_adapter", _ensure_adapter)
 
 
-def test_trainer_feature_dimension(tmp_path):
+def test_trainer_feature_augmentation(tmp_path: Path):
     data_cfg = DataConfig(root=Path("trainingdata"), max_assets=2)
     env_cfg = EnvironmentConfig()
     train_cfg = TrainingConfig(
@@ -78,20 +50,14 @@ def test_trainer_feature_dimension(tmp_path):
         save_dir=tmp_path / "runs",
     )
     eval_cfg = EvaluationConfig(report_dir=tmp_path / "evals")
-
-    kronos_cfg = KronosFeatureConfig(
-        context_length=16,
-        batch_size=8,
-        embedding_mode="both",
-        model_path="dummy",
-        tokenizer_path="dummy",
-    )
+    kronos_cfg = KronosFeatureConfig(context_length=16, horizons=(1, 4))
 
     trainer = DifferentiableMarketKronosTrainer(data_cfg, env_cfg, train_cfg, eval_cfg, kronos_cfg)
 
     ohlc_all, _, _ = load_aligned_ohlc(data_cfg)
     train_tensor, _ = split_train_eval(ohlc_all)
-    base_features, _ = super(DifferentiableMarketKronosTrainer, trainer)._build_features(train_tensor, train_cfg.include_cash, "train")
 
-    assert trainer.train_features.shape[-1] == base_features.shape[-1] + trainer.kronos_adapter.embedding_dim
+    base_features, _ = DifferentiableMarketTrainer._build_features(trainer, train_tensor, train_cfg.include_cash, "train")
+
+    assert trainer.train_features.shape[-1] == base_features.shape[-1] + 1
     trainer.close()

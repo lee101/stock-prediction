@@ -10,50 +10,40 @@ from .trainer import DifferentiableMarketKronosTrainer
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Differentiable market trainer with Kronos embeddings")
-    parser.add_argument("--data-root", type=Path, default=Path("trainingdata"), help="Root directory of OHLC CSV files")
-    parser.add_argument("--data-glob", type=str, default="*.csv", help="Glob pattern for CSV selection")
-    parser.add_argument("--max-assets", type=int, default=None, help="Limit number of assets loaded")
-    parser.add_argument("--exclude", type=str, nargs="*", default=(), help="Symbols to exclude")
-    parser.add_argument("--lookback", type=int, default=192, help="Training lookback window")
-    parser.add_argument("--batch-windows", type=int, default=64, help="Number of sampled windows per step")
-    parser.add_argument("--rollout-groups", type=int, default=4, help="GRPO rollout group size")
-    parser.add_argument("--epochs", type=int, default=2000, help="Training iterations")
-    parser.add_argument("--eval-interval", type=int, default=100, help="Steps between evaluations")
-    parser.add_argument("--save-dir", type=Path, default=Path("differentiable_market_kronos") / "runs", help="Run directory")
-    parser.add_argument("--device", type=str, default="auto", help="Device override for policy training")
-    parser.add_argument("--dtype", type=str, default="auto", help="dtype override for policy training")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed")
-    parser.add_argument("--include-cash", action="store_true", help="Append a zero-return cash asset")
-    parser.add_argument("--no-muon", action="store_true", help="Disable Muon optimizer")
-    parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
-    parser.add_argument("--microbatch-windows", type=int, default=None, help="Micro-batch window size")
-    parser.add_argument("--gradient-checkpointing", action="store_true", help="Enable GRU gradient checkpointing")
-    parser.add_argument("--init-checkpoint", type=Path, default=None, help="Warm-start policy from checkpoint")
-    parser.add_argument("--best-k-checkpoints", type=int, default=3, help="Number of top checkpoints to keep")
+    parser = argparse.ArgumentParser(description="Differentiable market trainer with Kronos summaries")
+    parser.add_argument("--data-root", type=Path, default=Path("trainingdata"))
+    parser.add_argument("--data-glob", type=str, default="*.csv")
+    parser.add_argument("--max-assets", type=int, default=None)
+    parser.add_argument("--exclude", type=str, nargs="*", default=())
+    parser.add_argument("--min-timesteps", type=int, default=512)
+    parser.add_argument("--lookback", type=int, default=192)
+    parser.add_argument("--batch-windows", type=int, default=64)
+    parser.add_argument("--rollout-groups", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=2000)
+    parser.add_argument("--eval-interval", type=int, default=100)
+    parser.add_argument("--save-dir", type=Path, default=Path("differentiable_market_kronos") / "runs")
+    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--dtype", type=str, default="auto")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--include-cash", action="store_true")
+    parser.add_argument("--no-muon", action="store_true")
+    parser.add_argument("--no-compile", action="store_true")
+    parser.add_argument("--microbatch-windows", type=int, default=None)
+    parser.add_argument("--gradient-checkpointing", action="store_true")
+    parser.add_argument("--init-checkpoint", type=Path, default=None)
+    parser.add_argument("--best-k-checkpoints", type=int, default=3)
 
-    # Kronos specific arguments
-    parser.add_argument("--kronos-model", type=str, default="NeoQuasar/Kronos-small", help="Kronos model path or HF ID")
-    parser.add_argument("--kronos-tokenizer", type=str, default="NeoQuasar/Kronos-Tokenizer-base", help="Kronos tokenizer path or HF ID")
-    parser.add_argument("--kronos-context", type=int, default=192, help="Number of timesteps per Kronos embedding window")
-    parser.add_argument("--kronos-clip", type=float, default=5.0, help="Clipping value applied during Kronos window normalisation")
-    parser.add_argument("--kronos-batch", type=int, default=64, help="Batch size for Kronos embedding inference")
-    parser.add_argument("--kronos-device", type=str, default="auto", help="Device for Kronos tokenizer/model")
-    parser.add_argument(
-        "--kronos-embedding-mode",
-        type=str,
-        choices=("context", "bits", "both"),
-        default="context",
-        help="Kronos feature representation to append to the market state",
-    )
-    parser.add_argument("--kronos-cache-dir", type=Path, default=None, help="Optional cache directory for Kronos embeddings")
-    parser.add_argument(
-        "--kronos-precision",
-        type=str,
-        choices=("float32", "bfloat16"),
-        default="float32",
-        help="Internal precision used for Kronos embeddings",
-    )
+    parser.add_argument("--kronos-model", type=str, default="NeoQuasar/Kronos-small")
+    parser.add_argument("--kronos-tokenizer", type=str, default="NeoQuasar/Kronos-Tokenizer-base")
+    parser.add_argument("--kronos-context", type=int, default=256)
+    parser.add_argument("--kronos-horizons", type=int, nargs="*", default=(1, 12, 48))
+    parser.add_argument("--kronos-quantiles", type=float, nargs="*", default=(0.1, 0.5, 0.9))
+    parser.add_argument("--kronos-sample-count", type=int, default=16)
+    parser.add_argument("--kronos-temperature", type=float, default=1.0)
+    parser.add_argument("--kronos-top-p", type=float, default=0.9)
+    parser.add_argument("--kronos-device", type=str, default="auto")
+    parser.add_argument("--kronos-disable-path-stats", action="store_true")
+    parser.add_argument("--kronos-no-bf16", action="store_true")
     return parser.parse_args()
 
 
@@ -66,6 +56,7 @@ def main() -> None:
         max_assets=args.max_assets,
         exclude_symbols=tuple(args.exclude),
         include_cash=args.include_cash,
+        min_timesteps=args.min_timesteps,
     )
     env_cfg = EnvironmentConfig()
     train_cfg = TrainingConfig(
@@ -91,12 +82,14 @@ def main() -> None:
         model_path=args.kronos_model,
         tokenizer_path=args.kronos_tokenizer,
         context_length=args.kronos_context,
-        clip=args.kronos_clip,
-        batch_size=args.kronos_batch,
+        horizons=tuple(args.kronos_horizons),
+        quantiles=tuple(args.kronos_quantiles),
+        include_path_stats=not args.kronos_disable_path_stats,
         device=args.kronos_device,
-        embedding_mode=args.kronos_embedding_mode,
-        cache_dir=args.kronos_cache_dir,
-        precision=args.kronos_precision,
+        sample_count=args.kronos_sample_count,
+        temperature=args.kronos_temperature,
+        top_p=args.kronos_top_p,
+        bf16=not args.kronos_no_bf16,
     )
 
     trainer = DifferentiableMarketKronosTrainer(data_cfg, env_cfg, train_cfg, eval_cfg, kronos_cfg)
