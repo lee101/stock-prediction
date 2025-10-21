@@ -3,12 +3,18 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .config import DataConfig, EnvironmentConfig, EvaluationConfig, TrainingConfig
-from .trainer import DifferentiableMarketTrainer
+from differentiable_market_totoembedding.config import (
+    DataConfig,
+    EnvironmentConfig,
+    EvaluationConfig,
+    TotoEmbeddingConfig,
+    TotoTrainingConfig,
+)
+from differentiable_market_totoembedding.trainer import TotoDifferentiableMarketTrainer
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Differentiable market RL trainer")
+    parser = argparse.ArgumentParser(description="Differentiable market RL trainer with frozen Toto embeddings")
     parser.add_argument("--data-root", type=Path, default=Path("trainingdata"), help="Root directory of OHLC CSV files")
     parser.add_argument("--data-glob", type=str, default="*.csv", help="Glob pattern for CSV selection")
     parser.add_argument("--max-assets", type=int, default=None, help="Limit number of assets loaded")
@@ -18,7 +24,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rollout-groups", type=int, default=4, help="GRPO rollout group size")
     parser.add_argument("--epochs", type=int, default=2000, help="Training iterations")
     parser.add_argument("--eval-interval", type=int, default=100, help="Steps between evaluations")
-    parser.add_argument("--save-dir", type=Path, default=Path("differentiable_market") / "runs", help="Directory to store runs")
+    parser.add_argument(
+        "--save-dir",
+        type=Path,
+        default=Path("differentiable_market_totoembedding") / "runs",
+        help="Directory to store runs",
+    )
     parser.add_argument("--device", type=str, default="auto", help="Device override: auto/cpu/cuda")
     parser.add_argument("--dtype", type=str, default="auto", help="dtype override: auto/bfloat16/float32")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
@@ -51,6 +62,43 @@ def parse_args() -> argparse.Namespace:
         choices=("reflect", "replicate", "constant"),
         default=None,
         help="Padding mode used when building Haar wavelet pyramid",
+    )
+    parser.add_argument("--toto-context-length", type=int, default=128, help="Context length fed into the Toto embedding backbone")
+    parser.add_argument("--toto-embedding-dim", type=int, default=None, help="Override the projection dimensionality of Toto embeddings")
+    parser.add_argument("--toto-input-dim", type=int, default=None, help="Override the expected per-timestep feature width for Toto")
+    parser.add_argument("--toto-batch-size", type=int, default=256, help="Batch size used when materialising Toto embeddings")
+    parser.add_argument("--toto-model-id", type=str, default="Datadog/Toto-Open-Base-1.0", help="Model identifier passed to Toto.from_pretrained")
+    parser.add_argument("--toto-device", type=str, default="cuda", help="Device used while generating Toto embeddings")
+    parser.add_argument("--toto-horizon", type=int, default=8, help="Forecast horizon when Toto falls back to forecast-stat features")
+    parser.add_argument("--toto-num-samples", type=int, default=2048, help="Sample count when Toto forecasts are available")
+    parser.add_argument("--toto-pretrained-path", type=Path, default=None, help="Optional path to a locally stored Toto backbone checkpoint")
+    parser.add_argument(
+        "--toto-cache-dir",
+        type=Path,
+        default=Path("differentiable_market_totoembedding") / "cache",
+        help="Directory for caching computed Toto embeddings",
+    )
+    parser.add_argument("--disable-toto-cache", action="store_true", help="Disable on-disk caching of Toto embeddings")
+    parser.add_argument("--disable-real-toto", action="store_true", help="Force the embedding model to use the transformer fallback instead of Toto")
+    parser.add_argument("--unfreeze-toto-backbone", action="store_true", help="Allow the Toto backbone to receive gradients during policy updates")
+    parser.add_argument(
+        "--toto-pad-mode",
+        type=str,
+        choices=("edge", "repeat"),
+        default="edge",
+        help="Padding strategy for early timesteps when building Toto contexts",
+    )
+    parser.add_argument(
+        "--toto-small-threshold",
+        type=float,
+        default=0.003,
+        help="Absolute log-return threshold separating bull/bear from neutral regimes",
+    )
+    parser.add_argument(
+        "--toto-large-threshold",
+        type=float,
+        default=0.015,
+        help="Absolute log-return threshold identifying high-volatility regimes",
     )
     parser.add_argument("--enable-shorting", action="store_true", help="Allow policy to allocate short exposure")
     parser.add_argument(
@@ -101,7 +149,25 @@ def main() -> None:
         env_cfg.risk_aversion = args.risk_aversion
     if args.drawdown_lambda is not None:
         env_cfg.drawdown_lambda = args.drawdown_lambda
-    train_cfg = TrainingConfig(
+    toto_cfg = TotoEmbeddingConfig(
+        context_length=args.toto_context_length,
+        input_feature_dim=args.toto_input_dim,
+        use_toto=not args.disable_real_toto,
+        freeze_backbone=not args.unfreeze_toto_backbone,
+        embedding_dim=args.toto_embedding_dim,
+        toto_model_id=args.toto_model_id,
+        toto_device=args.toto_device,
+        toto_horizon=args.toto_horizon,
+        toto_num_samples=args.toto_num_samples,
+        batch_size=args.toto_batch_size,
+        pretrained_model_path=args.toto_pretrained_path,
+        cache_dir=args.toto_cache_dir,
+        reuse_cache=not args.disable_toto_cache,
+        market_regime_thresholds=(args.toto_small_threshold, args.toto_large_threshold),
+        pad_mode=args.toto_pad_mode,
+    )
+
+    train_cfg = TotoTrainingConfig(
         lookback=args.lookback,
         batch_windows=args.batch_windows,
         rollout_groups=args.rollout_groups,
@@ -130,6 +196,7 @@ def main() -> None:
         wandb_metric_log_level=args.wandb_metric_log_level,
         tensorboard_root=args.tensorboard_root if args.tensorboard_root is not None else Path("tensorboard_logs"),
         tensorboard_subdir=args.tensorboard_subdir,
+        toto=toto_cfg,
     )
     if args.soft_drawdown_lambda is not None:
         train_cfg.soft_drawdown_lambda = args.soft_drawdown_lambda
@@ -153,7 +220,7 @@ def main() -> None:
         train_cfg.wavelet_levels = args.wavelet_levels
     if args.wavelet_padding_mode is not None:
         train_cfg.wavelet_padding_mode = args.wavelet_padding_mode
-    eval_cfg = EvaluationConfig(report_dir=Path("differentiable_market") / "evals")
+    eval_cfg = EvaluationConfig(report_dir=Path("differentiable_market_totoembedding") / "evals")
     if args.enable_shorting:
         train_cfg.enable_shorting = True
     if args.max_intraday_leverage is not None:
@@ -169,7 +236,7 @@ def main() -> None:
     env_cfg.max_intraday_leverage = train_cfg.max_intraday_leverage
     env_cfg.max_overnight_leverage = train_cfg.max_overnight_leverage
 
-    trainer = DifferentiableMarketTrainer(data_cfg, env_cfg, train_cfg, eval_cfg)
+    trainer = TotoDifferentiableMarketTrainer(data_cfg, env_cfg, train_cfg, eval_cfg)
     trainer.fit()
 
 

@@ -58,6 +58,8 @@ dependencies = [
 [project.scripts]
 diff-market-train = "differentiable_market.train:main"
 diff-market-backtest = "differentiable_market.marketsimulator.run:main"
+diff-market-toto-train = "differentiable_market_totoembedding.train:main"
+diff-market-kronos-train = "differentiable_market_kronos.train:main"
 
 [project.optional-dependencies]
 dev = [
@@ -185,6 +187,8 @@ default-groups = []
 # Explicit workspace members for per-package installs. Add more as they stabilize.
 members = [
     "differentiable_market",
+    "differentiable_market_kronos",
+    "differentiable_market_totoembedding",
     "gymrl",
     "hfshared",
     "hfinference",

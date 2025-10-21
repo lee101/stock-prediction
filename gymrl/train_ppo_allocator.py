@@ -23,6 +23,8 @@ import argparse
 import contextlib
 import json
 import logging
+import os
+import subprocess
 import types
 from dataclasses import asdict
 from pathlib import Path
@@ -139,7 +141,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-days", type=int, default=21, help="Number of trailing daily steps reserved for validation-only evaluation.")
     parser.add_argument("--features-cache", type=Path, default=None, help="Path to a cached feature NPZ file to load instead of rebuilding.")
     parser.add_argument("--cache-features-to", type=Path, default=None, help="Optional path to persist the generated feature cube for reuse.")
-    parser.add_argument("--symbols", type=str, default=None, help="Optional comma-separated subset of symbols to load from the dataset.")
     parser.add_argument("--costs-bps", type=float, default=3.0, help="Baseline proportional trading cost in basis points.")
     parser.add_argument("--turnover-penalty", type=float, default=5e-4, help="Penalty applied to portfolio turnover in the reward.")
     parser.add_argument("--drawdown-penalty", type=float, default=0.0, help="Penalty applied to running drawdown.")
@@ -184,6 +185,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--leverage-head", dest="leverage_head", action="store_true", help="Enable the leverage head in the action space.")
     parser.add_argument("--no-enforce-eod-cap", dest="enforce_eod_cap", action="store_false", help="Skip automatic end-of-day clamping to max gross leverage.")
     parser.add_argument("--enforce-eod-cap", dest="enforce_eod_cap", action="store_true", help="Force end-of-day clamp to max gross leverage (default).")
+    parser.add_argument(
+        "--annotate-final-artifact",
+        action="store_true",
+        help="Append PnL and loss metrics to the final PPO checkpoint filename.",
+    )
+    parser.add_argument(
+        "--s3-upload-uri",
+        type=str,
+        default=None,
+        help="Optional S3 URI for uploading the final checkpoint (e.g., s3://bucket/path/model.zip).",
+    )
+    parser.add_argument(
+        "--s3-endpoint-env",
+        type=str,
+        default="R2_ENDPOINT",
+        help="Environment variable carrying a custom endpoint URL for aws s3 cp (default: R2_ENDPOINT).",
+    )
     parser.set_defaults(include_cash=True, leverage_head=True, enforce_eod_cap=True)
     return parser.parse_args()
 
@@ -568,7 +586,6 @@ def main() -> None:
         model.learn(total_timesteps=args.num_timesteps, callback=[checkpoint_callback, eval_callback, topk_callback])
     model_path = args.output_dir / "ppo_allocator_final.zip"
     model.save(str(model_path))
-    logger.info("Saved final PPO model to %s", model_path)
 
     rollout_env = make_env_factory(
         cube.features,
@@ -580,8 +597,24 @@ def main() -> None:
     )()
     with _autocast_context():
         validation_metrics = evaluate_trained_policy(model, rollout_env)
+
+    total_validation_steps = int(validation_metrics.get("total_steps") or validation_steps)
+    cumulative_return = float(validation_metrics.get("cumulative_return", 0.0))
+    avg_daily_return = None
+    annual_return_simple = None
+    if total_validation_steps > 0:
+        avg_daily_return = cumulative_return / float(total_validation_steps)
+        annual_return_simple = avg_daily_return * 365.0
+        validation_metrics["average_daily_return_simple"] = avg_daily_return
+        validation_metrics["annualized_return_simple"] = annual_return_simple
+        logger.info(
+            "Average daily return: %.6f, annualised (simple) return: %.2f%%",
+            avg_daily_return,
+            annual_return_simple * 100.0,
+        )
+
     logger.info(
-        "Validation (last %d days) -> final value: %.4f, cumulative return: %.2f%%, annualized return: %.2f%%, avg turnover: %.4f, avg trading cost: %.6f",
+        "Validation (last %d days) -> final value: %.4f, cumulative return: %.2f%%, annualized (geom) return: %.2f%%, avg turnover: %.4f, avg trading cost: %.6f",
         validation_steps,
         validation_metrics["final_portfolio_value"],
         validation_metrics["cumulative_return"] * 100.0,
@@ -589,6 +622,52 @@ def main() -> None:
         validation_metrics["average_turnover"],
         validation_metrics["average_trading_cost"],
     )
+
+    formatted_model_path = model_path
+    if args.annotate_final_artifact and total_validation_steps > 0:
+        def _format_metric(prefix: str, value: float, scale: float = 100.0, decimals: int = 2) -> str:
+            sign = "p" if value >= 0 else "m"
+            magnitude = abs(value) * scale
+            return f"{prefix}{sign}{magnitude:.{decimals}f}"
+
+        fragments = [_format_metric("pnlpct", cumulative_return)]
+        avg_log_reward = validation_metrics.get("average_log_reward")
+        if avg_daily_return is not None:
+            fragments.append(_format_metric("daily", avg_daily_return))
+        if annual_return_simple is not None:
+            fragments.append(_format_metric("annual", annual_return_simple))
+        if avg_log_reward is not None:
+            fragments.append(_format_metric("log", avg_log_reward, scale=1.0, decimals=4))
+
+        annotated = f"{model_path.stem}_{'_'.join(fragments)}{model_path.suffix}"
+        target_path = model_path.with_name(annotated)
+        try:
+            model_path.rename(target_path)
+            formatted_model_path = target_path
+            logger.info("Renamed final checkpoint to %s", formatted_model_path)
+        except OSError as exc:
+            logger.warning("Failed to annotate checkpoint filename (%s); keeping original name.", exc)
+            formatted_model_path = model_path
+    else:
+        formatted_model_path = model_path
+
+    if args.s3_upload_uri:
+        endpoint_env = args.s3_endpoint_env or "R2_ENDPOINT"
+        endpoint_url = os.getenv(endpoint_env)
+        cmd = ["aws", "s3", "cp", str(formatted_model_path), args.s3_upload_uri]
+        if endpoint_url:
+            cmd.extend(["--endpoint-url", endpoint_url])
+        logger.info("Uploading final checkpoint to %s (endpoint env=%s).", args.s3_upload_uri, endpoint_env)
+        try:
+            result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.warning("aws s3 upload failed (exit %s): %s", result.returncode, result.stderr.strip())
+            else:
+                logger.info("aws s3 upload succeeded: %s", result.stdout.strip())
+        except FileNotFoundError:
+            logger.warning("aws CLI not available; skipping S3 upload.")
+
+    logger.info("Saved final PPO model to %s", formatted_model_path)
 
     topk_records = [
         {"reward": entry["reward"], "path": entry["path"]}
@@ -616,6 +695,9 @@ def main() -> None:
         "num_assets": len(cube.symbols),
         "total_steps": total_steps,
         "validation_metrics": validation_metrics,
+        "average_daily_return": avg_daily_return,
+        "annualised_return_simple": annual_return_simple,
+        "final_checkpoint": str(formatted_model_path),
         "topk_checkpoints": topk_records,
         "features_cache_loaded": cube_loaded_from_cache,
         "features_cache_path": str(args.features_cache) if args.features_cache else None,

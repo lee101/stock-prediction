@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -13,15 +13,15 @@ import torch
 from torch.distributions import Dirichlet
 from torch.nn.utils import clip_grad_norm_
 
-from .config import DataConfig, EnvironmentConfig, EvaluationConfig, TrainingConfig
-from .data import load_aligned_ohlc, log_data_preview, split_train_eval
-from .env import DifferentiableMarketEnv, smooth_abs
-from .features import ohlc_to_features
-from .losses import dirichlet_kl
-from .policy import DirichletGRUPolicy
-from .optim import MuonConfig, build_muon_optimizer
-from .utils import append_jsonl, ensure_dir, resolve_device, resolve_dtype, set_seed
-from .differentiable_utils import (
+from differentiable_market.config import DataConfig, EnvironmentConfig, EvaluationConfig
+from differentiable_market.data import load_aligned_ohlc, log_data_preview, split_train_eval
+from differentiable_market.env import DifferentiableMarketEnv, smooth_abs
+from differentiable_market.features import ohlc_to_features
+from differentiable_market.losses import dirichlet_kl
+from differentiable_market.policy import DirichletGRUPolicy
+from differentiable_market.optim import MuonConfig, build_muon_optimizer
+from differentiable_market.utils import append_jsonl, ensure_dir, resolve_device, resolve_dtype, set_seed
+from differentiable_market.differentiable_utils import (
     TradeMemoryState,
     augment_market_features,
     risk_budget_mismatch,
@@ -29,6 +29,9 @@ from .differentiable_utils import (
     trade_memory_update,
 )
 from wandboard import WandBoardLogger
+
+from differentiable_market_totoembedding.config import TotoEmbeddingConfig, TotoTrainingConfig
+from differentiable_market_totoembedding.embedding import TotoEmbeddingFeatureExtractor
 
 
 @dataclass(slots=True)
@@ -38,18 +41,28 @@ class TrainingState:
     best_step: int = -1
 
 
-class DifferentiableMarketTrainer:
+class TotoDifferentiableMarketTrainer:
     def __init__(
         self,
         data_cfg: DataConfig,
         env_cfg: EnvironmentConfig,
-        train_cfg: TrainingConfig,
+        train_cfg: TotoTrainingConfig,
         eval_cfg: EvaluationConfig | None = None,
     ):
+        if not isinstance(train_cfg, TotoTrainingConfig):
+            raise TypeError(
+                f"TotoDifferentiableMarketTrainer expects TotoTrainingConfig, received {type(train_cfg)!r}"
+            )
+        if train_cfg.toto.context_length > train_cfg.lookback:
+            adjusted = replace(train_cfg.toto, context_length=train_cfg.lookback)
+            train_cfg = replace(train_cfg, toto=adjusted)
+
         self.data_cfg = data_cfg
         self.env_cfg = env_cfg
         self.train_cfg = train_cfg
         self.eval_cfg = eval_cfg or EvaluationConfig()
+        self.toto_cfg = train_cfg.toto
+        self.embedding_extractor = TotoEmbeddingFeatureExtractor(self.toto_cfg)
 
         set_seed(train_cfg.seed)
         self.device = resolve_device(train_cfg.device)
@@ -68,8 +81,65 @@ class DifferentiableMarketTrainer:
         self.eval_index = index[train_len : train_len + eval_len]
         self.eval_periods_per_year = self._estimate_periods_per_year(self.eval_index)
         add_cash = self.train_cfg.include_cash or self.data_cfg.include_cash
-        self.train_features, self.train_returns = self._build_features(train_tensor, add_cash=add_cash, phase="train")
-        self.eval_features, self.eval_returns = self._build_features(eval_tensor, add_cash=add_cash, phase="eval")
+        self.train_features, self.train_returns = ohlc_to_features(train_tensor, add_cash=add_cash)
+        self.eval_features, self.eval_returns = ohlc_to_features(eval_tensor, add_cash=add_cash)
+
+        self.train_features = augment_market_features(
+            self.train_features,
+            self.train_returns,
+            use_taylor=self.train_cfg.use_taylor_features,
+            taylor_order=self.train_cfg.taylor_order,
+            taylor_scale=self.train_cfg.taylor_scale,
+            use_wavelet=self.train_cfg.use_wavelet_features,
+            wavelet_levels=self.train_cfg.wavelet_levels,
+            padding_mode=self.train_cfg.wavelet_padding_mode,
+        ).contiguous()
+
+        self.eval_features = augment_market_features(
+            self.eval_features,
+            self.eval_returns,
+            use_taylor=self.train_cfg.use_taylor_features,
+            taylor_order=self.train_cfg.taylor_order,
+            taylor_scale=self.train_cfg.taylor_scale,
+            use_wavelet=self.train_cfg.use_wavelet_features,
+            wavelet_levels=self.train_cfg.wavelet_levels,
+            padding_mode=self.train_cfg.wavelet_padding_mode,
+        ).contiguous()
+
+        train_embeddings = self.embedding_extractor.compute(train_tensor, self.train_index, self.symbols)
+        eval_embeddings = self.embedding_extractor.compute(eval_tensor, self.eval_index, self.symbols)
+
+        if add_cash:
+            zero_train = torch.zeros(
+                train_embeddings.shape[0],
+                1,
+                train_embeddings.shape[2],
+                dtype=train_embeddings.dtype,
+                device=train_embeddings.device,
+            )
+            zero_eval = torch.zeros(
+                eval_embeddings.shape[0],
+                1,
+                eval_embeddings.shape[2],
+                dtype=eval_embeddings.dtype,
+                device=eval_embeddings.device,
+            )
+            train_embeddings = torch.cat([train_embeddings, zero_train], dim=1)
+            eval_embeddings = torch.cat([eval_embeddings, zero_eval], dim=1)
+
+        if train_embeddings.shape[:2] != self.train_features.shape[:2]:
+            raise ValueError(
+                "Toto embedding dimensions do not align with training features "
+                f"(got {train_embeddings.shape[:2]}, expected {self.train_features.shape[:2]})"
+            )
+        if eval_embeddings.shape[:2] != self.eval_features.shape[:2]:
+            raise ValueError(
+                "Toto embedding dimensions do not align with evaluation features "
+                f"(got {eval_embeddings.shape[:2]}, expected {self.eval_features.shape[:2]})"
+            )
+
+        self.train_features = torch.cat([self.train_features, train_embeddings], dim=-1).contiguous()
+        self.eval_features = torch.cat([self.eval_features, eval_embeddings], dim=-1).contiguous()
 
         if self.train_features.shape[0] <= train_cfg.lookback:
             raise ValueError("Training data shorter than lookback window")
@@ -187,27 +257,6 @@ class DifferentiableMarketTrainer:
                 reason = "augmented losses" if self._augmented_losses else "torch runtime"
                 print(f"torch.compile fallback ({reason}): {exc}")
                 self._train_step = self._train_step_impl
-
-    def _build_features(
-        self,
-        ohlc_tensor: torch.Tensor,
-        add_cash: bool,
-        phase: Literal["train", "eval"],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Construct feature and return tensors for the requested phase."""
-        del phase  # Default implementation does not distinguish between phases.
-        features, forward_returns = ohlc_to_features(ohlc_tensor, add_cash=add_cash)
-        features = augment_market_features(
-            features,
-            forward_returns,
-            use_taylor=self.train_cfg.use_taylor_features,
-            taylor_order=self.train_cfg.taylor_order,
-            taylor_scale=self.train_cfg.taylor_scale,
-            use_wavelet=self.train_cfg.use_wavelet_features,
-            wavelet_levels=self.train_cfg.wavelet_levels,
-            padding_mode=self.train_cfg.wavelet_padding_mode,
-        ).contiguous()
-        return features, forward_returns.contiguous()
 
     def fit(self) -> TrainingState:
         try:
