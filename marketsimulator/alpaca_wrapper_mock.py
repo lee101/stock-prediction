@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Dict, Iterable, List, Optional
+import os
 
 from src.leverage_settings import get_leverage_settings
 
@@ -49,6 +50,8 @@ class MockClock:
 
     @property
     def is_open(self) -> bool:
+        if os.getenv("MARKETSIM_FORCE_MARKET_OPEN", "0").lower() in {"1", "true", "yes", "on"}:
+            return True
         return self._state.clock.is_open
 
     @property
