@@ -44,3 +44,11 @@ packages = ["hftraining"]
 
 [tool.setuptools.package-dir]
 hftraining = "."
+
+[tool.setuptools.package-data]
+hftraining = [
+    "configs/**/*.json",
+    "experiments/**/*.json",
+    "data/**/*.json",
+    "data/**/*.yaml",
+]

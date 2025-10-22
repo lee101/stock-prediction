@@ -465,6 +465,14 @@ class OHLCDataset(Dataset):
             for col in self.config.ohlc_features
             if col in self.feature_columns
         ]
+        self.price_feature_map = {
+            col: self.feature_columns.index(col)
+            for col in ("Open", "High", "Low", "Close")
+            if col in self.feature_columns
+        }
+        self.non_price_feature_indices = [
+            idx for idx in range(len(self.feature_columns)) if idx not in self.price_feature_indices
+        ]
         self.volume_feature_index = (
             self.feature_columns.index("Volume")
             if "Volume" in self.feature_columns
@@ -576,11 +584,9 @@ class OHLCDataset(Dataset):
 
         # Multiplicative gaussian noise for price features
         if self.config.price_noise_std > 0 and self.price_feature_indices:
-            noise = torch.randn(
-                (len(self.price_feature_indices), seq_len - 1),
-                dtype=augmented.dtype,
-            ) * self.config.price_noise_std
-            augmented[self.price_feature_indices, time_slice] *= (1.0 + noise)
+            noise = torch.randn(seq_len - 1, dtype=augmented.dtype) * self.config.price_noise_std
+            scaling = (1.0 + noise).clamp_min(1e-4)
+            augmented[self.price_feature_indices, time_slice] *= scaling.unsqueeze(0)
 
         # Multiplicative gaussian noise for volume feature
         if (
@@ -593,12 +599,17 @@ class OHLCDataset(Dataset):
             augmented[self.volume_feature_index, time_slice] *= (1.0 + vol_noise)
 
         # Feature dropout
-        if self.config.feature_dropout_prob > 0:
-            dropout_mask = torch.rand_like(
-                augmented[:, :-1]
-            ) < self.config.feature_dropout_prob
-            augmented[:, :-1] = torch.where(
-                dropout_mask, torch.zeros_like(augmented[:, :-1]), augmented[:, :-1]
+        if self.config.feature_dropout_prob > 0 and self.non_price_feature_indices:
+            dropout_mask = (
+                torch.rand(
+                    (len(self.non_price_feature_indices), seq_len - 1),
+                    dtype=augmented.dtype,
+                )
+                < self.config.feature_dropout_prob
+            )
+            values = augmented[self.non_price_feature_indices, time_slice]
+            augmented[self.non_price_feature_indices, time_slice] = torch.where(
+                dropout_mask, torch.zeros_like(values), values
             )
 
         # Random time masking
@@ -615,8 +626,45 @@ class OHLCDataset(Dataset):
                 augmented[:, start : start + span] = fill_values
 
         # Keep the most recent timestep exact to preserve prev_close consistency
+        augmented[:, :-1] = self._enforce_price_structure(augmented[:, :-1])
         augmented[:, -1] = series[:, -1]
         return augmented
+
+    def _enforce_price_structure(self, values: torch.Tensor) -> torch.Tensor:
+        mapping = getattr(self, "price_feature_map", {})
+        required = ("Open", "High", "Low", "Close")
+        if not all(name in mapping for name in required):
+            return values
+
+        open_idx = mapping["Open"]
+        high_idx = mapping["High"]
+        low_idx = mapping["Low"]
+        close_idx = mapping["Close"]
+
+        open_vals = values[open_idx]
+        high_vals = values[high_idx]
+        low_vals = values[low_idx]
+        close_vals = values[close_idx]
+
+        high_vals = torch.maximum(high_vals, open_vals)
+        high_vals = torch.maximum(high_vals, close_vals)
+        high_vals = torch.maximum(high_vals, low_vals)
+
+        low_vals = torch.minimum(low_vals, open_vals)
+        low_vals = torch.minimum(low_vals, close_vals)
+        low_vals = torch.minimum(low_vals, high_vals)
+
+        open_clamped = torch.clamp(open_vals, min=low_vals, max=high_vals)
+        close_clamped = torch.clamp(close_vals, min=low_vals, max=high_vals)
+
+        values[high_idx] = high_vals
+        values[low_idx] = low_vals
+        values[open_idx] = open_clamped
+        values[close_idx] = close_clamped
+        price_indices = getattr(self, "price_feature_indices", None)
+        if price_indices:
+            values[price_indices, :] = torch.clamp(values[price_indices, :], min=1e-6)
+        return values
     
     def __getitem__(self, idx: int) -> MaskedTimeseries:
         """Return a MaskedTimeseries object compatible with Toto model"""

@@ -34,3 +34,6 @@ packages = ["hfinference"]
 
 [tool.setuptools.package-dir]
 hfinference = "."
+
+[tool.setuptools.package-data]
+hfinference = ["configs/*.json"]

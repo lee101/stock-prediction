@@ -20,6 +20,7 @@ dev = [
 ]
 
 [tool.uv.sources]
+stock-trading-suite = { workspace = true }
 gymrl = { workspace = true }
 hftraining = { workspace = true }
 
@@ -28,4 +29,9 @@ packages = ["pufferlibtraining"]
 
 [tool.setuptools.package-dir]
 pufferlibtraining = "."
-stock-trading-suite = { workspace = true }
+
+[tool.setuptools.package-data]
+pufferlibtraining = [
+    "envs/**/*.json",
+    "logs/**/*.json",
+]

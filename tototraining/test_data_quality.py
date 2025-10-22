@@ -582,6 +582,70 @@ class TestDatasetValidation:
                 if batch_count >= 3:  # Test first 3 batches
                     break
 
+    def test_augmentation_preserves_ohlc_structure(self, sample_valid_data):
+        """Augmentation should maintain OHLC ordering and metadata consistency."""
+        config = DataLoaderConfig(
+            sequence_length=48,
+            prediction_length=8,
+            stride=4,
+            enable_augmentation=True,
+            price_noise_std=0.03,
+            volume_noise_std=0.1,
+            feature_dropout_prob=0.1,
+            time_mask_prob=0.2,
+            time_mask_max_span=5,
+            random_scaling_range=(0.98, 1.02),
+            additional_features=["Volume"],
+            add_technical_indicators=False,
+            batch_size=4,
+            normalization_method="robust",
+            random_seed=123,
+        )
+
+        preprocessor = OHLCPreprocessor(config)
+        training_data = {"TEST": sample_valid_data}
+        preprocessor.fit_scalers(training_data)
+        dataset = DataLoaderOHLCDataset(training_data, config, preprocessor, "train")
+
+        assert len(dataset) > 0
+        price_map = dataset.price_feature_map
+        assert price_map is not None
+        for key in ("Open", "High", "Low", "Close"):
+            assert key in price_map
+
+        open_idx = price_map["Open"]
+        high_idx = price_map["High"]
+        low_idx = price_map["Low"]
+        close_idx = price_map["Close"]
+
+        sample_count = min(len(dataset), 10)
+        for idx in range(sample_count):
+            sample = dataset[idx]
+            series = sample.timeseries.series
+            metadata = sample.metadata()
+
+            open_vals = series[open_idx, :-1]
+            high_vals = series[high_idx, :-1]
+            low_vals = series[low_idx, :-1]
+            close_vals = series[close_idx, :-1]
+
+            assert torch.all(high_vals >= open_vals)
+            assert torch.all(high_vals >= close_vals)
+            assert torch.all(high_vals >= low_vals)
+            assert torch.all(low_vals <= open_vals)
+            assert torch.all(low_vals <= close_vals)
+            assert torch.all(open_vals >= low_vals)
+            assert torch.all(close_vals >= low_vals)
+            assert torch.all(open_vals <= high_vals)
+            assert torch.all(close_vals <= high_vals)
+
+            prev_close = metadata["prev_close"]
+            assert torch.allclose(prev_close, series[close_idx, -1], atol=1e-6)
+
+            denom = prev_close.abs().clamp_min(1e-6)
+            reconstructed = metadata["target_pct"] * denom + prev_close
+            assert torch.allclose(reconstructed, metadata["target_price"], atol=1e-5)
+
 
 class TestDataLoaderIntegration:
     """Test full data loading pipeline validation"""

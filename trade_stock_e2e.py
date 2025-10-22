@@ -1,3 +1,4 @@
+import ast
 import logging
 import math
 import os
@@ -6,6 +7,7 @@ from pathlib import Path
 from time import sleep
 from typing import Dict, List, Optional, Tuple
 
+import pandas as pd
 import pytz
 from loguru import logger
 
@@ -77,6 +79,124 @@ _active_trades_store: Optional[FlatShelf] = None
 _trade_history_store: Optional[FlatShelf] = None
 
 _TRUTHY = {"1", "true", "yes", "on"}
+
+_LATEST_FORECAST_CACHE: Dict[str, Dict[str, object]] = {}
+_LATEST_FORECAST_PATH: Optional[Path] = None
+
+
+def _results_dir() -> Path:
+    return Path(__file__).resolve().parent / "results"
+
+
+def _coerce_optional_float(value: object) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        if isinstance(value, float):
+            return None if math.isnan(value) else value
+        if isinstance(value, (int,)):
+            return float(value)
+        value_str = str(value).strip()
+        if not value_str:
+            return None
+        parsed = float(value_str)
+        return None if math.isnan(parsed) else parsed
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_float_list(raw: object) -> Optional[List[float]]:
+    if raw is None or (isinstance(raw, float) and math.isnan(raw)):
+        return None
+    try:
+        text = str(raw)
+        if not text:
+            return None
+        normalized = text.replace("np.float32", "float")
+        values = ast.literal_eval(normalized)
+        if isinstance(values, (list, tuple)):
+            result: List[float] = []
+            for item in values:
+                coerced = _coerce_optional_float(item)
+                if coerced is None:
+                    continue
+                result.append(coerced)
+            return result or None
+    except (ValueError, SyntaxError):
+        return None
+    return None
+
+
+def _find_latest_prediction_file() -> Optional[Path]:
+    results_path = _results_dir()
+    if not results_path.exists():
+        return None
+    candidates = list(results_path.glob("predictions-*.csv"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _load_latest_forecast_snapshot() -> Dict[str, Dict[str, object]]:
+    global _LATEST_FORECAST_CACHE, _LATEST_FORECAST_PATH
+
+    latest_file = _find_latest_prediction_file()
+    if latest_file is None:
+        return {}
+    if _LATEST_FORECAST_PATH == latest_file and _LATEST_FORECAST_CACHE:
+        return _LATEST_FORECAST_CACHE
+
+    desired_columns = {
+        "maxdiffprofit_profit",
+        "maxdiffprofit_high_price",
+        "maxdiffprofit_low_price",
+        "maxdiffprofit_profit_high_multiplier",
+        "maxdiffprofit_profit_low_multiplier",
+        "maxdiffprofit_profit_values",
+        "entry_takeprofit_profit",
+        "entry_takeprofit_high_price",
+        "entry_takeprofit_low_price",
+        "entry_takeprofit_profit_values",
+        "takeprofit_profit",
+        "takeprofit_high_price",
+        "takeprofit_low_price",
+    }
+
+    try:
+        df = pd.read_csv(
+            latest_file,
+            usecols=lambda column: column == "instrument" or column in desired_columns,
+        )
+    except Exception as exc:  # pragma: no cover - guarded against missing pandas/corrupt files
+        logger.warning("Failed to load latest prediction snapshot %s: %s", latest_file, exc)
+        _LATEST_FORECAST_CACHE = {}
+        _LATEST_FORECAST_PATH = latest_file
+        return _LATEST_FORECAST_CACHE
+
+    snapshot: Dict[str, Dict[str, object]] = {}
+
+    for row in df.to_dict("records"):
+        instrument = row.get("instrument")
+        if not instrument:
+            continue
+        entry: Dict[str, object] = {}
+        for key in desired_columns:
+            if key not in row:
+                continue
+            if key.endswith("_values"):
+                parsed_values = _parse_float_list(row.get(key))
+                if parsed_values is not None:
+                    entry[key] = parsed_values
+            else:
+                parsed_float = _coerce_optional_float(row.get(key))
+                if parsed_float is not None:
+                    entry[key] = parsed_float
+        if entry:
+            snapshot[str(instrument)] = entry
+
+    _LATEST_FORECAST_CACHE = snapshot
+    _LATEST_FORECAST_PATH = latest_file
+    return snapshot
 
 
 def _is_kronos_only_mode() -> bool:
@@ -956,6 +1076,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
     kronos_only_mode = _is_kronos_only_mode()
 
+    latest_snapshot = _load_latest_forecast_snapshot()
+
     for symbol in symbols:
         try:
             # not many because we need to adapt strats? eg the wierd spikes in uniusd are a big opportunity to trade w high/low
@@ -1346,7 +1468,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             block_reason = "; ".join(unique_reasons) if unique_reasons else None
             trade_blocked = base_blocked or bool(gating_reasons)
 
-            results[symbol] = {
+            result_row = {
                 "avg_return": avg_return,
                 "predictions": backtest_df,
                 "side": position_side,
@@ -1409,7 +1531,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "walk_forward_takeprofit_sharpe": walk_forward_takeprofit_sharpe,
                 "backtest_samples": sample_size,
             }
-            _log_analysis_summary(symbol, results[symbol])
+            snapshot_row = latest_snapshot.get(symbol)
+            if snapshot_row:
+                result_row.update(snapshot_row)
+            results[symbol] = result_row
+            _log_analysis_summary(symbol, result_row)
 
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {str(e)}")
@@ -1785,6 +1911,7 @@ def manage_positions(
                     logger.info(f"Entering new {data['side']} position for {symbol}")
 
             entry_strategy = data.get("strategy")
+            stored_entry_strategy = "maxdiff" if entry_strategy == "highlow" else entry_strategy
             is_highlow_entry = entry_strategy == "highlow" and not effective_probe
             highlow_limit_executed = False
 
@@ -1805,15 +1932,19 @@ def manage_positions(
 
                     if is_highlow_entry:
                         if is_buy_side(data["side"]):
-                            limit_reference = data.get("predicted_low")
+                            preferred_limit = data.get("maxdiffprofit_low_price")
+                            fallback_limit = data.get("predicted_low")
                         else:
-                            limit_reference = data.get("predicted_high")
+                            preferred_limit = data.get("maxdiffprofit_high_price")
+                            fallback_limit = data.get("predicted_high")
+                        limit_reference = preferred_limit if preferred_limit is not None else fallback_limit
                         limit_price = coerce_numeric(limit_reference, default=float("nan"))
                         if math.isnan(limit_price) or limit_price <= 0:
                             logger.warning(
-                                "%s highlow entry missing limit price (predicted bound=%s); falling back to ramp",
+                                "%s highlow entry missing limit price (preferred=%s, fallback=%s); falling back to ramp",
                                 symbol,
-                                limit_reference,
+                                preferred_limit,
+                                fallback_limit,
                             )
                         else:
                             try:
@@ -1862,7 +1993,7 @@ def manage_positions(
                     mode="probe_transition",
                     qty=target_qty,
                 )
-                _tag_active_trade_strategy(symbol, data["side"], entry_strategy)
+                _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
                 _normalize_active_trade_patch(_update_active_trade)
             elif effective_probe:
                 _mark_probe_active(symbol, data["side"], target_qty)
@@ -1872,7 +2003,7 @@ def manage_positions(
                     mode="probe",
                     qty=target_qty,
                 )
-                _tag_active_trade_strategy(symbol, data["side"], entry_strategy)
+                _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
                 _normalize_active_trade_patch(_update_active_trade)
             else:
                 _update_active_trade(
@@ -1881,7 +2012,7 @@ def manage_positions(
                     mode="normal",
                     qty=target_qty,
                 )
-                _tag_active_trade_strategy(symbol, data["side"], entry_strategy)
+                _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
                 _normalize_active_trade_patch(_update_active_trade)
 
             if not effective_probe and entry_price is not None:
@@ -1891,9 +2022,9 @@ def manage_positions(
 
             if is_highlow_entry:
                 if is_buy_side(data["side"]):
-                    highlow_tp_reference = data.get("predicted_high")
+                    highlow_tp_reference = data.get("maxdiffprofit_high_price") or data.get("predicted_high")
                 else:
-                    highlow_tp_reference = data.get("predicted_low")
+                    highlow_tp_reference = data.get("maxdiffprofit_low_price") or data.get("predicted_low")
                 takeprofit_price = coerce_numeric(highlow_tp_reference, default=float("nan"))
                 if math.isnan(takeprofit_price) or takeprofit_price <= 0:
                     logger.debug(

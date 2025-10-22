@@ -4,8 +4,13 @@ import pandas as pd
 import torch
 
 from data_utils import drop_n_rows
-from loss_utils import percent_movements_augment, calculate_takeprofit_torch, \
-    calculate_trading_profit_torch_with_buysell, calculate_trading_profit_torch_with_entry_buysell
+from loss_utils import (
+    percent_movements_augment,
+    calculate_takeprofit_torch,
+    calculate_trading_profit_torch_with_buysell,
+    calculate_trading_profit_torch_with_entry_buysell,
+    calculate_profit_torch_with_entry_buysell_profit_values,
+)
 
 
 def test_drop_n_rows():
@@ -136,6 +141,49 @@ def test_entry_takeprofits():
                                                                 # low lowpreds
                                                                 )
     assert (profits - (.1 + .59)) < .002  # TODO take away non trades from trading loss
+
+
+def test_entry_profit_values_match_total_and_flag_wrong_orders():
+    y_test = torch.tensor([0.05, -0.04, 0.02], dtype=torch.float32)
+    y_test_pred = torch.tensor([1.0, -1.0, 1.0], dtype=torch.float32)
+    y_test_high = torch.tensor([0.08, 0.03, 0.05], dtype=torch.float32)
+    y_test_high_pred = torch.tensor([0.06, 0.01, 0.04], dtype=torch.float32)
+    y_test_low = torch.tensor([-0.03, -0.06, -0.02], dtype=torch.float32)
+    y_test_low_pred = torch.tensor([-0.015, -0.05, -0.01], dtype=torch.float32)
+
+    total = calculate_trading_profit_torch_with_entry_buysell(
+        None,
+        None,
+        y_test,
+        y_test_pred,
+        y_test_high,
+        y_test_high_pred,
+        y_test_low,
+        y_test_low_pred,
+    )
+    per_period = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test,
+        y_test_high,
+        y_test_high_pred,
+        y_test_low,
+        y_test_low_pred,
+        y_test_pred,
+    )
+
+    assert per_period.shape == y_test.shape
+    assert torch.allclose(total, per_period.sum())
+    assert per_period.sum().item() > 0
+
+    # regression guard: old argument order produced inconsistent totals
+    buggy_values = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test,
+        y_test_pred,
+        y_test_high,
+        y_test_high_pred,
+        y_test_low,
+        y_test_low_pred,
+    )
+    assert not torch.allclose(total, buggy_values.sum())
 
 
 def get_time():

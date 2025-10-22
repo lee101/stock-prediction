@@ -11,6 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, Sequence, Tuple
 
+from src.alpaca_utils import (
+    ANNUAL_MARGIN_RATE,
+    BASE_GROSS_EXPOSURE,
+    INTRADAY_GROSS_EXPOSURE,
+    MAX_GROSS_EXPOSURE,
+    TRADING_DAYS_PER_YEAR,
+)
 
 @dataclass
 class PortfolioEnvConfig:
@@ -31,6 +38,17 @@ class PortfolioEnvConfig:
         include_cash: If True, a synthetic cash asset is appended with deterministic return.
         cash_return: Deterministic return for the synthetic cash asset per step.
         forecast_cvar_alpha: Alpha level assumed when interpreting CVaR forecast inputs.
+        leverage_head: When True, appends a leverage control head to the action vector.
+        base_gross_exposure: Gross exposure that is free of financing costs (typically 1×).
+        max_gross_leverage: End-of-day gross leverage cap.
+        intraday_leverage_cap: Intraday gross leverage cap; enforced immediately after order execution.
+        closing_leverage_cap: Optional explicit end-of-day cap. Defaults to ``max_gross_leverage``.
+        daily_leverage_rate: Optional explicit daily financing rate applied to excess leverage while intraday.
+        leverage_interest_rate: Annualised interest rate applied to positions carried overnight above ``base_gross_exposure``.
+        trading_days_per_year: Trading days used when converting annualised rates to daily equivalents.
+        leverage_penalty_annual_rate: Annualised leverage cost used when ``daily_leverage_rate`` is None.
+        leverage_penalty_trading_days: Trading days per year used for rate conversion when ``daily_leverage_rate`` is None.
+        enforce_end_of_day_cap: If True, positions are automatically scaled back to ``max_gross_leverage`` after each step.
         loss_shutdown_enabled: Enable cooldown gating when recent trades in an asset/direction
             were unprofitable.
         loss_shutdown_cooldown: Number of steps an asset/direction remains in cooldown after a loss.
@@ -68,11 +86,18 @@ class PortfolioEnvConfig:
     leverage_cap: float = 1.0
     intraday_leverage_cap: Optional[float] = None
     closing_leverage_cap: Optional[float] = None
-    leverage_interest_rate: float = 0.0
-    trading_days_per_year: int = 252
+    leverage_interest_rate: float = ANNUAL_MARGIN_RATE
+    trading_days_per_year: int = TRADING_DAYS_PER_YEAR
     include_cash: bool = True
     cash_return: float = 0.0
     forecast_cvar_alpha: float = 0.05
+    leverage_head: bool = True
+    base_gross_exposure: float = BASE_GROSS_EXPOSURE
+    max_gross_leverage: float = MAX_GROSS_EXPOSURE
+    daily_leverage_rate: Optional[float] = None
+    leverage_penalty_annual_rate: float = ANNUAL_MARGIN_RATE
+    leverage_penalty_trading_days: int = TRADING_DAYS_PER_YEAR
+    enforce_end_of_day_cap: bool = True
 
 
 @dataclass
