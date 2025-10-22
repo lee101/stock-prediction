@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Sequence
@@ -213,12 +214,34 @@ class KronosForecastingWrapper:
         if self._predictor is not None:
             return self._predictor
 
+        original_model_module = sys.modules.get("model")
+        stub_module: Optional[types.ModuleType] = None
         try:
+            # Kronos expects ``model`` to resolve to the vendor package shipped in
+            # ``external/kronos``.  If a legacy ``model`` module has already been
+            # imported (e.g. the project-level ``model.py``), temporarily install a
+            # stub package that points to the Kronos directory so ``model.module`` can
+            # be resolved during the import below.  The original module is restored
+            # afterwards to avoid leaking changes into the wider application.
+            if original_model_module is None or not hasattr(original_model_module, "__path__"):
+                stub_module = types.ModuleType("model")
+                stub_module.__path__ = [str(_REPO_ROOT / "external" / "kronos" / "model")]  # type: ignore[attr-defined]
+                sys.modules["model"] = stub_module
             from external.kronos.model import Kronos, KronosPredictor, KronosTokenizer  # type: ignore
         except Exception as exc:  # pragma: no cover - import-time guard
+            if stub_module is not None:
+                sys.modules.pop("model", None)
+            if original_model_module is not None:
+                sys.modules["model"] = original_model_module
             raise RuntimeError(
                 "Failed to import Kronos components. Ensure the external Kronos package is available."
             ) from exc
+        finally:
+            if stub_module is not None:
+                # Remove the temporary stub and reinstate the legacy module if it existed.
+                sys.modules.pop("model", None)
+                if original_model_module is not None:
+                    sys.modules["model"] = original_model_module
 
         device = self.requested_device
         if device.startswith("cuda") and not torch.cuda.is_available():
