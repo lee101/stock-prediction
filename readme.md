@@ -93,6 +93,46 @@ PYTHONPATH=$(pwd) python scripts/deleverage_account_day_end.py
 
 ## Training Pipelines
 
+### FAL GPU (H200) Orchestration
+
+- The `faltrain/app.py::StockTrainerApp` endpoint now spins up a `GPU-H200` machine with CUDA/TF32 switches enabled, injects `torch`/`numpy` into the HF/Toto/Puffer stacks, and prefetches registered checkpoints during `setup()`. Environment variables required on FAL: `R2_ENDPOINT`, optional `R2_BUCKET` (defaults to `models`), `WANDB_PROJECT`, and `WANDB_ENTITY`.
+- Sync your latest local checkpoints before deploying so the remote H200 box mirrors production artefacts. The manifest lives at `faltrain/model_manifest.toml`; adjust or add patterns when new runs land.
+
+  ```bash
+  # Upload artefacts defined in the manifest (run from repo root with env activated)
+  python faltrain/sync_models.py \
+    --direction upload \
+    --bucket models \
+    --endpoint "$R2_ENDPOINT"
+
+  # Preview matches without copying anything
+  python faltrain/sync_models.py --list-only
+  ```
+
+- On the remote machine the app automatically skips downloads if the artefacts are already present, but you can force a refresh or fetch into a scratch location with:
+
+  ```bash
+  python faltrain/sync_models.py \
+    --direction download \
+    --bucket models \
+    --endpoint "$R2_ENDPOINT" \
+    --local-root /data/reference_models \
+    --skip-existing
+  ```
+
+- Trigger full sweeps from your laptop once artefacts are in R2:
+
+  ```bash
+  fal run faltrain/app.py::StockTrainerApp \
+    -d '{"trainer": "hf", "run_name": "fal_h200_hf_20251020", "do_sweeps": true}'
+  ```
+
+- To publish as a persistent service:
+
+  ```bash
+  fal deploy faltrain/app.py::StockTrainerApp --auth shared
+  ```
+
 ### PufferLib multi-stage RL (Toto-assisted)
 
 - Boot the UV-managed environment and launch the end-to-end RL stack (generic forecaster → specialists → vectorised RL) with sensible defaults:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
@@ -141,12 +142,75 @@ def split_train_eval(ohlc: torch.Tensor, split_ratio: float = 0.8) -> tuple[torc
 
 
 def log_data_preview(ohlc: torch.Tensor, symbols: Sequence[str], index: Sequence[pd.Timestamp]) -> dict:
+    if isinstance(index, pd.DatetimeIndex):
+        idx = index
+    else:
+        idx = pd.DatetimeIndex(index)
+
+    trading_days = int(len(idx))
+    if trading_days >= 1:
+        first_ts = idx[0]
+        last_ts = idx[-1]
+        calendar_span_days = int((last_ts - first_ts).days)
+        if calendar_span_days <= 0:
+            approx_trading_days_per_year = float("nan")
+        else:
+            approx_trading_days_per_year = trading_days / (calendar_span_days / 365.25)
+    else:
+        first_ts = last_ts = pd.Timestamp("NaT")
+        calendar_span_days = 0
+        approx_trading_days_per_year = float("nan")
+
+    diffs = idx.to_series().diff().dt.days.iloc[1:] if trading_days > 1 else pd.Series(dtype="float64")
+    max_gap_days = int(diffs.max()) if not diffs.empty and diffs.notna().any() else 0
+    gap_days_count = int((diffs > 1).sum()) if not diffs.empty else 0
+
+    if trading_days > 0:
+        normalized_idx = idx.normalize()
+        expected_range = pd.date_range(
+            first_ts.normalize(),
+            last_ts.normalize(),
+            freq="B",
+            tz=idx.tz,
+        )
+        missing_business_days = int(len(expected_range.difference(normalized_idx)))
+    else:
+        missing_business_days = 0
+
+    def _approx_periods_per_year(series: Sequence[pd.Timestamp]) -> float:
+        if len(series) < 2:
+            return float("nan")
+        if isinstance(series, pd.DatetimeIndex):
+            datetimes = series
+        else:
+            datetimes = pd.DatetimeIndex(series)
+        values = datetimes.asi8.astype(np.float64)
+        diffs_ns = np.diff(values)
+        diffs_ns = diffs_ns[diffs_ns > 0]
+        if diffs_ns.size == 0:
+            return float("nan")
+        avg_ns = float(diffs_ns.mean())
+        if not math.isfinite(avg_ns) or avg_ns <= 0.0:
+            return float("nan")
+        seconds_per_period = avg_ns / 1e9
+        if seconds_per_period <= 0.0:
+            return float("nan")
+        seconds_per_year = 365.25 * 24 * 3600
+        return float(seconds_per_year / seconds_per_period)
+
     preview = {
         "timesteps": int(ohlc.shape[0]),
         "assets": int(ohlc.shape[1]),
         "features": int(ohlc.shape[2]),
-        "first_timestamp": str(index[0]),
-        "last_timestamp": str(index[-1]),
+        "first_timestamp": str(first_ts),
+        "last_timestamp": str(last_ts),
         "symbols": list(symbols[:10]),
+        "calendar_span_days": calendar_span_days,
+        "trading_days": trading_days,
+        "approx_trading_days_per_year": approx_trading_days_per_year,
+        "missing_business_days": missing_business_days,
+        "max_gap_days": max_gap_days,
+        "multi_day_gaps": gap_days_count,
+        "estimated_periods_per_year": _approx_periods_per_year(idx),
     }
     return preview

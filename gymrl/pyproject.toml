@@ -16,6 +16,10 @@ dependencies = [
     "stable-baselines3>=2.3",
     "chronos-forecasting>=1.5.3",
     "torch==2.9.0",
+    "einops>=0.8.1,<0.9",
+    "jaxtyping>=0.2.29",
+    "gluonts[torch]==0.16.2",
+    "rotary-embedding-torch==0.8.6",
 ]
 
 [project.optional-dependencies]

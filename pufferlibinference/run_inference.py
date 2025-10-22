@@ -8,6 +8,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from src.leverage_settings import get_leverage_settings
+
 from .config import InferenceDataConfig, PufferInferenceConfig
 from .engine import PortfolioRLInferenceEngine
 
