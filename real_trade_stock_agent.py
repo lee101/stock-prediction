@@ -1,15 +1,13 @@
 import argparse
-import json
 from copy import deepcopy
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pytz
 from loguru import logger
 
 import alpaca_wrapper
-from gpt5_queries import query_gpt5_structured
 from src.logging_utils import setup_logging
 from src.process_utils import backout_near_market
 from stockagent import DEFAULT_SYMBOLS, DEFAULT_REASONING_EFFORT, SIMULATION_DAYS
@@ -25,10 +23,8 @@ from stockagent.agentsimulator import (
     TradingPlanEnvelope,
     fetch_latest_ohlc,
     get_account_snapshot,
-    plan_response_schema,
-    build_daily_plan_prompt,
-    SYSTEM_PROMPT,
 )
+from stockagent.agent import generate_stockagent_plan
 
 
 logger = setup_logging("trade_stock_agent.log")
@@ -75,137 +71,17 @@ def request_plan(
     snapshot = get_account_snapshot()
     target_date = determine_target_date(market_data.as_of)
 
-    prompt_text, payload = build_daily_plan_prompt(
+    envelope, raw_json = generate_stockagent_plan(
         market_data=market_data,
-        account_payload=snapshot.to_payload(),
+        account_snapshot=snapshot,
         target_date=target_date,
         symbols=symbols,
         include_market_history=include_history,
-    )
-    raw_json = query_gpt5_structured(
-        system_message=SYSTEM_PROMPT,
-        user_prompt=prompt_text,
-        response_schema=plan_response_schema(),
-        user_payload_json=json.dumps(payload),
         reasoning_effort=DEFAULT_REASONING_EFFORT,
     )
     logger.info(f"GPT raw response: {raw_json}")
-    try:
-        envelope = TradingPlanEnvelope.from_json(raw_json)
-    except ValueError as exc:
-        logger.warning(f"Failed to parse GPT response ({exc}); normalizing payload")
-        normalized = _normalize_plan_payload(_parse_json_response(raw_json), target_date)
-        envelope = TradingPlanEnvelope.from_json(json.dumps(normalized))
     logger.info(f"Received GPT plan for {envelope.plan.target_date.isoformat()}")
     return envelope, snapshot
-
-
-def _normalize_plan_payload(data: Dict[str, Any], target_date: date) -> Dict[str, Any]:
-    plan_source: Dict[str, Any] | None = None
-    if isinstance(data, Mapping):
-        candidate = data.get("plan")
-        if isinstance(candidate, Mapping):
-            plan_source = dict(candidate)
-        elif isinstance(data, Mapping):
-            plan_source = dict(data)
-    if plan_source is None:
-        plan_source = {}
-
-    metadata_keys = {
-        "target_date",
-        "instructions",
-        "risk_notes",
-        "focus_symbols",
-        "stop_trading_symbols",
-        "metadata",
-        "execution_window",
-    }
-
-    stop_trading_symbols: List[str] = []
-
-    plan_block: Dict[str, Any] | None = plan_source
-
-    if isinstance(plan_block, dict) and "instructions" not in plan_block:
-        instructions = []
-        for symbol, detail in list(plan_block.items()):
-            if symbol in metadata_keys or not isinstance(detail, dict):
-                continue
-            action = detail.get("action", "hold")
-            if action == "stop_trading":
-                stop_trading_symbols.append(symbol.upper())
-                action = "hold"
-            instructions.append(_normalize_instruction(detail, symbol, action))
-        plan_block = {
-            "target_date": plan_block.get("target_date", target_date.isoformat()),
-            "instructions": instructions,
-            "risk_notes": plan_block.get("risk_notes") or data.get("risk_notes"),
-            "focus_symbols": plan_block.get("focus_symbols", []),
-            "stop_trading_symbols": plan_block.get("stop_trading_symbols", []) + stop_trading_symbols,
-            "metadata": plan_block.get("metadata", {}),
-            "execution_window": plan_block.get("execution_window", data.get("execution_window", "market_open")),
-        }
-    elif isinstance(plan_block, dict):
-        plan_block.setdefault("target_date", target_date.isoformat())
-        plan_block.setdefault("instructions", [])
-        plan_block.setdefault("risk_notes", data.get("risk_notes"))
-        plan_block.setdefault("focus_symbols", [])
-        plan_block.setdefault("stop_trading_symbols", [])
-        plan_block.setdefault("metadata", {})
-        plan_block.setdefault("execution_window", data.get("execution_window", "market_open"))
-        plan_block["instructions"] = [
-            _normalize_instruction(instr, instr.get("symbol"), instr.get("action"))
-            for instr in plan_block["instructions"]
-        ]
-    else:
-        plan_block = {
-            "target_date": target_date.isoformat(),
-            "instructions": [],
-            "risk_notes": data.get("risk_notes"),
-            "focus_symbols": [],
-            "stop_trading_symbols": [],
-            "metadata": {},
-            "execution_window": "market_open",
-        }
-
-    plan_block["stop_trading_symbols"] = sorted(set(sym.upper() for sym in plan_block["stop_trading_symbols"]))
-
-    return plan_block
-
-
-def _normalize_instruction(detail: Dict[str, Any], symbol: str, action: str) -> Dict[str, Any]:
-    symbol = str(symbol or detail.get("symbol", "")).upper()
-    action = action or detail.get("action", "hold")
-    quantity = float(detail.get("quantity", 0) or 0)
-    execution_session = detail.get("execution_session", detail.get("execution_window", ExecutionSession.MARKET_OPEN.value))
-    entry_price = detail.get("entry_price")
-    exit_price = detail.get("exit_price")
-    exit_reason = detail.get("exit_reason")
-    notes = detail.get("risk_notes") or detail.get("notes")
-    return {
-        "symbol": symbol,
-        "action": action,
-        "quantity": quantity,
-        "execution_session": execution_session,
-        "entry_price": entry_price,
-        "exit_price": exit_price,
-        "exit_reason": exit_reason,
-        "notes": notes,
-    }
-
-
-def _parse_json_response(raw_json: str) -> Dict[str, Any]:
-    try:
-        return json.loads(raw_json)
-    except json.JSONDecodeError:
-        first = raw_json.find("{")
-        last = raw_json.rfind("}")
-        while first != -1 and last != -1 and last > first:
-            candidate = raw_json[first : last + 1]
-            try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                last = raw_json.rfind("}", 0, last)
-        raise ValueError("GPT response was not valid JSON")
 
 
 def log_plan(plan: TradingPlan) -> None:

@@ -32,7 +32,7 @@ dependencies = [
     "psutil>=5.9",
     "ta>=0.11",
     "scipy>=1.13",
-    "pyqlib>=0.9.7",
+    "pyqlib>=0.9.7; python_version < \"3.13\"",
     "beautifulsoup4>=4.12",
     "PyYAML>=6.0,<6.1",
     "jsonschema>=4.19",
@@ -61,6 +61,7 @@ diff-market-train = "differentiable_market.train:main"
 diff-market-backtest = "differentiable_market.marketsimulator.run:main"
 diff-market-toto-train = "differentiable_market_totoembedding.train:main"
 diff-market-kronos-train = "differentiable_market_kronos.train:main"
+stockagent2-pipeline = "stockagent2.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -221,3 +222,4 @@ toto = { workspace = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
+numpy = { index = "pypi" }

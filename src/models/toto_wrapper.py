@@ -28,7 +28,7 @@ _LEGACY_PATH = Path("/mnt/fast/code/chronos-forecasting/toto")
 if _LEGACY_PATH.exists():
     _CANDIDATE_PATHS.append(_LEGACY_PATH)
 
-for _path in _CANDIDATE_PATHS:
+for _path in reversed(_CANDIDATE_PATHS):
     if _path.exists():
         path_str = str(_path)
         if path_str not in sys.path:

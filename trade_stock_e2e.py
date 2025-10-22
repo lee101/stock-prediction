@@ -1992,6 +1992,7 @@ def manage_positions(
                     data["side"],
                     mode="probe_transition",
                     qty=target_qty,
+                    strategy=stored_entry_strategy,
                 )
                 _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
                 _normalize_active_trade_patch(_update_active_trade)
@@ -2002,6 +2003,7 @@ def manage_positions(
                     data["side"],
                     mode="probe",
                     qty=target_qty,
+                    strategy=stored_entry_strategy,
                 )
                 _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
                 _normalize_active_trade_patch(_update_active_trade)
@@ -2011,6 +2013,7 @@ def manage_positions(
                     data["side"],
                     mode="normal",
                     qty=target_qty,
+                    strategy=stored_entry_strategy,
                 )
                 _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
                 _normalize_active_trade_patch(_update_active_trade)
@@ -2086,13 +2089,15 @@ def manage_positions(
             )
             _mark_probe_transitioned(symbol, data["side"], current_position_size)
             entry_strategy = data.get("strategy")
+            stored_entry_strategy = "maxdiff" if entry_strategy == "highlow" else entry_strategy
             _update_active_trade(
                 symbol,
                 data["side"],
                 mode="probe_transition",
                 qty=current_position_size,
+                strategy=stored_entry_strategy,
             )
-            _tag_active_trade_strategy(symbol, data["side"], entry_strategy)
+            _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
             _normalize_active_trade_patch(_update_active_trade)
 
 
@@ -2135,6 +2140,7 @@ def manage_market_close(
         entry_strategy = active_trade_meta.get("entry_strategy")
         if not entry_strategy and symbol in previous_picks:
             entry_strategy = previous_picks.get(symbol, {}).get("strategy")
+        lookup_entry_strategy = "highlow" if entry_strategy == "maxdiff" else entry_strategy
 
         next_forecast = all_analyzed_results.get(symbol)
         if next_forecast:
@@ -2157,8 +2163,9 @@ def manage_market_close(
             and (entry_mode or "normal") != "probe"
         ):
             strategy_returns = next_forecast.get("strategy_returns", {})
-            strategy_return = strategy_returns.get(entry_strategy)
-            if strategy_return is None and entry_strategy == next_forecast.get("strategy"):
+            strategy_return = strategy_returns.get(lookup_entry_strategy)
+            forecast_strategy = next_forecast.get("strategy")
+            if strategy_return is None and lookup_entry_strategy == forecast_strategy:
                 strategy_return = next_forecast.get("avg_return")
             if strategy_return is not None and strategy_return < 0:
                 logger.info(
