@@ -41,10 +41,13 @@ class PortfolioEnvConfig:
         leverage_head: When True, appends a leverage control head to the action vector.
         base_gross_exposure: Gross exposure that is free of financing costs (typically 1×).
         max_gross_leverage: End-of-day gross leverage cap.
-        intraday_leverage_cap: Intraday gross leverage cap; enforced during the trading step.
-        daily_leverage_rate: Optional explicit daily financing rate applied to excess leverage.
+        intraday_leverage_cap: Intraday gross leverage cap; enforced immediately after order execution.
+        closing_leverage_cap: Optional explicit end-of-day cap. Defaults to ``max_gross_leverage``.
+        daily_leverage_rate: Optional explicit daily financing rate applied to excess leverage while intraday.
+        leverage_interest_rate: Annualised interest rate applied to positions carried overnight above ``base_gross_exposure``.
+        trading_days_per_year: Trading days used when converting annualised rates to daily equivalents.
         leverage_penalty_annual_rate: Annualised leverage cost used when ``daily_leverage_rate`` is None.
-        leverage_penalty_trading_days: Trading days per year used for rate conversion.
+        leverage_penalty_trading_days: Trading days per year used for rate conversion when ``daily_leverage_rate`` is None.
         enforce_end_of_day_cap: If True, positions are automatically scaled back to ``max_gross_leverage`` after each step.
         loss_shutdown_enabled: Enable cooldown gating when recent trades in an asset/direction
             were unprofitable.
@@ -57,6 +60,13 @@ class PortfolioEnvConfig:
             shutdown logic to avoid noise from tiny allocations.
         loss_shutdown_return_tolerance: Absolute return threshold below which outcomes are treated
             as neutral (neither profit nor loss) for cooldown updates.
+        intraday_leverage_cap: Optional gross exposure cap applied immediately after the action
+            projection. If None, defaults to leverage_cap (long/short) or 1.0 (long-only).
+        closing_leverage_cap: Optional gross exposure cap enforced at the end of every step before
+            carrying positions overnight. If None, defaults to intraday_leverage_cap.
+        leverage_interest_rate: Annualised interest rate applied to borrowed exposure above 1x when
+            held overnight (after enforcing closing_leverage_cap).
+        trading_days_per_year: Number of trading days used to annualise leverage interest.
     """
 
     costs_bps: float = 3.0
@@ -74,13 +84,16 @@ class PortfolioEnvConfig:
     loss_shutdown_min_position: float = 1e-4
     loss_shutdown_return_tolerance: float = 1e-5
     leverage_cap: float = 1.0
+    intraday_leverage_cap: Optional[float] = None
+    closing_leverage_cap: Optional[float] = None
+    leverage_interest_rate: float = ANNUAL_MARGIN_RATE
+    trading_days_per_year: int = TRADING_DAYS_PER_YEAR
     include_cash: bool = True
     cash_return: float = 0.0
     forecast_cvar_alpha: float = 0.05
     leverage_head: bool = True
     base_gross_exposure: float = BASE_GROSS_EXPOSURE
     max_gross_leverage: float = MAX_GROSS_EXPOSURE
-    intraday_leverage_cap: float = INTRADAY_GROSS_EXPOSURE
     daily_leverage_rate: Optional[float] = None
     leverage_penalty_annual_rate: float = ANNUAL_MARGIN_RATE
     leverage_penalty_trading_days: int = TRADING_DAYS_PER_YEAR

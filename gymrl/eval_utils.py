@@ -28,6 +28,9 @@ def evaluate_trained_policy(model, env: PortfolioEnv) -> Dict[str, float]:
     crypto_values = [1.0]
     non_crypto_values = [1.0]
     crypto_weights = []
+    interest_costs = []
+    gross_exposure_intraday = []
+    gross_exposure_close = []
 
     while True:
         action, _ = model.predict(obs, deterministic=True)
@@ -51,6 +54,9 @@ def evaluate_trained_policy(model, env: PortfolioEnv) -> Dict[str, float]:
         non_crypto_values.append(float(last_non_crypto_value * max(1e-6, 1.0 + non_crypto_net)))
 
         crypto_weights.append(float(info.get("weight_crypto", 0.0)))
+        interest_costs.append(float(info.get("interest_cost", 0.0)))
+        gross_exposure_intraday.append(float(info.get("gross_exposure_intraday", 0.0)))
+        gross_exposure_close.append(float(info.get("gross_exposure_close", 0.0)))
 
         if terminated or truncated:
             break
@@ -65,6 +71,9 @@ def evaluate_trained_policy(model, env: PortfolioEnv) -> Dict[str, float]:
     non_crypto_net_returns = np.asarray(non_crypto_net_returns, dtype=np.float32) if non_crypto_net_returns else np.array([], dtype=np.float32)
     crypto_values = np.asarray(crypto_values, dtype=np.float32)
     non_crypto_values = np.asarray(non_crypto_values, dtype=np.float32)
+    interest_costs = np.asarray(interest_costs, dtype=np.float32)
+    gross_exposure_intraday = np.asarray(gross_exposure_intraday, dtype=np.float32)
+    gross_exposure_close = np.asarray(gross_exposure_close, dtype=np.float32)
 
     final_value = float(portfolio_values[-1])
     cumulative_return = float(final_value - 1.0)
@@ -83,6 +92,11 @@ def evaluate_trained_policy(model, env: PortfolioEnv) -> Dict[str, float]:
     avg_crypto_weight = float(np.mean(crypto_weights)) if crypto_weights else 0.0
     avg_crypto_net = float(crypto_net_returns.mean()) if crypto_net_returns.size else 0.0
     avg_non_crypto_net = float(non_crypto_net_returns.mean()) if non_crypto_net_returns.size else 0.0
+    avg_interest_cost = float(interest_costs.mean()) if interest_costs.size else 0.0
+    avg_gross_intraday = float(gross_exposure_intraday.mean()) if gross_exposure_intraday.size else 0.0
+    avg_gross_close = float(gross_exposure_close.mean()) if gross_exposure_close.size else 0.0
+    max_gross_intraday = float(gross_exposure_intraday.max()) if gross_exposure_intraday.size else 0.0
+    max_gross_close = float(gross_exposure_close.max()) if gross_exposure_close.size else 0.0
 
     return {
         "final_portfolio_value": final_value,
@@ -100,6 +114,11 @@ def evaluate_trained_policy(model, env: PortfolioEnv) -> Dict[str, float]:
         "average_net_return_non_crypto": avg_non_crypto_net,
         "average_crypto_weight": avg_crypto_weight,
         "annualized_return": annualised_return,
+        "average_interest_cost": avg_interest_cost,
+        "average_gross_exposure_intraday": avg_gross_intraday,
+        "average_gross_exposure_close": avg_gross_close,
+        "max_gross_exposure_intraday": max_gross_intraday,
+        "max_gross_exposure_close": max_gross_close,
     }
 
 

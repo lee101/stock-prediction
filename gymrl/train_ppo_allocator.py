@@ -163,6 +163,10 @@ def parse_args() -> argparse.Namespace:
         default=1e-5,
         help="Absolute net return threshold treated as neutral when updating cooldown state.",
     )
+    parser.add_argument("--intraday-leverage-cap", type=float, default=None, help="Optional gross exposure cap applied immediately after actions (long-only leverage).")
+    parser.add_argument("--closing-leverage-cap", type=float, default=None, help="Gross exposure cap enforced at market close before carrying positions overnight.")
+    parser.add_argument("--leverage-interest-rate", type=float, default=0.0, help="Annual interest rate applied to leverage above 1x when held overnight.")
+    parser.add_argument("--trading-days-per-year", type=int, default=252, help="Trading days per year used for leverage interest accrual.")
     parser.add_argument(
         "--policy-dtype",
         type=str,
@@ -450,13 +454,16 @@ def main() -> None:
         loss_shutdown_penalty=args.loss_shutdown_penalty,
         loss_shutdown_min_position=args.loss_shutdown_min_position,
         loss_shutdown_return_tolerance=args.loss_shutdown_return_tolerance,
+        intraday_leverage_cap=args.intraday_leverage_cap,
+        closing_leverage_cap=args.closing_leverage_cap,
+        leverage_interest_rate=args.leverage_interest_rate,
+        trading_days_per_year=args.trading_days_per_year,
         leverage_cap=args.leverage_cap,
         include_cash=args.include_cash,
         cash_return=args.cash_return,
         leverage_head=args.leverage_head,
         base_gross_exposure=args.base_gross_exposure,
         max_gross_leverage=args.max_gross_leverage,
-        intraday_leverage_cap=args.intraday_leverage_cap,
         daily_leverage_rate=args.daily_leverage_rate,
         enforce_end_of_day_cap=args.enforce_eod_cap,
     )
@@ -614,13 +621,16 @@ def main() -> None:
         )
 
     logger.info(
-        "Validation (last %d days) -> final value: %.4f, cumulative return: %.2f%%, annualized (geom) return: %.2f%%, avg turnover: %.4f, avg trading cost: %.6f",
+        "Validation (last %d days) -> final value: %.4f, cumulative return: %.2f%%, annualized return: %.2f%%, "
+        "avg turnover: %.4f, avg trading cost: %.6f, avg interest cost: %.6f, avg close gross: %.3f",
         validation_steps,
         validation_metrics["final_portfolio_value"],
         validation_metrics["cumulative_return"] * 100.0,
         validation_metrics["annualized_return"] * 100.0,
         validation_metrics["average_turnover"],
         validation_metrics["average_trading_cost"],
+        validation_metrics.get("average_interest_cost", 0.0),
+        validation_metrics.get("average_gross_exposure_close", 0.0),
     )
 
     formatted_model_path = model_path

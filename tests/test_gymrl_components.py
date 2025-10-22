@@ -146,3 +146,39 @@ def test_portfolio_env_info_crypto_breakdown():
     assert info["loss_shutdown_active_long"] == pytest.approx(0.0)
     assert info["loss_shutdown_active_short"] == pytest.approx(0.0)
     assert info["loss_shutdown_clipped"] == pytest.approx(0.0)
+    assert info["interest_cost"] == pytest.approx(0.0)
+    assert info["gross_exposure_intraday"] == pytest.approx(1.0)
+    assert info["gross_exposure_close"] == pytest.approx(1.0)
+    assert info["closing_turnover"] == pytest.approx(0.0)
+    assert info["closing_trading_cost"] == pytest.approx(0.0)
+
+
+def test_portfolio_leverage_closing_interest(tmp_path):
+    T, N, F = 3, 2, 1
+    features = np.zeros((T, N, F), dtype=np.float32)
+    realized_returns = np.zeros((T, N), dtype=np.float32)
+    realized_returns[:, 0] = 0.01
+    config = PortfolioEnvConfig(
+        include_cash=False,
+        intraday_leverage_cap=4.0,
+        closing_leverage_cap=2.0,
+        leverage_interest_rate=0.0675,
+        trading_days_per_year=252,
+        weight_cap=None,
+    )
+
+    env = PortfolioEnv(features, realized_returns, config=config, symbols=["AAPL", "MSFT"])
+    env.reset()
+
+    _, _, _, _, info = env.step_with_weights(np.array([3.0, 1.0], dtype=np.float32))
+
+    assert info["gross_exposure_intraday"] == pytest.approx(4.0, rel=1e-6)
+    assert info["gross_exposure_close"] == pytest.approx(2.0, rel=1e-6)
+    assert info["closing_turnover"] == pytest.approx(2.0, rel=1e-6)
+    expected_cost = (4.0 + 2.0) * (TRADING_FEE + (config.costs_bps / 1e4))
+    assert info["trading_cost"] == pytest.approx(expected_cost, rel=1e-6)
+    assert info["closing_trading_cost"] == pytest.approx(2.0 * (TRADING_FEE + (config.costs_bps / 1e4)), rel=1e-6)
+    assert info["turnover"] == pytest.approx(6.0, rel=1e-6)
+    daily_rate = (1.0 + config.leverage_interest_rate) ** (1.0 / config.trading_days_per_year) - 1.0
+    assert info["interest_cost"] == pytest.approx(daily_rate, rel=1e-6)
+    assert env.current_weights.sum() == pytest.approx(2.0, rel=1e-6)
