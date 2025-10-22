@@ -19,6 +19,7 @@ dev = [
 ]
 
 [tool.uv.sources]
+stock-trading-suite = { workspace = true }
 hfinference = { workspace = true }
 
 [tool.setuptools]
@@ -26,4 +27,3 @@ packages = ["pufferlibinference"]
 
 [tool.setuptools.package-dir]
 pufferlibinference = "."
-stock-trading-suite = { workspace = true }

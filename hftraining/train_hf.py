@@ -68,6 +68,97 @@ from hftraining.engine_speed import compile_model as compile_for_speed, fast_con
 from hftraining.metrics import crps_from_quantiles, dm_test
 
 
+_NATIVE_SCALED_DOT_PRODUCT_ATTENTION = getattr(F, "scaled_dot_product_attention", None)
+
+
+def _scaled_dot_product_attention_reference(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+) -> torch.Tensor:
+    """Pure PyTorch reference implementation used as a CPU fallback."""
+    d_k = q.size(-1)
+    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
+
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            scores = scores.masked_fill(attn_mask, float("-inf"))
+        else:
+            scores = scores + attn_mask
+
+    if is_causal:
+        causal_mask = torch.triu(
+            torch.ones(
+                scores.size(-2),
+                scores.size(-1),
+                dtype=torch.bool,
+                device=scores.device,
+            ),
+            diagonal=1,
+        )
+        scores = scores.masked_fill(causal_mask, float("-inf"))
+
+    attn = torch.softmax(scores, dim=-1)
+    if dropout_p > 0.0:
+        attn = torch.nn.functional.dropout(
+            attn, p=dropout_p, training=torch.is_grad_enabled()
+        )
+    return torch.matmul(attn, v)
+
+
+def _scaled_dot_product_attention_with_fallback(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+) -> torch.Tensor:
+    """Uses native kernel when available, otherwise falls back to the reference path."""
+
+    native_fn = _NATIVE_SCALED_DOT_PRODUCT_ATTENTION
+    if native_fn is not None:
+        try:
+            return native_fn(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                dropout_p=dropout_p,
+                is_causal=is_causal,
+            )
+        except (RuntimeError, NotImplementedError) as exc:
+            if q.device.type != "cpu":
+                raise
+            message = str(exc).lower()
+            fallback_indicators = (
+                "not implemented",
+                "not available",
+                "only available",
+                "does not support",
+            )
+            if not any(indicator in message for indicator in fallback_indicators):
+                raise
+
+    return _scaled_dot_product_attention_reference(
+        q,
+        k,
+        v,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+    )
+
+
+if _NATIVE_SCALED_DOT_PRODUCT_ATTENTION is not None:
+    F.scaled_dot_product_attention = _scaled_dot_product_attention_with_fallback  # type: ignore[attr-defined]
+else:
+    F.scaled_dot_product_attention = _scaled_dot_product_attention_reference  # type: ignore[attr-defined]
+
+
 class StockDataset(Dataset):
     """Dataset for stock trading data."""
 
@@ -1250,9 +1341,9 @@ def main():
         num_heads=8 if device_str == "cuda" else 4,        # More heads for GPU
         
         # Training
-        learning_rate=3e-4,  # Optimal LR
-        warmup_steps=100,    # Reasonable warmup
-        max_steps=5000 if device_str == "cuda" else 1000,  # More steps for GPU
+        learning_rate=1e-4,
+        warmup_steps=400,
+        max_steps=20000 if device_str == "cuda" else 4000,
         batch_size=batch_size,
         
         # Optimizer
@@ -1262,9 +1353,9 @@ def main():
         adam_beta2=0.999,
         
         # Evaluation
-        eval_steps=100,      # Regular evaluation
-        save_steps=500,      # Save periodically
-        logging_steps=20,    # Frequent logging
+        eval_steps=200,
+        save_steps=800,
+        logging_steps=20,
         
         # Training stability
         max_grad_norm=1.0,   # Global gradient clipping
@@ -1286,9 +1377,9 @@ def main():
         prefetch_factor=2,
 
         # Micro augmentation (normalized inputs)
-        input_noise_std=0.001,
-        input_noise_prob=0.5,
-        input_noise_clip=0.02,
+        input_noise_std=0.0005,
+        input_noise_prob=0.2,
+        input_noise_clip=0.015,
         
         # Early stopping
         early_stopping_patience=15,
@@ -1296,7 +1387,11 @@ def main():
         
         # Output
         output_dir="hftraining/output",
-        logging_dir="hftraining/logs"
+        logging_dir="hftraining/logs",
+        wandb_project="hftraining",
+        wandb_entity="stock",
+        wandb_group="hftraining_longrun",
+        wandb_tags=("hftraining", "supervised"),
     )
     
     # Load data

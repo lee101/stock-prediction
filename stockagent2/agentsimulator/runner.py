@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -13,13 +13,15 @@ from stockagent.agentsimulator import (
     AccountPosition,
     AccountSnapshot,
     AgentSimulator,
+    SimulationResult,
+    TradingPlan,
     fetch_latest_ohlc,
 )
 from stockagent.constants import DEFAULT_SYMBOLS
 
 from ..config import OptimizationConfig, PipelineConfig
 from ..optimizer import CostAwareOptimizer
-from ..pipeline import AllocationPipeline
+from ..pipeline import AllocationPipeline, AllocationResult
 from stockagentcombined.forecaster import CombinedForecastGenerator
 from .forecast_adapter import CombinedForecastAdapter
 from .plan_builder import PipelinePlanBuilder, PipelineSimulationConfig
@@ -33,6 +35,14 @@ class RunnerConfig:
     starting_cash: float = 1_000_000.0
     local_data_dir: Path | None = Path("trainingdata")
     allow_remote_data: bool = False
+
+
+@dataclass(frozen=True)
+class PipelineSimulationResult:
+    simulator: AgentSimulator
+    simulation: SimulationResult
+    plans: Tuple[TradingPlan, ...]
+    allocations: Tuple[AllocationResult, ...]
 
 
 def _positions_from_weights(
@@ -87,7 +97,7 @@ def run_pipeline_simulation(
     runner_config: RunnerConfig,
     optimisation_config: OptimizationConfig,
     pipeline_config: PipelineConfig,
-) -> Optional[AgentSimulator]:
+) -> Optional[PipelineSimulationResult]:
     bundle = fetch_latest_ohlc(
         symbols=runner_config.symbols,
         lookback_days=runner_config.lookback_days,
@@ -114,7 +124,8 @@ def run_pipeline_simulation(
         pipeline_params=pipeline_config,
     )
 
-    plans = []
+    plans: List[TradingPlan] = []
+    allocations: List[AllocationResult] = []
     positions: Dict[str, float] = {}
     nav = runner_config.starting_cash
     for timestamp in trading_days:
@@ -128,6 +139,7 @@ def run_pipeline_simulation(
         if plan is None or builder.last_allocation is None:
             continue
         plans.append(plan)
+        allocations.append(builder.last_allocation)
         positions = _positions_from_weights(
             weights={symbol: weight for symbol, weight in zip(builder.last_allocation.universe, builder.last_allocation.weights)},
             prices=prices,
@@ -143,5 +155,10 @@ def run_pipeline_simulation(
         starting_cash=runner_config.starting_cash,
         account_snapshot=_snapshot_from_positions(positions={}, prices={}, nav=runner_config.starting_cash),
     )
-    simulator.simulate(plans)
-    return simulator
+    simulation_result = simulator.simulate(plans)
+    return PipelineSimulationResult(
+        simulator=simulator,
+        simulation=simulation_result,
+        plans=tuple(plans),
+        allocations=tuple(allocations),
+    )
