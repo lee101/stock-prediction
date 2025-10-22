@@ -24,6 +24,7 @@ if "backtest_test3_inline" not in sys.modules:
 import trade_stock_e2e as trade_module
 from trade_stock_e2e import (
     analyze_symbols,
+    build_portfolio,
     get_market_hours,
     manage_market_close,
     manage_positions,
@@ -115,8 +116,9 @@ def test_data():
     }
 
 
+@patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
 @patch("trade_stock_e2e.backtest_forecasts")
-def test_analyze_symbols(mock_backtest, test_data):
+def test_analyze_symbols(mock_backtest, mock_snapshot, test_data):
     mock_df = pd.DataFrame(
         {
             "simple_strategy_return": [0.02],
@@ -305,8 +307,9 @@ def test_manage_positions_only_closes_on_opposite_forecast():
     assert mocks["ramp"].call_count >= 1  # new entries can still be scheduled
 
 
+@patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
 @patch("trade_stock_e2e.backtest_forecasts")
-def test_analyze_symbols_strategy_selection(mock_backtest):
+def test_analyze_symbols_strategy_selection(mock_backtest, mock_snapshot):
     """Test that analyze_symbols correctly selects and applies strategies."""
     test_cases = [
         {
@@ -410,6 +413,8 @@ def test_manage_positions_highlow_strategy_uses_limit_orders():
             "strategy": "highlow",
             "predicted_high": 125.0,
             "predicted_low": 100.0,
+            "maxdiffprofit_low_price": 98.5,
+            "maxdiffprofit_high_price": 132.0,
             "predictions": pd.DataFrame(
                 [{"predicted_low": 100.0, "predicted_high": 125.0}]
             ),
@@ -420,10 +425,125 @@ def test_manage_positions_highlow_strategy_uses_limit_orders():
         manage_positions(current_picks, {}, current_picks)
 
     mocks["ramp"].assert_not_called()
-    mocks["spawn_tp"].assert_called_once_with("AAPL", 125.0)
     mocks["open_order"].assert_called_once()
     args, _ = mocks["open_order"].call_args
     assert args[0] == "AAPL"
     assert args[1] == 3
     assert args[2] == "buy"
-    assert args[3] == pytest.approx(100.0)
+    assert args[3] == pytest.approx(98.5)
+    mocks["spawn_tp"].assert_called_once_with("AAPL", 132.0)
+
+
+def test_manage_positions_highlow_short_uses_maxdiff_prices():
+    current_picks = {
+        "UNIUSD": {
+            "side": "sell",
+            "avg_return": 0.08,
+            "predicted_movement": -0.04,
+            "strategy": "highlow",
+            "predicted_high": 6.8,
+            "predicted_low": 6.1,
+            "maxdiffprofit_high_price": 6.9,
+            "maxdiffprofit_low_price": 6.05,
+            "predictions": pd.DataFrame([{"predicted_high": 6.8, "predicted_low": 6.1}]),
+        }
+    }
+
+    with stub_trading_env(positions=[], qty=2, trading_day_now=True) as mocks:
+        manage_positions(current_picks, {}, current_picks)
+
+    mocks["ramp"].assert_not_called()
+    mocks["open_order"].assert_called_once()
+    args, _ = mocks["open_order"].call_args
+    assert args[:3] == ("UNIUSD", 2, "sell")
+    assert args[3] == pytest.approx(6.9)
+    mocks["spawn_tp"].assert_called_once_with("UNIUSD", 6.05)
+
+
+def test_build_portfolio_core_prefers_profitable_strategies():
+    results = {
+        "AAA": {
+            "avg_return": 0.03,
+            "unprofit_shutdown_return": 0.02,
+            "simple_return": 0.01,
+            "composite_score": 0.5,
+            "trade_blocked": False,
+        },
+        "BBB": {
+            "avg_return": -0.01,
+            "unprofit_shutdown_return": -0.02,
+            "simple_return": 0.02,
+            "composite_score": 0.6,
+            "trade_blocked": False,
+        },
+    }
+
+    picks = build_portfolio(results, min_positions=1, max_positions=2)
+
+    assert "AAA" in picks
+    assert picks["AAA"]["avg_return"] > 0
+    assert "BBB" not in picks  # fails core profitability screen
+
+
+def test_build_portfolio_expands_to_meet_minimum():
+    results = {
+        "AAA": {
+            "avg_return": 0.03,
+            "unprofit_shutdown_return": 0.02,
+            "simple_return": 0.02,
+            "composite_score": 0.4,
+            "trade_blocked": False,
+        },
+        "BBB": {
+            "avg_return": 0.0,
+            "unprofit_shutdown_return": -0.01,
+            "simple_return": 0.01,
+            "composite_score": 0.3,
+            "trade_blocked": False,
+        },
+        "CCC": {
+            "avg_return": -0.02,
+            "unprofit_shutdown_return": 0.0,
+            "simple_return": 0.0,
+            "composite_score": 0.2,
+            "trade_blocked": True,
+        },
+    }
+
+    picks = build_portfolio(results, min_positions=2, max_positions=3)
+
+    assert len(picks) == 2
+    assert {"AAA", "BBB"} == set(picks.keys())
+
+
+def test_build_portfolio_includes_probe_candidate():
+    results = {
+        "CORE": {
+            "avg_return": 0.05,
+            "unprofit_shutdown_return": 0.04,
+            "simple_return": 0.02,
+            "composite_score": 0.6,
+            "trade_blocked": False,
+        },
+        "WEAK": {
+            "avg_return": 0.01,
+            "unprofit_shutdown_return": 0.0,
+            "simple_return": 0.01,
+            "composite_score": 0.2,
+            "trade_blocked": False,
+        },
+        "PROBE": {
+            "avg_return": -0.01,
+            "unprofit_shutdown_return": -0.02,
+            "simple_return": 0.0,
+            "composite_score": 0.1,
+            "trade_blocked": False,
+            "trade_mode": "probe",
+        },
+    }
+
+    picks = build_portfolio(results, min_positions=1, max_positions=2)
+
+    assert "CORE" in picks
+    assert "PROBE" in picks
+    assert "WEAK" not in picks  # replaced to respect probe inclusion

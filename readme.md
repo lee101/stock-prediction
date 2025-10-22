@@ -428,7 +428,7 @@ TRADE_STATE_SUFFIX=sim python marketsimulator/run_trade_loop.py --symbols AAPL M
 
 
 
-Have a thing that like a bindary step for the whole portfolil and probe trades
+Have a thing that like a binary step for the whole portfolio and probe trades
   Tests
 
   - python -m pytest tests/test_portfolio_risk.py tests/test_probe_transitions.py
@@ -495,28 +495,43 @@ uv run python -m tototraining.run_gpu_training \
   - Complete the `stockagentcombined` setup above so the combined forecasts are available.
   - Run allocator unit tests: `uv run pytest tests/test_stockagent2`
 - **Allocate with real forecasts**
-  - You can drive the end-to-end allocator via `stockagent2.agentsimulator.runner.run_pipeline_simulation`. Example:
+  - Reach for the CLI wrapper to fetch OHLC history, execute the allocator, and dump a ready-to-share summary:
     ```bash
-    uv run python - <<'PY'
-    from stockagent2.agentsimulator.runner import run_pipeline_simulation, RunnerConfig
+    uv run stockagent2-pipeline pipeline-sim \
+      --symbols AAPL MSFT NVDA AMD \
+      --lookback-days 200 \
+      --simulation-days 5 \
+      --summary-format json
+    ```
+    The command defaults to paper-trading mode (`--paper`). Swap in `--live` to tag the run for production, add `--allow-remote-data` when the local cache misses, and persist artefacts with `--summary-output`, `--plans-output`, or `--trades-output`.
+  - Optimiser and Black–Litterman knobs surface directly (`--net-exposure-target`, `--min-weight`, `--transaction-cost-bps`, `--tau`, `--pipeline-risk-aversion`, etc.). For larger batches of overrides, point `--optimisation-config`, `--pipeline-config`, or `--simulation-config` at JSON/TOML files.
+  - Python access still lives under `run_pipeline_simulation`, but the helper now returns a `PipelineSimulationResult` so you get the simulator, generated plans, and Monte Carlo diagnostics together:
+    ```python
+    from stockagent2.agentsimulator.runner import (
+        RunnerConfig,
+        PipelineSimulationConfig,
+        run_pipeline_simulation,
+    )
     from stockagent2.config import OptimizationConfig, PipelineConfig
 
-    simulator = run_pipeline_simulation(
+    result = run_pipeline_simulation(
         runner_config=RunnerConfig(
-            symbols=("AAPL", "MSFT", "NVDA", "AMD"),
-            lookback_days=200,
-            simulation_days=5,
-            starting_cash=1_000_000,
-            allow_remote_data=False,
+            symbols=("AAPL", "MSFT"),
+            lookback_days=120,
+            simulation_days=3,
+            starting_cash=250_000.0,
         ),
         optimisation_config=OptimizationConfig(),
         pipeline_config=PipelineConfig(),
+        simulation_config=PipelineSimulationConfig(sample_count=256),
     )
-    if simulator is not None:
-        print(f\"trades={len(simulator.trade_log)} total_fees={simulator.total_fees:.2f}\")
-    PY
+    if result is not None:
+        print(
+            f"plans={len(result.plans)} trades={len(result.simulator.trade_log)} "
+            f"ending_equity={result.simulation.ending_equity:,.2f}"
+        )
     ```
-  - The helper returns an `AgentSimulator`; inspect `simulator.trade_log`, `simulator.equity_curve`, or rerun the plans against a fresh simulator for analytics.
+  - Inspect `result.simulation` for aggregate metrics (`ending_equity`, `realized_pnl`, `total_fees`) and recycle the returned plans against fresh simulators or execution harnesses for deeper analytics.
 - **Market simulator hooks**
   - Both agents share `stockagent.agentsimulator.AgentSimulator`. You can pass the trading plans emitted by `PipelinePlanBuilder` straight into it to benchmark execution paths side-by-side.
 - **Document results**
@@ -525,41 +540,24 @@ uv run python -m tototraining.run_gpu_training \
   - Tests: `PYTHONPATH=. uv run pytest tests/test_stockagent2 -q`
   - Pipeline sim (AAPL/MSFT, lookback 120, three trading days) with relaxed caps (`long_cap=short_cap=0.8`, `min_weight=-0.8`, `max_weight=0.8`) and lower `risk_aversion=1.5` generated four trades, ending equity $253 026.98, realized P&L $1 520.36, fees $279.95, and residual long exposure (~1.52 k AAPL / 0.52 k MSFT):
     ```bash
-    PYTHONPATH=. uv run python - <<'PY'
-    from stockagent2.agentsimulator.runner import run_pipeline_simulation, RunnerConfig
-    from stockagent2.config import OptimizationConfig, PipelineConfig
-    import json
-
-    simulator = run_pipeline_simulation(
-        runner_config=RunnerConfig(
-            symbols=("AAPL", "MSFT"),
-            lookback_days=120,
-            simulation_days=3,
-            starting_cash=250_000.0,
-            allow_remote_data=False,
-        ),
-        optimisation_config=OptimizationConfig(
-            net_exposure_target=1.0,
-            gross_exposure_limit=1.6,
-            long_cap=0.8,
-            short_cap=0.8,
-            min_weight=-0.8,
-            max_weight=0.8,
-            transaction_cost_bps=5.0,
-            turnover_penalty_bps=1.5,
-        ),
-        pipeline_config=PipelineConfig(
-            tau=0.05,
-            shrinkage=0.1,
-            annualisation_periods=120,
-            chronos_weight=0.7,
-            timesfm_weight=0.3,
-            risk_aversion=1.5,
-            market_prior_weight=0.35,
-        ),
-    )
-    print(json.dumps(simulator.equity_curve[-3:], indent=2))
-    PY
+    uv run stockagent2-pipeline pipeline-sim \
+      --symbols AAPL MSFT \
+      --simulation-days 3 \
+      --starting-cash 250000 \
+      --net-exposure-target 1.0 \
+      --gross-exposure-limit 1.6 \
+      --long-cap 0.8 \
+      --short-cap 0.8 \
+      --min-weight -0.8 \
+      --max-weight 0.8 \
+      --transaction-cost-bps 5.0 \
+      --turnover-penalty-bps 1.5 \
+      --tau 0.05 \
+      --shrinkage 0.1 \
+      --annualisation-periods 120 \
+      --pipeline-risk-aversion 1.5 \
+      --market-prior-weight 0.35 \
+      --summary-output results/pipeline_aapl_msft_regression.json
     ```
 
 ### Market simulator smoke (2025-10-18)

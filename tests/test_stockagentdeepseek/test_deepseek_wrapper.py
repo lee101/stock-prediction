@@ -63,9 +63,15 @@ def test_call_deepseek_chat_returns_stripped_text_and_caches() -> None:
     assert first == "plan payload"
     assert second == "plan payload"
     assert client.completions.calls == 1
+    assert client.completions.kwargs_list[0]["max_tokens"] == 128
 
 
-def test_call_deepseek_chat_retries_after_context_error() -> None:
+def test_call_deepseek_chat_retries_after_context_error(monkeypatch) -> None:
+    class _ContextError(Exception):
+        pass
+
+    monkeypatch.setattr(deepseek_wrapper, "BadRequestError", _ContextError)
+
     error = deepseek_wrapper.BadRequestError("maximum context length exceeded")
     final_response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content="trimmed plan"))]
@@ -90,6 +96,7 @@ def test_call_deepseek_chat_retries_after_context_error() -> None:
 
     assert result == "trimmed plan"
     assert client.completions.calls == 2
+    assert client.completions.kwargs_list[0]["max_tokens"] == 128
 
     first_call_messages = client.completions.kwargs_list[0]["messages"]
     second_call_messages = client.completions.kwargs_list[1]["messages"]

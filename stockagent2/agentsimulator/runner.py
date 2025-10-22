@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -97,9 +97,14 @@ def run_pipeline_simulation(
     runner_config: RunnerConfig,
     optimisation_config: OptimizationConfig,
     pipeline_config: PipelineConfig,
+    simulation_config: PipelineSimulationConfig | None = None,
 ) -> Optional[PipelineSimulationResult]:
+    config = replace(simulation_config) if simulation_config is not None else PipelineSimulationConfig()
+    symbols = config.symbols if config.symbols is not None else runner_config.symbols
+    config.symbols = tuple(str(symbol).upper() for symbol in symbols)
+
     bundle = fetch_latest_ohlc(
-        symbols=runner_config.symbols,
+        symbols=config.symbols,
         lookback_days=runner_config.lookback_days,
         as_of=datetime.utcnow(),
         local_data_dir=runner_config.local_data_dir,
@@ -120,7 +125,7 @@ def run_pipeline_simulation(
     builder = PipelinePlanBuilder(
         pipeline=pipeline,
         forecast_adapter=forecast_adapter,
-        pipeline_config=PipelineSimulationConfig(symbols=runner_config.symbols),
+        pipeline_config=config,
         pipeline_params=pipeline_config,
     )
 
@@ -129,7 +134,11 @@ def run_pipeline_simulation(
     positions: Dict[str, float] = {}
     nav = runner_config.starting_cash
     for timestamp in trading_days:
-        prices = {symbol: float(frame.loc[:timestamp].iloc[-1]["close"]) for symbol, frame in bundle.bars.items() if symbol in runner_config.symbols and not frame.empty}
+        prices = {
+            symbol: float(frame.loc[:timestamp].iloc[-1]["close"])
+            for symbol, frame in bundle.bars.items()
+            if symbol in config.symbols and not frame.empty
+        }
         snapshot = _snapshot_from_positions(positions=positions, prices=prices, nav=nav)
         plan = builder.build_for_day(
             target_timestamp=timestamp,

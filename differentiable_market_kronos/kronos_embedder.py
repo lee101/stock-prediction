@@ -48,6 +48,8 @@ class KronosEmbedder:
         temperature: float = 1.0,
         top_p: float = 0.9,
         sample_count: int = 16,
+        top_k: int = 0,
+        clip: float = 5.0,
         feature_spec: Optional[KronosFeatureSpec] = None,
         bf16: bool = True,
     ) -> None:
@@ -55,9 +57,11 @@ class KronosEmbedder:
         self.max_context = max_context
         self.temperature = temperature
         self.top_p = top_p
+        self.top_k = top_k
         self.sample_count = sample_count
         self.feature_spec = feature_spec or KronosFeatureSpec()
         self.bf16 = bf16 and device.startswith("cuda")
+        self.clip = clip
 
         self.tokenizer = KronosTokenizer.from_pretrained(tokenizer_id)
         self.model = Kronos.from_pretrained(model_id)
@@ -66,7 +70,13 @@ class KronosEmbedder:
             self.model = torch.compile(self.model)
         except Exception:  # pragma: no cover
             pass
-        self.predictor = KronosPredictor(self.model, self.tokenizer, device=self.device, max_context=self.max_context)
+        self.predictor = KronosPredictor(
+            self.model,
+            self.tokenizer,
+            device=self.device,
+            max_context=self.max_context,
+            clip=self.clip,
+        )
 
     @torch.no_grad()
     def _predict_paths(self, x_df: pd.DataFrame, x_ts: pd.Series, horizon: int) -> Tuple[np.ndarray, float]:
@@ -79,6 +89,7 @@ class KronosEmbedder:
         enabled = self.device.startswith("cuda") and self.bf16
         with torch.autocast(device_type="cuda", dtype=dtype_ctx, enabled=enabled):
             for _ in range(self.sample_count):
+                self.predictor.clip = self.clip
                 pred_df = self.predictor.predict(
                     df=x_df,
                     x_timestamp=x_ts,
@@ -86,6 +97,7 @@ class KronosEmbedder:
                     pred_len=horizon,
                     T=self.temperature,
                     top_p=self.top_p,
+                    top_k=self.top_k,
                     sample_count=1,
                 )
                 preds.append(pred_df["close"].to_numpy(dtype=np.float64))

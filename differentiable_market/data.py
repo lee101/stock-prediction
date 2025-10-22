@@ -46,6 +46,20 @@ def _load_csv(path: Path) -> pd.DataFrame:
 def _filter_symbols(files: Sequence[Path], cfg: DataConfig) -> List[Tuple[str, Path]]:
     selected: List[Tuple[str, Path]] = []
     excluded = {sym.lower() for sym in cfg.exclude_symbols}
+    include = [sym.upper() for sym in cfg.include_symbols] if cfg.include_symbols else None
+
+    file_map = {path.stem.upper(): path for path in files}
+
+    if include:
+        for symbol in include:
+            path = file_map.get(symbol)
+            if path is None:
+                raise FileNotFoundError(f"Symbol '{symbol}' requested but no matching file found under {cfg.root}")
+            if symbol.lower() in excluded:
+                continue
+            selected.append((symbol, path))
+        return selected
+
     for path in files:
         symbol = path.stem.upper()
         if symbol.lower() in excluded:
@@ -68,6 +82,7 @@ def _cache_path(cfg: DataConfig) -> Path | None:
         "glob": cfg.glob,
         "max_assets": cfg.max_assets,
         "normalize": cfg.normalize,
+        "include": tuple(cfg.include_symbols),
         "exclude": tuple(sorted(cfg.exclude_symbols)),
     }
     key_str = json.dumps(key, sort_keys=True)

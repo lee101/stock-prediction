@@ -14,6 +14,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", type=Path, default=Path("trainingdata"))
     parser.add_argument("--data-glob", type=str, default="*.csv")
     parser.add_argument("--max-assets", type=int, default=None)
+    parser.add_argument("--symbols", type=str, nargs="*", default=None)
     parser.add_argument("--exclude", type=str, nargs="*", default=())
     parser.add_argument("--min-timesteps", type=int, default=512)
     parser.add_argument("--lookback", type=int, default=192)
@@ -41,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kronos-sample-count", type=int, default=16)
     parser.add_argument("--kronos-temperature", type=float, default=1.0)
     parser.add_argument("--kronos-top-p", type=float, default=0.9)
+    parser.add_argument("--kronos-top-k", type=int, default=0)
+    parser.add_argument("--kronos-clip", type=float, default=2.0)
     parser.add_argument("--kronos-device", type=str, default="auto")
     parser.add_argument("--kronos-disable-path-stats", action="store_true")
     parser.add_argument("--kronos-no-bf16", action="store_true")
@@ -54,6 +57,7 @@ def main() -> None:
         root=args.data_root,
         glob=args.data_glob,
         max_assets=args.max_assets,
+        include_symbols=tuple(args.symbols or ()),
         exclude_symbols=tuple(args.exclude),
         include_cash=args.include_cash,
         min_timesteps=args.min_timesteps,
@@ -89,6 +93,8 @@ def main() -> None:
         sample_count=args.kronos_sample_count,
         temperature=args.kronos_temperature,
         top_p=args.kronos_top_p,
+        top_k=args.kronos_top_k,
+        clip=args.kronos_clip,
         bf16=not args.kronos_no_bf16,
     )
 
