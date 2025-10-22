@@ -15,6 +15,7 @@ class DataConfig:
     cache_dir: Path | None = None
     normalize: Literal["standard", "log", "none"] = "log"
     # Exclude symbols explicitly if they should never appear in train/eval splits.
+    include_symbols: tuple[str, ...] = field(default_factory=tuple)
     exclude_symbols: tuple[str, ...] = field(default_factory=tuple)
     min_timesteps: int = 512
     include_cash: bool = False

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import math
 from typing import Dict
+from types import SimpleNamespace
+
+import pytest
 
 import numpy as np
 import pandas as pd
 
-from stockagent.agentsimulator import AccountPosition, AccountSnapshot
+from stockagent.agentsimulator import AccountPosition, AccountSnapshot, TradingPlan
 from stockagent2 import (
     AllocationPipeline,
     ForecastReturnSet,
@@ -16,6 +19,7 @@ from stockagent2 import (
     TickerView,
 )
 from stockagent2.agentsimulator.plan_builder import PipelinePlanBuilder, PipelineSimulationConfig
+from stockagent2.agentsimulator.runner import RunnerConfig, run_pipeline_simulation
 from stockagent2.agentsimulator.forecast_adapter import SymbolForecast
 from stockagent2.black_litterman import BlackLittermanFuser
 
@@ -270,3 +274,64 @@ def test_pipeline_plan_builder_generates_instructions() -> None:
     assert plan is not None
     assert builder.last_allocation is not None
     assert len(plan.instructions) > 0
+
+
+def test_run_pipeline_simulation_respects_simulation_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
+    trading_days = pd.date_range("2025-01-01", periods=2, freq="B", tz="UTC")
+    frame = pd.DataFrame({"close": [100.0, 101.0], "open": [100.0, 101.0]}, index=trading_days)
+
+    class DummyBundle:
+        bars = {"MSFT": frame}
+
+        def trading_days(self) -> list[pd.Timestamp]:
+            return list(trading_days)
+
+    monkeypatch.setattr(
+        "stockagent2.agentsimulator.runner.fetch_latest_ohlc",
+        lambda **_: DummyBundle(),
+    )
+    monkeypatch.setattr(
+        "stockagent2.agentsimulator.runner.CostAwareOptimizer",
+        lambda config: object(),
+    )
+    monkeypatch.setattr(
+        "stockagent2.agentsimulator.runner.AllocationPipeline",
+        lambda **_: object(),
+    )
+    monkeypatch.setattr(
+        "stockagent2.agentsimulator.runner.CombinedForecastGenerator",
+        lambda: object(),
+    )
+
+    record: dict[str, object] = {}
+
+    class DummyBuilder:
+        def __init__(self, *, pipeline, forecast_adapter, pipeline_config, pipeline_params):
+            self.pipeline_config = pipeline_config
+            self.pipeline_params = pipeline_params
+            record["symbols"] = tuple(pipeline_config.symbols or ())
+            self.last_allocation = SimpleNamespace(universe=("MSFT",), weights=np.array([1.0]))
+
+        def build_for_day(self, *, target_timestamp, market_frames, account_snapshot):
+            return TradingPlan(target_date=target_timestamp.date(), instructions=[])
+
+    monkeypatch.setattr(
+        "stockagent2.agentsimulator.runner.PipelinePlanBuilder",
+        DummyBuilder,
+    )
+    monkeypatch.setattr(
+        "stockagent2.agentsimulator.runner.CombinedForecastAdapter",
+        lambda generator: object(),
+    )
+
+    result = run_pipeline_simulation(
+        runner_config=RunnerConfig(symbols=("AAPL", "MSFT"), lookback_days=20, simulation_days=1),
+        optimisation_config=OptimizationConfig(),
+        pipeline_config=PipelineConfig(),
+        simulation_config=PipelineSimulationConfig(symbols=("MSFT",), sample_count=16),
+    )
+
+    assert result is not None
+    assert len(result.plans) == 1
+    assert result.simulation.starting_cash == RunnerConfig().starting_cash
+    assert record["symbols"] == ("MSFT",)

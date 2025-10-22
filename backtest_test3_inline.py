@@ -7,13 +7,70 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.tensorboard import SummaryWriter
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 from dataclasses import dataclass
 
 from src.comparisons import is_buy_side
 from src.logging_utils import setup_logging
 
 logger = setup_logging("backtest_test3_inline.log")
+
+_BOOL_FALSE = {"0", "false", "no", "off"}
+_FAST_TORCH_SETTINGS_CONFIGURED = False
+
+
+def _read_env_flag(names: Iterable[str]) -> Optional[bool]:
+    for name in names:
+        value = os.getenv(name)
+        if value is None:
+            continue
+        lowered = value.strip().lower()
+        if lowered in _BOOL_TRUE:
+            return True
+        if lowered in _BOOL_FALSE:
+            return False
+    return None
+
+
+def _maybe_enable_fast_torch_settings() -> None:
+    global _FAST_TORCH_SETTINGS_CONFIGURED
+    if _FAST_TORCH_SETTINGS_CONFIGURED:
+        return
+    _FAST_TORCH_SETTINGS_CONFIGURED = True
+
+    try:
+        if hasattr(torch.backends, "cudnn"):
+            try:
+                torch.backends.cudnn.allow_tf32 = True  # type: ignore[attr-defined]
+            except Exception as exc:
+                logger.debug("Unable to enable cuDNN TF32: %s", exc)
+        if hasattr(torch.backends, "cuda"):
+            try:
+                torch.backends.cuda.matmul.allow_tf32 = True  # type: ignore[attr-defined]
+                torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True  # type: ignore[attr-defined]
+            except Exception as exc:
+                logger.debug("Unable to enable CUDA matmul fast paths: %s", exc)
+            try:
+                enable_flash = getattr(torch.backends.cuda, "enable_flash_sdp", None)
+                if callable(enable_flash):
+                    enable_flash(True)
+                enable_mem = getattr(torch.backends.cuda, "enable_mem_efficient_sdp", None)
+                if callable(enable_mem):
+                    enable_mem(True)
+                enable_math = getattr(torch.backends.cuda, "enable_math_sdp", None)
+                if callable(enable_math):
+                    enable_math(False)
+            except Exception as exc:
+                logger.debug("Unable to configure scaled dot product kernels: %s", exc)
+    except Exception as exc:  # pragma: no cover - defensive guardrail
+        logger.debug("Torch backend optimisation setup failed: %s", exc)
+
+    try:
+        set_precision = getattr(torch, "set_float32_matmul_precision", None)
+        if callable(set_precision):
+            set_precision("high")
+    except Exception as exc:
+        logger.debug("Unable to set float32 matmul precision: %s", exc)
 
 from data_curate_daily import download_daily_stock_data, fetch_spread
 from disk_cache import disk_cache
@@ -225,8 +282,19 @@ if __name__ == "__main__" and "REAL_TESTING" not in os.environ:
 FAST_TESTING = os.getenv("FAST_TESTING", "0").strip().lower() in _BOOL_TRUE
 REAL_TESTING = os.getenv("REAL_TESTING", "0").strip().lower() in _BOOL_TRUE
 
+_maybe_enable_fast_torch_settings()
+
 COMPILED_MODELS_DIR = Path(os.getenv("COMPILED_MODELS_DIR", "compiled_models"))
 INDUCTOR_CACHE_DIR = COMPILED_MODELS_DIR / "torch_inductor"
+
+
+def _ensure_compilation_artifacts() -> None:
+    try:
+        COMPILED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        INDUCTOR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(INDUCTOR_CACHE_DIR))
+    except Exception as exc:  # pragma: no cover - filesystem best effort
+        logger.debug("Failed to prepare torch.compile artifact directories: %s", exc)
 
 FAST_TOTO_PARAMS = {
     "num_samples": int(os.getenv("FAST_TOTO_NUM_SAMPLES", "2048")),
@@ -242,9 +310,7 @@ if FAST_TESTING:
     )
 
 if REAL_TESTING:
-    COMPILED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    INDUCTOR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(INDUCTOR_CACHE_DIR))
+    _ensure_compilation_artifacts()
 
 
 def _is_force_kronos_enabled() -> bool:
@@ -588,38 +654,56 @@ def load_toto_pipeline() -> TotoPipeline:
     global pipeline
     _drop_kronos_wrappers()
     if pipeline is None:
+        _maybe_enable_fast_torch_settings()
         _require_cuda("Toto forecasting pipeline")
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Loading Toto pipeline '{TOTO_MODEL_ID}' on {device}")
 
-        torch_dtype: Optional[torch.dtype] = None
-        torch_compile_enabled = False
-        compile_mode: Optional[str] = None
-        compile_backend: Optional[str] = None
+        compile_mode_env = (
+            os.getenv("REAL_TOTO_COMPILE_MODE")
+            or os.getenv("TOTO_COMPILE_MODE")
+            or "max-autotune"
+        )
+        compile_mode = (compile_mode_env or "").strip() or "max-autotune"
 
-        if REAL_TESTING:
-            torch_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-            if torch.cuda.is_available() and hasattr(torch, "compile"):
-                torch_compile_enabled = True
-                compile_mode = os.getenv("REAL_TOTO_COMPILE_MODE") or os.getenv("TOTO_COMPILE_MODE") or "reduce-overhead"
-                compile_mode = (compile_mode or "").strip() or None
-                compile_backend = os.getenv("REAL_TOTO_COMPILE_BACKEND") or os.getenv("TOTO_COMPILE_BACKEND")
-                if compile_backend is not None and not compile_backend.strip():
-                    compile_backend = None
-                logger.info(
-                    "REAL_TESTING enabled Toto torch.compile "
-                    "(dtype=%s, mode=%s, backend=%s, cache_dir=%s).",
-                    torch_dtype,
-                    compile_mode,
-                    compile_backend,
-                    os.environ.get("TORCHINDUCTOR_CACHE_DIR"),
-                )
-            else:
-                logger.info("REAL_TESTING requested but torch.compile not available; falling back to eager mode.")
-        elif FAST_TESTING:
+        compile_backend_env = (
+            os.getenv("REAL_TOTO_COMPILE_BACKEND")
+            or os.getenv("TOTO_COMPILE_BACKEND")
+            or "inductor"
+        )
+        compile_backend = (compile_backend_env or "").strip()
+        if not compile_backend:
+            compile_backend = None
+
+        torch_dtype: Optional[torch.dtype] = torch.float32 if device == "cpu" else None
+        if FAST_TESTING:
             torch_dtype = torch.float32
+
+        disable_compile_flag = _read_env_flag(("TOTO_DISABLE_COMPILE", "MARKETSIM_TOTO_DISABLE_COMPILE"))
+        enable_compile_flag = _read_env_flag(("TOTO_COMPILE", "MARKETSIM_TOTO_COMPILE"))
+        torch_compile_enabled = device.startswith("cuda") and hasattr(torch, "compile")
+        if disable_compile_flag is True:
+            torch_compile_enabled = False
+        elif enable_compile_flag is not None:
+            torch_compile_enabled = bool(enable_compile_flag and hasattr(torch, "compile"))
+
+        if torch_compile_enabled:
+            _ensure_compilation_artifacts()
+            logger.info(
+                "Using torch.compile for Toto (mode=%s, backend=%s, cache_dir=%s).",
+                compile_mode,
+                compile_backend or "default",
+                os.environ.get("TORCHINDUCTOR_CACHE_DIR"),
+            )
         else:
-            torch_dtype = torch.float32 if device == "cpu" else None
+            if REAL_TESTING:
+                logger.info(
+                    "REAL_TESTING active but torch.compile disabled (available=%s, disable_flag=%s).",
+                    hasattr(torch, "compile"),
+                    disable_compile_flag,
+                )
+        if REAL_TESTING and device.startswith("cuda"):
+            logger.info("REAL_TESTING active — defaulting to float32 inference (bf16 disabled due to accuracy guard).")
 
         pipeline = TotoPipeline.from_pretrained(
             model_id=TOTO_MODEL_ID,
@@ -634,6 +718,7 @@ def load_toto_pipeline() -> TotoPipeline:
 
 def load_kronos_wrapper(params: Dict[str, float]) -> KronosForecastingWrapper:
     _drop_toto_pipeline()
+    _maybe_enable_fast_torch_settings()
     _require_cuda("Kronos inference", allow_cpu_fallback=False)
     key = (
         params["temperature"],

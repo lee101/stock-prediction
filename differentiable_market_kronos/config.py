@@ -16,6 +16,8 @@ class KronosFeatureConfig:
     sample_count: int = 16
     temperature: float = 1.0
     top_p: float = 0.9
+    top_k: int = 0
+    clip: float = 2.0
     bf16: bool = True
 
 
