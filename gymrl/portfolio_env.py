@@ -68,6 +68,11 @@ class EnvStepInfo:
     loss_shutdown_active_long: float = 0.0
     loss_shutdown_active_short: float = 0.0
     loss_shutdown_clipped: float = 0.0
+    interest_cost: float = 0.0
+    gross_exposure_intraday: float = 0.0
+    gross_exposure_close: float = 0.0
+    closing_turnover: float = 0.0
+    closing_trading_cost: float = 0.0
 
     def to_dict(self) -> Dict[str, float]:
         return {
@@ -91,6 +96,11 @@ class EnvStepInfo:
             "loss_shutdown_active_long": self.loss_shutdown_active_long,
             "loss_shutdown_active_short": self.loss_shutdown_active_short,
             "loss_shutdown_clipped": self.loss_shutdown_clipped,
+            "interest_cost": self.interest_cost,
+            "gross_exposure_intraday": self.gross_exposure_intraday,
+            "gross_exposure_close": self.gross_exposure_close,
+            "closing_turnover": self.closing_turnover,
+            "closing_trading_cost": self.closing_trading_cost,
         }
 
 
@@ -222,6 +232,25 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             base_costs = per_asset
 
         self.costs_vector = base_costs
+        self.intraday_leverage_cap = float(
+            self.config.intraday_leverage_cap
+            if self.config.intraday_leverage_cap is not None
+            else (self.config.leverage_cap if self.config.allow_short else 1.0)
+        )
+        self.closing_leverage_cap = float(
+            self.config.closing_leverage_cap
+            if self.config.closing_leverage_cap is not None
+            else self.intraday_leverage_cap
+        )
+        if self.closing_leverage_cap > self.intraday_leverage_cap + 1e-9:
+            raise ValueError("closing_leverage_cap cannot exceed intraday_leverage_cap")
+        annual_rate = max(0.0, float(self.config.leverage_interest_rate))
+        trading_days = max(1, int(self.config.trading_days_per_year))
+        if annual_rate > 0.0:
+            self.daily_interest_rate = (1.0 + annual_rate) ** (1.0 / trading_days) - 1.0
+        else:
+            self.daily_interest_rate = 0.0
+
         self.start_index = start_index
         self.episode_length = episode_length or (self.T - start_index - 1)
         if self.episode_length <= 0:
@@ -336,21 +365,15 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             short_logits = action[half:]
             long_weights = _softmax(long_logits)
             short_weights = _softmax(short_logits)
-            weights = self.config.leverage_cap * (long_weights - short_weights)
+            leverage_cap = self.intraday_leverage_cap
+            weights = leverage_cap * (long_weights - short_weights)
             gross = np.sum(np.abs(weights))
-            if gross > self.config.leverage_cap:
-                weights *= self.config.leverage_cap / max(gross, 1e-6)
+            if gross > leverage_cap:
+                weights *= leverage_cap / max(gross, 1e-6)
             weights = self._apply_loss_shutdown(weights)
             return weights.astype(np.float32, copy=False)
 
-        weights = _softmax(action)
-        if self.config.weight_cap is not None:
-            capped = np.minimum(weights, self.config.weight_cap)
-            capped_sum = capped.sum()
-            if capped_sum <= 1e-6:
-                weights = np.full_like(weights, 1.0 / weights.size)
-            else:
-                weights = capped / capped_sum
+        weights = self._project_long_only_weights(action)
         weights = self._apply_loss_shutdown(weights)
         return weights.astype(np.float32, copy=False)
 
@@ -363,20 +386,63 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             else:
                 raise ValueError(f"Explicit weights must have shape {(self.N,)}, received {weights.shape}")
         weights = np.maximum(weights, 0.0)
-        total = weights.sum()
-        if total <= 1e-6:
-            weights = np.full(self.N, 1.0 / self.N, dtype=np.float32)
-        else:
-            weights = weights / total
-        if self.config.weight_cap is not None:
-            weights = np.minimum(weights, self.config.weight_cap)
-            normaliser = weights.sum()
-            if normaliser <= 1e-6:
+        leverage_cap = self.intraday_leverage_cap if self.intraday_leverage_cap > 0 else 1.0
+        total = float(weights.sum())
+        if leverage_cap <= 1.0:
+            if total <= 1e-6:
                 weights = np.full(self.N, 1.0 / self.N, dtype=np.float32)
             else:
-                weights = weights / normaliser
+                weights = weights / total
+            if self.config.weight_cap is not None:
+                weights = np.minimum(weights, float(self.config.weight_cap))
+                normaliser = weights.sum()
+                if normaliser <= 1e-6:
+                    weights = np.full(self.N, 1.0 / self.N, dtype=np.float32)
+                else:
+                    weights = weights / normaliser
+        else:
+            if total <= 1e-6:
+                weights = np.full(self.N, leverage_cap / self.N, dtype=np.float32)
+            else:
+                scale = min(leverage_cap, total)
+                weights = weights / total * scale
+            if self.config.weight_cap is not None:
+                weights = np.minimum(weights, float(self.config.weight_cap))
         weights = self._apply_loss_shutdown(weights)
         return weights
+
+    def _project_long_only_weights(self, action: np.ndarray) -> np.ndarray:
+        if self.intraday_leverage_cap > 1.0:
+            raw = np.maximum(action, 0.0)
+            total = float(np.sum(raw))
+            if total <= 1e-6:
+                raw = np.ones(self.N, dtype=np.float32)
+                total = float(np.sum(raw))
+            leverage = min(self.intraday_leverage_cap, total)
+            weights = raw / total * leverage
+            if self.config.weight_cap is not None:
+                weights = np.minimum(weights, float(self.config.weight_cap))
+        else:
+            weights = _softmax(action)
+            if self.config.weight_cap is not None:
+                capped = np.minimum(weights, float(self.config.weight_cap))
+                capped_sum = capped.sum()
+                if capped_sum <= 1e-6:
+                    weights = np.full_like(weights, 1.0 / weights.size)
+                else:
+                    weights = capped / capped_sum
+
+        return weights.astype(np.float32, copy=False)
+
+    def _apply_closing_leverage_limit(self, weights: np.ndarray) -> np.ndarray:
+        cap = max(0.0, self.closing_leverage_cap)
+        if cap == 0.0:
+            return weights.astype(np.float32, copy=False)
+        gross = float(np.sum(np.abs(weights)))
+        if gross <= cap + 1e-8:
+            return weights.astype(np.float32, copy=False)
+        scale = cap / max(gross, 1e-8)
+        return (weights * scale).astype(np.float32, copy=False)
 
     def _ensure_loss_shutdown_buffers(self) -> None:
         if not self.config.loss_shutdown_enabled:
@@ -476,23 +542,45 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
         previous_weights = self._weights.copy()
         deltas = np.abs(new_weights - previous_weights)
         turnover = float(deltas.sum())
-        trading_cost = float(np.dot(deltas, self.costs_vector))
-
-        crypto_cost = float(np.dot(deltas[self.crypto_mask], self.costs_vector[self.crypto_mask])) if np.any(self.crypto_mask) else 0.0
-        non_crypto_cost = trading_cost - crypto_cost
+        per_asset_cost = deltas * self.costs_vector
+        trading_cost = float(per_asset_cost.sum())
 
         realized_vector = self.realized_returns[self._index]
         asset_returns = new_weights * realized_vector
-        per_asset_cost = deltas * self.costs_vector
+
+        gross_intraday = float(np.sum(np.abs(new_weights)))
+        closing_weights = self._apply_closing_leverage_limit(new_weights)
+        closing_adjust = np.abs(closing_weights - new_weights)
+        closing_turnover = float(closing_adjust.sum())
+        closing_trading_cost = float(np.dot(closing_adjust, self.costs_vector)) if closing_turnover > 1e-8 else 0.0
+        if closing_turnover > 1e-8:
+            turnover += closing_turnover
+            per_asset_cost += closing_adjust * self.costs_vector
+            trading_cost = float(per_asset_cost.sum())
+
+        crypto_cost = float(per_asset_cost[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
+        non_crypto_cost = trading_cost - crypto_cost
+
         net_asset_returns_vector = asset_returns - per_asset_cost
+
         crypto_return = float(asset_returns[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
         step_return = float(asset_returns.sum())
         non_crypto_return = step_return - crypto_return
-        net_return = step_return - trading_cost
+
+        interest_cost = 0.0
+        if self.daily_interest_rate > 0.0:
+            gross_close = float(np.sum(np.abs(closing_weights)))
+            borrowed = max(0.0, gross_close - 1.0)
+            interest_cost = borrowed * self.daily_interest_rate
+            if gross_close > 1e-8 and interest_cost > 0.0:
+                interest_allocation = interest_cost * (np.abs(closing_weights) / gross_close)
+                net_asset_returns_vector -= interest_allocation
+
+        net_return = step_return - trading_cost - interest_cost
         net_crypto_return = crypto_return - crypto_cost
-        net_non_crypto_return = net_return - net_crypto_return
-        weight_crypto = float(new_weights[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
-        weight_non_crypto = float(new_weights[~self.crypto_mask].sum()) if np.any(~self.crypto_mask) else 0.0
+        net_non_crypto_return = (non_crypto_return - non_crypto_cost) - interest_cost
+        weight_crypto = float(closing_weights[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
+        weight_non_crypto = float(closing_weights[~self.crypto_mask].sum()) if np.any(~self.crypto_mask) else 0.0
         net_multiplier = max(1e-8, 1.0 + net_return)
 
         self._portfolio_value *= net_multiplier
@@ -519,7 +607,7 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
         loss_shutdown_penalty = self._loss_shutdown_penalty_term
 
         self._last_weights = previous_weights
-        self._weights = new_weights.astype(np.float32)
+        self._weights = closing_weights.astype(np.float32)
         self._index += 1
         self._step_count += 1
 
@@ -552,6 +640,11 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             loss_shutdown_active_long=loss_shutdown_active_long,
             loss_shutdown_active_short=loss_shutdown_active_short,
             loss_shutdown_clipped=loss_shutdown_clipped,
+            interest_cost=interest_cost,
+            gross_exposure_intraday=gross_intraday,
+            gross_exposure_close=float(np.sum(np.abs(closing_weights))),
+            closing_turnover=closing_turnover,
+            closing_trading_cost=closing_trading_cost,
         ).to_dict()
 
         observation = self._get_observation() if not terminated else np.zeros(self.observation_space.shape, dtype=np.float32)

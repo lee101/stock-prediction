@@ -42,6 +42,13 @@ class PortfolioEnvConfig:
             shutdown logic to avoid noise from tiny allocations.
         loss_shutdown_return_tolerance: Absolute return threshold below which outcomes are treated
             as neutral (neither profit nor loss) for cooldown updates.
+        intraday_leverage_cap: Optional gross exposure cap applied immediately after the action
+            projection. If None, defaults to leverage_cap (long/short) or 1.0 (long-only).
+        closing_leverage_cap: Optional gross exposure cap enforced at the end of every step before
+            carrying positions overnight. If None, defaults to intraday_leverage_cap.
+        leverage_interest_rate: Annualised interest rate applied to borrowed exposure above 1x when
+            held overnight (after enforcing closing_leverage_cap).
+        trading_days_per_year: Number of trading days used to annualise leverage interest.
     """
 
     costs_bps: float = 3.0
@@ -59,6 +66,10 @@ class PortfolioEnvConfig:
     loss_shutdown_min_position: float = 1e-4
     loss_shutdown_return_tolerance: float = 1e-5
     leverage_cap: float = 1.0
+    intraday_leverage_cap: Optional[float] = None
+    closing_leverage_cap: Optional[float] = None
+    leverage_interest_rate: float = 0.0
+    trading_days_per_year: int = 252
     include_cash: bool = True
     cash_return: float = 0.0
     forecast_cvar_alpha: float = 0.05
