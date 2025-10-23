@@ -10,7 +10,7 @@ python -m scripts.run_stockagent_suite --suite stockagent
 
 What this does:
 
-- executes the `tests/test_stockagent/` test suite (pass additional `--pytest-arg` options if you want filters/verbosity)
+- executes the `tests/prod/agents/stockagent/` test suite (pass additional `--pytest-arg` options if you want filters/verbosity)
 - collects the latest state from `strategy_state/` and prints a summary with realised PnL, win rate, drawdown, top/bottom trades, and currently open exposures
 
 > Tip: if you prefer `uv run`, make sure the toolchain is synced first:

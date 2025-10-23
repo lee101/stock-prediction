@@ -43,6 +43,7 @@ from src.alpaca_utils import (
 )
 from src.leverage_settings import get_leverage_settings
 from .config import PortfolioEnvConfig
+from .regime_filters import RegimeGuard
 
 
 def _softmax(x: np.ndarray) -> np.ndarray:
@@ -90,6 +91,13 @@ class EnvStepInfo:
     post_close_gross_exposure: float = 0.0
     leverage_penalty: float = 0.0
     deleverage_turnover: float = 0.0
+    regime_drawdown_guard: float = 0.0
+    regime_negative_return_guard: float = 0.0
+    regime_turnover_guard: float = 0.0
+    regime_leverage_scale: float = 1.0
+    turnover_penalty_applied: float = 0.0
+    loss_shutdown_probe_applied: float = 0.0
+    regime_trailing_cumulative_return: float = 0.0
 
     def to_dict(self) -> Dict[str, float]:
         return {
@@ -122,6 +130,13 @@ class EnvStepInfo:
             "post_close_gross_exposure": self.post_close_gross_exposure,
             "leverage_penalty": self.leverage_penalty,
             "deleverage_turnover": self.deleverage_turnover,
+            "regime_drawdown_guard": self.regime_drawdown_guard,
+            "regime_negative_return_guard": self.regime_negative_return_guard,
+            "regime_turnover_guard": self.regime_turnover_guard,
+            "regime_leverage_scale": self.regime_leverage_scale,
+            "turnover_penalty_applied": self.turnover_penalty_applied,
+            "loss_shutdown_probe_applied": self.loss_shutdown_probe_applied,
+            "regime_trailing_cumulative_return": self.regime_trailing_cumulative_return,
         }
 
 
@@ -253,6 +268,17 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             base_costs = per_asset
 
         self.costs_vector = base_costs
+        self._base_turnover_penalty = float(self.config.turnover_penalty)
+        self._active_turnover_penalty = self._base_turnover_penalty
+        self._base_loss_probe_weight = (
+            float(self.config.loss_shutdown_probe_weight)
+            if getattr(self.config, "loss_shutdown_enabled", False)
+            else None
+        )
+        self._loss_shutdown_probe_override: Optional[float] = None
+        self._active_regime_flags: Dict[str, bool] = {"drawdown": False, "negative_return": False, "turnover": False}
+        self._active_regime_leverage_scale: float = 1.0
+        self._active_regime_cumulative_return: float = 0.0
         self._use_leverage_head = bool(getattr(self.config, "leverage_head", False))
 
         base_gross = max(1.0, float(getattr(self.config, "base_gross_exposure", BASE_GROSS_EXPOSURE)))
@@ -287,6 +313,21 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             self.daily_interest_rate = (1.0 + annual_interest) ** (1.0 / trading_days_interest) - 1.0
         else:
             self.daily_interest_rate = 0.0
+
+        self._regime_guard: Optional[RegimeGuard] = None
+        if getattr(self.config, "regime_filters_enabled", False):
+            self._regime_guard = RegimeGuard(
+                drawdown_threshold=getattr(self.config, "regime_drawdown_threshold", None),
+                leverage_scale=float(getattr(self.config, "regime_leverage_scale", 0.5)),
+                negative_return_window=int(max(1, getattr(self.config, "regime_negative_return_window", 42))),
+                negative_return_threshold=float(getattr(self.config, "regime_negative_return_threshold", 0.0)),
+                negative_return_turnover_penalty=getattr(self.config, "regime_negative_return_turnover_penalty", None),
+                turnover_threshold=getattr(self.config, "regime_turnover_threshold", None),
+                turnover_probe_weight=getattr(self.config, "regime_turnover_probe_weight", None),
+                base_turnover_penalty=self._base_turnover_penalty,
+                base_loss_probe_weight=self._base_loss_probe_weight,
+                loss_shutdown_enabled=self.config.loss_shutdown_enabled,
+            )
 
         self.start_index = start_index
         self.episode_length = episode_length or (self.T - start_index - 1)
@@ -374,11 +415,18 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
         self._loss_shutdown_clipped_amount = 0.0
         self._loss_shutdown_active_long = 0.0
         self._loss_shutdown_active_short = 0.0
+        self._active_turnover_penalty = self._base_turnover_penalty
+        self._loss_shutdown_probe_override = None
+        self._active_regime_flags = {"drawdown": False, "negative_return": False, "turnover": False}
+        self._active_regime_leverage_scale = 1.0
+        self._active_regime_cumulative_return = 0.0
         if self.config.loss_shutdown_enabled:
             self._ensure_loss_shutdown_buffers()
             self._loss_shutdown_counters_long.fill(0)
             if self._loss_shutdown_counters_short is not None:
                 self._loss_shutdown_counters_short.fill(0)
+        if self._regime_guard is not None:
+            self._regime_guard.reset()
 
         observation = self._get_observation()
         return observation, {}
@@ -549,7 +597,11 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
         self._ensure_loss_shutdown_buffers()
         weights = proposed.copy()
         min_pos = float(self.config.loss_shutdown_min_position)
-        probe = float(np.clip(self.config.loss_shutdown_probe_weight, 0.0, 1.0))
+        probe_setting = self._loss_shutdown_probe_override
+        if probe_setting is None:
+            probe_setting = self.config.loss_shutdown_probe_weight
+        probe_value = 0.0 if probe_setting is None else float(np.clip(probe_setting, 0.0, 1.0))
+        probe = probe_value
 
         active_long = self._loss_shutdown_counters_long > 0
         active_short = None
@@ -624,7 +676,37 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
 
     def _transition(self, new_weights: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict[str, float]]:
         previous_weights = self._weights.copy()
+        self._active_turnover_penalty = self._base_turnover_penalty
+        self._loss_shutdown_probe_override = None
+        self._active_regime_flags = {"drawdown": False, "negative_return": False, "turnover": False}
+        self._active_regime_leverage_scale = 1.0
+        self._active_regime_cumulative_return = 0.0
+
         executed_weights = new_weights.astype(np.float32, copy=False)
+        if self._regime_guard is not None:
+            pre_step_drawdown = 0.0
+            if self._peak_value > 1e-8:
+                pre_step_drawdown = (self._peak_value - self._portfolio_value) / self._peak_value
+            anticipated_turnover = float(np.abs(executed_weights - previous_weights).sum())
+            decision = self._regime_guard.pre_step(
+                drawdown=pre_step_drawdown,
+                anticipated_turnover=anticipated_turnover,
+            )
+            self._active_regime_cumulative_return = self._regime_guard.last_cumulative_return
+            self._active_regime_flags = dict(decision.flags)
+            self._active_turnover_penalty = float(
+                decision.turnover_penalty if decision.turnover_penalty is not None else self._base_turnover_penalty
+            )
+            leverage_scale = decision.leverage_scale
+            if leverage_scale is not None:
+                leverage_scale = float(np.clip(leverage_scale, 0.0, 1.0))
+                executed_weights = executed_weights * leverage_scale
+                self._active_regime_leverage_scale = leverage_scale
+            probe_override = decision.loss_probe_weight
+            if probe_override is not None and self.config.loss_shutdown_enabled:
+                self._loss_shutdown_probe_override = float(probe_override)
+                executed_weights = self._apply_loss_shutdown(executed_weights)
+
         deltas = np.abs(executed_weights - previous_weights)
         turnover = float(deltas.sum())
         per_asset_cost = deltas * self.costs_vector
@@ -709,7 +791,7 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             uncertainty_contrib = np.abs(new_weights) * np.maximum(self.forecast_uncertainty[self._index], 0.0)
             uncertainty_penalty = self.config.uncertainty_penalty * float(uncertainty_contrib.sum())
 
-        reward = np.log(net_multiplier) - self.config.turnover_penalty * turnover
+        reward = np.log(net_multiplier) - self._active_turnover_penalty * turnover
         reward -= self.config.drawdown_penalty * drawdown
         reward -= cvar_penalty
         reward -= uncertainty_penalty
@@ -726,8 +808,20 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
         loss_shutdown_active_short = self._loss_shutdown_active_short
         loss_shutdown_clipped = self._loss_shutdown_clipped_amount
 
+        if self._regime_guard is not None:
+            self._regime_guard.post_step(net_return=net_return)
+
         terminated = self._index >= self._max_index
         truncated = False
+
+        probe_applied = 0.0
+        if self.config.loss_shutdown_enabled:
+            if self._loss_shutdown_probe_override is not None:
+                probe_applied = float(self._loss_shutdown_probe_override)
+            elif self._base_loss_probe_weight is not None:
+                probe_applied = float(self._base_loss_probe_weight)
+
+        regime_flags = self._active_regime_flags
 
         info = EnvStepInfo(
             portfolio_value=self._portfolio_value,
@@ -759,6 +853,13 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             post_close_gross_exposure=gross_close,
             leverage_penalty=interest_cost,
             deleverage_turnover=deleverage_turnover,
+            regime_drawdown_guard=1.0 if regime_flags.get("drawdown") else 0.0,
+            regime_negative_return_guard=1.0 if regime_flags.get("negative_return") else 0.0,
+            regime_turnover_guard=1.0 if regime_flags.get("turnover") else 0.0,
+            regime_leverage_scale=self._active_regime_leverage_scale,
+            turnover_penalty_applied=self._active_turnover_penalty,
+            loss_shutdown_probe_applied=probe_applied,
+            regime_trailing_cumulative_return=self._active_regime_cumulative_return,
         ).to_dict()
 
         observation = self._get_observation() if not terminated else np.zeros(self.observation_space.shape, dtype=np.float32)

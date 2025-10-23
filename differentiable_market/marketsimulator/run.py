@@ -20,6 +20,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-trades", action="store_true", help="Disable trade log emission")
     parser.add_argument("--include-cash", dest="include_cash", action="store_true", help="Force-enable the synthetic cash asset during evaluation")
     parser.add_argument("--no-include-cash", dest="include_cash", action="store_false", help="Force-disable the synthetic cash asset during evaluation")
+    parser.add_argument("--risk-aversion", type=float, default=None, help="Override risk aversion penalty for evaluation.")
+    parser.add_argument("--drawdown-lambda", type=float, default=None, help="Override drawdown penalty for evaluation.")
     parser.set_defaults(include_cash=None)
     return parser.parse_args()
 
@@ -34,6 +36,12 @@ def main() -> None:
         include_cash=bool(args.include_cash) if args.include_cash is not None else False,
     )
     env_cfg = EnvironmentConfig()
+    env_kwargs = {slot: getattr(env_cfg, slot) for slot in env_cfg.__slots__}
+    if args.risk_aversion is not None:
+        env_kwargs["risk_aversion"] = float(args.risk_aversion)
+    if args.drawdown_lambda is not None:
+        env_kwargs["drawdown_lambda"] = float(args.drawdown_lambda)
+    env_cfg = EnvironmentConfig(**env_kwargs)
     eval_cfg = EvaluationConfig(
         window_length=args.window_length,
         stride=args.stride,

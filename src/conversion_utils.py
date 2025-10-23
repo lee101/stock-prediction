@@ -1,6 +1,16 @@
 from datetime import datetime
 
-import torch
+from .dependency_injection import register_observer, resolve_torch
+
+torch = resolve_torch()
+
+
+def _refresh_torch(module):
+    global torch
+    torch = module
+
+
+register_observer("torch", _refresh_torch)
 
 
 def unwrap_tensor(data):
