@@ -54,11 +54,11 @@ def test_setup_imports_notifies_observers(monkeypatch):
     assert events and events[-1] is previous_torch
 
     fake_torch = _make_fake_torch()
-    deps.setup_imports(torch_module=fake_torch)
+    deps.setup_imports(torch=fake_torch)
 
     assert events[-1] is fake_torch
     assert deps.injected_modules().get("torch") is fake_torch
 
-    deps.setup_imports(torch_module=previous_torch)
+    deps.setup_imports(torch=previous_torch)
     assert events[-1] is previous_torch
     assert deps.injected_modules().get("torch") is previous_torch

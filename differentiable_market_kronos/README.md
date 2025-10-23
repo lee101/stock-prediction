@@ -48,10 +48,10 @@ trainer.fit()
 
 ## Testing
 
-Lightweight tests live under `tests/differentiable_market_kronos`. They stub the
+Lightweight tests live under `tests/experimental/differentiable_market_kronos`. They stub the
 Kronos embedder to keep runtime manageable while exercising the feature plumbing
 into the differentiable market trainer. Run them via:
 
 ```bash
-pytest tests/differentiable_market_kronos -q
+pytest tests/experimental/differentiable_market_kronos -q
 ```

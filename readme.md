@@ -431,7 +431,7 @@ TRADE_STATE_SUFFIX=sim python marketsimulator/run_trade_loop.py --symbols AAPL M
 Have a thing that like a binary step for the whole portfolio and probe trades
   Tests
 
-  - python -m pytest tests/test_portfolio_risk.py tests/test_probe_transitions.py
+  - python -m pytest tests/prod/portfolio/test_portfolio_risk.py tests/prod/simulation/test_probe_transitions.py
 
   Next Steps
 
@@ -463,7 +463,7 @@ uv run python -m tototraining.run_gpu_training \
   - Ensure `external/kronos` is populated (already vendored) and GPU drivers are available if you intend to run the full models.
 - **Refresh hyperparameters**
   - Regenerate Toto/Kronos sweeps as needed (see `hftraining/` or your preferred pipeline) and drop the resulting JSON artefacts under `hyperparams/{toto,kronos,best}`. The combined generator will hot-load whatever is present in that tree.
-  - Sanity check the loader with a quick unit run: `uv run pytest tests/test_stockagentcombined.py -k forecast`
+  - Sanity check the loader with a quick unit run: `uv run pytest tests/prod/agents/stockagentcombined/test_stockagentcombined.py -k forecast`
 - **Run the market simulator**
   - Full speed (requires real models):
     ```bash
@@ -479,7 +479,7 @@ uv run python -m tototraining.run_gpu_training \
 - **Record outcomes**
   - Persist headline metrics and command lines in `stockagentcombined/results.md`. The file currently captures the 2025-10-17 stub run used while drafting this guide.
 - **2025-10-18 regression check (offline)**
-  - Tests: `PYTHONPATH=. uv run pytest tests/test_stockagentcombined.py tests/test_stockagentcombined_plans.py tests/test_stockagentcombined_entrytakeprofit.py tests/test_stockagentcombined_profit_shutdown.py -q`
+  - Tests: `PYTHONPATH=. uv run pytest tests/prod/agents/stockagentcombined/test_stockagentcombined.py tests/prod/agents/stockagentcombined/test_stockagentcombined_plans.py tests/prod/agents/stockagentcombined/test_stockagentcombined_entrytakeprofit.py tests/prod/agents/stockagentcombined/test_stockagentcombined_profit_shutdown.py -q`
   - Offline sim (symbols AAPL/MSFT, lookback 120, last three trading days, `error_multiplier=0.25`, `base_quantity=10`, `min_quantity=1`) finished with ending equity $249 996.67 on $250 000 start, realized P&L −$0.27, fees $6.13 across four trades:
     ```bash
     PYTHONPATH=. uv run python -m stockagentcombined.simulation \
@@ -493,7 +493,7 @@ uv run python -m tototraining.run_gpu_training \
 
 - **Prerequisites**
   - Complete the `stockagentcombined` setup above so the combined forecasts are available.
-  - Run allocator unit tests: `uv run pytest tests/test_stockagent2`
+  - Run allocator unit tests: `uv run pytest tests/prod/agents/stockagent2`
 - **Allocate with real forecasts**
   - Reach for the CLI wrapper to fetch OHLC history, execute the allocator, and dump a ready-to-share summary:
     ```bash
@@ -537,7 +537,7 @@ uv run python -m tototraining.run_gpu_training \
 - **Document results**
   - Append the latest allocator runs to `stockagent2/results.md`. The current entry shows the CPU-only stub run (net-neutral configuration) executed on 2025-10-17; swap the stub adapters with real models when running in production.
 - **2025-10-18 regression check (offline)**
-  - Tests: `PYTHONPATH=. uv run pytest tests/test_stockagent2 -q`
+  - Tests: `PYTHONPATH=. uv run pytest tests/prod/agents/stockagent2 -q`
   - Pipeline sim (AAPL/MSFT, lookback 120, three trading days) with relaxed caps (`long_cap=short_cap=0.8`, `min_weight=-0.8`, `max_weight=0.8`) and lower `risk_aversion=1.5` generated four trades, ending equity $253 026.98, realized P&L $1 520.36, fees $279.95, and residual long exposure (~1.52 k AAPL / 0.52 k MSFT):
     ```bash
     uv run stockagent2-pipeline pipeline-sim \

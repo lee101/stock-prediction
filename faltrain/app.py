@@ -19,6 +19,7 @@ import os
 import random
 import shutil
 import subprocess
+import warnings
 import time
 import uuid
 from contextlib import nullcontext
@@ -49,7 +50,8 @@ from wandboard import WandBoardLogger
 
 from src.dependency_injection import setup_imports as setup_src_imports
 from src.tblib_compat import ensure_tblib_pickling_support
-from faltrain.shared_logger import get_logger, setup_logging
+from src.torch_backend import configure_tf32_backends
+from faltrain.shared_logger import get_logger, log_timing, setup_logging
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ensure_tblib_pickling_support()
 LOG = get_logger("faltrain.app", logging.INFO)
@@ -567,45 +569,73 @@ class StockTrainerApp(
     def setup(self) -> None:
         setup_logging(logging.INFO)
         configure_stdout_logging(level=logging.INFO, fmt="%(asctime)s | %(message)s")
+        with log_timing(LOG, "StockTrainerApp.setup"):
+            warnings.filterwarnings(
+                "ignore",
+                message="The pynvml package is deprecated.*",
+                category=FutureWarning,
+                module="torch.cuda",
+            )
+            LOG.info(
+                "Starting StockTrainerApp.setup pid=%s cwd=%s",
+                os.getpid(),
+                os.getcwd(),
+            )
+            os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
+            os.environ.setdefault(
+                "PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True"
+            )
+            LOG.debug(
+                "Environment CUDA_LAUNCH_BLOCKING=%s PYTORCH_CUDA_ALLOC_CONF=%s",
+                os.getenv("CUDA_LAUNCH_BLOCKING"),
+                os.getenv("PYTORCH_CUDA_ALLOC_CONF"),
+            )
 
-        import torch as _torch
-        import numpy as _np
-        import pandas as _pd
+            with log_timing(LOG, "Import torch/numpy/pandas"):
+                import torch as _torch
+                import numpy as _np
+                import pandas as _pd
 
-        bulk_register_fal_dependencies(
-            {
-                "torch": _torch,
-                "numpy": _np,
-                "pandas": _pd,
-            }
-        )
-        setup_src_imports(_torch, _np, _pd)
+            with log_timing(LOG, "Configure torch backends"):
+                tf32_state = configure_tf32_backends(_torch, logger=LOG)
+                LOG.info(
+                    "TF32 precision configured new_api=%s legacy_api=%s",
+                    tf32_state["new_api"],
+                    tf32_state["legacy_api"],
+                )
+                try:
+                    _torch.backends.cudnn.benchmark = True
+                    _torch.backends.cuda.enable_flash_sdp(True)
+                    _torch.backends.cuda.enable_math_sdp(True)
+                    _torch.backends.cuda.enable_mem_efficient_sdp(True)
+                except Exception:
+                    LOG.debug("Skipping advanced CUDA backend configuration", exc_info=True)
 
-        # CUDA / transformer knobs tuned for H200 workloads.
-        os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
-        os.environ.setdefault(
-            "PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True"
-        )
-        try:
-            _torch.backends.cuda.matmul.allow_tf32 = True
-            _torch.backends.cudnn.allow_tf32 = True
-            _torch.backends.cudnn.benchmark = True
-            _torch.backends.cuda.enable_flash_sdp(True)
-            _torch.backends.cuda.enable_math_sdp(True)
-            _torch.backends.cuda.enable_mem_efficient_sdp(True)
-        except Exception:
-            pass
+            with log_timing(LOG, "Register shared dependencies"):
+                bulk_register_fal_dependencies(
+                    {
+                        "torch": _torch,
+                        "numpy": _np,
+                        "pandas": _pd,
+                    }
+                )
+                setup_src_imports(_torch, _np, _pd)
+                _inject_training_modules(_torch, _np, _pd)
 
-        LOG.info("CUDA device: %s", _torch.cuda.get_device_name(0))
-        LOG.info("torch version: %s", _torch.__version__)
+            with log_timing(LOG, "Prepare training directories"):
+                _ensure_dir(Path("/data"))
+                _ensure_dir(Path("/data/trainingdata"))
+                _ensure_dir(Path("/data/experiments"))
 
-        # Offer dependency injection to the in-repo training stacks.
-        _inject_training_modules(_torch, _np, _pd)
+            with log_timing(LOG, "Prefetch reference artifacts"):
+                self._prefetch_reference_artifacts()
 
-        _ensure_dir(Path("/data"))
-        _ensure_dir(Path("/data/trainingdata"))
-        _ensure_dir(Path("/data/experiments"))
-        self._prefetch_reference_artifacts()
+            LOG.info(
+                "StockTrainerApp setup complete cuda_available=%s device='%s' torch=%s",
+                _torch.cuda.is_available(),
+                _torch.cuda.get_device_name(0) if _torch.cuda.is_available() else "cpu",
+                _torch.__version__,
+            )
 
     def _prefetch_reference_artifacts(self) -> None:
         try:

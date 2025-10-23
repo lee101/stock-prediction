@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import importlib
 import logging
-import time
 import os
+import sys
+import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from contextlib import nullcontext
 
 from falmarket.shared_logger import get_logger, log_timing
-from faltrain.dependencies import bulk_register_fal_dependencies, get_fal_dependencies
+from src.dependency_injection import resolve_numpy, resolve_pandas, resolve_torch, setup_imports
 
 LOG = get_logger("falmarket.runner", logging.INFO)
 
@@ -27,27 +28,36 @@ def setup_training_imports(
     """Register shared heavy dependencies for the simulation runtime."""
 
     global _TORCH, _NUMPY, _PANDAS
-    mapping: Dict[str, ModuleType] = {}
     if torch_module is not None:
         _TORCH = torch_module
-        mapping["torch"] = torch_module
+        sys.modules.setdefault("torch", torch_module)
     if numpy_module is not None:
         _NUMPY = numpy_module
-        mapping["numpy"] = numpy_module
+        sys.modules.setdefault("numpy", numpy_module)
     if pandas_module is not None:
         _PANDAS = pandas_module
-        mapping["pandas"] = pandas_module
-    if mapping:
-        bulk_register_fal_dependencies(mapping)
+        sys.modules.setdefault("pandas", pandas_module)
+    setup_kwargs: Dict[str, ModuleType] = {}
+    if torch_module is not None:
+        setup_kwargs["torch"] = torch_module
+    if numpy_module is not None:
+        setup_kwargs["numpy"] = numpy_module
+    if pandas_module is not None:
+        setup_kwargs["pandas"] = pandas_module
+    if setup_kwargs:
+        setup_imports(**setup_kwargs)
 
 
 def _ensure_dependencies() -> Tuple[ModuleType, ModuleType, Optional[ModuleType]]:
-    torch_mod, numpy_mod = get_fal_dependencies("torch", "numpy")
-    pandas_mod: Optional[ModuleType]
-    try:
-        (pandas_mod,) = get_fal_dependencies("pandas")
-    except Exception:
-        pandas_mod = _PANDAS
+    torch_mod = _TORCH or resolve_torch()
+    numpy_mod = _NUMPY or resolve_numpy()
+    pandas_mod = _PANDAS
+    if pandas_mod is None:
+        try:
+            pandas_mod = resolve_pandas()
+        except Exception:
+            pandas_mod = None
+    setup_training_imports(torch_mod, numpy_mod, pandas_mod)
     return torch_mod, numpy_mod, pandas_mod
 
 

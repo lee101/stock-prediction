@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -21,6 +22,7 @@ from faltrain.dependencies import bulk_register_fal_dependencies
 from faltrain.logger_utils import configure_stdout_logging
 from src.dependency_injection import setup_imports as setup_src_imports
 from src.tblib_compat import ensure_tblib_pickling_support
+from src.torch_backend import configure_tf32_backends
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ensure_tblib_pickling_support()
@@ -78,6 +80,7 @@ class MarketSimulatorApp(
         "seaborn",
     ]
     local_python_modules = [
+        "falmarket",
         "fal_marketsimulator",
         "faltrain",
         "marketsimulator",
@@ -93,25 +96,46 @@ class MarketSimulatorApp(
         with log_timing(LOG, "MarketSimulatorApp.setup"):
             setup_logging(logging.INFO)
             configure_stdout_logging(level=logging.INFO, fmt="%(asctime)s | %(message)s")
+            warnings.filterwarnings(
+                "ignore",
+                message="The pynvml package is deprecated.*",
+                category=FutureWarning,
+                module="torch.cuda",
+            )
+            LOG.info(
+                "Starting MarketSimulatorApp.setup pid=%s cwd=%s",
+                os.getpid(),
+                os.getcwd(),
+            )
+            os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
+            os.environ.setdefault(
+                "PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True"
+            )
+            LOG.debug(
+                "Environment CUDA_LAUNCH_BLOCKING=%s PYTORCH_CUDA_ALLOC_CONF=%s",
+                os.getenv("CUDA_LAUNCH_BLOCKING"),
+                os.getenv("PYTORCH_CUDA_ALLOC_CONF"),
+            )
 
             with log_timing(LOG, "Import torch/numpy/pandas"):
                 import torch as _torch
                 import numpy as _np
                 import pandas as _pd
 
-            os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
-            os.environ.setdefault(
-                "PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True"
-            )
-            try:
-                _torch.backends.cuda.matmul.allow_tf32 = True
-                _torch.backends.cudnn.allow_tf32 = True
-                _torch.backends.cudnn.benchmark = True
-                _torch.backends.cuda.enable_flash_sdp(True)
-                _torch.backends.cuda.enable_math_sdp(True)
-                _torch.backends.cuda.enable_mem_efficient_sdp(True)
-            except Exception:
-                LOG.debug("Skipping advanced CUDA backend configuration", exc_info=True)
+            with log_timing(LOG, "Configure torch backends"):
+                tf32_state = configure_tf32_backends(_torch, logger=LOG)
+                LOG.info(
+                    "TF32 precision configured new_api=%s legacy_api=%s",
+                    tf32_state["new_api"],
+                    tf32_state["legacy_api"],
+                )
+                try:
+                    _torch.backends.cudnn.benchmark = True
+                    _torch.backends.cuda.enable_flash_sdp(True)
+                    _torch.backends.cuda.enable_math_sdp(True)
+                    _torch.backends.cuda.enable_mem_efficient_sdp(True)
+                except Exception:
+                    LOG.debug("Skipping advanced CUDA backend configuration", exc_info=True)
 
             with log_timing(LOG, "Register shared dependencies"):
                 bulk_register_fal_dependencies({"torch": _torch, "numpy": _np, "pandas": _pd})
@@ -131,7 +155,12 @@ class MarketSimulatorApp(
             with log_timing(LOG, "Sync compiled models"):
                 self._sync_compiled_models(direction="download")
 
-            LOG.info("CUDA available: %s", _torch.cuda.is_available())
+            LOG.info(
+                "MarketSimulatorApp setup complete cuda_available=%s device='%s' torch=%s",
+                _torch.cuda.is_available(),
+                _torch.cuda.get_device_name(0) if _torch.cuda.is_available() else "cpu",
+                _torch.__version__,
+            )
 
     @fal.endpoint("/api/simulate")
     def simulate(self, request: SimulationRequest) -> SimulationResponse:

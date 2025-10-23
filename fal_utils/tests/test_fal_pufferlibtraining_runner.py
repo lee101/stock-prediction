@@ -9,12 +9,12 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 import fal_pufferlibtraining.runner as runner
-import faltrain.dependencies as deps
+from src import dependency_injection as deps
 
 
 @pytest.fixture(autouse=True)
 def _stub_dependencies(monkeypatch):
-    deps._clear_registry_for_tests()
+    deps._reset_for_tests()
     torch_stub = ModuleType("torch")
     torch_stub.manual_seed = lambda seed: None
     torch_stub.cuda = SimpleNamespace(is_available=lambda: False)
@@ -23,7 +23,7 @@ def _stub_dependencies(monkeypatch):
     numpy_stub.bool_ = bool
     runner.setup_training_imports(torch_stub, numpy_stub, None)
     yield
-    deps._clear_registry_for_tests()
+    deps._reset_for_tests()
 
 
 def _build_parser() -> ArgumentParser:

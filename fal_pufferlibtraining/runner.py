@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from argparse import Namespace
+import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Dict, Optional, Tuple
 
-from faltrain.dependencies import bulk_register_fal_dependencies, get_fal_dependencies
+from src.dependency_injection import resolve_numpy, resolve_pandas, resolve_torch, setup_imports
 
 _TORCH: Optional[ModuleType] = None
 _NUMPY: Optional[ModuleType] = None
@@ -21,18 +22,37 @@ def setup_training_imports(
     """Register heavy dependencies for the RL pipeline."""
 
     global _TORCH, _NUMPY, _PANDAS
-    mapping: Dict[str, ModuleType] = {}
     if torch_module is not None:
         _TORCH = torch_module
-        mapping["torch"] = torch_module
+        sys.modules.setdefault("torch", torch_module)
     if numpy_module is not None:
         _NUMPY = numpy_module
-        mapping["numpy"] = numpy_module
+        sys.modules.setdefault("numpy", numpy_module)
     if pandas_module is not None:
         _PANDAS = pandas_module
-        mapping["pandas"] = pandas_module
-    if mapping:
-        bulk_register_fal_dependencies(mapping)
+        sys.modules.setdefault("pandas", pandas_module)
+    setup_kwargs: Dict[str, ModuleType] = {}
+    if torch_module is not None:
+        setup_kwargs["torch"] = torch_module
+    if numpy_module is not None:
+        setup_kwargs["numpy"] = numpy_module
+    if pandas_module is not None:
+        setup_kwargs["pandas"] = pandas_module
+    if setup_kwargs:
+        setup_imports(**setup_kwargs)
+
+
+def _ensure_injected_modules() -> Tuple[ModuleType, ModuleType, Optional[ModuleType]]:
+    torch_mod = _TORCH or resolve_torch()
+    numpy_mod = _NUMPY or resolve_numpy()
+    pandas_mod = _PANDAS
+    if pandas_mod is None:
+        try:
+            pandas_mod = resolve_pandas()
+        except Exception:
+            pandas_mod = None
+    setup_training_imports(torch_mod, numpy_mod, pandas_mod)
+    return torch_mod, numpy_mod, pandas_mod
 
 
 def _default_args() -> Namespace:
@@ -81,7 +101,7 @@ def run_training(
 ) -> Tuple[Dict[str, Any], Path]:
     """Execute the RL pipeline in-process and return the summary."""
 
-    get_fal_dependencies("torch", "numpy")
+    _ensure_injected_modules()
     trainingdata_dir = trainingdata_dir.expanduser().resolve()
     output_dir = output_dir.expanduser().resolve()
     tensorboard_dir = tensorboard_dir.expanduser().resolve()

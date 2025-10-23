@@ -32,6 +32,14 @@ def evaluate_trained_policy(model, env: PortfolioEnv) -> Dict[str, float]:
     gross_exposure_intraday = []
     gross_exposure_close = []
 
+    guard_drawdown_flags = []
+    guard_negative_flags = []
+    guard_turnover_flags = []
+    guard_leverage_scales = []
+    guard_turnover_penalties = []
+    guard_loss_probes = []
+    guard_trailing_returns = []
+
     while True:
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
@@ -57,6 +65,13 @@ def evaluate_trained_policy(model, env: PortfolioEnv) -> Dict[str, float]:
         interest_costs.append(float(info.get("interest_cost", 0.0)))
         gross_exposure_intraday.append(float(info.get("gross_exposure_intraday", 0.0)))
         gross_exposure_close.append(float(info.get("gross_exposure_close", 0.0)))
+        guard_drawdown_flags.append(float(info.get("regime_drawdown_guard", 0.0)))
+        guard_negative_flags.append(float(info.get("regime_negative_return_guard", 0.0)))
+        guard_turnover_flags.append(float(info.get("regime_turnover_guard", 0.0)))
+        guard_leverage_scales.append(float(info.get("regime_leverage_scale", 1.0)))
+        guard_turnover_penalties.append(float(info.get("turnover_penalty_applied", env.config.turnover_penalty)))
+        guard_loss_probes.append(float(info.get("loss_shutdown_probe_applied", env.config.loss_shutdown_probe_weight or 0.0)))
+        guard_trailing_returns.append(float(info.get("regime_trailing_cumulative_return", 0.0)))
 
         if terminated or truncated:
             break
@@ -74,6 +89,13 @@ def evaluate_trained_policy(model, env: PortfolioEnv) -> Dict[str, float]:
     interest_costs = np.asarray(interest_costs, dtype=np.float32)
     gross_exposure_intraday = np.asarray(gross_exposure_intraday, dtype=np.float32)
     gross_exposure_close = np.asarray(gross_exposure_close, dtype=np.float32)
+    guard_drawdown_flags = np.asarray(guard_drawdown_flags, dtype=np.float32)
+    guard_negative_flags = np.asarray(guard_negative_flags, dtype=np.float32)
+    guard_turnover_flags = np.asarray(guard_turnover_flags, dtype=np.float32)
+    guard_leverage_scales = np.asarray(guard_leverage_scales, dtype=np.float32)
+    guard_turnover_penalties = np.asarray(guard_turnover_penalties, dtype=np.float32)
+    guard_loss_probes = np.asarray(guard_loss_probes, dtype=np.float32)
+    guard_trailing_returns = np.asarray(guard_trailing_returns, dtype=np.float32)
 
     final_value = float(portfolio_values[-1])
     cumulative_return = float(final_value - 1.0)
@@ -119,6 +141,14 @@ def evaluate_trained_policy(model, env: PortfolioEnv) -> Dict[str, float]:
         "average_gross_exposure_close": avg_gross_close,
         "max_gross_exposure_intraday": max_gross_intraday,
         "max_gross_exposure_close": max_gross_close,
+        "guard_drawdown_hit_rate": float(guard_drawdown_flags.mean()) if guard_drawdown_flags.size else 0.0,
+        "guard_negative_return_hit_rate": float(guard_negative_flags.mean()) if guard_negative_flags.size else 0.0,
+        "guard_turnover_hit_rate": float(guard_turnover_flags.mean()) if guard_turnover_flags.size else 0.0,
+        "guard_average_leverage_scale": float(guard_leverage_scales.mean()) if guard_leverage_scales.size else 1.0,
+        "guard_min_leverage_scale": float(guard_leverage_scales.min()) if guard_leverage_scales.size else 1.0,
+        "guard_average_turnover_penalty": float(guard_turnover_penalties.mean()) if guard_turnover_penalties.size else float(env.config.turnover_penalty),
+        "guard_average_loss_probe_weight": float(guard_loss_probes.mean()) if guard_loss_probes.size else float(env.config.loss_shutdown_probe_weight or 0.0),
+        "guard_average_trailing_return": float(guard_trailing_returns.mean()) if guard_trailing_returns.size else 0.0,
     }
 
 

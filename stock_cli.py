@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import math
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 import alpaca_wrapper
@@ -42,6 +44,18 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _optional_float(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
 
 
 def _format_timestamp(ts: datetime, timezone_name: str) -> str:
@@ -99,6 +113,27 @@ def _summarize_orders(orders: Sequence, timezone_name: str) -> Sequence[str]:
     return lines
 
 
+def _estimate_live_portfolio_value(account, positions: Sequence) -> Optional[float]:
+    equity = _optional_float(getattr(account, "equity", None)) if account is not None else None
+    if equity and equity > 0:
+        return equity
+
+    total_market_value = 0.0
+    for position in positions:
+        total_market_value += _safe_float(getattr(position, "market_value", 0.0))
+
+    cash = _optional_float(getattr(account, "cash", None)) if account is not None else None
+    if cash is not None:
+        estimated_value = total_market_value + cash
+    else:
+        estimated_value = total_market_value
+
+    if estimated_value != 0.0:
+        return estimated_value
+
+    return None
+
+
 def _parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
@@ -128,6 +163,52 @@ def _format_quantity(value: Optional[float]) -> str:
         return str(value)
     formatted = f"{numeric:.6f}".rstrip("0").rstrip(".")
     return formatted if formatted else "0"
+
+
+def _coerce_optional_float(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+STRATEGY_PROFIT_FIELDS = (
+    ("entry", "entry_takeprofit_profit"),
+    ("maxdiff", "maxdiffprofit_profit"),
+    ("takeprofit", "takeprofit_profit"),
+)
+
+ENTRY_STRATEGY_PROFIT_LOOKUP = {
+    "maxdiff": "maxdiffprofit_profit",
+    "highlow": "maxdiffprofit_profit",
+    "entry": "entry_takeprofit_profit",
+    "entry_takeprofit": "entry_takeprofit_profit",
+    "simple": "entry_takeprofit_profit",
+    "ci_guard": "entry_takeprofit_profit",
+    "all_signals": "entry_takeprofit_profit",
+    "takeprofit": "takeprofit_profit",
+}
+
+
+def _format_strategy_profit_summary(entry_strategy: Optional[str], forecast: Dict[str, object]) -> Optional[str]:
+    if not forecast:
+        return None
+    normalized_strategy = (entry_strategy or "").strip().lower()
+    selected_key = ENTRY_STRATEGY_PROFIT_LOOKUP.get(normalized_strategy)
+    entries = []
+    for label, key in STRATEGY_PROFIT_FIELDS:
+        value = _coerce_optional_float(forecast.get(key))
+        if value is None:
+            continue
+        formatted = f"{value:.4f}"
+        if key == selected_key:
+            formatted = f"{formatted}*"
+        entries.append(f"{label}={formatted}")
+    if not entries:
+        return None
+    return f"profits {' '.join(entries)}"
 
 
 def _format_timedelta(delta: timedelta) -> str:
@@ -291,6 +372,7 @@ def status(
     leverage_settings = get_leverage_settings()
 
     # Global risk snapshot
+    live_portfolio_value: Optional[float] = None
     try:
         risk_threshold = get_global_risk_threshold()
     except Exception as exc:
@@ -357,6 +439,8 @@ def status(
     else:
         typer.echo("  No active positions.")
 
+    live_portfolio_value = _estimate_live_portfolio_value(account, positions)
+
     # Orders
     typer.echo("\n:: Open Orders")
     try:
@@ -406,6 +490,9 @@ def status(
                     f" | maxdiff_high={_format_price(high_price)} "
                     f"low={_format_price(low_price)}"
                 )
+            profit_summary = _format_strategy_profit_summary(strategy, forecast)
+            if profit_summary:
+                line += f" | {profit_summary}"
             typer.echo(line)
 
             entry_watchers = _select_watchers(watchers, symbol, side, "entry")
@@ -432,13 +519,19 @@ def status(
     typer.echo("\n:: Settings")
     state_suffix = os.getenv("TRADE_STATE_SUFFIX", "").strip() or "<unset>"
     typer.echo(f"  TRADE_STATE_SUFFIX={state_suffix}")
+    if state_suffix == "<unset>":
+        typer.echo("    Using default strategy state files.")
     if risk_threshold is not None:
         typer.echo(f"  Global Risk Threshold={risk_threshold:.2f}x")
     if latest_snapshot:
         typer.echo(
-            f"  Portfolio Value={_format_currency(latest_snapshot.portfolio_value)} "
+            f"  Last Recorded Portfolio Value={_format_currency(latest_snapshot.portfolio_value)} "
             f"as of {_format_timestamp(latest_snapshot.observed_at, timezone_name)}"
         )
+    else:
+        typer.echo("  Last Recorded Portfolio Value=n/a")
+    if live_portfolio_value is not None:
+        typer.echo(f"  Live Portfolio Value={_format_currency(live_portfolio_value)} (account equity estimate)")
 
 
 @app.command("plot-risk")

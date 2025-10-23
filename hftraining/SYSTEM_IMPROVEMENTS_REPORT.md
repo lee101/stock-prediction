@@ -46,10 +46,10 @@
 ### 1. Comprehensive Unit Test Suite
 
 **Created test files:**
-- `tests/test_hftraining_data_utils.py` - Data processing and utilities
-- `tests/test_hftraining_model.py` - Model architecture and components  
-- `tests/test_hftraining_training.py` - Training pipeline and trainer
-- `tests/test_modern_optimizers.py` - Modern optimizer implementations
+- `tests/experimental/hf/test_hftraining_data_utils.py` - Data processing and utilities
+- `tests/experimental/hf/test_hftraining_model.py` - Model architecture and components  
+- `tests/experimental/hf/test_hftraining_training.py` - Training pipeline and trainer
+- `tests/experimental/training/test_modern_optimizers.py` - Modern optimizer implementations
 
 **Coverage:**
 - StockDataProcessor functionality
@@ -136,7 +136,7 @@
 ### New Files
 - `hftraining/improved_schedulers.py` - Enhanced LR schedulers
 - `hftraining/quick_test_runner.py` - Rapid testing environment
-- `tests/test_hftraining_*.py` - Comprehensive unit tests
+- `tests/experimental/hf/test_hftraining_*.py` - Comprehensive unit tests
 - `hftraining/SYSTEM_IMPROVEMENTS_REPORT.md` - This report
 
 ### Key Modifications  

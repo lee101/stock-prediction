@@ -25,32 +25,32 @@ import pytest
 try:
     from training.differentiable_trainer import DifferentiableTrainer, TrainerConfig
 except ImportError:
-    from tests.stubs.training_stubs import DifferentiableTrainer, TrainerConfig
+    from tests.shared.stubs.training_stubs import DifferentiableTrainer, TrainerConfig
 
 try:
     from training.advanced_trainer import AdvancedTrainer, AdvancedConfig
 except ImportError:
-    from tests.stubs.training_stubs import AdvancedTrainer, AdvancedConfig
+    from tests.shared.stubs.training_stubs import AdvancedTrainer, AdvancedConfig
 
 try:
     from training.scaled_hf_trainer import ScaledHFTrainer, ScalingConfig
 except ImportError:
-    from tests.stubs.training_stubs import ScaledHFTrainer, ScalingConfig
+    from tests.shared.stubs.training_stubs import ScaledHFTrainer, ScalingConfig
 
 try:
     from training.experiment_runner import ExperimentRunner, ExperimentConfig
 except ImportError:
-    from tests.stubs.training_stubs import ExperimentRunner, ExperimentConfig
+    from tests.shared.stubs.training_stubs import ExperimentRunner, ExperimentConfig
 
 try:
     from training.hyperparameter_optimization import HyperOptimizer, SearchSpace
 except ImportError:
-    from tests.stubs.training_stubs import HyperOptimizer, SearchSpace
+    from tests.shared.stubs.training_stubs import HyperOptimizer, SearchSpace
 
 try:
     from training.download_training_data import DataDownloader, DataProcessor
 except ImportError:
-    from tests.stubs.training_stubs import DataDownloader, DataProcessor
+    from tests.shared.stubs.training_stubs import DataDownloader, DataProcessor
 
 
 class TestDifferentiableTrainer:

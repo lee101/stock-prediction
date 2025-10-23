@@ -8,14 +8,14 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 import fal_marketsimulator.runner as runner
-import faltrain.dependencies as deps
+from src import dependency_injection as deps
 
 
 @pytest.fixture(autouse=True)
 def _reset_registry():
-    deps._clear_registry_for_tests()
+    deps._reset_for_tests()
     yield
-    deps._clear_registry_for_tests()
+    deps._reset_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -27,9 +27,6 @@ def _inject_modules(monkeypatch):
     numpy_stub.bool_ = bool
     pandas_stub = ModuleType("pandas")
     runner.setup_training_imports(torch_stub, numpy_stub, pandas_stub)
-    deps.register_fal_dependency("torch", torch_stub)
-    deps.register_fal_dependency("numpy", numpy_stub)
-    deps.register_fal_dependency("pandas", pandas_stub)
     yield
     for name in ("torch", "numpy", "pandas"):
         sys.modules.pop(name, None)

@@ -3,7 +3,7 @@
 ## Objectives
 - Benchmark and improve RL pipelines in `hftraining/`, `gymrl/`, `pufferlibtraining/`, and `differentiable_market/`.
 - Produce realistic post-training PnL evaluations using consistent market data and cost assumptions.
-- Compare RL outcomes against `stockagentdeepseek` agent simulations (`tests/test_stockagentdeepseek/*`) and the production `trade_stock_e2e` stack.
+- Compare RL outcomes against `stockagentdeepseek` agent simulations (`tests/prod/agents/stockagentdeepseek/*`) and the production `trade_stock_e2e` stack.
 - Deliver an actionable recommendation for Alpaca deployment, including risk-managed configuration templates.
 
 ## Current Snapshot
@@ -53,12 +53,12 @@
 
 ## Immediate Next Actions (Oct 22)
 - [x] Confirm active Python env via `source .venv312/bin/activate` and `uv pip list` sanity check.
-- [x] Run smoke tests: `pytest hftraining/test_pipeline.py -q`, `pytest tests/gymrl/test_feature_builder.py -q`, `pytest tests/test_pufferlib_env_rules.py -q` (fixed leverage cap + date formatting to make suite green).
+- [x] Run smoke tests: `pytest hftraining/test_pipeline.py -q`, `pytest tests/experimental/rl/gymrl/test_feature_builder.py -q`, `pytest tests/experimental/pufferlib/test_pufferlib_env_rules.py -q` (fixed leverage cap + date formatting to make suite green).
 - [ ] Script baseline PnL extraction from `trade_stock_e2e.log` and DeepSeek simulation outputs for reference tables.
 - [ ] Begin harmonised evaluation harness skeleton under `evaltests/`.
 
 ## Progress Log
-- **2025-10-22**: Validated `.venv312` environment; gymRL feature builder and HF pipeline smoke tests pass. Patched `StockTradingEnv` info payload to normalise numpy datetimes and respect configured leverage caps, restoring `tests/test_pufferlib_env_rules.py`.
+- **2025-10-22**: Validated `.venv312` environment; gymRL feature builder and HF pipeline smoke tests pass. Patched `StockTradingEnv` info payload to normalise numpy datetimes and respect configured leverage caps, restoring `tests/experimental/pufferlib/test_pufferlib_env_rules.py`.
 - **2025-10-22**: Added `evaltests/baseline_pnl_extract.py` to surface production trade PnL (via `strategy_state/trade_history.json`), exposure snapshots from `trade_stock_e2e.log`, and DeepSeek simulator benchmarks. Exported refreshed summaries to `evaltests/baseline_pnl_summary.{json,md}`.
 - **2025-10-22**: Scaffolded cross-stack evaluation harness (`evaltests/rl_benchmark_runner.py`) with sample config and JSON output capturing checkpoint metadata alongside baseline reference metrics.
 - **2025-10-22**: Expanded harness evaluators for `hftraining` (loss/return metrics) and `gymrl` (PPO config + validation stats) with sample targets wired through `evaltests/sample_rl_targets.json`.
@@ -79,5 +79,14 @@
 - **2025-10-23**: Loss-shutdown v5 (`sweep_20251023_lossprobe_v5/`) pushes to +11.71% cumulative (avg daily +0.00558) with lower turnover 0.148; Sharpe still slightly negative (−0.0061) but improving as leverage tightens.
 - **2025-10-23**: Loss-shutdown v6 (`sweep_20251023_lossprobe_v6/`) maintains +11.88% cumulative return with turnover 0.15; Sharpe improves to −0.0068 under entropy anneal 0.0008→0.
 - **2025-10-23**: Loss-shutdown v7 (`sweep_20251023_lossprobe_v7/`) delivers +11.43% cumulative return, turnover 0.144, Sharpe ≈ −0.0047; indicates diminishing returns as penalties rise—need to flip Sharpe positive or explore out-of-sample evaluation.
+- **2025-10-23**: Loss-shutdown v8 (`sweep_20251025_lossprobe_v8/`) maintains +10.7% cumulative return with turnover 0.145 and slightly better Sharpe (≈ −0.005) under more aggressive penalties; turnover plateaued while returns dipped slightly.
+- **2025-10-23**: Loss-shutdown v9 (`sweep_20251025_lossprobe_v9/`) keeps cumulative return +10.77% with turnover 0.155 and Sharpe ≈ −0.00052; leverage averages 0.70×, showing gradual progress toward positive Sharpe.
+- **2025-10-23**: Loss-shutdown v10 (`sweep_20251025_lossprobe_v10/`) hits +10.64% cumulative return with turnover 0.153 and Sharpe proxy +0.00016—the first positive Sharpe configuration (40k steps, turnover penalty 0.0068).
+- **2025-10-23**: Hold-out evaluation on resampled top-5 cache (42-step windows) now spans −23.8% to +57.6% cumulative return (median +3.3%) with leverage ≤1.13×—highlighting regime variance despite controlled leverage. Detailed stats in `evaltests/gymrl_holdout_summary.{json,md}`.
+- **2025-10-23**: Loss-shutdown v11 (`sweep_20251025_lossprobe_v11/`, 40k steps, turnover penalty 0.0069) sustains +10.69% cumulative return, turnover 0.155, Sharpe proxy +0.00016, and max drawdown 0.0071 while keeping leverage ≤1.10×.
+- **2025-10-23**: Added regime guard heuristics (`RegimeGuard`) to `PortfolioEnv` with CLI wiring (`--regime-*` flags), covering drawdown, negative-return, and turnover guards; new telemetry fields (`turnover_penalty_applied`, guard flags) feed into evaluation outputs. Authored targeted pytest coverage (`tests/gymrl/test_regime_guard.py`) and refreshed `rl_benchmark_results.json`/`scoreboard.md` to capture the updated metrics.
+- **2025-10-23**: Ran guard A/B on loss-probe v11 over resampled top-5 hold-out slices (start indices 3 781, 3 600, 3 300). Initial guards (18% drawdown / ≤0 trailing / 0.50 turnover) degraded PnL; calibrated thresholds (3.6% drawdown / ≤−3% trailing / 0.55 turnover / 0.002 probe / leverage scale 0.6) now cut average turnover by ~0.8 ppts on the troubled window while leaving benign windows effectively unchanged. Full details logged in `evaltests/gymrl_guard_analysis.{json,md}` and summarised in `evaltests/guard_metrics_summary.md`. Guard-aware confirmation sweep (`gymrl_confirmation_guarded_v12`) completed with validation cumulative return +10.96% (guard turnover hit rate ~4.8%); preset stored at `gymrl/guard_config_calibrated.json` for future sweeps.
+- **2025-10-24**: Evaluated the guard-confirmed checkpoint on the stressed hold-out window (start index 3781) and additional slices (0→3000). Guards now engage selectively: turnover guard ~5% on validation, drawdown guard ~40% and leverage scale ~0.82× on the stress window, remaining dormant elsewhere. Summaries and scoreboard updated with the guard telemetry.
+- **2025-10-24**: Attempted full `backtest_test3_inline.py` run with the guard preset; run failed during Torch Inductor compilation (`compiled_models/torch_inductor/...main.cpp` missing). Need to rerun with compilation disabled or adjust the compiled-models cache before we can compare live-equivalent results.
 
 Progress will be updated here alongside key metric snapshots, dated entries, and blockers.
