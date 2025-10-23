@@ -9,6 +9,7 @@ trading pipeline (Toto/Kronos forecasts feeding an allocator).
 from .config import FeatureBuilderConfig, OfflineDatasetConfig, PortfolioEnvConfig
 from .feature_pipeline import FeatureBuilder, FeatureCube
 from .portfolio_env import PortfolioEnv
+from .regime_filters import RegimeGuard
 from .wrappers import ObservationNormalizer, NormalizerConfig
 from .behaviour import topk_equal_weight, kelly_fractional, blend_policies
 from .offline_dataset import build_offline_dataset, generate_behaviour_weights
@@ -27,6 +28,7 @@ __all__ = [
     "FeatureBuilder",
     "FeatureCube",
     "PortfolioEnv",
+    "RegimeGuard",
     "ObservationNormalizer",
     "NormalizerConfig",
     "topk_equal_weight",

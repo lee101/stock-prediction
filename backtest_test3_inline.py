@@ -326,10 +326,38 @@ def evaluate_maxdiff_strategy(
     close_to_high = torch.tensor(close_to_high_np, dtype=torch.float32)
     close_to_low = torch.tensor(close_to_low_np, dtype=torch.float32)
 
-    high_actual_base = torch.as_tensor(last_preds.get("high_actual_movement_values"), dtype=torch.float32)
-    low_actual_base = torch.as_tensor(last_preds.get("low_actual_movement_values"), dtype=torch.float32)
-    high_pred_base = torch.as_tensor(last_preds.get("high_predictions"), dtype=torch.float32)
-    low_pred_base = torch.as_tensor(last_preds.get("low_predictions"), dtype=torch.float32)
+    high_actual_values = last_preds.get("high_actual_movement_values")
+    low_actual_values = last_preds.get("low_actual_movement_values")
+    high_pred_values = last_preds.get("high_predictions")
+    low_pred_values = last_preds.get("low_predictions")
+
+    if (
+        high_actual_values is None
+        or low_actual_values is None
+        or high_pred_values is None
+        or low_pred_values is None
+    ):
+        logger.warning(
+            "MaxDiff strategy skipped: missing prediction arrays "
+            "(high_actual=%s, low_actual=%s, high_pred=%s, low_pred=%s)",
+            "None" if high_actual_values is None else type(high_actual_values).__name__,
+            "None" if low_actual_values is None else type(low_actual_values).__name__,
+            "None" if high_pred_values is None else type(high_pred_values).__name__,
+            "None" if low_pred_values is None else type(low_pred_values).__name__,
+        )
+        eval_zero = StrategyEvaluation(
+            total_return=0.0,
+            avg_daily_return=0.0,
+            annualized_return=0.0,
+            sharpe_ratio=0.0,
+            returns=np.zeros(0, dtype=float),
+        )
+        return eval_zero, eval_zero.returns, _zero_metadata()
+
+    high_actual_base = torch.as_tensor(high_actual_values, dtype=torch.float32)
+    low_actual_base = torch.as_tensor(low_actual_values, dtype=torch.float32)
+    high_pred_base = torch.as_tensor(high_pred_values, dtype=torch.float32)
+    low_pred_base = torch.as_tensor(low_pred_values, dtype=torch.float32)
 
     high_actual = high_actual_base + close_to_high
     low_actual = low_actual_base - close_to_low

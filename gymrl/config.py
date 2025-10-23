@@ -67,6 +67,15 @@ class PortfolioEnvConfig:
         leverage_interest_rate: Annualised interest rate applied to borrowed exposure above 1x when
             held overnight (after enforcing closing_leverage_cap).
         trading_days_per_year: Number of trading days used to annualise leverage interest.
+        regime_filters_enabled: If True, activate the regime guard heuristics that downshift leverage
+            and increase turnover penalties in unfavourable windows.
+        regime_drawdown_threshold: Drawdown level triggering leverage reduction (None disables).
+        regime_leverage_scale: Multiplicative scale applied to allocations when the drawdown guard fires.
+        regime_negative_return_window: Trailing window (in steps) used to evaluate cumulative returns.
+        regime_negative_return_threshold: Cumulative return threshold; values at or below trigger guards.
+        regime_negative_return_turnover_penalty: Turnover penalty applied when the negative-return guard fires.
+        regime_turnover_threshold: Turnover level triggering stricter loss-shutdown probe sizing.
+        regime_turnover_probe_weight: Loss-shutdown probe weight enforced when the turnover guard fires.
     """
 
     costs_bps: float = 3.0
@@ -98,6 +107,14 @@ class PortfolioEnvConfig:
     leverage_penalty_annual_rate: float = ANNUAL_MARGIN_RATE
     leverage_penalty_trading_days: int = TRADING_DAYS_PER_YEAR
     enforce_end_of_day_cap: bool = True
+    regime_filters_enabled: bool = False
+    regime_drawdown_threshold: Optional[float] = None
+    regime_leverage_scale: float = 0.5
+    regime_negative_return_window: int = 42
+    regime_negative_return_threshold: float = 0.0
+    regime_negative_return_turnover_penalty: Optional[float] = None
+    regime_turnover_threshold: Optional[float] = None
+    regime_turnover_probe_weight: Optional[float] = None
 
 
 @dataclass

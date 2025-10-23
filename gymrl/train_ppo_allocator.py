@@ -194,6 +194,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--leverage-head", dest="leverage_head", action="store_true", help="Enable the leverage head in the action space.")
     parser.add_argument("--no-enforce-eod-cap", dest="enforce_eod_cap", action="store_false", help="Skip automatic end-of-day clamping to max gross leverage.")
     parser.add_argument("--enforce-eod-cap", dest="enforce_eod_cap", action="store_true", help="Force end-of-day clamp to max gross leverage (default).")
+    parser.add_argument("--regime-filters-enabled", action="store_true", help="Enable regime guard heuristics during training/evaluation.")
+    parser.add_argument("--no-regime-filters", dest="regime_filters_enabled", action="store_false", help="Disable regime guards (default).")
+    parser.add_argument("--regime-config-path", type=Path, default=None, help="Optional JSON file containing regime guard overrides.")
+    parser.add_argument("--regime-drawdown-threshold", type=float, default=None, help="Drawdown threshold triggering leverage scaling.")
+    parser.add_argument("--regime-leverage-scale", type=float, default=0.5, help="Leverage multiplier applied when drawdown guard fires.")
+    parser.add_argument(
+        "--regime-negative-return-window",
+        type=int,
+        default=42,
+        help="Trailing window size (steps) used for the cumulative return guard.",
+    )
+    parser.add_argument(
+        "--regime-negative-return-threshold",
+        type=float,
+        default=0.0,
+        help="Cumulative return threshold (<=) that activates the turnover penalty guard.",
+    )
+    parser.add_argument(
+        "--regime-negative-return-turnover-penalty",
+        type=float,
+        default=None,
+        help="Turnover penalty applied when the negative-return guard fires.",
+    )
+    parser.add_argument(
+        "--regime-turnover-threshold",
+        type=float,
+        default=None,
+        help="Turnover level triggering the stricter loss-shutdown guard.",
+    )
+    parser.add_argument(
+        "--regime-turnover-probe-weight",
+        type=float,
+        default=None,
+        help="Loss-shutdown probe weight enforced when the turnover guard fires.",
+    )
     parser.add_argument(
         "--annotate-final-artifact",
         action="store_true",
@@ -211,7 +246,7 @@ def parse_args() -> argparse.Namespace:
         default="R2_ENDPOINT",
         help="Environment variable carrying a custom endpoint URL for aws s3 cp (default: R2_ENDPOINT).",
     )
-    parser.set_defaults(include_cash=True, leverage_head=True, enforce_eod_cap=True)
+    parser.set_defaults(include_cash=True, leverage_head=True, enforce_eod_cap=True, regime_filters_enabled=False)
     return parser.parse_args()
 
 
@@ -468,6 +503,23 @@ def main() -> None:
     if backend_errors:
         logger.warning("Forecast backend issues: %s", "; ".join(backend_errors))
 
+    regime_config = {}
+    if args.regime_config_path:
+        regime_path = args.regime_config_path
+        if not regime_path.is_file():
+            raise FileNotFoundError(f"Regime config not found: {regime_path}")
+        try:
+            regime_config = json.loads(regime_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Failed to parse regime config {regime_path}: {exc}") from exc
+        if "regime_filters_enabled" in regime_config:
+            args.regime_filters_enabled = bool(regime_config["regime_filters_enabled"])
+
+    def _regime_param(name: str, default):
+        if name in regime_config:
+            return regime_config[name]
+        return default
+
     env_config = PortfolioEnvConfig(
         costs_bps=args.costs_bps,
         turnover_penalty=args.turnover_penalty,
@@ -494,6 +546,14 @@ def main() -> None:
         max_gross_leverage=args.max_gross_leverage,
         daily_leverage_rate=args.daily_leverage_rate,
         enforce_end_of_day_cap=args.enforce_eod_cap,
+        regime_filters_enabled=_regime_param("regime_filters_enabled", args.regime_filters_enabled),
+        regime_drawdown_threshold=_regime_param("regime_drawdown_threshold", args.regime_drawdown_threshold),
+        regime_leverage_scale=_regime_param("regime_leverage_scale", args.regime_leverage_scale),
+        regime_negative_return_window=_regime_param("regime_negative_return_window", args.regime_negative_return_window),
+        regime_negative_return_threshold=_regime_param("regime_negative_return_threshold", args.regime_negative_return_threshold),
+        regime_negative_return_turnover_penalty=_regime_param("regime_negative_return_turnover_penalty", args.regime_negative_return_turnover_penalty),
+        regime_turnover_threshold=_regime_param("regime_turnover_threshold", args.regime_turnover_threshold),
+        regime_turnover_probe_weight=_regime_param("regime_turnover_probe_weight", args.regime_turnover_probe_weight),
     )
 
     if args.behaviour_dataset:

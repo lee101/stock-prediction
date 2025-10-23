@@ -51,29 +51,28 @@ across the whole import tree.
 ## 4. Dependency Injection Pipeline
 
 - `StockTrainerApp.setup` eagerly imports torch, numpy, and pandas, then calls
-  `faltrain.dependencies.bulk_register_fal_dependencies` to publish them.
-- Trainers should request these modules via `faltrain.dependencies` instead of
-  importing directly:
+  `src.dependency_injection.setup_imports(torch=_torch, numpy=_np, pandas=_pd)`
+  to share those modules with every trainer that runs inside the worker.
+- Trainers should request these modules via the helper instead of importing
+  directly:
   ```python
-  from faltrain.dependencies import get_fal_dependency
+  from src.dependency_injection import resolve_numpy, resolve_pandas, resolve_torch
 
-  torch = get_fal_dependency("torch")
-  numpy = get_fal_dependency("numpy")
-  pandas = get_fal_dependency("pandas")
+  torch = resolve_torch()
+  numpy = resolve_numpy()
+  pandas = resolve_pandas()
   ```
-- `get_fal_dependency` returns the injected module if available, otherwise it
-  imports the package (and registers it) so the entire import chain stays
-  consistent with the fal runtime.
-- For multiple modules at once, use
-  `torch, numpy = get_fal_dependencies("torch", "numpy")`.
+- The `resolve_*` helpers prefer the injected modules when running inside fal
+  and lazily import the package when executing locally.
 
 ## 5. Expectations for New Trainers
 
 - Copy the trainer package into this repo, add it to
   `local_python_modules`, and register any additional heavy dependencies by
-  calling `register_fal_dependency` during setup.
+  invoking your module's `setup_training_imports` (pattern used across
+  `fal_hftraining`, `fal_pufferlibtraining`, and `fal_marketsimulator`).
 - Write regression tests under `tests/` and run them in the shared environment:
-  `source .venv/bin/activate && pytest tests/<pattern>`.
+  `source .venv/bin/activate && pytest tests/prod/<pattern>`.
 - Benchmarks or sweeps should be executed through the fal worker so that GPU
   resource configuration and artifact sync logic remain consistent.
 
@@ -96,15 +95,15 @@ across the whole import tree.
   `s3://$R2_BUCKET/compiled_models/`; hyperparameters under `hyperparams/` are
   mirrored with `s3://$R2_BUCKET/stock/hyperparams/` as part of app setup.
 - When adding new simulator tooling, list the package in
-  `MarketSimulatorApp.local_python_modules` and access heavy dependencies
-  through `faltrain.dependencies`.
+  `MarketSimulatorApp.local_python_modules` and pull heavy dependencies through
+  `src.dependency_injection.resolve_*`.
 
 ## 7. Troubleshooting Checklist
 
 - Missing module during fal runs → confirm it is listed in
   `StockTrainerApp.local_python_modules` and installed via `uv pip install -e`.
 - Import errors for torch/numpy/pandas inside trainers → replace direct imports
-  with `get_fal_dependency`.
+  with `resolve_torch()` / `resolve_numpy()` / `resolve_pandas()`.
 - Divergent dependency versions → ensure `StockTrainerApp.requirements`
   contains the canonical versions and avoid pinning conflicting versions inside
   individual trainers.

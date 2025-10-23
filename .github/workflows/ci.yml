@@ -51,17 +51,17 @@ jobs:
 
       - name: Run critical trading backtests
         run: |
-          python -m pytest tests/test_trade_stock_e2e.py tests/test_backtest3.py
+          python -m pytest \
+            tests/prod/trading/test_trade_stock_e2e.py \
+            tests/prod/backtesting/test_backtest3.py
 
       - name: Run unit tests
         run: |
-          python -m pytest tests \
-            --ignore=tests/integ \
-            --ignore=tests/test_trade_stock_e2e.py \
-            --ignore=tests/test_backtest3.py \
+          python -m pytest tests/prod \
+            --ignore=tests/prod/trading/test_trade_stock_e2e.py \
+            --ignore=tests/prod/backtesting/test_backtest3.py \
             -m "not integration"
 
       - name: Run integration tests
         run: |
-          python -m pytest tests/integ
-          python -m pytest -m integration --ignore=tests/integ
+          python -m pytest tests/prod -m integration

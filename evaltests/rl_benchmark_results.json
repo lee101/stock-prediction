@@ -1,5 +1,5 @@
 {
-  "generated_at": "2025-10-23T00:37:08.205423+00:00",
+  "generated_at": "2025-10-23T12:09:29.673892+00:00",
   "baseline": {
     "generated_at": "2025-10-22T15:50:09.149128+00:00",
     "trade_history": {
@@ -406,27 +406,27 @@
     },
     {
       "target": {
-        "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v7)",
+        "name": "gymrl ppo allocator (sweep_20251026_guard_confirm)",
         "module": "gymrl",
-        "checkpoint": "gymrl/artifacts/sweep_20251023_lossprobe_v7/ppo_allocator_final.zip",
-        "config_path": "gymrl/artifacts/sweep_20251023_lossprobe_v7/training_metadata.json",
-        "notes": "Loss-shutdown v7 (turnover_penalty=0.0055, loss probes 0.008, entropy 0.0005\u21920, 60k steps)."
+        "checkpoint": "gymrl/artifacts/sweep_20251026_guard_confirm/ppo_allocator_final.zip",
+        "config_path": "gymrl/artifacts/sweep_20251026_guard_confirm/training_metadata.json",
+        "notes": "Loss-shutdown guard confirmation (turnover_penalty=0.0071, guard preset, 40k steps)."
       },
       "status": "evaluated",
       "metrics": {
         "checkpoint": {
           "exists": true,
-          "size_bytes": 346522,
-          "modified_at": "2025-10-23T00:36:06.959638+00:00"
+          "size_bytes": 346510,
+          "modified_at": "2025-10-23T12:08:35.674526+00:00"
         },
         "implementation": "gymrl_eval_v0",
         "config": {
-          "num_timesteps": 60000,
-          "learning_rate": 9e-05,
-          "batch_size": 256,
-          "n_steps": 1024,
+          "num_timesteps": 40000,
+          "learning_rate": 5.5e-05,
+          "batch_size": 512,
+          "n_steps": 2048,
           "seed": 42,
-          "turnover_penalty": 0.0055,
+          "turnover_penalty": 0.0071,
           "weight_cap": null,
           "allow_short": false,
           "leverage_cap": 1.0
@@ -439,75 +439,110 @@
           "num_features": 21,
           "forecast_backend_used": "toto",
           "validation_metrics": {
-            "final_portfolio_value": 1.1143040657043457,
-            "cumulative_return": 0.1143040657043457,
-            "average_turnover": 0.14388185739517212,
-            "average_trading_cost": 0.00010479705815669149,
-            "max_drawdown": 0.0071626086719334126,
-            "average_log_reward": -0.003256584517657757,
+            "final_portfolio_value": 1.109600305557251,
+            "cumulative_return": 0.10960030555725098,
+            "average_turnover": 0.16013744473457336,
+            "average_trading_cost": 0.00011814707977464423,
+            "max_drawdown": 0.006979136262089014,
+            "average_log_reward": 0.0011868280125781894,
             "total_steps": 21,
             "final_portfolio_value_crypto_only": 1.0,
             "cumulative_return_crypto_only": 0.0,
-            "final_portfolio_value_non_crypto": 1.1143040657043457,
-            "cumulative_return_non_crypto": 0.1143040657043457,
+            "final_portfolio_value_non_crypto": 1.109600305557251,
+            "cumulative_return_non_crypto": 0.10960030555725098,
             "average_net_return_crypto": 0.0,
-            "average_net_return_non_crypto": 0.0051820240914821625,
+            "average_net_return_non_crypto": 0.004977280739694834,
             "average_crypto_weight": 0.0,
-            "annualized_return": 5.56098936885861,
+            "annualized_return": 5.095901792174543,
             "average_interest_cost": 0.0,
-            "average_gross_exposure_intraday": 0.7184763550758362,
-            "average_gross_exposure_close": 0.7184763550758362,
-            "max_gross_exposure_intraday": 1.1487629413604736,
-            "max_gross_exposure_close": 1.1487629413604736,
-            "average_daily_return_simple": 0.005443050747825986,
-            "annualized_return_simple": 1.9867135229564847
+            "average_gross_exposure_intraday": 0.6824570894241333,
+            "average_gross_exposure_close": 0.6805760860443115,
+            "max_gross_exposure_intraday": 1.0905721187591553,
+            "max_gross_exposure_close": 1.0799999237060547,
+            "guard_drawdown_hit_rate": 0.0,
+            "guard_negative_return_hit_rate": 0.0,
+            "guard_turnover_hit_rate": 0.0476190485060215,
+            "guard_average_leverage_scale": 1.0,
+            "guard_min_leverage_scale": 1.0,
+            "guard_average_turnover_penalty": 0.0071000000461936,
+            "guard_average_loss_probe_weight": 0.0020000000949949026,
+            "guard_average_trailing_return": 0.06120715290307999,
+            "average_daily_return_simple": 0.005219062169392903,
+            "annualized_return_simple": 1.9049576918284097
           },
           "env_config": {
             "costs_bps": 3.0,
             "per_asset_costs_bps": null,
-            "turnover_penalty": 0.0055,
+            "turnover_penalty": 0.0071,
             "drawdown_penalty": 0.0,
             "cvar_penalty": 0.0,
             "uncertainty_penalty": 0.0,
             "weight_cap": null,
             "allow_short": false,
             "loss_shutdown_enabled": true,
-            "loss_shutdown_cooldown": 8,
-            "loss_shutdown_probe_weight": 0.008,
-            "loss_shutdown_penalty": 0.4,
+            "loss_shutdown_cooldown": 12,
+            "loss_shutdown_probe_weight": 0.002,
+            "loss_shutdown_penalty": 0.6,
             "loss_shutdown_min_position": 0.0001,
-            "loss_shutdown_return_tolerance": 8e-05,
+            "loss_shutdown_return_tolerance": 1e-05,
             "leverage_cap": 1.0,
-            "intraday_leverage_cap": 1.3,
-            "closing_leverage_cap": 1.2,
+            "intraday_leverage_cap": 1.18,
+            "closing_leverage_cap": 1.08,
             "leverage_interest_rate": 0.0,
             "trading_days_per_year": 252,
             "include_cash": true,
             "cash_return": 0.0,
             "forecast_cvar_alpha": 0.05,
             "leverage_head": true,
-            "base_gross_exposure": 0.55,
-            "max_gross_leverage": 1.2,
-            "daily_leverage_rate": 0.0008,
+            "base_gross_exposure": 0.5,
+            "max_gross_leverage": 1.08,
+            "daily_leverage_rate": 0.001,
             "leverage_penalty_annual_rate": 0.0675,
             "leverage_penalty_trading_days": 252,
-            "enforce_end_of_day_cap": true
+            "enforce_end_of_day_cap": true,
+            "regime_filters_enabled": true,
+            "regime_drawdown_threshold": 0.036,
+            "regime_leverage_scale": 0.6,
+            "regime_negative_return_window": 42,
+            "regime_negative_return_threshold": -0.03,
+            "regime_negative_return_turnover_penalty": 0.0075,
+            "regime_turnover_threshold": 0.55,
+            "regime_turnover_probe_weight": 0.002
+          },
+          "regime_config": {
+            "regime_drawdown_threshold": 0.036,
+            "regime_leverage_scale": 0.6,
+            "regime_negative_return_window": 42,
+            "regime_negative_return_threshold": -0.03,
+            "regime_negative_return_turnover_penalty": 0.0075,
+            "regime_turnover_threshold": 0.55,
+            "regime_turnover_probe_weight": 0.002
+          },
+          "regime_metrics": {
+            "drawdown_hit_rate": 0.0,
+            "negative_hit_rate": 0.0,
+            "turnover_hit_rate": 0.0476190485060215,
+            "average_leverage_scale": 1.0,
+            "min_leverage_scale": 1.0,
+            "average_turnover_penalty": 0.0071000000461936,
+            "average_loss_probe_weight": 0.0020000000949949026,
+            "average_trailing_return": 0.06120715290307999
           },
           "feature_backend": "toto",
           "feature_errors": []
         },
         "topk_checkpoints": [
           {
-            "reward": -0.06824201840208843,
-            "path": "gymrl/artifacts/sweep_20251023_lossprobe_v7/topk/step_28672_reward_-0.0682.zip"
+            "reward": 0.024758726337495318,
+            "path": "gymrl/artifacts/sweep_20251026_guard_confirm/topk/step_40960_reward_0.0248.zip"
           },
           {
-            "reward": -0.06855591799831018,
-            "path": "gymrl/artifacts/sweep_20251023_lossprobe_v7/topk/step_24576_reward_-0.0686.zip"
+            "reward": 0.02445609641381452,
+            "path": "gymrl/artifacts/sweep_20251026_guard_confirm/topk/step_36864_reward_0.0245.zip"
           },
           {
-            "reward": -0.06858073669718578,
-            "path": "gymrl/artifacts/sweep_20251023_lossprobe_v7/topk/step_20480_reward_-0.0686.zip"
+            "reward": 0.024032571920542978,
+            "path": "gymrl/artifacts/sweep_20251026_guard_confirm/topk/step_32768_reward_0.0240.zip"
           }
         ],
         "comparisons": {
@@ -534,8 +569,8 @@
               "fees": 0.56375
             }
           },
-          "gymrl_cumulative_return": 0.1143040657043457,
-          "gymrl_average_daily_return": 0.0051820240914821625
+          "gymrl_cumulative_return": 0.10960030555725098,
+          "gymrl_average_daily_return": 0.004977280739694834
         }
       },
       "warnings": []
@@ -783,19 +818,6 @@
       "relative_to_baseline": -0.000768035398785126
     },
     {
-      "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v7)",
-      "module": "gymrl",
-      "score": 0.1143040657043457,
-      "details": {
-        "cumulative_return": 0.1143040657043457,
-        "average_daily_return": 0.0051820240914821625,
-        "sharpe": -0.003256584517657757,
-        "turnover": 0.14388185739517212
-      },
-      "score_per_day": 0.0051820240914821625,
-      "relative_to_baseline": -4.344317661505084e-06
-    },
-    {
       "name": "pufferlib pipeline summary",
       "module": "pufferlibtraining",
       "score": 0.11112783537634408,
@@ -808,6 +830,22 @@
       },
       "score_per_day": 0.0003878255708115376,
       "relative_to_baseline": -3.251311547604087e-07
+    },
+    {
+      "name": "gymrl ppo allocator (sweep_20251026_guard_confirm)",
+      "module": "gymrl",
+      "score": 0.10960030555725098,
+      "details": {
+        "cumulative_return": 0.10960030555725098,
+        "average_daily_return": 0.004977280739694834,
+        "sharpe": 0.0011868280125781894,
+        "turnover": 0.16013744473457336,
+        "guard_negative_hit_rate": 0.0,
+        "guard_turnover_hit_rate": 0.0476190485060215,
+        "guard_drawdown_hit_rate": 0.0
+      },
+      "score_per_day": 0.004977280739694834,
+      "relative_to_baseline": -4.172672346172126e-06
     },
     {
       "name": "differentiable market GRPO run 20251021_094014",
