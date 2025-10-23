@@ -297,10 +297,7 @@ def run_validation(val_loader, forward_pass, model, ema, args, device):
     return val_loss, val_mape
 
 
-def train() -> None:
-    parser = create_argparser()
-    args = parser.parse_args()
-
+def run_with_namespace(args: argparse.Namespace) -> None:
     torch.manual_seed(42)
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -415,6 +412,12 @@ def train() -> None:
         print(f"Best validation loss {best_val_loss:.6f} achieved at epoch {best_epoch}.")
     else:
         _save_model(model, args.output_dir, args.checkpoint_name)
+
+
+def train() -> None:
+    parser = create_argparser()
+    args = parser.parse_args()
+    run_with_namespace(args)
 
 
 if __name__ == "__main__":

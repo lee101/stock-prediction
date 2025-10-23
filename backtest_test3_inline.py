@@ -80,7 +80,11 @@ from src.models.toto_wrapper import TotoPipeline
 from src.models.toto_aggregation import aggregate_with_spec
 from src.models.kronos_wrapper import KronosForecastingWrapper
 from hyperparamstore import load_best_config, load_model_selection
-from loss_utils import percent_movements_augment
+from loss_utils import (
+    percent_movements_augment,
+    calculate_profit_torch_with_entry_buysell_profit_values,
+    calculate_trading_profit_torch_with_entry_buysell,
+)
 
 SPREAD = 1.0008711461252937
 TOTO_CI_GUARD_MULTIPLIER = float(os.getenv("TOTO_CI_GUARD_MULTIPLIER", "1.0"))
@@ -149,6 +153,8 @@ def _require_cuda(feature: str, *, symbol: Optional[str] = None, allow_cpu_fallb
 @dataclass(frozen=True)
 class StrategyEvaluation:
     total_return: float
+    avg_daily_return: float
+    annualized_return: float
     sharpe_ratio: float
     returns: ReturnSeries
 
@@ -196,6 +202,222 @@ def _log_table(title: str, headers: List[str], rows: List[List[str]]) -> None:
     logger.info(f"\n{title}\n{body}")
 
 
+def _to_numpy_array(values: ReturnSeries) -> np.ndarray:
+    if isinstance(values, pd.Series):
+        array = values.to_numpy(dtype=float)
+    else:
+        array = np.asarray(values, dtype=float)
+    if array.ndim == 0:
+        return array.reshape(1)
+    return array
+
+
+def _compute_return_profile(daily_returns: ReturnSeries, trading_days_per_year: int) -> Tuple[float, float]:
+    if trading_days_per_year <= 0:
+        return 0.0, 0.0
+    returns_np = _to_numpy_array(daily_returns)
+    if returns_np.size == 0:
+        return 0.0, 0.0
+    finite_mask = np.isfinite(returns_np)
+    if not np.any(finite_mask):
+        return 0.0, 0.0
+    cleaned = returns_np[finite_mask]
+    if cleaned.size == 0:
+        return 0.0, 0.0
+    avg_daily = float(np.mean(cleaned))
+    annualized = float(avg_daily * trading_days_per_year)
+    return avg_daily, annualized
+
+
+def _evaluate_daily_returns(daily_returns: ReturnSeries, trading_days_per_year: int) -> StrategyEvaluation:
+    returns_np = _to_numpy_array(daily_returns)
+    if returns_np.size == 0:
+        return StrategyEvaluation(
+            total_return=0.0,
+            avg_daily_return=0.0,
+            annualized_return=0.0,
+            sharpe_ratio=0.0,
+            returns=returns_np,
+        )
+
+    total_return = float(np.sum(returns_np))
+    std = float(np.std(returns_np))
+    if std == 0.0 or not np.isfinite(std):
+        sharpe = 0.0
+    else:
+        mean = float(np.mean(returns_np))
+        sharpe = float((mean / std) * np.sqrt(max(trading_days_per_year, 1)))
+    avg_daily, annualized = _compute_return_profile(returns_np, trading_days_per_year)
+    return StrategyEvaluation(
+        total_return=total_return,
+        avg_daily_return=avg_daily,
+        annualized_return=annualized,
+        sharpe_ratio=sharpe,
+        returns=returns_np,
+    )
+
+
+def evaluate_maxdiff_strategy(
+    last_preds: Dict[str, torch.Tensor],
+    simulation_data: pd.DataFrame,
+    *,
+    trading_fee: float,
+    trading_days_per_year: int,
+    is_crypto: bool = False,
+) -> Tuple[StrategyEvaluation, np.ndarray, Dict[str, object]]:
+    close_actual = torch.as_tensor(
+        last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
+        dtype=torch.float32,
+    )
+    validation_len = int(close_actual.numel())
+
+    def _zero_metadata() -> Dict[str, object]:
+        high_price = float(last_preds.get("high_predicted_price_value", 0.0))
+        low_price = float(last_preds.get("low_predicted_price_value", 0.0))
+        return {
+            "maxdiffprofit_profit": 0.0,
+            "maxdiffprofit_profit_values": [],
+            "maxdiffprofit_profit_high_multiplier": 0.0,
+            "maxdiffprofit_profit_low_multiplier": 0.0,
+            "maxdiffprofit_high_price": high_price,
+            "maxdiffprofit_low_price": low_price,
+            "maxdiff_turnover": 0.0,
+        }
+
+    if validation_len == 0:
+        eval_zero = StrategyEvaluation(
+            total_return=0.0,
+            avg_daily_return=0.0,
+            annualized_return=0.0,
+            sharpe_ratio=0.0,
+            returns=np.zeros(0, dtype=float),
+        )
+        return eval_zero, eval_zero.returns, _zero_metadata()
+
+    if len(simulation_data) < validation_len + 2:
+        eval_zero = StrategyEvaluation(
+            total_return=0.0,
+            avg_daily_return=0.0,
+            annualized_return=0.0,
+            sharpe_ratio=0.0,
+            returns=np.zeros(0, dtype=float),
+        )
+        return eval_zero, eval_zero.returns, _zero_metadata()
+
+    high_series = simulation_data["High"].iloc[-(validation_len + 2):-2]
+    low_series = simulation_data["Low"].iloc[-(validation_len + 2):-2]
+    close_series = simulation_data["Close"].iloc[-(validation_len + 2):-2]
+
+    if len(high_series) != validation_len:
+        high_series = simulation_data["High"].tail(validation_len)
+        low_series = simulation_data["Low"].tail(validation_len)
+        close_series = simulation_data["Close"].tail(validation_len)
+
+    close_vals = close_series.to_numpy(dtype=float)
+    high_vals = high_series.to_numpy(dtype=float)
+    low_vals = low_series.to_numpy(dtype=float)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        close_to_high_np = np.abs(1.0 - np.divide(high_vals, close_vals, out=np.zeros_like(high_vals), where=close_vals != 0.0))
+        close_to_low_np = np.abs(1.0 - np.divide(low_vals, close_vals, out=np.zeros_like(low_vals), where=close_vals != 0.0))
+    close_to_high_np = np.nan_to_num(close_to_high_np, nan=0.0, posinf=0.0, neginf=0.0)
+    close_to_low_np = np.nan_to_num(close_to_low_np, nan=0.0, posinf=0.0, neginf=0.0)
+
+    close_to_high = torch.tensor(close_to_high_np, dtype=torch.float32)
+    close_to_low = torch.tensor(close_to_low_np, dtype=torch.float32)
+
+    high_actual_base = torch.as_tensor(last_preds.get("high_actual_movement_values"), dtype=torch.float32)
+    low_actual_base = torch.as_tensor(last_preds.get("low_actual_movement_values"), dtype=torch.float32)
+    high_pred_base = torch.as_tensor(last_preds.get("high_predictions"), dtype=torch.float32)
+    low_pred_base = torch.as_tensor(last_preds.get("low_predictions"), dtype=torch.float32)
+
+    high_actual = high_actual_base + close_to_high
+    low_actual = low_actual_base - close_to_low
+    high_pred = high_pred_base + close_to_high
+    low_pred = low_pred_base - close_to_low
+
+    with torch.no_grad():
+        maxdiff_trades = torch.where(
+            torch.abs(high_pred) > torch.abs(low_pred),
+            torch.ones_like(high_pred),
+            -torch.ones_like(high_pred),
+        )
+        if is_crypto:
+            maxdiff_trades = torch.where(maxdiff_trades < 0, torch.zeros_like(maxdiff_trades), maxdiff_trades)
+
+        base_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
+            close_actual,
+            high_actual,
+            high_pred,
+            low_actual,
+            low_pred,
+            maxdiff_trades,
+        )
+
+        best_high_multiplier = 0.0
+        best_high_profit = float(base_profit_values.sum().item())
+
+        for multiplier in np.linspace(-0.03, 0.03, 500):
+            profit = calculate_trading_profit_torch_with_entry_buysell(
+                None,
+                None,
+                close_actual,
+                maxdiff_trades,
+                high_actual,
+                high_pred + float(multiplier),
+                low_actual,
+                low_pred,
+            ).item()
+            if profit > best_high_profit:
+                best_high_profit = float(profit)
+                best_high_multiplier = float(multiplier)
+
+        adjusted_high_pred = high_pred + best_high_multiplier
+
+        best_low_multiplier = 0.0
+        best_low_profit = best_high_profit
+        for multiplier in np.linspace(-0.03, 0.03, 500):
+            profit = calculate_trading_profit_torch_with_entry_buysell(
+                None,
+                None,
+                close_actual,
+                maxdiff_trades,
+                high_actual,
+                adjusted_high_pred,
+                low_actual,
+                low_pred + float(multiplier),
+            ).item()
+            if profit > best_low_profit:
+                best_low_profit = float(profit)
+                best_low_multiplier = float(multiplier)
+
+        final_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
+            close_actual,
+            high_actual,
+            adjusted_high_pred,
+            low_actual,
+            low_pred + best_low_multiplier,
+            maxdiff_trades,
+        )
+
+    daily_returns_np = final_profit_values.detach().cpu().numpy().astype(float, copy=False)
+    evaluation = _evaluate_daily_returns(daily_returns_np, trading_days_per_year)
+
+    high_price_reference = float(last_preds.get("high_predicted_price_value", 0.0))
+    low_price_reference = float(last_preds.get("low_predicted_price_value", 0.0))
+    metadata = {
+        "maxdiffprofit_profit": evaluation.total_return,
+        "maxdiffprofit_profit_values": daily_returns_np.tolist(),
+        "maxdiffprofit_profit_high_multiplier": best_high_multiplier,
+        "maxdiffprofit_profit_low_multiplier": best_low_multiplier,
+        "maxdiffprofit_high_price": high_price_reference * (1.0 + best_high_multiplier),
+        "maxdiffprofit_low_price": low_price_reference * (1.0 + best_low_multiplier),
+        "maxdiff_turnover": float(np.mean(np.abs(daily_returns_np))) if daily_returns_np.size else 0.0,
+    }
+
+    return evaluation, daily_returns_np, metadata
+
+
 def _log_strategy_summary(results_df: pd.DataFrame, symbol: str, num_simulations: int) -> None:
     strategy_specs = [
         ("Simple", "simple_strategy_return", "simple_strategy_sharpe", "simple_strategy_finalday"),
@@ -209,6 +431,7 @@ def _log_strategy_summary(results_df: pd.DataFrame, symbol: str, num_simulations
         ),
         ("Entry+Takeprofit", "entry_takeprofit_return", "entry_takeprofit_sharpe", "entry_takeprofit_finalday"),
         ("Highlow", "highlow_return", "highlow_sharpe", "highlow_finalday_return"),
+        ("MaxDiff", "maxdiff_return", "maxdiff_sharpe", "maxdiff_finalday_return"),
         ("CI Guard", "ci_guard_return", "ci_guard_sharpe", None),
     ]
 
@@ -264,6 +487,8 @@ def compute_walk_forward_stats(results_df: pd.DataFrame) -> Dict[str, float]:
         stats["walk_forward_highlow_sharpe"] = float(results_df["highlow_sharpe"].mean())
     if "entry_takeprofit_sharpe" in results_df:
         stats["walk_forward_takeprofit_sharpe"] = float(results_df["entry_takeprofit_sharpe"].mean())
+    if "maxdiff_sharpe" in results_df:
+        stats["walk_forward_maxdiff_sharpe"] = float(results_df["maxdiff_sharpe"].mean())
     return stats
 
 
@@ -843,7 +1068,12 @@ def confidence_guard_strategy(
     return signals
 
 
-def evaluate_strategy(strategy_signals, actual_returns, trading_fee) -> StrategyEvaluation:
+def evaluate_strategy(
+    strategy_signals,
+    actual_returns,
+    trading_fee,
+    trading_days_per_year: int,
+) -> StrategyEvaluation:
     global SPREAD
     """Evaluate the performance of a strategy, factoring in trading fees."""
     strategy_signals = strategy_signals.numpy()  # Convert to numpy array
@@ -872,19 +1102,26 @@ def evaluate_strategy(strategy_signals, actual_returns, trading_fee) -> Strategy
     # logger.info(f'fees after adjustment: {fees}')
 
     # Apply fees to the strategy returns
-    strategy_returns = strategy_signals * actual_returns - fees
+    signal_series = pd.Series(strategy_signals, index=actual_returns.index, dtype=float)
+    fee_series = pd.Series(fees, index=actual_returns.index, dtype=float)
+    gross_returns = signal_series * actual_returns
+    strategy_returns = gross_returns - fee_series
 
     cumulative_returns = (1 + strategy_returns).cumprod() - 1
     total_return = float(cumulative_returns.iloc[-1])
+
+    avg_daily_return, annualized_return = _compute_return_profile(strategy_returns, trading_days_per_year)
 
     strategy_std = strategy_returns.std()
     if strategy_std == 0 or np.isnan(strategy_std):
         sharpe_ratio = 0.0  # or some other default value
     else:
-        sharpe_ratio = float(strategy_returns.mean() / strategy_std * np.sqrt(252))
+        sharpe_ratio = float(strategy_returns.mean() / strategy_std * np.sqrt(trading_days_per_year))
 
     return StrategyEvaluation(
         total_return=total_return,
+        avg_daily_return=avg_daily_return,
+        annualized_return=annualized_return,
         sharpe_ratio=sharpe_ratio,
         returns=strategy_returns
     )
@@ -952,25 +1189,85 @@ def backtest_forecasts(symbol, num_simulations=100):
             results_df[key] = value
 
         # Log final average metrics
-        tb_writer.add_scalar(f'{symbol}/final_metrics/simple_avg_return', results_df['simple_strategy_return'].mean(), 0)
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/simple_avg_return',
+            results_df['simple_strategy_avg_daily_return'].mean(),
+            0,
+        )
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/simple_annual_return',
+            results_df['simple_strategy_annual_return'].mean(),
+            0,
+        )
         tb_writer.add_scalar(f'{symbol}/final_metrics/simple_avg_sharpe', results_df['simple_strategy_sharpe'].mean(), 0)
-        tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_return',
-                             results_df['all_signals_strategy_return'].mean(), 0)
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/all_signals_avg_return',
+            results_df['all_signals_strategy_avg_daily_return'].mean(),
+            0,
+        )
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/all_signals_annual_return',
+            results_df['all_signals_strategy_annual_return'].mean(),
+            0,
+        )
         tb_writer.add_scalar(f'{symbol}/final_metrics/all_signals_avg_sharpe',
                              results_df['all_signals_strategy_sharpe'].mean(), 0)
-        tb_writer.add_scalar(f'{symbol}/final_metrics/buy_hold_avg_return', results_df['buy_hold_return'].mean(), 0)
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/buy_hold_avg_return',
+            results_df['buy_hold_avg_daily_return'].mean(),
+            0,
+        )
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/buy_hold_annual_return',
+            results_df['buy_hold_annual_return'].mean(),
+            0,
+        )
         tb_writer.add_scalar(f'{symbol}/final_metrics/buy_hold_avg_sharpe', results_df['buy_hold_sharpe'].mean(), 0)
-        tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_return',
-                             results_df['unprofit_shutdown_return'].mean(), 0)
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/unprofit_shutdown_avg_return',
+            results_df['unprofit_shutdown_avg_daily_return'].mean(),
+            0,
+        )
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/unprofit_shutdown_annual_return',
+            results_df['unprofit_shutdown_annual_return'].mean(),
+            0,
+        )
         tb_writer.add_scalar(f'{symbol}/final_metrics/unprofit_shutdown_avg_sharpe',
                              results_df['unprofit_shutdown_sharpe'].mean(), 0)
-        tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_return',
-                             results_df['entry_takeprofit_return'].mean(), 0)
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/entry_takeprofit_avg_return',
+            results_df['entry_takeprofit_avg_daily_return'].mean(),
+            0,
+        )
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/entry_takeprofit_annual_return',
+            results_df['entry_takeprofit_annual_return'].mean(),
+            0,
+        )
         tb_writer.add_scalar(f'{symbol}/final_metrics/entry_takeprofit_avg_sharpe',
                              results_df['entry_takeprofit_sharpe'].mean(), 0)
-        tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_return', results_df['highlow_return'].mean(), 0)
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/highlow_avg_return',
+            results_df['highlow_avg_daily_return'].mean(),
+            0,
+        )
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/highlow_annual_return',
+            results_df['highlow_annual_return'].mean(),
+            0,
+        )
         tb_writer.add_scalar(f'{symbol}/final_metrics/highlow_avg_sharpe', results_df['highlow_sharpe'].mean(), 0)
-        tb_writer.add_scalar(f'{symbol}/final_metrics/ci_guard_avg_return', results_df['ci_guard_return'].mean(), 0)
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/ci_guard_avg_return',
+            results_df['ci_guard_avg_daily_return'].mean(),
+            0,
+        )
+        tb_writer.add_scalar(
+            f'{symbol}/final_metrics/ci_guard_annual_return',
+            results_df['ci_guard_annual_return'].mean(),
+            0,
+        )
         tb_writer.add_scalar(f'{symbol}/final_metrics/ci_guard_avg_sharpe', results_df['ci_guard_sharpe'].mean(), 0)
 
         _log_validation_losses(results_df)
@@ -982,14 +1279,22 @@ def backtest_forecasts(symbol, num_simulations=100):
         avg_takeprofit = results_df["entry_takeprofit_return"].mean()
         avg_highlow = results_df["highlow_return"].mean()
         avg_ci_guard = results_df["ci_guard_return"].mean()
+        if "maxdiff_return" in results_df:
+            avg_maxdiff = float(results_df["maxdiff_return"].mean())
+            if not np.isfinite(avg_maxdiff):
+                avg_maxdiff = float("-inf")
+        else:
+            avg_maxdiff = float("-inf")
 
-        best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_ci_guard)
+        best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_ci_guard, avg_maxdiff)
         if best_return == avg_ci_guard:
             best_strategy = "ci_guard"
         elif best_return == avg_highlow:
             best_strategy = "highlow"
         elif best_return == avg_takeprofit:
             best_strategy = "takeprofit"
+        elif best_return == avg_maxdiff:
+            best_strategy = "maxdiff"
         elif best_return == avg_allsignals:
             best_strategy = "all_signals"
         else:
@@ -1009,6 +1314,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         'instrument': symbol,
         'close_last_price': simulation_data['Close'].iloc[-1],
     }
+    trading_days_per_year = 365 if is_crypto else 252
 
     spread_bps_estimate = float(abs(float(spread) - 1.0) * 1e4)
     last_preds["spread_bps_estimate"] = spread_bps_estimate
@@ -1195,16 +1501,37 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     last_preds["raw_expected_move_pct"] = raw_expected_move_pct
     last_preds["calibrated_expected_move_pct"] = calibrated_expected_move_pct
 
+    maxdiff_eval, maxdiff_returns_np, maxdiff_metadata = evaluate_maxdiff_strategy(
+        last_preds,
+        simulation_data,
+        trading_fee=trading_fee,
+        trading_days_per_year=trading_days_per_year,
+        is_crypto=is_crypto,
+    )
+    last_preds.update(maxdiff_metadata)
+    maxdiff_return = maxdiff_eval.total_return
+    maxdiff_sharpe = maxdiff_eval.sharpe_ratio
+    maxdiff_avg_daily = maxdiff_eval.avg_daily_return
+    maxdiff_annual = maxdiff_eval.annualized_return
+    maxdiff_returns = maxdiff_returns_np
+    maxdiff_finalday_return = float(maxdiff_returns[-1]) if maxdiff_returns.size else 0.0
+    maxdiff_turnover = float(maxdiff_metadata.get("maxdiff_turnover", 0.0))
+
     # Simple buy/sell strategy
     simple_signals = simple_buy_sell_strategy(
         last_preds["close_predictions"],
         is_crypto=is_crypto
     )
-    simple_eval = evaluate_strategy(simple_signals, actual_returns, trading_fee)
+    simple_eval = evaluate_strategy(simple_signals, actual_returns, trading_fee, trading_days_per_year)
     simple_total_return = simple_eval.total_return
     simple_sharpe = simple_eval.sharpe_ratio
     simple_returns = simple_eval.returns
-    simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
+    simple_avg_daily = simple_eval.avg_daily_return
+    simple_annual = simple_eval.annualized_return
+    if actual_returns.empty:
+        simple_finalday_return = 0.0
+    else:
+        simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
     # All signals strategy
     all_signals = all_signals_strategy(
@@ -1213,17 +1540,24 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         last_preds["low_predictions"],
         is_crypto=is_crypto
     )
-    all_signals_eval = evaluate_strategy(all_signals, actual_returns, trading_fee)
+    all_signals_eval = evaluate_strategy(all_signals, actual_returns, trading_fee, trading_days_per_year)
     all_signals_total_return = all_signals_eval.total_return
     all_signals_sharpe = all_signals_eval.sharpe_ratio
     all_signals_returns = all_signals_eval.returns
-    all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
+    all_signals_avg_daily = all_signals_eval.avg_daily_return
+    all_signals_annual = all_signals_eval.annualized_return
+    if actual_returns.empty:
+        all_signals_finalday_return = 0.0
+    else:
+        all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
     # Buy and hold strategy
     buy_hold_signals = buy_hold_strategy(last_preds["close_predictions"])
-    buy_hold_eval = evaluate_strategy(buy_hold_signals, actual_returns, trading_fee)
+    buy_hold_eval = evaluate_strategy(buy_hold_signals, actual_returns, trading_fee, trading_days_per_year)
     buy_hold_sharpe = buy_hold_eval.sharpe_ratio
     buy_hold_returns = buy_hold_eval.returns
+    buy_hold_avg_daily = buy_hold_eval.avg_daily_return
+    buy_hold_annual = buy_hold_eval.annualized_return
     if actual_returns.empty:
         buy_hold_return_expected = -trading_fee
         buy_hold_finalday_return = -trading_fee
@@ -1234,23 +1568,33 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
 
     # Unprofit shutdown buy and hold strategy
     unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns, is_crypto=is_crypto)
-    unprofit_shutdown_eval = evaluate_strategy(unprofit_shutdown_signals, actual_returns, trading_fee)
+    unprofit_shutdown_eval = evaluate_strategy(unprofit_shutdown_signals, actual_returns, trading_fee, trading_days_per_year)
     unprofit_shutdown_return = unprofit_shutdown_eval.total_return
     unprofit_shutdown_sharpe = unprofit_shutdown_eval.sharpe_ratio
     unprofit_shutdown_returns = unprofit_shutdown_eval.returns
+    unprofit_shutdown_avg_daily = unprofit_shutdown_eval.avg_daily_return
+    unprofit_shutdown_annual = unprofit_shutdown_eval.annualized_return
     unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
     # Entry + takeprofit strategy
-    entry_takeprofit_return, entry_takeprofit_sharpe, entry_takeprofit_returns = evaluate_entry_takeprofit_strategy(
+    entry_takeprofit_eval = evaluate_entry_takeprofit_strategy(
         last_preds["close_predictions"],
         last_preds["high_predictions"],
         last_preds["low_predictions"],
         last_preds["close_actual_movement_values"],
         last_preds["high_actual_movement_values"],
         last_preds["low_actual_movement_values"],
-        trading_fee
+        trading_fee,
+        trading_days_per_year,
     )
-    entry_takeprofit_finalday_return = entry_takeprofit_return / len(actual_returns)
+    entry_takeprofit_return = entry_takeprofit_eval.total_return
+    entry_takeprofit_sharpe = entry_takeprofit_eval.sharpe_ratio
+    entry_takeprofit_returns = entry_takeprofit_eval.returns
+    entry_takeprofit_avg_daily = entry_takeprofit_eval.avg_daily_return
+    entry_takeprofit_annual = entry_takeprofit_eval.annualized_return
+    entry_takeprofit_finalday_return = (
+        entry_takeprofit_return / len(actual_returns) if len(actual_returns) > 0 else 0.0
+    )
 
     # Highlow strategy
     highlow_eval = evaluate_highlow_strategy(
@@ -1261,18 +1605,23 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         last_preds["high_actual_movement_values"],
         last_preds["low_actual_movement_values"],
         trading_fee,
-        is_crypto=is_crypto
+        is_crypto=is_crypto,
+        trading_days_per_year=trading_days_per_year,
     )
     highlow_return = highlow_eval.total_return
     highlow_sharpe = highlow_eval.sharpe_ratio
     highlow_returns = highlow_eval.returns
-    highlow_finalday_return = highlow_return / len(actual_returns)
+    highlow_avg_daily = highlow_eval.avg_daily_return
+    highlow_annual = highlow_eval.annualized_return
+    highlow_finalday_return = highlow_return / len(actual_returns) if len(actual_returns) > 0 else 0.0
 
     ci_guard_return = 0.0
     ci_guard_sharpe = 0.0
     ci_guard_finalday_return = 0.0
     ci_guard_returns = np.zeros(len(actual_returns), dtype=np.float32)
     ci_signals = torch.zeros_like(last_preds["close_predictions"])
+    ci_guard_avg_daily = 0.0
+    ci_guard_annual = 0.0
     if len(actual_returns) > 0:
         ci_band = torch.as_tensor(last_preds["close_ci_band"][:-1], dtype=torch.float32)
         if ci_band.numel() == len(last_preds["close_predictions"]):
@@ -1282,10 +1631,12 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
                 ci_multiplier=TOTO_CI_GUARD_MULTIPLIER,
                 is_crypto=is_crypto,
             )
-            ci_eval = evaluate_strategy(ci_signals, actual_returns, trading_fee)
+            ci_eval = evaluate_strategy(ci_signals, actual_returns, trading_fee, trading_days_per_year)
             ci_guard_return = ci_eval.total_return
             ci_guard_sharpe = ci_eval.sharpe_ratio
             ci_guard_returns = ci_eval.returns
+            ci_guard_avg_daily = ci_eval.avg_daily_return
+            ci_guard_annual = ci_eval.annualized_return
             if ci_signals.numel() > 0:
                 ci_guard_finalday_return = (
                     ci_signals[-1].item() * actual_returns.iloc[-1]
@@ -1321,6 +1672,10 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     tb_writer.add_scalar(f'{symbol}/strategies/ci_guard/sharpe', ci_guard_sharpe, sim_idx)
     tb_writer.add_scalar(f'{symbol}/strategies/ci_guard/finalday', ci_guard_finalday_return, sim_idx)
 
+    tb_writer.add_scalar(f'{symbol}/strategies/maxdiff/total_return', maxdiff_return, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/maxdiff/sharpe', maxdiff_sharpe, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/maxdiff/finalday', maxdiff_finalday_return, sim_idx)
+
     # Log returns over time
     for t, ret in enumerate(simple_returns):
         tb_writer.add_scalar(f'{symbol}/returns_over_time/simple', ret, t)
@@ -1336,6 +1691,8 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         tb_writer.add_scalar(f'{symbol}/returns_over_time/highlow', ret, t)
     for t, ret in enumerate(ci_guard_returns):
         tb_writer.add_scalar(f'{symbol}/returns_over_time/ci_guard', ret, t)
+    for t, ret in enumerate(maxdiff_returns):
+        tb_writer.add_scalar(f'{symbol}/returns_over_time/maxdiff', ret, t)
 
     result = {
         'date': simulation_data.index[-1],
@@ -1357,24 +1714,50 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         'simple_strategy_return': float(simple_total_return),
         'simple_strategy_sharpe': float(simple_sharpe),
         'simple_strategy_finalday': float(simple_finalday_return),
+        'simple_strategy_avg_daily_return': float(simple_avg_daily),
+        'simple_strategy_annual_return': float(simple_annual),
         'all_signals_strategy_return': float(all_signals_total_return),
         'all_signals_strategy_sharpe': float(all_signals_sharpe),
         'all_signals_strategy_finalday': float(all_signals_finalday_return),
+        'all_signals_strategy_avg_daily_return': float(all_signals_avg_daily),
+        'all_signals_strategy_annual_return': float(all_signals_annual),
         'buy_hold_return': float(buy_hold_return),
         'buy_hold_sharpe': float(buy_hold_sharpe),
         'buy_hold_finalday': float(buy_hold_finalday_return),
+        'buy_hold_avg_daily_return': float(buy_hold_avg_daily),
+        'buy_hold_annual_return': float(buy_hold_annual),
         'unprofit_shutdown_return': float(unprofit_shutdown_return),
         'unprofit_shutdown_sharpe': float(unprofit_shutdown_sharpe),
         'unprofit_shutdown_finalday': float(unprofit_shutdown_finalday_return),
+        'unprofit_shutdown_avg_daily_return': float(unprofit_shutdown_avg_daily),
+        'unprofit_shutdown_annual_return': float(unprofit_shutdown_annual),
         'entry_takeprofit_return': float(entry_takeprofit_return),
         'entry_takeprofit_sharpe': float(entry_takeprofit_sharpe),
         'entry_takeprofit_finalday': float(entry_takeprofit_finalday_return),
+        'entry_takeprofit_avg_daily_return': float(entry_takeprofit_avg_daily),
+        'entry_takeprofit_annual_return': float(entry_takeprofit_annual),
         'highlow_return': float(highlow_return),
         'highlow_sharpe': float(highlow_sharpe),
         'highlow_finalday_return': float(highlow_finalday_return),
+        'highlow_avg_daily_return': float(highlow_avg_daily),
+        'highlow_annual_return': float(highlow_annual),
+        'maxdiff_return': float(maxdiff_return),
+        'maxdiff_sharpe': float(maxdiff_sharpe),
+        'maxdiff_finalday_return': float(maxdiff_finalday_return),
+        'maxdiff_avg_daily_return': float(maxdiff_avg_daily),
+        'maxdiff_annual_return': float(maxdiff_annual),
+        'maxdiff_turnover': float(maxdiff_turnover),
+        'maxdiffprofit_profit': float(maxdiff_metadata.get('maxdiffprofit_profit', 0.0)),
+        'maxdiffprofit_profit_values': maxdiff_metadata.get('maxdiffprofit_profit_values', []),
+        'maxdiffprofit_profit_high_multiplier': float(maxdiff_metadata.get('maxdiffprofit_profit_high_multiplier', 0.0)),
+        'maxdiffprofit_profit_low_multiplier': float(maxdiff_metadata.get('maxdiffprofit_profit_low_multiplier', 0.0)),
+        'maxdiffprofit_high_price': float(maxdiff_metadata.get('maxdiffprofit_high_price', 0.0)),
+        'maxdiffprofit_low_price': float(maxdiff_metadata.get('maxdiffprofit_low_price', 0.0)),
         'ci_guard_return': float(ci_guard_return),
         'ci_guard_sharpe': float(ci_guard_sharpe),
         'ci_guard_finalday': float(ci_guard_finalday_return),
+        'ci_guard_avg_daily_return': float(ci_guard_avg_daily),
+        'ci_guard_annual_return': float(ci_guard_annual),
         'close_val_loss': float(last_preds['close_val_loss']),
         'high_val_loss': float(last_preds['high_val_loss']),
         'low_val_loss': float(last_preds['low_val_loss']),
@@ -1384,10 +1767,15 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
 
 
 def evaluate_entry_takeprofit_strategy(
-        close_predictions, high_predictions, low_predictions,
-        actual_close, actual_high, actual_low,
-        trading_fee
-):
+    close_predictions,
+    high_predictions,
+    low_predictions,
+    actual_close,
+    actual_high,
+    actual_low,
+    trading_fee,
+    trading_days_per_year: int,
+) -> StrategyEvaluation:
     """
     Evaluates an entry+takeprofit approach with minimal repeated fees:
       - If close_predictions[idx] > 0 => 'buy'
@@ -1438,12 +1826,23 @@ def evaluate_entry_takeprofit_strategy(
 
     daily_returns = np.array(daily_returns, dtype=float)
     total_return = float(daily_returns.sum())
-    if daily_returns.std() == 0:
+    if daily_returns.size == 0:
         sharpe_ratio = 0.0
     else:
-        sharpe_ratio = float(daily_returns.mean() / daily_returns.std() * np.sqrt(252))
+        std = float(daily_returns.std())
+        if std == 0.0 or np.isnan(std):
+            sharpe_ratio = 0.0
+        else:
+            sharpe_ratio = float((daily_returns.mean() / std) * np.sqrt(trading_days_per_year))
+    avg_daily_return, annualized_return = _compute_return_profile(daily_returns, trading_days_per_year)
 
-    return total_return, sharpe_ratio, daily_returns
+    return StrategyEvaluation(
+        total_return=total_return,
+        avg_daily_return=avg_daily_return,
+        annualized_return=annualized_return,
+        sharpe_ratio=sharpe_ratio,
+        returns=daily_returns,
+    )
 
 
 def evaluate_highlow_strategy(
@@ -1454,7 +1853,8 @@ def evaluate_highlow_strategy(
         actual_high,
         actual_low,
         trading_fee,
-        is_crypto=False
+        is_crypto=False,
+        trading_days_per_year: int = 252,
 ) -> StrategyEvaluation:
     """
     Evaluate a "high-low" trading approach.
@@ -1510,13 +1910,20 @@ def evaluate_highlow_strategy(
 
     daily_returns = np.array(daily_returns, dtype=float)
     total_return = float(daily_returns.sum())
-    if daily_returns.std() == 0:
+    if daily_returns.size == 0:
         sharpe_ratio = 0.0
     else:
-        sharpe_ratio = float((daily_returns.mean() / daily_returns.std()) * np.sqrt(252))
+        std = float(daily_returns.std())
+        if std == 0.0 or np.isnan(std):
+            sharpe_ratio = 0.0
+        else:
+            sharpe_ratio = float((daily_returns.mean() / std) * np.sqrt(trading_days_per_year))
+    avg_daily_return, annualized_return = _compute_return_profile(daily_returns, trading_days_per_year)
 
     return StrategyEvaluation(
         total_return=total_return,
+        avg_daily_return=avg_daily_return,
+        annualized_return=annualized_return,
         sharpe_ratio=sharpe_ratio,
         returns=daily_returns
     )

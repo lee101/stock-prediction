@@ -6,7 +6,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -38,6 +38,11 @@ if "fal" not in sys.modules:
     fal_stub.App = _FalApp
     fal_stub.endpoint = _fal_endpoint
     sys.modules["fal"] = fal_stub
+
+if "transformers" not in sys.modules:
+    transformers_stub = ModuleType("transformers")
+    transformers_stub.set_seed = lambda seed: None
+    sys.modules["transformers"] = transformers_stub
 
 import faltrain.app as fal_app
 
@@ -168,7 +173,7 @@ def test_train_hf_selects_best_cfg_and_pushes_artifacts(monkeypatch, tmp_path):
     ).name
     assert best_dir.exists()
 
-    assert len(pnl_calls) == 2
+    assert len(pnl_calls) == len(response.sweep_results) * 2
     assert all(call[2] == Path("/data/trainingdata") for call in pnl_calls)
     assert response.pnl_summary["stock_only"]["crypto"] is False
     assert response.pnl_summary["stock_plus_crypto"]["crypto"] is True
@@ -199,6 +204,7 @@ def test_batch_size_fallback_on_oom(monkeypatch, tmp_path):
         exhaustive=False,
     )
     monkeypatch.setattr(fal_app, "auto_tune_batch_sizes", lambda **_: selection)
+    monkeypatch.setattr(fal_app, "get_cached_batch_selection", lambda **_: None)
 
     sync_calls = []
     cp_calls = []
@@ -251,7 +257,65 @@ def test_batch_size_fallback_on_oom(monkeypatch, tmp_path):
     assert attempts == [512, 256]
     assert persisted[-1] == 256
     assert response.best_cfg["batch_size"] == 256
+    assert response.best_cfg["transaction_cost_bps"] == fal_app.DEFAULT_STOCK_TRADING_FEE_BPS
 
+
+def test_run_toto_once_uses_runner(monkeypatch, tmp_path):
+    monkeypatch.setattr(fal_app, "REPO_ROOT", tmp_path)
+
+    data_root = tmp_path / "data"
+    (data_root / "train").mkdir(parents=True)
+
+    captured = {}
+
+    def fake_run_training(**kwargs):
+        captured.update(kwargs)
+        out_dir = Path(kwargs["output_dir"])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        summary = out_dir / "final_metrics.json"
+        summary.write_text(json.dumps({"val": {"loss": 0.12}}))
+        return {"val": {"loss": 0.12}}, summary
+
+    monkeypatch.setattr("tototrainingfal.runner.run_training", fake_run_training)
+
+    request = fal_app.TrainRequest(
+        run_name="toto-run",
+        trainer="toto",
+        trainingdata_prefix=str(data_root),
+        output_root=str(tmp_path / "out"),
+        sweeps=fal_app.SweepSpace(
+            learning_rates=[2e-4],
+            batch_sizes=[32],
+            context_lengths=[128],
+            horizons=[24],
+            loss=["huber"],
+            crypto_enabled=[False],
+        ),
+        do_sweeps=False,
+        parallel_trials=1,
+        epochs=2,
+    )
+
+    app = fal_app.create_app()
+    cfg = {
+        "batch_size": 32,
+        "context_length": 128,
+        "horizon": 24,
+        "loss": "huber",
+        "learning_rate": 2e-4,
+        "transaction_cost_bps": fal_app.DEFAULT_STOCK_TRADING_FEE_BPS,
+        "crypto_enabled": False,
+    }
+
+    metrics, outdir = app._run_toto_once(Path(tmp_path / "artifacts"), request, cfg)
+
+    assert metrics == {"val": {"loss": 0.12}}
+    assert Path(outdir).exists()
+    assert captured["context_length"] == 128
+    assert captured["prediction_length"] == 24
+    assert captured["batch_size"] == 32
+    assert captured["epochs"] == 2
+    assert captured["loss"] == "huber"
 def test_setup_injects_training_modules(monkeypatch):
     torch_stub = SimpleNamespace(tag="torch")
     numpy_stub = SimpleNamespace(tag="numpy")
@@ -302,7 +366,7 @@ def test_auto_tune_batch_sizes_prefers_feasible_candidate(monkeypatch, tmp_path)
     torch_stub = SimpleNamespace(cuda=FakeCuda)
 
     monkeypatch.setattr(tuner, "_CACHE", {})
-    monkeypatch.setattr(tuner, "_PERSIST_PATH", tmp_path / "best.json")
+    monkeypatch.setattr(tuner, "_PERSIST_PATHS", (tmp_path / "best.json",))
     monkeypatch.setattr(tuner, "_PERSISTED", {})
     monkeypatch.setattr(tuner, "_load_torch", lambda: torch_stub)
 
@@ -327,7 +391,7 @@ def test_auto_tune_can_be_disabled(monkeypatch, tmp_path):
     import faltrain.batch_size_tuner as tuner
 
     monkeypatch.setattr(tuner, "_CACHE", {})
-    monkeypatch.setattr(tuner, "_PERSIST_PATH", tmp_path / "best.json")
+    monkeypatch.setattr(tuner, "_PERSIST_PATHS", (tmp_path / "best.json",))
     monkeypatch.setattr(tuner, "_PERSISTED", {})
     monkeypatch.setattr(tuner, "_load_torch", lambda: None)
 

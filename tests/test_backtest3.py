@@ -107,9 +107,11 @@ def test_evaluate_strategy_with_fees():
     strategy_signals = torch.tensor([1., 1., -1., -1., 1.])
     actual_returns = pd.Series([0.02, 0.01, -0.01, -0.02, 0.03])
 
-    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee, 252)
     total_return = evaluation.total_return
     sharpe_ratio = evaluation.sharpe_ratio
+    avg_daily_return = evaluation.avg_daily_return
+    annual_return = evaluation.annualized_return
 
     #
     # Adjusted to match the code's actual fee logic (which includes spread).
@@ -120,15 +122,19 @@ def test_evaluate_strategy_with_fees():
     assert pytest.approx(total_return, rel=1e-4) == expected_total_return_according_to_code, \
         f"Expected total return {expected_total_return_according_to_code}, but got {total_return}"
     assert sharpe_ratio > 0, f"Sharpe ratio {sharpe_ratio} is not positive"
+    assert pytest.approx(avg_daily_return, rel=1e-6) == float(np.mean(evaluation.returns)), "avg_daily_return mismatch"
+    assert pytest.approx(annual_return, rel=1e-6) == avg_daily_return * 252, "annualized return mismatch"
 
 
 def test_evaluate_strategy_approx():
     strategy_signals = torch.tensor([1., 1., -1., -1., 1.])
     actual_returns = pd.Series([0.02, 0.01, -0.01, -0.02, 0.03])
 
-    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee, 252)
     total_return = evaluation.total_return
     sharpe_ratio = evaluation.sharpe_ratio
+    avg_daily_return = evaluation.avg_daily_return
+    annual_return = evaluation.annualized_return
 
     # Calculate expected fees correctly
     expected_gains = [1.02 - (2 * trading_fee),
@@ -144,6 +150,8 @@ def test_evaluate_strategy_approx():
     assert total_return > 0, \
         f"Expected total return {actual_gain}, but got {total_return}"
     assert sharpe_ratio > 0, f"Sharpe ratio {sharpe_ratio} is not positive"
+    assert pytest.approx(avg_daily_return, rel=1e-6) == float(np.mean(evaluation.returns)), "avg_daily_return mismatch"
+    assert pytest.approx(annual_return, rel=1e-6) == avg_daily_return * 252, "annualized return mismatch"
 
 
 def test_buy_hold_strategy():
@@ -176,9 +184,11 @@ def test_evaluate_buy_hold_strategy():
     actual_returns = pd.Series([0.02, -0.01, 0.03, -0.02, 0.04])
 
     strategy_signals = buy_hold_strategy(predictions)
-    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee, 252)
     total_return = evaluation.total_return
     sharpe_ratio = evaluation.sharpe_ratio
+    avg_daily_return = evaluation.avg_daily_return
+    annual_return = evaluation.annualized_return
 
     # The code’s logic (spread + fees) yields about 0.076956925...
     expected_total_return_according_to_code = 0.07695692505032437
@@ -186,6 +196,8 @@ def test_evaluate_buy_hold_strategy():
     assert pytest.approx(total_return, rel=1e-4) == expected_total_return_according_to_code, \
         f"Expected total return {expected_total_return_according_to_code}, but got {total_return}"
     assert sharpe_ratio > 0, f"Sharpe ratio {sharpe_ratio} is not positive"
+    assert pytest.approx(avg_daily_return, rel=1e-6) == float(np.mean(evaluation.returns)), "avg_daily_return mismatch"
+    assert pytest.approx(annual_return, rel=1e-6) == avg_daily_return * 252, "annualized return mismatch"
 
 
 def test_evaluate_unprofit_shutdown_buy_hold():
@@ -193,9 +205,11 @@ def test_evaluate_unprofit_shutdown_buy_hold():
     actual_returns = pd.Series([0.02, 0.01, 0.01, 0.02, 0.03])
 
     strategy_signals = unprofit_shutdown_buy_hold(predictions, actual_returns)
-    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee)
+    evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee, 252)
     total_return = evaluation.total_return
     sharpe_ratio = evaluation.sharpe_ratio
+    avg_daily_return = evaluation.avg_daily_return
+    annual_return = evaluation.annualized_return
 
     # The code’s logic yields about 0.041420068...
     expected_total_return_according_to_code = 0.041420068089422335
@@ -203,6 +217,8 @@ def test_evaluate_unprofit_shutdown_buy_hold():
     assert pytest.approx(total_return, rel=1e-4) == expected_total_return_according_to_code, \
         f"Expected total return {expected_total_return_according_to_code}, but got {total_return}"
     assert sharpe_ratio > 0, f"Sharpe ratio {sharpe_ratio} is not positive"
+    assert pytest.approx(avg_daily_return, rel=1e-6) == float(np.mean(evaluation.returns)), "avg_daily_return mismatch"
+    assert pytest.approx(annual_return, rel=1e-6) == avg_daily_return * 252, "annualized return mismatch"
 
 
 @patch('backtest_test3_inline.download_daily_stock_data')

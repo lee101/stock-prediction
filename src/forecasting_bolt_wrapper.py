@@ -2,9 +2,29 @@ from __future__ import annotations
 
 from typing import Optional
 
-import torch
-import numpy as np
+from .dependency_injection import (
+    register_observer,
+    resolve_numpy,
+    resolve_torch,
+)
 from chronos import BaseChronosPipeline
+
+torch = resolve_torch()
+np = resolve_numpy()
+
+
+def _refresh_torch(module):
+    global torch
+    torch = module
+
+
+def _refresh_numpy(module):
+    global np
+    np = module
+
+
+register_observer("torch", _refresh_torch)
+register_observer("numpy", _refresh_numpy)
 
 class ForecastingBoltWrapper:
     def __init__(self, model_name="amazon/chronos-bolt-base", device="cuda"):

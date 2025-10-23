@@ -1,0 +1,32 @@
+{
+  "targets": [
+    {
+      "name": "hftraining quick_test_output_20251017_143438",
+      "module": "hftraining",
+      "checkpoint": "hftraining/quick_test_output_20251017_143438/final_model.pth",
+      "config_path": "hftraining/quick_test_output_20251017_143438/config.json",
+      "notes": "Reference checkpoint from quick test run."
+    },
+    {
+      "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v7)",
+      "module": "gymrl",
+      "checkpoint": "gymrl/artifacts/sweep_20251023_lossprobe_v7/ppo_allocator_final.zip",
+      "config_path": "gymrl/artifacts/sweep_20251023_lossprobe_v7/training_metadata.json",
+      "notes": "Loss-shutdown v7 (turnover_penalty=0.0055, loss probes 0.008, entropy 0.0005→0, 60k steps)."
+    },
+    {
+      "name": "pufferlib pipeline summary",
+      "module": "pufferlibtraining",
+      "checkpoint": "pufferlibtraining/models/optuna_20251022/base_models/base_checkpoint_20251023_060620.pth",
+      "config_path": "pufferlibtraining/models/pipeline_summary.json",
+      "notes": "Latest pipeline run with transaction_cost_bps=5, risk_penalty=0.05, leverage_limit=1.5."
+    },
+    {
+      "name": "differentiable market GRPO run 20251021_094014",
+      "module": "differentiable_market",
+      "checkpoint": "differentiable_market/runs/20251021_094014/checkpoints/best.pt",
+      "config_path": "differentiable_market/runs/20251021_094014/config.json",
+      "notes": "GRPO training with torch.compile bf16; includes eval metrics."
+    }
+  ]
+}

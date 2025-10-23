@@ -1282,3 +1282,4 @@ yfinance==0.2.58
     # via -r requirements.in
 zipp==3.23.0
     # via importlib-metadata
+fal==1.46.2
