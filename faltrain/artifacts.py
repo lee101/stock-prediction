@@ -5,7 +5,6 @@ Artifact manifest loading and sync helpers shared across CLI and FAL apps.
 
 from __future__ import annotations
 
-import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +18,9 @@ except ImportError:  # pragma: no cover - fallback for older runtimes
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = Path(__file__).with_name("model_manifest.toml")
 
-LOG = logging.getLogger(__name__)
+from faltrain.logger_utils import std_logger
+
+LOG = std_logger(__name__)
 
 
 @dataclass(frozen=True)

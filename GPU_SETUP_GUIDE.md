@@ -83,7 +83,7 @@ uv pip install -r requirements.txt
 ### Verify GPU Access
 
 ```python
-# tests/test_gpu_setup.py
+# tests/prod/infra/test_gpu_setup.py
 import torch
 
 def test_gpu_availability():
@@ -115,7 +115,7 @@ if __name__ == "__main__":
 
 Run test:
 ```bash
-python tests/test_gpu_setup.py
+python tests/prod/infra/test_gpu_setup.py
 ```
 
 ## Environment Configuration

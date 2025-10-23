@@ -109,6 +109,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=512, help="PPO minibatch size.")
     parser.add_argument("--n-steps", type=int, default=2048, help="Number of steps to run per environment update.")
     parser.add_argument("--ent-coef", type=float, default=0.0, help="Entropy regularisation coefficient.")
+    parser.add_argument(
+        "--ent-coef-final",
+        type=float,
+        default=None,
+        help="Optional target entropy coefficient for linear annealing across training steps.",
+    )
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor.")
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda parameter.")
     parser.add_argument("--clip-range", type=float, default=0.2, help="PPO clip range.")
@@ -163,7 +169,6 @@ def parse_args() -> argparse.Namespace:
         default=1e-5,
         help="Absolute net return threshold treated as neutral when updating cooldown state.",
     )
-    parser.add_argument("--intraday-leverage-cap", type=float, default=None, help="Optional gross exposure cap applied immediately after actions (long-only leverage).")
     parser.add_argument("--closing-leverage-cap", type=float, default=None, help="Gross exposure cap enforced at market close before carrying positions overnight.")
     parser.add_argument("--leverage-interest-rate", type=float, default=0.0, help="Annual interest rate applied to leverage above 1x when held overnight.")
     parser.add_argument("--trading-days-per-year", type=int, default=252, help="Trading days per year used for leverage interest accrual.")
@@ -189,6 +194,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--leverage-head", dest="leverage_head", action="store_true", help="Enable the leverage head in the action space.")
     parser.add_argument("--no-enforce-eod-cap", dest="enforce_eod_cap", action="store_false", help="Skip automatic end-of-day clamping to max gross leverage.")
     parser.add_argument("--enforce-eod-cap", dest="enforce_eod_cap", action="store_true", help="Force end-of-day clamp to max gross leverage (default).")
+    parser.add_argument("--regime-filters-enabled", action="store_true", help="Enable regime guard heuristics during training/evaluation.")
+    parser.add_argument("--no-regime-filters", dest="regime_filters_enabled", action="store_false", help="Disable regime guards (default).")
+    parser.add_argument("--regime-config-path", type=Path, default=None, help="Optional JSON file containing regime guard overrides.")
+    parser.add_argument("--regime-drawdown-threshold", type=float, default=None, help="Drawdown threshold triggering leverage scaling.")
+    parser.add_argument("--regime-leverage-scale", type=float, default=0.5, help="Leverage multiplier applied when drawdown guard fires.")
+    parser.add_argument(
+        "--regime-negative-return-window",
+        type=int,
+        default=42,
+        help="Trailing window size (steps) used for the cumulative return guard.",
+    )
+    parser.add_argument(
+        "--regime-negative-return-threshold",
+        type=float,
+        default=0.0,
+        help="Cumulative return threshold (<=) that activates the turnover penalty guard.",
+    )
+    parser.add_argument(
+        "--regime-negative-return-turnover-penalty",
+        type=float,
+        default=None,
+        help="Turnover penalty applied when the negative-return guard fires.",
+    )
+    parser.add_argument(
+        "--regime-turnover-threshold",
+        type=float,
+        default=None,
+        help="Turnover level triggering the stricter loss-shutdown guard.",
+    )
+    parser.add_argument(
+        "--regime-turnover-probe-weight",
+        type=float,
+        default=None,
+        help="Loss-shutdown probe weight enforced when the turnover guard fires.",
+    )
     parser.add_argument(
         "--annotate-final-artifact",
         action="store_true",
@@ -206,7 +246,7 @@ def parse_args() -> argparse.Namespace:
         default="R2_ENDPOINT",
         help="Environment variable carrying a custom endpoint URL for aws s3 cp (default: R2_ENDPOINT).",
     )
-    parser.set_defaults(include_cash=True, leverage_head=True, enforce_eod_cap=True)
+    parser.set_defaults(include_cash=True, leverage_head=True, enforce_eod_cap=True, regime_filters_enabled=False)
     return parser.parse_args()
 
 
@@ -305,6 +345,24 @@ class TopKCheckpointCallback(BaseCallback):
                 rewards = ", ".join(f"{entry['reward']:.4f}" for entry in self._leaderboard)
                 logger.info("Top-%d checkpoint update (rewards=%s)", self.top_k, rewards)
 
+        return True
+
+
+class EntropyAnnealCallback(BaseCallback):
+    """Linearly anneal the entropy coefficient throughout training."""
+
+    def __init__(self, total_timesteps: int, start_coef: float, final_coef: float) -> None:
+        super().__init__()
+        self.total_timesteps = max(1, int(total_timesteps))
+        self.start_coef = float(start_coef)
+        self.final_coef = float(final_coef)
+
+    def _on_step(self) -> bool:
+        progress = min(1.0, self.num_timesteps / self.total_timesteps)
+        new_coef = self.start_coef + (self.final_coef - self.start_coef) * progress
+        self.model.ent_coef = new_coef
+        if hasattr(self.model.policy, "entropy_coef"):
+            self.model.policy.entropy_coef = new_coef
         return True
 
 
@@ -419,6 +477,11 @@ def main() -> None:
         "enforce_eod_cap": args.enforce_eod_cap,
         "leverage_head": args.leverage_head,
     }
+    if args.ent_coef_final is not None:
+        extra_meta["entropy_schedule"] = {
+            "start": args.ent_coef,
+            "final": args.ent_coef_final,
+        }
 
     cube_meta = {
         "feature_names": cube.feature_names,
@@ -439,6 +502,23 @@ def main() -> None:
         logger.info("Feature backend: %s", backend_label)
     if backend_errors:
         logger.warning("Forecast backend issues: %s", "; ".join(backend_errors))
+
+    regime_config = {}
+    if args.regime_config_path:
+        regime_path = args.regime_config_path
+        if not regime_path.is_file():
+            raise FileNotFoundError(f"Regime config not found: {regime_path}")
+        try:
+            regime_config = json.loads(regime_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Failed to parse regime config {regime_path}: {exc}") from exc
+        if "regime_filters_enabled" in regime_config:
+            args.regime_filters_enabled = bool(regime_config["regime_filters_enabled"])
+
+    def _regime_param(name: str, default):
+        if name in regime_config:
+            return regime_config[name]
+        return default
 
     env_config = PortfolioEnvConfig(
         costs_bps=args.costs_bps,
@@ -466,6 +546,14 @@ def main() -> None:
         max_gross_leverage=args.max_gross_leverage,
         daily_leverage_rate=args.daily_leverage_rate,
         enforce_end_of_day_cap=args.enforce_eod_cap,
+        regime_filters_enabled=_regime_param("regime_filters_enabled", args.regime_filters_enabled),
+        regime_drawdown_threshold=_regime_param("regime_drawdown_threshold", args.regime_drawdown_threshold),
+        regime_leverage_scale=_regime_param("regime_leverage_scale", args.regime_leverage_scale),
+        regime_negative_return_window=_regime_param("regime_negative_return_window", args.regime_negative_return_window),
+        regime_negative_return_threshold=_regime_param("regime_negative_return_threshold", args.regime_negative_return_threshold),
+        regime_negative_return_turnover_penalty=_regime_param("regime_negative_return_turnover_penalty", args.regime_negative_return_turnover_penalty),
+        regime_turnover_threshold=_regime_param("regime_turnover_threshold", args.regime_turnover_threshold),
+        regime_turnover_probe_weight=_regime_param("regime_turnover_probe_weight", args.regime_turnover_probe_weight),
     )
 
     if args.behaviour_dataset:
@@ -589,8 +677,12 @@ def main() -> None:
         backend_label,
     )
 
+    callbacks: List[BaseCallback] = [checkpoint_callback, eval_callback, topk_callback]
+    if args.ent_coef_final is not None:
+        callbacks.append(EntropyAnnealCallback(args.num_timesteps, args.ent_coef, args.ent_coef_final))
+
     with _autocast_context():
-        model.learn(total_timesteps=args.num_timesteps, callback=[checkpoint_callback, eval_callback, topk_callback])
+        model.learn(total_timesteps=args.num_timesteps, callback=callbacks)
     model_path = args.output_dir / "ppo_allocator_final.zip"
     model.save(str(model_path))
 

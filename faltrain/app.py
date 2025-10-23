@@ -19,33 +19,62 @@ import os
 import random
 import shutil
 import subprocess
+import warnings
 import time
 import uuid
-from pathlib import Path
+from contextlib import nullcontext
 from importlib import import_module
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+
+import inspect
 
 import copy
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import fal
+import transformers
 from pydantic import BaseModel, Field
 
 from faltrain.artifacts import load_artifact_specs, sync_artifacts
 from faltrain.batch_size_tuner import (
     BatchSizeSelection,
     auto_tune_batch_sizes,
+    get_cached_batch_selection,
     persist_batch_size,
 )
+from faltrain.dependencies import bulk_register_fal_dependencies
+from faltrain.logger_utils import configure_stdout_logging
+from wandboard import WandBoardLogger
+
+from src.dependency_injection import setup_imports as setup_src_imports
+from src.tblib_compat import ensure_tblib_pickling_support
+from src.torch_backend import configure_tf32_backends
+from faltrain.shared_logger import get_logger, log_timing, setup_logging
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LOG = logging.getLogger("faltrain.app")
-LOG.setLevel(logging.INFO)
+ensure_tblib_pickling_support()
+LOG = get_logger("faltrain.app", logging.INFO)
+
+DEFAULT_STOCK_TRADING_FEE = 0.0005
+DEFAULT_CRYPTO_TRADING_FEE = 0.0015
+DEFAULT_STOCK_TRADING_FEE_BPS = int(round(DEFAULT_STOCK_TRADING_FEE * 10_000))
+DEFAULT_CRYPTO_TRADING_FEE_BPS = int(round(DEFAULT_CRYPTO_TRADING_FEE * 10_000))
+
+DEFAULT_STOCK_TRADING_FEE = 0.0005
+DEFAULT_CRYPTO_TRADING_FEE = 0.0015
+DEFAULT_STOCK_TRADING_FEE_BPS = int(round(DEFAULT_STOCK_TRADING_FEE * 10_000))
+DEFAULT_CRYPTO_TRADING_FEE_BPS = int(round(DEFAULT_CRYPTO_TRADING_FEE * 10_000))
 
 _TRAINING_INJECTION_MODULES: Tuple[str, ...] = (
     "hftraining.injection",
+    "fal_hftraining.runner",
     "tototraining.injection",
     "pufferlibtraining.injection",
+    "fal_pufferlibtraining.runner",
+    "fal_marketsimulator.runner",
+    "tototrainingfal.runner",
+    "faltrain.batch_size_tuner",
 )
 
 
@@ -96,15 +125,18 @@ def _aws_cp(src: str, dst: str, endpoint: str, recursive: bool = False) -> None:
     _run(args)
 
 
-def _maybe_seed(seed: Optional[int]) -> int:
-    value = seed if seed is not None else random.randint(1, 10_000_000)
-    random.seed(value)
-    return value
+def _resolve_training_seed(request_seed: Optional[int]) -> int:
+    """Return the seed for a training run and seed relevant libraries."""
+    seed = int(request_seed) if request_seed is not None else random.randint(1, 10_000_000)
+    random.seed(seed)
+    transformers.set_seed(seed)
+    return seed
 
 
 def _inject_training_modules(
     torch_mod: Any,
     numpy_mod: Any,
+    pandas_mod: Any | None = None,
     *,
     module_names: Iterable[str] = _TRAINING_INJECTION_MODULES,
 ) -> None:
@@ -115,7 +147,17 @@ def _inject_training_modules(
             continue
         setup_fn = getattr(module, "setup_training_imports", None)
         if callable(setup_fn):
-            setup_fn(torch_mod, numpy_mod)
+            try:
+                params = tuple(inspect.signature(setup_fn).parameters.values())
+            except (TypeError, ValueError):
+                params = ()
+            try:
+                if len(params) >= 3:
+                    setup_fn(torch_mod, numpy_mod, pandas_mod)
+                else:
+                    setup_fn(torch_mod, numpy_mod)
+            except TypeError:
+                setup_fn(torch_mod, numpy_mod)
             LOG.info("Injected torch/numpy into %s", mod_path)
 
 
@@ -374,13 +416,27 @@ def _collect_checkpoint_candidates(base_dir: Path) -> List[Path]:
 
 def _grid(space: "SweepSpace") -> List[Dict[str, Any]]:
     grid: List[Dict[str, Any]] = []
-    batch_selection = auto_tune_batch_sizes(
-        candidates=space.batch_sizes,
-        context_lengths=space.context_lengths,
-        horizons=space.horizons,
-        auto_tune=space.auto_tune_batch_size,
-        safety_margin=space.batch_size_safety_margin,
-    )
+    batch_selection: Optional[BatchSizeSelection] = None
+    if space.auto_tune_batch_size:
+        batch_selection = get_cached_batch_selection(
+            candidates=space.batch_sizes,
+            context_lengths=space.context_lengths,
+            horizons=space.horizons,
+        )
+        if batch_selection and batch_selection.signature:
+            LOG.info(
+                "Reusing cached batch size %s for signature %s",
+                batch_selection.selected,
+                batch_selection.signature,
+            )
+    if batch_selection is None:
+        batch_selection = auto_tune_batch_sizes(
+            candidates=space.batch_sizes,
+            context_lengths=space.context_lengths,
+            horizons=space.horizons,
+            auto_tune=space.auto_tune_batch_size,
+            safety_margin=space.batch_size_safety_margin,
+        )
     batch_meta = batch_selection.meta()
     for lr in space.learning_rates:
         for bs in batch_selection.sweep_values():
@@ -427,9 +483,11 @@ class TrainRequest(BaseModel):
     symbols: List[str] = ["SPY"]
     val_days: int = 30
     epochs: int = 2
-    transaction_cost_bps: int = 1
+    transaction_cost_bps: Optional[int] = None
+    stock_transaction_cost_bps: int = DEFAULT_STOCK_TRADING_FEE_BPS
+    crypto_transaction_cost_bps: int = DEFAULT_CRYPTO_TRADING_FEE_BPS
     seed: Optional[int] = None
-    parallel_trials: int = 2
+    parallel_trials: int = 4
 
 
 class RunArtifact(BaseModel):
@@ -453,17 +511,27 @@ class TrainResponse(BaseModel):
     artifact_root: RunArtifact
 
 
+def _resolve_transaction_cost_bps(req: TrainRequest, *, crypto_enabled: bool) -> int:
+    if req.transaction_cost_bps is not None:
+        return int(req.transaction_cost_bps)
+    if crypto_enabled:
+        return int(req.crypto_transaction_cost_bps)
+    return int(req.stock_transaction_cost_bps)
+
+
 class StockTrainerApp(
     fal.App,
     name="stock-trainer",
     min_concurrency=0,
     max_concurrency=1,
-    keep_alive=120,
+    keep_alive=30,
 ):
     machine_type = "GPU-H200"
     python_version = "3.12"
     requirements = [
         "fal-client",
+        "tblib>=3.2",
+        "nvidia-ml-py>=13.580.82",
         "torch>=2.8.0",
         "torchvision>=0.21.0",
         "numpy>=1.24.4,<2",
@@ -494,39 +562,80 @@ class StockTrainerApp(
         "pufferlibinference",
         "gymrl",
         "src",
+        "fal_hftraining",
+        "fal_pufferlibtraining",
     ]
 
     def setup(self) -> None:
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
+        setup_logging(logging.INFO)
+        configure_stdout_logging(level=logging.INFO, fmt="%(asctime)s | %(message)s")
+        with log_timing(LOG, "StockTrainerApp.setup"):
+            warnings.filterwarnings(
+                "ignore",
+                message="The pynvml package is deprecated.*",
+                category=FutureWarning,
+                module="torch.cuda",
+            )
+            LOG.info(
+                "Starting StockTrainerApp.setup pid=%s cwd=%s",
+                os.getpid(),
+                os.getcwd(),
+            )
+            os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
+            os.environ.setdefault(
+                "PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True"
+            )
+            LOG.debug(
+                "Environment CUDA_LAUNCH_BLOCKING=%s PYTORCH_CUDA_ALLOC_CONF=%s",
+                os.getenv("CUDA_LAUNCH_BLOCKING"),
+                os.getenv("PYTORCH_CUDA_ALLOC_CONF"),
+            )
 
-        import torch as _torch
-        import numpy as _np
+            with log_timing(LOG, "Import torch/numpy/pandas"):
+                import torch as _torch
+                import numpy as _np
+                import pandas as _pd
 
-        # CUDA / transformer knobs tuned for H200 workloads.
-        os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
-        os.environ.setdefault(
-            "PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True"
-        )
-        try:
-            _torch.backends.cuda.matmul.allow_tf32 = True
-            _torch.backends.cudnn.allow_tf32 = True
-            _torch.backends.cudnn.benchmark = True
-            _torch.backends.cuda.enable_flash_sdp(True)
-            _torch.backends.cuda.enable_math_sdp(True)
-            _torch.backends.cuda.enable_mem_efficient_sdp(True)
-        except Exception:
-            pass
+            with log_timing(LOG, "Configure torch backends"):
+                tf32_state = configure_tf32_backends(_torch, logger=LOG)
+                LOG.info(
+                    "TF32 precision configured new_api=%s legacy_api=%s",
+                    tf32_state["new_api"],
+                    tf32_state["legacy_api"],
+                )
+                try:
+                    _torch.backends.cudnn.benchmark = True
+                    _torch.backends.cuda.enable_flash_sdp(True)
+                    _torch.backends.cuda.enable_math_sdp(True)
+                    _torch.backends.cuda.enable_mem_efficient_sdp(True)
+                except Exception:
+                    LOG.debug("Skipping advanced CUDA backend configuration", exc_info=True)
 
-        LOG.info("CUDA device: %s", _torch.cuda.get_device_name(0))
-        LOG.info("torch version: %s", _torch.__version__)
+            with log_timing(LOG, "Register shared dependencies"):
+                bulk_register_fal_dependencies(
+                    {
+                        "torch": _torch,
+                        "numpy": _np,
+                        "pandas": _pd,
+                    }
+                )
+                setup_src_imports(_torch, _np, _pd)
+                _inject_training_modules(_torch, _np, _pd)
 
-        # Offer dependency injection to the in-repo training stacks.
-        _inject_training_modules(_torch, _np)
+            with log_timing(LOG, "Prepare training directories"):
+                _ensure_dir(Path("/data"))
+                _ensure_dir(Path("/data/trainingdata"))
+                _ensure_dir(Path("/data/experiments"))
 
-        _ensure_dir(Path("/data"))
-        _ensure_dir(Path("/data/trainingdata"))
-        _ensure_dir(Path("/data/experiments"))
-        self._prefetch_reference_artifacts()
+            with log_timing(LOG, "Prefetch reference artifacts"):
+                self._prefetch_reference_artifacts()
+
+            LOG.info(
+                "StockTrainerApp setup complete cuda_available=%s device='%s' torch=%s",
+                _torch.cuda.is_available(),
+                _torch.cuda.get_device_name(0) if _torch.cuda.is_available() else "cpu",
+                _torch.__version__,
+            )
 
     def _prefetch_reference_artifacts(self) -> None:
         try:
@@ -686,6 +795,14 @@ class StockTrainerApp(
                 "batch_size": cfg["batch_size"],
                 "learning_rate": cfg["learning_rate"],
                 "loss": cfg["loss"],
+                "transaction_cost_bps": int(
+                    cfg.get(
+                        "transaction_cost_bps",
+                        _resolve_transaction_cost_bps(
+                            req, crypto_enabled=cfg.get("crypto_enabled", False)
+                        ),
+                    )
+                ),
             },
             "data": {
                 "symbols": req.symbols,
@@ -707,18 +824,9 @@ class StockTrainerApp(
         os.environ.setdefault("WANDB_ENTITY", _env("WANDB_ENTITY", "default"))
         os.environ.setdefault("WANDB_RUN_GROUP", req.run_name)
 
-        self._invoke_training_process(
-            ["python", "-m", "hftraining.run_training", "--config", str(cfg_path)]
-        )
+        from fal_hftraining.runner import run_training as run_hf_training
 
-        metrics_path = outdir / "final_metrics.json"
-        metrics: Dict[str, Any] = {}
-        if metrics_path.exists():
-            with metrics_path.open("r") as handle:
-                try:
-                    metrics = json.load(handle)
-                except json.JSONDecodeError:
-                    metrics = {}
+        metrics, _ = run_hf_training(config=config, run_name=req.run_name, output_dir=outdir)
         return metrics, outdir
 
     def _run_toto_once(
@@ -726,33 +834,39 @@ class StockTrainerApp(
     ) -> Tuple[Dict[str, Any], Path]:
         run_id = uuid.uuid4().hex[:8]
         outdir = _ensure_dir(workdir / f"toto_{run_id}")
+        from tototrainingfal.runner import run_training as run_toto_training
 
-        cmd = [
-            "python",
-            "tototraining/run_gpu_training.py",
-            "--output-dir",
-            str(outdir),
-            "--epochs",
-            str(req.epochs),
-            "--batch-size",
-            str(cfg["batch_size"]),
-            "--context-length",
-            str(cfg["context_length"]),
-            "--prediction-length",
-            str(cfg["horizon"]),
-            "--loss",
-            cfg["loss"],
-        ]
-        self._invoke_training_process(cmd)
+        trainingdata_root = Path(req.trainingdata_prefix)
+        train_root = trainingdata_root / "train"
+        val_root = trainingdata_root / "val"
+        if not val_root.exists():
+            alt = trainingdata_root / "test"
+            val_root = alt if alt.exists() else None
 
-        metrics_path = outdir / "final_metrics.json"
-        metrics: Dict[str, Any] = {}
-        if metrics_path.exists():
-            with metrics_path.open("r") as handle:
-                try:
-                    metrics = json.load(handle)
-                except json.JSONDecodeError:
-                    metrics = {}
+        device_label = "cuda"
+        try:
+            import torch  # type: ignore
+
+            if not torch.cuda.is_available():
+                device_label = "cpu"
+        except Exception:
+            device_label = "cpu"
+
+        metrics, _ = run_toto_training(
+            train_root=train_root,
+            val_root=val_root,
+            context_length=int(cfg["context_length"]),
+            prediction_length=int(cfg["horizon"]),
+            stride=int(max(1, cfg["horizon"])),
+            batch_size=int(cfg["batch_size"]),
+            epochs=int(req.epochs),
+            learning_rate=float(cfg.get("learning_rate", req.sweeps.learning_rates[0])),
+            loss=str(cfg["loss"]),
+            output_dir=outdir,
+            device=device_label,
+            grad_accum=max(1, cfg.get("grad_accum", 1)),
+        )
+
         return metrics, outdir
 
     def _run_puffer_once(
@@ -762,60 +876,31 @@ class StockTrainerApp(
         outdir = _ensure_dir(workdir / f"puffer_{run_id}")
         logdir = _ensure_dir(outdir / "logs")
 
-        cmd = [
-            "python",
-            "pufferlibtraining/train_ppo.py",
-            "--trainingdata-dir",
-            req.trainingdata_prefix,
-            "--output-dir",
-            str(outdir),
-            "--tensorboard-dir",
-            str(logdir),
-            "--rl-epochs",
-            str(req.epochs),
-            "--rl-batch-size",
-            str(cfg["batch_size"]),
-            "--rl-learning-rate",
-            str(cfg["learning_rate"]),
-        ]
-        self._invoke_training_process(cmd)
+        from fal_pufferlibtraining.runner import run_training as run_puffer_training
 
-        metrics_path = outdir / "summary.json"
+        summary, summary_path = run_puffer_training(
+            trainingdata_dir=Path(req.trainingdata_prefix),
+            output_dir=outdir,
+            tensorboard_dir=logdir,
+            cfg=cfg,
+            epochs=req.epochs,
+            transaction_cost_bps=float(cfg.get("transaction_cost_bps", req.transaction_cost_bps or 0)),
+            run_name=req.run_name,
+        )
+
         metrics: Dict[str, Any] = {}
-        if metrics_path.exists():
-            with metrics_path.open("r") as handle:
-                try:
-                    metrics = json.load(handle)
-                except json.JSONDecodeError:
-                    metrics = {}
+        if summary_path.exists():
+            try:
+                metrics = json.loads(summary_path.read_text()).get("portfolio_pairs", {})
+            except json.JSONDecodeError:
+                metrics = {}
+        if not metrics:
+            metrics = summary.get("portfolio_pairs", {})
         return metrics, outdir
 
     def _evaluate_pnl(
         self, model_dir: Path, include_crypto: bool, trainingdata_dir: Path
     ) -> Dict[str, Any]:
-        env = os.environ.copy()
-        env.setdefault("PYTHONPATH", str(REPO_ROOT))
-
-        try:
-            args = ["python", "-u", "comprehensive_backtest_real_gpu.py"]
-            if include_crypto:
-                args.append("--include-crypto")
-            args.extend(["--model-dir", str(model_dir)])
-            if trainingdata_dir.exists():
-                args.extend(["--trainingdata-dir", str(trainingdata_dir)])
-            _run(args, env=env, check=False)
-        except Exception:
-            pass
-
-        try:
-            args = ["python", "-u", "enhanced_local_backtester.py"]
-            if include_crypto:
-                args.append("--include-crypto")
-            args.extend(["--model-dir", str(model_dir)])
-            _run(args, env=env, check=False)
-        except Exception:
-            pass
-
         pnl = {
             "return_pct": None,
             "sharpe": None,
@@ -823,24 +908,48 @@ class StockTrainerApp(
             "mode": "hf_quick_realistic_test",
         }
         try:
-            cp = _run(
-                ["python", "-u", "hftraining/quick_realistic_test.py"],
-                env=env,
-                check=False,
-                capture=True,
-            )
-            output = cp.stdout or ""
-            import re
+            from hftraining.quick_realistic_test import quick_test
 
-            ret_match = re.search(r"Return:\s*([-\d\.]+)%", output)
-            sharpe_match = re.search(r"Sharpe Ratio:\s*([-\d\.]+)", output)
-            dd_match = re.search(r"Max Drawdown:\s*([-\d\.]+)%", output)
-            if ret_match:
-                pnl["return_pct"] = float(ret_match.group(1))
-            if sharpe_match:
-                pnl["sharpe"] = float(sharpe_match.group(1))
-            if dd_match:
-                pnl["max_drawdown_pct"] = float(dd_match.group(1))
+            _, metrics, _ = quick_test()
+            if metrics is not None:
+                pnl["return_pct"] = float(getattr(metrics, "total_return", 0.0) * 100.0)
+                pnl["sharpe"] = float(getattr(metrics, "sharpe_ratio", 0.0))
+                pnl["max_drawdown_pct"] = float(getattr(metrics, "max_drawdown", 0.0) * 100.0)
+        except Exception:
+            pass
+
+        try:
+            from comprehensive_backtest_real_gpu import ComprehensiveBacktester
+            from src.fixtures import crypto_symbols
+
+            symbols = [
+                "COUR",
+                "GOOG",
+                "TSLA",
+                "NVDA",
+                "AAPL",
+                "U",
+                "ADSK",
+                "ADBE",
+                "COIN",
+                "MSFT",
+                "NFLX",
+            ]
+            if include_crypto:
+                symbols.extend(symbol for symbol in crypto_symbols[:3])
+            backtester = ComprehensiveBacktester(symbols=symbols)
+            backtester.run_comprehensive_backtest()
+        except Exception:
+            pass
+
+        try:
+            from enhanced_local_backtester import run_enhanced_comparison
+            from src.fixtures import crypto_symbols
+
+            symbols = ["AAPL", "MSFT", "NVDA", "GOOGL", "TSLA"]
+            if include_crypto:
+                symbols.extend(symbol for symbol in crypto_symbols[:2])
+            run_enhanced_comparison(symbols, simulation_days=14, compare_with_synthetic=False)
         except Exception:
             pass
 
@@ -915,7 +1024,7 @@ class StockTrainerApp(
             except FileExistsError:
                 pass
 
-        seed = _maybe_seed(request.seed)
+        seed = _resolve_training_seed(request.seed)
         base_cfg = {"seed": seed}
         sweep_cfgs = [base_cfg]
         if request.do_sweeps:
@@ -923,90 +1032,156 @@ class StockTrainerApp(
         else:
             sweep_cfgs = [{**base_cfg, **_grid(request.sweeps)[0]}]
 
+        for cfg in sweep_cfgs:
+            crypto_flag = bool(cfg.get("crypto_enabled", False))
+            cfg.setdefault("crypto_enabled", crypto_flag)
+            cfg["transaction_cost_bps"] = _resolve_transaction_cost_bps(
+                request, crypto_enabled=crypto_flag
+            )
+
         artifact_root = _ensure_dir(Path(request.output_root) / request.run_name)
         runner = self._runner_for_request(request, artifact_root)
         total_runs = len(sweep_cfgs)
         parallel_trials = max(1, min(int(request.parallel_trials or 1), total_runs))
 
-        results_by_idx: Dict[int, Tuple[Dict[str, Any], Dict[str, Any], Path, float]] = {}
+        enable_sweep_logging = request.do_sweeps and total_runs > 1
+        sweep_logger_ctx = nullcontext(None)
+        if enable_sweep_logging:
+            aggregate_log_dir = _ensure_dir(artifact_root / "sweep_logs")
+            try:
+                sweep_logger_ctx = WandBoardLogger(
+                    run_name=f"{request.run_name}_sweep",
+                    project=os.getenv("WANDB_PROJECT"),
+                    entity=os.getenv("WANDB_ENTITY"),
+                    group=request.run_name,
+                    tags=(f"trainer:{request.trainer}", "faltrain", "sweep"),
+                    log_dir=aggregate_log_dir,
+                    tensorboard_subdir="aggregate",
+                    enable_wandb=True,
+                )
+            except Exception as exc:
+                LOG.warning("Failed to initialise sweep logger: %s", exc)
+                sweep_logger_ctx = nullcontext(None)
+                enable_sweep_logging = False
+
+        results_by_idx: Dict[int, Tuple[Dict[str, Any], Dict[str, Any], Path, float, float]] = {}
+        pnl_per_idx: Dict[int, Dict[str, Dict[str, Any]]] = {}
+        results: List[SweepResult] = []
         best_idx, best_score = -1, float("inf")
 
-        def _record_result(
-            idx_res: int,
-            cfg_res: Dict[str, Any],
-            metrics_res: Dict[str, Any],
-            outdir_res: Path,
-            duration_res: float,
-        ) -> None:
-            nonlocal best_idx, best_score
-            score_val = _score_from_metrics(metrics_res)
-            score = score_val if score_val is not None else float("inf")
-            score_display = score_val if score_val is not None else "n/a"
-            LOG.info(
-                "Run finished in %.1fs with score=%s (artifacts=%s)",
-                duration_res,
-                score_display,
-                outdir_res,
-            )
-            results_by_idx[idx_res] = (cfg_res, metrics_res, outdir_res, score)
-            if best_idx == -1 or score < best_score:
-                best_score = score
-                best_idx = idx_res
+        with sweep_logger_ctx as sweep_logger:
 
-        if parallel_trials == 1:
-            for idx, cfg in enumerate(sweep_cfgs):
-                idx_res, cfg_res, metrics_res, outdir_res, duration_res = self._run_single_config(
-                    idx, total_runs, cfg, runner
+            def _record_result(
+                idx_res: int,
+                cfg_res: Dict[str, Any],
+                metrics_res: Dict[str, Any],
+                outdir_res: Path,
+                duration_res: float,
+            ) -> None:
+                nonlocal best_idx, best_score
+                score_val = _score_from_metrics(metrics_res)
+                score = score_val if score_val is not None else float("inf")
+                score_display = score_val if score_val is not None else "n/a"
+                LOG.info(
+                    "Run finished in %.1fs with score=%s (artifacts=%s)",
+                    duration_res,
+                    score_display,
+                    outdir_res,
                 )
-                _record_result(idx_res, cfg_res, metrics_res, outdir_res, duration_res)
-        else:
-            with ThreadPoolExecutor(max_workers=parallel_trials) as executor:
-                futures = [
-                    executor.submit(self._run_single_config, idx, total_runs, cfg, runner)
-                    for idx, cfg in enumerate(sweep_cfgs)
-                ]
-                try:
-                    for future in as_completed(futures):
-                        idx_res, cfg_res, metrics_res, outdir_res, duration_res = future.result()
-                        _record_result(idx_res, cfg_res, metrics_res, outdir_res, duration_res)
-                except Exception:
-                    for future in futures:
-                        future.cancel()
-                    raise
+                results_by_idx[idx_res] = (cfg_res, metrics_res, outdir_res, score, duration_res)
+                if best_idx == -1 or score < best_score:
+                    best_score = score
+                    best_idx = idx_res
+
+            if parallel_trials == 1:
+                for idx, cfg in enumerate(sweep_cfgs):
+                    idx_res, cfg_res, metrics_res, outdir_res, duration_res = self._run_single_config(
+                        idx, total_runs, cfg, runner
+                    )
+                    _record_result(idx_res, cfg_res, metrics_res, outdir_res, duration_res)
+            else:
+                with ThreadPoolExecutor(max_workers=parallel_trials) as executor:
+                    futures = [
+                        executor.submit(self._run_single_config, idx, total_runs, cfg, runner)
+                        for idx, cfg in enumerate(sweep_cfgs)
+                    ]
+                    try:
+                        for future in as_completed(futures):
+                            idx_res, cfg_res, metrics_res, outdir_res, duration_res = future.result()
+                            _record_result(idx_res, cfg_res, metrics_res, outdir_res, duration_res)
+                    except Exception:
+                        for future in futures:
+                            future.cancel()
+                        raise
+
+            if best_idx == -1:
+                raise RuntimeError("No training runs completed successfully")
+
+            for idx in sorted(results_by_idx):
+                cfg_res, metrics_res, outdir_res, score_res, _ = results_by_idx[idx]
+                metrics_file = None
+                outdir_path = Path(outdir_res)
+                for candidate in ("final_metrics.json", "summary.json"):
+                    candidate_path = outdir_path / candidate
+                    if candidate_path.exists():
+                        metrics_file = str(candidate_path)
+                        break
+                results.append(
+                    SweepResult(
+                        cfg=cfg_res,
+                        metrics=metrics_res,
+                        artifacts=RunArtifact(
+                            local_dir=str(outdir_res),
+                            metrics_path=metrics_file,
+                        ),
+                    )
+                )
+
+                should_eval_pnl = enable_sweep_logging or idx == best_idx
+                if should_eval_pnl:
+                    pnl_per_idx[idx] = {
+                        "stock_only": self._evaluate_pnl(
+                            Path(outdir_res), include_crypto=False, trainingdata_dir=local_data
+                        ),
+                        "stock_plus_crypto": self._evaluate_pnl(
+                            Path(outdir_res), include_crypto=True, trainingdata_dir=local_data
+                        ),
+                    }
+
+            if sweep_logger:
+                table_name = f"{request.trainer}_sweep"
+                for idx in sorted(results_by_idx):
+                    cfg_res, metrics_res, outdir_res, score_res, duration_res = results_by_idx[idx]
+                    combined_metrics: Dict[str, Any] = {"duration_seconds": duration_res}
+                    if metrics_res:
+                        combined_metrics["training"] = metrics_res
+                    if math.isfinite(score_res):
+                        combined_metrics["score"] = score_res
+                    if idx in pnl_per_idx:
+                        combined_metrics["pnl"] = pnl_per_idx[idx]
+                    combined_metrics["artifacts_dir"] = str(outdir_res)
+                    sweep_logger.log_sweep_point(
+                        hparams=cfg_res,
+                        metrics=combined_metrics,
+                        step=idx,
+                        table_name=table_name,
+                    )
 
         if best_idx == -1:
             raise RuntimeError("No training runs completed successfully")
 
-        results: List[SweepResult] = []
-        for idx in sorted(results_by_idx):
-            cfg_res, metrics_res, outdir_res, _ = results_by_idx[idx]
-            metrics_file = None
-            outdir_path = Path(outdir_res)
-            for candidate in ("final_metrics.json", "summary.json"):
-                candidate_path = outdir_path / candidate
-                if candidate_path.exists():
-                    metrics_file = str(candidate_path)
-                    break
-            results.append(
-                SweepResult(
-                    cfg=cfg_res,
-                    metrics=metrics_res,
-                    artifacts=RunArtifact(
-                        local_dir=str(outdir_res),
-                        metrics_path=metrics_file,
-                    ),
-                )
-            )
-
         best = results[best_idx]
-        pnl_summary = {
-            "stock_only": self._evaluate_pnl(
-                Path(best.artifacts.local_dir), include_crypto=False, trainingdata_dir=local_data
-            ),
-            "stock_plus_crypto": self._evaluate_pnl(
-                Path(best.artifacts.local_dir), include_crypto=True, trainingdata_dir=local_data
-            ),
-        }
+        if best_idx in pnl_per_idx:
+            pnl_summary = pnl_per_idx[best_idx]
+        else:
+            pnl_summary = {
+                "stock_only": self._evaluate_pnl(
+                    Path(best.artifacts.local_dir), include_crypto=False, trainingdata_dir=local_data
+                ),
+                "stock_plus_crypto": self._evaluate_pnl(
+                    Path(best.artifacts.local_dir), include_crypto=True, trainingdata_dir=local_data
+                ),
+            }
 
         LOG.info("Uploading artifacts for run %s", request.run_name)
         run_prefix = f"{s3_uri}/checkpoints/{request.run_name}/"
@@ -1035,6 +1210,14 @@ class StockTrainerApp(
             pnl_summary=pnl_summary,
             artifact_root=RunArtifact(local_dir=str(artifact_root), r2_uri=run_prefix),
         )
+
+
+# Ensure the fal runtime sees concrete annotations when introspecting endpoints.
+StockTrainerApp.train.__annotations__ = {
+    **StockTrainerApp.train.__annotations__,
+    "request": TrainRequest,
+    "return": TrainResponse,
+}
 
 
 def create_app() -> StockTrainerApp:

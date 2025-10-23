@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kronos-horizons", type=int, nargs="*", default=(1, 12, 48))
     parser.add_argument("--kronos-quantiles", type=float, nargs="*", default=(0.1, 0.5, 0.9))
     parser.add_argument("--kronos-sample-count", type=int, default=16)
+    parser.add_argument("--kronos-sample-chunk", type=int, default=32)
     parser.add_argument("--kronos-temperature", type=float, default=1.0)
     parser.add_argument("--kronos-top-p", type=float, default=0.9)
     parser.add_argument("--kronos-top-k", type=int, default=0)
@@ -91,6 +92,7 @@ def main() -> None:
         include_path_stats=not args.kronos_disable_path_stats,
         device=args.kronos_device,
         sample_count=args.kronos_sample_count,
+        sample_chunk=args.kronos_sample_chunk,
         temperature=args.kronos_temperature,
         top_p=args.kronos_top_p,
         top_k=args.kronos_top_k,

@@ -6,7 +6,6 @@ CLI helper to sync model/checkpoint artifacts with R2 storage.
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import sys
 from pathlib import Path
@@ -14,8 +13,10 @@ from pathlib import Path
 if __package__ in {None, ""}:  # pragma: no cover - script execution path
     sys.path.append(str(Path(__file__).resolve().parents[1]))
     from faltrain.artifacts import REPO_ROOT, load_artifact_specs, sync_artifacts  # type: ignore
+    from faltrain.logger_utils import configure_stdout_logging  # type: ignore
 else:  # pragma: no cover - module execution path
     from .artifacts import REPO_ROOT, load_artifact_specs, sync_artifacts
+    from .logger_utils import configure_stdout_logging
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -82,7 +83,7 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_stdout_logging(level="INFO", fmt="%(message)s")
 
     if not args.endpoint:
         parser.error("R2 endpoint missing. Pass --endpoint or set R2_ENDPOINT.")

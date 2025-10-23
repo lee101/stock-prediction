@@ -14,9 +14,10 @@ import logging
 import math
 import os
 import time
+import multiprocessing
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, MutableMapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, MutableSequence, Optional, Sequence, Tuple, Union
 
 from torch.utils.tensorboard import SummaryWriter
 
@@ -95,6 +96,54 @@ def _sanitize(obj: Any, max_depth: int = 3) -> Any:
     return str(obj)
 
 
+def _flatten_mapping(obj: Mapping[str, Any], *, parent_key: str = "", sep: str = ".") -> Dict[str, Any]:
+    """Flatten nested mappings and sequences into dotted-key dictionaries."""
+    items: Dict[str, Any] = {}
+    for key, value in obj.items():
+        key_str = f"{parent_key}{sep}{key}" if parent_key else str(key)
+        if isinstance(value, Mapping):
+            items.update(_flatten_mapping(value, parent_key=key_str, sep=sep))
+            continue
+        if isinstance(value, (list, tuple)):
+            for idx, element in enumerate(value):
+                nested_key = f"{key_str}[{idx}]"
+                if isinstance(element, Mapping):
+                    items.update(_flatten_mapping(element, parent_key=nested_key, sep=sep))
+                else:
+                    items[nested_key] = element
+            continue
+        items[key_str] = value
+    return items
+
+
+def _prepare_hparam_payload(hparams: Mapping[str, Any]) -> Dict[str, Any]:
+    """Normalise hyperparameter values for TensorBoard / W&B logging."""
+    flat = _flatten_mapping(hparams)
+    prepared: Dict[str, Any] = {}
+    for key, value in flat.items():
+        if isinstance(value, (int, float, bool, str)):
+            prepared[key] = value
+        elif value is None:
+            prepared[key] = "None"
+        else:
+            prepared[key] = str(value)
+    return prepared
+
+
+def _prepare_metric_payload(metrics: Mapping[str, Any]) -> Dict[str, float]:
+    """Filter and convert metrics to floats where possible."""
+    flat = _flatten_mapping(metrics)
+    prepared: Dict[str, float] = {}
+    for key, value in flat.items():
+        if not _is_scalar(value):
+            continue
+        try:
+            prepared[key] = _to_float(value)
+        except Exception:
+            continue
+    return prepared
+
+
 class WandBoardLogger(AbstractContextManager):
     """Mirror metrics to Weights & Biases while keeping TensorBoard writes intact."""
 
@@ -140,6 +189,7 @@ class WandBoardLogger(AbstractContextManager):
         self._last_error: Optional[Exception] = None
         self._wandb_run = None
         self._wandb_enabled = enable_wandb and _WANDB_AVAILABLE and bool(self.project)
+        self._sweep_rows: Dict[str, MutableSequence[Dict[str, Any]]] = {}
 
         root_dir = _ensure_dir(log_dir or "tensorboard_logs")
         subdir = tensorboard_subdir or self.run_name
@@ -326,6 +376,78 @@ class WandBoardLogger(AbstractContextManager):
             self._last_error = exc
             logger.warning("wandb.watch failed: %s", exc)
 
+    def log_hparams(
+        self,
+        hparams: Mapping[str, Any],
+        metrics: Mapping[str, Any],
+        *,
+        step: Optional[int] = None,
+        table_name: str = "hparams",
+    ) -> None:
+        """Mirror hyperparameter/metric pairs to TensorBoard and Weights & Biases."""
+        self._log_sweep_payload(hparams, metrics, step=step, table_name=table_name)
+
+    def log_sweep_point(
+        self,
+        *,
+        hparams: Mapping[str, Any],
+        metrics: Mapping[str, Any],
+        step: Optional[int] = None,
+        table_name: str = "sweep_results",
+    ) -> None:
+        """Specialised helper for sweep iterations."""
+        self._log_sweep_payload(hparams, metrics, step=step, table_name=table_name)
+
+    def _log_sweep_payload(
+        self,
+        hparams: Mapping[str, Any],
+        metrics: Mapping[str, Any],
+        *,
+        step: Optional[int],
+        table_name: str,
+    ) -> None:
+        if not hparams and not metrics:
+            return
+
+        prepared_hparams = _prepare_hparam_payload(hparams or {})
+        prepared_metrics = _prepare_metric_payload(metrics or {})
+
+        if self.tensorboard_writer is not None and prepared_metrics:
+            run_name = f"{table_name}/row_{len(self._sweep_rows.get(table_name, []))}"
+            tb_metrics = {f"{table_name}/{key}": value for key, value in prepared_metrics.items()}
+            try:
+                self.tensorboard_writer.add_hparams(
+                    prepared_hparams,
+                    tb_metrics,
+                    run_name=run_name,
+                    global_step=step,
+                )
+            except Exception as exc:
+                logger.debug("Failed to log hparams to TensorBoard: %s", exc)
+
+        if self._wandb_run is not None:
+            rows = self._sweep_rows.setdefault(table_name, [])
+            row_payload: Dict[str, Any] = dict(prepared_hparams)
+            row_payload.update(prepared_metrics)
+            rows.append(row_payload)
+            all_columns = sorted({key for row in rows for key in row})
+            try:
+                table = wandb.Table(columns=list(all_columns))
+                for row in rows:
+                    table.add_data(*[row.get(col) for col in all_columns])
+                log_payload: Dict[str, Any] = {table_name: table}
+                if prepared_metrics:
+                    log_payload.update({f"{table_name}/{k}": v for k, v in prepared_metrics.items()})
+                self._wandb_run.log(log_payload, step=step)
+                if prepared_hparams:
+                    try:
+                        self._wandb_run.config.update(prepared_hparams, allow_val_change=True)
+                    except Exception:
+                        pass
+            except Exception as exc:  # pragma: no cover - network dependent
+                self._last_error = exc
+                logger.warning("wandb sweep logging failed: %s", exc)
+
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
@@ -348,6 +470,7 @@ class WandBoardLogger(AbstractContextManager):
                 self._wandb_run.finish()
             finally:
                 self._wandb_run = None
+        self._sweep_rows.clear()
 
     def close(self) -> None:
         self.finish()
@@ -401,4 +524,81 @@ def _format_metric_keys(keys: Iterable[Any], *, limit: int = 8) -> str:
     return preview
 
 
-__all__ = ["WandBoardLogger"]
+def _ensure_main_process() -> None:
+    try:
+        name = multiprocessing.current_process().name
+    except Exception:
+        name = "MainProcess"
+    if name != "MainProcess":
+        raise RuntimeError(
+            "wandb sweeps must be launched from the main process; wrap sweep launches in "
+            "an `if __name__ == '__main__':` guard when using multiprocessing."
+        )
+
+
+class WandbSweepAgent:
+    """Utility for registering and running Weights & Biases sweeps safely."""
+
+    def __init__(
+        self,
+        sweep_config: Mapping[str, Any],
+        *,
+        function: Callable[[Mapping[str, Any]], None],
+        project: Optional[str] = None,
+        entity: Optional[str] = None,
+        count: Optional[int] = None,
+        sweep_id: Optional[str] = None,
+    ) -> None:
+        if not callable(function):
+            raise ValueError("Sweep agent requires a callable function.")
+        self._sweep_config = _sanitize(dict(sweep_config), max_depth=8)
+        self._function = function
+        self._project = project
+        self._entity = entity
+        self._count = count
+        self._sweep_id = sweep_id
+
+    @property
+    def sweep_id(self) -> Optional[str]:
+        return self._sweep_id
+
+    def register(self) -> str:
+        if not _WANDB_AVAILABLE:
+            raise RuntimeError("wandb package not available; cannot register sweeps.")
+        sweep_kwargs: Dict[str, Any] = {"sweep": self._sweep_config}
+        if self._project:
+            sweep_kwargs["project"] = self._project
+        if self._entity:
+            sweep_kwargs["entity"] = self._entity
+        sweep_id = wandb.sweep(**sweep_kwargs)
+        self._sweep_id = sweep_id
+        return sweep_id
+
+    def run(self, *, sweep_id: Optional[str] = None, count: Optional[int] = None) -> None:
+        if not _WANDB_AVAILABLE:
+            raise RuntimeError("wandb package not available; cannot launch sweeps.")
+        _ensure_main_process()
+        active_id = sweep_id or self._sweep_id or self.register()
+        agent_kwargs: Dict[str, Any] = {
+            "sweep_id": active_id,
+            "function": self._wrap_function,
+        }
+        agent_count = count if count is not None else self._count
+        if agent_count is not None:
+            agent_kwargs["count"] = agent_count
+        if self._project:
+            agent_kwargs["project"] = self._project
+        if self._entity:
+            agent_kwargs["entity"] = self._entity
+        wandb.agent(**agent_kwargs)
+
+    def _wrap_function(self) -> None:
+        config_mapping: Mapping[str, Any]
+        try:
+            config_mapping = dict(getattr(wandb, "config", {}))
+        except Exception:
+            config_mapping = {}
+        self._function(config_mapping)
+
+
+__all__ = ["WandBoardLogger", "WandbSweepAgent"]

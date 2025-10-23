@@ -996,18 +996,23 @@ def download_symbol_history(
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
     include_latest: bool = True,
+    timeframe: Optional[TimeFrame] = None,
 ) -> pd.DataFrame:
     symbol = symbol.upper()
     is_crypto = symbol in DEFAULT_CRYPTO_SYMBOLS or symbol.endswith("USD")
 
     end_dt = end or datetime.now(timezone.utc)
     start_dt = start or (end_dt - timedelta(days=DEFAULT_HISTORY_DAYS))
+    requested_timeframe = timeframe or TimeFrame(1, TimeFrameUnit.Day)
+
+    if not is_crypto and requested_timeframe.unit != TimeFrameUnit.Day:
+        raise ValueError("Stock history currently supports only daily timeframes.")
 
     try:
         if is_crypto:
             request = CryptoBarsRequest(
                 symbol_or_symbols=remap_symbols(symbol),
-                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                timeframe=requested_timeframe,
                 start=start_dt,
                 end=end_dt,
             )
@@ -1015,7 +1020,7 @@ def download_symbol_history(
         else:
             request = StockBarsRequest(
                 symbol_or_symbols=symbol,
-                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                timeframe=requested_timeframe,
                 start=start_dt,
                 end=end_dt,
                 adjustment="raw",

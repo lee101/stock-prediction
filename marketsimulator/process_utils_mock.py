@@ -31,3 +31,37 @@ def spawn_close_position_at_takeprofit(symbol: str, takeprofit_price: float):
             logger.info(f"[sim] Scheduling takeprofit for {symbol} at {takeprofit_price}")
             alpaca_wrapper.open_take_profit_position(pos, {}, takeprofit_price, float(pos.qty))
             break
+
+
+def spawn_open_position_at_maxdiff_takeprofit(
+    symbol: str,
+    side: str,
+    limit_price: float,
+    target_qty: float,
+    tolerance_pct: float = 0.0066,
+    expiry_minutes: int = 60 * 24,
+):
+    logger.info(
+        "[sim] Maxdiff staged entry for %s side=%s qty=%s limit=%.4f tol=%.4f expiry=%s",
+        symbol,
+        side,
+        target_qty,
+        limit_price,
+        tolerance_pct,
+        expiry_minutes,
+    )
+
+
+def spawn_close_position_at_maxdiff_takeprofit(
+    symbol: str,
+    side: str,
+    takeprofit_price: float,
+    expiry_minutes: int = 60 * 24,
+):
+    logger.info(
+        "[sim] Maxdiff staged exit for %s entry_side=%s takeprofit=%.4f expiry=%s",
+        symbol,
+        side,
+        takeprofit_price,
+        expiry_minutes,
+    )

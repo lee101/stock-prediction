@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prediction-length", type=int, default=1, help="Forecast horizon in steps.")
     parser.add_argument("--realized-horizon", type=int, default=1, help="Realised return horizon for rewards.")
     parser.add_argument("--fill-method", type=str, default="ffill", help="Optional fill method when aligning timestamps (e.g., ffill, bfill, none).")
+    parser.add_argument("--resample-rule", type=str, default=None, help="Optional pandas offset alias (e.g., '1H') to resample inputs before feature extraction.")
     parser.add_argument("--device-map", type=str, default=None, help="Device override for Toto/Kronos (e.g., 'cuda', 'cpu').")
     parser.add_argument("--kronos-device", type=str, default=None, help="Device override specifically for Kronos forecasts.")
     parser.add_argument(
@@ -81,6 +82,7 @@ def main() -> None:
         realized_horizon=args.realized_horizon,
         fill_method=fill_method,
         enforce_common_index=args.enforce_common_index,
+        resample_rule=args.resample_rule,
     )
 
     logger.info("Building feature cube (backend=%s, samples=%d) ...", args.forecast_backend, args.num_samples)

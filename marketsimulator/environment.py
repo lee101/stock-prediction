@@ -222,10 +222,18 @@ def _patch_third_party(use_mock_analytics: bool, force_kronos: bool):
         process_utils.backout_near_market,
         process_utils.ramp_into_position,
         process_utils.spawn_close_position_at_takeprofit,
+        process_utils.spawn_open_position_at_maxdiff_takeprofit,
+        process_utils.spawn_close_position_at_maxdiff_takeprofit,
     )
     process_utils.backout_near_market = process_utils_mock.backout_near_market
     process_utils.ramp_into_position = process_utils_mock.ramp_into_position
     process_utils.spawn_close_position_at_takeprofit = process_utils_mock.spawn_close_position_at_takeprofit
+    process_utils.spawn_open_position_at_maxdiff_takeprofit = (
+        process_utils_mock.spawn_open_position_at_maxdiff_takeprofit
+    )
+    process_utils.spawn_close_position_at_maxdiff_takeprofit = (
+        process_utils_mock.spawn_close_position_at_maxdiff_takeprofit
+    )
     if force_kronos:
         logger.info("[sim] Kronos-only forecasting flag active for simulation environment.")
 
@@ -379,6 +387,8 @@ def activate_simulation(
             process_utils.backout_near_market,
             process_utils.ramp_into_position,
             process_utils.spawn_close_position_at_takeprofit,
+            process_utils.spawn_open_position_at_maxdiff_takeprofit,
+            process_utils.spawn_close_position_at_maxdiff_takeprofit,
         ) = originals
         for name, original in restore_handles["replaced_modules"].items():
             if original is None:
