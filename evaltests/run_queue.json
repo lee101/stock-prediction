@@ -27,6 +27,15 @@
       "command": "source .venv312/bin/activate && python -m differentiable_market.marketsimulator.run --checkpoint differentiable_market/runs/20251021_094014/checkpoints/best.pt --window-length 256 --stride 64 --report-dir differentiable_market/evals/risk_sweep_20251023 --data-glob '[A-Z]*.csv' --risk-aversion 0.25 --drawdown-lambda 0.05",
       "expected_duration_hours": 2,
       "status": "completed"
+    },
+    {
+      "name": "gymrl_confirmation_guarded_v12",
+      "module": "gymrl",
+      "priority": 1,
+      "description": "Short confirmation sweep with calibrated regime guards (turnover penalty 0.0071, loss probe 0.002) once cooldown ends.",
+      "command": "source .venv312/bin/activate && python -m gymrl.train_ppo_allocator --data-dir tototraining/trainingdata/train --forecast-backend auto --num-timesteps 40000 --learning-rate 5.5e-5 --turnover-penalty 0.0071 --loss-shutdown-probe-weight 0.002 --loss-shutdown-penalty 0.6 --loss-shutdown-cooldown 12 --ent-coef 0.00015 --ent-coef-final 0.0 --base-gross-exposure 0.5 --max-gross-leverage 1.08 --intraday-leverage-cap 1.18 --daily-leverage-rate 0.001 --closing-leverage-cap 1.08 --enable-loss-shutdown --regime-filters-enabled --regime-drawdown-threshold 0.036 --regime-negative-return-threshold -0.03 --regime-turnover-threshold 0.55 --regime-turnover-probe-weight 0.002 --regime-leverage-scale 0.6 --validation-days 21 --output-dir gymrl/artifacts/sweep_20251026_guard_confirm --tensorboard-log gymrl/runs/guard_confirm --regime-config-path gymrl/guard_config_calibrated.json",
+      "expected_duration_hours": 1.5,
+      "status": "completed"
     }
   ]
 }

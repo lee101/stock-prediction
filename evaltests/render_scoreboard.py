@@ -87,7 +87,23 @@ def render_markdown(data: Mapping[str, Any], timestamp: datetime) -> str:
             elif module == "pufferlibtraining":
                 note = f"best_pair={details.get('best_pair')}"
             elif module == "gymrl":
-                note = f"avg_daily_return={details.get('average_daily_return')}"
+                note_parts = []
+                adr = details.get("average_daily_return")
+                if isinstance(adr, (int, float)):
+                    note_parts.append(f"avg_daily_return={adr:.4f}")
+                guard_neg = details.get("guard_negative_hit_rate")
+                guard_turn = details.get("guard_turnover_hit_rate")
+                guard_draw = details.get("guard_drawdown_hit_rate")
+                guard_bits = []
+                if isinstance(guard_neg, (int, float)):
+                    guard_bits.append(f"neg={guard_neg:.2f}")
+                if isinstance(guard_turn, (int, float)):
+                    guard_bits.append(f"turn={guard_turn:.2f}")
+                if isinstance(guard_draw, (int, float)):
+                    guard_bits.append(f"draw={guard_draw:.2f}")
+                if guard_bits:
+                    note_parts.append("guard(" + ", ".join(guard_bits) + ")")
+                note = "; ".join(note_parts)
         score_str = f"{score:,.4f}" if isinstance(score, (int, float)) else "-"
         per_day_str = f"{per_day:,.4f}" if isinstance(per_day, (int, float)) else "-"
         rel_str = f"{rel:,.4f}" if isinstance(rel, (int, float)) else "-"

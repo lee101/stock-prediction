@@ -4,6 +4,7 @@
 import os
 import sys
 import types
+from pathlib import Path
 from unittest.mock import MagicMock
 
 os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
@@ -198,6 +199,37 @@ if not hasattr(tradeapi_mod, "REST"):
 
         def get_clock(self):
             return types.SimpleNamespace(is_open=True)
+
+
+def pytest_addoption(parser):
+    """Register custom CLI options for this repository."""
+    parser.addoption(
+        "--run-experimental",
+        action="store_true",
+        default=False,
+        help="Run tests under tests/experimental (skipped by default).",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Automatically mark and optionally skip experimental tests."""
+    run_experimental = config.getoption("--run-experimental")
+    mark_experimental = pytest.mark.experimental
+    skip_marker = pytest.mark.skip(reason="experimental suite disabled; pass --run-experimental to include")
+    experimental_root = Path(config.rootpath, "tests", "experimental").resolve()
+
+    for item in items:
+        path = Path(str(item.fspath)).resolve()
+        try:
+            path.relative_to(experimental_root)
+            is_experimental = True
+        except ValueError:
+            is_experimental = False
+
+        if is_experimental:
+            item.add_marker(mark_experimental)
+            if not run_experimental:
+                item.add_marker(skip_marker)
 
         def cancel_orders(self):
             self._orders.clear()

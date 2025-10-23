@@ -7,12 +7,12 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 import fal_hftraining.runner as runner
-import faltrain.dependencies as deps
+from src import dependency_injection as deps
 
 
 @pytest.fixture(autouse=True)
 def _stub_dependencies(monkeypatch):
-    deps._clear_registry_for_tests()
+    deps._reset_for_tests()
     torch_stub = ModuleType("torch")
     torch_stub.manual_seed = lambda seed: None
     torch_stub.cuda = SimpleNamespace(
@@ -25,7 +25,7 @@ def _stub_dependencies(monkeypatch):
     pandas_stub = ModuleType("pandas")
     runner.setup_training_imports(torch_stub, numpy_stub, pandas_stub)
     yield
-    deps._clear_registry_for_tests()
+    deps._reset_for_tests()
 
 
 def test_run_training_invokes_hf_pipeline(monkeypatch, tmp_path):

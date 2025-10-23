@@ -294,6 +294,34 @@ def _evaluate_gymrl(target: EvalTarget) -> EvaluationResult:
 
         env_config = metadata.get("env_config", {})
         validation_metrics = metadata.get("validation_metrics", {})
+        regime_config: Dict[str, Any] = {}
+        regime_metrics: Dict[str, Any] = {}
+        if isinstance(env_config, Mapping) and env_config.get("regime_filters_enabled"):
+            for key in (
+                "regime_drawdown_threshold",
+                "regime_leverage_scale",
+                "regime_negative_return_window",
+                "regime_negative_return_threshold",
+                "regime_negative_return_turnover_penalty",
+                "regime_turnover_threshold",
+                "regime_turnover_probe_weight",
+            ):
+                if key in env_config:
+                    regime_config[key] = env_config[key]
+            if isinstance(validation_metrics, Mapping):
+                for metric_key, alias in (
+                    ("guard_drawdown_hit_rate", "drawdown_hit_rate"),
+                    ("guard_negative_return_hit_rate", "negative_hit_rate"),
+                    ("guard_turnover_hit_rate", "turnover_hit_rate"),
+                    ("guard_average_leverage_scale", "average_leverage_scale"),
+                    ("guard_min_leverage_scale", "min_leverage_scale"),
+                    ("guard_average_turnover_penalty", "average_turnover_penalty"),
+                    ("guard_average_loss_probe_weight", "average_loss_probe_weight"),
+                    ("guard_average_trailing_return", "average_trailing_return"),
+                ):
+                    if metric_key in validation_metrics:
+                        regime_metrics[alias] = validation_metrics[metric_key]
+
         gym_metrics.update(
             {
                 "train_steps": metadata.get("train_steps"),
@@ -306,6 +334,10 @@ def _evaluate_gymrl(target: EvalTarget) -> EvaluationResult:
                 "env_config": env_config,
             }
         )
+        if regime_config:
+            gym_metrics["regime_config"] = regime_config
+        if regime_metrics:
+            gym_metrics["regime_metrics"] = regime_metrics
 
         topk = metadata.get("topk_checkpoints", [])
         if isinstance(topk, list):
@@ -723,6 +755,14 @@ def run_evaluations(targets: Iterable[EvalTarget]) -> Dict[str, Any]:
                         "turnover": validation.get("average_turnover"),
                     }
                     per_day_score = validation.get("average_net_return_non_crypto")
+                    regime_metrics = gym_metrics.get("regime_metrics")
+                    if isinstance(regime_metrics, Mapping) and regime_metrics:
+                        details = {
+                            **details,
+                            "guard_negative_hit_rate": regime_metrics.get("negative_hit_rate"),
+                            "guard_turnover_hit_rate": regime_metrics.get("turnover_hit_rate"),
+                            "guard_drawdown_hit_rate": regime_metrics.get("drawdown_hit_rate"),
+                        }
 
         elif module == "differentiable_market":
             eval_metrics = metrics_map.get("eval_metrics", {})

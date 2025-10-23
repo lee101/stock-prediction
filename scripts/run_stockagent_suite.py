@@ -33,19 +33,25 @@ class SuiteConfig:
 
 SUITES: dict[str, SuiteConfig] = {
     "stockagent": SuiteConfig(
-        tests=("tests/test_stockagent",),
+        tests=("tests/prod/agents/stockagent",),
         description="Stateful GPT-5 planner harness.",
     ),
     "stockagentindependant": SuiteConfig(
-        tests=("tests/test_stockagentindependant",),
+        tests=("tests/prod/agents/stockagentindependant",),
         description="Stateless plan generator checks.",
     ),
     "stockagent2": SuiteConfig(
-        tests=("tests/test_stockagent2",),
+        tests=("tests/prod/agents/stockagent2",),
         description="Experimental second-generation agent tests.",
     ),
     "stockagentcombined": SuiteConfig(
-        tests=("tests/test_stockagentcombined.py", "tests/test_stockagentcombined_plans.py"),
+        tests=(
+            "tests/prod/agents/stockagentcombined/test_stockagentcombined.py",
+            "tests/prod/agents/stockagentcombined/test_stockagentcombined_plans.py",
+            "tests/prod/agents/stockagentcombined/test_stockagentcombined_cli.py",
+            "tests/prod/agents/stockagentcombined/test_stockagentcombined_entrytakeprofit.py",
+            "tests/prod/agents/stockagentcombined/test_stockagentcombined_profit_shutdown.py",
+        ),
         description="Combined planner + executor regression tests.",
     ),
 }

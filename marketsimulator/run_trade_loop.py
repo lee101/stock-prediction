@@ -19,7 +19,7 @@ else:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Simulate trade_stock_e2e with a mocked Alpaca stack.")
     parser.add_argument("--symbols", nargs="+", default=["AAPL", "MSFT", "NVDA"], help="Symbols to simulate.")
-    parser.add_argument("--steps", type=int, default=32, help="Number of simulation steps to run.")
+    parser.add_argument("--steps", type=int, default=30, help="Number of simulation steps to run.")
     parser.add_argument("--step-size", type=int, default=1, help="Data rows to advance between iterations.")
     parser.add_argument("--initial-cash", type=float, default=100_000.0, help="Starting cash balance.")
     parser.add_argument("--top-k", type=int, default=4, help="Number of picks to keep each iteration.")

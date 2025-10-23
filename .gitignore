@@ -24,6 +24,7 @@ lightning_logs*
 lightning_logsminute
 
 strategy_state/
+current_state_config/
 testresults/
 data/_simulator/
 
@@ -166,3 +167,4 @@ reports
 wandb
 tensorboard_logs/
 gymrl/cache
+trainingdatadaily
