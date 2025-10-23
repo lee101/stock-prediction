@@ -37,6 +37,7 @@ dependencies = [
     "PyYAML>=6.0,<6.1",
     "jsonschema>=4.19",
     "pydantic>=2.9",
+    "tblib>=3.2",
     "torch==2.9.0",
     "pytorch-lightning>=2.4.0,<3.0",
     "torch-optimizer>=0.3",
@@ -211,6 +212,10 @@ explicit = true
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
 
 [tool.uv.pip]
 torch-backend = "auto"

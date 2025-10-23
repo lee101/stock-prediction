@@ -4,6 +4,7 @@
 import os
 import sys
 import types
+from pathlib import Path
 from unittest.mock import MagicMock
 
 os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
@@ -199,6 +200,37 @@ if not hasattr(tradeapi_mod, "REST"):
         def get_clock(self):
             return types.SimpleNamespace(is_open=True)
 
+
+def pytest_addoption(parser):
+    """Register custom CLI options for this repository."""
+    parser.addoption(
+        "--run-experimental",
+        action="store_true",
+        default=False,
+        help="Run tests under tests/experimental (skipped by default).",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Automatically mark and optionally skip experimental tests."""
+    run_experimental = config.getoption("--run-experimental")
+    mark_experimental = pytest.mark.experimental
+    skip_marker = pytest.mark.skip(reason="experimental suite disabled; pass --run-experimental to include")
+    experimental_root = Path(config.rootpath, "tests", "experimental").resolve()
+
+    for item in items:
+        path = Path(str(item.fspath)).resolve()
+        try:
+            path.relative_to(experimental_root)
+            is_experimental = True
+        except ValueError:
+            is_experimental = False
+
+        if is_experimental:
+            item.add_marker(mark_experimental)
+            if not run_experimental:
+                item.add_marker(skip_marker)
+
         def cancel_orders(self):
             self._orders.clear()
             return []
@@ -268,9 +300,27 @@ if "backtest_test3_inline" not in sys.modules:
             return pd.DataFrame(
                 {
                     "simple_strategy_return": [0.01] * num_simulations,
+                    "simple_strategy_avg_daily_return": [0.01] * num_simulations,
+                    "simple_strategy_annual_return": [0.01 * 252] * num_simulations,
                     "all_signals_strategy_return": [0.01] * num_simulations,
+                    "all_signals_strategy_avg_daily_return": [0.01] * num_simulations,
+                    "all_signals_strategy_annual_return": [0.01 * 252] * num_simulations,
                     "entry_takeprofit_return": [0.01] * num_simulations,
+                    "entry_takeprofit_avg_daily_return": [0.01] * num_simulations,
+                    "entry_takeprofit_annual_return": [0.01 * 252] * num_simulations,
                     "highlow_return": [0.01] * num_simulations,
+                    "highlow_avg_daily_return": [0.01] * num_simulations,
+                    "highlow_annual_return": [0.01 * 252] * num_simulations,
+                    "maxdiff_return": [0.01] * num_simulations,
+                    "maxdiff_avg_daily_return": [0.01] * num_simulations,
+                    "maxdiff_annual_return": [0.01 * 252] * num_simulations,
+                    "maxdiff_sharpe": [1.2] * num_simulations,
+                    "maxdiffprofit_high_price": [1.1] * num_simulations,
+                    "maxdiffprofit_low_price": [0.9] * num_simulations,
+                    "maxdiffprofit_profit_high_multiplier": [0.02] * num_simulations,
+                    "maxdiffprofit_profit_low_multiplier": [-0.02] * num_simulations,
+                    "maxdiffprofit_profit": [0.01] * num_simulations,
+                    "maxdiffprofit_profit_values": ["[0.01]"] * num_simulations,
                     "predicted_close": [1.0] * num_simulations,
                     "predicted_high": [1.2] * num_simulations,
                     "predicted_low": [0.8] * num_simulations,

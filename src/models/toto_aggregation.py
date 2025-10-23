@@ -6,7 +6,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-import numpy as np
+from ..dependency_injection import register_observer, resolve_numpy
+
+np = resolve_numpy()
+
+
+def _refresh_numpy(module):
+    global np
+    np = module
+
+
+register_observer("numpy", _refresh_numpy)
 
 _DEFAULT_METHODS = {
     "mean",

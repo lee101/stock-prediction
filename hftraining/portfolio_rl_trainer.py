@@ -148,9 +148,13 @@ class DifferentiablePortfolioTrainer:
             weight_decay=config.weight_decay,
         )
         total_steps = max(1, len(self.train_loader) * config.epochs)
+        effective_warmup = min(config.warmup_steps, max(1, total_steps // 10))
+        if effective_warmup >= total_steps:
+            effective_warmup = max(1, total_steps - 1)
+        self._effective_warmup_steps = effective_warmup
         self.scheduler = WarmupCosine(
             self.optimizer,
-            warmup_steps=config.warmup_steps,
+            warmup_steps=effective_warmup,
             total_steps=total_steps,
             min_lr=config.min_learning_rate,
         )
@@ -231,8 +235,10 @@ class DifferentiablePortfolioTrainer:
         else:
             cvar = pnl_flat.new_tensor(0.0)
         sharpe = sharpe_like_ratio(pnl)
-        entropy = -(weights.clamp_min(1e-8) * weights.clamp_min(1e-8).log()).sum(dim=-1).mean()
-        loss = -(profit - self.config.risk_penalty * sharpe) + self.config.entropy_coef * entropy
+        weight_magnitude = weights.abs()
+        weight_probs = weight_magnitude / weight_magnitude.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+        entropy = -(weight_probs * weight_probs.clamp_min(1e-8).log()).sum(dim=-1).mean()
+        loss = -(profit + self.config.risk_penalty * sharpe) + self.config.entropy_coef * entropy
         if self.config.cvar_weight:
             loss = loss + self.config.cvar_weight * (-cvar)
 
@@ -258,6 +264,10 @@ class DifferentiablePortfolioTrainer:
 
     def train(self) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
+        self.metrics_logger.log(
+            {'train/effective_warmup_steps': float(self._effective_warmup_steps)},
+            step=0,
+        )
         for epoch in range(self.config.epochs):
             self.model.train()
             epoch_loss = 0.0

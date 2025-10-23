@@ -48,6 +48,7 @@ class KronosEmbedder:
         temperature: float = 1.0,
         top_p: float = 0.9,
         sample_count: int = 16,
+        sample_chunk: int = 32,
         top_k: int = 0,
         clip: float = 5.0,
         feature_spec: Optional[KronosFeatureSpec] = None,
@@ -59,6 +60,7 @@ class KronosEmbedder:
         self.top_p = top_p
         self.top_k = top_k
         self.sample_count = sample_count
+        self.sample_chunk = max(1, sample_chunk)
         self.feature_spec = feature_spec or KronosFeatureSpec()
         self.bf16 = bf16 and device.startswith("cuda")
         self.clip = clip
@@ -86,9 +88,10 @@ class KronosEmbedder:
         y_ts = pd.Series(pd.date_range(start=x_ts.iloc[-1] + delta, periods=horizon, freq=delta))
         dtype_ctx = torch.bfloat16 if self.bf16 and torch.cuda.is_available() else torch.float32
         preds = []
-        enabled = self.device.startswith("cuda") and self.bf16
-        with torch.autocast(device_type="cuda", dtype=dtype_ctx, enabled=enabled):
-            for _ in range(self.sample_count):
+        using_cuda = self.device.startswith("cuda")
+        autocast_enabled = using_cuda and self.bf16
+        with torch.autocast(device_type="cuda", dtype=dtype_ctx, enabled=autocast_enabled):
+            for sample_idx in range(self.sample_count):
                 self.predictor.clip = self.clip
                 pred_df = self.predictor.predict(
                     df=x_df,
@@ -101,6 +104,12 @@ class KronosEmbedder:
                     sample_count=1,
                 )
                 preds.append(pred_df["close"].to_numpy(dtype=np.float64))
+                if using_cuda and ((sample_idx + 1) % self.sample_chunk == 0):
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+        if using_cuda:
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
         paths = np.stack(preds, axis=0)
         last_close = float(x_df["close"].iloc[-1])
         return paths, last_close

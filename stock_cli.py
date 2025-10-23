@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import math
+import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import alpaca_wrapper
 import matplotlib.dates as mdates
@@ -20,9 +22,13 @@ from src.portfolio_risk import (
 )
 from src.leverage_settings import get_leverage_settings
 from src.trading_obj_utils import filter_to_realistic_positions
+from stock.state import get_state_dir, get_state_file, resolve_state_suffix
 from stock.state_utils import StateLoadError, collect_probe_statuses, render_ascii_line
 
 MAX_RISK_AXIS_LIMIT = 1.6
+STATE_SUFFIX = resolve_state_suffix()
+ACTIVE_TRADES_PATH = get_state_file("active_trades", STATE_SUFFIX)
+MAXDIFF_WATCHERS_DIR = get_state_dir() / f"maxdiff_watchers{STATE_SUFFIX or ''}"
 
 app = typer.Typer(help="Portfolio analytics CLI utilities.")
 
@@ -38,6 +44,18 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _optional_float(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
 
 
 def _format_timestamp(ts: datetime, timezone_name: str) -> str:
@@ -95,6 +113,254 @@ def _summarize_orders(orders: Sequence, timezone_name: str) -> Sequence[str]:
     return lines
 
 
+def _estimate_live_portfolio_value(account, positions: Sequence) -> Optional[float]:
+    equity = _optional_float(getattr(account, "equity", None)) if account is not None else None
+    if equity and equity > 0:
+        return equity
+
+    total_market_value = 0.0
+    for position in positions:
+        total_market_value += _safe_float(getattr(position, "market_value", 0.0))
+
+    cash = _optional_float(getattr(account, "cash", None)) if account is not None else None
+    if cash is not None:
+        estimated_value = total_market_value + cash
+    else:
+        estimated_value = total_market_value
+
+    if estimated_value != 0.0:
+        return estimated_value
+
+    return None
+
+
+def _parse_iso_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _format_price(value: Optional[float]) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    precision = 4 if abs(numeric) < 1 else 2
+    return f"{numeric:.{precision}f}"
+
+
+def _format_quantity(value: Optional[float]) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    formatted = f"{numeric:.6f}".rstrip("0").rstrip(".")
+    return formatted if formatted else "0"
+
+
+def _coerce_optional_float(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+STRATEGY_PROFIT_FIELDS = (
+    ("entry", "entry_takeprofit_profit"),
+    ("maxdiff", "maxdiffprofit_profit"),
+    ("takeprofit", "takeprofit_profit"),
+)
+
+ENTRY_STRATEGY_PROFIT_LOOKUP = {
+    "maxdiff": "maxdiffprofit_profit",
+    "highlow": "maxdiffprofit_profit",
+    "entry": "entry_takeprofit_profit",
+    "entry_takeprofit": "entry_takeprofit_profit",
+    "simple": "entry_takeprofit_profit",
+    "ci_guard": "entry_takeprofit_profit",
+    "all_signals": "entry_takeprofit_profit",
+    "takeprofit": "takeprofit_profit",
+}
+
+
+def _format_strategy_profit_summary(entry_strategy: Optional[str], forecast: Dict[str, object]) -> Optional[str]:
+    if not forecast:
+        return None
+    normalized_strategy = (entry_strategy or "").strip().lower()
+    selected_key = ENTRY_STRATEGY_PROFIT_LOOKUP.get(normalized_strategy)
+    entries = []
+    for label, key in STRATEGY_PROFIT_FIELDS:
+        value = _coerce_optional_float(forecast.get(key))
+        if value is None:
+            continue
+        formatted = f"{value:.4f}"
+        if key == selected_key:
+            formatted = f"{formatted}*"
+        entries.append(f"{label}={formatted}")
+    if not entries:
+        return None
+    return f"profits {' '.join(entries)}"
+
+
+def _format_timedelta(delta: timedelta) -> str:
+    total_seconds = int(delta.total_seconds())
+    if total_seconds < 0:
+        total_seconds = 0
+    if total_seconds < 60:
+        return f"{total_seconds}s"
+    if total_seconds < 3600:
+        minutes, seconds = divmod(total_seconds, 60)
+        if seconds and minutes < 10:
+            return f"{minutes}m{seconds}s"
+        return f"{minutes}m"
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes = remainder // 60
+    if minutes == 0:
+        return f"{hours}h"
+    return f"{hours}h{minutes}m"
+
+
+def _format_since(timestamp: Optional[str]) -> str:
+    parsed = _parse_iso_timestamp(timestamp)
+    if parsed is None:
+        return "n/a"
+    delta = datetime.now(timezone.utc) - parsed
+    return f"{_format_timedelta(delta)} ago"
+
+
+def _is_pid_alive(pid: Optional[int]) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    except OSError:
+        return False
+    return True
+
+
+def _load_json_data(path) -> Optional[dict]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        typer.secho(f"  Failed to read {path}: {exc}", err=True, fg=typer.colors.YELLOW)
+        return None
+
+
+def _load_active_trading_plan() -> List[Dict]:
+    data = _load_json_data(ACTIVE_TRADES_PATH)
+    if not data:
+        return []
+    entries: List[Dict] = []
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        symbol, side = (key.split("|", 1) + ["n/a"])[:2]
+        entry = dict(value)
+        entry["symbol"] = symbol
+        entry["side"] = side
+        entries.append(entry)
+    entries.sort(key=lambda item: (item.get("symbol", ""), item.get("side", "")))
+    return entries
+
+
+def _load_maxdiff_watchers() -> List[Dict]:
+    if not MAXDIFF_WATCHERS_DIR.exists():
+        return []
+    watchers: List[Dict] = []
+    for path in sorted(MAXDIFF_WATCHERS_DIR.glob("*.json")):
+        data = _load_json_data(path)
+        if not isinstance(data, dict):
+            continue
+        data["config_path"] = str(path)
+        pid = data.get("pid")
+        data["process_alive"] = _is_pid_alive(pid)
+        watchers.append(data)
+    return watchers
+
+
+def _select_watchers(watchers: List[Dict], symbol: str, side: str, mode: str) -> List[Dict]:
+    return [
+        watcher
+        for watcher in watchers
+        if watcher.get("symbol") == symbol and watcher.get("side") == side and watcher.get("mode") == mode
+    ]
+
+
+def _format_watcher_summary(watcher: Dict) -> str:
+    mode = watcher.get("mode", "watcher")
+    side = watcher.get("side", "?")
+    parts = [f"{mode} watcher [{side}]"]
+    state = watcher.get("state")
+    if state:
+        parts.append(f"state={state}")
+    if watcher.get("process_alive"):
+        parts.append(f"pid={watcher.get('pid')}")
+    elif watcher.get("pid"):
+        parts.append("inactive")
+    limit_price = watcher.get("limit_price")
+    if limit_price is not None:
+        parts.append(f"limit={_format_price(limit_price)}")
+    takeprofit_price = watcher.get("takeprofit_price")
+    if takeprofit_price is not None:
+        parts.append(f"tp={_format_price(takeprofit_price)}")
+    tolerance_pct = watcher.get("tolerance_pct")
+    if tolerance_pct is not None:
+        try:
+            parts.append(f"tol={float(tolerance_pct) * 100:.2f}%")
+        except (TypeError, ValueError):
+            pass
+    price_tolerance = watcher.get("price_tolerance")
+    if price_tolerance is not None and tolerance_pct is None:
+        try:
+            parts.append(f"tol={float(price_tolerance) * 100:.2f}%")
+        except (TypeError, ValueError):
+            pass
+    qty = watcher.get("target_qty")
+    if qty is not None:
+        parts.append(f"qty={_format_quantity(qty)}")
+    open_orders = watcher.get("open_order_count")
+    if open_orders is not None:
+        parts.append(f"orders={open_orders}")
+    last_reference = watcher.get("last_reference_price")
+    if last_reference is not None:
+        parts.append(f"ref={_format_price(last_reference)}")
+    last_update = watcher.get("last_update")
+    if last_update:
+        parts.append(f"updated {_format_since(last_update)}")
+    expiry_at = watcher.get("expiry_at")
+    expiry_ts = _parse_iso_timestamp(expiry_at)
+    if expiry_ts:
+        remaining = expiry_ts - datetime.now(timezone.utc)
+        if remaining.total_seconds() > 0:
+            parts.append(f"expires in {_format_timedelta(remaining)}")
+        else:
+            parts.append("expired")
+    return " | ".join(parts)
+
+
+def _fetch_forecast_snapshot() -> tuple[Dict[str, Dict], Optional[str]]:
+    try:
+        from trade_stock_e2e import _load_latest_forecast_snapshot  # type: ignore
+
+        return _load_latest_forecast_snapshot(), None
+    except Exception as exc:
+        return {}, str(exc)
+
+
 @app.command()
 def status(
     timezone_name: str = typer.Option("US/Eastern", "--tz", help="Timezone for timestamp display."),
@@ -106,6 +372,7 @@ def status(
     leverage_settings = get_leverage_settings()
 
     # Global risk snapshot
+    live_portfolio_value: Optional[float] = None
     try:
         risk_threshold = get_global_risk_threshold()
     except Exception as exc:
@@ -172,6 +439,8 @@ def status(
     else:
         typer.echo("  No active positions.")
 
+    live_portfolio_value = _estimate_live_portfolio_value(account, positions)
+
     # Orders
     typer.echo("\n:: Open Orders")
     try:
@@ -188,17 +457,81 @@ def status(
     else:
         typer.echo("  No open orders.")
 
+    # Trading plan overview
+    typer.echo("\n:: Trading Plan")
+    trading_plan = _load_active_trading_plan()
+    forecast_snapshot, forecast_error = _fetch_forecast_snapshot()
+    watchers = _load_maxdiff_watchers()
+    used_watcher_keys = set()
+
+    if forecast_error:
+        typer.secho(f"  Forecast snapshot unavailable: {forecast_error}", fg=typer.colors.YELLOW)
+
+    if trading_plan:
+        for entry in trading_plan:
+            symbol = entry.get("symbol", "UNKNOWN")
+            side = entry.get("side", "n/a")
+            strategy = entry.get("entry_strategy", "n/a")
+            mode = entry.get("mode", "n/a")
+            qty_repr = _format_quantity(entry.get("qty"))
+            opened_repr = _format_optional_timestamp(
+                _parse_iso_timestamp(entry.get("opened_at")),
+                timezone_name,
+            )
+            line = (
+                f"  - {symbol} [{side}] strategy={strategy} "
+                f"mode={mode} qty={qty_repr} opened={opened_repr}"
+            )
+            forecast = forecast_snapshot.get(symbol, {})
+            high_price = forecast.get("maxdiffprofit_high_price")
+            low_price = forecast.get("maxdiffprofit_low_price")
+            if high_price is not None or low_price is not None:
+                line += (
+                    f" | maxdiff_high={_format_price(high_price)} "
+                    f"low={_format_price(low_price)}"
+                )
+            profit_summary = _format_strategy_profit_summary(strategy, forecast)
+            if profit_summary:
+                line += f" | {profit_summary}"
+            typer.echo(line)
+
+            entry_watchers = _select_watchers(watchers, symbol, side, "entry")
+            exit_watchers = _select_watchers(watchers, symbol, side, "exit")
+            for watcher in entry_watchers + exit_watchers:
+                key = watcher.get("config_path") or f"{symbol}|{side}|{watcher.get('mode')}"
+                used_watcher_keys.add(key)
+                typer.echo(f"    {_format_watcher_summary(watcher)}")
+    else:
+        typer.echo("  No recorded active trades.")
+
+    remaining_watchers = [
+        watcher
+        for watcher in watchers
+        if (watcher.get("config_path") or f"{watcher.get('symbol')}|{watcher.get('side')}|{watcher.get('mode')}") not in used_watcher_keys
+    ]
+    if remaining_watchers:
+        typer.echo("\n:: MaxDiff Watchers")
+        for watcher in remaining_watchers:
+            symbol = watcher.get("symbol", "UNKNOWN")
+            typer.echo(f"  - {symbol} {_format_watcher_summary(watcher)}")
+
     # Settings overview
     typer.echo("\n:: Settings")
     state_suffix = os.getenv("TRADE_STATE_SUFFIX", "").strip() or "<unset>"
     typer.echo(f"  TRADE_STATE_SUFFIX={state_suffix}")
+    if state_suffix == "<unset>":
+        typer.echo("    Using default strategy state files.")
     if risk_threshold is not None:
         typer.echo(f"  Global Risk Threshold={risk_threshold:.2f}x")
     if latest_snapshot:
         typer.echo(
-            f"  Portfolio Value={_format_currency(latest_snapshot.portfolio_value)} "
+            f"  Last Recorded Portfolio Value={_format_currency(latest_snapshot.portfolio_value)} "
             f"as of {_format_timestamp(latest_snapshot.observed_at, timezone_name)}"
         )
+    else:
+        typer.echo("  Last Recorded Portfolio Value=n/a")
+    if live_portfolio_value is not None:
+        typer.echo(f"  Live Portfolio Value={_format_currency(live_portfolio_value)} (account equity estimate)")
 
 
 @app.command("plot-risk")

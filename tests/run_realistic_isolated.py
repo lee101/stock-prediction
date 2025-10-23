@@ -36,9 +36,9 @@ def main():
     """Run all realistic tests in isolation."""
     
     test_files = [
-        'tests/integ/test_training_realistic.py',
-        'tests/integ/test_hftraining_realistic.py',
-        'tests/integ/test_totoembedding_realistic.py'
+        "tests/experimental/integration/integ/test_training_realistic.py",
+        "tests/experimental/integration/integ/test_hftraining_realistic.py",
+        "tests/experimental/integration/integ/test_totoembedding_realistic.py",
     ]
     
     print("=" * 60)
