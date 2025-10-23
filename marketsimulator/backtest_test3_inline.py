@@ -175,6 +175,56 @@ def _fallback_backtest(symbol: str, num_simulations: int | None = None) -> pd.Da
     if window is None or window.empty:
         raise ValueError(f"No data available for fallback analytics on {symbol}")
 
+    window = window.copy()
+    timestamp_series = None
+    price_groups = {"open": [], "high": [], "low": [], "close": []}
+    other_columns: Dict[str, pd.Series] = {}
+
+    for idx, column in enumerate(window.columns):
+        key = str(column).strip().lower()
+        series = window.iloc[:, idx]
+        if key == "timestamp":
+            timestamp_series = series if timestamp_series is None else timestamp_series.combine_first(series)
+        elif key in price_groups:
+            price_groups[key].append(series)
+        elif key == "volume":
+            other_columns["Volume"] = series
+
+    consolidated = {}
+    if timestamp_series is not None:
+        consolidated["timestamp"] = timestamp_series
+
+    for key, series_list in price_groups.items():
+        if not series_list:
+            continue
+        combined = series_list[0].copy()
+        for extra in series_list[1:]:
+            combined = combined.combine_first(extra)
+        consolidated[key.capitalize()] = combined
+
+    consolidated.update(other_columns)
+
+    if consolidated:
+        window = pd.DataFrame(consolidated)
+    else:
+        rename_map = {}
+        for column in window.columns:
+            key = str(column).strip().lower()
+            if key == "timestamp":
+                rename_map[column] = "timestamp"
+            elif key == "open":
+                rename_map[column] = "Open"
+            elif key == "high":
+                rename_map[column] = "High"
+            elif key == "low":
+                rename_map[column] = "Low"
+            elif key == "close":
+                rename_map[column] = "Close"
+        if rename_map:
+            window.rename(columns=rename_map, inplace=True)
+        if window.columns.duplicated().any():
+            window = window.loc[:, ~window.columns.duplicated(keep="first")]
+
     required_cols = {"Close", "High", "Low"}
     missing = required_cols.difference(window.columns)
     if missing:

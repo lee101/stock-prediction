@@ -249,10 +249,22 @@ class SimulationController:
         return self.state.clock.current
 
     def summary(self):
+        positions_detail = {}
+        for symbol, pos in self.state.positions.items():
+            market_value = pos.market_value
+            positions_detail[symbol] = {
+                "qty": pos.qty,
+                "side": pos.side,
+                "price": pos.current_price,
+                "market_value": market_value,
+            }
+
         return {
             "cash": self.state.cash,
             "equity": self.state.equity,
             "positions": {symbol: pos.qty for symbol, pos in self.state.positions.items()},
+            "positions_detail": positions_detail,
+            "liquidation_value": self.state.equity,
         }
 
 

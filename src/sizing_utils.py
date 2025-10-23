@@ -81,6 +81,8 @@ def get_qty(symbol: str, entry_price: float, positions: Optional[Sequence[Positi
     buying_power = float(getattr(alpaca_wrapper, "total_buying_power", 0.0) or 0.0)
     equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
     risk_multiplier = max(get_global_risk_threshold(), 1.0)
+    if symbol in crypto_symbols:
+        risk_multiplier = 1.0
     
     # Calculate qty based on 50% of buying power and risk multiplier
     qty_from_buying_power = 0.50 * buying_power * risk_multiplier / entry_price
@@ -94,6 +96,8 @@ def get_qty(symbol: str, entry_price: float, positions: Optional[Sequence[Positi
         max_symbol_value = (max_exposure_pct / 100) * equity
         remaining_value = max(max_symbol_value - current_symbol_value - 1e-9, 0.0)
         leverage_cap = max(risk_multiplier, 1.0)
+        if symbol in crypto_symbols:
+            leverage_cap = 1.0
         max_additional_value = remaining_value * leverage_cap
         qty_from_exposure_limit = max_additional_value / entry_price if entry_price > 0 else 0.0
         qty = min(qty_from_buying_power, qty_from_exposure_limit)
