@@ -14,7 +14,7 @@ from ..dependency_injection import (
     resolve_torch,
 )
 
-from .model_cache import ModelCacheManager, dtype_to_token
+from .model_cache import ModelCacheManager, device_to_token, dtype_to_token
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _KRONOS_CANDIDATES = [
@@ -110,6 +110,7 @@ class KronosForecastingWrapper:
         self.verbose = verbose
 
         self._device = device
+        self._device_token = device_to_token(device)
         self._predictor = None
         self._preferred_dtype = self._compute_preferred_dtype(device)
 
@@ -432,7 +433,9 @@ class KronosForecastingWrapper:
 
         cache_manager = ModelCacheManager("kronos")
         dtype_token = dtype_to_token(self._preferred_dtype or torch.float32)
-        with cache_manager.compilation_env(self.model_name, dtype_token):
+        device_token = device_to_token(device)
+        self._device_token = device_token
+        with cache_manager.compilation_env(self.model_name, dtype_token, device_token):
             tokenizer = KronosTokenizer.from_pretrained(self.tokenizer_name, cache_dir=self.cache_dir)
             model = Kronos.from_pretrained(self.model_name, cache_dir=self.cache_dir)
 

@@ -107,12 +107,15 @@ def test_toto_pipeline_persists_and_reuses_compiled_cache(tmp_path):
     assert pipeline.model is not None
     assert DummyToto.calls[0] == "Fake/Model"
 
-    cache_root = Path(os.environ["COMPILED_MODELS_DIR"]) / "toto" / "Fake-Model" / "bf16"
+    cache_root = Path(os.environ["COMPILED_MODELS_DIR"]) / "toto" / "Fake-Model" / "bf16" / "cpu"
     metadata_path = cache_root / "metadata.json"
     assert metadata_path.exists()
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["model_id"] == "Fake/Model"
     assert metadata["dtype"] == "bf16"
+    assert metadata["device"] == "cpu"
+    assert metadata["device_variant"] == "cpu"
+    assert metadata["device_requested"] == "cpu"
 
     # Second load should reuse local cache path.
     _ = tw.TotoPipeline.from_pretrained(
@@ -126,6 +129,59 @@ def test_toto_pipeline_persists_and_reuses_compiled_cache(tmp_path):
     assert len(DummyToto.calls) >= 2
     second_call = DummyToto.calls[1]
     assert second_call.startswith(str(cache_root / "weights"))
+
+
+def test_toto_cache_separates_device_variants(tmp_path):
+    cpu_pipeline = tw.TotoPipeline.from_pretrained(
+        model_id="Fake/Model",
+        device_map="cpu",
+        torch_dtype=torch.float32,
+        compile_model=False,
+        torch_compile=False,
+        warmup_sequence=0,
+    )
+    assert cpu_pipeline.model is not None
+
+    cpu_cache = Path(os.environ["COMPILED_MODELS_DIR"]) / "toto" / "Fake-Model" / "fp32" / "cpu"
+    assert (cpu_cache / "metadata.json").exists()
+
+    gpu_first = tw.TotoPipeline.from_pretrained(
+        model_id="Fake/Model",
+        device_map="cuda:0",
+        torch_dtype=torch.float32,
+        compile_model=False,
+        torch_compile=False,
+        warmup_sequence=0,
+    )
+    assert gpu_first.model is not None
+
+    calls_after_first_gpu = list(DummyToto.calls)
+
+    gpu_second = tw.TotoPipeline.from_pretrained(
+        model_id="Fake/Model",
+        device_map="cuda:0",
+        torch_dtype=torch.float32,
+        compile_model=False,
+        torch_compile=False,
+        warmup_sequence=0,
+    )
+    assert gpu_second.model is not None
+
+    cache_root = Path(os.environ["COMPILED_MODELS_DIR"]) / "toto" / "Fake-Model" / "fp32"
+    cpu_path = cache_root / "cpu"
+    gpu_path = cache_root / "cuda"
+
+    assert cpu_path.exists()
+    assert gpu_path.exists()
+    assert cpu_path != gpu_path
+
+    new_calls = DummyToto.calls[len(calls_after_first_gpu) :]
+    assert new_calls
+    assert all(call.startswith(str(gpu_path / "weights")) for call in new_calls)
+
+    gpu_metadata = json.loads((gpu_path / "metadata.json").read_text(encoding="utf-8"))
+    assert gpu_metadata["device"] == "cuda"
+    assert gpu_metadata["device_requested"] == "cuda:0"
 
 
 def test_toto_cache_policy_only_requires_existing_cache(tmp_path):

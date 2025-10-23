@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from typing import Any, ContextManager, Dict, List, Optional, Tuple, TYPE_CHECKING, Union, cast
 
 from ..dependency_injection import register_observer, resolve_numpy, resolve_torch
-from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
+from .model_cache import (
+    ModelCacheError,
+    ModelCacheManager,
+    device_to_token,
+    dtype_to_token,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CANDIDATE_PATHS = [
@@ -64,10 +69,21 @@ try:
     from toto.data.util.dataset import MaskedTimeseries
     from toto.inference.forecaster import TotoForecaster
     from toto.model.toto import Toto
-except ModuleNotFoundError:  # pragma: no cover - compatibility with namespace installs
-    from toto.toto.data.util.dataset import MaskedTimeseries  # type: ignore
-    from toto.toto.inference.forecaster import TotoForecaster  # type: ignore
-    from toto.toto.model.toto import Toto  # type: ignore
+except ModuleNotFoundError:
+    try:  # pragma: no cover - compatibility with namespace installs
+        from toto.toto.data.util.dataset import MaskedTimeseries  # type: ignore
+        from toto.toto.inference.forecaster import TotoForecaster  # type: ignore
+        from toto.toto.model.toto import Toto  # type: ignore
+    except ModuleNotFoundError as exc:  # pragma: no cover - gracefully degrade when Toto missing entirely
+        _IMPORT_ERROR = exc
+        MaskedTimeseries = None  # type: ignore
+        TotoForecaster = None  # type: ignore
+        Toto = None  # type: ignore
+    except Exception as exc:  # pragma: no cover - unexpected import errors
+        _IMPORT_ERROR = exc
+        MaskedTimeseries = None  # type: ignore
+        TotoForecaster = None  # type: ignore
+        Toto = None  # type: ignore
 except Exception as exc:  # pragma: no cover - allow graceful degradation when deps missing
     _IMPORT_ERROR = exc
     MaskedTimeseries = None  # type: ignore
@@ -405,6 +421,7 @@ class TotoPipeline:
         dtype_token = dtype_to_token(torch_dtype)
         amp_token = dtype_to_token(amp_dtype)
         device = device_map if device_map != "mps" else "cpu"
+        device_token = device_to_token(device)
 
         extra_kwargs: Dict[str, Any] = dict(kwargs)
         pipeline_kwargs: Dict[str, Any] = {}
@@ -420,12 +437,25 @@ class TotoPipeline:
             "compile_mode": (compile_mode or "none"),
             "compile_backend": (compile_backend or "none"),
             "torch_version": torch.__version__,
+            "device": device_token,
+            "device_variant": device_token,
         }
 
         use_cache = policy != "never"
         loaded_from_cache = False
-        with manager.compilation_env(model_id, dtype_token):
-            metadata = manager.load_metadata(model_id, dtype_token) if use_cache else None
+        with manager.compilation_env(model_id, dtype_token, device_token):
+            metadata = (
+                manager.load_metadata(model_id, dtype_token, device_token)
+                if use_cache
+                else None
+            )
+            if metadata:
+                metadata = dict(metadata)
+                if "device" in metadata:
+                    metadata["device"] = device_to_token(metadata["device"])
+                elif "device_variant" in metadata:
+                    metadata["device"] = device_to_token(metadata["device_variant"])
+                metadata.setdefault("device_variant", metadata.get("device", device_token))
             model: TotoModelType
             if (
                 use_cache
@@ -433,7 +463,7 @@ class TotoPipeline:
                 and metadata
                 and manager.metadata_matches(metadata, metadata_requirements)
             ):
-                cache_path = manager.load_pretrained_path(model_id, dtype_token)
+                cache_path = manager.load_pretrained_path(model_id, dtype_token, device_token)
                 if cache_path is not None:
                     try:
                         model = cast(
@@ -442,9 +472,10 @@ class TotoPipeline:
                         )
                         loaded_from_cache = True
                         logger.info(
-                            "Loaded Toto model '%s' (%s) from compiled cache.",
+                            "Loaded Toto model '%s' (%s/%s) from compiled cache.",
                             model_id,
                             dtype_token,
+                            device_token,
                         )
                     except Exception as exc:  # pragma: no cover - backstop for unexpected load failures
                         loaded_from_cache = False
@@ -455,8 +486,8 @@ class TotoPipeline:
                         )
             if policy == "only" and not loaded_from_cache:
                 raise RuntimeError(
-                    f"Compiled Toto cache unavailable for model '{model_id}' and dtype '{dtype_token}'. "
-                    "Run the model pre-warming utilities to generate cached weights."
+                    f"Compiled Toto cache unavailable for model '{model_id}', dtype '{dtype_token}', "
+                    f"device '{device_token}'. Run the model pre-warming utilities to generate cached weights."
                 )
 
             if not loaded_from_cache:
@@ -494,7 +525,9 @@ class TotoPipeline:
                 if model_obj is not None:
                     metadata_payload = {
                         **metadata_requirements,
-                        "device": device,
+                        "device": device_token,
+                        "device_variant": device_token,
+                        "device_requested": device,
                         "compile_model": bool(pipeline._compiled),
                         "torch_compile": bool(pipeline._torch_compile_success),
                         "warmup_sequence": int(warmup_sequence),
@@ -506,6 +539,7 @@ class TotoPipeline:
                             model=model_obj,
                             metadata=metadata_payload,
                             force=force_refresh,
+                            variant_token=device_token,
                         )
                     except ModelCacheError as exc:
                         logger.warning(

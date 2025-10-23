@@ -15,6 +15,7 @@ __all__ = [
     "ModelCacheError",
     "ModelCacheManager",
     "dtype_to_token",
+    "device_to_token",
 ]
 
 
@@ -66,6 +67,26 @@ def dtype_to_token(dtype: Any) -> str:
     return str(dtype).replace("torch.", "")
 
 
+def device_to_token(device: Any) -> str:
+    """Return a stable token representing a device string."""
+
+    if device is None:
+        return "cpu"
+    value = str(device).strip().lower()
+    if not value:
+        return "cpu"
+    # Normalise CUDA devices so ``cuda`` and ``cuda:0`` share the same token.
+    if value.startswith("cuda"):
+        return "cuda"
+    if value.startswith("gpu"):
+        return "cuda"
+    if value.startswith("cpu"):
+        return "cpu"
+    if value.startswith("mps"):
+        return "mps"
+    return _sanitize_identifier(value) or "cpu"
+
+
 @dataclass
 class ModelCacheManager:
     """
@@ -85,27 +106,82 @@ class ModelCacheManager:
     # ------------------------------------------------------------------ #
     # Directory helpers
     # ------------------------------------------------------------------ #
-    def _base_dir(self, model_id: str, dtype_token: str) -> Path:
-        return self._ns_root / _sanitize_identifier(model_id) / dtype_token
+    def _base_dir(
+        self,
+        model_id: str,
+        dtype_token: str,
+        variant_token: Optional[str] = None,
+    ) -> Path:
+        base = self._ns_root / _sanitize_identifier(model_id) / _sanitize_identifier(dtype_token)
+        if variant_token:
+            variant = _sanitize_identifier(variant_token)
+            if not variant:
+                variant = "default"
+            base = base / variant
+        return base
 
-    def weights_dir(self, model_id: str, dtype_token: str) -> Path:
-        return self._base_dir(model_id, dtype_token) / "weights"
+    def _resolve_dir(
+        self,
+        model_id: str,
+        dtype_token: str,
+        variant_token: Optional[str],
+        *,
+        suffix: str,
+        ensure: bool = False,
+    ) -> Path:
+        base = self._base_dir(model_id, dtype_token, variant_token)
+        path = base / suffix
+        if ensure:
+            path.mkdir(parents=True, exist_ok=True)
+        return path
 
-    def compilation_dir(self, model_id: str, dtype_token: str) -> Path:
-        return self._base_dir(model_id, dtype_token) / "torch_inductor"
+    def weights_dir(
+        self,
+        model_id: str,
+        dtype_token: str,
+        variant_token: Optional[str] = None,
+    ) -> Path:
+        return self._resolve_dir(model_id, dtype_token, variant_token, suffix="weights")
 
-    def metadata_path(self, model_id: str, dtype_token: str) -> Path:
-        return self._base_dir(model_id, dtype_token) / "metadata.json"
+    def compilation_dir(
+        self,
+        model_id: str,
+        dtype_token: str,
+        variant_token: Optional[str] = None,
+    ) -> Path:
+        return self._resolve_dir(model_id, dtype_token, variant_token, suffix="torch_inductor")
+
+    def metadata_path(
+        self,
+        model_id: str,
+        dtype_token: str,
+        variant_token: Optional[str] = None,
+    ) -> Path:
+        return self._resolve_dir(model_id, dtype_token, variant_token, suffix="metadata.json")
 
     # ------------------------------------------------------------------ #
     # Metadata helpers
     # ------------------------------------------------------------------ #
-    def load_metadata(self, model_id: str, dtype_token: str) -> Optional[Dict[str, Any]]:
-        path = self.metadata_path(model_id, dtype_token)
+    def load_metadata(
+        self,
+        model_id: str,
+        dtype_token: str,
+        variant_token: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        path = self.metadata_path(model_id, dtype_token, variant_token)
         try:
             with path.open("r", encoding="utf-8") as handle:
                 return json.load(handle)
         except FileNotFoundError:
+            if variant_token is not None:
+                legacy_path = self.metadata_path(model_id, dtype_token, None)
+                try:
+                    with legacy_path.open("r", encoding="utf-8") as handle:
+                        return json.load(handle)
+                except FileNotFoundError:
+                    return None
+                except json.JSONDecodeError:
+                    return None
             return None
         except json.JSONDecodeError:
             return None
@@ -121,8 +197,9 @@ class ModelCacheManager:
         model_id: str,
         dtype_token: str,
         metadata: Dict[str, Any],
+        variant_token: Optional[str] = None,
     ) -> None:
-        path = self.metadata_path(model_id, dtype_token)
+        path = self.metadata_path(model_id, dtype_token, variant_token)
         path.parent.mkdir(parents=True, exist_ok=True)
         metadata = dict(metadata)
         metadata.setdefault(
@@ -138,14 +215,29 @@ class ModelCacheManager:
     # ------------------------------------------------------------------ #
     # Artifact helpers
     # ------------------------------------------------------------------ #
-    def has_cached_weights(self, model_id: str, dtype_token: str) -> bool:
-        weights = self.weights_dir(model_id, dtype_token)
+    def has_cached_weights(
+        self,
+        model_id: str,
+        dtype_token: str,
+        variant_token: Optional[str] = None,
+    ) -> bool:
+        weights = self.weights_dir(model_id, dtype_token, variant_token)
         if not weights.exists():
+            if variant_token is not None:
+                legacy = self.weights_dir(model_id, dtype_token, None)
+                if not legacy.exists():
+                    return False
+                return any(legacy.iterdir())
             return False
         return any(weights.iterdir())
 
-    def reset_cache(self, model_id: str, dtype_token: str) -> None:
-        base = self._base_dir(model_id, dtype_token)
+    def reset_cache(
+        self,
+        model_id: str,
+        dtype_token: str,
+        variant_token: Optional[str] = None,
+    ) -> None:
+        base = self._base_dir(model_id, dtype_token, variant_token)
         if base.exists():
             shutil.rmtree(base)
 
@@ -153,11 +245,16 @@ class ModelCacheManager:
     # Environments
     # ------------------------------------------------------------------ #
     @contextmanager
-    def compilation_env(self, model_id: str, dtype_token: str):
+    def compilation_env(
+        self,
+        model_id: str,
+        dtype_token: str,
+        variant_token: Optional[str] = None,
+    ):
         """
         Context manager that points TORCHINDUCTOR_CACHE_DIR at the cache location.
         """
-        compile_dir = self.compilation_dir(model_id, dtype_token)
+        compile_dir = self.compilation_dir(model_id, dtype_token, variant_token)
         compile_dir.mkdir(parents=True, exist_ok=True)
         env_key = "TORCHINDUCTOR_CACHE_DIR"
         previous = os.environ.get(env_key)
@@ -181,6 +278,7 @@ class ModelCacheManager:
         model: Any,
         metadata: Dict[str, Any],
         force: bool = False,
+        variant_token: Optional[str] = None,
     ) -> None:
         """
         Persist model weights and metadata to the cache directory.
@@ -188,7 +286,7 @@ class ModelCacheManager:
         The method first attempts ``save_pretrained`` (HuggingFace compatible) and
         falls back to ``state_dict`` when unavailable.
         """
-        weights_dir = self.weights_dir(model_id, dtype_token)
+        weights_dir = self.weights_dir(model_id, dtype_token, variant_token)
         if force and weights_dir.exists():
             shutil.rmtree(weights_dir)
         weights_dir.mkdir(parents=True, exist_ok=True)
@@ -226,12 +324,23 @@ class ModelCacheManager:
 
         metadata = dict(metadata)
         metadata["data_format"] = fmt
-        self.write_metadata(model_id, dtype_token, metadata)
+        self.write_metadata(model_id, dtype_token, metadata, variant_token)
 
-    def load_pretrained_path(self, model_id: str, dtype_token: str) -> Optional[Path]:
-        weights_dir = self.weights_dir(model_id, dtype_token)
+    def load_pretrained_path(
+        self,
+        model_id: str,
+        dtype_token: str,
+        variant_token: Optional[str] = None,
+    ) -> Optional[Path]:
+        weights_dir = self.weights_dir(model_id, dtype_token, variant_token)
         if not weights_dir.exists():
-            return None
+            if variant_token is not None:
+                legacy = self.weights_dir(model_id, dtype_token, None)
+                if not legacy.exists():
+                    return None
+                weights_dir = legacy
+            else:
+                return None
         config = weights_dir / "config.json"
         if config.exists():
             return weights_dir
@@ -243,12 +352,19 @@ class ModelCacheManager:
         model_id: str,
         dtype_token: str,
         metadata: Optional[Dict[str, Any]] = None,
+        variant_token: Optional[str] = None,
     ) -> Optional[Path]:
-        weights_dir = self.weights_dir(model_id, dtype_token)
+        weights_dir = self.weights_dir(model_id, dtype_token, variant_token)
         if not weights_dir.exists():
-            return None
+            if variant_token is not None:
+                legacy = self.weights_dir(model_id, dtype_token, None)
+                if not legacy.exists():
+                    return None
+                weights_dir = legacy
+            else:
+                return None
         if metadata is None:
-            metadata = self.load_metadata(model_id, dtype_token)
+            metadata = self.load_metadata(model_id, dtype_token, variant_token)
         if metadata:
             candidate = metadata.get("state_path")
             if candidate:
