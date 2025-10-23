@@ -18,11 +18,12 @@ except Exception as import_exc:  # pragma: no cover - exercised via tests with s
     logging.getLogger(__name__).warning(
         "Falling back to stubbed backtest resources due to import failure: %s", import_exc
     )
+    captured_import_error = import_exc
 
     def backtest_forecasts(*args, **kwargs):
         raise RuntimeError(
             "backtest_forecasts is unavailable because backtest_test3_inline could not be imported."
-        ) from import_exc
+        ) from captured_import_error
 
     def release_model_resources() -> None:
         return None
