@@ -34,7 +34,13 @@ from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
 from src.trading_obj_utils import filter_to_realistic_positions
-from src.process_utils import backout_near_market, ramp_into_position, spawn_close_position_at_takeprofit
+from src.process_utils import (
+    backout_near_market,
+    ramp_into_position,
+    spawn_close_position_at_maxdiff_takeprofit,
+    spawn_close_position_at_takeprofit,
+    spawn_open_position_at_maxdiff_takeprofit,
+)
 from src.portfolio_risk import record_portfolio_snapshot
 from src.sizing_utils import get_qty
 from alpaca.data import StockHistoricalDataClient
@@ -67,6 +73,11 @@ DEFAULT_SPREAD_BPS = 25
 PROBE_LOSS_COOLDOWN_MINUTES = 180
 ALLOW_HIGHLOW_ENTRY = os.getenv("ALLOW_HIGHLOW_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
 ALLOW_TAKEPROFIT_ENTRY = os.getenv("ALLOW_TAKEPROFIT_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
+_ALLOW_MAXDIFF_ENV = os.getenv("ALLOW_MAXDIFF_ENTRY")
+if _ALLOW_MAXDIFF_ENV is None:
+    ALLOW_MAXDIFF_ENTRY = ALLOW_HIGHLOW_ENTRY
+else:
+    ALLOW_MAXDIFF_ENTRY = _ALLOW_MAXDIFF_ENV.strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip().lower() in {"1", "true", "yes", "on"}
 CONSENSUS_MIN_MOVE_PCT = float(os.getenv("CONSENSUS_MIN_MOVE_PCT", "0.001"))
 
@@ -494,10 +505,12 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
     returns_metrics = _format_metric_parts(
         [
             ("avg", data.get("avg_return"), 3),
+            ("annual", data.get("annual_return"), 3),
             ("simple", data.get("simple_return"), 3),
             ("all", strategy_returns.get("all_signals"), 3),
             ("takeprofit", strategy_returns.get("takeprofit"), 3),
             ("highlow", strategy_returns.get("highlow"), 3),
+            ("maxdiff", strategy_returns.get("maxdiff"), 3),
             ("ci_guard", strategy_returns.get("ci_guard"), 3),
             ("unprofit", data.get("unprofit_shutdown_return"), 3),
             ("composite", data.get("composite_score"), 3),
@@ -1119,26 +1132,54 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 continue
 
             sample_size = len(backtest_df)
+            trading_days_per_year = 365 if symbol in crypto_symbols else 252
 
             def _mean_column(column: str, default: float = 0.0) -> float:
                 if column in backtest_df.columns:
                     return coerce_numeric(backtest_df[column].mean(), default=default)
                 return default
 
-            strategy_returns = {
-                "simple": backtest_df["simple_strategy_return"].mean(),
-                "all_signals": backtest_df["all_signals_strategy_return"].mean(),
-                "takeprofit": backtest_df["entry_takeprofit_return"].mean(),
-                "highlow": backtest_df["highlow_return"].mean(),
+            def _mean_return(primary: str, fallback: Optional[str] = None, default: float = 0.0) -> float:
+                if primary in backtest_df.columns:
+                    return coerce_numeric(backtest_df[primary].mean(), default=default)
+                if fallback and fallback in backtest_df.columns:
+                    return coerce_numeric(backtest_df[fallback].mean(), default=default)
+                return default
+
+            strategy_returns_daily = {
+                "simple": _mean_return("simple_strategy_avg_daily_return", "simple_strategy_return"),
+                "all_signals": _mean_return("all_signals_strategy_avg_daily_return", "all_signals_strategy_return"),
+                "takeprofit": _mean_return("entry_takeprofit_avg_daily_return", "entry_takeprofit_return"),
+                "highlow": _mean_return("highlow_avg_daily_return", "highlow_return"),
+                "maxdiff": _mean_return("maxdiff_avg_daily_return", "maxdiff_return"),
+            }
+            strategy_returns_annual = {
+                "simple": _mean_return("simple_strategy_annual_return", "simple_strategy_return"),
+                "all_signals": _mean_return("all_signals_strategy_annual_return", "all_signals_strategy_return"),
+                "takeprofit": _mean_return("entry_takeprofit_annual_return", "entry_takeprofit_return"),
+                "highlow": _mean_return("highlow_annual_return", "highlow_return"),
+                "maxdiff": _mean_return("maxdiff_annual_return", "maxdiff_return"),
             }
             if "ci_guard_return" in backtest_df.columns:
-                strategy_returns["ci_guard"] = backtest_df["ci_guard_return"].mean()
+                strategy_returns_daily["ci_guard"] = _mean_return(
+                    "ci_guard_avg_daily_return",
+                    "ci_guard_return",
+                )
+                strategy_returns_annual["ci_guard"] = _mean_return(
+                    "ci_guard_annual_return",
+                    "ci_guard_return",
+                )
+            strategy_returns = strategy_returns_daily
 
             unprofit_return = 0.0
             unprofit_sharpe = 0.0
-            if "unprofit_shutdown_return" in backtest_df.columns:
-                unprofit_return = backtest_df["unprofit_shutdown_return"].mean()
+            if "unprofit_shutdown_avg_daily_return" in backtest_df.columns or "unprofit_shutdown_return" in backtest_df.columns:
+                unprofit_return = _mean_return("unprofit_shutdown_avg_daily_return", "unprofit_shutdown_return")
                 strategy_returns["unprofit_shutdown"] = unprofit_return
+                strategy_returns_annual["unprofit_shutdown"] = _mean_return(
+                    "unprofit_shutdown_annual_return",
+                    "unprofit_shutdown_return",
+                )
             if "unprofit_shutdown_sharpe" in backtest_df.columns:
                 unprofit_sharpe = backtest_df["unprofit_shutdown_sharpe"].mean()
 
@@ -1147,6 +1188,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             walk_forward_turnover_raw = last_prediction.get("walk_forward_turnover")
             walk_forward_highlow_raw = last_prediction.get("walk_forward_highlow_sharpe")
             walk_forward_takeprofit_raw = last_prediction.get("walk_forward_takeprofit_sharpe")
+            walk_forward_maxdiff_raw = last_prediction.get("walk_forward_maxdiff_sharpe")
 
             walk_forward_oos_sharpe = (
                 coerce_numeric(walk_forward_oos_sharpe_raw)
@@ -1168,6 +1210,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 if walk_forward_takeprofit_raw is not None
                 else None
             )
+            walk_forward_maxdiff_sharpe = (
+                coerce_numeric(walk_forward_maxdiff_raw)
+                if walk_forward_maxdiff_raw is not None
+                else None
+            )
 
             close_price = coerce_numeric(last_prediction.get("close"), default=0.0)
             predicted_close_price = coerce_numeric(
@@ -1186,32 +1233,44 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             strategy_stats: Dict[str, Dict[str, float]] = {
                 "simple": {
                     "avg_return": strategy_returns.get("simple", 0.0),
+                    "annual_return": strategy_returns_annual.get("simple", 0.0),
                     "sharpe": _mean_column("simple_strategy_sharpe"),
                     "turnover": _mean_column("simple_strategy_turnover"),
                     "max_drawdown": _mean_column("simple_strategy_max_drawdown"),
                 },
                 "all_signals": {
                     "avg_return": strategy_returns.get("all_signals", 0.0),
+                    "annual_return": strategy_returns_annual.get("all_signals", 0.0),
                     "sharpe": _mean_column("all_signals_strategy_sharpe"),
                     "turnover": _mean_column("all_signals_strategy_turnover"),
                     "max_drawdown": _mean_column("all_signals_strategy_max_drawdown"),
                 },
                 "takeprofit": {
                     "avg_return": strategy_returns.get("takeprofit", 0.0),
+                    "annual_return": strategy_returns_annual.get("takeprofit", 0.0),
                     "sharpe": _mean_column("entry_takeprofit_sharpe"),
                     "turnover": _mean_column("entry_takeprofit_turnover"),
                     "max_drawdown": _mean_column("entry_takeprofit_max_drawdown"),
                 },
                 "highlow": {
                     "avg_return": strategy_returns.get("highlow", 0.0),
+                    "annual_return": strategy_returns_annual.get("highlow", 0.0),
                     "sharpe": _mean_column("highlow_sharpe"),
                     "turnover": _mean_column("highlow_turnover"),
                     "max_drawdown": _mean_column("highlow_max_drawdown"),
+                },
+                "maxdiff": {
+                    "avg_return": strategy_returns.get("maxdiff", 0.0),
+                    "annual_return": strategy_returns_annual.get("maxdiff", 0.0),
+                    "sharpe": _mean_column("maxdiff_sharpe"),
+                    "turnover": _mean_column("maxdiff_turnover"),
+                    "max_drawdown": _mean_column("maxdiff_max_drawdown"),
                 },
             }
             if "ci_guard" in strategy_returns:
                 strategy_stats["ci_guard"] = {
                     "avg_return": strategy_returns.get("ci_guard", 0.0),
+                    "annual_return": strategy_returns_annual.get("ci_guard", 0.0),
                     "sharpe": _mean_column("ci_guard_sharpe"),
                     "turnover": _mean_column("ci_guard_turnover"),
                     "max_drawdown": _mean_column("ci_guard_max_drawdown"),
@@ -1229,8 +1288,10 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     allow_config = ALLOW_TAKEPROFIT_ENTRY
                 elif name == "highlow":
                     allow_config = ALLOW_HIGHLOW_ENTRY
+                elif name == "maxdiff":
+                    allow_config = ALLOW_MAXDIFF_ENTRY
 
-                if name in {"takeprofit", "highlow"}:
+                if name in {"takeprofit", "highlow", "maxdiff"}:
                     if not allow_config:
                         strategy_ineligible[name] = "disabled_by_config"
                         continue
@@ -1244,7 +1305,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                         strategy_ineligible[name] = reason
                         continue
 
-                score = float(stats.get("avg_return") or 0.0) + 0.05 * float(stats.get("sharpe") or 0.0)
+                annual_metric = float(stats.get("annual_return") or 0.0)
+                score = annual_metric + 0.05 * float(stats.get("sharpe") or 0.0)
                 if name in {"simple", "ci_guard"}:
                     score += 0.001
                 candidate_scores[name] = score
@@ -1254,9 +1316,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 strategy_candidates.sort(key=lambda item: item[0], reverse=True)
                 best_strategy = strategy_candidates[0][1]
                 avg_return = float(strategy_stats.get(best_strategy, {}).get("avg_return", 0.0))
+                annual_return = float(strategy_stats.get(best_strategy, {}).get("annual_return", 0.0))
             else:
                 best_strategy = "simple"
                 avg_return = strategy_returns.get(best_strategy, 0.0)
+                annual_return = strategy_returns_annual.get(best_strategy, 0.0)
             selected_strategy_score = candidate_scores.get(best_strategy)
 
             if strategy_ineligible:
@@ -1283,6 +1347,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             simple_return = strategy_returns.get("simple", 0.0)
             takeprofit_return = strategy_returns.get("takeprofit", 0.0)
             highlow_return = strategy_returns.get("highlow", 0.0)
+            maxdiff_return = strategy_returns.get("maxdiff", 0.0)
             simple_sharpe = 0.0
             if "simple_strategy_sharpe" in backtest_df.columns:
                 simple_sharpe = coerce_numeric(backtest_df["simple_strategy_sharpe"].mean(), default=0.0)
@@ -1293,9 +1358,13 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     simple_return = kronos_profit
                 if kronos_profit > avg_return:
                     avg_return = kronos_profit
+                kronos_annual = kronos_profit * trading_days_per_year
+                if kronos_annual > annual_return:
+                    annual_return = kronos_annual
             price_skill = max(simple_return, 0.0) + 0.25 * max(simple_sharpe, 0.0) + 0.15 * max(kronos_profit, 0.0)
             highlow_allowed_entry = ALLOW_HIGHLOW_ENTRY and ("highlow" not in strategy_ineligible)
             takeprofit_allowed_entry = ALLOW_TAKEPROFIT_ENTRY and ("takeprofit" not in strategy_ineligible)
+            maxdiff_allowed_entry = ALLOW_MAXDIFF_ENTRY and ("maxdiff" not in strategy_ineligible)
 
             raw_expected_move_pct = expected_move_pct
             calibrated_move_raw = last_prediction.get("calibrated_expected_move_pct")
@@ -1355,7 +1424,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             if (
                 edge_strength < MIN_EDGE_STRENGTH
-                and max(avg_return, simple_return, takeprofit_return, highlow_return, kronos_profit) <= 0
+                and max(avg_return, simple_return, takeprofit_return, highlow_return, maxdiff_return, kronos_profit) <= 0
             ):
                 _log_detail(
                     f"Skipping {symbol} - no actionable price edge "
@@ -1365,15 +1434,17 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             effective_takeprofit = takeprofit_return if takeprofit_allowed_entry else 0.0
             effective_highlow = highlow_return if highlow_allowed_entry else 0.0
+            effective_maxdiff = maxdiff_return if maxdiff_allowed_entry else 0.0
             kronos_contrib = max(kronos_profit, 0.0)
             composite_score = (
-                0.18 * avg_return
-                + 0.25 * simple_return
+                0.17 * avg_return
+                + 0.24 * simple_return
                 + 0.22 * kronos_contrib
                 + 0.15 * edge_strength
                 + 0.1 * unprofit_return
                 + 0.05 * effective_takeprofit
-                + 0.05 * effective_highlow
+                + 0.04 * effective_highlow
+                + 0.03 * effective_maxdiff
             )
 
             bid_price, ask_price = fetch_bid_ask(symbol)
@@ -1470,6 +1541,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             result_row = {
                 "avg_return": avg_return,
+                "annual_return": annual_return,
                 "predictions": backtest_df,
                 "side": position_side,
                 "predicted_movement": predicted_movement,
@@ -1480,7 +1552,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "calibrated_close": float(calibrated_close_price),
                 "last_close": float(close_price),
                 "strategy_returns": strategy_returns,
+                "strategy_annual_returns": strategy_returns_annual,
                 "simple_return": simple_return,
+                "maxdiff_return": maxdiff_return,
                 "unprofit_shutdown_return": unprofit_return,
                 "unprofit_shutdown_sharpe": unprofit_sharpe,
                 "expected_move_pct": expected_move_pct,
@@ -1495,6 +1569,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "fallback_backtest": used_fallback_engine,
                 "highlow_entry_allowed": highlow_allowed_entry,
                 "takeprofit_entry_allowed": takeprofit_allowed_entry,
+                "maxdiff_entry_allowed": maxdiff_allowed_entry,
                 "trade_blocked": trade_blocked,
                 "block_reason": block_reason,
                 "last_trade_pnl": last_pnl,
@@ -1529,11 +1604,25 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "walk_forward_turnover": walk_forward_turnover,
                 "walk_forward_highlow_sharpe": walk_forward_highlow_sharpe,
                 "walk_forward_takeprofit_sharpe": walk_forward_takeprofit_sharpe,
+                "walk_forward_maxdiff_sharpe": walk_forward_maxdiff_sharpe,
                 "backtest_samples": sample_size,
             }
             snapshot_row = latest_snapshot.get(symbol)
             if snapshot_row:
                 result_row.update(snapshot_row)
+
+            maxdiff_numeric_keys = (
+                "maxdiffprofit_high_price",
+                "maxdiffprofit_low_price",
+                "maxdiffprofit_profit_high_multiplier",
+                "maxdiffprofit_profit_low_multiplier",
+                "maxdiffprofit_profit",
+            )
+            for key in maxdiff_numeric_keys:
+                if key in last_prediction:
+                    result_row[key] = coerce_numeric(last_prediction.get(key), default=0.0)
+            if "maxdiffprofit_profit_values" in last_prediction:
+                result_row["maxdiffprofit_profit_values"] = last_prediction.get("maxdiffprofit_profit_values")
             results[symbol] = result_row
             _log_analysis_summary(symbol, result_row)
 
@@ -1911,8 +2000,8 @@ def manage_positions(
                     logger.info(f"Entering new {data['side']} position for {symbol}")
 
             entry_strategy = data.get("strategy")
-            stored_entry_strategy = "maxdiff" if entry_strategy == "highlow" else entry_strategy
-            is_highlow_entry = entry_strategy == "highlow" and not effective_probe
+            stored_entry_strategy = "maxdiff" if entry_strategy in {"highlow", "maxdiff"} else entry_strategy
+            is_highlow_entry = entry_strategy in {"highlow", "maxdiff"} and not effective_probe
             highlow_limit_executed = False
 
             if bid_price is not None and ask_price is not None:
@@ -1949,32 +2038,47 @@ def manage_positions(
                         else:
                             try:
                                 logger.info(
-                                    "Submitting highlow limit order for %s %s qty=%s @ %.4f",
+                                    "Spawning highlow staged entry watcher for %s %s qty=%s @ %.4f",
                                     symbol,
                                     data["side"],
                                     target_qty,
                                     limit_price,
                                 )
-                                result = alpaca_wrapper.open_order_at_price_or_all(
+                                spawn_open_position_at_maxdiff_takeprofit(
                                     symbol,
-                                    target_qty,
                                     data["side"],
-                                    limit_price,
+                                    float(limit_price),
+                                    float(target_qty),
                                 )
-                                if result is None:
-                                    logger.warning(
-                                        "Highlow limit order for %s returned None; will additionally ramp position.",
-                                        symbol,
-                                    )
-                                else:
-                                    highlow_limit_executed = True
-                                    entry_price = limit_price
+                                highlow_limit_executed = True
+                                entry_price = float(limit_price)
                             except Exception as exc:
                                 logger.warning(
-                                    "Failed to submit highlow limit order for %s: %s; will ramp instead.",
+                                    "Failed to spawn highlow staged entry for %s: %s; attempting direct limit order fallback.",
                                     symbol,
                                     exc,
                                 )
+                                try:
+                                    result = alpaca_wrapper.open_order_at_price_or_all(
+                                        symbol,
+                                        target_qty,
+                                        data["side"],
+                                        float(limit_price),
+                                    )
+                                    if result is None:
+                                        logger.warning(
+                                            "Highlow fallback limit order for %s returned None; will attempt ramp.",
+                                            symbol,
+                                        )
+                                    else:
+                                        highlow_limit_executed = True
+                                        entry_price = float(limit_price)
+                                except Exception as fallback_exc:
+                                    logger.warning(
+                                        "Fallback highlow limit order failed for %s: %s; will ramp instead.",
+                                        symbol,
+                                        fallback_exc,
+                                    )
                 else:
                     logger.info(f"Probe trade target quantity for {symbol}: {target_qty} at price {entry_price}")
 
@@ -2042,7 +2146,11 @@ def manage_positions(
                             symbol,
                             takeprofit_price,
                         )
-                        spawn_close_position_at_takeprofit(symbol, float(takeprofit_price))
+                        spawn_close_position_at_maxdiff_takeprofit(
+                            symbol,
+                            data["side"],
+                            float(takeprofit_price),
+                        )
                     except Exception as exc:
                         logger.warning("Failed to schedule highlow takeprofit for %s: %s", symbol, exc)
             elif ENABLE_TAKEPROFIT_BRACKETS:
@@ -2089,7 +2197,7 @@ def manage_positions(
             )
             _mark_probe_transitioned(symbol, data["side"], current_position_size)
             entry_strategy = data.get("strategy")
-            stored_entry_strategy = "maxdiff" if entry_strategy == "highlow" else entry_strategy
+            stored_entry_strategy = "maxdiff" if entry_strategy in {"highlow", "maxdiff"} else entry_strategy
             _update_active_trade(
                 symbol,
                 data["side"],

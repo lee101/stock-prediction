@@ -1,0 +1,876 @@
+{
+  "generated_at": "2025-10-23T00:37:08.205423+00:00",
+  "baseline": {
+    "generated_at": "2025-10-22T15:50:09.149128+00:00",
+    "trade_history": {
+      "total_trades": 68,
+      "total_realized_pnl": -8661.710138,
+      "pnl_by_symbol": {
+        "BTCUSD": 356.7337,
+        "CRWD": -22.68,
+        "ETHUSD": -495.113838,
+        "GOOG": 49.0,
+        "MSFT": -8549.65
+      },
+      "pnl_by_date": {
+        "2025-10-15": -9032.543838000001,
+        "2025-10-16": 372.4837,
+        "2025-10-17": -8.65,
+        "2025-10-18": 3.0,
+        "2025-10-21": 2.0,
+        "2025-10-22": 2.0
+      },
+      "cumulative_curve": [
+        [
+          "2025-10-15T03:41:44.725064+00:00",
+          1.0
+        ],
+        [
+          "2025-10-15T03:42:55.068249+00:00",
+          2.0
+        ],
+        [
+          "2025-10-15T07:37:59.876013+00:00",
+          3.0
+        ],
+        [
+          "2025-10-15T08:19:12.077823+00:00",
+          -8501.5
+        ],
+        [
+          "2025-10-15T09:40:06.616114+00:00",
+          -8519.75
+        ],
+        [
+          "2025-10-15T10:11:38.469361+00:00",
+          -8518.75
+        ],
+        [
+          "2025-10-15T11:06:47.660167+00:00",
+          -8517.75
+        ],
+        [
+          "2025-10-15T14:54:20.179926+00:00",
+          -8526.43
+        ],
+        [
+          "2025-10-15T14:54:20.182931+00:00",
+          -8747.404957
+        ],
+        [
+          "2025-10-15T14:57:33.197466+00:00",
+          -8761.404957
+        ],
+        [
+          "2025-10-15T14:57:33.199963+00:00",
+          -9035.543838000001
+        ],
+        [
+          "2025-10-15T22:32:21.299563+00:00",
+          -9034.543838000001
+        ],
+        [
+          "2025-10-15T22:40:17.602336+00:00",
+          -9033.543838000001
+        ],
+        [
+          "2025-10-15T22:55:13.972975+00:00",
+          -9032.543838000001
+        ],
+        [
+          "2025-10-16T00:21:39.528574+00:00",
+          -9032.543838000001
+        ],
+        [
+          "2025-10-16T00:22:11.030104+00:00",
+          -9032.543838000001
+        ],
+        [
+          "2025-10-16T00:22:27.280916+00:00",
+          -9032.543838000001
+        ],
+        [
+          "2025-10-16T00:23:18.636837+00:00",
+          -9032.543838000001
+        ],
+        [
+          "2025-10-16T01:37:41.940042+00:00",
+          -9031.543838000001
+        ],
+        [
+          "2025-10-16T01:58:54.201679+00:00",
+          -9030.543838000001
+        ],
+        [
+          "2025-10-16T02:00:51.709596+00:00",
+          -9030.568338000001
+        ],
+        [
+          "2025-10-16T02:00:59.168229+00:00",
+          -9048.818338000001
+        ],
+        [
+          "2025-10-16T03:02:32.754063+00:00",
+          -9047.818338000001
+        ],
+        [
+          "2025-10-16T04:24:51.728970+00:00",
+          -9046.818338000001
+        ],
+        [
+          "2025-10-16T04:25:34.863238+00:00",
+          -9045.818338000001
+        ],
+        [
+          "2025-10-16T04:25:54.415653+00:00",
+          -9044.818338000001
+        ],
+        [
+          "2025-10-16T04:31:57.586779+00:00",
+          -9043.818338000001
+        ],
+        [
+          "2025-10-16T04:32:59.385470+00:00",
+          -9042.818338000001
+        ],
+        [
+          "2025-10-16T04:35:36.684802+00:00",
+          -9041.818338000001
+        ],
+        [
+          "2025-10-16T04:41:42.590992+00:00",
+          -9040.818338000001
+        ],
+        [
+          "2025-10-16T04:58:15.185244+00:00",
+          -9039.818338000001
+        ],
+        [
+          "2025-10-16T05:11:08.280222+00:00",
+          -9038.818338000001
+        ],
+        [
+          "2025-10-16T05:13:08.431771+00:00",
+          -9037.818338000001
+        ],
+        [
+          "2025-10-16T05:13:35.609917+00:00",
+          -9036.818338000001
+        ],
+        [
+          "2025-10-16T05:20:20.648485+00:00",
+          -9035.818338000001
+        ],
+        [
+          "2025-10-16T05:21:45.483645+00:00",
+          -9034.818338000001
+        ],
+        [
+          "2025-10-16T05:22:09.234896+00:00",
+          -9033.818338000001
+        ],
+        [
+          "2025-10-16T05:22:31.318044+00:00",
+          -9032.818338000001
+        ],
+        [
+          "2025-10-16T05:23:10.330493+00:00",
+          -9031.818338000001
+        ],
+        [
+          "2025-10-16T05:28:48.943986+00:00",
+          -9030.818338000001
+        ],
+        [
+          "2025-10-16T05:29:21.505423+00:00",
+          -9029.818338000001
+        ],
+        [
+          "2025-10-16T06:20:25.852585+00:00",
+          -9028.818338000001
+        ],
+        [
+          "2025-10-16T08:21:37.746046+00:00",
+          -9027.818338000001
+        ],
+        [
+          "2025-10-16T09:36:51.984943+00:00",
+          -9026.818338000001
+        ],
+        [
+          "2025-10-16T09:37:03.852269+00:00",
+          -9026.818638
+        ],
+        [
+          "2025-10-16T09:37:03.920874+00:00",
+          -9026.818538000001
+        ],
+        [
+          "2025-10-16T09:37:04.221888+00:00",
+          -9026.818538000001
+        ],
+        [
+          "2025-10-16T09:37:04.393586+00:00",
+          -9026.815438000001
+        ],
+        [
+          "2025-10-16T09:57:41.568482+00:00",
+          -9025.815438000001
+        ],
+        [
+          "2025-10-16T10:00:55.596392+00:00",
+          -9024.815438000001
+        ],
+        [
+          "2025-10-16T10:23:05.907384+00:00",
+          -9023.815438000001
+        ],
+        [
+          "2025-10-16T21:03:45.074116+00:00",
+          -9022.815438000001
+        ],
+        [
+          "2025-10-16T21:04:12.728228+00:00",
+          -9021.815438000001
+        ],
+        [
+          "2025-10-16T21:41:59.694722+00:00",
+          -9020.815438000001
+        ],
+        [
+          "2025-10-16T22:17:58.065630+00:00",
+          -9019.815438000001
+        ],
+        [
+          "2025-10-16T22:52:15.283201+00:00",
+          -9018.815438000001
+        ],
+        [
+          "2025-10-16T22:52:51.629259+00:00",
+          -9017.815438000001
+        ],
+        [
+          "2025-10-16T23:06:22.398125+00:00",
+          -8837.807838
+        ],
+        [
+          "2025-10-16T23:08:50.225354+00:00",
+          -8661.060138
+        ],
+        [
+          "2025-10-16T23:11:57.277084+00:00",
+          -8660.060138
+        ],
+        [
+          "2025-10-17T01:24:30.125545+00:00",
+          -8668.710138
+        ],
+        [
+          "2025-10-18T13:15:30.598992+00:00",
+          -8667.710138
+        ],
+        [
+          "2025-10-18T14:04:13.985834+00:00",
+          -8666.710138
+        ],
+        [
+          "2025-10-18T14:53:43.723096+00:00",
+          -8665.710138
+        ],
+        [
+          "2025-10-21T23:01:43.521667+00:00",
+          -8664.710138
+        ],
+        [
+          "2025-10-21T23:02:17.076479+00:00",
+          -8663.710138
+        ],
+        [
+          "2025-10-22T03:03:47.782392+00:00",
+          -8662.710138
+        ],
+        [
+          "2025-10-22T09:58:17.531279+00:00",
+          -8661.710138
+        ]
+      ]
+    },
+    "trade_log": {
+      "snapshots": {
+        "count": 572,
+        "min_exposure": 0.0,
+        "max_exposure": 128097.52,
+        "avg_exposure": 1621.8209265734265,
+        "latest_exposure": 0.0,
+        "latest_threshold": 1.5,
+        "duration_days": 7.1026851851851855,
+        "start_timestamp": "2025-10-15T07:30:25",
+        "end_timestamp": "2025-10-22T09:58:17"
+      }
+    },
+    "deepseek": {
+      "base_plan": {
+        "realized_pnl": 7.21625,
+        "fees": 0.56375,
+        "net_pnl": 6.6525,
+        "ending_cash": 8006.936250000001,
+        "ending_equity": 8006.936250000001,
+        "num_trades": 0
+      },
+      "entry_takeprofit": {
+        "realized_pnl": 0.0,
+        "fees": 0.56375,
+        "net_pnl": -0.56375,
+        "ending_cash": 6.936249999999973,
+        "ending_equity": 6.936249999999973,
+        "daily_return_pct": -0.007046875,
+        "monthly_return_pct": -0.14788013878770379,
+        "annual_return_pct": -1.760199342175961
+      },
+      "maxdiff": {
+        "realized_pnl": 0.0,
+        "fees": 0.0,
+        "net_pnl": 0.0,
+        "ending_cash": 0.0,
+        "ending_equity": 0.0,
+        "daily_return_pct": 0.0,
+        "annual_return_pct": 0.0
+      },
+      "neural": {
+        "realized_pnl": 7.21625,
+        "fees": 0.56375,
+        "net_pnl": 6.6525,
+        "ending_cash": 8006.936250000001,
+        "ending_equity": 8006.936250000001
+      }
+    }
+  },
+  "results": [
+    {
+      "target": {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "checkpoint": "hftraining/quick_test_output_20251017_143438/final_model.pth",
+        "config_path": "hftraining/quick_test_output_20251017_143438/config.json",
+        "notes": "Reference checkpoint from quick test run."
+      },
+      "status": "evaluated",
+      "metrics": {
+        "checkpoint": {
+          "exists": true,
+          "size_bytes": 948249,
+          "modified_at": "2025-10-17T01:34:58.205187+00:00"
+        },
+        "implementation": "hftraining_eval_v0",
+        "config": {
+          "max_steps": 500,
+          "learning_rate": 0.001,
+          "batch_size": 4,
+          "gradient_accumulation_steps": 4
+        },
+        "training_metrics": {
+          "steps_logged": 25,
+          "final_eval_loss": 0.7620276167367895,
+          "final_train_loss": 1.011150598526001,
+          "final_eval_return": -0.018165069746060504,
+          "best_eval_loss": 0.7620276167367895,
+          "best_eval_step": 500
+        },
+        "comparisons": {
+          "baseline_total_realized_pnl": -8661.710138,
+          "deepseek_reference": {
+            "base_plan": {
+              "net_pnl": 6.6525,
+              "realized_pnl": 7.21625,
+              "fees": 0.56375
+            },
+            "entry_takeprofit": {
+              "net_pnl": -0.56375,
+              "realized_pnl": 0.0,
+              "fees": 0.56375
+            },
+            "maxdiff": {
+              "net_pnl": 0.0,
+              "realized_pnl": 0.0,
+              "fees": 0.0
+            },
+            "neural": {
+              "net_pnl": 6.6525,
+              "realized_pnl": 7.21625,
+              "fees": 0.56375
+            }
+          }
+        }
+      },
+      "warnings": []
+    },
+    {
+      "target": {
+        "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v7)",
+        "module": "gymrl",
+        "checkpoint": "gymrl/artifacts/sweep_20251023_lossprobe_v7/ppo_allocator_final.zip",
+        "config_path": "gymrl/artifacts/sweep_20251023_lossprobe_v7/training_metadata.json",
+        "notes": "Loss-shutdown v7 (turnover_penalty=0.0055, loss probes 0.008, entropy 0.0005\u21920, 60k steps)."
+      },
+      "status": "evaluated",
+      "metrics": {
+        "checkpoint": {
+          "exists": true,
+          "size_bytes": 346522,
+          "modified_at": "2025-10-23T00:36:06.959638+00:00"
+        },
+        "implementation": "gymrl_eval_v0",
+        "config": {
+          "num_timesteps": 60000,
+          "learning_rate": 9e-05,
+          "batch_size": 256,
+          "n_steps": 1024,
+          "seed": 42,
+          "turnover_penalty": 0.0055,
+          "weight_cap": null,
+          "allow_short": false,
+          "leverage_cap": 1.0
+        },
+        "gymrl_metrics": {
+          "train_steps": 14340,
+          "validation_steps": 21,
+          "total_steps": 19120,
+          "num_assets": 5,
+          "num_features": 21,
+          "forecast_backend_used": "toto",
+          "validation_metrics": {
+            "final_portfolio_value": 1.1143040657043457,
+            "cumulative_return": 0.1143040657043457,
+            "average_turnover": 0.14388185739517212,
+            "average_trading_cost": 0.00010479705815669149,
+            "max_drawdown": 0.0071626086719334126,
+            "average_log_reward": -0.003256584517657757,
+            "total_steps": 21,
+            "final_portfolio_value_crypto_only": 1.0,
+            "cumulative_return_crypto_only": 0.0,
+            "final_portfolio_value_non_crypto": 1.1143040657043457,
+            "cumulative_return_non_crypto": 0.1143040657043457,
+            "average_net_return_crypto": 0.0,
+            "average_net_return_non_crypto": 0.0051820240914821625,
+            "average_crypto_weight": 0.0,
+            "annualized_return": 5.56098936885861,
+            "average_interest_cost": 0.0,
+            "average_gross_exposure_intraday": 0.7184763550758362,
+            "average_gross_exposure_close": 0.7184763550758362,
+            "max_gross_exposure_intraday": 1.1487629413604736,
+            "max_gross_exposure_close": 1.1487629413604736,
+            "average_daily_return_simple": 0.005443050747825986,
+            "annualized_return_simple": 1.9867135229564847
+          },
+          "env_config": {
+            "costs_bps": 3.0,
+            "per_asset_costs_bps": null,
+            "turnover_penalty": 0.0055,
+            "drawdown_penalty": 0.0,
+            "cvar_penalty": 0.0,
+            "uncertainty_penalty": 0.0,
+            "weight_cap": null,
+            "allow_short": false,
+            "loss_shutdown_enabled": true,
+            "loss_shutdown_cooldown": 8,
+            "loss_shutdown_probe_weight": 0.008,
+            "loss_shutdown_penalty": 0.4,
+            "loss_shutdown_min_position": 0.0001,
+            "loss_shutdown_return_tolerance": 8e-05,
+            "leverage_cap": 1.0,
+            "intraday_leverage_cap": 1.3,
+            "closing_leverage_cap": 1.2,
+            "leverage_interest_rate": 0.0,
+            "trading_days_per_year": 252,
+            "include_cash": true,
+            "cash_return": 0.0,
+            "forecast_cvar_alpha": 0.05,
+            "leverage_head": true,
+            "base_gross_exposure": 0.55,
+            "max_gross_leverage": 1.2,
+            "daily_leverage_rate": 0.0008,
+            "leverage_penalty_annual_rate": 0.0675,
+            "leverage_penalty_trading_days": 252,
+            "enforce_end_of_day_cap": true
+          },
+          "feature_backend": "toto",
+          "feature_errors": []
+        },
+        "topk_checkpoints": [
+          {
+            "reward": -0.06824201840208843,
+            "path": "gymrl/artifacts/sweep_20251023_lossprobe_v7/topk/step_28672_reward_-0.0682.zip"
+          },
+          {
+            "reward": -0.06855591799831018,
+            "path": "gymrl/artifacts/sweep_20251023_lossprobe_v7/topk/step_24576_reward_-0.0686.zip"
+          },
+          {
+            "reward": -0.06858073669718578,
+            "path": "gymrl/artifacts/sweep_20251023_lossprobe_v7/topk/step_20480_reward_-0.0686.zip"
+          }
+        ],
+        "comparisons": {
+          "baseline_total_realized_pnl": -8661.710138,
+          "deepseek_reference": {
+            "base_plan": {
+              "net_pnl": 6.6525,
+              "realized_pnl": 7.21625,
+              "fees": 0.56375
+            },
+            "entry_takeprofit": {
+              "net_pnl": -0.56375,
+              "realized_pnl": 0.0,
+              "fees": 0.56375
+            },
+            "maxdiff": {
+              "net_pnl": 0.0,
+              "realized_pnl": 0.0,
+              "fees": 0.0
+            },
+            "neural": {
+              "net_pnl": 6.6525,
+              "realized_pnl": 7.21625,
+              "fees": 0.56375
+            }
+          },
+          "gymrl_cumulative_return": 0.1143040657043457,
+          "gymrl_average_daily_return": 0.0051820240914821625
+        }
+      },
+      "warnings": []
+    },
+    {
+      "target": {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "checkpoint": "pufferlibtraining/models/optuna_20251022/base_models/base_checkpoint_20251023_060620.pth",
+        "config_path": "pufferlibtraining/models/pipeline_summary.json",
+        "notes": "Latest pipeline run with transaction_cost_bps=5, risk_penalty=0.05, leverage_limit=1.5."
+      },
+      "status": "evaluated",
+      "metrics": {
+        "checkpoint": {
+          "exists": true,
+          "size_bytes": 346982653,
+          "modified_at": "2025-10-22T17:20:05.626977+00:00"
+        },
+        "implementation": "pufferlib_eval_v0",
+        "pipeline": {
+          "base_checkpoint": "/home/lee/code/stock/pufferlibtraining/models/optuna_20251022/base_models/base_checkpoint_20251023_060620.pth",
+          "specialists": [
+            "AAPL",
+            "AMZN",
+            "MSFT"
+          ],
+          "portfolio_pairs": {
+            "AAPL_AMZN": {
+              "best_checkpoint": "/home/lee/code/stock/pufferlibtraining/models/optuna_20251022/finetuned/portfolio_pairs/AAPL_AMZN_portfolio_best.pt",
+              "best_val_profit": -0.0018743742257356644,
+              "best_epoch": 0,
+              "best_epoch_profit": -0.0018743742257356644,
+              "best_epoch_sharpe": -0.20037013292312622,
+              "best_epoch_cvar": -0.030888762325048447
+            },
+            "AMZN_MSFT": {
+              "best_checkpoint": "/home/lee/code/stock/pufferlibtraining/models/optuna_20251022/finetuned/portfolio_pairs/AMZN_MSFT_portfolio_best.pt",
+              "best_val_profit": 0.003747624810785055,
+              "best_epoch": 216,
+              "best_epoch_profit": 0.003747624810785055,
+              "best_epoch_sharpe": 0.13057483732700348,
+              "best_epoch_cvar": -0.053952254354953766
+            }
+          }
+        },
+        "aggregate_pair_metrics": {
+          "AAPL_AMZN": {
+            "run": "20251020_puffer_rl400_lr2e4_adamw",
+            "days": 317,
+            "avg_daily_return": -0.0005655180645277207,
+            "annualized_return": -0.13285655287159648,
+            "cumulative_return": -0.17301713878925784
+          },
+          "AMZN_MSFT": {
+            "run": "20251020_puffer_rl400_lr2e4_adamw",
+            "days": 317,
+            "avg_daily_return": 0.0003878255708115376,
+            "annualized_return": 0.1026463874423571,
+            "cumulative_return": 0.11112783537634408
+          }
+        },
+        "comparisons": {
+          "baseline_total_realized_pnl": -8661.710138,
+          "deepseek_reference": {
+            "base_plan": {
+              "net_pnl": 6.6525,
+              "realized_pnl": 7.21625,
+              "fees": 0.56375
+            },
+            "entry_takeprofit": {
+              "net_pnl": -0.56375,
+              "realized_pnl": 0.0,
+              "fees": 0.56375
+            },
+            "maxdiff": {
+              "net_pnl": 0.0,
+              "realized_pnl": 0.0,
+              "fees": 0.0
+            },
+            "neural": {
+              "net_pnl": 6.6525,
+              "realized_pnl": 7.21625,
+              "fees": 0.56375
+            }
+          },
+          "pufferlib_pair_cumulative_returns": {
+            "AAPL_AMZN": -0.17301713878925784,
+            "AMZN_MSFT": 0.11112783537634408
+          }
+        }
+      },
+      "warnings": []
+    },
+    {
+      "target": {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "checkpoint": "differentiable_market/runs/20251021_094014/checkpoints/best.pt",
+        "config_path": "differentiable_market/runs/20251021_094014/config.json",
+        "notes": "GRPO training with torch.compile bf16; includes eval metrics."
+      },
+      "status": "evaluated",
+      "metrics": {
+        "checkpoint": {
+          "exists": true,
+          "size_bytes": 77964415,
+          "modified_at": "2025-10-21T09:48:47.229397+00:00"
+        },
+        "implementation": "diff_market_eval_v0",
+        "config": {
+          "epochs": 2000,
+          "batch_windows": 128,
+          "microbatch_windows": 16,
+          "rollout_groups": 4,
+          "lookback": 192,
+          "lr_muon": 0.02,
+          "lr_adamw": 0.0003,
+          "entropy_coef": 0.001,
+          "kl_coef": 0.1,
+          "use_muon": true,
+          "use_compile": true,
+          "gradient_checkpointing": true,
+          "env": {
+            "transaction_cost": 0.001,
+            "risk_aversion": 0.1,
+            "drawdown_lambda": 0.0
+          },
+          "eval": {
+            "window_length": 256,
+            "stride": 64,
+            "metric": "sharpe"
+          }
+        },
+        "training": {
+          "metrics_logged": true
+        },
+        "eval_metrics": {
+          "final": {
+            "step": 1999,
+            "objective": -0.005240235477685928,
+            "sharpe": -0.4516964256763458,
+            "turnover": 0.020010411739349365,
+            "total_return": -0.005226529395239362,
+            "annual_return": -0.007507097030414487,
+            "max_drawdown": 0.0052952091209590435
+          },
+          "best_sharpe": {
+            "step": 150,
+            "sharpe": -0.2904624938964844,
+            "objective": -0.006433924660086632,
+            "total_return": -0.006413271284646525
+          },
+          "best_objective": {
+            "step": 0,
+            "objective": -0.006743879523128271,
+            "sharpe": -0.2943485379219055,
+            "total_return": -0.006721190600055663
+          }
+        },
+        "topk_checkpoints": [
+          {
+            "rank": 1,
+            "step": 1900,
+            "loss": 0.005165250971913338,
+            "path": "checkpoints/best_step001900_loss0.005165.pt"
+          },
+          {
+            "rank": 2,
+            "step": 1999,
+            "loss": 0.005240235477685928,
+            "path": "checkpoints/best_step001999_loss0.005240.pt"
+          },
+          {
+            "rank": 3,
+            "step": 1800,
+            "loss": 0.005295949522405863,
+            "path": "checkpoints/best_step001800_loss0.005296.pt"
+          }
+        ],
+        "report_summary": {
+          "windows": 1,
+          "objective_mean": -0.003057264257222414,
+          "reward_mean": -1.7470081729697995e-05,
+          "reward_std": 2.719513577176258e-05,
+          "sharpe_mean": -0.6423972845077515,
+          "turnover_mean": 0.020000256597995758,
+          "cumulative_return_mean": -0.0030525955371558666,
+          "max_drawdown_worst": 0.0030208230018615723,
+          "objective_best": -0.003057264257222414
+        },
+        "comparisons": {
+          "baseline_total_realized_pnl": -8661.710138,
+          "deepseek_reference": {
+            "base_plan": {
+              "net_pnl": 6.6525,
+              "realized_pnl": 7.21625,
+              "fees": 0.56375
+            },
+            "entry_takeprofit": {
+              "net_pnl": -0.56375,
+              "realized_pnl": 0.0,
+              "fees": 0.56375
+            },
+            "maxdiff": {
+              "net_pnl": 0.0,
+              "realized_pnl": 0.0,
+              "fees": 0.0
+            },
+            "neural": {
+              "net_pnl": 6.6525,
+              "realized_pnl": 7.21625,
+              "fees": 0.56375
+            }
+          },
+          "diff_market_total_return": -0.005226529395239362
+        }
+      },
+      "warnings": []
+    }
+  ],
+  "scoreboard": [
+    {
+      "name": "deepseek_base_plan",
+      "module": "deepseek",
+      "score": 6.6525,
+      "details": {
+        "net_pnl": 6.6525,
+        "realized_pnl": 7.21625,
+        "fees": 0.56375
+      },
+      "score_per_day": 0.9161341894682661,
+      "relative_to_baseline": -0.000768035398785126
+    },
+    {
+      "name": "deepseek_neural",
+      "module": "deepseek",
+      "score": 6.6525,
+      "details": {
+        "net_pnl": 6.6525,
+        "realized_pnl": 7.21625,
+        "fees": 0.56375
+      },
+      "score_per_day": 0.9161341894682661,
+      "relative_to_baseline": -0.000768035398785126
+    },
+    {
+      "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v7)",
+      "module": "gymrl",
+      "score": 0.1143040657043457,
+      "details": {
+        "cumulative_return": 0.1143040657043457,
+        "average_daily_return": 0.0051820240914821625,
+        "sharpe": -0.003256584517657757,
+        "turnover": 0.14388185739517212
+      },
+      "score_per_day": 0.0051820240914821625,
+      "relative_to_baseline": -4.344317661505084e-06
+    },
+    {
+      "name": "pufferlib pipeline summary",
+      "module": "pufferlibtraining",
+      "score": 0.11112783537634408,
+      "details": {
+        "best_pair": "AMZN_MSFT",
+        "cumulative_return": 0.11112783537634408,
+        "annualized_return": 0.1026463874423571,
+        "avg_daily_return": 0.0003878255708115376,
+        "run": "20251020_puffer_rl400_lr2e4_adamw"
+      },
+      "score_per_day": 0.0003878255708115376,
+      "relative_to_baseline": -3.251311547604087e-07
+    },
+    {
+      "name": "differentiable market GRPO run 20251021_094014",
+      "module": "differentiable_market",
+      "score": -0.0030525955371558666,
+      "details": {
+        "total_return": -0.005226529395239362,
+        "annual_return": -0.007507097030414487,
+        "sharpe": -0.4516964256763458,
+        "turnover": 0.020010411739349365,
+        "periods_per_year": null,
+        "report_cumulative_return": -0.0030525955371558666,
+        "report_sharpe": -0.6423972845077515,
+        "report_objective": -0.003057264257222414
+      },
+      "score_per_day": -0.0030525955371558666,
+      "relative_to_baseline": 2.559124479428036e-06
+    },
+    {
+      "name": "hftraining quick_test_output_20251017_143438",
+      "module": "hftraining",
+      "score": -0.018165069746060504,
+      "details": {
+        "final_eval_return": -0.018165069746060504,
+        "final_eval_loss": 0.7620276167367895,
+        "best_eval_loss": 0.7620276167367895
+      },
+      "score_per_day": -0.018165069746060504,
+      "relative_to_baseline": 1.5228573222960664e-05
+    },
+    {
+      "name": "deepseek_entry_takeprofit",
+      "module": "deepseek",
+      "score": -0.56375,
+      "details": {
+        "net_pnl": -0.56375,
+        "realized_pnl": 0.0,
+        "fees": 0.56375
+      },
+      "score_per_day": -0.07763557298951297,
+      "relative_to_baseline": 6.508529967156932e-05
+    },
+    {
+      "name": "baseline_production",
+      "module": "baseline",
+      "score": -8661.710138,
+      "details": {
+        "total_realized_pnl": -8661.710138
+      },
+      "score_per_day": -1192.8280791710927,
+      "relative_to_baseline": 1.0
+    },
+    {
+      "name": "deepseek_maxdiff",
+      "module": "deepseek",
+      "score": 0.0,
+      "details": {
+        "net_pnl": 0.0,
+        "realized_pnl": 0.0,
+        "fees": 0.0
+      },
+      "score_per_day": 0.0,
+      "relative_to_baseline": -0.0
+    }
+  ]
+}

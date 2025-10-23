@@ -5,11 +5,14 @@ import sys
 import types
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
-import numpy as np
-import pandas as pd
-import torch
+from ..dependency_injection import (
+    register_observer,
+    resolve_numpy,
+    resolve_pandas,
+    resolve_torch,
+)
 
 from .model_cache import ModelCacheManager, dtype_to_token
 
@@ -26,6 +29,30 @@ for _path in _KRONOS_CANDIDATES:
 
 logger = logging.getLogger(__name__)
 
+torch = resolve_torch()
+np = resolve_numpy()
+pd = resolve_pandas()
+
+
+def _refresh_torch(module):
+    global torch
+    torch = module
+
+
+def _refresh_numpy(module):
+    global np
+    np = module
+
+
+def _refresh_pandas(module):
+    global pd
+    pd = module
+
+
+register_observer("torch", _refresh_torch)
+register_observer("numpy", _refresh_numpy)
+register_observer("pandas", _refresh_pandas)
+
 
 @dataclass(frozen=True)
 class KronosForecastResult:
@@ -34,6 +61,15 @@ class KronosForecastResult:
     absolute: np.ndarray
     percent: np.ndarray
     timestamps: pd.Index
+
+
+@dataclass(frozen=True)
+class _SeriesPayload:
+    feature_frame: pd.DataFrame
+    history_series: pd.Series
+    future_series: pd.Series
+    future_index: pd.Index
+    last_values: Dict[str, float]
 
 
 class KronosForecastingWrapper:
@@ -100,52 +136,33 @@ class KronosForecastingWrapper:
             raise ValueError("columns must contain at least one entry.")
         if pred_len <= 0:
             raise ValueError("pred_len must be positive.")
-        if timestamp_col not in data.columns:
-            raise KeyError(f"{timestamp_col!r} column not present in dataframe.")
 
-        working = data.copy()
-        working = working.dropna(subset=[timestamp_col])
-        if working.empty:
-            raise ValueError("dataframe is empty after dropping NaN timestamps.")
-
-        timestamp_series = pd.to_datetime(working[timestamp_col], utc=True, errors="coerce")
-        timestamp_series = timestamp_series.dropna()
-        if timestamp_series.empty:
-            raise ValueError("No valid timestamps available for Kronos forecasting.")
-
-        working = working.loc[timestamp_series.index]
-        timestamps = pd.DatetimeIndex(timestamp_series)
-        if timestamps.tz is None:
-            timestamps = timestamps.tz_localize("UTC")
-        timestamps = timestamps.tz_convert(None)
-
-        if lookback:
-            span = int(max(1, lookback))
-            if len(working) > span:
-                working = working.iloc[-span:]
-                timestamps = timestamps[-span:]
-
-        feature_frame = self._prepare_feature_frame(working)
-        if len(feature_frame) < 2:
-            raise ValueError("Insufficient history for Kronos forecasting (need at least 2 rows).")
-
-        future_index = self._build_future_index(timestamps, pred_len)
-
-        history_index = pd.DatetimeIndex(timestamps)
-        x_timestamp = pd.Series(history_index)
-        y_timestamp = pd.Series(future_index)
+        payload = self._prepare_series_payloads(
+            data_frames=[data],
+            timestamp_col=timestamp_col,
+            pred_len=pred_len,
+            lookback=lookback,
+        )[0]
 
         predictor = self._ensure_predictor()
-        effective_temperature = float(temperature if temperature is not None else self.temperature)
-        effective_top_p = float(top_p if top_p is not None else self.top_p)
-        effective_top_k = int(top_k if top_k is not None else self.top_k)
-        effective_samples = int(sample_count if sample_count is not None else self.sample_count)
-        effective_verbose = bool(verbose if verbose is not None else self.verbose)
+        (
+            effective_temperature,
+            effective_top_p,
+            effective_top_k,
+            effective_samples,
+            effective_verbose,
+        ) = self._resolve_sampling_params(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            sample_count=sample_count,
+            verbose=verbose,
+        )
 
         forecast_df = predictor.predict(
-            feature_frame,
-            x_timestamp=x_timestamp,
-            y_timestamp=y_timestamp,
+            payload.feature_frame,
+            x_timestamp=payload.history_series,
+            y_timestamp=payload.future_series,
             pred_len=int(pred_len),
             T=effective_temperature,
             top_k=effective_top_k,
@@ -157,6 +174,174 @@ class KronosForecastingWrapper:
         if not isinstance(forecast_df, pd.DataFrame):
             raise RuntimeError("Kronos predictor returned an unexpected result type.")
 
+        return self._assemble_results(payload, forecast_df, columns)
+
+    def predict_series_batch(
+        self,
+        *,
+        data_frames: Sequence[pd.DataFrame],
+        timestamp_col: str,
+        columns: Sequence[str],
+        pred_len: int,
+        lookback: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        sample_count: Optional[int] = None,
+        verbose: Optional[bool] = None,
+    ) -> List[Dict[str, KronosForecastResult]]:
+        if not data_frames:
+            raise ValueError("data_frames must contain at least one dataframe.")
+        if not columns:
+            raise ValueError("columns must contain at least one entry.")
+        if pred_len <= 0:
+            raise ValueError("pred_len must be positive.")
+
+        payloads = self._prepare_series_payloads(
+            data_frames=data_frames,
+            timestamp_col=timestamp_col,
+            pred_len=pred_len,
+            lookback=lookback,
+        )
+
+        predictor = self._ensure_predictor()
+        batch_predict = getattr(predictor, "predict_batch", None)
+        if batch_predict is None:
+            raise AttributeError("Kronos predictor does not expose 'predict_batch'. Update the Kronos package.")
+
+        (
+            effective_temperature,
+            effective_top_p,
+            effective_top_k,
+            effective_samples,
+            effective_verbose,
+        ) = self._resolve_sampling_params(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            sample_count=sample_count,
+            verbose=verbose,
+        )
+
+        forecast_list = batch_predict(
+            [payload.feature_frame for payload in payloads],
+            [payload.history_series for payload in payloads],
+            [payload.future_series for payload in payloads],
+            pred_len=int(pred_len),
+            T=effective_temperature,
+            top_k=effective_top_k,
+            top_p=effective_top_p,
+            sample_count=effective_samples,
+            verbose=effective_verbose,
+        )
+
+        if not isinstance(forecast_list, (list, tuple)):
+            raise RuntimeError("Kronos batch predictor returned an unexpected result type.")
+        if len(forecast_list) != len(payloads):
+            raise RuntimeError(
+                "Kronos batch predictor returned a result with mismatched length."
+            )
+
+        results: List[Dict[str, KronosForecastResult]] = []
+        for payload, forecast_df in zip(payloads, forecast_list):
+            if not isinstance(forecast_df, pd.DataFrame):
+                raise RuntimeError("Kronos batch predictor returned a non-DataFrame entry.")
+            results.append(self._assemble_results(payload, forecast_df, columns))
+        return results
+
+    def _resolve_sampling_params(
+        self,
+        *,
+        temperature: Optional[float],
+        top_p: Optional[float],
+        top_k: Optional[int],
+        sample_count: Optional[int],
+        verbose: Optional[bool],
+    ) -> tuple[float, float, int, int, bool]:
+        effective_temperature = float(temperature if temperature is not None else self.temperature)
+        effective_top_p = float(top_p if top_p is not None else self.top_p)
+        effective_top_k = int(top_k if top_k is not None else self.top_k)
+        effective_samples = int(sample_count if sample_count is not None else self.sample_count)
+        effective_verbose = bool(verbose if verbose is not None else self.verbose)
+        return (
+            effective_temperature,
+            effective_top_p,
+            effective_top_k,
+            effective_samples,
+            effective_verbose,
+        )
+
+    def _prepare_series_payloads(
+        self,
+        *,
+        data_frames: Sequence[pd.DataFrame],
+        timestamp_col: str,
+        pred_len: int,
+        lookback: Optional[int],
+    ) -> List[_SeriesPayload]:
+        payloads: List[_SeriesPayload] = []
+        for idx, frame in enumerate(data_frames):
+            if not isinstance(frame, pd.DataFrame):
+                raise TypeError(f"data_frames[{idx}] must be a pandas DataFrame.")
+            if timestamp_col not in frame.columns:
+                raise KeyError(f"{timestamp_col!r} column not present in dataframe index {idx}.")
+
+            working = frame.copy()
+            working = working.dropna(subset=[timestamp_col])
+            if working.empty:
+                raise ValueError(f"dataframe at index {idx} is empty after dropping NaN timestamps.")
+
+            timestamp_series = pd.to_datetime(working[timestamp_col], utc=True, errors="coerce")
+            timestamp_series = timestamp_series.dropna()
+            if timestamp_series.empty:
+                raise ValueError(f"No valid timestamps available for Kronos forecasting (index {idx}).")
+
+            working = working.loc[timestamp_series.index]
+            timestamps = pd.DatetimeIndex(timestamp_series)
+            if timestamps.tz is None:
+                timestamps = timestamps.tz_localize("UTC")
+            timestamps = timestamps.tz_convert(None)
+
+            if lookback:
+                span = int(max(1, lookback))
+                if len(working) > span:
+                    working = working.iloc[-span:]
+                    timestamps = timestamps[-span:]
+
+            feature_frame = self._prepare_feature_frame(working)
+            if len(feature_frame) < 2:
+                raise ValueError(
+                    "Insufficient history for Kronos forecasting (need at least 2 rows)."
+                )
+
+            future_index = self._build_future_index(timestamps, pred_len)
+            history_index = pd.DatetimeIndex(timestamps)
+            x_timestamp = pd.Series(history_index)
+            y_timestamp = pd.Series(future_index)
+
+            last_values: Dict[str, float] = {}
+            for column in feature_frame.columns:
+                column_key = str(column).lower()
+                last_values[column_key] = float(feature_frame[column_key].iloc[-1])
+
+            payloads.append(
+                _SeriesPayload(
+                    feature_frame=feature_frame,
+                    history_series=x_timestamp,
+                    future_series=y_timestamp,
+                    future_index=future_index,
+                    last_values=last_values,
+                )
+            )
+
+        return payloads
+
+    def _assemble_results(
+        self,
+        payload: _SeriesPayload,
+        forecast_df: pd.DataFrame,
+        columns: Sequence[str],
+    ) -> Dict[str, KronosForecastResult]:
         results: Dict[str, KronosForecastResult] = {}
         for column in columns:
             key = str(column)
@@ -164,19 +349,15 @@ class KronosForecastingWrapper:
             if lower_key not in forecast_df.columns:
                 raise KeyError(f"Kronos forecast missing column '{key}'.")
             absolute = np.asarray(forecast_df[lower_key], dtype=np.float64)
-            base_history = np.asarray(feature_frame[lower_key], dtype=np.float64)
-            if base_history.size == 0:
-                raise ValueError(f"No historical data available for column '{key}'.")
-            percent = self._compute_step_returns(
-                previous=float(base_history[-1]),
-                absolute=absolute,
-            )
+            previous = payload.last_values.get(lower_key)
+            if previous is None:
+                raise KeyError(f"No historical baseline available for column '{key}'.")
+            percent = self._compute_step_returns(previous=previous, absolute=absolute)
             results[key] = KronosForecastResult(
                 absolute=absolute,
                 percent=percent,
-                timestamps=pd.Index(future_index),
+                timestamps=payload.future_index,
             )
-
         return results
 
     def unload(self) -> None:
