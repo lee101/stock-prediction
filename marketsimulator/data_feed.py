@@ -16,6 +16,7 @@ def _read_symbol_file(symbol: str, data_root: Path) -> Optional[pd.DataFrame]:
     candidates = [
         data_root / "train" / f"{symbol}.csv",
         data_root / "test" / f"{symbol}.csv",
+        data_root / f"{symbol}.csv",
     ]
     frames = []
     for path in candidates:
@@ -28,6 +29,9 @@ def _read_symbol_file(symbol: str, data_root: Path) -> Optional[pd.DataFrame]:
     if not frames:
         return None
     combined = pd.concat(frames, ignore_index=True)
+    combined = _normalise_price_columns(combined)
+    if "timestamp" in combined.columns:
+        combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True, errors="coerce")
     combined.sort_values("timestamp", inplace=True)
     combined.reset_index(drop=True, inplace=True)
     return combined
@@ -65,3 +69,22 @@ def load_price_series(
             frame = _synthetic_series(symbol)
         series[symbol] = PriceSeries(symbol=symbol, frame=frame)
     return series
+
+
+def _normalise_price_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {}
+    for column in frame.columns:
+        key = str(column).strip().lower()
+        if key == "timestamp":
+            rename_map[column] = "timestamp"
+        elif key == "open":
+            rename_map[column] = "Open"
+        elif key == "high":
+            rename_map[column] = "High"
+        elif key == "low":
+            rename_map[column] = "Low"
+        elif key == "close":
+            rename_map[column] = "Close"
+    if rename_map:
+        frame = frame.rename(columns=rename_map)
+    return frame
