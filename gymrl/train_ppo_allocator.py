@@ -109,6 +109,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=512, help="PPO minibatch size.")
     parser.add_argument("--n-steps", type=int, default=2048, help="Number of steps to run per environment update.")
     parser.add_argument("--ent-coef", type=float, default=0.0, help="Entropy regularisation coefficient.")
+    parser.add_argument(
+        "--ent-coef-final",
+        type=float,
+        default=None,
+        help="Optional target entropy coefficient for linear annealing across training steps.",
+    )
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor.")
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda parameter.")
     parser.add_argument("--clip-range", type=float, default=0.2, help="PPO clip range.")
@@ -163,7 +169,6 @@ def parse_args() -> argparse.Namespace:
         default=1e-5,
         help="Absolute net return threshold treated as neutral when updating cooldown state.",
     )
-    parser.add_argument("--intraday-leverage-cap", type=float, default=None, help="Optional gross exposure cap applied immediately after actions (long-only leverage).")
     parser.add_argument("--closing-leverage-cap", type=float, default=None, help="Gross exposure cap enforced at market close before carrying positions overnight.")
     parser.add_argument("--leverage-interest-rate", type=float, default=0.0, help="Annual interest rate applied to leverage above 1x when held overnight.")
     parser.add_argument("--trading-days-per-year", type=int, default=252, help="Trading days per year used for leverage interest accrual.")
@@ -308,6 +313,24 @@ class TopKCheckpointCallback(BaseCallback):
         return True
 
 
+class EntropyAnnealCallback(BaseCallback):
+    """Linearly anneal the entropy coefficient throughout training."""
+
+    def __init__(self, total_timesteps: int, start_coef: float, final_coef: float) -> None:
+        super().__init__()
+        self.total_timesteps = max(1, int(total_timesteps))
+        self.start_coef = float(start_coef)
+        self.final_coef = float(final_coef)
+
+    def _on_step(self) -> bool:
+        progress = min(1.0, self.num_timesteps / self.total_timesteps)
+        new_coef = self.start_coef + (self.final_coef - self.start_coef) * progress
+        self.model.ent_coef = new_coef
+        if hasattr(self.model.policy, "entropy_coef"):
+            self.model.policy.entropy_coef = new_coef
+        return True
+
+
 def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -419,6 +442,11 @@ def main() -> None:
         "enforce_eod_cap": args.enforce_eod_cap,
         "leverage_head": args.leverage_head,
     }
+    if args.ent_coef_final is not None:
+        extra_meta["entropy_schedule"] = {
+            "start": args.ent_coef,
+            "final": args.ent_coef_final,
+        }
 
     cube_meta = {
         "feature_names": cube.feature_names,
@@ -589,8 +617,12 @@ def main() -> None:
         backend_label,
     )
 
+    callbacks: List[BaseCallback] = [checkpoint_callback, eval_callback, topk_callback]
+    if args.ent_coef_final is not None:
+        callbacks.append(EntropyAnnealCallback(args.num_timesteps, args.ent_coef, args.ent_coef_final))
+
     with _autocast_context():
-        model.learn(total_timesteps=args.num_timesteps, callback=[checkpoint_callback, eval_callback, topk_callback])
+        model.learn(total_timesteps=args.num_timesteps, callback=callbacks)
     model_path = args.output_dir / "ppo_allocator_final.zip"
     model.save(str(model_path))
 

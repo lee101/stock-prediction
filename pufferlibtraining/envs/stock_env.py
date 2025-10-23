@@ -61,7 +61,6 @@ class StockTradingEnv(gym.Env):
         self.asset_symbols = sorted(asset_frames.keys())
         self.window_size = int(window_size)
         self.initial_balance = float(initial_balance)
-        self.leverage_limit = float(resolved_leverage_limit)
         self.borrowing_cost_annual = float(resolved_borrowing_cost)
         self.transaction_cost = float(transaction_cost_bps) / 10_000.0
         self.spread_cost = float(spread_bps) / 10_000.0
@@ -69,11 +68,15 @@ class StockTradingEnv(gym.Env):
         self.borrowing_cost_daily = self.borrowing_cost_annual / self.trading_days_per_year
         # Risk dial influences the effective intraday/overnight caps (monotonic)
         risk_scale = float(max(0.0, min(1.0, risk_scale)))
-        self.max_intraday_leverage = 1.0 + (float(max_intraday_leverage) - 1.0) * risk_scale
-        self.max_overnight_leverage = 1.0 + (float(max_overnight_leverage) - 1.0) * risk_scale
-        # Explicit leverage_limit still caps everything (acts as a global ceiling)
-        self.max_intraday_leverage = min(self.max_intraday_leverage, self.leverage_limit)
-        self.max_overnight_leverage = min(self.max_overnight_leverage, self.leverage_limit)
+        intraday_cap = 1.0 + (float(max_intraday_leverage) - 1.0) * risk_scale
+        overnight_cap = 1.0 + (float(max_overnight_leverage) - 1.0) * risk_scale
+        if leverage_limit is None:
+            resolved_leverage_limit = max(float(settings.max_gross_leverage), intraday_cap, overnight_cap)
+        else:
+            resolved_leverage_limit = float(leverage_limit)
+        self.leverage_limit = resolved_leverage_limit
+        self.max_intraday_leverage = min(intraday_cap, self.leverage_limit)
+        self.max_overnight_leverage = min(overnight_cap, self.leverage_limit)
         if self.max_overnight_leverage > self.max_intraday_leverage:
             self.max_overnight_leverage = self.max_intraday_leverage
         trade_timing = (trade_timing or "open").strip().lower()
@@ -231,6 +234,18 @@ class StockTradingEnv(gym.Env):
             else self._get_observation()
         )
 
+        if self.dates is not None:
+            raw_date = self.dates[self.current_index - 1]
+            if isinstance(raw_date, np.datetime64):
+                # Use pandas to normalise numpy datetime64 (preserves tz if present)
+                date_value = pd.Timestamp(raw_date).isoformat()
+            elif hasattr(raw_date, "isoformat"):
+                date_value = raw_date.isoformat()
+            else:
+                date_value = str(raw_date)
+        else:
+            date_value = None
+
         info = {
             "portfolio_value": float(self.portfolio_value.item()),
             "step_return": float(step_return.item()),
@@ -240,7 +255,7 @@ class StockTradingEnv(gym.Env):
             "financing_cost": float(financing_cost.item()),
             "raw_profit": float(raw_profit.item()),
             "net_profit": float(net_profit.item()),
-            "date": self.dates[self.current_index - 1].isoformat() if self.dates is not None else None,
+            "date": date_value,
             "trade_timing": self.trade_timing,
             "max_intraday_leverage": float(self.max_intraday_leverage),
             "max_overnight_leverage": float(self.max_overnight_leverage),

@@ -80,6 +80,12 @@ def stub_trading_env(
         mocks["ramp"] = stack.enter_context(
             patch("trade_stock_e2e.ramp_into_position")
         )
+        mocks["spawn_open_maxdiff"] = stack.enter_context(
+            patch("trade_stock_e2e.spawn_open_position_at_maxdiff_takeprofit")
+        )
+        mocks["spawn_close_maxdiff"] = stack.enter_context(
+            patch("trade_stock_e2e.spawn_close_position_at_maxdiff_takeprofit")
+        )
         mocks["spawn_tp"] = stack.enter_context(
             patch("trade_stock_e2e.spawn_close_position_at_takeprofit")
         )
@@ -122,9 +128,17 @@ def test_analyze_symbols(mock_backtest, mock_snapshot, test_data):
     mock_df = pd.DataFrame(
         {
             "simple_strategy_return": [0.02],
+            "simple_strategy_avg_daily_return": [0.02],
+            "simple_strategy_annual_return": [0.02 * 252],
             "all_signals_strategy_return": [0.01],
+            "all_signals_strategy_avg_daily_return": [0.01],
+            "all_signals_strategy_annual_return": [0.01 * 252],
             "entry_takeprofit_return": [0.005],
+            "entry_takeprofit_avg_daily_return": [0.005],
+            "entry_takeprofit_annual_return": [0.005 * 252],
             "highlow_return": [0.004],
+            "highlow_avg_daily_return": [0.004],
+            "highlow_annual_return": [0.004 * 252],
             "predicted_close": [105],
             "predicted_high": [106],
             "predicted_low": [104],
@@ -139,6 +153,7 @@ def test_analyze_symbols(mock_backtest, mock_snapshot, test_data):
     assert len(results) > 0
     first_symbol = list(results.keys())[0]
     assert "avg_return" in results[first_symbol]
+    assert "annual_return" in results[first_symbol]
     assert "side" in results[first_symbol]
     assert "predicted_movement" in results[first_symbol]
 
@@ -347,6 +362,14 @@ def test_analyze_symbols_strategy_selection(mock_backtest, mock_snapshot):
         },
     ]
 
+    for case in test_cases:
+        for prefix in ("simple_strategy", "all_signals_strategy", "entry_takeprofit", "highlow"):
+            return_key = f"{prefix}_return"
+            if return_key in case and case[return_key]:
+                value = case[return_key][0]
+                case.setdefault(f"{prefix}_avg_daily_return", [value])
+                case.setdefault(f"{prefix}_annual_return", [value * 252])
+
     symbols = ["TEST1", "TEST2", "TEST3"]
 
     for symbol, test_case in zip(symbols, test_cases):
@@ -404,13 +427,14 @@ def test_manage_positions_enters_new_simple_position_without_real_trades():
     mocks["open_order"].assert_not_called()
 
 
-def test_manage_positions_highlow_strategy_uses_limit_orders():
+@pytest.mark.parametrize("strategy_name", ["highlow", "maxdiff"])
+def test_manage_positions_highlow_strategy_uses_limit_orders(strategy_name):
     current_picks = {
         "AAPL": {
             "side": "buy",
             "avg_return": 0.12,
             "predicted_movement": 0.06,
-            "strategy": "highlow",
+            "strategy": strategy_name,
             "predicted_high": 125.0,
             "predicted_low": 100.0,
             "maxdiffprofit_low_price": 98.5,
@@ -425,22 +449,25 @@ def test_manage_positions_highlow_strategy_uses_limit_orders():
         manage_positions(current_picks, {}, current_picks)
 
     mocks["ramp"].assert_not_called()
-    mocks["open_order"].assert_called_once()
-    args, _ = mocks["open_order"].call_args
+    mocks["open_order"].assert_not_called()
+    mocks["spawn_open_maxdiff"].assert_called_once()
+    args, _ = mocks["spawn_open_maxdiff"].call_args
     assert args[0] == "AAPL"
-    assert args[1] == 3
-    assert args[2] == "buy"
-    assert args[3] == pytest.approx(98.5)
-    mocks["spawn_tp"].assert_called_once_with("AAPL", 132.0)
+    assert args[1] == "buy"
+    assert args[2] == pytest.approx(98.5)
+    assert args[3] == pytest.approx(3.0)
+    mocks["spawn_close_maxdiff"].assert_called_once_with("AAPL", "buy", 132.0)
+    mocks["spawn_tp"].assert_not_called()
 
 
-def test_manage_positions_highlow_short_uses_maxdiff_prices():
+@pytest.mark.parametrize("strategy_name", ["highlow", "maxdiff"])
+def test_manage_positions_highlow_short_uses_maxdiff_prices(strategy_name):
     current_picks = {
         "UNIUSD": {
             "side": "sell",
             "avg_return": 0.08,
             "predicted_movement": -0.04,
-            "strategy": "highlow",
+            "strategy": strategy_name,
             "predicted_high": 6.8,
             "predicted_low": 6.1,
             "maxdiffprofit_high_price": 6.9,
@@ -453,11 +480,15 @@ def test_manage_positions_highlow_short_uses_maxdiff_prices():
         manage_positions(current_picks, {}, current_picks)
 
     mocks["ramp"].assert_not_called()
-    mocks["open_order"].assert_called_once()
-    args, _ = mocks["open_order"].call_args
-    assert args[:3] == ("UNIUSD", 2, "sell")
-    assert args[3] == pytest.approx(6.9)
-    mocks["spawn_tp"].assert_called_once_with("UNIUSD", 6.05)
+    mocks["open_order"].assert_not_called()
+    mocks["spawn_open_maxdiff"].assert_called_once()
+    args, _ = mocks["spawn_open_maxdiff"].call_args
+    assert args[0] == "UNIUSD"
+    assert args[1] == "sell"
+    assert args[2] == pytest.approx(6.9)
+    assert args[3] == pytest.approx(2.0)
+    mocks["spawn_close_maxdiff"].assert_called_once_with("UNIUSD", "sell", 6.05)
+    mocks["spawn_tp"].assert_not_called()
 
 
 def test_build_portfolio_core_prefers_profitable_strategies():

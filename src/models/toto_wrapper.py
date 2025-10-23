@@ -12,8 +12,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, ContextManager, Dict, List, Optional, Tuple, TYPE_CHECKING, Union, cast
 
-import numpy as np
-import torch
+from ..dependency_injection import register_observer, resolve_numpy, resolve_torch
 from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +34,22 @@ for _path in reversed(_CANDIDATE_PATHS):
             sys.path.insert(0, path_str)
 
 _IMPORT_ERROR: Optional[Exception] = None
+torch = resolve_torch()
+np = resolve_numpy()
+
+
+def _refresh_torch(module):
+    global torch
+    torch = module
+
+
+def _refresh_numpy(module):
+    global np
+    np = module
+
+
+register_observer("torch", _refresh_torch)
+register_observer("numpy", _refresh_numpy)
 
 if TYPE_CHECKING:
     from toto.data.util.dataset import MaskedTimeseries as MaskedTimeseriesType
@@ -531,6 +546,7 @@ class TotoPipeline:
         if context.dim() == 1:
             context = context.unsqueeze(0)
 
+        batch_size = int(context.shape[0])
         seq_len = context.shape[-1]
 
         time_interval_seconds = int(kwargs.pop("time_interval_seconds", 60 * 15))
@@ -601,6 +617,7 @@ class TotoPipeline:
             "torch_compile_success": self._torch_compile_success,
             "torch_compile_mode": self._compile_mode,
             "torch_compile_backend": self._compile_backend,
+            "batch_size": batch_size,
         }
 
         if getattr(forecast, "samples", None) is None:
@@ -608,10 +625,22 @@ class TotoPipeline:
 
         samples = forecast.samples.detach().cpu().numpy()
 
-        if samples.ndim == 3 and samples.shape[0] == 1:
-            samples = samples.squeeze(0)
+        primary_axis = samples.shape[0]
+        if primary_axis != batch_size and samples.ndim > 1 and samples.shape[1] == batch_size:
+            samples = np.swapaxes(samples, 0, 1)
+            primary_axis = samples.shape[0]
 
-        return [TotoForecast(samples=samples)]
+        if primary_axis != batch_size:
+            raise RuntimeError(
+                "Toto forecast samples tensor does not match the requested batch size."
+            )
+
+        forecasts: List[TotoForecast] = []
+        for idx in range(batch_size):
+            series_samples = samples[idx : idx + 1]
+            forecasts.append(TotoForecast(samples=series_samples))
+
+        return forecasts
 
     def unload(self) -> None:
         """Release GPU resources held by the Toto pipeline."""

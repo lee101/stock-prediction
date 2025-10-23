@@ -3,20 +3,33 @@
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
+from types import ModuleType
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-LOG = logging.getLogger(__name__)
+from faltrain.logger_utils import std_logger
+
+LOG = std_logger(__name__)
 
 _CACHE: Dict[str, int] = {}
 _CACHE_LOCK = Lock()
 _PERSISTED: Dict[str, Dict[str, Any]] = {}
 _PERSIST_LOCK = Lock()
-_PERSIST_PATH = Path(__file__).resolve().parents[1] / "hyperparamstore" / "best_hyper_params.json"
+_PERSIST_PATHS: Tuple[Path, ...] = tuple(
+    dict.fromkeys(
+        (
+            Path("/data/params/best_hyperparams.json"),
+            Path(__file__).resolve().parents[1]
+            / "hyperparamstore"
+            / "best_hyper_params.json",
+        )
+    )
+)
+_TORCH: Optional[ModuleType] = None
+_NUMPY: Optional[ModuleType] = None
 
 
 @dataclass(frozen=True)
@@ -54,14 +67,14 @@ class BatchSizeSelection:
         }
 
 
-def _load_persisted() -> Dict[str, Dict[str, Any]]:
-    if not _PERSIST_PATH.exists():
+def _load_from_path(path: Path) -> Dict[str, Dict[str, Any]]:
+    if not path.exists():
         return {}
     try:
-        with _PERSIST_PATH.open("r") as handle:
+        with path.open("r") as handle:
             data = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
-        LOG.warning("Failed to load persisted batch sizes: %s", exc)
+        LOG.warning("Failed to load persisted batch sizes from %s: %s", path, exc)
         return {}
     if not isinstance(data, dict):
         return {}
@@ -72,6 +85,30 @@ def _load_persisted() -> Dict[str, Dict[str, Any]]:
     return result
 
 
+def _load_persisted() -> Dict[str, Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {}
+    for path in reversed(_PERSIST_PATHS):
+        merged.update(_load_from_path(path))
+    return merged
+
+
+def _normalise_candidates(
+    candidates: Sequence[int],
+) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+    seen: Dict[int, None] = {}
+    user_sequence: List[int] = []
+    for value in candidates:
+        ivalue = int(value)
+        if ivalue not in seen:
+            seen[ivalue] = None
+            user_sequence.append(ivalue)
+    if not user_sequence:
+        return (), ()
+    descending_candidates = tuple(sorted(user_sequence, reverse=True))
+    user_candidates = tuple(user_sequence)
+    return descending_candidates, user_candidates
+
+
 def _persist_signature(
     signature: str,
     *,
@@ -80,7 +117,6 @@ def _persist_signature(
     horizon: int,
 ) -> None:
     with _PERSIST_LOCK:
-        _PERSIST_PATH.parent.mkdir(parents=True, exist_ok=True)
         payload = dict(_PERSISTED)
         payload[signature] = {
             "batch_size": int(batch_size),
@@ -88,16 +124,33 @@ def _persist_signature(
             "horizon": int(horizon),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        tmp_path = _PERSIST_PATH.with_suffix(".tmp")
-        with tmp_path.open("w") as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
-        tmp_path.replace(_PERSIST_PATH)
+        for path in _PERSIST_PATHS:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if path.suffix:
+                    tmp_path = path.with_suffix(path.suffix + ".tmp")
+                else:
+                    tmp_path = path.with_name(path.name + ".tmp")
+                with tmp_path.open("w") as handle:
+                    json.dump(payload, handle, indent=2, sort_keys=True)
+                tmp_path.replace(path)
+            except Exception as exc:
+                LOG.warning("Failed to persist batch size to %s: %s", path, exc)
         _PERSISTED.clear()
         _PERSISTED.update(payload)
 
 
 with _PERSIST_LOCK:
     _PERSISTED.update(_load_persisted())
+
+
+def setup_training_imports(torch_module: Optional[ModuleType], numpy_module: Optional[ModuleType]) -> None:
+    """Allow external callers to inject torch/numpy modules before usage."""
+    global _TORCH, _NUMPY
+    if torch_module is not None:
+        _TORCH = torch_module
+    if numpy_module is not None:
+        _NUMPY = numpy_module
 
 
 def persist_batch_size(
@@ -119,6 +172,82 @@ def persist_batch_size(
         _CACHE[selection.signature] = chosen
 
 
+def get_cached_batch_selection(
+    *,
+    candidates: Sequence[int],
+    context_lengths: Sequence[int],
+    horizons: Sequence[int],
+) -> Optional[BatchSizeSelection]:
+    descending_candidates, user_candidates = _normalise_candidates(candidates)
+    if not descending_candidates:
+        raise ValueError("SweepSpace.batch_sizes must contain at least one value")
+
+    max_context = _max_or_default(context_lengths)
+    max_horizon = _max_or_default(horizons)
+
+    if len(descending_candidates) == 1:
+        return BatchSizeSelection(
+            signature=None,
+            selected=descending_candidates[0],
+            descending_candidates=descending_candidates,
+            user_candidates=user_candidates,
+            context_length=max_context,
+            horizon=max_horizon,
+            exhaustive=False,
+        )
+
+    torch_mod = _load_torch()
+    if torch_mod is None:
+        return None
+
+    try:
+        if not torch_mod.cuda.is_available():
+            return None
+    except AttributeError:
+        return None
+
+    try:
+        device_index = torch_mod.cuda.current_device()
+    except Exception:
+        device_index = 0
+
+    try:
+        device_name = torch_mod.cuda.get_device_name(device_index)
+    except Exception:
+        device_name = f"cuda:{device_index}"
+
+    signature = _device_signature(torch_mod, device_index, device_name)
+    with _PERSIST_LOCK:
+        persisted = _PERSISTED.get(signature)
+
+    if not persisted:
+        return None
+
+    persisted_bs = persisted.get("batch_size")
+    persisted_context = int(persisted.get("context_length", 1))
+    persisted_horizon = int(persisted.get("horizon", 1))
+    if not (
+        isinstance(persisted_bs, int)
+        and persisted_bs in descending_candidates
+        and persisted_context >= max_context
+        and persisted_horizon >= max_horizon
+    ):
+        return None
+
+    with _CACHE_LOCK:
+        _CACHE[signature] = persisted_bs
+
+    return BatchSizeSelection(
+        signature=signature,
+        selected=persisted_bs,
+        descending_candidates=descending_candidates,
+        user_candidates=user_candidates,
+        context_length=max_context,
+        horizon=max_horizon,
+        exhaustive=False,
+    )
+
+
 def auto_tune_batch_sizes(
     *,
     candidates: Sequence[int],
@@ -137,18 +266,9 @@ def auto_tune_batch_sizes(
     ordered candidate list for fallback handling.
     """
 
-    seen: Dict[int, None] = {}
-    user_sequence: List[int] = []
-    for value in candidates:
-        ivalue = int(value)
-        if ivalue not in seen:
-            seen[ivalue] = None
-            user_sequence.append(ivalue)
-    if not user_sequence:
+    descending_candidates, user_candidates = _normalise_candidates(candidates)
+    if not descending_candidates:
         raise ValueError("SweepSpace.batch_sizes must contain at least one value")
-
-    descending_candidates = tuple(sorted(user_sequence, reverse=True))
-    user_candidates = tuple(user_sequence)
     ascending_candidates = tuple(sorted(descending_candidates))
     max_context = _max_or_default(context_lengths)
     max_horizon = _max_or_default(horizons)
@@ -309,10 +429,14 @@ def auto_tune_batch_sizes(
 
 
 def _load_torch():
+    global _TORCH
+    if _TORCH is not None:
+        return _TORCH
     try:
         import torch  # type: ignore
     except ImportError:
         return None
+    _TORCH = torch
     return torch
 
 
@@ -422,4 +546,10 @@ class _HeuristicBatchSizeTester:
         return activation + gradients + optimizer
 
 
-__all__ = ["BatchSizeSelection", "auto_tune_batch_sizes", "persist_batch_size"]
+__all__ = [
+    "BatchSizeSelection",
+    "auto_tune_batch_sizes",
+    "persist_batch_size",
+    "get_cached_batch_selection",
+    "setup_training_imports",
+]
