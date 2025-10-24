@@ -157,6 +157,34 @@ def _autocast_context(device: str, dtype: Optional[torch.dtype]) -> ContextManag
     return cast(ContextManager[None], nullcontext())
 
 
+_CPU_LOW_PRECISION_DTYPES: Tuple[torch.dtype, ...] = tuple(
+    dtype
+    for dtype in (
+        getattr(torch, "float16", None),
+        getattr(torch, "bfloat16", None),
+    )
+    if dtype is not None
+)
+
+
+def _normalise_inference_dtype(
+    device: str,
+    requested: Optional[torch.dtype],
+) -> Tuple[Optional[torch.dtype], Optional[torch.dtype]]:
+    """Normalise the requested dtype for the target device.
+
+    Returns a tuple of (effective_dtype, original_request).  The effective dtype
+    is the one that should be used for execution, while ``original_request``
+    records the caller's preference for metadata.
+    """
+
+    if requested is None:
+        return None, None
+    if device.startswith("cpu") and requested in _CPU_LOW_PRECISION_DTYPES:
+        return torch.float32, requested
+    return requested, requested
+
+
 def _forecast_with_retries(
     forecaster,
     *,
@@ -251,6 +279,7 @@ class TotoPipeline:
         torch_compile: bool = False,
         compile_mode: Optional[str] = "max-autotune",
         compile_backend: Optional[str] = None,
+        requested_dtype: Optional[torch.dtype] = None,
     ):
         if _IMPORT_ERROR is not None or MaskedTimeseries is None or TotoForecaster is None:
             raise RuntimeError(
@@ -261,6 +290,11 @@ class TotoPipeline:
         self.max_oom_retries = max(0, int(max_oom_retries))
         self.min_samples_per_batch = max(1, int(min_samples_per_batch))
         self.min_num_samples = max(1, int(min_num_samples))
+
+        normalised_dtype, fallback_requested = _normalise_inference_dtype(self.device, torch_dtype)
+        if requested_dtype is None:
+            requested_dtype = fallback_requested
+        torch_dtype = normalised_dtype
 
         target_kwargs: Dict[str, Any] = {"device": self.device}
         if torch_dtype is not None:
@@ -274,6 +308,17 @@ class TotoPipeline:
             self.model_dtype = first_param.dtype
         except StopIteration:
             self.model_dtype = torch_dtype or torch.float32
+
+        self.effective_dtype_token = dtype_to_token(self.model_dtype)
+        if requested_dtype is not None and self.model_dtype != requested_dtype:
+            logger.info(
+                "Adjusted Toto model dtype to %s for device %s (requested %s).",
+                self.model_dtype,
+                self.device,
+                requested_dtype,
+            )
+        self.requested_dtype = requested_dtype or self.model_dtype
+        self.requested_dtype_token = dtype_to_token(self.requested_dtype)
 
         if device.startswith("cuda"):
             self.amp_dtype = amp_dtype
@@ -418,9 +463,10 @@ class TotoPipeline:
             raise ValueError(f"Unrecognised cache policy '{cache_policy}'. Expected 'prefer', 'never', or 'only'.")
 
         manager = cache_manager or ModelCacheManager("toto")
+        device = device_map if device_map != "mps" else "cpu"
+        torch_dtype, requested_dtype = _normalise_inference_dtype(device, torch_dtype)
         dtype_token = dtype_to_token(torch_dtype)
         amp_token = dtype_to_token(amp_dtype)
-        device = device_map if device_map != "mps" else "cpu"
         device_token = device_to_token(device)
 
         extra_kwargs: Dict[str, Any] = dict(kwargs)
@@ -510,6 +556,7 @@ class TotoPipeline:
                 torch_compile=torch_compile,
                 compile_mode=compile_mode,
                 compile_backend=compile_backend,
+                requested_dtype=requested_dtype,
             )
 
             should_warmup = (
@@ -528,6 +575,8 @@ class TotoPipeline:
                         "device": device_token,
                         "device_variant": device_token,
                         "device_requested": device,
+                        "dtype": pipeline.effective_dtype_token,
+                        "dtype_requested": pipeline.requested_dtype_token,
                         "compile_model": bool(pipeline._compiled),
                         "torch_compile": bool(pipeline._torch_compile_success),
                         "warmup_sequence": int(warmup_sequence),

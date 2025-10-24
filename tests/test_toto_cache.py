@@ -66,7 +66,7 @@ class DummyToto:
         return self
 
     def parameters(self):
-        yield torch.zeros(())
+        yield torch.zeros((), dtype=self._dtype)
 
     def compile(self, mode=None):  # type: ignore[override]
         self._compile_mode = mode
@@ -99,7 +99,7 @@ def test_toto_pipeline_persists_and_reuses_compiled_cache(tmp_path):
     pipeline = tw.TotoPipeline.from_pretrained(
         model_id="Fake/Model",
         device_map="cpu",
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float32,
         compile_model=False,
         torch_compile=False,
         warmup_sequence=0,
@@ -107,12 +107,13 @@ def test_toto_pipeline_persists_and_reuses_compiled_cache(tmp_path):
     assert pipeline.model is not None
     assert DummyToto.calls[0] == "Fake/Model"
 
-    cache_root = Path(os.environ["COMPILED_MODELS_DIR"]) / "toto" / "Fake-Model" / "bf16" / "cpu"
+    cache_root = Path(os.environ["COMPILED_MODELS_DIR"]) / "toto" / "Fake-Model" / "fp32" / "cpu"
     metadata_path = cache_root / "metadata.json"
     assert metadata_path.exists()
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["model_id"] == "Fake/Model"
-    assert metadata["dtype"] == "bf16"
+    assert metadata["dtype"] == "fp32"
+    assert metadata["dtype_requested"] == "fp32"
     assert metadata["device"] == "cpu"
     assert metadata["device_variant"] == "cpu"
     assert metadata["device_requested"] == "cpu"
@@ -121,7 +122,7 @@ def test_toto_pipeline_persists_and_reuses_compiled_cache(tmp_path):
     _ = tw.TotoPipeline.from_pretrained(
         model_id="Fake/Model",
         device_map="cpu",
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float32,
         compile_model=False,
         torch_compile=False,
         warmup_sequence=0,
@@ -182,6 +183,27 @@ def test_toto_cache_separates_device_variants(tmp_path):
     gpu_metadata = json.loads((gpu_path / "metadata.json").read_text(encoding="utf-8"))
     assert gpu_metadata["device"] == "cuda"
     assert gpu_metadata["device_requested"] == "cuda:0"
+    assert gpu_metadata["dtype_requested"] == "fp32"
+
+
+def test_toto_cpu_bfloat16_requests_fallback_to_fp32(tmp_path):
+    pipeline = tw.TotoPipeline.from_pretrained(
+        model_id="Fake/Model",
+        device_map="cpu",
+        torch_dtype=torch.bfloat16,
+        compile_model=False,
+        torch_compile=False,
+        warmup_sequence=0,
+    )
+
+    assert pipeline.model_dtype == torch.float32
+    assert pipeline.requested_dtype_token == "bf16"
+
+    cache_root = Path(os.environ["COMPILED_MODELS_DIR"]) / "toto" / "Fake-Model" / "fp32" / "cpu"
+    metadata_path = cache_root / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["dtype"] == "fp32"
+    assert metadata["dtype_requested"] == "bf16"
 
 
 def test_toto_cache_policy_only_requires_existing_cache(tmp_path):
