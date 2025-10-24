@@ -747,7 +747,7 @@ pettingzoo==1.24.1
     # via pufferlib
 pexpect==4.9.0
     # via ipython
-pillow==12.0.0
+pillow==11.0.0
     # via
     #   imageio
     #   matplotlib
@@ -1282,4 +1282,5 @@ yfinance==0.2.58
     # via -r requirements.in
 zipp==3.23.0
     # via importlib-metadata
-fal==1.46.2
+# fal integrations depend on websockets>=12 which conflicts with alpaca-trade-api.
+# Install fal separately in its dedicated environment when needed.

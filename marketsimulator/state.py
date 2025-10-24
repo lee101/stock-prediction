@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List, Optional
 import pandas as pd
 import pytz
 
+from stock.data_utils import coerce_numeric
 from src.leverage_settings import LeverageSettings, get_leverage_settings
 from loss_utils import CRYPTO_TRADING_FEE, TRADING_FEE
 from .execution import classify_liquidity, simulate_fill
@@ -53,7 +54,10 @@ class PriceSeries:
         return self.cursor < len(self.frame) - 1
 
     def price(self, column: str = "Close") -> float:
-        return float(self.current_row[column])
+        value = self.current_row.get(column)
+        if value is None:
+            return coerce_numeric(self.current_row.get("Close"), default=0.0)
+        return coerce_numeric(value, default=0.0)
 
 
 @dataclass
@@ -225,13 +229,19 @@ class SimulationState:
         series = self.prices.get(symbol)
         if series is None:
             return None
-        return float(series.current_row.get("Low", series.price("Close")))
+        return coerce_numeric(
+            series.current_row.get("Low", series.price("Close")),
+            default=series.price("Close"),
+        )
 
     def current_ask(self, symbol: str) -> Optional[float]:
         series = self.prices.get(symbol)
         if series is None:
             return None
-        return float(series.current_row.get("High", series.price("Close")))
+        return coerce_numeric(
+            series.current_row.get("High", series.price("Close")),
+            default=series.price("Close"),
+        )
 
     def place_take_profit(self, symbol: str, side: str, price: float, qty: float) -> None:
         self.take_profit_targets.append(TakeProfitTarget(symbol, side, price, qty))
@@ -275,8 +285,15 @@ class SimulationState:
             series = self.prices.get(target.symbol)
             if series is None:
                 continue
-            last_high = float(series.current_row.get("High", series.price("Close")))
-            last_low = float(series.current_row.get("Low", series.price("Close")))
+            close_price = series.price("Close")
+            last_high = coerce_numeric(
+                series.current_row.get("High", close_price),
+                default=close_price,
+            )
+            last_low = coerce_numeric(
+                series.current_row.get("Low", close_price),
+                default=close_price,
+            )
             met = False
             if target.side == "sell":
                 met = last_high >= target.price
@@ -378,8 +395,15 @@ class SimulationState:
         vol_bps = 0.0
         if series is not None:
             current_row = series.current_row
-            high = float(current_row.get("High", series.price("Close")))
-            low = float(current_row.get("Low", series.price("Close")))
+            close_price = series.price("Close")
+            high = coerce_numeric(
+                current_row.get("High", close_price),
+                default=close_price,
+            )
+            low = coerce_numeric(
+                current_row.get("Low", close_price),
+                default=close_price,
+            )
             mid_price = max(1e-9, (high + low) / 2.0)
             if mid_price > 0:
                 vol_bps = abs(high - low) / mid_price * 1e4
