@@ -63,13 +63,20 @@ Additional guard confirm windows:
 | Symbol | MaxDiff Return | MaxDiff Sharpe | Simple Return |
 | --- | ---: | ---: | ---: |
 | AAPL | 0.0261 | 7.6525 | -0.0699 |
+| AAPL | n/a | n/a | n/a |
 | AAPL_real | 0.0374 | 13.218 | -0.2166 |
-| AAPL_real_full | 0.0373 | 13.3979 | -0.1766 |
+| AAPL | n/a | n/a | n/a |
+| AAPL | n/a | n/a | n/a |
 | GOOG | 0.0124 | 5.0736 | -0.0788 |
 | GOOG_real | 0.0294 | 10.8298 | -0.2143 |
+| GOOG_real_full | 0.0302 | 10.9347 | -0.1415 |
+| GOOG | n/a | n/a | n/a |
 | META | 0.0281 | 9.2342 | -0.0182 |
 | META_real | 0.0412 | 13.9079 | -0.0281 |
+| META_real_full | 0.0405 | 13.6983 | -0.0197 |
 | NVDA | 0.0212 | 4.0324 | -0.021 |
 | NVDA_real | 0.0474 | 11.4997 | 0.0117 |
+| NVDA_real_full | 0.0445 | 11.4281 | 0.0044 |
 | TSLA | 0.0309 | 4.4751 | -0.0201 |
 | TSLA_real | 0.0704 | 10.8814 | -0.0213 |
+| TSLA_real_full | 0.0762 | 11.2807 | -0.0082 |

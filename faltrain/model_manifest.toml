@@ -40,3 +40,23 @@ source = "compiled_models"
 remote = "compiled_models"
 recursive = true
 required = false
+
+[[artifact]]
+name = "Toto compiled export"
+source = "data/models/toto/compiled"
+remote = "stock/models/toto/compiled"
+recursive = true
+required = false
+
+[[artifact]]
+name = "Toto uncompiled export"
+source = "data/models/toto/uncompiled"
+remote = "stock/models/toto/uncompiled"
+recursive = true
+required = false
+
+[[artifact]]
+name = "Toto manifest"
+source = "data/models/toto/manifest.json"
+remote = "stock/models/toto/manifest.json"
+required = false

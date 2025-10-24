@@ -3,13 +3,15 @@
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import subprocess
+import sys
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 import fal
 from fal_marketsimulator.runner import setup_training_imports, simulate_trading
@@ -22,8 +24,32 @@ from src.tblib_compat import ensure_tblib_pickling_support
 from src.torch_backend import configure_tf32_backends
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 ensure_tblib_pickling_support()
 LOG = get_logger("falmarket.app", logging.INFO)
+
+
+def _validate_local_python_modules(modules: Iterable[str]) -> None:
+    """
+    Ensure every module declared in local_python_modules is importable.
+    Raises a RuntimeError with actionable guidance when a module is missing.
+    """
+
+    missing = [
+        module_name
+        for module_name in modules
+        if importlib.util.find_spec(module_name) is None
+    ]
+    if not missing:
+        return
+
+    formatted = ", ".join(sorted(missing))
+    raise RuntimeError(
+        "MarketSimulatorApp.local_python_modules references missing modules: "
+        f"{formatted}. Install them via `uv pip install -e <module>/` or "
+        "adjust the local_python_modules list before launching the fal app."
+    )
 
 
 class SimulationRequest(BaseModel):
@@ -84,10 +110,20 @@ class MarketSimulatorApp(
         "marketsimulator",
         "trade_stock_e2e",
         "trade_stock_e2e_trained",
+        "alpaca_wrapper",
+        "backtest_test3_inline",
+        "data_curate_daily",
+        "env_real",
+        "jsonshelve",
         "src",
         "stock",
         "utils",
         "traininglib",
+        "rlinference",
+        "training",
+        "gymrl",
+        "analysis",
+        "analysis_runner_funcs",
     ]
 
     def setup(self) -> None:
@@ -135,6 +171,7 @@ class MarketSimulatorApp(
 
             setup_training_imports(_torch, _np, _pd)
             setup_src_imports(_torch, _np, _pd)
+            _validate_local_python_modules(self.local_python_modules)
 
             os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
             os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")

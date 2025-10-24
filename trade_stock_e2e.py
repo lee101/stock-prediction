@@ -1,4 +1,3 @@
-import ast
 import logging
 import math
 import os
@@ -44,6 +43,18 @@ from src.process_utils import (
 )
 from src.portfolio_risk import record_portfolio_snapshot
 from src.sizing_utils import get_qty
+from src.trade_stock_utils import (
+    agree_direction,
+    coerce_optional_float,
+    compute_spread_bps,
+    edge_threshold_bps,
+    evaluate_strategy_entry_gate,
+    expected_cost_bps,
+    kelly_lite,
+    parse_float_list,
+    resolve_spread_cap,
+    should_rebalance,
+)
 from alpaca.data import StockHistoricalDataClient
 from stock.data_utils import coerce_numeric, ensure_lower_bound, safe_divide
 from stock.state import ensure_state_dir as _shared_ensure_state_dir
@@ -68,9 +79,6 @@ MAX_TOTAL_EXPOSURE_PCT = 120.0
 LIVE_DRAWDOWN_TRIGGER = -500.0  # dollars
 PROBE_MAX_DURATION = timedelta(days=1)
 
-LIQUID_CRYPTO_PREFIXES = ("BTC", "ETH", "SOL", "UNI")
-TIGHT_SPREAD_EQUITIES = {"AAPL", "MSFT", "AMZN", "NVDA", "META", "GOOG"}
-DEFAULT_SPREAD_BPS = 25
 PROBE_LOSS_COOLDOWN_MINUTES = 180
 ALLOW_HIGHLOW_ENTRY = os.getenv("ALLOW_HIGHLOW_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
 ALLOW_TAKEPROFIT_ENTRY = os.getenv("ALLOW_TAKEPROFIT_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -95,48 +103,14 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _LATEST_FORECAST_CACHE: Dict[str, Dict[str, object]] = {}
 _LATEST_FORECAST_PATH: Optional[Path] = None
 
+_coerce_optional_float = coerce_optional_float
+_parse_float_list = parse_float_list
+_edge_threshold_bps = edge_threshold_bps
+_evaluate_strategy_entry_gate = evaluate_strategy_entry_gate
+
 
 def _results_dir() -> Path:
     return Path(__file__).resolve().parent / "results"
-
-
-def _coerce_optional_float(value: object) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        if isinstance(value, float):
-            return None if math.isnan(value) else value
-        if isinstance(value, (int,)):
-            return float(value)
-        value_str = str(value).strip()
-        if not value_str:
-            return None
-        parsed = float(value_str)
-        return None if math.isnan(parsed) else parsed
-    except (TypeError, ValueError):
-        return None
-
-
-def _parse_float_list(raw: object) -> Optional[List[float]]:
-    if raw is None or (isinstance(raw, float) and math.isnan(raw)):
-        return None
-    try:
-        text = str(raw)
-        if not text:
-            return None
-        normalized = text.replace("np.float32", "float")
-        values = ast.literal_eval(normalized)
-        if isinstance(values, (list, tuple)):
-            result: List[float] = []
-            for item in values:
-                coerced = _coerce_optional_float(item)
-                if coerced is None:
-                    continue
-                result.append(coerced)
-            return result or None
-    except (ValueError, SyntaxError):
-        return None
-    return None
 
 
 def _find_latest_prediction_file() -> Optional[Path]:
@@ -238,23 +212,6 @@ def fetch_bid_ask(symbol: str) -> Tuple[Optional[float], Optional[float]]:
     return get_bid(symbol), get_ask(symbol)
 
 
-def compute_spread_bps(bid: Optional[float], ask: Optional[float]) -> float:
-    if bid is None or ask is None:
-        return float("inf")
-    mid = (bid + ask) / 2.0
-    if mid <= 0:
-        return float("inf")
-    return (ask - bid) / mid * 1e4
-
-
-def resolve_spread_cap(symbol: str) -> int:
-    if symbol.endswith("USD") and symbol.startswith(LIQUID_CRYPTO_PREFIXES):
-        return 35
-    if symbol in TIGHT_SPREAD_EQUITIES:
-        return 8
-    return DEFAULT_SPREAD_BPS
-
-
 def is_tradeable(
     symbol: str,
     bid: Optional[float],
@@ -284,13 +241,6 @@ def is_tradeable(
     return True, f"Spread {spread_bps:.1f}bps OK"
 
 
-def expected_cost_bps(symbol: str) -> float:
-    base = 20.0 if symbol.endswith("USD") else 6.0
-    if symbol in {"META", "AMD", "LCID", "QUBT"}:
-        base += 25.0
-    return base
-
-
 def pass_edge_threshold(symbol: str, expected_move_pct: float) -> Tuple[bool, str]:
     move_bps = abs(expected_move_pct) * 1e4
     kronos_only = _is_kronos_only_mode()
@@ -305,11 +255,6 @@ def pass_edge_threshold(symbol: str, expected_move_pct: float) -> Tuple[bool, st
     return True, f"Edge {move_bps:.1f}bps ≥ need {need:.1f}bps"
 
 
-def agree_direction(*pred_signs: int) -> bool:
-    signs = {sign for sign in pred_signs if sign in (-1, 1)}
-    return len(signs) == 1
-
-
 def resolve_signal_sign(move_pct: float) -> int:
     threshold = CONSENSUS_MIN_MOVE_PCT
     if _is_kronos_only_mode():
@@ -317,37 +262,6 @@ def resolve_signal_sign(move_pct: float) -> int:
     if abs(move_pct) < threshold:
         return 0
     return 1 if move_pct > 0 else -1
-
-
-def kelly_lite(edge_pct: float, sigma_pct: float, cap: float = 0.15) -> float:
-    if sigma_pct <= 0:
-        return 0.0
-    raw = edge_pct / (sigma_pct ** 2)
-    scaled = 0.2 * raw
-    if scaled <= 0:
-        return 0.0
-    return float(min(cap, max(0.0, scaled)))
-
-
-def should_rebalance(
-    current_pos_side: Optional[str],
-    new_side: str,
-    current_size: float,
-    target_size: float,
-    eps: float = 0.25,
-) -> bool:
-    current_side = (current_pos_side or "").lower()
-    new_side_norm = new_side.lower()
-    if current_side not in {"buy", "sell"} or new_side_norm not in {"buy", "sell"}:
-        return True
-    if current_side != new_side_norm:
-        return True
-    current_abs = abs(current_size)
-    target_abs = abs(target_size)
-    if current_abs <= 1e-9:
-        return True
-    delta = abs(target_abs - current_abs) / max(current_abs, 1e-9)
-    return delta > eps
 
 
 def _record_loss_timestamp(symbol: str, closed_at: Optional[str]) -> None:
@@ -372,40 +286,6 @@ def can_trade_now(symbol: str, now: datetime, min_cooldown_minutes: int = PROBE_
         if delta.total_seconds() < min_cooldown_minutes * 60:
             return False
     return True
-
-
-def _edge_threshold_bps(symbol: str) -> float:
-    base_cost = expected_cost_bps(symbol) + 10.0
-    hard_floor = 40.0 if symbol.endswith("USD") else 15.0
-    return max(base_cost, hard_floor)
-
-
-def _evaluate_strategy_entry_gate(
-    symbol: str,
-    stats: Dict[str, float],
-    *,
-    fallback_used: bool,
-    sample_size: int,
-) -> Tuple[bool, str]:
-    if fallback_used:
-        return False, "fallback_metrics"
-    avg_return = float(stats.get("avg_return") or 0.0)
-    sharpe = float(stats.get("sharpe") or 0.0)
-    turnover = float(stats.get("turnover") or 0.0)
-    max_drawdown = float(stats.get("max_drawdown") or 0.0)
-    edge_bps = avg_return * 1e4
-    needed_edge = _edge_threshold_bps(symbol)
-    if edge_bps < needed_edge:
-        return False, f"edge {edge_bps:.1f}bps < need {needed_edge:.1f}bps"
-    if sharpe < 0.5:
-        return False, f"sharpe {sharpe:.2f} below 0.50 gate"
-    if sample_size < 120:
-        return False, f"insufficient samples {sample_size} < 120"
-    if max_drawdown < -0.08:
-        return False, f"max drawdown {max_drawdown:.2f} below -0.08 gate"
-    if turnover > 2.0 and sharpe < 0.8:
-        return False, f"turnover {turnover:.2f} with sharpe {sharpe:.2f}"
-    return True, "ok"
 
 
 def _ensure_state_dir() -> bool:
