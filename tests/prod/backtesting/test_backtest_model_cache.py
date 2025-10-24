@@ -62,11 +62,12 @@ def test_resolve_toto_params_cached(monkeypatch):
     params_first = module.resolve_toto_params("ETHUSD")
     params_second = module.resolve_toto_params("ETHUSD")
 
-    assert params_first == params_second == {
-        "num_samples": 11,
-        "samples_per_batch": 7,
+    expected = {
+        "num_samples": module.TOTO_MIN_NUM_SAMPLES,
+        "samples_per_batch": module.TOTO_MIN_SAMPLES_PER_BATCH,
         "aggregate": "median",
     }
+    assert params_first == params_second == expected
     assert call_count["value"] == 1
 
 
@@ -116,6 +117,7 @@ def test_resolve_best_model_cached(monkeypatch):
         return {"model": "toto"}
 
     monkeypatch.delenv("MARKETSIM_FORCE_KRONOS", raising=False)
+    monkeypatch.setattr(module, "_in_test_mode", lambda: False)
     monkeypatch.setattr(module, "load_model_selection", fake_load_model_selection)
 
     assert module.resolve_best_model("ETHUSD") == "toto"

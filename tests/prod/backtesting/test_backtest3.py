@@ -1,19 +1,67 @@
 import os
 from unittest.mock import patch, MagicMock
 
+import importlib
+import sys
+import types
+
 import numpy as np
 import pandas as pd
 import pytest
 import torch
 
-import backtest_test3_inline as backtest_module
-# Set the environment variable for testing
-os.environ['TESTING'] = 'True'
+# Ensure the backtest module knows we are in test mode before import side effects run.
+# Ensure the backtest module knows we are in test mode before import side effects run.
+os.environ.setdefault('TESTING', 'True')
 
-# Import the function to test
-from backtest_test3_inline import backtest_forecasts, evaluate_highlow_strategy, simple_buy_sell_strategy, \
-    all_signals_strategy, \
-    evaluate_strategy, buy_hold_strategy, unprofit_shutdown_buy_hold, SPREAD
+# Provide minimal Alpaca stubs so module import never touches live services.
+tradeapi_mod = sys.modules.setdefault("alpaca_trade_api", types.ModuleType("alpaca_trade_api"))
+tradeapi_rest = sys.modules.setdefault(
+    "alpaca_trade_api.rest", types.ModuleType("alpaca_trade_api.rest")
+)
+
+if not hasattr(tradeapi_rest, "APIError"):
+    class _APIError(Exception):
+        pass
+
+    tradeapi_rest.APIError = _APIError  # type: ignore[attr-defined]
+
+
+if not hasattr(tradeapi_mod, "REST"):
+    class _DummyREST:
+        def __init__(self, *args, **kwargs):
+            self._orders = []
+
+        def get_all_positions(self):  # pragma: no cover - smoke stub
+            return []
+
+        def get_account(self):
+            return types.SimpleNamespace(
+                equity=1.0,
+                cash=1.0,
+                multiplier=1,
+                buying_power=1.0,
+            )
+
+        def get_clock(self):
+            return types.SimpleNamespace(is_open=True)
+
+    tradeapi_mod.REST = _DummyREST  # type: ignore[attr-defined]
+
+import backtest_test3_inline as backtest_module
+
+if not hasattr(backtest_module, "evaluate_highlow_strategy"):
+    backtest_module = importlib.reload(backtest_module)
+
+# Expose the functions under test via the imported module so patching still works.
+backtest_forecasts = backtest_module.backtest_forecasts
+evaluate_highlow_strategy = backtest_module.evaluate_highlow_strategy
+simple_buy_sell_strategy = backtest_module.simple_buy_sell_strategy
+all_signals_strategy = backtest_module.all_signals_strategy
+evaluate_strategy = backtest_module.evaluate_strategy
+buy_hold_strategy = backtest_module.buy_hold_strategy
+unprofit_shutdown_buy_hold = backtest_module.unprofit_shutdown_buy_hold
+SPREAD = backtest_module.SPREAD
 
 trading_fee = 0.0025
 

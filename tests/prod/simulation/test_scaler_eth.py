@@ -1,6 +1,52 @@
+import importlib
+import os
+import sys
+import types
+
 import numpy as np
 
-from backtest_test3_inline import calibrate_signal
+os.environ.setdefault('TESTING', 'True')
+
+tradeapi_mod = sys.modules.setdefault("alpaca_trade_api", types.ModuleType("alpaca_trade_api"))
+tradeapi_rest = sys.modules.setdefault(
+    "alpaca_trade_api.rest", types.ModuleType("alpaca_trade_api.rest")
+)
+
+if not hasattr(tradeapi_rest, "APIError"):
+    class _APIError(Exception):
+        pass
+
+    tradeapi_rest.APIError = _APIError  # type: ignore[attr-defined]
+
+
+if not hasattr(tradeapi_mod, "REST"):
+    class _DummyREST:
+        def __init__(self, *args, **kwargs):
+            self._orders = []
+
+        def get_all_positions(self):
+            return []
+
+        def get_account(self):
+            return types.SimpleNamespace(
+                equity=1.0,
+                cash=1.0,
+                multiplier=1,
+                buying_power=1.0,
+            )
+
+        def get_clock(self):
+            return types.SimpleNamespace(is_open=True)
+
+    tradeapi_mod.REST = _DummyREST  # type: ignore[attr-defined]
+
+
+import backtest_test3_inline as backtest_module
+
+if not hasattr(backtest_module, "calibrate_signal"):
+    backtest_module = importlib.reload(backtest_module)
+
+calibrate_signal = backtest_module.calibrate_signal
 
 
 def test_eth_calibration_small_delta_stability():

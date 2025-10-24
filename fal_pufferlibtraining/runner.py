@@ -1,17 +1,29 @@
 from __future__ import annotations
 
+import importlib
 import json
-from argparse import Namespace
 import sys
+from argparse import Namespace
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Dict, Optional, Tuple
 
-from src.dependency_injection import resolve_numpy, resolve_pandas, resolve_torch, setup_imports
+from src.runtime_imports import setup_src_imports
 
-_TORCH: Optional[ModuleType] = None
-_NUMPY: Optional[ModuleType] = None
-_PANDAS: Optional[ModuleType] = None
+try:  # pragma: no cover - production environments
+    import torch  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover
+    torch = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - production environments
+    import numpy as np  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - production environments
+    import pandas as pd  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover
+    pd = None  # type: ignore[assignment]
 
 
 def setup_training_imports(
@@ -21,38 +33,43 @@ def setup_training_imports(
 ) -> None:
     """Register heavy dependencies for the RL pipeline."""
 
-    global _TORCH, _NUMPY, _PANDAS
+    global torch, np, pd
     if torch_module is not None:
-        _TORCH = torch_module
-        sys.modules.setdefault("torch", torch_module)
+        torch = torch_module
+        sys.modules["torch"] = torch_module
     if numpy_module is not None:
-        _NUMPY = numpy_module
-        sys.modules.setdefault("numpy", numpy_module)
+        np = numpy_module
+        sys.modules["numpy"] = numpy_module
     if pandas_module is not None:
-        _PANDAS = pandas_module
-        sys.modules.setdefault("pandas", pandas_module)
-    setup_kwargs: Dict[str, ModuleType] = {}
-    if torch_module is not None:
-        setup_kwargs["torch"] = torch_module
-    if numpy_module is not None:
-        setup_kwargs["numpy"] = numpy_module
-    if pandas_module is not None:
-        setup_kwargs["pandas"] = pandas_module
-    if setup_kwargs:
-        setup_imports(**setup_kwargs)
+        pd = pandas_module
+        sys.modules["pandas"] = pandas_module
+    setup_src_imports(torch_module, numpy_module, pandas_module)
 
 
 def _ensure_injected_modules() -> Tuple[ModuleType, ModuleType, Optional[ModuleType]]:
-    torch_mod = _TORCH or resolve_torch()
-    numpy_mod = _NUMPY or resolve_numpy()
-    pandas_mod = _PANDAS
-    if pandas_mod is None:
+    global torch, np, pd
+
+    if torch is None:
         try:
-            pandas_mod = resolve_pandas()
-        except Exception:
-            pandas_mod = None
-    setup_training_imports(torch_mod, numpy_mod, pandas_mod)
-    return torch_mod, numpy_mod, pandas_mod
+            torch = importlib.import_module("torch")
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Torch is unavailable. Ensure setup_training_imports() runs inside the FAL worker."
+            ) from exc
+    if np is None:
+        try:
+            np = importlib.import_module("numpy")
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "NumPy is unavailable. Ensure setup_training_imports() runs inside the FAL worker."
+            ) from exc
+    if pd is None:
+        try:
+            pd = importlib.import_module("pandas")
+        except ModuleNotFoundError:
+            pd = None
+    setup_training_imports(torch, np, pd)
+    return torch, np, pd
 
 
 def _default_args() -> Namespace:

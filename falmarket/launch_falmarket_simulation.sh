@@ -5,7 +5,9 @@ usage() {
   cat <<'USAGE'
 Usage: launch_falmarket_simulation.sh [OPTIONS] [ENDPOINT]
 
-Trigger the fal market simulator endpoint with sensible defaults.
+Trigger the fal market simulator endpoint with sensible defaults. If no
+endpoint is provided the script launches ``fal run falmarket/app.py::MarketSimulatorApp``
+and forwards its stdout while triggering the simulation request automatically.
 
 Options:
   --endpoint URL           Explicit endpoint base URL (overrides positional argument).
@@ -21,7 +23,11 @@ Options:
   --no-compact-logs        Disable compact logging.
   --auth-token TOKEN       Authorization header value.
   --header "Name: Value"   Additional header (repeatable).
-  --dry-run                Print the request without sending it.
+  --dry-run                Print the request without sending it (requires --endpoint).
+  --fal-binary PATH        fal executable to invoke when auto-launching (default: fal).
+  --fal-app SPEC           fal app spec (default: falmarket/app.py::MarketSimulatorApp).
+  --fal-arg ARG            Extra argument forwarded to ``fal run`` (repeatable).
+  --keep-alive             Keep the fal process alive after the request completes.
   -h, --help               Show this message and exit.
 
 Examples:
@@ -45,6 +51,10 @@ payload_json=""
 auth_token=""
 declare -a headers=()
 dry_run=0
+fal_binary="fal"
+fal_app="falmarket/app.py::MarketSimulatorApp"
+declare -a fal_args=()
+keep_alive=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -104,6 +114,22 @@ while [[ $# -gt 0 ]]; do
       dry_run=1
       shift
       ;;
+    --fal-binary)
+      fal_binary=${2-}
+      shift 2
+      ;;
+    --fal-app)
+      fal_app=${2-}
+      shift 2
+      ;;
+    --fal-arg)
+      fal_args+=("$2")
+      shift 2
+      ;;
+    --keep-alive)
+      keep_alive=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -125,12 +151,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$endpoint" ]]; then
-  echo "Error: endpoint URL is required." >&2
-  usage >&2
-  exit 2
-fi
-
 if [[ -n "$payload_file" && -n "$payload_json" ]]; then
   echo "Error: use either --payload-file or --payload-json, not both." >&2
   exit 2
@@ -138,6 +158,67 @@ fi
 
 if [[ -z "$append_path" ]]; then
   append_path=$append_path_default
+fi
+
+if [[ -z "$endpoint" && $dry_run -eq 1 ]]; then
+  echo "Error: --dry-run requires an explicit endpoint." >&2
+  exit 2
+fi
+
+if [[ -z "$endpoint" ]]; then
+  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  runner_script=$(cd "$script_dir/.." && pwd)/run_and_train_fal_marketsimulator.py
+  python_bin=${PYTHON_BIN:-}
+  if [[ -z "$python_bin" ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+      python_bin=python3
+    elif command -v python >/dev/null 2>&1; then
+      python_bin=python
+    else
+      echo "Error: python3 (or python) is required to auto-launch fal run." >&2
+      exit 127
+    fi
+  fi
+  if ! command -v "$python_bin" >/dev/null 2>&1; then
+    echo "Error: $python_bin is not executable." >&2
+    exit 127
+  fi
+
+  IFS=',' read -r -a symbols_raw <<<"$symbols_csv"
+  declare -a symbols_args=()
+  for raw_symbol in "${symbols_raw[@]}"; do
+    trimmed=${raw_symbol#"${raw_symbol%%[![:space:]]*}"}
+    trimmed=${trimmed%"${trimmed##*[![:space:]]}"}
+    if [[ -z "$trimmed" ]]; then
+      continue
+    fi
+    upper=$(printf '%s' "$trimmed" | tr '[:lower:]' '[:upper:]')
+    symbols_args+=("$upper")
+  done
+  if [[ ${#symbols_args[@]} -eq 0 ]]; then
+    echo "Error: no valid symbols parsed from --symbols." >&2
+    exit 2
+  fi
+
+  cmd=("$python_bin" "$runner_script" "--fal-binary" "$fal_binary" "--fal-app" "$fal_app" "--endpoint-path" "$append_path" "--steps" "$steps" "--step-size" "$step_size" "--initial-cash" "$initial_cash" "--top-k" "$top_k")
+  cmd+=("--symbols" "${symbols_args[@]}")
+  if [[ "$kronos_only" == "true" ]]; then
+    cmd+=("--kronos-only")
+  fi
+  if [[ "$compact_logs" == "true" ]]; then
+    cmd+=("--compact-logs")
+  fi
+  for header in "${headers[@]}"; do
+    cmd+=("--header" "$header")
+  done
+  for arg in "${fal_args[@]}"; do
+    cmd+=("--fal-arg" "$arg")
+  done
+  if [[ $keep_alive -eq 1 ]]; then
+    cmd+=("--keep-alive")
+  fi
+
+  exec "${cmd[@]}"
 fi
 
 append_endpoint() {
