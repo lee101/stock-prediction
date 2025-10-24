@@ -7,14 +7,16 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-
 import fal_pufferlibtraining.runner as runner
-from src import dependency_injection as deps
 
 
 @pytest.fixture(autouse=True)
-def _stub_dependencies(monkeypatch):
-    deps._reset_for_tests()
+def _stub_dependencies():
+    original_torch = runner.torch
+    original_numpy = runner.np
+    original_pandas = runner.pd
+    previous_sys_modules = {name: sys.modules.get(name) for name in ("torch", "numpy", "pandas")}
+
     torch_stub = ModuleType("torch")
     torch_stub.manual_seed = lambda seed: None
     torch_stub.cuda = SimpleNamespace(is_available=lambda: False)
@@ -22,8 +24,17 @@ def _stub_dependencies(monkeypatch):
     numpy_stub.isscalar = lambda value: not hasattr(value, "__len__")
     numpy_stub.bool_ = bool
     runner.setup_training_imports(torch_stub, numpy_stub, None)
-    yield
-    deps._reset_for_tests()
+    try:
+        yield
+    finally:
+        runner.torch = original_torch
+        runner.np = original_numpy
+        runner.pd = original_pandas
+        for name, module in previous_sys_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
 
 def _build_parser() -> ArgumentParser:

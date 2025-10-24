@@ -6,20 +6,16 @@ from datetime import datetime
 from types import ModuleType, SimpleNamespace
 
 import pytest
-
 import fal_marketsimulator.runner as runner
-from src import dependency_injection as deps
 
 
 @pytest.fixture(autouse=True)
-def _reset_registry():
-    deps._reset_for_tests()
-    yield
-    deps._reset_for_tests()
+def _inject_modules():
+    original_torch = runner.torch
+    original_numpy = runner.np
+    original_pandas = runner.pd
+    previous_sys_modules = {name: sys.modules.get(name) for name in ("torch", "numpy", "pandas")}
 
-
-@pytest.fixture(autouse=True)
-def _inject_modules(monkeypatch):
     torch_stub = ModuleType("torch")
     torch_stub.cuda = SimpleNamespace(is_available=lambda: False)
     numpy_stub = ModuleType("numpy")
@@ -27,9 +23,17 @@ def _inject_modules(monkeypatch):
     numpy_stub.bool_ = bool
     pandas_stub = ModuleType("pandas")
     runner.setup_training_imports(torch_stub, numpy_stub, pandas_stub)
-    yield
-    for name in ("torch", "numpy", "pandas"):
-        sys.modules.pop(name, None)
+    try:
+        yield
+    finally:
+        runner.torch = original_torch
+        runner.np = original_numpy
+        runner.pd = original_pandas
+        for name, module in previous_sys_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
 
 def test_simulate_trading_returns_summary(monkeypatch):
@@ -53,10 +57,7 @@ def test_simulate_trading_returns_summary(monkeypatch):
     trade_module = ModuleType("trade_stock_e2e")
 
     def analyze_symbols(symbols):
-        return {
-            symbol: {"avg_return": 0.02 * (idx + 1), "confidence": 0.5}
-            for idx, symbol in enumerate(symbols)
-        }
+        return {symbol: {"avg_return": 0.02 * (idx + 1), "confidence": 0.5} for idx, symbol in enumerate(symbols)}
 
     def log_trading_plan(current, name):
         logged.append((name, sorted(current)))
