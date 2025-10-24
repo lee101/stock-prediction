@@ -104,6 +104,11 @@ across the whole import tree.
   the compiled FP32 caches under `compiled_models/` in sync with
   `s3://$R2_BUCKET/compiled_models/`; hyperparameters under `hyperparams/` are
   mirrored with `s3://$R2_BUCKET/stock/hyperparams/` as part of app setup.
+- Run `python scripts/package_toto_models.py` to materialise Toto caches for
+  each dtype/mode (compiled vs uncompiled) into `data/models/toto/`.  Passing
+  `--upload` pushes the export to `s3://$R2_BUCKET/stock/models/toto/…`
+  via the configured `R2_ENDPOINT`, so faltrain/falmarket can hydrate from
+  either the local cache (`/data/models/toto`) or the remote mirror.
 - When adding new simulator tooling, list the package in
   `MarketSimulatorApp.local_python_modules` and accept torch/numpy/pandas via
   your module’s `setup_training_imports`.

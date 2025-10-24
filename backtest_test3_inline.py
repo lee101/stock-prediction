@@ -1,3 +1,5 @@
+import argparse
+import json
 import os
 import sys
 from datetime import datetime
@@ -2215,14 +2217,34 @@ def evaluate_highlow_strategy(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        symbol = "ETHUSD"
-        print("Usage: python backtest_test.py <symbol> defaultint to eth")
-    else:
-        symbol = sys.argv[1]
+    parser = argparse.ArgumentParser(
+        description="Run inline backtests for a given symbol and optionally export results as JSON."
+    )
+    parser.add_argument(
+        "symbol",
+        nargs="?",
+        default="ETHUSD",
+        help="Ticker symbol to backtest (default: ETHUSD).",
+    )
+    parser.add_argument(
+        "--output-json",
+        dest="output_json",
+        help="Optional path to write backtest results as JSON.",
+    )
+    args = parser.parse_args()
 
-    # backtest_forecasts("NVDA")
-    backtest_forecasts(symbol)
-    # backtest_forecasts("UNIUSD")
-    # backtest_forecasts("AAPL")
-    # backtest_forecasts("GOOG")
+    result_df = backtest_forecasts(args.symbol)
+
+    if args.output_json:
+        output_path = Path(args.output_json)
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        strategies_payload = json.loads(result_df.to_json(orient="records"))
+        payload = {
+            "symbol": args.symbol,
+            "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "strategies": strategies_payload,
+        }
+        output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

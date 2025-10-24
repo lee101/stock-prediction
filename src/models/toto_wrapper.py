@@ -300,7 +300,7 @@ class TotoPipeline:
         device: str = "cuda",
         *,
         torch_dtype: Optional[TorchDType] = None,
-        amp_dtype: Optional[TorchDType] = torch.float16,
+        amp_dtype: Optional[TorchDType] = None,
         max_oom_retries: int = 2,
         min_samples_per_batch: int = 32,
         min_num_samples: int = 256,
@@ -318,6 +318,10 @@ class TotoPipeline:
             raise RuntimeError(
                 "Torch and NumPy must be configured via setup_toto_wrapper_imports before instantiating TotoPipeline."
             )
+
+        torch_module = cast(ModuleType, torch)
+        if amp_dtype is None:
+            amp_dtype = getattr(torch_module, "float16", None)
 
         self.device = device
         self.max_oom_retries = max(0, int(max_oom_retries))
@@ -458,7 +462,7 @@ class TotoPipeline:
         *,
         compile_model: bool = True,
         compile_mode: Optional[str] = "max-autotune",
-        amp_dtype: Optional[TorchDType] = torch.float16,
+        amp_dtype: Optional[TorchDType] = None,
         torch_compile: bool = False,
         compile_backend: Optional[str] = None,
         cache_policy: str = "prefer",
@@ -474,6 +478,10 @@ class TotoPipeline:
             raise RuntimeError(
                 "Toto dependencies are not available; ensure toto and its requirements are installed"
             ) from _IMPORT_ERROR
+
+        torch_module = _require_torch()
+        if amp_dtype is None:
+            amp_dtype = getattr(torch_module, "float16", None)
 
         policy = cache_policy.lower()
         if policy not in {"prefer", "never", "only"}:

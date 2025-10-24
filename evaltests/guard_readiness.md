@@ -30,14 +30,18 @@
 | AAPL | real-full | 0.0373 | -0.1766 | 0.2139 | Live Toto (dynamic OOM fallback, 128→96 samples) |
 | GOOG | mock | 0.0124 | -0.0788 | 0.0912 | Mock analytics |
 | GOOG | real-lite | 0.0294 | -0.2143 | 0.2437 | Live Toto (128 samples) |
+| GOOG | real-full | 0.0302 | -0.1415 | 0.1717 | Live Toto with dynamic OOM fallback |
 | META | mock | 0.0281 | -0.0182 | 0.0463 | Mock analytics |
 | META | real-lite | 0.0412 | -0.0281 | 0.0693 | Live Toto (128 samples) |
+| META | real-full | 0.0405 | -0.0197 | 0.0602 | Live Toto with dynamic OOM fallback |
 | NVDA | mock | 0.0212 | -0.0210 | 0.0422 | Mock analytics |
 | NVDA | real-lite | 0.0474 | 0.0117 | 0.0357 | Live Toto (128 samples) |
+| NVDA | real-full | 0.0445 | 0.0044 | 0.0401 | Live Toto with dynamic OOM fallback |
 | TSLA | mock | 0.0309 | -0.0201 | 0.0510 | Mock analytics |
 | TSLA | real-lite | 0.0704 | -0.0213 | 0.0917 | Live Toto (128 samples) |
+| TSLA | real-full | 0.0762 | -0.0082 | 0.0844 | Live Toto with dynamic OOM fallback |
 | **Average (mock)** |  | **0.0237** | **-0.0416** | **0.0653** | |
-| **Average (real runs)** |  | **0.0439** | **-0.1075** | **0.1514** | |
+| **Average (real runs)** |  | **0.0455** | **-0.0810** | **0.1265** | |
 
 ## Interpretation
 1. Guards eliminate leverage spikes in the stress window (avg leverage down to 0.82×; turnover slashed to 0.066).
