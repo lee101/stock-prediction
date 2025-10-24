@@ -1,3 +1,27 @@
+# Marketsimulator Real-Analytics Smoke Tests (24 Oct 2025)
+
+## Configuration
+- **Date:** 24 October 2025 (UTC baseline)
+- **Script:** `python marketsimulator/run_trade_loop.py`
+- **Symbols:** `COUR GOOG TSLA NVDA AAPL U ADSK ADBE MSFT COIN AMZN AMD INTC QUBT BTCUSD ETHUSD UNIUSD`
+- **Initial cash:** \$100,000
+- **Iterations:** `--steps 2` (overnight/open-close cadence) with 24-hour strides; `TRADE_STATE_SUFFIX=sim_realfix` to isolate state.
+- **Analytics target:** real Kronos/Toto stack with GPU (RTX 3090 Ti), `TOTO_NUM_SAMPLES=16`, `MARKETSIM_KRONOS_SAMPLE_COUNT=8`, `TOTO_DISABLE_COMPILE=1` (torch.compile repeatedly failed with missing artifact directories), `SIM_LOGURU_LEVEL=INFO` to surface summary logs.
+- **Outcome:** Both Kronos and Toto forecasting calls still fall back to the simulator analytics because the cached CSV slices emitted by `marketsimulator/data_feed.py` lack the expected `High/Low` columns for several symbols (warning spam between 22:09–22:12 UTC). No live trades were admitted—every strategy line failed the walk-forward Sharpe / dollar-volume gates—so the run closes flat.
+
+## Summary
+- **Final equity:** \$100,000.00 (cash \$100,000.00, no open positions).
+- **PnL:** +\$0.00 (+0.00%) over the two-step window, annualised ≈ 0.00 % (252d) / 0.00 % (365d).
+- **Symbol PnL breakdown:** empty (no realised or open PnL).
+- **Runtime observations:** Kronos/Toto continue to fall back immediately. Even with `TOTO_DISABLE_COMPILE=1`, Kronos still aborts when OHLC data are missing. All shortlisted names remain blocked by the risk gates (Sharpe < 0.30 or dollar volume below thresholds), mirroring the behaviour we observed in the longer 30-step sandbox run.
+
+## Key Follow-ups
+1. **Restore OHLC coverage for the simulator feeds.** The mock data loader still surfaces price frames that lack `High/Low` for AMZN/AMD/INTC/COIN/BTCUSD/ETHUSD/UNIUSD. Until those pipelines are refreshed, the real backtest path will always drop to the fallback engine.
+2. **Re-enable Toto compilation after populating cache directories.** Torch.compile currently fails with `compiled_models/torch_inductor/...main.cpp: No such file or directory`; we disabled compilation to keep the run moving, but the GPU inference path will remain CPU-bound until we fix the cache bootstrap in `backtest_test3_inline._ensure_compilation_artifacts`.
+3. **Probe mode clean-up is effective but underutilised.** With the relaxed mock analytics, risk gates prevent all new entries; once the OHLC issue is addressed we should revisit the NVDA/AAPL/MSFT probes with the compiled models to validate the utility of the probe-to-normal transitions.
+
+---
+
 # Marketsimulator Strategy Isolation Runs (23 Oct 2025)
 
 ## Simulation Configuration

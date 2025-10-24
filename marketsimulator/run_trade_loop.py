@@ -23,7 +23,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Simulate trade_stock_e2e with a mocked Alpaca stack.")
     parser.add_argument("--symbols", nargs="+", default=["AAPL", "MSFT", "NVDA"], help="Symbols to simulate.")
     parser.add_argument("--steps", type=int, default=30, help="Number of simulation steps to run.")
-    parser.add_argument("--step-size", type=int, default=1, help="Data rows to advance between iterations.")
+    parser.add_argument(
+        "--step-size",
+        type=int,
+        default=1,
+        help="Data rows to advance between iterations (1 day recommended; larger strides remain experimental).",
+    )
     parser.add_argument("--initial-cash", type=float, default=100_000.0, help="Starting cash balance.")
     parser.add_argument("--top-k", type=int, default=4, help="Number of picks to keep each iteration.")
     parser.add_argument(
@@ -107,7 +112,7 @@ def main() -> None:
         _configure_compact_logging_post(args.compact_logs)
 
         previous_picks = {}
-        step_size = args.step_size if args.step_size and args.step_size > 0 else 1
+        step_size = args.step_size if args.step_size and args.step_size > 0 else 1  # non-unit strides remain experimental
         start_timestamp = controller.current_time()
         initial_value = float(args.initial_cash)
         for step in range(args.steps):
