@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -58,3 +59,34 @@ def test_cli_overrides_apply_to_payload():
     assert payload["top_k"] == 6
     assert payload["kronos_only"] is True
     assert payload["compact_logs"] is False
+
+
+def test_auto_launch_invokes_runner(tmp_path):
+    log_path = tmp_path / "python_stub.log"
+    stub = tmp_path / "python_stub.sh"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'echo python_stub "$@" >> "${PYTHON_STUB_LOG}"\n'
+        "echo python_stub invoked $@\n"
+    )
+    stub.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PYTHON_BIN": str(stub),
+        "PYTHON_STUB_LOG": str(log_path),
+    }
+
+    completed = subprocess.run(
+        ["bash", str(SCRIPT_PATH), "--fal-binary", "fakefal"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert "python_stub invoked" in completed.stdout
+    contents = log_path.read_text().strip()
+    assert "run_and_train_fal_marketsimulator.py" in contents
+    assert "--fal-binary" in contents

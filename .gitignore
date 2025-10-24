@@ -168,3 +168,7 @@ wandb
 tensorboard_logs/
 gymrl/cache
 trainingdatadaily
+trainingdatahourly/
+evaltests/backtests
+analysis
+analysis_runner_funcs

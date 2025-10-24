@@ -4,15 +4,10 @@ import logging
 import sys
 import types
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
-
-from ..dependency_injection import (
-    register_observer,
-    resolve_numpy,
-    resolve_pandas,
-    resolve_torch,
-)
+from types import ModuleType
+from typing import Any, Dict, List, Optional, Sequence
 
 from .model_cache import ModelCacheManager, dtype_to_token
 
@@ -29,29 +24,65 @@ for _path in _KRONOS_CANDIDATES:
 
 logger = logging.getLogger(__name__)
 
-torch = resolve_torch()
-np = resolve_numpy()
-pd = resolve_pandas()
+def _optional_import(module_name: str) -> ModuleType | None:
+    try:
+        return import_module(module_name)
+    except ModuleNotFoundError:
+        return None
 
 
-def _refresh_torch(module):
+torch: ModuleType | None = _optional_import("torch")
+np: ModuleType | None = _optional_import("numpy")
+pd: ModuleType | None = _optional_import("pandas")
+
+
+def setup_kronos_wrapper_imports(
+    *,
+    torch_module: ModuleType | None = None,
+    numpy_module: ModuleType | None = None,
+    pandas_module: ModuleType | None = None,
+    **_: Any,
+) -> None:
+    global torch, np, pd
+    if torch_module is not None:
+        torch = torch_module
+    if numpy_module is not None:
+        np = numpy_module
+    if pandas_module is not None:
+        pd = pandas_module
+
+
+def _require_torch() -> ModuleType:
     global torch
-    torch = module
+    if torch is not None:
+        return torch
+    try:
+        torch = import_module("torch")  # type: ignore[assignment]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Torch is unavailable. Call setup_kronos_wrapper_imports before use.") from exc
+    return torch
 
 
-def _refresh_numpy(module):
+def _require_numpy() -> ModuleType:
     global np
-    np = module
+    if np is not None:
+        return np
+    try:
+        np = import_module("numpy")  # type: ignore[assignment]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("NumPy is unavailable. Call setup_kronos_wrapper_imports before use.") from exc
+    return np
 
 
-def _refresh_pandas(module):
+def _require_pandas() -> ModuleType:
     global pd
-    pd = module
-
-
-register_observer("torch", _refresh_torch)
-register_observer("numpy", _refresh_numpy)
-register_observer("pandas", _refresh_pandas)
+    if pd is not None:
+        return pd
+    try:
+        pd = import_module("pandas")  # type: ignore[assignment]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("pandas is unavailable. Call setup_kronos_wrapper_imports before use.") from exc
+    return pd
 
 
 @dataclass(frozen=True)
@@ -97,6 +128,10 @@ class KronosForecastingWrapper:
         cache_dir: Optional[str] = None,
         verbose: bool = False,
     ) -> None:
+        if torch is None or np is None or pd is None:
+            raise RuntimeError(
+                "Torch, NumPy, and pandas must be configured via setup_kronos_wrapper_imports before instantiating KronosForecastingWrapper."
+            )
         self.model_name = model_name
         self.tokenizer_name = tokenizer_name
         self.requested_device = device
@@ -238,9 +273,7 @@ class KronosForecastingWrapper:
         if not isinstance(forecast_list, (list, tuple)):
             raise RuntimeError("Kronos batch predictor returned an unexpected result type.")
         if len(forecast_list) != len(payloads):
-            raise RuntimeError(
-                "Kronos batch predictor returned a result with mismatched length."
-            )
+            raise RuntimeError("Kronos batch predictor returned a result with mismatched length.")
 
         results: List[Dict[str, KronosForecastResult]] = []
         for payload, forecast_df in zip(payloads, forecast_list):
@@ -310,9 +343,7 @@ class KronosForecastingWrapper:
 
             feature_frame = self._prepare_feature_frame(working)
             if len(feature_frame) < 2:
-                raise ValueError(
-                    "Insufficient history for Kronos forecasting (need at least 2 rows)."
-                )
+                raise ValueError("Insufficient history for Kronos forecasting (need at least 2 rows).")
 
             future_index = self._build_future_index(timestamps, pred_len)
             history_index = pd.DatetimeIndex(timestamps)

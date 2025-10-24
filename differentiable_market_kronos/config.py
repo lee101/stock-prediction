@@ -14,12 +14,14 @@ class KronosFeatureConfig:
     include_path_stats: bool = True
     device: str = "auto"
     sample_count: int = 16
-    sample_chunk: int = 32
+    sample_chunk: int = 16
     temperature: float = 1.0
     top_p: float = 0.9
     top_k: int = 0
     clip: float = 2.0
     bf16: bool = True
+    compile: bool = True
+    log_timings: bool = False
 
 
 @dataclass(slots=True)

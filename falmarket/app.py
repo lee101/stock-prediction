@@ -7,20 +7,17 @@ import logging
 import os
 import subprocess
 import warnings
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List
 
 import fal
-from pydantic import BaseModel, Field, field_validator
-
-from fal_marketsimulator.runner import simulate_trading, setup_training_imports
+from fal_marketsimulator.runner import setup_training_imports, simulate_trading
 from falmarket.shared_logger import get_logger, log_timing, setup_logging
 from faltrain.artifacts import load_artifact_specs, sync_artifacts
-from faltrain.dependencies import bulk_register_fal_dependencies
 from faltrain.logger_utils import configure_stdout_logging
-from src.dependency_injection import setup_imports as setup_src_imports
+from pydantic import BaseModel, Field, field_validator
+from src.runtime_imports import setup_src_imports
 from src.tblib_compat import ensure_tblib_pickling_support
 from src.torch_backend import configure_tf32_backends
 
@@ -63,7 +60,8 @@ class MarketSimulatorApp(
     max_concurrency=1,
     keep_alive=5,
 ):
-    machine_type = "GPU-H200"
+    # machine_type = "GPU-H200"
+    machine_type = "XS"
     python_version = "3.12"
     requirements = [
         "fal-client",
@@ -108,9 +106,7 @@ class MarketSimulatorApp(
                 os.getcwd(),
             )
             os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
-            os.environ.setdefault(
-                "PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True"
-            )
+            os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True")
             LOG.debug(
                 "Environment CUDA_LAUNCH_BLOCKING=%s PYTORCH_CUDA_ALLOC_CONF=%s",
                 os.getenv("CUDA_LAUNCH_BLOCKING"),
@@ -118,9 +114,9 @@ class MarketSimulatorApp(
             )
 
             with log_timing(LOG, "Import torch/numpy/pandas"):
-                import torch as _torch
                 import numpy as _np
                 import pandas as _pd
+                import torch as _torch
 
             with log_timing(LOG, "Configure torch backends"):
                 tf32_state = configure_tf32_backends(_torch, logger=LOG)
@@ -137,10 +133,8 @@ class MarketSimulatorApp(
                 except Exception:
                     LOG.debug("Skipping advanced CUDA backend configuration", exc_info=True)
 
-            with log_timing(LOG, "Register shared dependencies"):
-                bulk_register_fal_dependencies({"torch": _torch, "numpy": _np, "pandas": _pd})
-                setup_training_imports(_torch, _np, _pd)
-                setup_src_imports(_torch, _np, _pd)
+            setup_training_imports(_torch, _np, _pd)
+            setup_src_imports(_torch, _np, _pd)
 
             os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
             os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
@@ -278,3 +272,11 @@ class MarketSimulatorApp(
 
 def create_app() -> MarketSimulatorApp:
     return MarketSimulatorApp()
+
+
+# Ensure FastAPI/Pydantic resolve postponed annotations when building the OpenAPI schema.
+SimulationRequest.model_rebuild()
+SimulationResponse.model_rebuild()
+_simulate_endpoint = MarketSimulatorApp.simulate
+_simulate_endpoint.__annotations__["request"] = SimulationRequest
+_simulate_endpoint.__annotations__["return"] = SimulationResponse

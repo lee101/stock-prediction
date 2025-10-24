@@ -1,0 +1,12 @@
+{
+  "balance": 95580.27,
+  "pnl": -1424.62,
+  "return": 0.011971,
+  "sharpe": -0.937473,
+  "steps": 16,
+  "symbols": [
+    "AMZN",
+    "TSLA",
+    "AAPL"
+  ]
+}

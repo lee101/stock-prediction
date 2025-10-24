@@ -50,20 +50,30 @@ across the whole import tree.
 
 ## 4. Dependency Injection Pipeline
 
-- `StockTrainerApp.setup` eagerly imports torch, numpy, and pandas, then calls
-  `src.dependency_injection.setup_imports(torch=_torch, numpy=_np, pandas=_pd)`
-  to share those modules with every trainer that runs inside the worker.
-- Trainers should request these modules via the helper instead of importing
-  directly:
+- `StockTrainerApp.setup` eagerly imports torch, numpy, and pandas, then hands
+  those module objects to each package’s `setup_training_imports(...)`.
+- Every in-process runner (`fal_hftraining`, `fal_pufferlibtraining`,
+  `fal_marketsimulator`, and the various `src.*` helpers) exposes a matching
+  setup function. The helpers store the supplied modules in module-level
+  globals and fall back to regular imports when you execute the code locally.
+- New trainers should follow the same pattern:
   ```python
-  from src.dependency_injection import resolve_numpy, resolve_pandas, resolve_torch
+  try:
+      import torch
+      import numpy as np
+  except ImportError:  # Running inside fal before setup()
+      torch = np = None
 
-  torch = resolve_torch()
-  numpy = resolve_numpy()
-  pandas = resolve_pandas()
+  def setup_training_imports(torch_module, numpy_module, pandas_module=None):
+      global torch, np
+      if torch_module is not None:
+          torch = torch_module
+      if numpy_module is not None:
+          np = numpy_module
   ```
-- The `resolve_*` helpers prefer the injected modules when running inside fal
-  and lazily import the package when executing locally.
+- During local development you can leave the globals alone (they already point
+  at the imported modules); inside fal the runtime populates them once during
+  `App.setup()`.
 
 ## 5. Expectations for New Trainers
 
@@ -95,15 +105,16 @@ across the whole import tree.
   `s3://$R2_BUCKET/compiled_models/`; hyperparameters under `hyperparams/` are
   mirrored with `s3://$R2_BUCKET/stock/hyperparams/` as part of app setup.
 - When adding new simulator tooling, list the package in
-  `MarketSimulatorApp.local_python_modules` and pull heavy dependencies through
-  `src.dependency_injection.resolve_*`.
+  `MarketSimulatorApp.local_python_modules` and accept torch/numpy/pandas via
+  your module’s `setup_training_imports`.
 
 ## 7. Troubleshooting Checklist
 
 - Missing module during fal runs → confirm it is listed in
   `StockTrainerApp.local_python_modules` and installed via `uv pip install -e`.
-- Import errors for torch/numpy/pandas inside trainers → replace direct imports
-  with `resolve_torch()` / `resolve_numpy()` / `resolve_pandas()`.
+- Import errors for torch/numpy/pandas inside trainers → confirm
+  `setup_training_imports()` is called in `App.setup()` and that your module
+  falls back to normal imports when executed locally.
 - Divergent dependency versions → ensure `StockTrainerApp.requirements`
   contains the canonical versions and avoid pinning conflicting versions inside
   individual trainers.
