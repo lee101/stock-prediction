@@ -8,6 +8,8 @@ from typing import Callable, Optional
 import torch
 import torch.nn.functional as F
 
+from src.torch_backend import configure_tf32_backends
+
 try:
     from flash_attn.flash_attn_interface import flash_attn_func as _flash_attn_func
 except Exception:  # pragma: no cover - optional dependency
@@ -191,12 +193,11 @@ def enable_fast_kernels():
     # TF32 on Ampere/Hopper improves throughput without hurting accuracy much.
     # These tweaks must be guarded because CUDA initialisation might fail on CPU-only nodes.
     try:
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        if hasattr(torch, "set_float32_matmul_precision"):
-            torch.set_float32_matmul_precision("high")
+        state = configure_tf32_backends(torch)
+        if not any(state.values()) and hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")  # type: ignore[attr-defined]
     except Exception as exc:
-        warnings.warn(f"Unable to enable TF32 fast matmul: {exc}")
+        warnings.warn(f"Unable to configure TF32 fast matmul: {exc}")
 
     if not torch.cuda.is_available():
         yield

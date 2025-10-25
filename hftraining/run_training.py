@@ -38,6 +38,7 @@ sys.path.append(os.path.dirname(current_dir))
 from config import create_config, ExperimentConfig
 from data_utils import load_training_data, StockDataProcessor, create_sequences, split_data
 from train_hf import StockDataset, HFTrainer
+from src.torch_backend import configure_tf32_backends
 from hf_trainer import TransformerTradingModel
 from modern_optimizers import get_optimizer
 from toto_features import TotoOptions
@@ -116,13 +117,32 @@ def setup_environment(config: ExperimentConfig):
     print(f"CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         # Optional TF32 for faster matmul on Ampere+
-        allow_tf32 = getattr(config.system, 'allow_tf32', True)
-        try:
-            torch.backends.cuda.matmul.allow_tf32 = bool(allow_tf32)
-            torch.backends.cudnn.allow_tf32 = bool(allow_tf32)
-            print(f"TF32 enabled: {bool(allow_tf32)}")
-        except Exception:
-            pass
+        allow_tf32 = getattr(config.system, "allow_tf32", True)
+        if allow_tf32:
+            try:
+                state = configure_tf32_backends(torch)
+                surface = "new" if state["new_api"] else "legacy"
+                print(f"TF32 enabled via {surface} precision controls")
+            except Exception as exc:
+                print(f"Failed to enable TF32 optimisations: {exc}")
+        else:
+            try:
+                matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
+                if matmul is not None:
+                    if hasattr(matmul, "fp32_precision"):
+                        matmul.fp32_precision = "ieee"
+                    elif hasattr(matmul, "allow_tf32"):
+                        matmul.allow_tf32 = False
+                cudnn_backend = getattr(torch.backends, "cudnn", None)
+                if cudnn_backend is not None:
+                    conv = getattr(cudnn_backend, "conv", None)
+                    if conv is not None and hasattr(conv, "fp32_precision"):
+                        conv.fp32_precision = "ieee"
+                    elif hasattr(cudnn_backend, "allow_tf32"):
+                        cudnn_backend.allow_tf32 = False
+                print("TF32 fast paths disabled per configuration")
+            except Exception:
+                pass
         try:
             torch.set_float32_matmul_precision("high")
         except Exception:

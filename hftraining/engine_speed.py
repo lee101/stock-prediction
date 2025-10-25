@@ -14,6 +14,7 @@ from typing import Iterator, Optional
 
 import torch
 
+from src.torch_backend import configure_tf32_backends
 from traininglib.runtime_flags import enable_fast_kernels  # Reuse existing guardrails.
 
 
@@ -21,14 +22,13 @@ def enable_tf32() -> None:
     """
     Allow TF32 matmul/cudnn paths on Ampere/Hopper GPUs.
     """
-    try:
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        if hasattr(torch, "set_float32_matmul_precision"):
-            torch.set_float32_matmul_precision("high")
-    except Exception:
-        # Non-fatal; TF32 simply remains disabled on this platform.
-        pass
+    state = configure_tf32_backends(torch)
+    if not any(state.values()):  # pragma: no cover - only when backend config fails
+        try:
+            if hasattr(torch, "set_float32_matmul_precision"):
+                torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
 
 
 def prefer_flash_sdp(math_fallback: bool = False) -> None:

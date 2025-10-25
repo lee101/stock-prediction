@@ -65,3 +65,51 @@ jobs:
       - name: Run integration tests
         run: |
           python -m pytest tests/prod -m integration
+
+      - name: Run simulator report
+        env:
+          MARKETSIM_ALLOW_MOCK_ANALYTICS: "1"
+          MARKETSIM_SKIP_REAL_IMPORT: "1"
+          MARKETSIM_FORCE_KRONOS: "1"
+          MARKETSIM_SYMBOL_SIDE_MAP: "NVDA:sell"
+          MARKETSIM_SYMBOL_KELLY_SCALE_MAP: "AAPL:0.2,MSFT:0.25,NVDA:0.01,AMZN:0.15,GOOG:0.2,XLK:0.15,SOXX:0.15"
+          MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP: "AAPL:10800,MSFT:10800,NVDA:7200,AMZN:10800,GOOG:10800,XLK:10800,SOXX:10800"
+          MARKETSIM_SYMBOL_MIN_COOLDOWN_MAP: "NVDA:360"
+          MARKETSIM_SYMBOL_FORCE_PROBE_MAP: "AAPL:true"
+          MARKETSIM_SYMBOL_MIN_MOVE_MAP: "AAPL:0.08,AMZN:0.06,GOOG:0.05,XLK:0.04,SOXX:0.04"
+          MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP: "AAPL:-0.03,AMZN:-0.02,GOOG:0.02,XLK:0.015,SOXX:0.015"
+          MARKETSIM_TREND_SUMMARY_PATH: "marketsimulator/run_logs/trend_summary.json"
+          MARKETSIM_TREND_PNL_SUSPEND_MAP: "AAPL:-5000,GOOG:-100,XLK:-200,AMZN:-400,SOXX:-150,NVDA:-1500"
+          MARKETSIM_TREND_PNL_RESUME_MAP: "AAPL:-3000,GOOG:-50,XLK:-100,AMZN:-200,SOXX:-75,NVDA:-750"
+          MARKETSIM_SYMBOL_MAX_ENTRIES_MAP: "NVDA:1,MSFT:10,AAPL:10,AMZN:8,GOOG:6,XLK:6,SOXX:6"
+          CI_SIM_PREFIX: "ci-${{ github.run_id }}"
+        run: |
+          make sim-report
+
+      - name: Aggregate simulator trends
+        run: |
+          make sim-trend
+
+      - name: Check trend alerts
+        env:
+          CI_SIM_PREFIX: "ci-${{ github.run_id }}"
+          MARKETSIM_SYMBOL_SIDE_MAP: "NVDA:sell"
+          MARKETSIM_SYMBOL_KELLY_SCALE_MAP: "AAPL:0.3,MSFT:0.2,NVDA:0.05,AMZN:0.15,GOOG:0.2,XLK:0.15,SOXX:0.15"
+          MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP: "AAPL:7200,MSFT:10800,NVDA:7200,AMZN:10800,GOOG:10800,XLK:10800,SOXX:10800"
+        run: |
+          python scripts/check_trend_alerts.py \
+            marketsimulator/run_logs/trend_summary.json \
+            --min-sma -1200 \
+            --max-std 1400 \
+            --symbols AAPL,MSFT,NVDA,AMZN,GOOG,XLK,SOXX \
+            --trades-glob "marketsimulator/run_logs/${CI_SIM_PREFIX}_trades_summary.json" \
+            --max-trades-map NVDA@ci_guard:2,MSFT@ci_guard:20,AAPL@ci_guard:20,AMZN@ci_guard:16,GOOG@ci_guard:12,XLK@ci_guard:12,SOXX@ci_guard:12
+
+      - name: Upload simulator artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-report-${{ github.run_id }}
+          path: |
+            marketsimulator/run_logs/${{ env.CI_SIM_PREFIX }}_*
+            marketsimulator/run_logs/trend_summary.json

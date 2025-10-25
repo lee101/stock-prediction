@@ -28,6 +28,7 @@ from trade_stock_e2e import (
     get_market_hours,
     manage_market_close,
     manage_positions,
+    reset_symbol_entry_counters,
 )
 
 
@@ -91,6 +92,9 @@ def stub_trading_env(
         )
         mocks["open_order"] = stack.enter_context(
             patch("trade_stock_e2e.alpaca_wrapper.open_order_at_price_or_all")
+        )
+        stack.enter_context(
+            patch("trade_stock_e2e.PROBE_SYMBOLS", set())
         )
         stack.enter_context(
             patch.object(
@@ -425,6 +429,160 @@ def test_manage_positions_enters_new_simple_position_without_real_trades():
     mocks["get_qty"].assert_called()
     mocks["spawn_tp"].assert_not_called()
     mocks["open_order"].assert_not_called()
+
+
+@pytest.mark.parametrize("limit_map", ["AAPL:2", "AAPL@simple:2"])
+def test_manage_positions_respects_max_entries_per_run(monkeypatch, limit_map):
+    monkeypatch.setenv("MARKETSIM_SYMBOL_MAX_ENTRIES_MAP", limit_map)
+    reset_symbol_entry_counters()
+
+    current_picks = {
+        "AAPL": {
+            "side": "buy",
+            "avg_return": 0.07,
+            "predicted_movement": 0.03,
+            "strategy": "simple",
+            "predicted_high": 120.0,
+            "predicted_low": 115.0,
+            "predictions": pd.DataFrame(),
+        }
+    }
+
+    with stub_trading_env(positions=[], qty=5, trading_day_now=True) as mocks:
+        manage_positions(current_picks, {}, current_picks)
+        manage_positions(current_picks, {}, current_picks)
+        manage_positions(current_picks, {}, current_picks)
+
+    assert mocks["ramp"].call_count == 2
+
+
+def test_reset_symbol_entry_counters_allows_additional_runs(monkeypatch):
+    monkeypatch.setenv("MARKETSIM_SYMBOL_MAX_ENTRIES_MAP", "AAPL:1")
+    reset_symbol_entry_counters()
+
+    current_picks = {
+        "AAPL": {
+            "side": "buy",
+            "avg_return": 0.07,
+            "predicted_movement": 0.03,
+            "strategy": "simple",
+            "predicted_high": 120.0,
+            "predicted_low": 115.0,
+            "predictions": pd.DataFrame(),
+        }
+    }
+
+    with stub_trading_env(positions=[], qty=5, trading_day_now=True) as mocks_first:
+        manage_positions(current_picks, {}, current_picks)
+        manage_positions(current_picks, {}, current_picks)
+
+    assert mocks_first["ramp"].call_count == 1
+
+    reset_symbol_entry_counters()
+
+    with stub_trading_env(positions=[], qty=5, trading_day_now=True) as mocks_second:
+        manage_positions(current_picks, {}, current_picks)
+        manage_positions(current_picks, {}, current_picks)
+
+    assert mocks_second["ramp"].call_count == 1
+
+
+@patch("trade_stock_e2e._symbol_force_probe", return_value=True)
+def test_manage_positions_force_probe_override(mock_force_probe):
+    current_picks = {
+        "AAPL": {
+            "side": "sell",
+            "avg_return": 0.07,
+            "predicted_movement": -0.03,
+            "strategy": "ci_guard",
+            "predicted_high": 120.0,
+            "predicted_low": 115.0,
+            "predictions": pd.DataFrame(),
+            "trade_mode": "normal",
+        }
+    }
+
+    with ExitStack() as stack:
+        mock_probe_active = stack.enter_context(
+            patch("trade_stock_e2e._mark_probe_active")
+        )
+        mocks = stack.enter_context(stub_trading_env(positions=[], qty=5, trading_day_now=True))
+        manage_positions(current_picks, {}, current_picks)
+
+    mock_force_probe.assert_called()
+    mock_probe_active.assert_called_once()
+    mocks["ramp"].assert_called_once()
+
+
+def test_manage_positions_min_strategy_return_gating(monkeypatch):
+    monkeypatch.setenv("MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP", "AAPL:-0.02")
+    current_picks = {
+        "AAPL": {
+            "side": "sell",
+            "avg_return": -0.01,
+            "predicted_movement": -0.05,
+            "strategy": "ci_guard",
+            "strategy_returns": {"ci_guard": -0.01},
+            "predicted_high": 120.0,
+            "predicted_low": 115.0,
+            "predictions": pd.DataFrame(),
+            "trade_mode": "probe",
+        }
+    }
+
+    with stub_trading_env(positions=[], qty=5, trading_day_now=True) as mocks:
+        manage_positions(current_picks, {}, current_picks)
+
+    mocks["ramp"].assert_not_called()
+
+
+@patch("trade_stock_e2e._load_trend_summary", return_value={"AAPL": {"pnl": -6000.0}})
+def test_manage_positions_trend_pnl_gating(mock_summary, monkeypatch):
+    monkeypatch.setenv("MARKETSIM_TREND_PNL_SUSPEND_MAP", "AAPL:-5000")
+    current_picks = {
+        "AAPL": {
+            "side": "sell",
+            "avg_return": -0.03,
+            "predicted_movement": -0.09,
+            "strategy": "ci_guard",
+            "strategy_returns": {"ci_guard": -0.04},
+            "predicted_high": 120.0,
+            "predicted_low": 110.0,
+            "predictions": pd.DataFrame(),
+            "trade_mode": "probe",
+        }
+    }
+
+    with stub_trading_env(positions=[], qty=5, trading_day_now=True) as mocks:
+        manage_positions(current_picks, {}, current_picks)
+
+    mocks["ramp"].assert_not_called()
+    mock_summary.assert_called()
+
+
+@patch("trade_stock_e2e._load_trend_summary", return_value={"AAPL": {"pnl": -2000.0}})
+def test_manage_positions_trend_pnl_resume(mock_summary, monkeypatch):
+    monkeypatch.setenv("MARKETSIM_TREND_PNL_SUSPEND_MAP", "AAPL:-5000")
+    monkeypatch.setenv("MARKETSIM_TREND_PNL_RESUME_MAP", "AAPL:-3000")
+    current_picks = {
+        "AAPL": {
+            "side": "sell",
+            "avg_return": -0.03,
+            "predicted_movement": -0.09,
+            "strategy": "ci_guard",
+            "strategy_returns": {"ci_guard": -0.04},
+            "predicted_high": 120.0,
+            "predicted_low": 110.0,
+            "predictions": pd.DataFrame(),
+            "trade_mode": "probe",
+        }
+    }
+
+    with stub_trading_env(positions=[], qty=5, trading_day_now=True) as mocks:
+        manage_positions(current_picks, {}, current_picks)
+
+    mocks["ramp"].assert_called_once()
+    mock_summary.assert_called()
 
 
 @pytest.mark.parametrize("strategy_name", ["highlow", "maxdiff"])
