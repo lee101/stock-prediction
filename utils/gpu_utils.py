@@ -11,6 +11,8 @@ import logging
 from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 
+from src.torch_backend import configure_tf32_backends
+
 # Optional dependencies
 try:
     import pynvml
@@ -180,9 +182,11 @@ class GPUManager:
         
         # TF32 for Ampere GPUs (RTX 30xx/40xx)
         if allow_tf32:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            logger.info("Enabled TF32 for matrix operations")
+            state = configure_tf32_backends(torch, logger=logger)
+            if not any(state.values()):  # pragma: no cover - rare failure path
+                logger.debug("TF32 configuration unavailable on this platform")
+            else:
+                logger.info("Enabled TF32 precision optimizations")
         
         # CuDNN benchmarking
         if benchmark_cudnn and not deterministic:

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from src.comparisons import is_buy_side
 from src.logging_utils import setup_logging
+from src.torch_backend import configure_tf32_backends
 
 logger = setup_logging("backtest_test3_inline.log")
 
@@ -41,38 +42,30 @@ def _maybe_enable_fast_torch_settings() -> None:
     _FAST_TORCH_SETTINGS_CONFIGURED = True
 
     try:
-        if hasattr(torch.backends, "cudnn"):
+        state = configure_tf32_backends(torch, logger=logger)
+        if state["legacy_api"]:
+            matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
+            if matmul is not None and hasattr(matmul, "allow_fp16_reduced_precision_reduction"):
+                try:
+                    matmul.allow_fp16_reduced_precision_reduction = True  # type: ignore[attr-defined]
+                except Exception as exc:
+                    logger.debug("Unable to enable reduced precision reductions: %s", exc)
+        cuda_backends = getattr(torch.backends, "cuda", None)
+        if cuda_backends is not None:
             try:
-                torch.backends.cudnn.allow_tf32 = True  # type: ignore[attr-defined]
-            except Exception as exc:
-                logger.debug("Unable to enable cuDNN TF32: %s", exc)
-        if hasattr(torch.backends, "cuda"):
-            try:
-                torch.backends.cuda.matmul.allow_tf32 = True  # type: ignore[attr-defined]
-                torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True  # type: ignore[attr-defined]
-            except Exception as exc:
-                logger.debug("Unable to enable CUDA matmul fast paths: %s", exc)
-            try:
-                enable_flash = getattr(torch.backends.cuda, "enable_flash_sdp", None)
+                enable_flash = getattr(cuda_backends, "enable_flash_sdp", None)
                 if callable(enable_flash):
                     enable_flash(True)
-                enable_mem = getattr(torch.backends.cuda, "enable_mem_efficient_sdp", None)
+                enable_mem = getattr(cuda_backends, "enable_mem_efficient_sdp", None)
                 if callable(enable_mem):
                     enable_mem(True)
-                enable_math = getattr(torch.backends.cuda, "enable_math_sdp", None)
+                enable_math = getattr(cuda_backends, "enable_math_sdp", None)
                 if callable(enable_math):
                     enable_math(False)
             except Exception as exc:
                 logger.debug("Unable to configure scaled dot product kernels: %s", exc)
     except Exception as exc:  # pragma: no cover - defensive guardrail
         logger.debug("Torch backend optimisation setup failed: %s", exc)
-
-    try:
-        set_precision = getattr(torch, "set_float32_matmul_precision", None)
-        if callable(set_precision):
-            set_precision("high")
-    except Exception as exc:
-        logger.debug("Unable to set float32 matmul precision: %s", exc)
 
 from data_curate_daily import download_daily_stock_data, fetch_spread
 from disk_cache import disk_cache
@@ -2072,10 +2065,44 @@ def evaluate_entry_takeprofit_strategy(
       - If we remain in the same side as previous day, don't pay another opening fee.
     """
 
+    total_available = min(
+        len(close_predictions),
+        len(high_predictions),
+        len(low_predictions),
+        len(actual_close),
+        len(actual_high),
+        len(actual_low),
+    )
+
+    if total_available == 0:
+        return StrategyEvaluation(
+            total_return=0.0,
+            avg_daily_return=0.0,
+            annualized_return=0.0,
+            sharpe_ratio=0.0,
+            returns=np.zeros(0, dtype=float),
+        )
+
+    if total_available < len(close_predictions):
+        logger.warning(
+            "Entry+takeprofit truncating inputs (close=%d, actual_close=%d, actual_high=%d, actual_low=%d)",
+            len(close_predictions),
+            len(actual_close),
+            len(actual_high),
+            len(actual_low),
+        )
+
+    close_predictions = close_predictions[:total_available]
+    high_predictions = high_predictions[:total_available]
+    low_predictions = low_predictions[:total_available]
+    actual_close = actual_close[:total_available]
+    actual_high = actual_high[:total_available]
+    actual_low = actual_low[:total_available]
+
     daily_returns = []
     last_side = None  # track "buy" or "short" from previous day
 
-    for idx in range(len(close_predictions)):
+    for idx in range(total_available):
         # determine side
         is_buy = bool(close_predictions[idx] > 0)
         new_side = "buy" if is_buy else "short"
@@ -2231,20 +2258,103 @@ if __name__ == "__main__":
         dest="output_json",
         help="Optional path to write backtest results as JSON.",
     )
+    parser.add_argument(
+        "--output-label",
+        dest="output_label",
+        help="Optional label to store in the JSON payload instead of the raw symbol.",
+    )
     args = parser.parse_args()
 
     result_df = backtest_forecasts(args.symbol)
 
     if args.output_json:
         output_path = Path(args.output_json)
+        from math import isnan
+
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
-        strategies_payload = json.loads(result_df.to_json(orient="records"))
+
+        def _mean(column: str) -> Optional[float]:
+            if column not in result_df:
+                return None
+            value = float(result_df[column].mean())
+            if isnan(value):
+                return None
+            return value
+
+        strategies_payload = {
+            "simple": {
+                "return": _mean("simple_strategy_return"),
+                "sharpe": _mean("simple_strategy_sharpe"),
+                "final_day": _mean("simple_strategy_finalday"),
+                "avg_daily_return": _mean("simple_strategy_avg_daily_return"),
+                "annual_return": _mean("simple_strategy_annual_return"),
+            },
+            "all_signals": {
+                "return": _mean("all_signals_strategy_return"),
+                "sharpe": _mean("all_signals_strategy_sharpe"),
+                "final_day": _mean("all_signals_strategy_finalday"),
+                "avg_daily_return": _mean("all_signals_strategy_avg_daily_return"),
+                "annual_return": _mean("all_signals_strategy_annual_return"),
+            },
+            "buy_hold": {
+                "return": _mean("buy_hold_return"),
+                "sharpe": _mean("buy_hold_sharpe"),
+                "final_day": _mean("buy_hold_finalday"),
+                "avg_daily_return": _mean("buy_hold_avg_daily_return"),
+                "annual_return": _mean("buy_hold_annual_return"),
+            },
+            "unprofit_shutdown": {
+                "return": _mean("unprofit_shutdown_return"),
+                "sharpe": _mean("unprofit_shutdown_sharpe"),
+                "final_day": _mean("unprofit_shutdown_finalday"),
+                "avg_daily_return": _mean("unprofit_shutdown_avg_daily_return"),
+                "annual_return": _mean("unprofit_shutdown_annual_return"),
+            },
+            "entry_takeprofit": {
+                "return": _mean("entry_takeprofit_return"),
+                "sharpe": _mean("entry_takeprofit_sharpe"),
+                "final_day": _mean("entry_takeprofit_finalday"),
+                "avg_daily_return": _mean("entry_takeprofit_avg_daily_return"),
+                "annual_return": _mean("entry_takeprofit_annual_return"),
+            },
+            "highlow": {
+                "return": _mean("highlow_return"),
+                "sharpe": _mean("highlow_sharpe"),
+                "final_day": _mean("highlow_finalday_return"),
+                "avg_daily_return": _mean("highlow_avg_daily_return"),
+                "annual_return": _mean("highlow_annual_return"),
+            },
+            "maxdiff": {
+                "return": _mean("maxdiff_return"),
+                "sharpe": _mean("maxdiff_sharpe"),
+                "final_day": _mean("maxdiff_finalday_return"),
+                "avg_daily_return": _mean("maxdiff_avg_daily_return"),
+                "annual_return": _mean("maxdiff_annual_return"),
+                "turnover": _mean("maxdiff_turnover"),
+            },
+            "ci_guard": {
+                "return": _mean("ci_guard_return"),
+                "sharpe": _mean("ci_guard_sharpe"),
+                "final_day": _mean("ci_guard_finalday"),
+                "avg_daily_return": _mean("ci_guard_avg_daily_return"),
+                "annual_return": _mean("ci_guard_annual_return"),
+            },
+        }
+
         payload = {
-            "symbol": args.symbol,
+            "symbol": args.output_label or args.symbol,
+            "runs": int(len(result_df)),
             "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "strategies": strategies_payload,
+            "metrics": {
+                "close_val_loss": _mean("close_val_loss"),
+                "high_val_loss": _mean("high_val_loss"),
+                "low_val_loss": _mean("low_val_loss"),
+                "walk_forward_oos_sharpe": _mean("walk_forward_oos_sharpe"),
+                "walk_forward_turnover": _mean("walk_forward_turnover"),
+            },
         }
         output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

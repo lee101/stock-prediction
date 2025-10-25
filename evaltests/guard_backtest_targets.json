@@ -1,0 +1,87 @@
+[
+  {
+    "symbol": "AAPL",
+    "output_json": "evaltests/backtests/gymrl_guard_confirm_aapl_real_full.json",
+    "output_label": "AAPL_real_full",
+    "env": {
+      "PYTHONPATH": ".",
+      "TORCHINDUCTOR_DISABLE": "1",
+      "FAST_TESTING": "0",
+      "REAL_TESTING": "1",
+      "MARKETSIM_TOTO_DISABLE_COMPILE": "1",
+      "MARKETSIM_TOTO_MAX_NUM_SAMPLES": "2048",
+      "MARKETSIM_TOTO_MAX_SAMPLES_PER_BATCH": "256",
+      "MARKETSIM_TOTO_MIN_NUM_SAMPLES": "96",
+      "MARKETSIM_TOTO_MIN_SAMPLES_PER_BATCH": "24",
+      "MARKETSIM_TOTO_BACKTEST_MAX_RETRIES": "4"
+    }
+  },
+  {
+    "symbol": "GOOG",
+    "output_json": "evaltests/backtests/gymrl_guard_confirm_goog_real_full.json",
+    "output_label": "GOOG_real_full",
+    "env": {
+      "PYTHONPATH": ".",
+      "TORCHINDUCTOR_DISABLE": "1",
+      "FAST_TESTING": "0",
+      "REAL_TESTING": "1",
+      "MARKETSIM_TOTO_DISABLE_COMPILE": "1",
+      "MARKETSIM_TOTO_MAX_NUM_SAMPLES": "4096",
+      "MARKETSIM_TOTO_MAX_SAMPLES_PER_BATCH": "512",
+      "MARKETSIM_TOTO_MIN_NUM_SAMPLES": "512",
+      "MARKETSIM_TOTO_MIN_SAMPLES_PER_BATCH": "64",
+      "MARKETSIM_TOTO_BACKTEST_MAX_RETRIES": "4"
+    }
+  },
+  {
+    "symbol": "META",
+    "output_json": "evaltests/backtests/gymrl_guard_confirm_meta_real_full.json",
+    "output_label": "META_real_full",
+    "env": {
+      "PYTHONPATH": ".",
+      "TORCHINDUCTOR_DISABLE": "1",
+      "FAST_TESTING": "0",
+      "REAL_TESTING": "1",
+      "MARKETSIM_TOTO_DISABLE_COMPILE": "1",
+      "MARKETSIM_TOTO_MAX_NUM_SAMPLES": "4096",
+      "MARKETSIM_TOTO_MAX_SAMPLES_PER_BATCH": "512",
+      "MARKETSIM_TOTO_MIN_NUM_SAMPLES": "512",
+      "MARKETSIM_TOTO_MIN_SAMPLES_PER_BATCH": "64",
+      "MARKETSIM_TOTO_BACKTEST_MAX_RETRIES": "4"
+    }
+  },
+  {
+    "symbol": "NVDA",
+    "output_json": "evaltests/backtests/gymrl_guard_confirm_nvda_real_full.json",
+    "output_label": "NVDA_real_full",
+    "env": {
+      "PYTHONPATH": ".",
+      "TORCHINDUCTOR_DISABLE": "1",
+      "FAST_TESTING": "0",
+      "REAL_TESTING": "1",
+      "MARKETSIM_TOTO_DISABLE_COMPILE": "1",
+      "MARKETSIM_TOTO_MAX_NUM_SAMPLES": "2048",
+      "MARKETSIM_TOTO_MAX_SAMPLES_PER_BATCH": "256",
+      "MARKETSIM_TOTO_MIN_NUM_SAMPLES": "96",
+      "MARKETSIM_TOTO_MIN_SAMPLES_PER_BATCH": "24",
+      "MARKETSIM_TOTO_BACKTEST_MAX_RETRIES": "4"
+    }
+  },
+  {
+    "symbol": "TSLA",
+    "output_json": "evaltests/backtests/gymrl_guard_confirm_tsla_real_full.json",
+    "output_label": "TSLA_real_full",
+    "env": {
+      "PYTHONPATH": ".",
+      "TORCHINDUCTOR_DISABLE": "1",
+      "FAST_TESTING": "0",
+      "REAL_TESTING": "1",
+      "MARKETSIM_TOTO_DISABLE_COMPILE": "1",
+      "MARKETSIM_TOTO_MAX_NUM_SAMPLES": "4096",
+      "MARKETSIM_TOTO_MAX_SAMPLES_PER_BATCH": "512",
+      "MARKETSIM_TOTO_MIN_NUM_SAMPLES": "512",
+      "MARKETSIM_TOTO_MIN_SAMPLES_PER_BATCH": "64",
+      "MARKETSIM_TOTO_BACKTEST_MAX_RETRIES": "4"
+    }
+  }
+]

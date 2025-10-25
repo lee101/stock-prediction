@@ -1,0 +1,89 @@
+name: Trend Pipeline Refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 1 * * *'
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: |
+          uv pip install -e .
+
+      - name: Run trend pipeline
+        run: |
+          uv run make trend-pipeline
+
+      - name: Check latency status
+        run: |
+          uv run make latency-status
+
+      - name: Append latency summary to job summary
+        run: |
+          uv run python scripts/write_latency_step_summary.py
+
+      - name: Show provider usage summary
+        if: always()
+        run: |
+          if [ -f marketsimulator/run_logs/provider_usage.csv ]; then
+            uv run python scripts/provider_usage_report.py --log marketsimulator/run_logs/provider_usage.csv --timeline-window 20 --no-sparkline
+            if [ -f marketsimulator/run_logs/provider_usage_sparkline.md ]; then
+              echo "--- Provider Usage Sparkline ---"
+              cat marketsimulator/run_logs/provider_usage_sparkline.md
+            fi
+          else
+            echo "provider_usage.csv not found"
+          fi
+          if [ -f marketsimulator/run_logs/provider_latency.csv ]; then
+            uv run python scripts/provider_latency_report.py --log marketsimulator/run_logs/provider_latency.csv --output marketsimulator/run_logs/provider_latency_summary.txt
+            if [ -f marketsimulator/run_logs/provider_latency_rolling.md ]; then
+              echo "--- Provider Latency Rolling ---"
+              cat marketsimulator/run_logs/provider_latency_rolling.md
+            fi
+            if [ -f marketsimulator/run_logs/provider_latency_history.md ]; then
+              echo "--- Provider Latency History ---"
+              cat marketsimulator/run_logs/provider_latency_history.md
+            fi
+          else
+            echo "provider_latency.csv not found"
+          fi
+
+      - name: Upload artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trend-pipeline-logs
+          path: |
+            marketsimulator/run_logs/trend_summary.json
+            marketsimulator/run_logs/candidate_readiness.md
+            marketsimulator/run_logs/candidate_momentum.md
+            marketsimulator/run_logs/candidate_forecast_gate_report.md
+            marketsimulator/run_logs/candidate_forecast_gate_history.csv
+            marketsimulator/run_logs/candidate_readiness_history.csv
+            marketsimulator/run_logs/provider_usage.csv
+            marketsimulator/run_logs/provider_switches.csv
+            marketsimulator/run_logs/provider_usage_summary.txt
+            marketsimulator/run_logs/provider_usage_sparkline.md
+            marketsimulator/run_logs/provider_latency.csv
+            marketsimulator/run_logs/provider_latency_summary.txt
+            marketsimulator/run_logs/provider_latency_rollup.csv
+            marketsimulator/run_logs/provider_latency_rolling.md
+            marketsimulator/run_logs/provider_latency_rolling.json
+            marketsimulator/run_logs/provider_latency_rolling_history.jsonl
+            marketsimulator/run_logs/provider_latency_history.md
+            marketsimulator/run_logs/provider_latency_history.html
