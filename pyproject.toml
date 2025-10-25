@@ -67,6 +67,7 @@ stockagent2-pipeline = "stockagent2.cli:main"
 [project.optional-dependencies]
 dev = [
     "stock-trading-suite[all]",
+    "ty==0.0.1a24",
     "black==24.10.0",
     "isort==5.13.2",
     "jupyter==1.1.1",
@@ -228,3 +229,22 @@ torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
 numpy = { index = "pypi" }
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.src]
+include = ["src"]
+exclude = [
+    "hftraining/**",
+    "hfinference/**",
+    "external/**",
+    "experiments/**",
+    "training/**",
+    "tests/**",
+    "tools/**",
+]
+
+[tool.ty.rules]
+unresolved-import = "ignore"
+unresolved-attribute = "ignore"

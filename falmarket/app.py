@@ -3,30 +3,53 @@
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import subprocess
+import sys
 import warnings
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List
 
 import fal
-from pydantic import BaseModel, Field, field_validator
-
-from fal_marketsimulator.runner import simulate_trading, setup_training_imports
+from fal_marketsimulator.runner import setup_training_imports, simulate_trading
 from falmarket.shared_logger import get_logger, log_timing, setup_logging
 from faltrain.artifacts import load_artifact_specs, sync_artifacts
-from faltrain.dependencies import bulk_register_fal_dependencies
 from faltrain.logger_utils import configure_stdout_logging
-from src.dependency_injection import setup_imports as setup_src_imports
+from pydantic import BaseModel, Field, field_validator
+from src.runtime_imports import setup_src_imports
 from src.tblib_compat import ensure_tblib_pickling_support
 from src.torch_backend import configure_tf32_backends
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 ensure_tblib_pickling_support()
 LOG = get_logger("falmarket.app", logging.INFO)
+
+
+def _validate_local_python_modules(modules: Iterable[str]) -> None:
+    """
+    Ensure every module declared in local_python_modules is importable.
+    Raises a RuntimeError with actionable guidance when a module is missing.
+    """
+
+    missing = [
+        module_name
+        for module_name in modules
+        if importlib.util.find_spec(module_name) is None
+    ]
+    if not missing:
+        return
+
+    formatted = ", ".join(sorted(missing))
+    raise RuntimeError(
+        "MarketSimulatorApp.local_python_modules references missing modules: "
+        f"{formatted}. Install them via `uv pip install -e <module>/` or "
+        "adjust the local_python_modules list before launching the fal app."
+    )
 
 
 class SimulationRequest(BaseModel):
@@ -63,7 +86,8 @@ class MarketSimulatorApp(
     max_concurrency=1,
     keep_alive=5,
 ):
-    machine_type = "GPU-H200"
+    # machine_type = "GPU-H200"
+    machine_type = "XS"
     python_version = "3.12"
     requirements = [
         "fal-client",
@@ -86,10 +110,20 @@ class MarketSimulatorApp(
         "marketsimulator",
         "trade_stock_e2e",
         "trade_stock_e2e_trained",
+        "alpaca_wrapper",
+        "backtest_test3_inline",
+        "data_curate_daily",
+        "env_real",
+        "jsonshelve",
         "src",
         "stock",
         "utils",
         "traininglib",
+        "rlinference",
+        "training",
+        "gymrl",
+        "analysis",
+        "analysis_runner_funcs",
     ]
 
     def setup(self) -> None:
@@ -108,9 +142,7 @@ class MarketSimulatorApp(
                 os.getcwd(),
             )
             os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
-            os.environ.setdefault(
-                "PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True"
-            )
+            os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True")
             LOG.debug(
                 "Environment CUDA_LAUNCH_BLOCKING=%s PYTORCH_CUDA_ALLOC_CONF=%s",
                 os.getenv("CUDA_LAUNCH_BLOCKING"),
@@ -118,9 +150,9 @@ class MarketSimulatorApp(
             )
 
             with log_timing(LOG, "Import torch/numpy/pandas"):
-                import torch as _torch
                 import numpy as _np
                 import pandas as _pd
+                import torch as _torch
 
             with log_timing(LOG, "Configure torch backends"):
                 tf32_state = configure_tf32_backends(_torch, logger=LOG)
@@ -137,10 +169,9 @@ class MarketSimulatorApp(
                 except Exception:
                     LOG.debug("Skipping advanced CUDA backend configuration", exc_info=True)
 
-            with log_timing(LOG, "Register shared dependencies"):
-                bulk_register_fal_dependencies({"torch": _torch, "numpy": _np, "pandas": _pd})
-                setup_training_imports(_torch, _np, _pd)
-                setup_src_imports(_torch, _np, _pd)
+            setup_training_imports(_torch, _np, _pd)
+            setup_src_imports(_torch, _np, _pd)
+            _validate_local_python_modules(self.local_python_modules)
 
             os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
             os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
@@ -278,3 +309,11 @@ class MarketSimulatorApp(
 
 def create_app() -> MarketSimulatorApp:
     return MarketSimulatorApp()
+
+
+# Ensure FastAPI/Pydantic resolve postponed annotations when building the OpenAPI schema.
+SimulationRequest.model_rebuild()
+SimulationResponse.model_rebuild()
+_simulate_endpoint = MarketSimulatorApp.simulate
+_simulate_endpoint.__annotations__["request"] = SimulationRequest
+_simulate_endpoint.__annotations__["return"] = SimulationResponse

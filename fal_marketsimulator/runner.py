@@ -3,21 +3,25 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-import sys
 import time
-from pathlib import Path
-from types import ModuleType
-from typing import Any, Dict, Iterable, List, Optional, Tuple
 from contextlib import nullcontext
+from types import ModuleType
+from typing import Any, Dict, Iterable, List, Optional
 
 from falmarket.shared_logger import get_logger, log_timing
-from src.dependency_injection import resolve_numpy, resolve_pandas, resolve_torch, setup_imports
+from src.runtime_imports import setup_src_imports
 
 LOG = get_logger("falmarket.runner", logging.INFO)
-
-_TORCH: Optional[ModuleType] = None
-_NUMPY: Optional[ModuleType] = None
-_PANDAS: Optional[ModuleType] = None
+# fal sdk NEEDS this as setup() is only way to get these imported in fal
+try:
+    import numpy as np
+    import pandas as pd
+    import torch
+except ImportError:
+    # These will be injected via setup_imports() in FAL environment
+    torch = None
+    np = None
+    pd = None
 
 
 def setup_training_imports(
@@ -27,38 +31,14 @@ def setup_training_imports(
 ) -> None:
     """Register shared heavy dependencies for the simulation runtime."""
 
-    global _TORCH, _NUMPY, _PANDAS
+    global torch, np, pd
     if torch_module is not None:
-        _TORCH = torch_module
-        sys.modules.setdefault("torch", torch_module)
+        torch = torch_module
     if numpy_module is not None:
-        _NUMPY = numpy_module
-        sys.modules.setdefault("numpy", numpy_module)
+        np = numpy_module
     if pandas_module is not None:
-        _PANDAS = pandas_module
-        sys.modules.setdefault("pandas", pandas_module)
-    setup_kwargs: Dict[str, ModuleType] = {}
-    if torch_module is not None:
-        setup_kwargs["torch"] = torch_module
-    if numpy_module is not None:
-        setup_kwargs["numpy"] = numpy_module
-    if pandas_module is not None:
-        setup_kwargs["pandas"] = pandas_module
-    if setup_kwargs:
-        setup_imports(**setup_kwargs)
-
-
-def _ensure_dependencies() -> Tuple[ModuleType, ModuleType, Optional[ModuleType]]:
-    torch_mod = _TORCH or resolve_torch()
-    numpy_mod = _NUMPY or resolve_numpy()
-    pandas_mod = _PANDAS
-    if pandas_mod is None:
-        try:
-            pandas_mod = resolve_pandas()
-        except Exception:
-            pandas_mod = None
-    setup_training_imports(torch_mod, numpy_mod, pandas_mod)
-    return torch_mod, numpy_mod, pandas_mod
+        pd = pandas_module
+    setup_src_imports(torch, np, pd)
 
 
 def _configure_logging(compact: bool) -> Optional[int]:
@@ -112,7 +92,8 @@ def simulate_trading(
 ) -> Dict[str, Any]:
     """Run the trade_stock_e2e loop inside the fal worker and return results."""
 
-    _ensure_dependencies()
+    if torch is None or np is None:
+        raise RuntimeError("Torch and NumPy must be configured via setup_training_imports before simulate_trading.")
 
     symbols_list = list(symbols)
     symbols_unique = list(dict.fromkeys(symbols_list))
@@ -133,13 +114,11 @@ def simulate_trading(
 
     from marketsimulator.environment import activate_simulation
 
-    torch_mod, _, _ = _ensure_dependencies()
-
     def _analysis_context():
-        inference_ctor = getattr(torch_mod, "inference_mode", None)
+        inference_ctor = getattr(torch, "inference_mode", None)
         if callable(inference_ctor):
             return inference_ctor()
-        no_grad_ctor = getattr(torch_mod, "no_grad", None)
+        no_grad_ctor = getattr(torch, "no_grad", None)
         if callable(no_grad_ctor):
             return no_grad_ctor()
         return nullcontext()
@@ -197,9 +176,9 @@ def simulate_trading(
                 )
                 previous_picks = current
                 controller.advance_steps(max(1, step_size))
-                # if torch_mod.cuda.is_available():
+                # if torch.cuda.is_available():
                 #     try:
-                #         torch_mod.cuda.synchronize()
+                #         torch.cuda.synchronize()
                 #     except Exception:
                 #         pass
 

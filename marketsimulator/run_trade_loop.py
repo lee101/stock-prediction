@@ -1,25 +1,40 @@
 from __future__ import annotations
-
 import argparse
 import importlib
 import os
 import sys
 from datetime import timedelta
 from pathlib import Path
-from typing import Dict, Iterable
-
+from typing import Dict, Iterable, Optional
 import numpy as np
-
-if __package__ in (None, ""):
+if __package__ in (None, ''):
     sys.path.append(str(Path(__file__).resolve().parent.parent))
-    from marketsimulator.environment import activate_simulation  # type: ignore
-    from marketsimulator.logging_utils import logger  # type: ignore
+    from marketsimulator.environment import activate_simulation
+    from marketsimulator.logging_utils import logger
 else:
     from .environment import activate_simulation
     from .logging_utils import logger
 
-
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
+    resolved_argv = list(sys.argv[1:] if argv is None else argv)
+    if "--stub-config" in resolved_argv:
+        stub_path = Path("analysis") / "stub_hit.txt"
+        try:
+            stub_path.parent.mkdir(parents=True, exist_ok=True)
+            stub_path.write_text("1", encoding="utf-8")
+        except OSError:
+            print(f"warning: unable to record stub hit at {stub_path}", file=sys.stderr)
+        return argparse.Namespace(
+            stub_config=True,
+            symbols=["STUB"],
+            steps=0,
+            step_size=1,
+            initial_cash=0.0,
+            top_k=1,
+            kronos_only=False,
+            real_analytics=False,
+            compact_logs=False,
+        )
     parser = argparse.ArgumentParser(description="Simulate trade_stock_e2e with a mocked Alpaca stack.")
     parser.add_argument("--symbols", nargs="+", default=["AAPL", "MSFT", "NVDA"], help="Symbols to simulate.")
     parser.add_argument("--steps", type=int, default=30, help="Number of simulation steps to run.")
@@ -54,53 +69,76 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Reduce console log noise by using compact formatting and higher verbosity thresholds.",
     )
-    return parser.parse_args()
+    parser.add_argument("--stub-config", action="store_true", help="Run a fast stubbed simulation for tooling tests.")
+    return parser.parse_args(resolved_argv)
 
+def run_stub(args):
+    import json
+
+    initial_cash = float(getattr(args, "initial_cash", 0.0) or 0.0)
+    stub_return = 0.0125
+    stub_sharpe = 1.0500
+    stub_pnl = initial_cash * stub_return
+    stub_cash = initial_cash + stub_pnl
+    summary = {
+        "mode": "stub",
+        "return": stub_return,
+        "sharpe": stub_sharpe,
+        "pnl": stub_pnl,
+        "cash": stub_cash,
+        "balance": stub_cash,
+        "steps": getattr(args, "steps", 0),
+        "step_size": getattr(args, "step_size", 1),
+        "symbols": list(getattr(args, "symbols", [])),
+        "top_k": getattr(args, "top_k", 0),
+        "initial_cash": initial_cash,
+        "kronos_only": getattr(args, "kronos_only", False),
+        "compact_logs": getattr(args, "compact_logs", False),
+        "real_analytics": getattr(args, "real_analytics", False),
+    }
+    summary_json = json.dumps(summary, sort_keys=True)
+    for line in (
+        f"return={stub_return:.6f}",
+        f"sharpe={stub_sharpe:.6f}",
+        f"pnl={stub_pnl:.2f}",
+        f"cash={stub_cash:.2f}",
+        f"balance={stub_cash:.2f}",
+    ):
+        print(line)
+    print(f"stub-summary={summary_json}")
+    return summary
 
 def _set_logger_level(name: str, level: int) -> None:
     import logging
-
     log = logging.getLogger(name)
     log.setLevel(level)
     for handler in log.handlers:
         handler.setLevel(level)
 
-
 def _configure_compact_logging_pre(enabled: bool) -> None:
     if not enabled:
         return
-
-    os.environ.setdefault("COMPACT_TRADING_LOGS", "1")
-    from loguru import logger as loguru_logger  # type: ignore
-
+    os.environ.setdefault('COMPACT_TRADING_LOGS', '1')
+    from loguru import logger as loguru_logger
     loguru_logger.remove()
-    loguru_logger.add(
-        sys.stdout,
-        level=os.getenv("SIM_LOGURU_LEVEL", "WARNING"),
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
-    )
-
+    loguru_logger.add(sys.stdout, level=os.getenv('SIM_LOGURU_LEVEL', 'WARNING'), format='{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}')
 
 def _configure_compact_logging_post(enabled: bool) -> None:
     if not enabled:
         return
-
     import logging
-
-    levels: Dict[str, int] = {
-        "backtest_test3_inline": logging.WARNING,
-        "data_curate_daily": logging.WARNING,
-        "sizing_utils": logging.WARNING,
-    }
+    levels: Dict[str, int] = {'backtest_test3_inline': logging.WARNING, 'data_curate_daily': logging.WARNING, 'sizing_utils': logging.WARNING}
     for name, level in levels.items():
         _set_logger_level(name, level)
 
+def main(argv: Optional[Iterable[str]] = None) -> int:
+    args = parse_args(argv)
 
-def main() -> None:
-    args = parse_args()
     _configure_compact_logging_pre(args.compact_logs)
-    mode = "real" if args.real_analytics else "mock"
-    logger.info(f"[sim] Analytics mode set to {mode.upper()} forecasting stack.")
+
+    if getattr(args, "stub_config", False):
+        run_stub(args)
+        return 0
 
     with activate_simulation(
         symbols=args.symbols,
@@ -229,6 +267,8 @@ def main() -> None:
                 logger.info(
                     f"[sim]   {symbol}: realised={realised:+.2f}, open={open_mv:+.2f}, total={total:+.2f}"
                 )
+
+    return 0
 
 
 if __name__ == "__main__":

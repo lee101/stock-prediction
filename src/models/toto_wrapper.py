@@ -2,17 +2,18 @@
 Toto forecasting wrapper that mirrors the Chronos interface while adding
 torch.compile options, AMP controls, and GPU-aware retry logic.
 """
+
 from __future__ import annotations
 
 import logging
 import sys
-import os
-from pathlib import Path
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any, ContextManager, Dict, List, Optional, Tuple, TYPE_CHECKING, Union, cast
+from importlib import import_module
+from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, ContextManager, Dict, List, Optional, Union, cast
 
-from ..dependency_injection import register_observer, resolve_numpy, resolve_torch
 from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -34,22 +35,64 @@ for _path in reversed(_CANDIDATE_PATHS):
             sys.path.insert(0, path_str)
 
 _IMPORT_ERROR: Optional[Exception] = None
-torch = resolve_torch()
-np = resolve_numpy()
 
 
-def _refresh_torch(module):
+def _optional_import(module_name: str) -> ModuleType | None:
+    try:
+        return import_module(module_name)
+    except ModuleNotFoundError:
+        return None
+
+
+torch: ModuleType | None = _optional_import("torch")
+np: ModuleType | None = _optional_import("numpy")
+
+if TYPE_CHECKING:
+    from numpy import ndarray as NDArray
+    import torch as torch_types
+
+    TorchDType = torch_types.dtype
+    TorchTensor = torch_types.Tensor
+else:  # pragma: no cover - typing fallback when optional deps missing
+    NDArray = Any
+    TorchDType = Any
+    TorchTensor = Any
+
+
+def setup_toto_wrapper_imports(
+    *,
+    torch_module: ModuleType | None = None,
+    numpy_module: ModuleType | None = None,
+    **_: Any,
+) -> None:
+    global torch, np
+    if torch_module is not None:
+        torch = torch_module
+    if numpy_module is not None:
+        np = numpy_module
+
+
+def _require_torch() -> ModuleType:
     global torch
-    torch = module
+    if torch is not None:
+        return torch
+    try:
+        torch = import_module("torch")  # type: ignore[assignment]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Torch is unavailable. Call setup_toto_wrapper_imports before use.") from exc
+    return torch
 
 
-def _refresh_numpy(module):
+def _require_numpy() -> ModuleType:
     global np
-    np = module
+    if np is not None:
+        return np
+    try:
+        np = import_module("numpy")  # type: ignore[assignment]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("NumPy is unavailable. Call setup_toto_wrapper_imports before use.") from exc
+    return np
 
-
-register_observer("torch", _refresh_torch)
-register_observer("numpy", _refresh_numpy)
 
 if TYPE_CHECKING:
     from toto.data.util.dataset import MaskedTimeseries as MaskedTimeseriesType
@@ -80,18 +123,36 @@ else:  # pragma: no cover - executed when imports succeed
 logger = logging.getLogger(__name__)
 
 # Enable tensor-core friendly defaults when possible.
-if torch.cuda.is_available():
-    torch.backends.cuda.matmul.allow_tf32 = True
-torch.set_float32_matmul_precision("medium")
+if (
+    torch is not None
+    and getattr(torch, "cuda", None) is not None
+    and callable(getattr(torch.cuda, "is_available", None))
+    and torch.cuda.is_available()
+):
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = True  # type: ignore[attr-defined]
+    except Exception:
+        logger = logging.getLogger(__name__)
+        logger.debug("Failed to enable TF32 matmul on Toto wrapper import", exc_info=True)
+
+if torch is not None:
+    _set_precision = getattr(torch, "set_float32_matmul_precision", None)
+    if callable(_set_precision):
+        try:
+            _set_precision("medium")
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "Failed to set float32 matmul precision for Toto wrapper", exc_info=True
+            )
 
 
 @dataclass
 class TotoForecast:
     """Container for Toto forecast results compatible with Chronos outputs."""
 
-    samples: np.ndarray
+    samples: NDArray
 
-    def numpy(self) -> np.ndarray:
+    def numpy(self) -> NDArray:
         """Return samples in Chronos-compatible layout."""
         samples = self.samples
 
@@ -108,36 +169,51 @@ class TotoForecast:
 
 def _is_cuda_oom(exc: BaseException) -> bool:
     """Return True if the exception represents a CUDA OOM condition."""
-    if isinstance(exc, torch.cuda.OutOfMemoryError):
+    cuda_mod = getattr(torch, "cuda", None)
+    oom_error = getattr(cuda_mod, "OutOfMemoryError", None)
+    if oom_error is not None and isinstance(exc, oom_error):
         return True
     message = str(exc).lower()
     return "out of memory" in message
 
 
 def _maybe_empty_cuda_cache(device: str) -> None:
-    if device.startswith("cuda") and torch.cuda.is_available():
+    cuda_mod = getattr(torch, "cuda", None)
+    if (
+        device.startswith("cuda")
+        and cuda_mod is not None
+        and callable(getattr(cuda_mod, "is_available", None))
+        and cuda_mod.is_available()
+    ):
         try:
-            torch.cuda.empty_cache()
+            cuda_mod.empty_cache()
         except Exception as cache_exc:  # pragma: no cover - best effort
             logger.debug("Failed to empty CUDA cache after OOM: %s", cache_exc)
 
 
 def _inference_context() -> ContextManager[None]:
     """Return the best available inference context manager (inference_mode or no_grad)."""
-    context_ctor = getattr(torch, "inference_mode", None)
+    torch_module = _require_torch()
+    context_ctor = getattr(torch_module, "inference_mode", None)
     if callable(context_ctor):
         return cast(ContextManager[None], context_ctor())
-    return cast(ContextManager[None], torch.no_grad())
+    return cast(ContextManager[None], torch_module.no_grad())
 
 
-def _autocast_context(device: str, dtype: Optional[torch.dtype]) -> ContextManager[None]:
+def _autocast_context(device: str, dtype: Optional[TorchDType]) -> ContextManager[None]:
+    torch_module = _require_torch()
     if dtype is None:
         return cast(ContextManager[None], nullcontext())
     if device.startswith("cuda"):
-        autocast_fn = getattr(torch, "autocast", None)
+        autocast_fn = getattr(torch_module, "autocast", None)
         if callable(autocast_fn):
             return cast(ContextManager[None], autocast_fn(device_type="cuda", dtype=dtype))
-        return cast(ContextManager[None], torch.cuda.amp.autocast(dtype=dtype))
+        cuda_amp = getattr(torch_module, "cuda", None)
+        amp_mod = getattr(cuda_amp, "amp", None)
+        autocast_ctor = getattr(amp_mod, "autocast", None)
+        if callable(autocast_ctor):
+            return cast(ContextManager[None], autocast_ctor(dtype=dtype))
+        return cast(ContextManager[None], nullcontext())
     return cast(ContextManager[None], nullcontext())
 
 
@@ -149,7 +225,7 @@ def _forecast_with_retries(
     num_samples: int,
     samples_per_batch: int,
     device: str,
-    autocast_dtype: Optional[torch.dtype],
+    autocast_dtype: Optional[TorchDType],
     max_retries: int,
     min_samples_per_batch: int,
     min_num_samples: int,
@@ -200,10 +276,7 @@ def _forecast_with_retries(
             else:
                 next_num_samples = max(next_samples_per_batch, current_num_samples)
 
-            if (
-                next_samples_per_batch == current_samples_per_batch
-                and next_num_samples == current_num_samples
-            ):
+            if next_samples_per_batch == current_samples_per_batch and next_num_samples == current_num_samples:
                 break
 
             current_samples_per_batch = next_samples_per_batch
@@ -226,8 +299,8 @@ class TotoPipeline:
         model: TotoModelType,
         device: str = "cuda",
         *,
-        torch_dtype: Optional[torch.dtype] = None,
-        amp_dtype: Optional[torch.dtype] = torch.float16,
+        torch_dtype: Optional[TorchDType] = None,
+        amp_dtype: Optional[TorchDType] = None,
         max_oom_retries: int = 2,
         min_samples_per_batch: int = 32,
         min_num_samples: int = 256,
@@ -240,6 +313,15 @@ class TotoPipeline:
             raise RuntimeError(
                 "Toto dependencies are not available; ensure toto and its requirements are installed"
             ) from _IMPORT_ERROR
+
+        if torch is None or np is None:
+            raise RuntimeError(
+                "Torch and NumPy must be configured via setup_toto_wrapper_imports before instantiating TotoPipeline."
+            )
+
+        torch_module = cast(ModuleType, torch)
+        if amp_dtype is None:
+            amp_dtype = getattr(torch_module, "float16", None)
 
         self.device = device
         self.max_oom_retries = max(0, int(max_oom_retries))
@@ -265,7 +347,7 @@ class TotoPipeline:
             self.amp_dtype = None
 
         if self.amp_dtype is not None and device.startswith("cuda"):
-            self._autocast_dtype: Optional[torch.dtype] = self.amp_dtype
+            self._autocast_dtype: Optional[TorchDType] = self.amp_dtype
         elif device.startswith("cuda") and torch_dtype in {torch.float16, torch.bfloat16}:
             self._autocast_dtype = torch_dtype
         else:
@@ -376,11 +458,11 @@ class TotoPipeline:
         cls,
         model_id: str = "Datadog/Toto-Open-Base-1.0",
         device_map: str = "cuda",
-        torch_dtype: Optional[torch.dtype] = None,
+        torch_dtype: Optional[TorchDType] = None,
         *,
         compile_model: bool = True,
         compile_mode: Optional[str] = "max-autotune",
-        amp_dtype: Optional[torch.dtype] = torch.float16,
+        amp_dtype: Optional[TorchDType] = None,
         torch_compile: bool = False,
         compile_backend: Optional[str] = None,
         cache_policy: str = "prefer",
@@ -396,6 +478,10 @@ class TotoPipeline:
             raise RuntimeError(
                 "Toto dependencies are not available; ensure toto and its requirements are installed"
             ) from _IMPORT_ERROR
+
+        torch_module = _require_torch()
+        if amp_dtype is None:
+            amp_dtype = getattr(torch_module, "float16", None)
 
         policy = cache_policy.lower()
         if policy not in {"prefer", "never", "only"}:
@@ -482,9 +568,7 @@ class TotoPipeline:
             )
 
             should_warmup = (
-                warmup_sequence > 0
-                and (compile_model or torch_compile or pipeline.compiled)
-                and not loaded_from_cache
+                warmup_sequence > 0 and (compile_model or torch_compile or pipeline.compiled) and not loaded_from_cache
             )
             if should_warmup:
                 pipeline._warmup(sequence_length=warmup_sequence)
@@ -520,7 +604,7 @@ class TotoPipeline:
 
     def predict(
         self,
-        context: Union[torch.Tensor, np.ndarray, List[float]],
+        context: Union[TorchTensor, NDArray, List[float]],
         prediction_length: int,
         num_samples: int = 4096,
         temperature: float = 1.0,
@@ -536,8 +620,11 @@ class TotoPipeline:
         if MaskedTimeseries is None:
             raise RuntimeError("Toto dependencies are not available; cannot build MaskedTimeseries inputs.")
 
-        if isinstance(context, (list, np.ndarray)):
-            context = torch.tensor(context, dtype=torch.float32)
+        torch_module = _require_torch()
+        numpy_mod = _require_numpy()
+
+        if isinstance(context, (list, numpy_mod.ndarray)):
+            context = torch_module.tensor(context, dtype=torch_module.float32)
 
         context = context.to(self.device)
         if context.dtype != self.model_dtype:
@@ -594,10 +681,7 @@ class TotoPipeline:
             forecast_kwargs=forecast_kwargs,
         )
 
-        if (
-            effective_num_samples != num_samples
-            or effective_samples_per_batch != samples_per_batch
-        ):
+        if effective_num_samples != num_samples or effective_samples_per_batch != samples_per_batch:
             logger.info(
                 "Toto forecast adjusted sampling from num_samples=%d, samples_per_batch=%d "
                 "to num_samples=%d, samples_per_batch=%d due to OOM.",
@@ -627,13 +711,11 @@ class TotoPipeline:
 
         primary_axis = samples.shape[0]
         if primary_axis != batch_size and samples.ndim > 1 and samples.shape[1] == batch_size:
-            samples = np.swapaxes(samples, 0, 1)
+            samples = numpy_mod.swapaxes(samples, 0, 1)
             primary_axis = samples.shape[0]
 
         if primary_axis != batch_size:
-            raise RuntimeError(
-                "Toto forecast samples tensor does not match the requested batch size."
-            )
+            raise RuntimeError("Toto forecast samples tensor does not match the requested batch size.")
 
         forecasts: List[TotoForecast] = []
         for idx in range(batch_size):

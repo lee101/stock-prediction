@@ -9,6 +9,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 import torch
+import time
 
 
 def _maybe_append_kronos_to_path() -> Optional[str]:
@@ -53,6 +54,8 @@ class KronosEmbedder:
         clip: float = 5.0,
         feature_spec: Optional[KronosFeatureSpec] = None,
         bf16: bool = True,
+        compile_model: bool = True,
+        log_timings: bool = False,
     ) -> None:
         self.device = device
         self.max_context = max_context
@@ -60,18 +63,21 @@ class KronosEmbedder:
         self.top_p = top_p
         self.top_k = top_k
         self.sample_count = sample_count
-        self.sample_chunk = max(1, sample_chunk)
+        self.sample_chunk = max(1, min(sample_chunk, self.sample_count))
         self.feature_spec = feature_spec or KronosFeatureSpec()
         self.bf16 = bf16 and device.startswith("cuda")
         self.clip = clip
+        self.log_timings = log_timings
 
         self.tokenizer = KronosTokenizer.from_pretrained(tokenizer_id)
         self.model = Kronos.from_pretrained(model_id)
         self.model.eval().to(self.device)
-        try:
-            self.model = torch.compile(self.model)
-        except Exception:  # pragma: no cover
-            pass
+        self.tokenizer.to(self.device)
+        if compile_model and hasattr(torch, "compile"):
+            try:
+                self.model = torch.compile(self.model)
+            except Exception:  # pragma: no cover
+                pass
         self.predictor = KronosPredictor(
             self.model,
             self.tokenizer,
@@ -79,6 +85,9 @@ class KronosEmbedder:
             max_context=self.max_context,
             clip=self.clip,
         )
+        self.predictor.device = self.device
+        self.predictor.model = self.model
+        self.predictor.tokenizer = self.tokenizer
 
     @torch.no_grad()
     def _predict_paths(self, x_df: pd.DataFrame, x_ts: pd.Series, horizon: int) -> Tuple[np.ndarray, float]:
@@ -86,10 +95,41 @@ class KronosEmbedder:
             raise ValueError("Need at least two timestamps to infer frequency")
         delta = x_ts.iloc[-1] - x_ts.iloc[-2]
         y_ts = pd.Series(pd.date_range(start=x_ts.iloc[-1] + delta, periods=horizon, freq=delta))
+        try:
+            chunk = max(1, min(self.sample_chunk, self.sample_count))
+            retries = 0
+            while True:
+                try:
+                    return self._predict_paths_impl(x_df, x_ts, y_ts, horizon, chunk)
+                except torch.cuda.OutOfMemoryError:
+                    torch.cuda.empty_cache()
+                    if not self.device.startswith("cuda"):
+                        raise
+                    if chunk == 1 or retries >= 4:
+                        raise
+                    chunk = max(1, chunk // 2)
+                    retries += 1
+                    if self.log_timings:
+                        print(f"[kronos] CUDA OOM; retrying horizon={horizon} with sample_chunk={chunk}")
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            raise
+
+    def _predict_paths_impl(
+        self,
+        x_df: pd.DataFrame,
+        x_ts: pd.Series,
+        y_ts: pd.Series,
+        horizon: int,
+        chunk: int,
+    ) -> Tuple[np.ndarray, float]:
         dtype_ctx = torch.bfloat16 if self.bf16 and torch.cuda.is_available() else torch.float32
-        preds = []
+        preds: list[np.ndarray] = []
         using_cuda = self.device.startswith("cuda")
         autocast_enabled = using_cuda and self.bf16
+        start_time = time.perf_counter() if self.log_timings else None
+        if using_cuda and self.log_timings:
+            torch.cuda.reset_peak_memory_stats()
         with torch.autocast(device_type="cuda", dtype=dtype_ctx, enabled=autocast_enabled):
             for sample_idx in range(self.sample_count):
                 self.predictor.clip = self.clip
@@ -104,12 +144,20 @@ class KronosEmbedder:
                     sample_count=1,
                 )
                 preds.append(pred_df["close"].to_numpy(dtype=np.float64))
-                if using_cuda and ((sample_idx + 1) % self.sample_chunk == 0):
+                if using_cuda and ((sample_idx + 1) % chunk == 0):
                     torch.cuda.synchronize()
                     torch.cuda.empty_cache()
         if using_cuda:
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
+        if self.log_timings and start_time is not None:
+            elapsed = time.perf_counter() - start_time
+            peak_mb = 0.0
+            if using_cuda:
+                peak_mb = torch.cuda.max_memory_allocated() / (1024**2)
+            print(
+                f"[kronos] horizon={horizon} samples={self.sample_count} chunk={chunk} time={elapsed:.2f}s peak_mem={peak_mb:.1f}MB"
+            )
         paths = np.stack(preds, axis=0)
         last_close = float(x_df["close"].iloc[-1])
         return paths, last_close

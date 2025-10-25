@@ -1,26 +1,48 @@
 from datetime import datetime
+from importlib import import_module
+from types import ModuleType
+from typing import Any
 
-from .dependency_injection import register_observer, resolve_torch
 
-torch = resolve_torch()
+def _optional_import(module_name: str) -> ModuleType | None:
+    try:
+        return import_module(module_name)
+    except ModuleNotFoundError:
+        return None
 
 
-def _refresh_torch(module):
+torch: ModuleType | None = _optional_import("torch")
+
+
+def setup_conversion_utils_imports(
+    *,
+    torch_module: ModuleType | None = None,
+    **_: Any,
+) -> None:
     global torch
-    torch = module
+    if torch_module is not None:
+        torch = torch_module
 
 
-register_observer("torch", _refresh_torch)
+def _torch_module() -> ModuleType | None:
+    global torch
+    if torch is not None:
+        return torch
+    try:
+        torch = import_module("torch")  # type: ignore[assignment]
+    except ModuleNotFoundError:
+        return None
+    return torch
 
 
-def unwrap_tensor(data):
-    if isinstance(data, torch.Tensor):
+def unwrap_tensor(data: Any):
+    torch_mod = _torch_module()
+    if torch_mod is not None and isinstance(data, torch_mod.Tensor):
         if data.dim() == 0:
             return float(data)
-        elif data.dim() >= 1:
+        if data.dim() >= 1:
             return data.tolist()
-    else:
-        return data
+    return data
 
 
 def convert_string_to_datetime(data):

@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TraderMetricsSummary",
+  "description": "Schema for summary JSON emitted by metrics tools.",
+  "type": "object",
+  "required": ["return", "sharpe", "pnl", "balance"],
+  "properties": {
+    "return": {
+      "type": "number",
+      "description": "Total return over the run (fractional)."
+    },
+    "sharpe": {
+      "type": "number",
+      "description": "Sharpe ratio for the run."
+    },
+    "pnl": {
+      "type": "number",
+      "description": "Profit and loss in base currency."
+    },
+    "balance": {
+      "type": "number",
+      "description": "Ending account balance."
+    },
+    "steps": {
+      "type": "integer",
+      "description": "Number of steps/episodes executed.",
+      "minimum": 0
+    },
+    "symbols": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Symbols traded during the run."
+    },
+    "summary_path": {
+      "type": "string",
+      "description": "Path to this summary file."
+    },
+    "log_path": {
+      "type": "string",
+      "description": "Path to the matching log file."
+    }
+  },
+  "additionalProperties": true
+}

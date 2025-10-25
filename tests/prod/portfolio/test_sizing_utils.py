@@ -35,9 +35,10 @@ def test_get_current_symbol_exposure(mock_alpaca):
     assert exposure == 0.0
 
 
+@patch('src.sizing_utils.get_global_risk_threshold', return_value=1.0)
 @patch('src.sizing_utils.alpaca_wrapper')
 @patch('src.sizing_utils.filter_to_realistic_positions')
-def test_get_qty_basic_calculation(mock_filter, mock_alpaca):
+def test_get_qty_basic_calculation(mock_filter, mock_alpaca, mock_risk_threshold):
     """Test basic quantity calculation."""
     # Setup mocks
     mock_alpaca.total_buying_power = 10000
@@ -54,9 +55,10 @@ def test_get_qty_basic_calculation(mock_filter, mock_alpaca):
         assert qty == 0.166  # floor(0.5 * 10000 / 30000 * 1000) / 1000
 
 
+@patch('src.sizing_utils.get_global_risk_threshold', return_value=1.0)
 @patch('src.sizing_utils.alpaca_wrapper')
 @patch('src.sizing_utils.filter_to_realistic_positions')
-def test_get_qty_exposure_limits(mock_filter, mock_alpaca):
+def test_get_qty_exposure_limits(mock_filter, mock_alpaca, mock_risk_threshold):
     """Test that exposure limits are respected."""
     # Setup mocks
     mock_alpaca.total_buying_power = 10000
@@ -75,9 +77,10 @@ def test_get_qty_exposure_limits(mock_filter, mock_alpaca):
     assert qty == 9.0  # floor(10.0) in practice
 
 
+@patch('src.sizing_utils.get_global_risk_threshold', return_value=1.0)
 @patch('src.sizing_utils.alpaca_wrapper')
 @patch('src.sizing_utils.filter_to_realistic_positions')
-def test_get_qty_max_exposure_reached(mock_filter, mock_alpaca):
+def test_get_qty_max_exposure_reached(mock_filter, mock_alpaca, mock_risk_threshold):
     """Test that quantity is 0 when max exposure is reached."""
     # Setup mocks
     mock_alpaca.total_buying_power = 10000
@@ -92,9 +95,10 @@ def test_get_qty_max_exposure_reached(mock_filter, mock_alpaca):
     assert qty == 0.0
 
 
+@patch('src.sizing_utils.get_global_risk_threshold', return_value=1.0)
 @patch('src.sizing_utils.alpaca_wrapper')
 @patch('src.sizing_utils.filter_to_realistic_positions')
-def test_get_qty_over_max_exposure(mock_filter, mock_alpaca):
+def test_get_qty_over_max_exposure(mock_filter, mock_alpaca, mock_risk_threshold):
     """Test that quantity is 0 when already over max exposure."""
     # Setup mocks
     mock_alpaca.total_buying_power = 10000
@@ -109,9 +113,10 @@ def test_get_qty_over_max_exposure(mock_filter, mock_alpaca):
     assert qty == 0.0
 
 
+@patch('src.sizing_utils.get_global_risk_threshold', return_value=1.0)
 @patch('src.sizing_utils.alpaca_wrapper')
 @patch('src.sizing_utils.filter_to_realistic_positions')
-def test_get_qty_minimum_order_size(mock_filter, mock_alpaca):
+def test_get_qty_minimum_order_size(mock_filter, mock_alpaca, mock_risk_threshold):
     """Test handling of very small calculated quantities."""
     # Setup mocks with very high price
     mock_alpaca.total_buying_power = 10000
@@ -134,9 +139,10 @@ def test_get_current_symbol_exposure_zero_equity(mock_alpaca):
     assert exposure == 0.0
 
 
+@patch('src.sizing_utils.get_global_risk_threshold', return_value=1.0)
 @patch('src.sizing_utils.alpaca_wrapper')
 @patch('src.sizing_utils.filter_to_realistic_positions')
-def test_get_qty_zero_equity(mock_filter, mock_alpaca):
+def test_get_qty_zero_equity(mock_filter, mock_alpaca, mock_risk_threshold):
     """Test quantity calculation when equity is zero."""
     mock_alpaca.total_buying_power = 10000
     mock_alpaca.equity = 0  # Zero equity
