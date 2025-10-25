@@ -1,0 +1,25 @@
+{
+  "balance": 99389.66442710803,
+  "cash": 99389.66442710803,
+  "fees_paid": 17.961184702781388,
+  "flatten_end": true,
+  "initial_cash": 100000.0,
+  "kronos_only": true,
+  "kronos_sharpe_cutoff": -1.0,
+  "max_drawdown": 972.3414335232519,
+  "max_drawdown_pct": 0.009723414335232518,
+  "mode": "simulation",
+  "pnl": -610.3355728919705,
+  "real_analytics": true,
+  "return": -0.006103355728919705,
+  "sharpe": -2.9555807331399317,
+  "sharpe_cutoff": null,
+  "step_size": 1,
+  "steps": 20,
+  "symbols": [
+    "AAPL",
+    "MSFT",
+    "NVDA"
+  ],
+  "top_k": 4
+}

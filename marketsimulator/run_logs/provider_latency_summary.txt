@@ -1,0 +1,4 @@
+Total samples: 384
+Provider latency stats (ms):
+- yahoo: avg=323.08 ms, p50=312.10 ms, p95=372.04 ms, max=1350.27 ms (n=384)
+Latest sample: 2025-10-24T22:06:21.130468+00:00 XHB@yahoo latency=532.66 ms

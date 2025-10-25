@@ -33,6 +33,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.torch_backend import configure_tf32_backends  # noqa: E402
 from toto.inference.forecaster import TotoForecaster  # noqa: E402
 from toto.model.toto import Toto  # noqa: E402
 
@@ -300,7 +301,7 @@ def run_validation(val_loader, forward_pass, model, ema, args, device):
 def run_with_namespace(args: argparse.Namespace) -> None:
     torch.manual_seed(42)
     if torch.cuda.is_available():
-        torch.backends.cuda.matmul.allow_tf32 = True
+        configure_tf32_backends(torch)
     torch.set_float32_matmul_precision("medium")
 
     device = torch.device(args.device)

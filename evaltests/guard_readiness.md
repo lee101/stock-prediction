@@ -48,6 +48,12 @@
 2. Validation remains positive with minimal guard activity, implying low friction in calmer regimes.
 3. Mock backtests show MaxDiff outperforming the simple baseline by **+6.5 points** on average; live runs (lite + full-fidelity fallback) now deliver an average uplift of **+15.1 points**, still using reduced Toto sampling (128 shrinking to 96 when GPU pressure spikes).
 
+## Compile Trials Snapshot
+- High-sample Toto runs with `torch.compile` are logged under `gymrl_guard_confirm_{symbol}_real_full_compile.json` for GOOG, META, and TSLA.
+- `evaltests/guard_compile_comparison.md` compares compile vs baseline metrics; the latest sweep (2025-10-24T20:27Z) shows GOOG simple return dropping from +0.0192 to −0.0913 (Δ −0.1105) when compile is enabled with the 512→4096 Toto sample ramp. The baseline-sample diagnostic (`evaltests/guard_compile_comparison_compile128.md`) still reports GOOG simple return collapsing to −0.143 (Δ −0.163) while META drifts −0.0015 and TSLA improves +0.1005.
+- Aggregate history (see `guard_compile_stats.md`) now reports GOOG ≈ −0.0114 mean simple delta (regress), META +0.0134 (promote on average but with sign flips), TSLA −0.0194 (regress). MaxDiff deltas skew positive across the compile128 trials, indicating the guard-specific mechanics remain healthy even as the simple strategy breaks.
+- Recommendation: keep compile trials in monitoring-only mode. Prioritise GOOG fusion triage (compile vs eager), then rerun META/TSLA with targeted instrumentation (Toto latency, sample counts) before considering any rollout.
+
 ## Remaining Checks
 - Scale the real (non-mock) backtests to full forecast fidelity and the entire symbol basket once GPU memory permits.
 - Compare guard hit timelines against production when full real runs are available.

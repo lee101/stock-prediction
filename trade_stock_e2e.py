@@ -1,6 +1,7 @@
 import logging
 import math
 import os
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import sleep
@@ -33,6 +34,7 @@ from src.comparisons import is_buy_side, is_same_side, is_sell_side
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
+from marketsimulator.state import get_state
 from src.trading_obj_utils import filter_to_realistic_positions
 from src.process_utils import (
     backout_near_market,
@@ -100,6 +102,11 @@ _trade_history_store: Optional[FlatShelf] = None
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
+SIMPLIFIED_MODE = os.getenv("MARKETSIM_SIMPLE_MODE", "0").strip().lower() in _TRUTHY
+
+DEFAULT_PROBE_SYMBOLS = {"AAPL", "MSFT", "NVDA"}
+PROBE_SYMBOLS = set() if SIMPLIFIED_MODE else set(DEFAULT_PROBE_SYMBOLS)
+
 _LATEST_FORECAST_CACHE: Dict[str, Dict[str, object]] = {}
 _LATEST_FORECAST_PATH: Optional[Path] = None
 
@@ -109,8 +116,603 @@ _edge_threshold_bps = edge_threshold_bps
 _evaluate_strategy_entry_gate = evaluate_strategy_entry_gate
 
 
+def _get_env_float(name: str) -> Optional[float]:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; expected float.", name, raw)
+        return None
+
+
+_DRAW_CAPS_CACHE: Optional[Tuple[str, Dict[Tuple[Optional[str], Optional[str]], float]]] = None
+_DRAW_RESUME_CACHE: Optional[Tuple[str, Dict[Tuple[Optional[str], Optional[str]], float]]] = None
+_DRAW_SUSPENDED: Dict[Tuple[str, str], bool] = {}
+_THRESHOLD_MAP_CACHE: Dict[str, Tuple[str, Dict[Tuple[Optional[str], Optional[str]], float]]] = {}
+_SYMBOL_SIDE_CACHE: Optional[Tuple[str, Dict[str, str]]] = None
+_SYMBOL_KELLY_SCALE_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_SYMBOL_MAX_HOLD_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_SYMBOL_MIN_COOLDOWN_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_SYMBOL_MAX_ENTRIES_CACHE: Optional[Tuple[str, Dict[Tuple[Optional[str], Optional[str]], int]]] = None
+_SYMBOL_FORCE_PROBE_CACHE: Optional[Tuple[str, Dict[str, bool]]] = None
+_SYMBOL_MIN_MOVE_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_SYMBOL_MIN_PREDICTED_MOVE_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_SYMBOL_MIN_STRATEGY_RETURN_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_TREND_SUMMARY_CACHE: Optional[Tuple[Tuple[str, float], Dict[str, Dict[str, float]]]] = None
+_TREND_RESUME_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+EntryKey = Tuple[Optional[str], Optional[str]]
+_SYMBOL_RUN_ENTRY_COUNTS: Dict[EntryKey, int] = {}
+_SYMBOL_RUN_ENTRY_ID: Optional[str] = None
+
+
+def _strategy_key(symbol: Optional[str], strategy: Optional[str]) -> Tuple[str, str]:
+    return ((symbol or "__global__").lower(), (strategy or "__default__").lower())
+
+
+def _parse_threshold_map(env_name: str) -> Dict[Tuple[Optional[str], Optional[str]], float]:
+    cache_key_raw = os.getenv(env_name)
+    cache_key = cache_key_raw or ""
+    cached = _THRESHOLD_MAP_CACHE.get(env_name)
+    if cached is None or cached[0] != cache_key:
+        parsed: Dict[Tuple[Optional[str], Optional[str]], float] = {}
+        if cache_key_raw:
+            for item in cache_key_raw.split(","):
+                entry = item.strip()
+                if not entry:
+                    continue
+                try:
+                    key_part, value_part = entry.split(":", 1)
+                    value = float(value_part)
+                except ValueError:
+                    logger.warning("Ignoring invalid %s entry: %s", env_name, entry)
+                    continue
+                key = key_part.strip()
+                if not key:
+                    logger.warning("Ignoring invalid %s entry with empty key.", env_name)
+                    continue
+                symbol_key: Optional[str] = None
+                strategy_key: Optional[str] = None
+                if "@" in key:
+                    sym_raw, strat_raw = key.split("@", 1)
+                    symbol_key = sym_raw.strip().lower() or None
+                    strategy_key = strat_raw.strip().lower() or None
+                elif key.isupper():
+                    symbol_key = key.lower()
+                else:
+                    strategy_key = key.lower()
+                parsed[(symbol_key, strategy_key)] = value
+        _THRESHOLD_MAP_CACHE[env_name] = (cache_key, parsed)
+    return _THRESHOLD_MAP_CACHE[env_name][1]
+
+
+def _lookup_threshold(env_name: str, symbol: Optional[str], strategy: Optional[str]) -> Optional[float]:
+    parsed = _parse_threshold_map(env_name)
+    symbol_key = symbol.lower() if symbol else None
+    strategy_key = strategy.lower() if strategy else None
+    for candidate in (
+        (symbol_key, strategy_key),
+        (symbol_key, None),
+        (None, strategy_key),
+        (None, None),
+    ):
+        if candidate in parsed:
+            return parsed[candidate]
+    return None
+
+
+def _drawdown_cap_for(strategy: Optional[str], symbol: Optional[str] = None) -> Optional[float]:
+    global _DRAW_CAPS_CACHE
+    env_raw = os.getenv("MARKETSIM_KELLY_DRAWDOWN_CAP_MAP")
+    cache_key = env_raw or ""
+    if _DRAW_CAPS_CACHE is None or _DRAW_CAPS_CACHE[0] != cache_key:
+        _DRAW_CAPS_CACHE = (cache_key, _parse_threshold_map("MARKETSIM_KELLY_DRAWDOWN_CAP_MAP"))
+    caps = _DRAW_CAPS_CACHE[1] if _DRAW_CAPS_CACHE else {}
+    symbol_key = symbol.lower() if symbol else None
+    strategy_key = strategy.lower() if strategy else None
+    for candidate in (
+        (symbol_key, strategy_key),
+        (symbol_key, None),
+        (None, strategy_key),
+        (None, None),
+    ):
+        if candidate in caps:
+            return caps[candidate]
+    return _get_env_float("MARKETSIM_KELLY_DRAWDOWN_CAP")
+
+
+def _drawdown_resume_for(
+    strategy: Optional[str], cap: Optional[float], symbol: Optional[str] = None
+) -> Optional[float]:
+    global _DRAW_RESUME_CACHE
+    env_raw = os.getenv("MARKETSIM_DRAWDOWN_RESUME_MAP")
+    cache_key = env_raw or ""
+    if _DRAW_RESUME_CACHE is None or _DRAW_RESUME_CACHE[0] != cache_key:
+        _DRAW_RESUME_CACHE = (cache_key, _parse_threshold_map("MARKETSIM_DRAWDOWN_RESUME_MAP"))
+    overrides = _DRAW_RESUME_CACHE[1] if _DRAW_RESUME_CACHE else {}
+    symbol_key = symbol.lower() if symbol else None
+    strategy_key = strategy.lower() if strategy else None
+    for candidate in (
+        (symbol_key, strategy_key),
+        (symbol_key, None),
+        (None, strategy_key),
+        (None, None),
+    ):
+        if candidate in overrides:
+            return overrides[candidate]
+    resume_abs = _get_env_float("MARKETSIM_DRAWDOWN_RESUME")
+    if resume_abs is not None:
+        return resume_abs
+    factor = _get_env_float("MARKETSIM_DRAWDOWN_RESUME_FACTOR") or 0.8
+    if factor <= 0 or cap is None:
+        return None
+    return cap * factor
+
+
+def _kelly_drawdown_scale(strategy: Optional[str], symbol: Optional[str] = None) -> float:
+    cap = _drawdown_cap_for(strategy, symbol)
+    if not cap or cap <= 0:
+        scale = 1.0
+    else:
+        min_scale = _get_env_float("MARKETSIM_KELLY_DRAWDOWN_MIN_SCALE") or 0.0
+        try:
+            state = get_state()
+            drawdown_pct = getattr(state, "drawdown_pct", None)
+        except RuntimeError:
+            drawdown_pct = None
+        if drawdown_pct is None:
+            scale = 1.0
+        else:
+            scale = max(0.0, 1.0 - (drawdown_pct / cap))
+            if min_scale > 0:
+                scale = max(min_scale, scale)
+            scale = min(1.0, scale)
+
+    symbol_scale = _symbol_kelly_scale(symbol)
+    if symbol_scale is not None:
+        scale *= max(0.0, min(symbol_scale, 1.0))
+    min_scale = _get_env_float("MARKETSIM_KELLY_DRAWDOWN_MIN_SCALE") or 0.0
+    if min_scale > 0:
+        scale = max(min_scale, scale)
+    return min(1.0, scale)
+
+
 def _results_dir() -> Path:
     return Path(__file__).resolve().parent / "results"
+
+
+def _allowed_side_for(symbol: Optional[str]) -> Optional[str]:
+    global _SYMBOL_SIDE_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_SIDE_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_SIDE_CACHE is None or _SYMBOL_SIDE_CACHE[0] != cache_key:
+        parsed: Dict[str, str] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry:
+                    continue
+                if ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_SIDE_MAP entry: %s", entry)
+                    continue
+                symbol_key, side = entry.split(":", 1)
+                norm_symbol = symbol_key.strip().lower()
+                norm_side = side.strip().lower()
+                if norm_symbol and norm_side in {"buy", "sell", "both"}:
+                    parsed[norm_symbol] = norm_side
+                else:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_SIDE_MAP entry: %s", entry)
+        _SYMBOL_SIDE_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_SIDE_CACHE[1] if _SYMBOL_SIDE_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_kelly_scale(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_KELLY_SCALE_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_KELLY_SCALE_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_KELLY_SCALE_CACHE is None or _SYMBOL_KELLY_SCALE_CACHE[0] != cache_key:
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_KELLY_SCALE_MAP entry: %s", entry)
+                    continue
+                symbol_key, value = entry.split(":", 1)
+                try:
+                    parsed[symbol_key.strip().lower()] = float(value)
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_KELLY_SCALE_MAP value: %s", entry)
+        _SYMBOL_KELLY_SCALE_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_KELLY_SCALE_CACHE[1] if _SYMBOL_KELLY_SCALE_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_max_hold_seconds(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_MAX_HOLD_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_MAX_HOLD_CACHE is None or _SYMBOL_MAX_HOLD_CACHE[0] != cache_key:
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP entry: %s", entry)
+                    continue
+                symbol_key, seconds_raw = entry.split(":", 1)
+                try:
+                    parsed[symbol_key.strip().lower()] = float(seconds_raw)
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP value: %s", entry)
+        _SYMBOL_MAX_HOLD_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_MAX_HOLD_CACHE[1] if _SYMBOL_MAX_HOLD_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_min_cooldown_minutes(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_MIN_COOLDOWN_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MIN_COOLDOWN_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_MIN_COOLDOWN_CACHE is None or _SYMBOL_MIN_COOLDOWN_CACHE[0] != cache_key:
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MIN_COOLDOWN_MAP entry: %s", entry)
+                    continue
+                symbol_key, value_raw = entry.split(":", 1)
+                try:
+                    parsed[symbol_key.strip().lower()] = float(value_raw)
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MIN_COOLDOWN_MAP value: %s", entry)
+        _SYMBOL_MIN_COOLDOWN_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_MIN_COOLDOWN_CACHE[1] if _SYMBOL_MIN_COOLDOWN_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_max_entries_per_run(
+    symbol: Optional[str], strategy: Optional[str] = None
+) -> Tuple[Optional[int], Optional[Tuple[Optional[str], Optional[str]]]]:
+    global _SYMBOL_MAX_ENTRIES_CACHE
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MAX_ENTRIES_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_MAX_ENTRIES_CACHE is None or _SYMBOL_MAX_ENTRIES_CACHE[0] != cache_key:
+        parsed: Dict[Tuple[Optional[str], Optional[str]], int] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MAX_ENTRIES_MAP entry: %s", entry)
+                    continue
+                key_raw, value_raw = entry.split(":", 1)
+                symbol_key: Optional[str] = None
+                strategy_key: Optional[str] = None
+                if "@" in key_raw:
+                    sym_raw, strat_raw = key_raw.split("@", 1)
+                    symbol_key = sym_raw.strip().lower() or None
+                    strategy_key = strat_raw.strip().lower() or None
+                else:
+                    key_clean = key_raw.strip().lower()
+                    symbol_key = key_clean or None
+                try:
+                    parsed[(symbol_key, strategy_key)] = int(float(value_raw))
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MAX_ENTRIES_MAP value: %s", entry)
+        _SYMBOL_MAX_ENTRIES_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_MAX_ENTRIES_CACHE[1] if _SYMBOL_MAX_ENTRIES_CACHE else {}
+    symbol_key = symbol.lower() if symbol else None
+    strategy_key = strategy.lower() if strategy else None
+    for candidate in (
+        (symbol_key, strategy_key),
+        (symbol_key, None),
+        (None, strategy_key),
+        (None, None),
+    ):
+        if candidate in overrides:
+            return overrides[candidate], candidate
+    return None, None
+
+
+def _symbol_min_move(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_MIN_MOVE_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MIN_MOVE_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_MIN_MOVE_CACHE is None or _SYMBOL_MIN_MOVE_CACHE[0] != cache_key:
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MIN_MOVE_MAP entry: %s", entry)
+                    continue
+                key_raw, value_raw = entry.split(":", 1)
+                try:
+                    parsed[key_raw.strip().lower()] = float(value_raw)
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MIN_MOVE_MAP value: %s", entry)
+        _SYMBOL_MIN_MOVE_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_MIN_MOVE_CACHE[1] if _SYMBOL_MIN_MOVE_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_min_predicted_move(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_MIN_PREDICTED_MOVE_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP")
+    cache_key = env_raw or ""
+    if (
+        _SYMBOL_MIN_PREDICTED_MOVE_CACHE is None
+        or _SYMBOL_MIN_PREDICTED_MOVE_CACHE[0] != cache_key
+    ):
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning(
+                        "Ignoring malformed MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP entry: %s",
+                        entry,
+                    )
+                    continue
+                key_raw, value_raw = entry.split(":", 1)
+                try:
+                    parsed[key_raw.strip().lower()] = abs(float(value_raw))
+                except ValueError:
+                    logger.warning(
+                        "Ignoring invalid MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP value: %s",
+                        entry,
+                    )
+        _SYMBOL_MIN_PREDICTED_MOVE_CACHE = (cache_key, parsed)
+    overrides = (
+        _SYMBOL_MIN_PREDICTED_MOVE_CACHE[1] if _SYMBOL_MIN_PREDICTED_MOVE_CACHE else {}
+    )
+    return overrides.get(symbol.lower())
+
+
+def _symbol_min_strategy_return(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_MIN_STRATEGY_RETURN_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP")
+    cache_key = env_raw or ""
+    if (
+        _SYMBOL_MIN_STRATEGY_RETURN_CACHE is None
+        or _SYMBOL_MIN_STRATEGY_RETURN_CACHE[0] != cache_key
+    ):
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning(
+                        "Ignoring malformed MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP entry: %s",
+                        entry,
+                    )
+                    continue
+                key_raw, value_raw = entry.split(":", 1)
+                try:
+                    parsed[key_raw.strip().lower()] = float(value_raw)
+                except ValueError:
+                    logger.warning(
+                        "Ignoring invalid MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP value: %s",
+                        entry,
+                    )
+        _SYMBOL_MIN_STRATEGY_RETURN_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_MIN_STRATEGY_RETURN_CACHE[1] if _SYMBOL_MIN_STRATEGY_RETURN_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_force_probe(symbol: Optional[str]) -> bool:
+    global _SYMBOL_FORCE_PROBE_CACHE
+    if symbol is None:
+        return False
+    env_raw = os.getenv("MARKETSIM_SYMBOL_FORCE_PROBE_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_FORCE_PROBE_CACHE is None or _SYMBOL_FORCE_PROBE_CACHE[0] != cache_key:
+        parsed: Dict[str, bool] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry:
+                    continue
+                if ":" in entry:
+                    key_raw, value_raw = entry.split(":", 1)
+                    value_norm = value_raw.strip().lower()
+                    parsed[key_raw.strip().lower()] = value_norm in _TRUTHY
+                else:
+                    parsed[entry.strip().lower()] = True
+        _SYMBOL_FORCE_PROBE_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_FORCE_PROBE_CACHE[1] if _SYMBOL_FORCE_PROBE_CACHE else {}
+    return bool(overrides.get(symbol.lower()))
+
+
+def _symbol_trend_pnl_threshold(symbol: Optional[str]) -> Optional[float]:
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_TREND_PNL_SUSPEND_MAP")
+    if not env_raw:
+        return None
+    for item in env_raw.split(","):
+        entry = item.strip()
+        if not entry or ":" not in entry:
+            continue
+        key_raw, value_raw = entry.split(":", 1)
+        if key_raw.strip().lower() == symbol.lower():
+            try:
+                return float(value_raw)
+            except ValueError:
+                logger.warning("Invalid MARKETSIM_TREND_PNL_SUSPEND_MAP value: %s", entry)
+                return None
+    return None
+
+
+def _symbol_trend_resume_threshold(symbol: Optional[str]) -> Optional[float]:
+    global _TREND_RESUME_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_TREND_PNL_RESUME_MAP")
+    cache_key = env_raw or ""
+    if _TREND_RESUME_CACHE is None or _TREND_RESUME_CACHE[0] != cache_key:
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_TREND_PNL_RESUME_MAP entry: %s", entry)
+                    continue
+                key_raw, value_raw = entry.split(":", 1)
+                try:
+                    parsed[key_raw.strip().lower()] = float(value_raw)
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_TREND_PNL_RESUME_MAP value: %s", entry)
+        _TREND_RESUME_CACHE = (cache_key, parsed)
+    overrides = _TREND_RESUME_CACHE[1] if _TREND_RESUME_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _load_trend_summary() -> Dict[str, Dict[str, float]]:
+    global _TREND_SUMMARY_CACHE
+    path_raw = os.getenv("MARKETSIM_TREND_SUMMARY_PATH")
+    if not path_raw:
+        return {}
+    path = Path(path_raw)
+    if not path.exists():
+        logger.debug("Trend summary path %s not found; skipping suspend checks.", path)
+        return {}
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {}
+    cache_key = (path_raw, mtime)
+    if _TREND_SUMMARY_CACHE and _TREND_SUMMARY_CACHE[0] == cache_key:
+        return _TREND_SUMMARY_CACHE[1]
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            summary = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to load trend summary %s: %s", path, exc)
+        return {}
+    _TREND_SUMMARY_CACHE = (cache_key, summary)
+    return summary
+
+
+def _get_trend_stat(symbol: str, key: str) -> Optional[float]:
+    summary = _load_trend_summary()
+    if not summary:
+        return None
+    symbol_info = summary.get(symbol.upper())
+    if not symbol_info:
+        return None
+    value = symbol_info.get(key)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def reset_symbol_entry_counters(run_id: Optional[str] = None) -> None:
+    """Clear per-run entry counters to allow fresh simulations or trading sessions."""
+    global _SYMBOL_RUN_ENTRY_COUNTS, _SYMBOL_RUN_ENTRY_ID
+    _SYMBOL_RUN_ENTRY_COUNTS = {}
+    _SYMBOL_RUN_ENTRY_ID = run_id
+
+
+def _normalize_entry_key(symbol: Optional[str], strategy: Optional[str]) -> Optional[EntryKey]:
+    if symbol is None:
+        return None
+    return (symbol.lower(), strategy.lower() if strategy else None)
+
+
+def _current_symbol_entry_count(symbol: str, strategy: Optional[str], *, key: Optional[EntryKey] = None) -> int:
+    use_key = key if key is not None else _normalize_entry_key(symbol, strategy)
+    if use_key is None:
+        return 0
+    return _SYMBOL_RUN_ENTRY_COUNTS.get(use_key, 0)
+
+
+def _increment_symbol_entry(symbol: str, strategy: Optional[str], *, key: Optional[EntryKey] = None) -> int:
+    use_key = key if key is not None else _normalize_entry_key(symbol, strategy)
+    if use_key is None:
+        return 0
+    new_count = _SYMBOL_RUN_ENTRY_COUNTS.get(use_key, 0) + 1
+    _SYMBOL_RUN_ENTRY_COUNTS[use_key] = new_count
+    return new_count
+
+
+def _format_entry_limit_key(key: Optional[EntryKey]) -> Optional[str]:
+    if key is None:
+        return None
+    symbol_key, strategy_key = key
+    if symbol_key and strategy_key:
+        return f"{symbol_key}@{strategy_key}"
+    if symbol_key:
+        return symbol_key
+    if strategy_key:
+        return f"@{strategy_key}"
+    return "__default__"
+
+
+def get_entry_counter_snapshot() -> Dict[str, Dict[str, Dict[str, Optional[float]]]]:
+    """Return per-key and per-symbol entry counter statistics for the current run."""
+    snapshot_per_key: Dict[str, Dict[str, Optional[float]]] = {}
+    aggregated: Dict[str, Dict[str, Optional[float]]] = {}
+
+    for (symbol_key, strategy_key), count in _SYMBOL_RUN_ENTRY_COUNTS.items():
+        label_symbol = (symbol_key or "__global__").upper()
+        label_key = label_symbol if strategy_key is None else f"{label_symbol}@{strategy_key}"
+        resolved_limit, matched_key = _symbol_max_entries_per_run(
+            label_symbol if symbol_key is not None else None,
+            strategy_key,
+        )
+        approx_trade_limit = float(max(resolved_limit, 0) * 2) if resolved_limit is not None else None
+        snapshot_per_key[label_key] = {
+            "entries": int(count),
+            "entry_limit": float(resolved_limit) if resolved_limit is not None else None,
+            "approx_trade_limit": approx_trade_limit,
+            "resolved_limit_key": _format_entry_limit_key(matched_key),
+        }
+
+        aggregate = aggregated.setdefault(
+            label_symbol,
+            {
+                "entries": 0,
+                "entry_limits": [],
+            },
+        )
+        aggregate["entries"] += int(count)
+        if resolved_limit is not None:
+            aggregate["entry_limits"].append(float(resolved_limit))
+
+    per_symbol: Dict[str, Dict[str, Optional[float]]] = {}
+    for symbol_label, info in aggregated.items():
+        candidates = info["entry_limits"]
+        entry_limit = min(candidates) if candidates else None
+        approx_trade_limit = float(max(entry_limit, 0) * 2) if entry_limit is not None else None
+        per_symbol[symbol_label] = {
+            "entries": info["entries"],
+            "entry_limit": entry_limit,
+            "approx_trade_limit": approx_trade_limit,
+        }
+
+    return {
+        "per_key": snapshot_per_key,
+        "per_symbol": per_symbol,
+    }
 
 
 def _find_latest_prediction_file() -> Optional[Path]:
@@ -277,6 +879,9 @@ def clear_cooldown(symbol: str) -> None:
 
 
 def can_trade_now(symbol: str, now: datetime, min_cooldown_minutes: int = PROBE_LOSS_COOLDOWN_MINUTES) -> bool:
+    override_minutes = _symbol_min_cooldown_minutes(symbol)
+    if override_minutes is not None and override_minutes >= 0:
+        min_cooldown_minutes = float(override_minutes)
     state = _COOLDOWN_STATE.get(symbol)
     if not state:
         return True
@@ -614,11 +1219,21 @@ def _update_active_trade(symbol: str, side: str, mode: str, qty: float, strategy
         logger.error(f"Failed loading active trades store: {exc}")
         return
     key = _state_key(symbol, side)
+    opened_at_sim = None
+    try:
+        state = get_state()
+        sim_now = getattr(getattr(state, "clock", None), "current", None)
+        if sim_now is not None:
+            opened_at_sim = sim_now.isoformat()
+    except RuntimeError:
+        opened_at_sim = None
     record = {
         "mode": mode,
         "qty": qty,
         "opened_at": datetime.now(timezone.utc).isoformat(),
     }
+    if opened_at_sim:
+        record["opened_at_sim"] = opened_at_sim
     if strategy:
         record["entry_strategy"] = strategy
     store[key] = record
@@ -974,6 +1589,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
     for symbol in symbols:
         try:
+            kelly_fraction = None
             # not many because we need to adapt strats? eg the wierd spikes in uniusd are a big opportunity to trade w high/low
             # but then i bumped up because its not going to say buy crypto when its down, if its most recent based?
             num_simulations = env_simulations or 70
@@ -1272,12 +1888,27 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                         f"Skipping {symbol} - calibrated move flipped sign negative to positive for sell setup."
                     )
                     continue
+            allowed_side = _allowed_side_for(symbol)
+            if allowed_side and allowed_side != "both":
+                if allowed_side == "buy" and position_side == "sell":
+                    _log_detail(f"Skipping {symbol} - sells disabled via MARKETSIM_SYMBOL_SIDE_MAP.")
+                    continue
+                if allowed_side == "sell" and position_side == "buy":
+                    _log_detail(f"Skipping {symbol} - buys disabled via MARKETSIM_SYMBOL_SIDE_MAP.")
+                    continue
+
             if predicted_movement < 0 and position_side == "buy":
                 if _is_kronos_only_mode():
                     position_side = "sell"
                 else:
                     _log_detail(
                         f"Skipping {symbol} - calibrated move flipped sign positive to negative for buy setup."
+                    )
+                    continue
+
+                if allowed_side and allowed_side not in {"both", position_side}:
+                    _log_detail(
+                        f"Skipping {symbol} - {position_side} entries disabled via MARKETSIM_SYMBOL_SIDE_MAP."
                     )
                     continue
 
@@ -1302,6 +1933,50 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if sigma_pct <= 0:
                 sigma_pct = max(abs(expected_move_pct), 1e-3)
             kelly_fraction = kelly_lite(abs(expected_move_pct), sigma_pct)
+            drawdown_scale = _kelly_drawdown_scale(best_strategy, symbol)
+            if drawdown_scale < 1.0:
+                logger.info(
+                    f"{symbol}: Drawdown scale applied to Kelly for {best_strategy or 'unknown'} ({drawdown_scale:.3f})"
+                )
+
+            cap = _drawdown_cap_for(best_strategy, symbol)
+            resume_threshold = _drawdown_resume_for(best_strategy, cap, symbol)
+            try:
+                state = get_state()
+                drawdown_pct = getattr(state, "drawdown_pct", None)
+            except RuntimeError:
+                drawdown_pct = None
+            suspend_threshold = _lookup_threshold(
+                "MARKETSIM_DRAWDOWN_SUSPEND_MAP", symbol, best_strategy
+            )
+            if suspend_threshold is None:
+                suspend_threshold = _get_env_float("MARKETSIM_DRAWDOWN_SUSPEND")
+            if cap is None:
+                cap = suspend_threshold
+            strategy_key = _strategy_key(symbol, best_strategy)
+            if (
+                cap
+                and drawdown_pct is not None
+                and suspend_threshold
+                and drawdown_pct >= suspend_threshold
+            ):
+                _DRAW_SUSPENDED[strategy_key] = True
+                _log_detail(
+                    f"Suspending new entry for {symbol} due to drawdown {drawdown_pct:.3%} >= {suspend_threshold:.3%}"
+                )
+                continue
+            if (
+                _DRAW_SUSPENDED.get(strategy_key)
+                and resume_threshold
+                and drawdown_pct is not None
+                and drawdown_pct <= resume_threshold
+            ):
+                _DRAW_SUSPENDED[strategy_key] = False
+                _log_detail(
+                    f"Resuming entries for strategy {strategy_key} as drawdown {drawdown_pct:.3%} <= {resume_threshold:.3%}"
+                )
+            if _DRAW_SUSPENDED.get(strategy_key):
+                continue
 
             if (
                 edge_strength < MIN_EDGE_STRENGTH
@@ -1331,14 +2006,18 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             bid_price, ask_price = fetch_bid_ask(symbol)
             spread_bps = compute_spread_bps(bid_price, ask_price)
             spread_cap = resolve_spread_cap(symbol)
-            tradeable, spread_reason = is_tradeable(
-                symbol,
-                bid_price,
-                ask_price,
-                avg_dollar_vol=avg_dollar_vol,
-                atr_pct=atr_pct,
-            )
-            edge_ok, edge_reason = pass_edge_threshold(symbol, expected_move_pct)
+            if SIMPLIFIED_MODE:
+                tradeable, spread_reason = True, "simplified"
+                edge_ok, edge_reason = True, "simplified"
+            else:
+                tradeable, spread_reason = is_tradeable(
+                    symbol,
+                    bid_price,
+                    ask_price,
+                    avg_dollar_vol=avg_dollar_vol,
+                    atr_pct=atr_pct,
+                )
+                edge_ok, edge_reason = pass_edge_threshold(symbol, expected_move_pct)
             sign_toto = resolve_signal_sign(toto_move_pct)
             sign_kronos = resolve_signal_sign(kronos_move_pct)
             active_signs = [sign for sign in (sign_toto, sign_kronos) if sign in (-1, 1)]
@@ -1360,6 +2039,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 if fallback_source:
                     _log_detail(f"{symbol}: consensus fallback to {fallback_source} signal only")
 
+            if SIMPLIFIED_MODE:
+                consensus_reason = None
+
             block_info = _evaluate_trade_block(symbol, position_side)
             last_pnl = block_info.get("last_pnl")
             last_closed_at = block_info.get("last_closed_at")
@@ -1369,15 +2051,25 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 else:
                     clear_cooldown(symbol)
             now_utc = datetime.now(timezone.utc)
-            cooldown_ok = can_trade_now(symbol, now_utc)
+            cooldown_ok = True if SIMPLIFIED_MODE else can_trade_now(symbol, now_utc)
 
             gating_reasons: List[str] = []
-            sharpe_cutoff = 0.3 if not kronos_only_mode else -0.25
-            if walk_forward_oos_sharpe is not None and walk_forward_oos_sharpe < sharpe_cutoff:
+            default_cutoff = -0.25 if kronos_only_mode else 0.3
+            env_key = (
+                "MARKETSIM_KRONOS_SHARPE_CUTOFF"
+                if kronos_only_mode
+                else "MARKETSIM_SHARPE_CUTOFF"
+            )
+            sharpe_cutoff = _get_env_float(env_key)
+            if sharpe_cutoff is None and kronos_only_mode:
+                sharpe_cutoff = _get_env_float("MARKETSIM_SHARPE_CUTOFF")
+            if sharpe_cutoff is None:
+                sharpe_cutoff = default_cutoff
+            if not SIMPLIFIED_MODE and walk_forward_oos_sharpe is not None and walk_forward_oos_sharpe < sharpe_cutoff:
                 gating_reasons.append(
                     f"Walk-forward Sharpe {walk_forward_oos_sharpe:.2f} < {sharpe_cutoff:.2f}"
                 )
-            if not kronos_only_mode:
+            if not SIMPLIFIED_MODE and not kronos_only_mode:
                 if (
                     walk_forward_turnover is not None
                     and walk_forward_oos_sharpe is not None
@@ -1406,7 +2098,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if kelly_fraction <= 0:
                 gating_reasons.append("Kelly fraction <= 0")
 
-            base_blocked = block_info.get("blocked", False)
+            base_blocked = False if SIMPLIFIED_MODE else block_info.get("blocked", False)
             if kronos_only_mode and base_blocked:
                 base_blocked = False
             combined_reasons: List[str] = []
@@ -1524,6 +2216,20 @@ def build_portfolio(
     if not all_results:
         return {}
 
+    if SIMPLIFIED_MODE:
+        limit = max_expanded or max_positions
+        ranked = sorted(
+            all_results.items(),
+            key=lambda item: _coerce_optional_float(item[1].get("avg_return")) or 0.0,
+            reverse=True,
+        )
+        simple_picks: Dict[str, Dict] = {}
+        for symbol, data in ranked:
+            simple_picks[symbol] = data
+            if len(simple_picks) >= limit:
+                break
+        return simple_picks
+
     sorted_by_composite = sorted(all_results.items(), key=lambda item: item[1].get("composite_score", 0), reverse=True)
 
     picks: Dict[str, Dict] = {}
@@ -1638,6 +2344,11 @@ def manage_positions(
         f"global risk threshold={snapshot.risk_threshold:.2f}x"
     )
 
+    try:
+        sim_state = get_state()
+    except RuntimeError:
+        sim_state = None
+
     if not positions:
         logger.info("No positions to analyze")
     else:
@@ -1651,6 +2362,7 @@ def manage_positions(
     # Handle position closures
     for position in positions:
         symbol = position.symbol
+        normalized_side = _normalize_side_for_key(getattr(position, "side", ""))
         should_close = False
         close_reason = ""
 
@@ -1696,7 +2408,6 @@ def manage_positions(
             should_close = True
             close_reason = f"direction_change_to_{all_analyzed_results[symbol]['side']}"
 
-        normalized_side = _normalize_side_for_key(position.side)
         probe_meta = all_analyzed_results.get(symbol, {})
         if not probe_meta:
             probe_meta = _evaluate_trade_block(symbol, normalized_side)
@@ -1707,6 +2418,26 @@ def manage_positions(
             )
             should_close = True
             close_reason = "probe_duration_exceeded"
+
+        if not should_close:
+            hold_limit_seconds = _symbol_max_hold_seconds(symbol)
+            if hold_limit_seconds:
+                active_trade_meta = _get_active_trade(symbol, normalized_side)
+                opened_at_wall = _parse_timestamp(active_trade_meta.get("opened_at"))
+                opened_at_sim = _parse_timestamp(active_trade_meta.get("opened_at_sim"))
+                hold_age_seconds = None
+                if opened_at_sim is not None and sim_state is not None:
+                    sim_now = getattr(getattr(sim_state, "clock", None), "current", None)
+                    if sim_now is not None:
+                        hold_age_seconds = (sim_now - opened_at_sim).total_seconds()
+                if hold_age_seconds is None and opened_at_wall is not None:
+                    hold_age_seconds = (datetime.now(timezone.utc) - opened_at_wall).total_seconds()
+                if hold_age_seconds is not None and hold_age_seconds >= hold_limit_seconds:
+                    logger.info(
+                        f"Closing {symbol} {normalized_side} after {hold_age_seconds:.0f}s (max hold {hold_limit_seconds:.0f}s)."
+                    )
+                    should_close = True
+                    close_reason = "max_hold_exceeded"
 
         if should_close:
             _record_trade_outcome(position, close_reason or "unspecified")
@@ -1725,26 +2456,137 @@ def manage_positions(
         equity = ensure_lower_bound(total_exposure_value, 1.0, default=1.0)
     max_total_exposure_value = (MAX_TOTAL_EXPOSURE_PCT / 100.0) * equity
 
-    for symbol, data in current_picks.items():
-        trade_mode = data.get("trade_mode", "normal")
-        is_probe_trade = trade_mode == "probe"
-        probe_transition_ready = data.get("probe_transition_ready", False)
-        probe_expired = data.get("probe_expired", False)
+    for symbol, original_data in current_picks.items():
+        data = dict(original_data)
+        simplified_mode = SIMPLIFIED_MODE
+        if simplified_mode:
+            data["trade_mode"] = "normal"
+            trade_mode = "normal"
+            is_probe_trade = False
+            force_probe = False
+            probe_transition_ready = False
+            probe_expired = False
+        else:
+            if symbol.upper() in PROBE_SYMBOLS and data.get("trade_mode", "normal") != "probe":
+                data["trade_mode"] = "probe"
+            trade_mode = data.get("trade_mode", "normal")
+            is_probe_trade = trade_mode == "probe"
+            force_probe = _symbol_force_probe(symbol)
+            if force_probe and data.get("trade_mode") != "probe":
+                data = dict(data)
+                data["trade_mode"] = "probe"
+                current_picks[symbol] = data
+                logger.info(f"{symbol}: Forcing probe mode via MARKETSIM_SYMBOL_FORCE_PROBE_MAP.")
+                trade_mode = data["trade_mode"]
+                is_probe_trade = True
+            probe_transition_ready = data.get("probe_transition_ready", False)
+            probe_expired = data.get("probe_expired", False)
 
-        if data.get("trade_blocked") and not is_probe_trade:
-            logger.info(f"Skipping {symbol} due to active block: {data.get('block_reason', 'recent loss')}")
-            continue
-        if probe_expired:
-            logger.info(
-                f"Skipping {symbol} entry while probe backout executes (duration exceeded {PROBE_MAX_DURATION})."
-            )
-            continue
+            if data.get("trade_blocked") and not is_probe_trade:
+                logger.info(f"Skipping {symbol} due to active block: {data.get('block_reason', 'recent loss')}")
+                continue
+            if probe_expired:
+                logger.info(
+                    f"Skipping {symbol} entry while probe backout executes (duration exceeded {PROBE_MAX_DURATION})."
+                )
+                continue
+            min_move = _symbol_min_move(symbol)
+            if min_move is not None:
+                predicted_move = abs(coerce_numeric(data.get("predicted_movement"), default=0.0))
+                if predicted_move < min_move:
+                    logger.info(
+                        f"Skipping {symbol} - predicted move {predicted_move:.4f} below minimum "
+                        f"{min_move:.4f} configured via MARKETSIM_SYMBOL_MIN_MOVE_MAP."
+                    )
+                    continue
+            min_predicted_direction = _symbol_min_predicted_move(symbol)
+            if min_predicted_direction is not None:
+                predicted_movement = coerce_numeric(data.get("predicted_movement"), default=None)
+                if predicted_movement is None:
+                    logger.info(
+                        f"Skipping {symbol} - missing predicted movement required by "
+                        "MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP."
+                    )
+                    continue
+                threshold = max(min_predicted_direction, 0.0)
+                if threshold > 0:
+                    if data["side"] == "buy":
+                        if predicted_movement < threshold:
+                            logger.info(
+                                f"Skipping {symbol} - predicted move {predicted_movement:.4f} below "
+                                f"minimum {threshold:.4f} for long entries "
+                                "(MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP)."
+                            )
+                            continue
+                    elif data["side"] == "sell":
+                        if predicted_movement > -threshold:
+                            logger.info(
+                                f"Skipping {symbol} - predicted move {predicted_movement:.4f} above "
+                                f"-{threshold:.4f} for short entries "
+                                "(MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP)."
+                            )
+                            continue
+            min_strategy_return = _symbol_min_strategy_return(symbol)
+            if min_strategy_return is not None:
+                strategy_key = data.get("strategy")
+                strategy_returns = data.get("strategy_returns", {}) or {}
+                strategy_return = coerce_numeric(strategy_returns.get(strategy_key), default=None)
+                if strategy_return is None:
+                    strategy_return = coerce_numeric(data.get("avg_return"), default=None)
+                if strategy_return is None:
+                    strategy_return = coerce_numeric(data.get("predicted_movement"), default=None)
+                if strategy_return is None:
+                    logger.info(
+                        f"Skipping {symbol} - missing strategy return to compare with "
+                        "MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP."
+                    )
+                    continue
+                if min_strategy_return < 0:
+                    if strategy_return > min_strategy_return:
+                        logger.info(
+                            f"Skipping {symbol} - strategy return {strategy_return:.4f} "
+                            f"above allowed maximum {min_strategy_return:.4f} for short bias."
+                        )
+                        continue
+                elif min_strategy_return > 0:
+                    if strategy_return < min_strategy_return:
+                        logger.info(
+                            f"Skipping {symbol} - strategy return {strategy_return:.4f} "
+                            f"below minimum {min_strategy_return:.4f}."
+                        )
+                        continue
+            trend_threshold = _symbol_trend_pnl_threshold(symbol)
+            resume_threshold = _symbol_trend_resume_threshold(symbol)
+            if trend_threshold is not None or resume_threshold is not None:
+                pnl_stat = _get_trend_stat(symbol, "pnl")
+                if pnl_stat is None:
+                    logger.debug(
+                        "Trend PnL stat unavailable for %s; skipping trend-based suspension check.",
+                        symbol,
+                    )
+                else:
+                    if trend_threshold is not None and pnl_stat <= trend_threshold:
+                        logger.info(
+                            f"Skipping {symbol} - cumulative trend PnL {pnl_stat:.2f} ≤ "
+                            f"{trend_threshold:.2f} from MARKETSIM_TREND_PNL_SUSPEND_MAP."
+                        )
+                        continue
+                    if resume_threshold is not None and pnl_stat < resume_threshold:
+                        logger.info(
+                            f"Skipping {symbol} - cumulative trend PnL {pnl_stat:.2f} < "
+                            f"{resume_threshold:.2f} resume floor (MARKETSIM_TREND_PNL_RESUME_MAP)."
+                        )
+                        continue
 
         position_exists = any(p.symbol == symbol for p in positions)
         correct_side = any(p.symbol == symbol and is_same_side(p.side, data["side"]) for p in positions)
 
         transition_to_normal = (
-            is_probe_trade and probe_transition_ready and position_exists and correct_side
+            is_probe_trade
+            and not force_probe
+            and probe_transition_ready
+            and position_exists
+            and correct_side
         )
         effective_probe = is_probe_trade and not transition_to_normal
 
@@ -1789,14 +2631,25 @@ def manage_positions(
                 needs_size_increase = False
             else:
                 base_qty = computed_qty
-                kelly_value = ensure_lower_bound(
+                drawdown_scale = _kelly_drawdown_scale(data.get("strategy"), symbol)
+                base_kelly = ensure_lower_bound(
                     coerce_numeric(data.get("kelly_fraction"), default=1.0),
                     0.0,
                     default=0.0,
                 )
+                kelly_value = base_kelly
+                if drawdown_scale < 1.0 and base_kelly > 0:
+                    scaled_kelly = ensure_lower_bound(base_kelly * drawdown_scale, 0.0, default=0.0)
+                    if scaled_kelly < base_kelly:
+                        logger.info(
+                            f"{symbol}: Kelly reduced from {base_kelly:.3f} to {scaled_kelly:.3f} via drawdown scaling"
+                        )
+                    kelly_value = scaled_kelly
                 if kelly_value <= 0:
                     logger.info(f"{symbol}: Kelly fraction non-positive; skipping entry.")
                     continue
+                kelly_fraction = kelly_value
+                data["kelly_fraction"] = kelly_fraction
                 target_qty = ensure_lower_bound(base_qty * kelly_value, 0.0, default=0.0)
                 if target_qty < min_trade_qty:
                     target_qty = min_trade_qty
@@ -1863,7 +2716,52 @@ def manage_positions(
             _mark_probe_pending(symbol, data["side"])
             continue
 
+        entry_strategy = data.get("strategy")
+        stored_entry_strategy = "maxdiff" if entry_strategy in {"highlow", "maxdiff"} else entry_strategy
+
         if should_enter or not correct_side:
+            max_entries_per_run, limit_key = _symbol_max_entries_per_run(symbol, stored_entry_strategy)
+            resolved_limit_key = limit_key or _normalize_entry_key(symbol, None)
+            current_count = 0
+            if max_entries_per_run is not None and resolved_limit_key is not None:
+                current_count = _current_symbol_entry_count(
+                    symbol,
+                    stored_entry_strategy,
+                    key=resolved_limit_key,
+                )
+            is_new_position_entry = (
+                not position_exists or not correct_side or effective_probe or transition_to_normal
+            )
+            if (
+                max_entries_per_run is not None
+                and max_entries_per_run >= 0
+                and is_new_position_entry
+                and resolved_limit_key is not None
+                and current_count >= max_entries_per_run
+            ):
+                logger.info(
+                    f"{symbol}: Skipping entry to respect per-run max entries limit "
+                    f"({current_count}/{max_entries_per_run})."
+                )
+                if effective_probe:
+                    _mark_probe_pending(symbol, data["side"])
+                continue
+
+            if (
+                max_entries_per_run is not None
+                and max_entries_per_run > 0
+                and is_new_position_entry
+                and resolved_limit_key is not None
+                and current_count < max_entries_per_run
+            ):
+                warn_threshold = max(0, int(math.floor(max_entries_per_run * 0.8)))
+                if current_count >= warn_threshold:
+                    logger.info(
+                        f"{symbol}: Entries {current_count}/{max_entries_per_run} nearing cap "
+                        f"for {resolved_limit_key}; next entry will reduce remaining headroom."
+                    )
+
+            entry_executed = False
             if needs_size_increase and bid_price is not None and ask_price is not None and not effective_probe:
                 entry_price = ask_price if data["side"] == "buy" else bid_price
                 target_qty_for_log = get_qty(symbol, entry_price, positions)
@@ -1880,8 +2778,6 @@ def manage_positions(
                 else:
                     logger.info(f"Entering new {data['side']} position for {symbol}")
 
-            entry_strategy = data.get("strategy")
-            stored_entry_strategy = "maxdiff" if entry_strategy in {"highlow", "maxdiff"} else entry_strategy
             is_highlow_entry = entry_strategy in {"highlow", "maxdiff"} and not effective_probe
             highlow_limit_executed = False
 
@@ -1933,6 +2829,7 @@ def manage_positions(
                                 )
                                 highlow_limit_executed = True
                                 entry_price = float(limit_price)
+                                entry_executed = True
                             except Exception as exc:
                                 logger.warning(
                                     "Failed to spawn highlow staged entry for %s: %s; attempting direct limit order fallback.",
@@ -1954,6 +2851,7 @@ def manage_positions(
                                     else:
                                         highlow_limit_executed = True
                                         entry_price = float(limit_price)
+                                        entry_executed = True
                                 except Exception as fallback_exc:
                                     logger.warning(
                                         "Fallback highlow limit order failed for %s: %s; will ramp instead.",
@@ -1965,10 +2863,12 @@ def manage_positions(
 
                 if not highlow_limit_executed:
                     ramp_into_position(symbol, data["side"], target_qty=target_qty)
+                    entry_executed = True
             else:
                 logger.warning(f"Could not get bid/ask prices for {symbol}, using default sizing")
                 if not highlow_limit_executed:
                     ramp_into_position(symbol, data["side"], target_qty=target_qty if effective_probe else None)
+                    entry_executed = True
 
             if transition_to_normal:
                 _mark_probe_transitioned(symbol, data["side"], target_qty)
@@ -2002,6 +2902,22 @@ def manage_positions(
                 )
                 _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
                 _normalize_active_trade_patch(_update_active_trade)
+
+            if (
+                entry_executed
+                and is_new_position_entry
+                and max_entries_per_run is not None
+                and max_entries_per_run >= 0
+                and resolved_limit_key is not None
+            ):
+                post_count = _increment_symbol_entry(
+                    symbol,
+                    stored_entry_strategy,
+                    key=resolved_limit_key,
+                )
+                logger.info(
+                    f"{symbol}: Incremented per-run entry count to {post_count}/{max_entries_per_run}."
+                )
 
             if not effective_probe and entry_price is not None:
                 projected_value = abs(target_qty * entry_price)
