@@ -15,6 +15,11 @@
 - **Symbol PnL breakdown:** empty (no realised or open PnL).
 - **Runtime observations:** Kronos/Toto continue to fall back immediately. Even with `TOTO_DISABLE_COMPILE=1`, Kronos still aborts when OHLC data are missing. All shortlisted names remain blocked by the risk gates (Sharpe < 0.30 or dollar volume below thresholds), mirroring the behaviour we observed in the longer 30-step sandbox run.
 
+### Gate-relaxed experiment (24 Oct 2025)
+- **Environment:** `MARKETSIM_DISABLE_GATES=1`, `TRADE_STRATEGY_WHITELIST=simple`, 17-symbol universe, 10 steps, `TOTO_DISABLE_COMPILE=1`.
+- **Outcome:** Final cash **$179,855.61** with equity **$85,581.39** (PnL **−$14,418.61** / **−14.42 %**; annualised −98.7 % / −99.7 %). Removing the Sharpe / turnover / spread / dollar-volume guards lets Kelly sizing pile into large short books—e.g., COUR −$31.5 K, COIN −$22.4 K, U −$23.0 K—so the account ends the run with heavy short exposure and sizable drawdowns.
+- **Takeaway:** The relaxed gates confirm that the risk filters were the only thing preventing the Kelly allocator from saturating shorts. Before benchmarking other strategies we need stricter position caps (or a reduced Kelly fraction) plus a remediation for the remaining Kronos/Toto runtime warnings; otherwise every variant will collapse into the same large short pile.
+
 ## Key Follow-ups
 1. **Restore OHLC coverage for the simulator feeds.** The mock data loader still surfaces price frames that lack `High/Low` for AMZN/AMD/INTC/COIN/BTCUSD/ETHUSD/UNIUSD. Until those pipelines are refreshed, the real backtest path will always drop to the fallback engine.
 2. **Re-enable Toto compilation after populating cache directories.** Torch.compile currently fails with `compiled_models/torch_inductor/...main.cpp: No such file or directory`; we disabled compilation to keep the run moving, but the GPU inference path will remain CPU-bound until we fix the cache bootstrap in `backtest_test3_inline._ensure_compilation_artifacts`.

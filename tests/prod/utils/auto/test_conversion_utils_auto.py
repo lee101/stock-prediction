@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-import pytest
-import sys
-from pathlib import Path
 import importlib
+import sys
 import types
+from pathlib import Path
+
+import pytest
+from src.runtime_imports import _reset_for_tests, setup_src_imports
 
 pytestmark = pytest.mark.auto_generated
 
@@ -30,9 +32,11 @@ class DummyTensor:
 
 
 def test_conversion_utils_with_mock_torch():
-    # Inject a minimal mock torch into sys.modules
-    sys.modules['torch'] = types.SimpleNamespace(Tensor=DummyTensor)
-    mod = importlib.import_module('src.conversion_utils')
+    _reset_for_tests()
+    stub_torch = types.SimpleNamespace(Tensor=DummyTensor)
+    sys.modules.pop("src.conversion_utils", None)
+    setup_src_imports(torch_module=stub_torch, numpy_module=None, pandas_module=None)
+    mod = importlib.import_module("src.conversion_utils")
 
     # Scalar tensor unwraps to float
     val = mod.unwrap_tensor(DummyTensor(0, 3.14))
@@ -43,8 +47,10 @@ def test_conversion_utils_with_mock_torch():
     assert arr == [1, 2, 3]
 
     # Non-tensor returns as-is
-    assert mod.unwrap_tensor({'a': 1}) == {'a': 1}
+    assert mod.unwrap_tensor({"a": 1}) == {"a": 1}
 
     # String to datetime conversion
-    dt = mod.convert_string_to_datetime('2024-04-16T19:53:01.577838')
+    dt = mod.convert_string_to_datetime("2024-04-16T19:53:01.577838")
     assert dt.year == 2024
+
+    _reset_for_tests()
