@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:  # pragma: no cover - dependency optional at import
     import matplotlib
@@ -40,6 +40,7 @@ class SymbolPerformance:
     unrealized_pl: float
     total_value: float
     trades: int
+    realised_pl: float
 
 
 @dataclass
@@ -51,9 +52,12 @@ class SimulationReport:
     total_return_pct: float
     fees_paid: float
     trades_executed: int
+    max_drawdown: float
+    max_drawdown_pct: float
     daily_snapshots: List[DailySnapshot] = field(default_factory=list)
     symbol_performance: List[SymbolPerformance] = field(default_factory=list)
     generated_files: List[Path] = field(default_factory=list)
+    trade_executions: List[TradeExecution] = field(default_factory=list)
 
     def render_summary(self) -> str:
         lines = [
@@ -63,6 +67,7 @@ class SimulationReport:
             f"  Total return : ${self.total_return:,.2f} ({self.total_return_pct:.2%})",
             f"  Fees paid    : ${self.fees_paid:,.2f}",
             f"  Trades       : {self.trades_executed}",
+            f"  Max drawdown : ${self.max_drawdown:,.2f} ({self.max_drawdown_pct:.2%})",
             "",
             "Per-symbol performance:",
         ]
@@ -70,7 +75,7 @@ class SimulationReport:
             lines.append("  (no trades executed)")
         else:
             lines.append(
-                "  Symbol | Cash Flow | Market Value | Position | Unrealized P/L | Total Value | Trades"
+                "  Symbol | Cash Flow | Market Value | Position | Unrealized P/L | Realized P/L | Total Value | Trades"
             )
             for perf in self.symbol_performance:
                 lines.append(
@@ -79,6 +84,7 @@ class SimulationReport:
                     f"${perf.market_value:>12,.2f} | "
                     f"{perf.position_qty:>8.3f} | "
                     f"${perf.unrealized_pl:>12,.2f} | "
+                    f"${perf.realised_pl:>12,.2f} | "
                     f"${perf.total_value:>11,.2f} | "
                     f"{perf.trades:>6}"
                 )
@@ -102,6 +108,7 @@ def _symbol_performance(state: SimulationState) -> List[SymbolPerformance]:
         unrealized = float(position.unrealized_pl) if position else 0.0
         cash_flow = cash_by_symbol.get(symbol, 0.0)
         total_value = cash_flow + market_value
+        realised = sum(trade.cash_delta for trade in trades_by_symbol.get(symbol, []))
         performance.append(
             SymbolPerformance(
                 symbol=symbol,
@@ -111,6 +118,7 @@ def _symbol_performance(state: SimulationState) -> List[SymbolPerformance]:
                 unrealized_pl=unrealized,
                 total_value=total_value,
                 trades=len(trades_by_symbol.get(symbol, [])),
+                realised_pl=realised,
             )
         )
     return performance
@@ -121,6 +129,7 @@ def _build_report(state: SimulationState, daily_snapshots: List[DailySnapshot], 
     final_equity = float(state.equity)
     total_return = final_equity - initial_cash
     total_return_pct = (total_return / initial_cash) if initial_cash else 0.0
+    max_dd_value, max_dd_pct = _compute_max_drawdown(daily_snapshots, initial_cash, final_equity)
 
     return SimulationReport(
         initial_cash=initial_cash,
@@ -130,9 +139,32 @@ def _build_report(state: SimulationState, daily_snapshots: List[DailySnapshot], 
         total_return_pct=total_return_pct,
         fees_paid=float(state.fees_paid),
         trades_executed=len(state.trade_log),
+        max_drawdown=max_dd_value,
+        max_drawdown_pct=max_dd_pct,
         daily_snapshots=daily_snapshots,
         symbol_performance=_symbol_performance(state),
+        trade_executions=list(state.trade_log),
     )
+
+
+def _compute_max_drawdown(
+    snapshots: List[DailySnapshot], initial_cash: float, final_equity: float
+) -> Tuple[float, float]:
+    if not snapshots:
+        equity_series = [initial_cash, final_equity]
+    else:
+        equity_series = [initial_cash]
+        equity_series.extend(snap.equity for snap in snapshots)
+    peak = equity_series[0]
+    max_drawdown = 0.0
+    for value in equity_series[1:]:
+        if value > peak:
+            peak = value
+        drawdown = peak - value
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+    max_drawdown_pct = (max_drawdown / peak) if peak else 0.0
+    return max_drawdown, max_drawdown_pct
 
 
 def _generate_plots(report: SimulationReport, output_dir: Path) -> List[Path]:
@@ -206,6 +238,7 @@ def simulate_strategy(
     top_k: int = 4,
     output_dir: Optional[Path] = None,
     force_kronos: Optional[bool] = None,
+    flatten_end: bool = False,
 ) -> SimulationReport:
     daily_snapshots: List[DailySnapshot] = []
     symbols = list(symbols)
@@ -220,6 +253,9 @@ def simulate_strategy(
         predict_module = importlib.import_module("predict_stock_forecasting")
         alpaca_module = importlib.import_module("alpaca_wrapper")
         previous_picks: Dict[str, Dict] = {}
+
+        if hasattr(trade_module, "reset_symbol_entry_counters"):
+            trade_module.reset_symbol_entry_counters(run_id="simulator")
 
         mid_steps = max(1, step_size // 2)
         end_steps = max(1, step_size - mid_steps)
@@ -282,9 +318,27 @@ def simulate_strategy(
             controller.advance_steps(end_steps)
 
         state = controller.state
+        if flatten_end:
+            _flatten_positions(controller)
+            state = controller.state
         report = _build_report(state, daily_snapshots, initial_cash)
         logger.info("\n" + report.render_summary())
         if output_path:
             generated = _generate_plots(report, output_path)
             report.generated_files.extend(generated)
         return report
+
+
+def _flatten_positions(controller) -> None:
+    state = controller.state
+    if not state.positions:
+        logger.info("[sim] No positions to flatten at end of run.")
+        return
+    logger.info(f"[sim] Flattening {len(state.positions)} open positions at end of run.")
+    for symbol, position in list(state.positions.items()):
+        qty = float(position.qty)
+        if abs(qty) < 1e-9:
+            continue
+        price = float(position.current_price)
+        state.close_position(symbol, price=price, qty=abs(qty))
+    logger.info(f"[sim] End-of-run flatten complete. Cash: {state.cash:.2f} Equity: {state.equity:.2f}")

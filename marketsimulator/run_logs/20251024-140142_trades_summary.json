@@ -1,0 +1,55 @@
+{
+  "AAPL": {
+    "average_holding_seconds": 7200.0,
+    "average_slip_bps": 53.87660431585123,
+    "buy_trades": 13,
+    "cash_delta": -38.5023078720765,
+    "fees": 2.4942529437586334,
+    "gross_notional": 4988.505887517265,
+    "holding_cycles": 13,
+    "sell_trades": 13,
+    "slip_bps_sum": 1400.791712212132,
+    "total_qty": 26.0,
+    "trades": 26
+  },
+  "MSFT": {
+    "average_holding_seconds": 30600.0,
+    "average_slip_bps": 56.845303294796736,
+    "buy_trades": 11,
+    "cash_delta": 46.035560501083,
+    "fees": 22.044558847662298,
+    "gross_notional": 44089.1176953246,
+    "holding_cycles": 4,
+    "sell_trades": 6,
+    "slip_bps_sum": 966.3701560115445,
+    "total_qty": 205.5077165683523,
+    "trades": 17
+  },
+  "NVDA": {
+    "average_holding_seconds": 15600.0,
+    "average_slip_bps": 44.62306480236474,
+    "buy_trades": 9,
+    "cash_delta": -71.0107213572542,
+    "fees": 4.735618267390155,
+    "gross_notional": 9471.23653478031,
+    "holding_cycles": 6,
+    "sell_trades": 9,
+    "slip_bps_sum": 803.2151664425653,
+    "total_qty": 69.42705725766777,
+    "trades": 18
+  },
+  "__overall__": {
+    "average_holding_seconds": 13460.869565217392,
+    "average_slip_bps": 51.973394010922,
+    "buy_trades": 33,
+    "cash_delta": -63.4774687282477,
+    "fees": 29.274430058811085,
+    "gross_notional": 58548.86011762218,
+    "holding_cycles": 23,
+    "sell_trades": 28,
+    "slip_bps_sum": 3170.377034666242,
+    "total_qty": 300.9347738260201,
+    "trades": 61,
+    "worst_cumulative_cash": -7706.261457314738
+  }
+}

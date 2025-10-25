@@ -5,6 +5,7 @@ from typing import Optional
 from .logging_utils import logger
 
 from . import alpaca_wrapper_mock as alpaca_wrapper
+from .state import get_state
 
 
 def backout_near_market(symbol: str):
@@ -50,6 +51,11 @@ def spawn_open_position_at_maxdiff_takeprofit(
         tolerance_pct,
         expiry_minutes,
     )
+    try:
+        state = get_state()
+    except RuntimeError:
+        return
+    state.register_maxdiff_entry(symbol, side, limit_price, target_qty, tolerance_pct, expiry_minutes)
 
 
 def spawn_close_position_at_maxdiff_takeprofit(
@@ -65,3 +71,8 @@ def spawn_close_position_at_maxdiff_takeprofit(
         takeprofit_price,
         expiry_minutes,
     )
+    try:
+        state = get_state()
+    except RuntimeError:
+        return
+    state.register_maxdiff_exit(symbol, side, takeprofit_price, expiry_minutes)

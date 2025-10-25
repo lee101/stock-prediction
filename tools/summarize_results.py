@@ -11,6 +11,12 @@ import argparse
 import datetime as dt
 import os
 from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from typing import Iterable, List
 
 from tools.extract_metrics import extract_metrics
