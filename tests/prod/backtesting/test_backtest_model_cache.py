@@ -47,6 +47,7 @@ def _fresh_module():
 
 
 def test_resolve_toto_params_cached(monkeypatch):
+    monkeypatch.setenv("FAST_TESTING", "0")
     module = _fresh_module()
     call_count = {"value": 0}
     record = SimpleNamespace(config={"num_samples": 11, "samples_per_batch": 7, "aggregate": "median"})
@@ -72,6 +73,7 @@ def test_resolve_toto_params_cached(monkeypatch):
 
 
 def test_resolve_kronos_params_cached(monkeypatch):
+    monkeypatch.setenv("FAST_TESTING", "0")
     module = _fresh_module()
     call_count = {"value": 0}
     record = SimpleNamespace(
@@ -108,6 +110,7 @@ def test_resolve_kronos_params_cached(monkeypatch):
 
 
 def test_resolve_best_model_cached(monkeypatch):
+    monkeypatch.setenv("FAST_TESTING", "0")
     module = _fresh_module()
     call_count = {"value": 0}
 
