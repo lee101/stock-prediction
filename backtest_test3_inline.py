@@ -1,3 +1,5 @@
+import argparse
+import json
 import os
 import sys
 from datetime import datetime
@@ -101,6 +103,7 @@ _GPU_FALLBACK_ENV = "MARKETSIM_ALLOW_CPU_FALLBACK"
 _cpu_fallback_log_state: Set[Tuple[str, Optional[str]]] = set()
 
 pipeline: Optional[TotoPipeline] = None
+TOTO_DEVICE_OVERRIDE: Optional[str] = None
 kronos_wrapper_cache: Dict[tuple, KronosForecastingWrapper] = {}
 
 ReturnSeries = Union[np.ndarray, pd.Series]
@@ -269,6 +272,8 @@ def evaluate_maxdiff_strategy(
         last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
         dtype=torch.float32,
     )
+    if "close_actual_movement_values" not in last_preds:
+        last_preds["close_actual_movement_values"] = close_actual
     validation_len = int(close_actual.numel())
 
     def _zero_metadata() -> Dict[str, object]:
@@ -635,7 +640,7 @@ def release_model_resources() -> None:
 
 
 @disk_cache
-def cached_predict(context, prediction_length, num_samples, samples_per_batch):
+def cached_predict(context, prediction_length, num_samples, samples_per_batch, *, symbol: Optional[str] = None):
     pipeline_instance = load_toto_pipeline()
     inference_mode_ctor = getattr(torch, "inference_mode", None)
     context_manager = inference_mode_ctor() if callable(inference_mode_ctor) else torch.no_grad()
@@ -648,7 +653,13 @@ def cached_predict(context, prediction_length, num_samples, samples_per_batch):
         )
 
 
-def _compute_toto_forecast(price_frame: pd.DataFrame, current_last_price: float, toto_params: dict):
+def _compute_toto_forecast(
+    symbol: str,
+    target_key: str,
+    price_frame: pd.DataFrame,
+    current_last_price: float,
+    toto_params: dict,
+):
     """
     Generate Toto forecasts for a prepared price frame.
     Returns (predictions_tensor, band_tensor, predicted_absolute_last).
@@ -668,12 +679,71 @@ def _compute_toto_forecast(price_frame: pd.DataFrame, current_last_price: float,
         if current_context.empty:
             continue
         context = torch.tensor(current_context["y"].values, dtype=torch.float32)
-        forecast = cached_predict(
-            context,
-            1,
-            num_samples=toto_params["num_samples"],
-            samples_per_batch=toto_params["samples_per_batch"],
-        )
+        requested_num_samples = int(toto_params["num_samples"])
+        requested_batch = int(toto_params["samples_per_batch"])
+
+        attempts = 0
+        cpu_fallback_used = False
+        global TOTO_DEVICE_OVERRIDE
+        while True:
+            requested_num_samples, requested_batch = _normalise_sampling_params(
+                requested_num_samples,
+                requested_batch,
+            )
+            toto_params["num_samples"] = requested_num_samples
+            toto_params["samples_per_batch"] = requested_batch
+            _toto_params_cache[symbol] = toto_params.copy()
+            try:
+                forecast = cached_predict(
+                    context,
+                    1,
+                    num_samples=requested_num_samples,
+                    samples_per_batch=requested_batch,
+                    symbol=symbol,
+                )
+                break
+            except RuntimeError as exc:
+                if not _is_cuda_oom_error(exc) or attempts >= TOTO_BACKTEST_MAX_RETRIES:
+                    if not _is_cuda_oom_error(exc):
+                        raise
+                    if cpu_fallback_used:
+                        raise
+                    logger.warning(
+                        "Toto forecast OOM for %s %s after %d GPU retries; falling back to CPU inference.",
+                        symbol,
+                        target_key,
+                        attempts,
+                    )
+                    cpu_fallback_used = True
+                    TOTO_DEVICE_OVERRIDE = "cpu"
+                    _drop_toto_pipeline()
+                    attempts = 0
+                    requested_num_samples = max(TOTO_MIN_NUM_SAMPLES, requested_num_samples // 2)
+                    requested_batch = max(TOTO_MIN_SAMPLES_PER_BATCH, requested_batch // 2)
+                    continue
+                attempts += 1
+                requested_num_samples = max(
+                    TOTO_MIN_NUM_SAMPLES,
+                    requested_num_samples // 2,
+                )
+                requested_batch = max(
+                    TOTO_MIN_SAMPLES_PER_BATCH,
+                    min(requested_batch // 2, requested_num_samples),
+                )
+                logger.warning(
+                    "Toto forecast OOM for %s %s; retrying with num_samples=%d, samples_per_batch=%d (attempt %d/%d).",
+                    symbol,
+                    target_key,
+                    requested_num_samples,
+                    requested_batch,
+                    attempts,
+                    TOTO_BACKTEST_MAX_RETRIES,
+                )
+                continue
+
+        updated_params = _apply_toto_runtime_feedback(symbol, toto_params, requested_num_samples, requested_batch)
+        if updated_params is not None:
+            toto_params = updated_params
         tensor = forecast[0]
         numpy_method = getattr(tensor, "numpy", None)
         if callable(numpy_method):
@@ -769,6 +839,133 @@ DEFAULT_TOTO_NUM_SAMPLES = int(os.getenv("TOTO_NUM_SAMPLES", "3072"))
 DEFAULT_TOTO_SAMPLES_PER_BATCH = int(os.getenv("TOTO_SAMPLES_PER_BATCH", "384"))
 DEFAULT_TOTO_AGG_SPEC = os.getenv("TOTO_AGGREGATION_SPEC", "trimmed_mean_10")
 
+
+def _read_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return max(minimum, default)
+    return max(minimum, value)
+
+
+TOTO_MIN_SAMPLES_PER_BATCH = _read_int_env("MARKETSIM_TOTO_MIN_SAMPLES_PER_BATCH", 32)
+TOTO_MIN_NUM_SAMPLES = _read_int_env("MARKETSIM_TOTO_MIN_NUM_SAMPLES", 128)
+if TOTO_MIN_NUM_SAMPLES < TOTO_MIN_SAMPLES_PER_BATCH:
+    TOTO_MIN_NUM_SAMPLES = TOTO_MIN_SAMPLES_PER_BATCH
+
+TOTO_MAX_SAMPLES_PER_BATCH = _read_int_env("MARKETSIM_TOTO_MAX_SAMPLES_PER_BATCH", 512)
+if TOTO_MAX_SAMPLES_PER_BATCH < TOTO_MIN_SAMPLES_PER_BATCH:
+    TOTO_MAX_SAMPLES_PER_BATCH = TOTO_MIN_SAMPLES_PER_BATCH
+
+TOTO_MAX_NUM_SAMPLES = _read_int_env("MARKETSIM_TOTO_MAX_NUM_SAMPLES", 4096)
+if TOTO_MAX_NUM_SAMPLES < TOTO_MIN_NUM_SAMPLES:
+    TOTO_MAX_NUM_SAMPLES = max(TOTO_MIN_NUM_SAMPLES, DEFAULT_TOTO_NUM_SAMPLES)
+
+TOTO_MAX_OOM_RETRIES = _read_int_env("MARKETSIM_TOTO_MAX_OOM_RETRIES", 4, minimum=0)
+TOTO_BACKTEST_MAX_RETRIES = _read_int_env("MARKETSIM_TOTO_BACKTEST_MAX_RETRIES", 3, minimum=0)
+
+_toto_runtime_adjust_log_state: Dict[str, Tuple[int, int]] = {}
+
+
+def _clamp_toto_params(symbol: str, params: dict) -> dict:
+    """Clamp Toto runtime parameters to safe bounds and log adjustments."""
+    original = (int(params.get("num_samples", 0)), int(params.get("samples_per_batch", 0)))
+    num_samples = int(params.get("num_samples", DEFAULT_TOTO_NUM_SAMPLES))
+    samples_per_batch = int(params.get("samples_per_batch", DEFAULT_TOTO_SAMPLES_PER_BATCH))
+
+    num_samples = max(TOTO_MIN_NUM_SAMPLES, min(TOTO_MAX_NUM_SAMPLES, num_samples))
+    samples_per_batch = max(
+        TOTO_MIN_SAMPLES_PER_BATCH,
+        min(TOTO_MAX_SAMPLES_PER_BATCH, samples_per_batch, num_samples),
+    )
+
+    params["num_samples"] = num_samples
+    params["samples_per_batch"] = samples_per_batch
+
+    adjusted = (num_samples, samples_per_batch)
+    if adjusted != original:
+        state = _toto_runtime_adjust_log_state.get(symbol)
+        if state != adjusted:
+            logger.info(
+                "Adjusted Toto sampling bounds for %s: num_samples=%d, samples_per_batch=%d (was %d/%d).",
+                symbol,
+                num_samples,
+                samples_per_batch,
+                original[0],
+                original[1],
+            )
+            _toto_runtime_adjust_log_state[symbol] = adjusted
+    return params
+
+
+def _apply_toto_runtime_feedback(
+    symbol: Optional[str],
+    params: dict,
+    requested_num_samples: int,
+    requested_batch: int,
+) -> Optional[dict]:
+    """Update cached Toto params after runtime OOM fallback."""
+    if symbol is None:
+        return None
+    pipeline_instance = pipeline
+    if pipeline_instance is None:
+        return None
+    metadata = getattr(pipeline_instance, "last_run_metadata", None)
+    if not metadata:
+        return None
+    used_samples = int(metadata.get("num_samples_used") or 0)
+    used_batch = int(metadata.get("samples_per_batch_used") or 0)
+    if used_samples <= 0 or used_batch <= 0:
+        return None
+    used_batch = min(used_samples, used_batch)
+    if used_samples == requested_num_samples and used_batch == requested_batch:
+        return None
+
+    updated = params.copy()
+    updated["num_samples"] = used_samples
+    updated["samples_per_batch"] = used_batch
+    updated = _clamp_toto_params(symbol, updated)
+    params.update(updated)
+    _toto_params_cache[symbol] = updated.copy()
+    _toto_params_log_state[symbol] = ("runtime_adjusted", repr((used_samples, used_batch)))
+    logger.info(
+        "Cached Toto params adjusted after runtime fallback for %s: requested %d/%d, using %d/%d.",
+        symbol,
+        requested_num_samples,
+        requested_batch,
+        used_samples,
+        used_batch,
+    )
+    return updated
+
+
+def _is_cuda_oom_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    if "out of memory" in message:
+        return True
+    cuda_module = getattr(torch, "cuda", None)
+    oom_error = getattr(cuda_module, "OutOfMemoryError", None) if cuda_module else None
+    if oom_error is not None and isinstance(exc, oom_error):
+        return True
+    return False
+
+
+def _normalise_sampling_params(num_samples: int, samples_per_batch: int) -> Tuple[int, int]:
+    """Ensure Toto sampling params satisfy divisibility and configured bounds."""
+    num_samples = max(TOTO_MIN_NUM_SAMPLES, min(TOTO_MAX_NUM_SAMPLES, num_samples))
+    samples_per_batch = max(TOTO_MIN_SAMPLES_PER_BATCH, min(samples_per_batch, num_samples))
+    if samples_per_batch <= 0:
+        samples_per_batch = TOTO_MIN_SAMPLES_PER_BATCH
+    if num_samples < samples_per_batch:
+        num_samples = samples_per_batch
+    remainder = num_samples % samples_per_batch
+    if remainder != 0:
+        num_samples -= remainder
+        if num_samples < samples_per_batch:
+            num_samples = samples_per_batch
+    return num_samples, samples_per_batch
+
+
 DEFAULT_KRONOS_PARAMS = {
     "temperature": 0.152,
     "top_p": 0.83,
@@ -781,7 +978,7 @@ DEFAULT_KRONOS_PARAMS = {
 
 def resolve_toto_params(symbol: str) -> dict:
     if FAST_TESTING:
-        params = FAST_TOTO_PARAMS.copy()
+        params = _clamp_toto_params(symbol, FAST_TOTO_PARAMS.copy())
         state = ("fast", repr(sorted(params.items())))
         if _toto_params_log_state.get(symbol) != state:
             logger.info(f"FAST_TESTING active — using fast Toto hyperparameters for {symbol}.")
@@ -809,6 +1006,7 @@ def resolve_toto_params(symbol: str) -> dict:
         "samples_per_batch": int(config.get("samples_per_batch", DEFAULT_TOTO_SAMPLES_PER_BATCH)),
         "aggregate": config.get("aggregate", DEFAULT_TOTO_AGG_SPEC),
     }
+    params = _clamp_toto_params(symbol, params)
     _toto_params_cache[symbol] = params
     return params.copy()
 
@@ -884,7 +1082,17 @@ def resolve_best_model(symbol: str) -> str:
 def pre_process_data(x_train: pd.DataFrame, key_to_predict: str) -> pd.DataFrame:
     """Minimal reimplementation to avoid heavy dependency on training module."""
     newdata = x_train.copy(deep=True)
-    newdata[key_to_predict] = percent_movements_augment(newdata[key_to_predict].values.reshape(-1, 1))
+    series = newdata[key_to_predict].to_numpy(dtype=float, copy=True)
+    if series.size == 0:
+        return newdata
+    pct = np.empty_like(series, dtype=float)
+    pct[0] = 1.0
+    if series.size > 1:
+        denom = series[:-1]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pct[1:] = np.where(denom != 0.0, (series[1:] - denom) / denom, 0.0)
+        pct[1:] = np.nan_to_num(pct[1:], nan=0.0, posinf=0.0, neginf=0.0)
+    newdata[key_to_predict] = pct
     return newdata
 
 
@@ -904,12 +1112,25 @@ tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 
 def load_toto_pipeline() -> TotoPipeline:
     """Lazily load the Toto forecasting pipeline."""
-    global pipeline
+    global pipeline, TOTO_DEVICE_OVERRIDE
     _drop_kronos_wrappers()
     if pipeline is None:
         _maybe_enable_fast_torch_settings()
-        _require_cuda("Toto forecasting pipeline")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        preferred_device = "cuda" if torch.cuda.is_available() else "cpu"
+        override_env = os.getenv("MARKETSIM_TOTO_DEVICE")
+        override = TOTO_DEVICE_OVERRIDE
+        if override_env:
+            env_value = override_env.strip().lower()
+            if env_value in {"cuda", "cpu"}:
+                override = env_value
+        device = override or preferred_device
+        if device == "cuda":
+            _require_cuda("Toto forecasting pipeline")
+        else:
+            logger.warning(
+                "Toto forecasting pipeline running on CPU (override=%s); inference will be slower.",
+                override or "auto",
+            )
         logger.info(f"Loading Toto pipeline '{TOTO_MODEL_ID}' on {device}")
 
         compile_mode_env = (
@@ -965,6 +1186,9 @@ def load_toto_pipeline() -> TotoPipeline:
             torch_compile=torch_compile_enabled,
             compile_mode=compile_mode,
             compile_backend=compile_backend,
+            max_oom_retries=TOTO_MAX_OOM_RETRIES,
+            min_samples_per_batch=TOTO_MIN_SAMPLES_PER_BATCH,
+            min_num_samples=TOTO_MIN_NUM_SAMPLES,
         )
     return pipeline
 
@@ -1105,6 +1329,28 @@ def evaluate_strategy(
     global SPREAD
     """Evaluate the performance of a strategy, factoring in trading fees."""
     strategy_signals = strategy_signals.numpy()  # Convert to numpy array
+
+    actual_returns = actual_returns.copy()
+    sig_len = strategy_signals.shape[0]
+    ret_len = len(actual_returns)
+    if sig_len == 0 or ret_len == 0:
+        return StrategyEvaluation(
+            total_return=0.0,
+            avg_daily_return=0.0,
+            annualized_return=0.0,
+            sharpe_ratio=0.0,
+            returns=np.zeros(0, dtype=float),
+        )
+    if sig_len != ret_len:
+        min_len = min(sig_len, ret_len)
+        logger.warning(
+            "Strategy/return length mismatch (signals=%s, returns=%s); truncating to %s",
+            sig_len,
+            ret_len,
+            min_len,
+        )
+        strategy_signals = strategy_signals[-min_len:]
+        actual_returns = actual_returns.iloc[-min_len:]
 
     # Calculate fees: apply fee for each trade (both buy and sell)
     # Adjust fees: only apply when position changes
@@ -1396,7 +1642,10 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
 
         price = price.rename(columns={"Date": "time_idx"})
         price["ds"] = pd.date_range(start="1949-01-01", periods=len(price), freq="D").values
-        price['y'] = price[key_to_predict].shift(-1)
+        target_series = price[key_to_predict].shift(-1)
+        if isinstance(target_series, pd.DataFrame):
+            target_series = target_series.iloc[:, 0]
+        price["y"] = target_series.to_numpy()
         price['trade_weight'] = (price["y"] > 0) * 2 - 1
 
         price.drop(price.tail(1).index, inplace=True)
@@ -1405,7 +1654,10 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         price = price.dropna()
 
         validation = price[-7:]
-        current_last_price = float(simulation_data[key_to_predict].iloc[-1])
+        last_series = simulation_data[key_to_predict]
+        if isinstance(last_series, pd.DataFrame):
+            last_series = last_series.iloc[:, 0]
+        current_last_price = float(last_series.iloc[-1])
 
         toto_predictions = None
         toto_band = None
@@ -1414,6 +1666,8 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         if run_toto:
             try:
                 toto_predictions, toto_band, toto_abs = _compute_toto_forecast(
+                    symbol,
+                    key_to_predict,
                     price,
                     current_last_price,
                     toto_params,
@@ -1516,6 +1770,8 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     realized_vol_pct = float(actual_returns.std() * 100.0) if not actual_returns.empty else 0.0
     last_preds["realized_volatility_pct"] = realized_vol_pct
     close_pred_tensor = torch.as_tensor(last_preds.get("close_predictions", torch.zeros(1)), dtype=torch.float32)
+    if "close_predictions" not in last_preds:
+        last_preds["close_predictions"] = close_pred_tensor
     try:
         close_pred_np = close_pred_tensor.detach().cpu().numpy()
     except AttributeError:
@@ -1528,6 +1784,25 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     last_preds["calibration_intercept"] = float(intercept)
     last_preds["raw_expected_move_pct"] = raw_expected_move_pct
     last_preds["calibrated_expected_move_pct"] = calibrated_expected_move_pct
+
+    pred_length = int(close_pred_tensor.shape[0])
+
+    def _ensure_tensor_key(key: str) -> torch.Tensor:
+        value = last_preds.get(key)
+        if value is None:
+            tensor = torch.zeros(pred_length, dtype=torch.float32)
+            last_preds[key] = tensor
+            return tensor
+        tensor = torch.as_tensor(value, dtype=torch.float32)
+        if tensor.shape[0] != pred_length:
+            tensor = tensor.reshape(-1)
+        last_preds[key] = tensor
+        return tensor
+
+    high_preds_tensor = _ensure_tensor_key("high_predictions")
+    low_preds_tensor = _ensure_tensor_key("low_predictions")
+    _ensure_tensor_key("high_actual_movement_values")
+    _ensure_tensor_key("low_actual_movement_values")
 
     maxdiff_eval, maxdiff_returns_np, maxdiff_metadata = evaluate_maxdiff_strategy(
         last_preds,
@@ -1547,7 +1822,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
 
     # Simple buy/sell strategy
     simple_signals = simple_buy_sell_strategy(
-        last_preds["close_predictions"],
+        close_pred_tensor,
         is_crypto=is_crypto
     )
     simple_eval = evaluate_strategy(simple_signals, actual_returns, trading_fee, trading_days_per_year)
@@ -1563,9 +1838,9 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
 
     # All signals strategy
     all_signals = all_signals_strategy(
-        last_preds["close_predictions"],
-        last_preds["high_predictions"],
-        last_preds["low_predictions"],
+        close_pred_tensor,
+        high_preds_tensor,
+        low_preds_tensor,
         is_crypto=is_crypto
     )
     all_signals_eval = evaluate_strategy(all_signals, actual_returns, trading_fee, trading_days_per_year)
@@ -1602,7 +1877,12 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     unprofit_shutdown_returns = unprofit_shutdown_eval.returns
     unprofit_shutdown_avg_daily = unprofit_shutdown_eval.avg_daily_return
     unprofit_shutdown_annual = unprofit_shutdown_eval.annualized_return
-    unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
+    if actual_returns.empty:
+        unprofit_shutdown_finalday_return = -2 * trading_fee * SPREAD
+    else:
+        unprofit_shutdown_finalday_return = (
+            unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]
+        ) - (2 * trading_fee * SPREAD)
 
     # Entry + takeprofit strategy
     entry_takeprofit_eval = evaluate_entry_takeprofit_strategy(
@@ -1725,9 +2005,9 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     result = {
         'date': simulation_data.index[-1],
         'close': float(last_preds['close_last_price']),
-        'predicted_close': float(last_preds['close_predicted_price_value']),
-        'predicted_high': float(last_preds['high_predicted_price_value']),
-        'predicted_low': float(last_preds['low_predicted_price_value']),
+        'predicted_close': float(last_preds.get('close_predicted_price_value', 0.0)),
+        'predicted_high': float(last_preds.get('high_predicted_price_value', 0.0)),
+        'predicted_low': float(last_preds.get('low_predicted_price_value', 0.0)),
         'toto_expected_move_pct': float(last_preds.get('toto_close_pred_pct', 0.0)),
         'kronos_expected_move_pct': float(last_preds.get('kronos_close_pred_pct', 0.0)),
         'realized_volatility_pct': float(last_preds.get('realized_volatility_pct', 0.0)),
@@ -1786,9 +2066,9 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         'ci_guard_finalday': float(ci_guard_finalday_return),
         'ci_guard_avg_daily_return': float(ci_guard_avg_daily),
         'ci_guard_annual_return': float(ci_guard_annual),
-        'close_val_loss': float(last_preds['close_val_loss']),
-        'high_val_loss': float(last_preds['high_val_loss']),
-        'low_val_loss': float(last_preds['low_val_loss']),
+        'close_val_loss': float(last_preds.get('close_val_loss', 0.0)),
+        'high_val_loss': float(last_preds.get('high_val_loss', 0.0)),
+        'low_val_loss': float(last_preds.get('low_val_loss', 0.0)),
     }
 
     return result
@@ -1958,14 +2238,34 @@ def evaluate_highlow_strategy(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        symbol = "ETHUSD"
-        print("Usage: python backtest_test.py <symbol> defaultint to eth")
-    else:
-        symbol = sys.argv[1]
+    parser = argparse.ArgumentParser(
+        description="Run inline backtests for a given symbol and optionally export results as JSON."
+    )
+    parser.add_argument(
+        "symbol",
+        nargs="?",
+        default="ETHUSD",
+        help="Ticker symbol to backtest (default: ETHUSD).",
+    )
+    parser.add_argument(
+        "--output-json",
+        dest="output_json",
+        help="Optional path to write backtest results as JSON.",
+    )
+    args = parser.parse_args()
 
-    # backtest_forecasts("NVDA")
-    backtest_forecasts(symbol)
-    # backtest_forecasts("UNIUSD")
-    # backtest_forecasts("AAPL")
-    # backtest_forecasts("GOOG")
+    result_df = backtest_forecasts(args.symbol)
+
+    if args.output_json:
+        output_path = Path(args.output_json)
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        strategies_payload = json.loads(result_df.to_json(orient="records"))
+        payload = {
+            "symbol": args.symbol,
+            "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "strategies": strategies_payload,
+        }
+        output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

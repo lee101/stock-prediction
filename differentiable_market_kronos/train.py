@@ -48,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kronos-device", type=str, default="auto")
     parser.add_argument("--kronos-disable-path-stats", action="store_true")
     parser.add_argument("--kronos-no-bf16", action="store_true")
+    parser.add_argument("--kronos-no-compile", action="store_true")
+    parser.add_argument("--kronos-log-timings", action="store_true")
     return parser.parse_args()
 
 
@@ -98,6 +100,8 @@ def main() -> None:
         top_k=args.kronos_top_k,
         clip=args.kronos_clip,
         bf16=not args.kronos_no_bf16,
+        compile=not args.kronos_no_compile,
+        log_timings=args.kronos_log_timings,
     )
 
     trainer = DifferentiableMarketKronosTrainer(data_cfg, env_cfg, train_cfg, eval_cfg, kronos_cfg)

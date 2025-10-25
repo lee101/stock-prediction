@@ -36,14 +36,14 @@ jobs:
       - name: Install dependencies
         run: |
           uv pip install --system --requirement requirements.txt
-          uv pip install --system mypy ruff pyright
+          uv pip install --system ty ruff pyright
 
       - name: Lint with Ruff
         run: ruff check src
 
-      - name: Type check with mypy
+      - name: Type check with ty
         continue-on-error: true
-        run: python -m mypy --config-file mypy-ci.ini src
+        run: ty check
 
       - name: Type check with Pyright
         continue-on-error: true

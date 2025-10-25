@@ -82,8 +82,12 @@ class KronosFeatureAdapter:
                 temperature=self.cfg.temperature,
                 top_p=self.cfg.top_p,
                 sample_count=self.cfg.sample_count,
+                sample_chunk=self.cfg.sample_chunk,
+                top_k=self.cfg.top_k,
+                clip=self.cfg.clip,
                 feature_spec=feature_spec,
                 bf16=self.cfg.bf16,
+                compile_model=self.cfg.compile,
             )
         return self._embedder
 
@@ -137,6 +141,8 @@ class KronosFeatureAdapter:
             feat_df = feat_df.reindex(self.index).fillna(0.0)
             feature_arrays.append(feat_df.to_numpy(dtype=np.float32))
             print(f"[kronos-adapter] computed features for {symbol} ({idx + 1}/{len(self.symbols)})")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         if not feature_arrays:
             raise ValueError("No Kronos features computed")
         stacked = np.stack(feature_arrays, axis=1)

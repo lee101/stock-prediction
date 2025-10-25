@@ -12,6 +12,8 @@ Features:
 
 from __future__ import annotations
 
+import copy
+import inspect
 import json
 import logging
 import math
@@ -19,23 +21,23 @@ import os
 import random
 import shutil
 import subprocess
-import warnings
 import time
 import uuid
+import warnings
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-import inspect
-
-import copy
-from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 import fal
 import transformers
 from pydantic import BaseModel, Field
+from src.runtime_imports import setup_src_imports
+from src.tblib_compat import ensure_tblib_pickling_support
+from src.torch_backend import configure_tf32_backends
+from wandboard import WandBoardLogger
 
 from faltrain.artifacts import load_artifact_specs, sync_artifacts
 from faltrain.batch_size_tuner import (
@@ -46,12 +48,8 @@ from faltrain.batch_size_tuner import (
 )
 from faltrain.dependencies import bulk_register_fal_dependencies
 from faltrain.logger_utils import configure_stdout_logging
-from wandboard import WandBoardLogger
-
-from src.dependency_injection import setup_imports as setup_src_imports
-from src.tblib_compat import ensure_tblib_pickling_support
-from src.torch_backend import configure_tf32_backends
 from faltrain.shared_logger import get_logger, log_timing, setup_logging
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ensure_tblib_pickling_support()
 LOG = get_logger("faltrain.app", logging.INFO)
@@ -526,7 +524,8 @@ class StockTrainerApp(
     max_concurrency=1,
     keep_alive=30,
 ):
-    machine_type = "GPU-H200"
+    # machine_type = "GPU-H200"
+    machine_type = "XS"
     python_version = "3.12"
     requirements = [
         "fal-client",
@@ -582,9 +581,7 @@ class StockTrainerApp(
                 os.getcwd(),
             )
             os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
-            os.environ.setdefault(
-                "PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True"
-            )
+            os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:1024,expandable_segments:True")
             LOG.debug(
                 "Environment CUDA_LAUNCH_BLOCKING=%s PYTORCH_CUDA_ALLOC_CONF=%s",
                 os.getenv("CUDA_LAUNCH_BLOCKING"),
@@ -592,9 +589,9 @@ class StockTrainerApp(
             )
 
             with log_timing(LOG, "Import torch/numpy/pandas"):
-                import torch as _torch
                 import numpy as _np
                 import pandas as _pd
+                import torch as _torch
 
             with log_timing(LOG, "Configure torch backends"):
                 tf32_state = configure_tf32_backends(_torch, logger=LOG)
@@ -703,9 +700,7 @@ class StockTrainerApp(
         if return_code != 0:
             if oom_hint:
                 raise TrainingOOMError(cmd, summary)
-            raise RuntimeError(
-                f"Training command failed (exit={return_code}): {' '.join(cmd)}\n{summary}"
-            )
+            raise RuntimeError(f"Training command failed (exit={return_code}): {' '.join(cmd)}\n{summary}")
         return summary
 
     def _run_with_batch_retry(
@@ -747,9 +742,7 @@ class StockTrainerApp(
                     try:
                         persist_batch_size(selection, batch_size=batch_size)
                     except Exception as exc:
-                        LOG.warning(
-                            "Failed to persist successful batch size %s: %s", batch_size, exc
-                        )
+                        LOG.warning("Failed to persist successful batch size %s: %s", batch_size, exc)
             return metrics, outdir
 
         if last_exc is not None:
@@ -782,9 +775,7 @@ class StockTrainerApp(
         duration = time.time() - start_ts
         return idx, cfg_local, metrics, outdir, duration
 
-    def _run_hf_once(
-        self, workdir: Path, req: TrainRequest, cfg: Dict[str, Any]
-    ) -> Tuple[Dict[str, Any], Path]:
+    def _run_hf_once(self, workdir: Path, req: TrainRequest, cfg: Dict[str, Any]) -> Tuple[Dict[str, Any], Path]:
         run_id = uuid.uuid4().hex[:8]
         outdir = _ensure_dir(workdir / f"hf_{run_id}")
 
@@ -798,9 +789,7 @@ class StockTrainerApp(
                 "transaction_cost_bps": int(
                     cfg.get(
                         "transaction_cost_bps",
-                        _resolve_transaction_cost_bps(
-                            req, crypto_enabled=cfg.get("crypto_enabled", False)
-                        ),
+                        _resolve_transaction_cost_bps(req, crypto_enabled=cfg.get("crypto_enabled", False)),
                     )
                 ),
             },
@@ -829,9 +818,7 @@ class StockTrainerApp(
         metrics, _ = run_hf_training(config=config, run_name=req.run_name, output_dir=outdir)
         return metrics, outdir
 
-    def _run_toto_once(
-        self, workdir: Path, req: TrainRequest, cfg: Dict[str, Any]
-    ) -> Tuple[Dict[str, Any], Path]:
+    def _run_toto_once(self, workdir: Path, req: TrainRequest, cfg: Dict[str, Any]) -> Tuple[Dict[str, Any], Path]:
         run_id = uuid.uuid4().hex[:8]
         outdir = _ensure_dir(workdir / f"toto_{run_id}")
         from tototrainingfal.runner import run_training as run_toto_training
@@ -869,9 +856,7 @@ class StockTrainerApp(
 
         return metrics, outdir
 
-    def _run_puffer_once(
-        self, workdir: Path, req: TrainRequest, cfg: Dict[str, Any]
-    ) -> Tuple[Dict[str, Any], Path]:
+    def _run_puffer_once(self, workdir: Path, req: TrainRequest, cfg: Dict[str, Any]) -> Tuple[Dict[str, Any], Path]:
         run_id = uuid.uuid4().hex[:8]
         outdir = _ensure_dir(workdir / f"puffer_{run_id}")
         logdir = _ensure_dir(outdir / "logs")
@@ -898,9 +883,7 @@ class StockTrainerApp(
             metrics = summary.get("portfolio_pairs", {})
         return metrics, outdir
 
-    def _evaluate_pnl(
-        self, model_dir: Path, include_crypto: bool, trainingdata_dir: Path
-    ) -> Dict[str, Any]:
+    def _evaluate_pnl(self, model_dir: Path, include_crypto: bool, trainingdata_dir: Path) -> Dict[str, Any]:
         pnl = {
             "return_pct": None,
             "sharpe": None,
@@ -1035,9 +1018,7 @@ class StockTrainerApp(
         for cfg in sweep_cfgs:
             crypto_flag = bool(cfg.get("crypto_enabled", False))
             cfg.setdefault("crypto_enabled", crypto_flag)
-            cfg["transaction_cost_bps"] = _resolve_transaction_cost_bps(
-                request, crypto_enabled=crypto_flag
-            )
+            cfg["transaction_cost_bps"] = _resolve_transaction_cost_bps(request, crypto_enabled=crypto_flag)
 
         artifact_root = _ensure_dir(Path(request.output_root) / request.run_name)
         runner = self._runner_for_request(request, artifact_root)
