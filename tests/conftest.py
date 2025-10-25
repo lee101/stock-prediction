@@ -329,6 +329,35 @@ if "backtest_test3_inline" not in sys.modules:
             )
 
         backtest_stub.backtest_forecasts = backtest_forecasts
+
+        def _compute_toto_forecast(*args, **kwargs):
+            import torch
+
+            if "current_last_price" in kwargs:
+                last_price = kwargs["current_last_price"]
+            elif len(args) >= 2:
+                last_price = args[-2]
+            else:
+                last_price = 0.0
+
+            predictions = torch.zeros(1, dtype=torch.float32)
+            band = torch.zeros_like(predictions)
+            return predictions, band, float(last_price or 0.0)
+
+        backtest_stub._compute_toto_forecast = _compute_toto_forecast
+
+        def pre_process_data(frame, price_column="Close"):
+            return frame.copy()
+
+        def resolve_toto_params(symbol):
+            return {"num_samples": 64, "samples_per_batch": 32}
+
+        def release_model_resources():
+            return None
+
+        backtest_stub.pre_process_data = pre_process_data
+        backtest_stub.resolve_toto_params = resolve_toto_params
+        backtest_stub.release_model_resources = release_model_resources
         backtest_stub.__import_error__ = exc  # expose failure reason for debugging
         sys.modules["backtest_test3_inline"] = backtest_stub
 
@@ -341,3 +370,43 @@ if os.getenv("SKIP_TORCH_CHECK", "0") not in ("1", "true", "TRUE", "yes", "YES")
         raise RuntimeError(
             "PyTorch must be installed for this test suite."
         ) from e
+
+
+# Backwards compatibility for chronos pipelines that used the old `context` keyword
+try:  # pragma: no cover - best-effort compatibility shim
+    from chronos import ChronosPipeline
+    import inspect
+
+    _predict_sig = inspect.signature(ChronosPipeline.predict)
+
+    if "context" not in _predict_sig.parameters:
+        _chronos_predict = ChronosPipeline.predict
+
+        def _predict_with_context(self, *args, **kwargs):
+            if "context" in kwargs:
+                ctx = kwargs.pop("context")
+                if not args:
+                    args = (ctx,)
+                else:
+                    args = (ctx,) + args
+            return _chronos_predict(self, *args, **kwargs)
+
+        ChronosPipeline.predict = _predict_with_context  # type: ignore[assignment]
+except Exception:
+    pass
+
+
+# Minimal stubs for fal cloud runtime APIs used by integration tests.
+if "fal" not in sys.modules:
+    fal_mod = types.ModuleType("fal")
+
+    class _FalApp:
+        def __init_subclass__(cls, **kwargs):  # swallow keyword-only configuration
+            super().__init_subclass__()
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+    fal_mod.App = _FalApp
+    fal_mod.endpoint = lambda *a, **k: (lambda fn: fn)
+    sys.modules["fal"] = fal_mod

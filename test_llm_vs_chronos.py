@@ -1,3 +1,5 @@
+import os
+import pytest
 from loguru import logger
 import warnings
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
@@ -13,6 +15,9 @@ from pathlib import Path
 import asyncio
 from claude_queries import query_to_claude_async
 from src.cache import async_cache_decorator
+
+if not os.getenv("ANTHROPIC_API_KEY"):
+    pytest.skip("Anthropic API key required for LLM vs Chronos integration test", allow_module_level=True)
 
 # Load data
 base_dir = Path(__file__).parent
