@@ -80,12 +80,17 @@ def main() -> None:
             )
             if isinstance(delta, (int, float)):
                 deltas.append(delta)
+            def _fmt(value: object) -> str:
+                if isinstance(value, (int, float)):
+                    return f"{value:.4f}"
+                return "n/a"
+
             lines.append(
                 f"| {row['symbol']} | "
-                f"{maxdiff_ret if isinstance(maxdiff_ret, (int, float)) else 'n/a'} | "
-                f"{row['maxdiff_sharpe'] if isinstance(row['maxdiff_sharpe'], (int, float)) else 'n/a'} | "
-                f"{simple_ret if isinstance(simple_ret, (int, float)) else 'n/a'} | "
-                f"{delta if isinstance(delta, (int, float)) else 'n/a'} |"
+                f"{_fmt(maxdiff_ret)} | "
+                f"{_fmt(row['maxdiff_sharpe'])} | "
+                f"{_fmt(simple_ret)} | "
+                f"{_fmt(delta)} |"
             )
         if deltas:
             avg_delta = sum(deltas) / len(deltas)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Dict, Iterable
 
@@ -134,13 +135,26 @@ def test_simulate_trading_only_uses_allowed_packages(monkeypatch):
     numpy_stub = _build_numpy_stub()
     pandas_stub = _build_pandas_stub()
 
+    monkeypatch.setattr(fal_runner, "setup_src_imports", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fal_runner, "_configure_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fal_runner, "_restore_logging", lambda *args, **kwargs: None)
+
     fal_runner.setup_training_imports(torch_stub, numpy_stub, pandas_stub)
     _register_trade_module()
     _register_environment_module()
 
-    repo_modules_before = {
-        name for name, mod in sys.modules.items() if getattr(mod, "__file__", "") and "code/stock" in mod.__file__
-    }
+    repo_root = Path(__file__).resolve().parents[3]
+
+    def _is_repo_module(module: ModuleType) -> bool:
+        module_path = getattr(module, "__file__", None)
+        if not module_path:
+            return False
+        try:
+            return Path(module_path).resolve().is_relative_to(repo_root)
+        except ValueError:
+            return False
+
+    repo_modules_before = {name for name, mod in sys.modules.items() if _is_repo_module(mod)}
     result = fal_runner.simulate_trading(
         symbols=["AAPL", "MSFT"],
         steps=2,
@@ -154,9 +168,7 @@ def test_simulate_trading_only_uses_allowed_packages(monkeypatch):
     assert result["summary"]["cash"] == pytest.approx(100_500.0)
     assert len(result["timeline"]) == 2
 
-    repo_modules_after = {
-        name for name, mod in sys.modules.items() if getattr(mod, "__file__", "") and "code/stock" in mod.__file__
-    }
+    repo_modules_after = {name for name, mod in sys.modules.items() if _is_repo_module(mod)}
     new_modules = repo_modules_after - repo_modules_before
 
     allowed = set(MarketSimulatorApp.local_python_modules) | {
@@ -186,6 +198,6 @@ def test_simulate_trading_only_uses_allowed_packages(monkeypatch):
 
     assert not disallowed, f"Modules outside local_python_modules imported: {disallowed}"
 
-    assert sys.modules["torch"] is torch_stub
-    assert sys.modules["numpy"] is numpy_stub
-    assert sys.modules["pandas"] is pandas_stub
+    assert fal_runner.torch is torch_stub
+    assert fal_runner.np is numpy_stub
+    assert fal_runner.pd is pandas_stub

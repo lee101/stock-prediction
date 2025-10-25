@@ -1,0 +1,257 @@
+timestamp,symbol,reason,count
+2025-10-24T18:01:33.028214+00:00,SMH,2025-10-25 07:01:25 | INFO | Skipping SMH - strategy return 0.0057 below minimum 0.0150.,1
+2025-10-24T18:01:33.028225+00:00,QQQ,2025-10-25 07:01:27 | INFO | Skipping QQQ - strategy return 0.0067 below minimum 0.0150.,1
+2025-10-24T18:01:33.028229+00:00,SOXX,no_skip_detected,1
+2025-10-24T18:01:33.028232+00:00,XLY,no_skip_detected,1
+2025-10-24T18:05:48.688063+00:00,SMH,2025-10-25 07:05:40 | INFO | Skipping SMH - strategy return 0.0056 below minimum 0.0150.,1
+2025-10-24T18:05:48.688072+00:00,QQQ,2025-10-25 07:05:43 | INFO | Skipping QQQ - strategy return 0.0073 below minimum 0.0150.,1
+2025-10-24T18:05:48.688077+00:00,SOXX,2025-10-25 07:05:45 | INFO | Skipping SOXX - strategy return 0.0062 below minimum 0.0150.,1
+2025-10-24T18:05:48.688081+00:00,XLY,2025-10-25 07:05:48 | INFO | Skipping XLY - strategy return 0.0079 below minimum 0.0150.,1
+2025-10-24T18:27:09.863633+00:00,SMH,2025-10-25 07:27:01 | INFO | Skipping SMH - strategy return 0.0054 below minimum 0.0150.,1
+2025-10-24T18:27:09.863642+00:00,QQQ,2025-10-25 07:27:04 | INFO | Skipping QQQ - strategy return 0.0046 below minimum 0.0150.,1
+2025-10-24T18:27:09.863646+00:00,SOXX,2025-10-25 07:27:06 | INFO | Skipping SOXX - strategy return 0.0078 below minimum 0.0150.,1
+2025-10-24T18:27:09.863648+00:00,XLY,2025-10-25 07:27:09 | INFO | Skipping XLY - strategy return 0.0067 below minimum 0.0150.,1
+2025-10-24T18:34:39.266017+00:00,SMH,2025-10-25 07:34:31 | INFO | Skipping SMH - strategy return 0.0077 below minimum 0.0150.,1
+2025-10-24T18:34:39.266035+00:00,QQQ,2025-10-25 07:34:34 | INFO | Skipping QQQ - strategy return 0.0074 below minimum 0.0150.,1
+2025-10-24T18:34:39.266039+00:00,SOXX,2025-10-25 07:34:36 | INFO | Skipping SOXX - strategy return 0.0064 below minimum 0.0150.,1
+2025-10-24T18:34:39.266042+00:00,XLY,2025-10-25 07:34:38 | INFO | Skipping XLY - strategy return 0.0057 below minimum 0.0150.,1
+2025-10-24T18:38:26.668413+00:00,SMH,2025-10-25 07:38:18 | INFO | Skipping SMH - strategy return 0.0055 below minimum 0.0150.,1
+2025-10-24T18:38:26.668422+00:00,QQQ,2025-10-25 07:38:21 | INFO | Skipping QQQ - strategy return 0.0070 below minimum 0.0150.,1
+2025-10-24T18:38:26.668426+00:00,SOXX,no_skip_detected,1
+2025-10-24T18:38:26.668429+00:00,XLY,2025-10-25 07:38:26 | INFO | Skipping XLY - strategy return 0.0061 below minimum 0.0150.,1
+2025-10-24T18:49:29.111705+00:00,SMH,2025-10-25 07:49:21 | INFO | Skipping SMH - strategy return 0.0052 below minimum 0.0150.,1
+2025-10-24T18:49:29.111713+00:00,QQQ,2025-10-25 07:49:23 | INFO | Skipping QQQ - strategy return 0.0073 below minimum 0.0150.,1
+2025-10-24T18:49:29.111717+00:00,SOXX,2025-10-25 07:49:26 | INFO | Skipping SOXX - strategy return 0.0054 below minimum 0.0150.,1
+2025-10-24T18:49:29.111719+00:00,XLY,2025-10-25 07:49:28 | INFO | Skipping XLY - strategy return 0.0071 below minimum 0.0150.,1
+2025-10-24T19:50:11.674625+00:00,SMH,2025-10-25 08:49:53 | INFO | Skipping SMH - strategy return 0.0042 below minimum 0.0150.,1
+2025-10-24T19:50:11.674632+00:00,SOXX,no_skip_detected,1
+2025-10-24T19:50:11.674636+00:00,QQQ,2025-10-25 08:49:58 | INFO | Skipping QQQ - strategy return 0.0072 below minimum 0.0150.,1
+2025-10-24T19:50:11.674639+00:00,XLY,2025-10-25 08:50:01 | INFO | Skipping XLY - strategy return 0.0050 below minimum 0.0150.,1
+2025-10-24T19:50:11.674641+00:00,IWM,2025-10-25 08:50:03 | INFO | Skipping IWM - strategy return 0.0078 below minimum 0.0150.,1
+2025-10-24T19:50:11.674644+00:00,AAPL,no_skip_detected,1
+2025-10-24T19:50:11.674646+00:00,MSFT,no_skip_detected,1
+2025-10-24T19:50:11.674648+00:00,XLK,2025-10-25 08:50:11 | INFO | Skipping XLK - strategy return 0.0054 below minimum 0.0150.,1
+2025-10-24T19:52:53.733974+00:00,SMH,no_skip_detected,1
+2025-10-24T19:52:53.733982+00:00,SOXX,no_skip_detected,1
+2025-10-24T19:52:53.733986+00:00,QQQ,2025-10-25 08:52:40 | INFO | Skipping QQQ - strategy return 0.0070 below minimum 0.0150.,1
+2025-10-24T19:52:53.733989+00:00,XLY,no_skip_detected,1
+2025-10-24T19:52:53.733991+00:00,IWM,2025-10-25 08:52:45 | INFO | Skipping IWM - strategy return 0.0077 below minimum 0.0150.,1
+2025-10-24T19:52:53.733993+00:00,AAPL,no_skip_detected,1
+2025-10-24T19:52:53.733996+00:00,MSFT,no_skip_detected,1
+2025-10-24T19:52:53.733998+00:00,XLK,2025-10-25 08:52:53 | INFO | Skipping XLK - strategy return 0.0055 below minimum 0.0150.,1
+2025-10-24T19:54:24.685731+00:00,SMH,2025-10-25 08:54:06 | INFO | Skipping SMH - strategy return 0.0061 below minimum 0.0150.,1
+2025-10-24T19:54:24.685739+00:00,SOXX,2025-10-25 08:54:08 | INFO | Skipping SOXX - strategy return 0.0045 below minimum 0.0150.,1
+2025-10-24T19:54:24.685743+00:00,QQQ,2025-10-25 08:54:11 | INFO | Skipping QQQ - strategy return 0.0051 below minimum 0.0150.,1
+2025-10-24T19:54:24.685746+00:00,XLY,2025-10-25 08:54:14 | INFO | Skipping XLY - strategy return 0.0066 below minimum 0.0150.,1
+2025-10-24T19:54:24.685748+00:00,IWM,no_skip_detected,1
+2025-10-24T19:54:24.685751+00:00,AAPL,no_skip_detected,1
+2025-10-24T19:54:24.685753+00:00,MSFT,no_skip_detected,1
+2025-10-24T19:54:24.685755+00:00,XLK,no_skip_detected,1
+2025-10-24T19:56:59.789020+00:00,SMH,2025-10-25 08:56:41 | INFO | Skipping SMH - strategy return 0.0087 below minimum 0.0150.,1
+2025-10-24T19:56:59.789037+00:00,SOXX,2025-10-25 08:56:43 | INFO | Skipping SOXX - strategy return 0.0055 below minimum 0.0150.,1
+2025-10-24T19:56:59.789042+00:00,QQQ,2025-10-25 08:56:46 | INFO | Skipping QQQ - strategy return 0.0061 below minimum 0.0150.,1
+2025-10-24T19:56:59.789046+00:00,XLY,no_skip_detected,1
+2025-10-24T19:56:59.789049+00:00,IWM,2025-10-25 08:56:51 | INFO | Skipping IWM - strategy return 0.0063 below minimum 0.0150.,1
+2025-10-24T19:56:59.789053+00:00,AAPL,no_skip_detected,1
+2025-10-24T19:56:59.789056+00:00,MSFT,no_skip_detected,1
+2025-10-24T19:56:59.789059+00:00,XLK,2025-10-25 08:56:59 | INFO | Skipping XLK - strategy return 0.0046 below minimum 0.0150.,1
+2025-10-24T19:58:30.555586+00:00,SMH,no_skip_detected,1
+2025-10-24T19:58:30.555595+00:00,SOXX,no_skip_detected,1
+2025-10-24T19:58:30.555599+00:00,QQQ,2025-10-25 08:58:16 | INFO | Skipping QQQ - strategy return 0.0044 below minimum 0.0150.,1
+2025-10-24T19:58:30.555601+00:00,XLY,2025-10-25 08:58:19 | INFO | Skipping XLY - strategy return 0.0063 below minimum 0.0150.,1
+2025-10-24T19:58:30.555604+00:00,IWM,2025-10-25 08:58:22 | INFO | Skipping IWM - strategy return 0.0067 below minimum 0.0150.,1
+2025-10-24T19:58:30.555606+00:00,AAPL,no_skip_detected,1
+2025-10-24T19:58:30.555608+00:00,MSFT,no_skip_detected,1
+2025-10-24T19:58:30.555611+00:00,XLK,2025-10-25 08:58:30 | INFO | Skipping XLK - strategy return 0.0054 below minimum 0.0150.,1
+2025-10-24T20:02:54.931281+00:00,SMH,2025-10-25 09:02:35 | INFO | Skipping SMH - strategy return 0.0075 below minimum 0.0150.,1
+2025-10-24T20:02:54.931294+00:00,SOXX,2025-10-25 09:02:38 | INFO | Skipping SOXX - strategy return 0.0065 below minimum 0.0150.,1
+2025-10-24T20:02:54.931299+00:00,QQQ,2025-10-25 09:02:41 | INFO | Skipping QQQ - strategy return 0.0070 below minimum 0.0150.,1
+2025-10-24T20:02:54.931303+00:00,XLY,2025-10-25 09:02:43 | INFO | Skipping XLY - strategy return 0.0064 below minimum 0.0150.,1
+2025-10-24T20:02:54.931306+00:00,IWM,2025-10-25 09:02:46 | INFO | Skipping IWM - strategy return 0.0065 below minimum 0.0150.,1
+2025-10-24T20:02:54.931308+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:02:54.931311+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:02:54.931314+00:00,XLK,2025-10-25 09:02:54 | INFO | Skipping XLK - strategy return 0.0079 below minimum 0.0150.,1
+2025-10-24T20:05:34.660130+00:00,SMH,2025-10-25 09:05:15 | INFO | Skipping SMH - strategy return 0.0066 below minimum 0.0150.,1
+2025-10-24T20:05:34.660139+00:00,SOXX,no_skip_detected,1
+2025-10-24T20:05:34.660143+00:00,QQQ,2025-10-25 09:05:21 | INFO | Skipping QQQ - strategy return 0.0045 below minimum 0.0150.,1
+2025-10-24T20:05:34.660146+00:00,XLY,2025-10-25 09:05:23 | INFO | Skipping XLY - strategy return 0.0058 below minimum 0.0150.,1
+2025-10-24T20:05:34.660148+00:00,IWM,2025-10-25 09:05:26 | INFO | Skipping IWM - strategy return 0.0077 below minimum 0.0150.,1
+2025-10-24T20:05:34.660151+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:05:34.660153+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:05:34.660156+00:00,XLK,2025-10-25 09:05:34 | INFO | Skipping XLK - strategy return 0.0024 below minimum 0.0150.,1
+2025-10-24T20:10:10.436816+00:00,SMH,no_skip_detected,1
+2025-10-24T20:10:10.436826+00:00,SOXX,no_skip_detected,1
+2025-10-24T20:10:10.436830+00:00,QQQ,2025-10-25 09:09:56 | INFO | Skipping QQQ - strategy return 0.0069 below minimum 0.0150.,1
+2025-10-24T20:10:10.436834+00:00,XLY,2025-10-25 09:09:59 | INFO | Skipping XLY - strategy return 0.0076 below minimum 0.0150.,1
+2025-10-24T20:10:10.436838+00:00,IWM,no_skip_detected,1
+2025-10-24T20:10:10.436842+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:10:10.436845+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:10:10.436849+00:00,XLK,2025-10-25 09:10:10 | INFO | Skipping XLK - strategy return 0.0070 below minimum 0.0150.,1
+2025-10-24T20:12:50.947119+00:00,SMH,2025-10-25 09:12:31 | INFO | Skipping SMH - strategy return 0.0050 below minimum 0.0150.,1
+2025-10-24T20:12:50.947128+00:00,SOXX,2025-10-25 09:12:34 | INFO | Skipping SOXX - strategy return 0.0068 below minimum 0.0150.,1
+2025-10-24T20:12:50.947132+00:00,QQQ,2025-10-25 09:12:37 | INFO | Skipping QQQ - strategy return 0.0074 below minimum 0.0150.,1
+2025-10-24T20:12:50.947135+00:00,XLY,2025-10-25 09:12:39 | INFO | Skipping XLY - strategy return 0.0073 below minimum 0.0150.,1
+2025-10-24T20:12:50.947138+00:00,IWM,2025-10-25 09:12:42 | INFO | Skipping IWM - strategy return 0.0080 below minimum 0.0150.,1
+2025-10-24T20:12:50.947140+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:12:50.947142+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:12:50.947144+00:00,XLK,2025-10-25 09:12:50 | INFO | Skipping XLK - strategy return 0.0061 below minimum 0.0150.,1
+2025-10-24T20:15:06.216459+00:00,SMH,2025-10-25 09:14:47 | INFO | Skipping SMH - strategy return 0.0058 below minimum 0.0150.,1
+2025-10-24T20:15:06.216466+00:00,SOXX,no_skip_detected,1
+2025-10-24T20:15:06.216470+00:00,QQQ,2025-10-25 09:14:52 | INFO | Skipping QQQ - strategy return 0.0052 below minimum 0.0150.,1
+2025-10-24T20:15:06.216472+00:00,XLY,no_skip_detected,1
+2025-10-24T20:15:06.216474+00:00,IWM,2025-10-25 09:14:57 | INFO | Skipping IWM - strategy return 0.0061 below minimum 0.0150.,1
+2025-10-24T20:15:06.216476+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:15:06.216478+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:15:06.216480+00:00,XLK,2025-10-25 09:15:05 | INFO | Skipping XLK - strategy return 0.0067 below minimum 0.0150.,1
+2025-10-24T20:19:28.039881+00:00,SMH,2025-10-25 09:19:09 | INFO | Skipping SMH - strategy return 0.0053 below minimum 0.0150.,1
+2025-10-24T20:19:28.039890+00:00,SOXX,2025-10-25 09:19:11 | INFO | Skipping SOXX - strategy return 0.0053 below minimum 0.0150.,1
+2025-10-24T20:19:28.039894+00:00,QQQ,2025-10-25 09:19:14 | INFO | Skipping QQQ - strategy return 0.0074 below minimum 0.0150.,1
+2025-10-24T20:19:28.039897+00:00,XLY,2025-10-25 09:19:17 | INFO | Skipping XLY - strategy return 0.0066 below minimum 0.0150.,1
+2025-10-24T20:19:28.039900+00:00,IWM,2025-10-25 09:19:19 | INFO | Skipping IWM - strategy return 0.0065 below minimum 0.0150.,1
+2025-10-24T20:19:28.039902+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:19:28.039904+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:19:28.039907+00:00,XLK,2025-10-25 09:19:27 | INFO | Skipping XLK - strategy return 0.0061 below minimum 0.0150.,1
+2025-10-24T20:21:25.060718+00:00,SMH,2025-10-25 09:21:06 | INFO | Skipping SMH - strategy return 0.0055 below minimum 0.0150.,1
+2025-10-24T20:21:25.060726+00:00,SOXX,2025-10-25 09:21:09 | INFO | Skipping SOXX - strategy return 0.0068 below minimum 0.0150.,1
+2025-10-24T20:21:25.060730+00:00,QQQ,no_skip_detected,1
+2025-10-24T20:21:25.060732+00:00,XLY,2025-10-25 09:21:14 | INFO | Skipping XLY - strategy return 0.0056 below minimum 0.0150.,1
+2025-10-24T20:21:25.060735+00:00,IWM,2025-10-25 09:21:17 | INFO | Skipping IWM - strategy return 0.0058 below minimum 0.0150.,1
+2025-10-24T20:21:25.060737+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:21:25.060739+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:21:25.060742+00:00,XLK,2025-10-25 09:21:24 | INFO | Skipping XLK - strategy return 0.0062 below minimum 0.0150.,1
+2025-10-24T20:23:48.798179+00:00,SMH,no_skip_detected,1
+2025-10-24T20:23:48.798188+00:00,SOXX,2025-10-25 09:23:32 | INFO | Skipping SOXX - strategy return 0.0052 below minimum 0.0150.,1
+2025-10-24T20:23:48.798192+00:00,QQQ,2025-10-25 09:23:35 | INFO | Skipping QQQ - strategy return 0.0065 below minimum 0.0150.,1
+2025-10-24T20:23:48.798195+00:00,XLY,2025-10-25 09:23:37 | INFO | Skipping XLY - strategy return 0.0063 below minimum 0.0150.,1
+2025-10-24T20:23:48.798197+00:00,IWM,2025-10-25 09:23:40 | INFO | Skipping IWM - strategy return 0.0065 below minimum 0.0150.,1
+2025-10-24T20:23:48.798200+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:23:48.798202+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:23:48.798204+00:00,XLK,no_skip_detected,1
+2025-10-24T20:26:12.064405+00:00,SMH,no_skip_detected,1
+2025-10-24T20:26:12.064411+00:00,SOXX,no_skip_detected,1
+2025-10-24T20:26:12.064414+00:00,QQQ,2025-10-25 09:25:58 | INFO | Skipping QQQ - strategy return 0.0063 below minimum 0.0150.,1
+2025-10-24T20:26:12.064416+00:00,XLY,2025-10-25 09:26:01 | INFO | Skipping XLY - strategy return 0.0049 below minimum 0.0150.,1
+2025-10-24T20:26:12.064418+00:00,IWM,2025-10-25 09:26:03 | INFO | Skipping IWM - strategy return 0.0052 below minimum 0.0150.,1
+2025-10-24T20:26:12.064420+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:26:12.064422+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:26:12.064424+00:00,XLK,2025-10-25 09:26:11 | INFO | Skipping XLK - strategy return 0.0054 below minimum 0.0150.,1
+2025-10-24T20:28:58.739676+00:00,SMH,2025-10-25 09:28:40 | INFO | Skipping SMH - strategy return 0.0051 below minimum 0.0150.,1
+2025-10-24T20:28:58.739684+00:00,SOXX,2025-10-25 09:28:43 | INFO | Skipping SOXX - strategy return 0.0044 below minimum 0.0150.,1
+2025-10-24T20:28:58.739688+00:00,QQQ,2025-10-25 09:28:45 | INFO | Skipping QQQ - strategy return 0.0063 below minimum 0.0150.,1
+2025-10-24T20:28:58.739691+00:00,XLY,no_skip_detected,1
+2025-10-24T20:28:58.739693+00:00,IWM,2025-10-25 09:28:50 | INFO | Skipping IWM - strategy return 0.0053 below minimum 0.0150.,1
+2025-10-24T20:28:58.739696+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:28:58.739698+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:28:58.739700+00:00,XLK,2025-10-25 09:28:58 | INFO | Skipping XLK - strategy return 0.0073 below minimum 0.0150.,1
+2025-10-24T20:44:37.868573+00:00,SMH,2025-10-25 09:44:19 | INFO | Skipping SMH - strategy return 0.0071 below minimum 0.0150.,1
+2025-10-24T20:44:37.868580+00:00,SOXX,2025-10-25 09:44:22 | INFO | Skipping SOXX - strategy return 0.0071 below minimum 0.0150.,1
+2025-10-24T20:44:37.868584+00:00,QQQ,2025-10-25 09:44:24 | INFO | Skipping QQQ - strategy return 0.0056 below minimum 0.0150.,1
+2025-10-24T20:44:37.868587+00:00,XLY,2025-10-25 09:44:27 | INFO | Skipping XLY - strategy return 0.0057 below minimum 0.0150.,1
+2025-10-24T20:44:37.868589+00:00,IWM,2025-10-25 09:44:29 | INFO | Skipping IWM - strategy return 0.0058 below minimum 0.0150.,1
+2025-10-24T20:44:37.868591+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:44:37.868593+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:44:37.868596+00:00,XLK,2025-10-25 09:44:37 | INFO | Skipping XLK - strategy return 0.0059 below minimum 0.0150.,1
+2025-10-24T20:47:09.088903+00:00,SMH,2025-10-25 09:46:50 | INFO | Skipping SMH - strategy return 0.0062 below minimum 0.0150.,1
+2025-10-24T20:47:09.088911+00:00,SOXX,no_skip_detected,1
+2025-10-24T20:47:09.088915+00:00,QQQ,2025-10-25 09:46:55 | INFO | Skipping QQQ - strategy return 0.0058 below minimum 0.0150.,1
+2025-10-24T20:47:09.088918+00:00,XLY,no_skip_detected,1
+2025-10-24T20:47:09.088920+00:00,IWM,2025-10-25 09:47:00 | INFO | Skipping IWM - strategy return 0.0057 below minimum 0.0150.,1
+2025-10-24T20:47:09.088923+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:47:09.088925+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:47:09.088927+00:00,XLK,2025-10-25 09:47:08 | INFO | Skipping XLK - strategy return 0.0066 below minimum 0.0150.,1
+2025-10-24T20:48:37.606246+00:00,SMH,no_skip_detected,1
+2025-10-24T20:48:37.606254+00:00,SOXX,2025-10-25 09:48:21 | INFO | Skipping SOXX - strategy return 0.0071 below minimum 0.0150.,1
+2025-10-24T20:48:37.606258+00:00,QQQ,2025-10-25 09:48:24 | INFO | Skipping QQQ - strategy return 0.0060 below minimum 0.0150.,1
+2025-10-24T20:48:37.606261+00:00,XLY,no_skip_detected,1
+2025-10-24T20:48:37.606264+00:00,IWM,no_skip_detected,1
+2025-10-24T20:48:37.606266+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:48:37.606268+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:48:37.606270+00:00,XLK,2025-10-25 09:48:37 | INFO | Skipping XLK - strategy return 0.0053 below minimum 0.0150.,1
+2025-10-24T20:50:16.638380+00:00,SMH,2025-10-25 09:49:58 | INFO | Skipping SMH - strategy return 0.0071 below minimum 0.0150.,1
+2025-10-24T20:50:16.638389+00:00,SOXX,2025-10-25 09:50:01 | INFO | Skipping SOXX - strategy return 0.0052 below minimum 0.0150.,1
+2025-10-24T20:50:16.638392+00:00,QQQ,2025-10-25 09:50:03 | INFO | Skipping QQQ - strategy return 0.0063 below minimum 0.0150.,1
+2025-10-24T20:50:16.638395+00:00,XLY,2025-10-25 09:50:06 | INFO | Skipping XLY - strategy return 0.0056 below minimum 0.0150.,1
+2025-10-24T20:50:16.638398+00:00,IWM,no_skip_detected,1
+2025-10-24T20:50:16.638400+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:50:16.638402+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:50:16.638404+00:00,XLK,2025-10-25 09:50:16 | INFO | Skipping XLK - strategy return 0.0063 below minimum 0.0150.,1
+2025-10-24T20:55:52.309630+00:00,SMH,2025-10-25 09:55:33 | INFO | Skipping SMH - strategy return 0.0056 below minimum 0.0150.,1
+2025-10-24T20:55:52.309645+00:00,SOXX,no_skip_detected,1
+2025-10-24T20:55:52.309652+00:00,QQQ,2025-10-25 09:55:38 | INFO | Skipping QQQ - strategy return 0.0060 below minimum 0.0150.,1
+2025-10-24T20:55:52.309657+00:00,XLY,2025-10-25 09:55:41 | INFO | Skipping XLY - strategy return 0.0078 below minimum 0.0150.,1
+2025-10-24T20:55:52.309661+00:00,IWM,2025-10-25 09:55:44 | INFO | Skipping IWM - strategy return 0.0069 below minimum 0.0150.,1
+2025-10-24T20:55:52.309665+00:00,AAPL,no_skip_detected,1
+2025-10-24T20:55:52.309668+00:00,MSFT,no_skip_detected,1
+2025-10-24T20:55:52.309672+00:00,XLK,2025-10-25 09:55:51 | INFO | Skipping XLK - strategy return 0.0063 below minimum 0.0150.,1
+2025-10-24T21:00:24.492571+00:00,SMH,no_skip_detected,1
+2025-10-24T21:00:24.492579+00:00,SOXX,2025-10-25 10:00:07 | INFO | Skipping SOXX - strategy return 0.0044 below minimum 0.0150.,1
+2025-10-24T21:00:24.492583+00:00,QQQ,2025-10-25 10:00:09 | INFO | Skipping QQQ - strategy return 0.0060 below minimum 0.0150.,1
+2025-10-24T21:00:24.492585+00:00,XLY,2025-10-25 10:00:12 | INFO | Skipping XLY - strategy return 0.0084 below minimum 0.0150.,1
+2025-10-24T21:00:24.492588+00:00,IWM,2025-10-25 10:00:15 | INFO | Skipping IWM - strategy return 0.0060 below minimum 0.0150.,1
+2025-10-24T21:00:24.492590+00:00,AAPL,no_skip_detected,1
+2025-10-24T21:00:24.492592+00:00,MSFT,no_skip_detected,1
+2025-10-24T21:00:24.492594+00:00,XLK,2025-10-25 10:00:24 | INFO | Skipping XLK - strategy return 0.0048 below minimum 0.0150.,1
+2025-10-24T21:07:17.141507+00:00,SMH,no_skip_detected,1
+2025-10-24T21:07:17.141515+00:00,SOXX,2025-10-25 10:07:00 | INFO | Skipping SOXX - strategy return 0.0055 below minimum 0.0150.,1
+2025-10-24T21:07:17.141519+00:00,QQQ,2025-10-25 10:07:03 | INFO | Skipping QQQ - strategy return 0.0057 below minimum 0.0150.,1
+2025-10-24T21:07:17.141521+00:00,XLY,no_skip_detected,1
+2025-10-24T21:07:17.141524+00:00,IWM,2025-10-25 10:07:08 | INFO | Skipping IWM - strategy return 0.0046 below minimum 0.0150.,1
+2025-10-24T21:07:17.141526+00:00,AAPL,no_skip_detected,1
+2025-10-24T21:07:17.141528+00:00,MSFT,no_skip_detected,1
+2025-10-24T21:07:17.141530+00:00,XLK,2025-10-25 10:07:16 | INFO | Skipping XLK - strategy return 0.0068 below minimum 0.0150.,1
+2025-10-24T21:13:03.297972+00:00,SMH,2025-10-25 10:12:44 | INFO | Skipping SMH - strategy return 0.0037 below minimum 0.0150.,1
+2025-10-24T21:13:03.297981+00:00,SOXX,2025-10-25 10:12:47 | INFO | Skipping SOXX - strategy return 0.0071 below minimum 0.0150.,1
+2025-10-24T21:13:03.297984+00:00,QQQ,2025-10-25 10:12:50 | INFO | Skipping QQQ - strategy return 0.0059 below minimum 0.0150.,1
+2025-10-24T21:13:03.297987+00:00,XLY,no_skip_detected,1
+2025-10-24T21:13:03.297990+00:00,IWM,2025-10-25 10:12:55 | INFO | Skipping IWM - strategy return 0.0086 below minimum 0.0150.,1
+2025-10-24T21:13:03.297992+00:00,AAPL,no_skip_detected,1
+2025-10-24T21:13:03.297994+00:00,MSFT,no_skip_detected,1
+2025-10-24T21:13:03.297997+00:00,XLK,2025-10-25 10:13:02 | INFO | Skipping XLK - strategy return 0.0038 below minimum 0.0150.,1
+2025-10-24T21:25:27.720109+00:00,SMH,2025-10-25 10:25:08 | INFO | Skipping SMH - strategy return 0.0069 below minimum 0.0150.,1
+2025-10-24T21:25:27.720118+00:00,SOXX,2025-10-25 10:25:11 | INFO | Skipping SOXX - strategy return 0.0046 below minimum 0.0150.,1
+2025-10-24T21:25:27.720122+00:00,QQQ,2025-10-25 10:25:14 | INFO | Skipping QQQ - strategy return 0.0059 below minimum 0.0150.,1
+2025-10-24T21:25:27.720124+00:00,XLY,2025-10-25 10:25:16 | INFO | Skipping XLY - strategy return 0.0057 below minimum 0.0150.,1
+2025-10-24T21:25:27.720127+00:00,IWM,2025-10-25 10:25:19 | INFO | Skipping IWM - strategy return 0.0050 below minimum 0.0150.,1
+2025-10-24T21:25:27.720130+00:00,AAPL,no_skip_detected,1
+2025-10-24T21:25:27.720132+00:00,MSFT,no_skip_detected,1
+2025-10-24T21:25:27.720134+00:00,XLK,2025-10-25 10:25:27 | INFO | Skipping XLK - strategy return 0.0069 below minimum 0.0150.,1
+2025-10-24T21:37:33.587605+00:00,SMH,2025-10-25 10:37:15 | INFO | Skipping SMH - strategy return 0.0077 below minimum 0.0150.,1
+2025-10-24T21:37:33.587612+00:00,SOXX,2025-10-25 10:37:17 | INFO | Skipping SOXX - strategy return 0.0082 below minimum 0.0150.,1
+2025-10-24T21:37:33.587616+00:00,QQQ,2025-10-25 10:37:20 | INFO | Skipping QQQ - strategy return 0.0067 below minimum 0.0150.,1
+2025-10-24T21:37:33.587619+00:00,XLY,2025-10-25 10:37:22 | INFO | Skipping XLY - strategy return 0.0054 below minimum 0.0150.,1
+2025-10-24T21:37:33.587621+00:00,IWM,2025-10-25 10:37:25 | INFO | Skipping IWM - strategy return 0.0065 below minimum 0.0150.,1
+2025-10-24T21:37:33.587623+00:00,AAPL,no_skip_detected,1
+2025-10-24T21:37:33.587625+00:00,MSFT,no_skip_detected,1
+2025-10-24T21:37:33.587628+00:00,XLK,2025-10-25 10:37:33 | INFO | Skipping XLK - strategy return 0.0064 below minimum 0.0150.,1
+2025-10-24T21:41:38.729456+00:00,SMH,2025-10-25 10:41:19 | INFO | Skipping SMH - strategy return 0.0065 below minimum 0.0150.,1
+2025-10-24T21:41:38.729463+00:00,SOXX,2025-10-25 10:41:22 | INFO | Skipping SOXX - strategy return 0.0073 below minimum 0.0150.,1
+2025-10-24T21:41:38.729467+00:00,QQQ,2025-10-25 10:41:25 | INFO | Skipping QQQ - strategy return 0.0048 below minimum 0.0150.,1
+2025-10-24T21:41:38.729470+00:00,XLY,no_skip_detected,1
+2025-10-24T21:41:38.729472+00:00,IWM,2025-10-25 10:41:30 | INFO | Skipping IWM - strategy return 0.0069 below minimum 0.0150.,1
+2025-10-24T21:41:38.729474+00:00,AAPL,no_skip_detected,1
+2025-10-24T21:41:38.729477+00:00,MSFT,no_skip_detected,1
+2025-10-24T21:41:38.729479+00:00,XLK,2025-10-25 10:41:38 | INFO | Skipping XLK - strategy return 0.0050 below minimum 0.0150.,1
+2025-10-24T21:52:31.722474+00:00,SMH,2025-10-25 10:52:13 | INFO | Skipping SMH - strategy return 0.0080 below minimum 0.0150.,1
+2025-10-24T21:52:31.722483+00:00,SOXX,2025-10-25 10:52:16 | INFO | Skipping SOXX - strategy return 0.0052 below minimum 0.0150.,1
+2025-10-24T21:52:31.722487+00:00,QQQ,2025-10-25 10:52:18 | INFO | Skipping QQQ - strategy return 0.0039 below minimum 0.0150.,1
+2025-10-24T21:52:31.722490+00:00,XLY,2025-10-25 10:52:21 | INFO | Skipping XLY - strategy return 0.0060 below minimum 0.0150.,1
+2025-10-24T21:52:31.722492+00:00,IWM,2025-10-25 10:52:23 | INFO | Skipping IWM - strategy return 0.0060 below minimum 0.0150.,1
+2025-10-24T21:52:31.722495+00:00,AAPL,no_skip_detected,1
+2025-10-24T21:52:31.722497+00:00,MSFT,no_skip_detected,1
+2025-10-24T21:52:31.722499+00:00,XLK,2025-10-25 10:52:31 | INFO | Skipping XLK - predicted move -0.0099 above -0.0100 for short entries (MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP).,1
+2025-10-24T22:03:14.210870+00:00,SMH,2025-10-25 11:02:56 | INFO | Skipping SMH - strategy return 0.0048 below minimum 0.0150.,1
+2025-10-24T22:03:14.210878+00:00,SOXX,no_skip_detected,1
+2025-10-24T22:03:14.210881+00:00,QQQ,2025-10-25 11:03:01 | INFO | Skipping QQQ - strategy return 0.0064 below minimum 0.0150.,1
+2025-10-24T22:03:14.210884+00:00,XLY,2025-10-25 11:03:03 | INFO | Skipping XLY - strategy return 0.0059 below minimum 0.0150.,1
+2025-10-24T22:03:14.210887+00:00,IWM,no_skip_detected,1
+2025-10-24T22:03:14.210889+00:00,AAPL,no_skip_detected,1
+2025-10-24T22:03:14.210891+00:00,MSFT,no_skip_detected,1
+2025-10-24T22:03:14.210893+00:00,XLK,2025-10-25 11:03:13 | INFO | Skipping XLK - strategy return 0.0072 below minimum 0.0150.,1
+2025-10-24T22:06:44.995968+00:00,SMH,2025-10-25 11:06:27 | INFO | Skipping SMH - strategy return 0.0051 below minimum 0.0150.,1
+2025-10-24T22:06:44.995980+00:00,SOXX,2025-10-25 11:06:29 | INFO | Skipping SOXX - strategy return 0.0065 below minimum 0.0150.,1
+2025-10-24T22:06:44.995985+00:00,QQQ,2025-10-25 11:06:32 | INFO | Skipping QQQ - strategy return 0.0074 below minimum 0.0150.,1
+2025-10-24T22:06:44.995988+00:00,XLY,no_skip_detected,1
+2025-10-24T22:06:44.995990+00:00,IWM,2025-10-25 11:06:37 | INFO | Skipping IWM - strategy return 0.0070 below minimum 0.0150.,1
+2025-10-24T22:06:44.995993+00:00,AAPL,no_skip_detected,1
+2025-10-24T22:06:44.995995+00:00,MSFT,no_skip_detected,1
+2025-10-24T22:06:44.995997+00:00,XLK,2025-10-25 11:06:44 | INFO | Skipping XLK - strategy return 0.0066 below minimum 0.0150.,1

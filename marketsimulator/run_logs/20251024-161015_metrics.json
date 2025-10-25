@@ -1,0 +1,63 @@
+{
+  "balance": 99672.69440799681,
+  "cash": 99672.69440799681,
+  "entry_entries_goog": 6.0,
+  "entry_entries_msft": 6.0,
+  "entry_limit_goog": 6.0,
+  "entry_limit_msft": 10.0,
+  "entry_limits": {
+    "per_key": {
+      "GOOG": {
+        "approx_trade_limit": 12.0,
+        "entries": 6,
+        "entry_limit": 6.0,
+        "resolved_limit_key": "goog"
+      },
+      "MSFT": {
+        "approx_trade_limit": 20.0,
+        "entries": 6,
+        "entry_limit": 10.0,
+        "resolved_limit_key": "msft"
+      }
+    },
+    "per_symbol": {
+      "GOOG": {
+        "approx_trade_limit": 12.0,
+        "entries": 6,
+        "entry_limit": 6.0
+      },
+      "MSFT": {
+        "approx_trade_limit": 20.0,
+        "entries": 6,
+        "entry_limit": 10.0
+      }
+    }
+  },
+  "entry_util_goog": 1.0,
+  "entry_util_msft": 0.6,
+  "fees_paid": 23.07825063215716,
+  "flatten_end": true,
+  "initial_cash": 100000.0,
+  "kronos_only": true,
+  "kronos_sharpe_cutoff": -1.0,
+  "max_drawdown": 325.5247975945531,
+  "max_drawdown_pct": 0.003255148576750052,
+  "mode": "simulation",
+  "pnl": -327.3055920031911,
+  "real_analytics": true,
+  "return": -0.0032730559200319113,
+  "sharpe": -8.532035257653424,
+  "sharpe_cutoff": null,
+  "step_size": 1,
+  "steps": 20,
+  "symbols": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "GOOG",
+    "XLK",
+    "SOXX"
+  ],
+  "top_k": 4
+}

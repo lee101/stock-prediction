@@ -172,3 +172,5 @@ trainingdatahourly/
 evaltests/backtests
 analysis
 analysis_runner_funcs
+analysis_listing.txt
+analysis_listing_repr.txt

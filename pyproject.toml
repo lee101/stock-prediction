@@ -122,6 +122,7 @@ serving = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "gunicorn>=23.0",
+    "runpod>=1.7.9",
 ]
 
 automation = [

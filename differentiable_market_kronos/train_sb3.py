@@ -12,9 +12,12 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
+from src.torch_backend import configure_tf32_backends
+
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.set_float32_matmul_precision("high")
+configure_tf32_backends(torch)
+if hasattr(torch, "set_float32_matmul_precision"):
+    torch.set_float32_matmul_precision("high")
 
 from .config import ExperimentConfig
 from .envs.dm_env import KronosDMEnv
