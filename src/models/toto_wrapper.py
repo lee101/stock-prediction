@@ -14,6 +14,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, ContextManager, Dict, List, Optional, Union, cast
 
+from src.torch_backend import configure_tf32_backends
+
 from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -123,27 +125,8 @@ else:  # pragma: no cover - executed when imports succeed
 logger = logging.getLogger(__name__)
 
 # Enable tensor-core friendly defaults when possible.
-if (
-    torch is not None
-    and getattr(torch, "cuda", None) is not None
-    and callable(getattr(torch.cuda, "is_available", None))
-    and torch.cuda.is_available()
-):
-    try:
-        torch.backends.cuda.matmul.allow_tf32 = True  # type: ignore[attr-defined]
-    except Exception:
-        logger = logging.getLogger(__name__)
-        logger.debug("Failed to enable TF32 matmul on Toto wrapper import", exc_info=True)
-
 if torch is not None:
-    _set_precision = getattr(torch, "set_float32_matmul_precision", None)
-    if callable(_set_precision):
-        try:
-            _set_precision("medium")
-        except Exception:
-            logging.getLogger(__name__).debug(
-                "Failed to set float32 matmul precision for Toto wrapper", exc_info=True
-            )
+    configure_tf32_backends(torch, logger=logging.getLogger(__name__))
 
 
 @dataclass
@@ -319,9 +302,8 @@ class TotoPipeline:
                 "Torch and NumPy must be configured via setup_toto_wrapper_imports before instantiating TotoPipeline."
             )
 
-        torch_module = cast(ModuleType, torch)
         if amp_dtype is None:
-            amp_dtype = getattr(torch_module, "float16", None)
+            amp_dtype = getattr(torch, "float16", None)
 
         self.device = device
         self.max_oom_retries = max(0, int(max_oom_retries))

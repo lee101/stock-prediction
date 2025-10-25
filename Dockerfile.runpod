@@ -1,0 +1,49 @@
+FROM runpod/base:0.7.0-cuda12.1
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_CACHE_DIR=/workspace/.uvcache \
+    PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /workspace
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+COPY pyproject.toml uv.lock ./
+
+COPY runpodmarket ./runpodmarket
+COPY falmarket ./falmarket
+COPY fal_marketsimulator ./fal_marketsimulator
+COPY faltrain ./faltrain
+COPY marketsimulator ./marketsimulator
+COPY src ./src
+COPY traininglib ./traininglib
+COPY training ./training
+COPY rlinference ./rlinference
+COPY gymrl ./gymrl
+COPY analysis ./analysis
+COPY analysis_runner_funcs ./analysis_runner_funcs
+COPY fal_utils ./fal_utils
+COPY utils ./utils
+COPY trade_stock_e2e.py ./trade_stock_e2e.py
+COPY trade_stock_e2e_trained.py ./trade_stock_e2e_trained.py
+COPY alpaca_wrapper.py ./alpaca_wrapper.py
+COPY backtest_test3_inline.py ./backtest_test3_inline.py
+COPY data_curate_daily.py ./data_curate_daily.py
+COPY env_real.py ./env_real.py
+COPY jsonshelve.py ./jsonshelve.py
+COPY stock ./stock
+
+# Create persistent directories required by runtime sync steps.
+RUN mkdir -p trainingdata trainingdatadaily trainingdatahourly compiled_models hyperparams
+
+RUN uv pip install --system --no-cache-dir awscli
+RUN uv pip install --system --no-cache-dir ".[serving]"
+
+ENV RUNPODMARKET_DISABLE_SERVERLESS=0
+
+CMD ["python", "-u", "-m", "runpodmarket.handler"]
