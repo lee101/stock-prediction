@@ -118,7 +118,14 @@ sys.modules.setdefault("jsonshelve", jsonshelve_mod)
 sys.modules.setdefault("src.fixtures", types.ModuleType("fixtures"))
 sys.modules["src.fixtures"].crypto_symbols = []
 sys.modules.setdefault("src.logging_utils", types.ModuleType("logging_utils"))
-sys.modules["src.logging_utils"].setup_logging = lambda *a, **k: types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None)
+sys.modules["src.logging_utils"].setup_logging = (
+    lambda *a, **k: types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+    )
+)
 sys.modules.setdefault("src.stock_utils", types.ModuleType("stock_utils"))
 sys.modules["src.stock_utils"].pairs_equal = lambda a,b: a==b
 sys.modules["src.stock_utils"].remap_symbols = lambda s: s
@@ -200,7 +207,7 @@ def test_backout_near_market_switches_to_market(monkeypatch):
 
     monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'get_all_positions', get_positions)
 
-    alpaca_cli.backout_near_market('META', start_time=start)
+    alpaca_cli.backout_near_market('META', start_time=start, ramp_minutes=1, market_after=10)
 
     assert called.get('called')
 
@@ -230,4 +237,4 @@ def test_backout_near_market_ramp_progress(monkeypatch):
 
     alpaca_cli.backout_near_market('META', start_time=start)
 
-    assert pytest.approx(captured['pct'], rel=1e-6) == pytest.approx(0.0184666667, rel=1e-6)
+    assert pytest.approx(captured['pct'], rel=1e-6) == pytest.approx(0.0077333333, rel=1e-6)

@@ -164,9 +164,7 @@ def pytest_addoption(parser):
         help="run GPU tests"
     )
 
-
 # Custom pytest markers
-pytest_plugins = []
 
 # Fixtures for mocking external dependencies
 @pytest.fixture
