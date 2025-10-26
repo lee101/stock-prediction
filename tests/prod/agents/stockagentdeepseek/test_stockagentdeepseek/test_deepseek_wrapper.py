@@ -15,6 +15,13 @@ def _reset_cache():
     deepseek_wrapper.reset_client()
 
 
+@pytest.fixture(autouse=True)
+def _disable_openrouter(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_DISABLE_OPENROUTER", "1")
+    # Ensure environment change takes effect for module-level flags.
+    monkeypatch.setattr(deepseek_wrapper, "_DISABLE_OPENROUTER", True, raising=False)
+
+
 class DummyCompletions:
     def __init__(self, responses):
         self.responses = responses if isinstance(responses, list) else [responses]

@@ -20,6 +20,50 @@ ensure_tblib_pickling_support()
 setup_logging(logging.INFO)
 LOG = get_logger("runpodmarket.handler", logging.INFO)
 
+def _warmup_cuda(torch_module: Any) -> None:
+    """Prime CUDA context to reduce first-request latency."""
+
+    cuda_iface = getattr(torch_module, "cuda", None)
+    if cuda_iface is None:
+        return
+    try:
+        if not cuda_iface.is_available():
+            LOG.info("CUDA not available; skipping warmup.")
+            return
+    except Exception as exc:  # pragma: no cover - CUDA presence query failed
+        LOG.debug("Unable to query CUDA availability: %s", exc)
+        return
+
+    try:
+        device_index = cuda_iface.current_device()
+    except Exception:
+        device_index = 0
+        try:
+            cuda_iface.set_device(device_index)
+        except Exception:
+            pass
+
+    try:
+        device_name = cuda_iface.get_device_name(device_index)
+    except Exception:
+        device_name = f"cuda:{device_index}"
+
+    try:
+        tensor = torch_module.zeros(1, device=f"cuda:{device_index}")
+        tensor.mul_(1.0)
+        cuda_iface.synchronize()
+        capability = None
+        get_capability = getattr(cuda_iface, "get_device_capability", None)
+        if callable(get_capability):
+            try:
+                capability = get_capability(device_index)
+            except Exception:
+                capability = None
+        LOG.info("CUDA warmup complete device=%s capability=%s", device_name, capability)
+    except Exception as exc:  # pragma: no cover - device-specific failure
+        LOG.warning("CUDA warmup failed on %s: %s", device_name, exc)
+
+
 try:  # Heavy numerics injected for the simulator runtime.
     import numpy as _np  # type: ignore
     import pandas as _pd  # type: ignore
@@ -32,6 +76,10 @@ except Exception as exc:  # pragma: no cover - runtime environment check
 else:
     configure_tf32_backends(_torch, logger=LOG)
     setup_training_imports(_torch, _np, _pd)
+    try:
+        _warmup_cuda(_torch)
+    except Exception as exc:  # pragma: no cover - defensive
+        LOG.warning("CUDA warmup attempt raised %s", exc)
 
 STRICT_DOWNLOAD = os.getenv("RUNPODMARKET_STRICT_DOWNLOAD", "").lower() in {"1", "true", "yes"}
 
