@@ -31,8 +31,12 @@ def _normalise_side(side: str) -> str:
 
 def _row_value(row: pd.Series, *names: str, default: float) -> float:
     for name in names:
-        if name in row and pd.notna(row[name]):
-            return coerce_numeric(row[name], default=default)
+        if name not in row:
+            continue
+        raw_value = row[name]
+        scalar = coerce_numeric(raw_value, default=default)
+        if pd.notna(scalar):
+            return float(scalar)
     return coerce_numeric(default, default=default)
 
 
