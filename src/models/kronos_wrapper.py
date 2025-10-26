@@ -9,7 +9,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Dict, List, Optional, Sequence
 
-from .model_cache import ModelCacheManager, dtype_to_token
+from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _KRONOS_CANDIDATES = [
@@ -127,6 +127,7 @@ class KronosForecastingWrapper:
         sample_count: int = 8,
         cache_dir: Optional[str] = None,
         verbose: bool = False,
+        prefer_fp32: bool = False,
     ) -> None:
         if torch is None or np is None or pd is None:
             raise RuntimeError(
@@ -143,10 +144,11 @@ class KronosForecastingWrapper:
         self.sample_count = sample_count
         self.cache_dir = cache_dir
         self.verbose = verbose
+        self._prefer_fp32 = bool(prefer_fp32)
 
         self._device = device
         self._predictor = None
-        self._preferred_dtype = self._compute_preferred_dtype(device)
+        self._preferred_dtype = self._compute_preferred_dtype(device, prefer_fp32=self._prefer_fp32)
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -413,7 +415,9 @@ class KronosForecastingWrapper:
     # Internal helpers
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _compute_preferred_dtype(device: str) -> Optional[torch.dtype]:
+    def _compute_preferred_dtype(device: str, *, prefer_fp32: bool = False) -> Optional[torch.dtype]:
+        if prefer_fp32:
+            return None
         if not device.startswith("cuda"):
             return None
         if not torch.cuda.is_available():
@@ -486,6 +490,56 @@ class KronosForecastingWrapper:
             except Exception as exc:  # pragma: no cover - predictor may not expose .model
                 logger.debug("Failed to set Kronos predictor dtype: %s", exc)
         predictor.model = predictor.model.eval()
+
+        metadata_requirements = {
+            "model_id": self.model_name,
+            "tokenizer_id": self.tokenizer_name,
+            "dtype": dtype_token,
+            "device": self._device,
+            "prefer_fp32": self._prefer_fp32,
+            "torch_version": getattr(torch, "__version__", "unknown"),
+        }
+        metadata_payload = {
+            **metadata_requirements,
+            "max_context": int(self.max_context),
+            "clip": float(self.clip),
+            "temperature": float(self.temperature),
+            "top_p": float(self.top_p),
+            "top_k": int(self.top_k),
+            "sample_count": int(self.sample_count),
+        }
+
+        should_persist = True
+        existing_metadata = cache_manager.load_metadata(self.model_name, dtype_token)
+        if existing_metadata is not None and cache_manager.metadata_matches(existing_metadata, metadata_requirements):
+            should_persist = False
+        weights_dir = cache_manager.weights_dir(self.model_name, dtype_token)
+        if not should_persist and not (weights_dir / "model_state.pt").exists():
+            should_persist = True
+
+        if should_persist:
+            try:
+                cache_manager.persist_model_state(
+                    model_id=self.model_name,
+                    dtype_token=dtype_token,
+                    model=model,
+                    metadata=metadata_payload,
+                    force=True,
+                )
+                tokenizer_dir = weights_dir / "tokenizer"
+                if hasattr(tokenizer, "save_pretrained"):
+                    tokenizer_dir.mkdir(parents=True, exist_ok=True)
+                    tokenizer.save_pretrained(str(tokenizer_dir))  # type: ignore[arg-type]
+            except ModelCacheError as exc:
+                logger.warning(
+                    "Failed to persist Kronos cache for %s (%s): %s",
+                    self.model_name,
+                    dtype_token,
+                    exc,
+                )
+            except Exception as exc:  # pragma: no cover - tokenizer persistence best effort
+                logger.debug("Failed to persist Kronos tokenizer cache: %s", exc)
+
         self._predictor = predictor
         return predictor
 

@@ -117,8 +117,18 @@ jsonshelve_mod.FlatShelf = FlatShelf
 sys.modules.setdefault("jsonshelve", jsonshelve_mod)
 sys.modules.setdefault("src.fixtures", types.ModuleType("fixtures"))
 sys.modules["src.fixtures"].crypto_symbols = []
-sys.modules.setdefault("src.logging_utils", types.ModuleType("logging_utils"))
-sys.modules["src.logging_utils"].setup_logging = lambda *a, **k: types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None)
+logging_utils_mod = types.ModuleType("logging_utils")
+
+def _stub_logger(*args, **kwargs):
+    return types.SimpleNamespace(
+        info=lambda *a, **k: None,
+        error=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+    )
+
+logging_utils_mod.setup_logging = _stub_logger
+sys.modules.setdefault("src.logging_utils", logging_utils_mod)
 sys.modules.setdefault("src.stock_utils", types.ModuleType("stock_utils"))
 sys.modules["src.stock_utils"].pairs_equal = lambda a,b: a==b
 sys.modules["src.stock_utils"].remap_symbols = lambda s: s
@@ -200,7 +210,7 @@ def test_backout_near_market_switches_to_market(monkeypatch):
 
     monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'get_all_positions', get_positions)
 
-    alpaca_cli.backout_near_market('META', start_time=start)
+    alpaca_cli.backout_near_market('META', start_time=start, ramp_minutes=10, market_after=15)
 
     assert called.get('called')
 
@@ -228,6 +238,13 @@ def test_backout_near_market_ramp_progress(monkeypatch):
 
     monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'get_all_positions', get_positions)
 
-    alpaca_cli.backout_near_market('META', start_time=start)
+    ramp_minutes = 30
+    alpaca_cli.backout_near_market('META', start_time=start, ramp_minutes=ramp_minutes, market_after=50)
 
-    assert pytest.approx(captured['pct'], rel=1e-6) == pytest.approx(0.0184666667, rel=1e-6)
+    minutes_since_start = 14
+    pct_offset = -0.003
+    pct_final_offset = 0.02
+    progress = min(minutes_since_start / ramp_minutes, 1.0)
+    expected_pct = pct_offset + (pct_final_offset - pct_offset) * progress
+
+    assert pytest.approx(captured['pct'], rel=1e-6) == pytest.approx(expected_pct, rel=1e-6)

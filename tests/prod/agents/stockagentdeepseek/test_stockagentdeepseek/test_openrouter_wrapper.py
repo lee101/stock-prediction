@@ -29,6 +29,7 @@ class DummyClient:
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(openrouter_wrapper, "APIError", Exception, raising=False)
     openrouter_wrapper.reset_client()
     yield
     openrouter_wrapper.reset_client()
@@ -63,14 +64,9 @@ def test_openrouter_uses_cache(monkeypatch):
 
 
 def test_openrouter_fallback(monkeypatch):
-    api_error_cls = getattr(openrouter_wrapper, "APIError", Exception)
-
-    class ContextError(api_error_cls):
-        pass
-
-    error = ContextError("context length exceeded")
+    error = Exception("context length exceeded")
     final = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=" fallback ok "))])
-    client = DummyClient([error, final])
+    client = DummyClient([error, error, error, final])
     monkeypatch.setattr(openrouter_wrapper, "_ensure_client", lambda: client)
 
     messages = [{"role": "user", "content": "payload"}]
@@ -84,8 +80,8 @@ def test_openrouter_fallback(monkeypatch):
     )
 
     assert output.strip() == "fallback ok"
-    assert client.chat.completions.calls == 2
+    assert client.chat.completions.calls == 4
     first_kwargs = client.chat.completions.kwargs_list[0]
     assert first_kwargs["model"] == "primary-model"
-    second_kwargs = client.chat.completions.kwargs_list[1]
-    assert second_kwargs["model"] == "fallback-model"
+    fallback_kwargs = client.chat.completions.kwargs_list[-1]
+    assert fallback_kwargs["model"] == "fallback-model"

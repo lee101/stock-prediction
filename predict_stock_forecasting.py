@@ -1,4 +1,5 @@
 import csv
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -43,6 +44,21 @@ KRONOS_TOP_P = 0.85
 def load_pipeline():
     global forecasting_wrapper
     if forecasting_wrapper is None:
+        sample_count = KRONOS_SAMPLE_COUNT
+        env_sample = os.getenv("MARKETSIM_KRONOS_SAMPLE_COUNT")
+        if env_sample:
+            try:
+                sample_override = max(1, int(env_sample))
+                if sample_override != sample_count:
+                    loguru_logger.info(
+                        f"Using MARKETSIM_KRONOS_SAMPLE_COUNT override: {sample_override} samples"
+                    )
+                sample_count = sample_override
+            except ValueError:
+                loguru_logger.warning(
+                    "Invalid MARKETSIM_KRONOS_SAMPLE_COUNT=%r; expected positive integer.",
+                    env_sample,
+                )
         forecasting_wrapper = KronosForecastingWrapper(
             model_name="NeoQuasar/Kronos-base",
             tokenizer_name="NeoQuasar/Kronos-Tokenizer-base",
@@ -52,7 +68,8 @@ def load_pipeline():
             temperature=KRONOS_TEMPERATURE,
             top_p=KRONOS_TOP_P,
             top_k=0,
-            sample_count=KRONOS_SAMPLE_COUNT,
+            sample_count=sample_count,
+            prefer_fp32=True,
         )
 
 

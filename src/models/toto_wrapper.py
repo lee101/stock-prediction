@@ -284,6 +284,7 @@ class TotoPipeline:
         *,
         torch_dtype: Optional[TorchDType] = None,
         amp_dtype: Optional[TorchDType] = None,
+        amp_autocast: bool = True,
         max_oom_retries: int = 2,
         min_samples_per_batch: int = 32,
         min_num_samples: int = 256,
@@ -302,7 +303,9 @@ class TotoPipeline:
                 "Torch and NumPy must be configured via setup_toto_wrapper_imports before instantiating TotoPipeline."
             )
 
-        if amp_dtype is None:
+        if not amp_autocast:
+            amp_dtype = None
+        elif amp_dtype is None:
             amp_dtype = getattr(torch, "float16", None)
 
         self.device = device
@@ -445,6 +448,7 @@ class TotoPipeline:
         compile_model: bool = True,
         compile_mode: Optional[str] = "max-autotune",
         amp_dtype: Optional[TorchDType] = None,
+        amp_autocast: bool = True,
         torch_compile: bool = False,
         compile_backend: Optional[str] = None,
         cache_policy: str = "prefer",
@@ -462,8 +466,12 @@ class TotoPipeline:
             ) from _IMPORT_ERROR
 
         torch_module = _require_torch()
-        if amp_dtype is None:
-            amp_dtype = getattr(torch_module, "float16", None)
+        if not amp_autocast:
+            effective_amp_dtype: Optional[TorchDType] = None
+        elif amp_dtype is None:
+            effective_amp_dtype = getattr(torch_module, "float16", None)
+        else:
+            effective_amp_dtype = amp_dtype
 
         policy = cache_policy.lower()
         if policy not in {"prefer", "never", "only"}:
@@ -471,7 +479,7 @@ class TotoPipeline:
 
         manager = cache_manager or ModelCacheManager("toto")
         dtype_token = dtype_to_token(torch_dtype)
-        amp_token = dtype_to_token(amp_dtype)
+        amp_token = dtype_to_token(effective_amp_dtype)
         device = device_map if device_map != "mps" else "cpu"
 
         extra_kwargs: Dict[str, Any] = dict(kwargs)
@@ -539,7 +547,8 @@ class TotoPipeline:
                 model,
                 device=device,
                 torch_dtype=torch_dtype,
-                amp_dtype=amp_dtype,
+                amp_dtype=effective_amp_dtype,
+                amp_autocast=amp_autocast,
                 max_oom_retries=int(pipeline_kwargs.get("max_oom_retries", 2)),
                 min_samples_per_batch=int(pipeline_kwargs.get("min_samples_per_batch", 32)),
                 min_num_samples=int(pipeline_kwargs.get("min_num_samples", 256)),
@@ -563,6 +572,7 @@ class TotoPipeline:
                         "device": device,
                         "compile_model": bool(pipeline._compiled),
                         "torch_compile": bool(pipeline._torch_compile_success),
+                        "amp_autocast": bool(amp_autocast),
                         "warmup_sequence": int(warmup_sequence),
                     }
                     try:
