@@ -1075,7 +1075,17 @@ def resolve_best_model(symbol: str) -> str:
 def pre_process_data(x_train: pd.DataFrame, key_to_predict: str) -> pd.DataFrame:
     """Minimal reimplementation to avoid heavy dependency on training module."""
     newdata = x_train.copy(deep=True)
-    newdata[key_to_predict] = percent_movements_augment(newdata[key_to_predict].values.reshape(-1, 1))
+    series = newdata[key_to_predict].to_numpy(dtype=float, copy=True)
+    if series.size == 0:
+        return newdata
+    pct = np.empty_like(series, dtype=float)
+    pct[0] = 1.0
+    if series.size > 1:
+        denom = series[:-1]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pct[1:] = np.where(denom != 0.0, (series[1:] - denom) / denom, 0.0)
+        pct[1:] = np.nan_to_num(pct[1:], nan=0.0, posinf=0.0, neginf=0.0)
+    newdata[key_to_predict] = pct
     return newdata
 
 
@@ -1625,7 +1635,10 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
 
         price = price.rename(columns={"Date": "time_idx"})
         price["ds"] = pd.date_range(start="1949-01-01", periods=len(price), freq="D").values
-        price['y'] = price[key_to_predict].shift(-1)
+        target_series = price[key_to_predict].shift(-1)
+        if isinstance(target_series, pd.DataFrame):
+            target_series = target_series.iloc[:, 0]
+        price["y"] = target_series.to_numpy()
         price['trade_weight'] = (price["y"] > 0) * 2 - 1
 
         price.drop(price.tail(1).index, inplace=True)
@@ -1634,7 +1647,10 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         price = price.dropna()
 
         validation = price[-7:]
-        current_last_price = float(simulation_data[key_to_predict].iloc[-1])
+        last_series = simulation_data[key_to_predict]
+        if isinstance(last_series, pd.DataFrame):
+            last_series = last_series.iloc[:, 0]
+        current_last_price = float(last_series.iloc[-1])
 
         toto_predictions = None
         toto_band = None
@@ -1854,7 +1870,12 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     unprofit_shutdown_returns = unprofit_shutdown_eval.returns
     unprofit_shutdown_avg_daily = unprofit_shutdown_eval.avg_daily_return
     unprofit_shutdown_annual = unprofit_shutdown_eval.annualized_return
-    unprofit_shutdown_finalday_return = (unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
+    if actual_returns.empty:
+        unprofit_shutdown_finalday_return = -2 * trading_fee * SPREAD
+    else:
+        unprofit_shutdown_finalday_return = (
+            unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]
+        ) - (2 * trading_fee * SPREAD)
 
     # Entry + takeprofit strategy
     entry_takeprofit_eval = evaluate_entry_takeprofit_strategy(
