@@ -1,0 +1,56 @@
+[
+  {
+    "symbol": "GOOG",
+    "output_json": "evaltests/backtests/gymrl_guard_confirm_goog_real_full_compile128.json",
+    "output_label": "GOOG_real_full_compile128",
+    "env": {
+      "PYTHONPATH": ".",
+      "TORCHINDUCTOR_DISABLE": "1",
+      "FAST_TESTING": "0",
+      "REAL_TESTING": "1",
+      "MARKETSIM_TOTO_DISABLE_COMPILE": "0",
+      "MARKETSIM_TOTO_COMPILE": "1",
+      "MARKETSIM_TOTO_MAX_NUM_SAMPLES": "128",
+      "MARKETSIM_TOTO_MAX_SAMPLES_PER_BATCH": "128",
+      "MARKETSIM_TOTO_MIN_NUM_SAMPLES": "128",
+      "MARKETSIM_TOTO_MIN_SAMPLES_PER_BATCH": "64",
+      "MARKETSIM_TOTO_BACKTEST_MAX_RETRIES": "4"
+    }
+  },
+  {
+    "symbol": "META",
+    "output_json": "evaltests/backtests/gymrl_guard_confirm_meta_real_full_compile128.json",
+    "output_label": "META_real_full_compile128",
+    "env": {
+      "PYTHONPATH": ".",
+      "TORCHINDUCTOR_DISABLE": "1",
+      "FAST_TESTING": "0",
+      "REAL_TESTING": "1",
+      "MARKETSIM_TOTO_DISABLE_COMPILE": "0",
+      "MARKETSIM_TOTO_COMPILE": "1",
+      "MARKETSIM_TOTO_MAX_NUM_SAMPLES": "128",
+      "MARKETSIM_TOTO_MAX_SAMPLES_PER_BATCH": "128",
+      "MARKETSIM_TOTO_MIN_NUM_SAMPLES": "128",
+      "MARKETSIM_TOTO_MIN_SAMPLES_PER_BATCH": "64",
+      "MARKETSIM_TOTO_BACKTEST_MAX_RETRIES": "4"
+    }
+  },
+  {
+    "symbol": "TSLA",
+    "output_json": "evaltests/backtests/gymrl_guard_confirm_tsla_real_full_compile128.json",
+    "output_label": "TSLA_real_full_compile128",
+    "env": {
+      "PYTHONPATH": ".",
+      "TORCHINDUCTOR_DISABLE": "1",
+      "FAST_TESTING": "0",
+      "REAL_TESTING": "1",
+      "MARKETSIM_TOTO_DISABLE_COMPILE": "0",
+      "MARKETSIM_TOTO_COMPILE": "1",
+      "MARKETSIM_TOTO_MAX_NUM_SAMPLES": "128",
+      "MARKETSIM_TOTO_MAX_SAMPLES_PER_BATCH": "128",
+      "MARKETSIM_TOTO_MIN_NUM_SAMPLES": "128",
+      "MARKETSIM_TOTO_MIN_SAMPLES_PER_BATCH": "64",
+      "MARKETSIM_TOTO_BACKTEST_MAX_RETRIES": "4"
+    }
+  }
+]

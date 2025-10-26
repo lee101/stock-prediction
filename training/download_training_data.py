@@ -26,7 +26,7 @@ TRAINING_SYMBOLS = {
     'tech_mega': ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA'],
     
     # Tech growth
-    'tech_growth': ['CRM', 'ADBE', 'NFLX', 'PYPL', 'SQ', 'SHOP', 'SNOW', 'PLTR', 'NET', 'CRWD'],
+    'tech_growth': ['CRM', 'ADBE', 'NFLX', 'PYPL', 'SQ', 'SHOP', 'SNOW', 'PLTR', 'MSFT'],
     
     # Semiconductors
     'semiconductors': ['AMD', 'INTC', 'QCOM', 'AVGO', 'MU', 'MRVL', 'AMAT', 'LRCX'],

@@ -64,7 +64,7 @@ class E2ETestingSystem:
         self.start_date = datetime.strptime(start_date, "%Y-%m-%d")
         self.end_date = datetime.strptime(end_date, "%Y-%m-%d")
         self.initial_cash = initial_cash
-        self.symbols = crypto_symbols + ["GOOG", "NET", "TSLA", "NVDA", "AAPL"]  # Mix crypto + stocks
+        self.symbols = crypto_symbols + ["GOOG", "MSFT", "TSLA", "NVDA", "AAPL"]  # Mix crypto + stocks
         
         # Define allocation strategies to test
         self.strategies = [

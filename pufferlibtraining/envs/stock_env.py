@@ -7,6 +7,9 @@ import numpy as np
 import pandas as pd
 import torch
 
+from src.leverage_settings import get_leverage_settings
+from src.fees import get_fees_for_symbols
+
 
 class StockTradingEnv(gym.Env):
     """
@@ -27,12 +30,19 @@ class StockTradingEnv(gym.Env):
         asset_frames: Dict[str, pd.DataFrame],
         window_size: int = 30,
         initial_balance: float = 100_000.0,
-        leverage_limit: float = 2.0,
-        borrowing_cost_annual: float = 0.0675,
+        # Leverage behaviour
+        leverage_limit: Optional[float] = None,
+        borrowing_cost_annual: Optional[float] = None,
+        trading_days_per_year: Optional[int] = None,
+        # Fee model (all in bps except base per-asset fees which are looked up)
         transaction_cost_bps: float = 10.0,
         spread_bps: float = 1.0,
+        # Two-tier leverage constraints and trade scheduling
+        max_intraday_leverage: float = 4.0,
+        max_overnight_leverage: float = 2.0,
+        trade_timing: str = "open",  # "open" or "close"
+        risk_scale: float = 1.0,
         feature_columns: Optional[Sequence[str]] = None,
-        trading_days_per_year: int = 252,
         device: Optional[torch.device] = None,
     ):
         super().__init__()
@@ -43,15 +53,36 @@ class StockTradingEnv(gym.Env):
         if window_size < 2:
             raise ValueError("window_size must be >= 2 to build contextual observations.")
 
+        settings = get_leverage_settings()
+        resolved_leverage_limit = settings.max_gross_leverage if leverage_limit is None else float(leverage_limit)
+        resolved_borrowing_cost = settings.annual_cost if borrowing_cost_annual is None else float(borrowing_cost_annual)
+        resolved_trading_days = settings.trading_days_per_year if trading_days_per_year is None else int(trading_days_per_year)
+
         self.asset_symbols = sorted(asset_frames.keys())
         self.window_size = int(window_size)
         self.initial_balance = float(initial_balance)
-        self.leverage_limit = float(leverage_limit)
-        self.borrowing_cost_annual = float(borrowing_cost_annual)
+        self.borrowing_cost_annual = float(resolved_borrowing_cost)
         self.transaction_cost = float(transaction_cost_bps) / 10_000.0
         self.spread_cost = float(spread_bps) / 10_000.0
-        self.trading_days_per_year = int(trading_days_per_year)
+        self.trading_days_per_year = int(resolved_trading_days)
         self.borrowing_cost_daily = self.borrowing_cost_annual / self.trading_days_per_year
+        # Risk dial influences the effective intraday/overnight caps (monotonic)
+        risk_scale = float(max(0.0, min(1.0, risk_scale)))
+        intraday_cap = 1.0 + (float(max_intraday_leverage) - 1.0) * risk_scale
+        overnight_cap = 1.0 + (float(max_overnight_leverage) - 1.0) * risk_scale
+        if leverage_limit is None:
+            resolved_leverage_limit = max(float(settings.max_gross_leverage), intraday_cap, overnight_cap)
+        else:
+            resolved_leverage_limit = float(leverage_limit)
+        self.leverage_limit = resolved_leverage_limit
+        self.max_intraday_leverage = min(intraday_cap, self.leverage_limit)
+        self.max_overnight_leverage = min(overnight_cap, self.leverage_limit)
+        if self.max_overnight_leverage > self.max_intraday_leverage:
+            self.max_overnight_leverage = self.max_intraday_leverage
+        trade_timing = (trade_timing or "open").strip().lower()
+        if trade_timing not in {"open", "close"}:
+            raise ValueError("trade_timing must be 'open' or 'close'")
+        self.trade_timing = trade_timing
         self.device = device or torch.device("cpu")
 
         (
@@ -63,6 +94,10 @@ class StockTradingEnv(gym.Env):
         ) = self._prepare_asset_tensor(asset_frames, feature_columns=feature_columns)
 
         self.n_assets = len(self.asset_symbols)
+        # Per-asset base fees (e.g., equities vs crypto) added on top of bps settings
+        self.base_fee_rates = torch.tensor(
+            get_fees_for_symbols(self.asset_symbols), dtype=torch.float32, device=self.device
+        )
         self.feature_dim = self.feature_tensor.shape[-1]
         self.n_steps = self.feature_tensor.shape[0]
         if self.n_steps <= self.window_size + 1:
@@ -106,27 +141,60 @@ class StockTradingEnv(gym.Env):
             raise ValueError(f"Action should have shape ({self.n_assets},), received {action.shape}")
 
         action_tensor = torch.as_tensor(action, dtype=torch.float32, device=self.device)
-        # Map raw actions to target weights while respecting leverage ceiling.
-        target_weights = torch.tanh(action_tensor) * self.leverage_limit
-        gross_exposure = target_weights.abs().sum()
-        if gross_exposure > self.leverage_limit:
-            target_weights = target_weights / (gross_exposure / self.leverage_limit)
-            gross_exposure = target_weights.abs().sum()
+        # Map raw actions to target weights; intraday ceiling applies to 'open' trading.
+        scaled = torch.tanh(action_tensor) * self.max_intraday_leverage
+        gross_intraday = scaled.abs().sum()
+        if gross_intraday > self.max_intraday_leverage:
+            scaled = scaled / (gross_intraday / self.max_intraday_leverage)
+            gross_intraday = scaled.abs().sum()
 
         current_open = self.open_prices[self.current_index]
         current_close = self.close_prices[self.current_index]
-        price_returns = (current_close - current_open) / torch.clamp(current_open, min=1e-8)
+        price_returns_oc = (current_close - current_open) / torch.clamp(current_open, min=1e-8)
 
         prev_value = self.portfolio_value
-        turnover = torch.abs(target_weights - self.current_weights)
-        trade_cost = (turnover * prev_value) * self.transaction_cost
-        spread_cost = (turnover * prev_value) * self.spread_cost
-        total_trading_cost = trade_cost.sum() + spread_cost.sum()
+        per_asset_cost_rate = self.base_fee_rates + self.transaction_cost + self.spread_cost
 
-        financing_cost = torch.clamp(gross_exposure - 1.0, min=0.0)
-        financing_cost = financing_cost * prev_value * self.borrowing_cost_daily
+        total_trading_cost = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        financing_cost = torch.tensor(0.0, dtype=torch.float32, device=self.device)
 
-        raw_profit = (target_weights * price_returns).sum() * prev_value
+        if self.trade_timing == "open":
+            # Trade at the open: move current -> scaled, pay turnover costs now.
+            turnover_open = torch.abs(scaled - self.current_weights)
+            total_trading_cost += (turnover_open * prev_value * per_asset_cost_rate).sum()
+
+            # Hold intraday at 'scaled' weights; charge financing on intraday leverage.
+            financing_cost += torch.clamp(gross_intraday - 1.0, min=0.0) * prev_value * self.borrowing_cost_daily
+            raw_profit = (scaled * price_returns_oc).sum() * prev_value
+
+            # Auto-deleverage at close to overnight cap if necessary (pays extra turnover).
+            gross_after = gross_intraday
+            if gross_after > self.max_overnight_leverage:
+                shrink = self.max_overnight_leverage / torch.clamp(gross_after, min=1e-8)
+                overnight_weights = scaled * shrink
+                turnover_close = torch.abs(overnight_weights - scaled)
+                total_trading_cost += (turnover_close * prev_value * per_asset_cost_rate).sum()
+            else:
+                overnight_weights = scaled
+
+            next_weights = overnight_weights.detach()
+            gross_for_info = gross_intraday.detach()
+        else:  # trade at close
+            # Hold existing weights intraday, then rebalance to 'scaled' at the close.
+            gross_hold = self.current_weights.abs().sum()
+            financing_cost += torch.clamp(gross_hold - 1.0, min=0.0) * prev_value * self.borrowing_cost_daily
+            raw_profit = (self.current_weights * price_returns_oc).sum() * prev_value
+
+            # At close: apply new target but enforce overnight cap.
+            gross_target = scaled.abs().sum()
+            if gross_target > self.max_overnight_leverage:
+                scaled = scaled / (gross_target / self.max_overnight_leverage)
+                gross_target = scaled.abs().sum()
+            turnover_close = torch.abs(scaled - self.current_weights)
+            total_trading_cost += (turnover_close * prev_value * per_asset_cost_rate).sum()
+            next_weights = scaled.detach()
+            gross_for_info = gross_target.detach()
+
         net_profit = raw_profit - total_trading_cost - financing_cost
         self.portfolio_value = prev_value + net_profit
 
@@ -134,25 +202,27 @@ class StockTradingEnv(gym.Env):
         reward = float((net_profit / self.initial_balance).clamp(min=-1e6, max=1e6).item())
 
         self.balance_history.append(float(self.portfolio_value.item()))
-        self.leverage_history.append(float(gross_exposure.item()))
-        self.turnover_history.append(float(turnover.sum().item()))
+        self.leverage_history.append(float(gross_for_info.item()))
+        # Turnover is embedded in costs; we report aggregate by dividing total by rate avg.
+        self.turnover_history.append(float(torch.abs(next_weights - self.current_weights).sum().item()))
         self.returns_history.append(float(step_return.item()))
 
         trade_record = {
             "step": int(self.current_index - self.window_size),
             "weights_before": self.current_weights.detach().cpu().tolist(),
-            "weights_after": target_weights.detach().cpu().tolist(),
+            "weights_after": next_weights.detach().cpu().tolist(),
             "raw_profit": float(raw_profit.item()),
             "net_profit": float(net_profit.item()),
             "transaction_cost": float(total_trading_cost.item()),
             "financing_cost": float(financing_cost.item()),
-            "gross_exposure": float(gross_exposure.item()),
-            "turnover": float(turnover.sum().item()),
+            "gross_exposure": float(gross_for_info.item()),
+            "turnover": float(torch.abs(next_weights - self.current_weights).sum().item()),
+            "trade_timing": self.trade_timing,
         }
         self.trades.append(trade_record)
 
-        self.current_weights = target_weights.detach()
-        self.latest_gross = gross_exposure.detach()
+        self.current_weights = next_weights
+        self.latest_gross = gross_for_info
         self.last_step_return = step_return.detach()
 
         self.current_index += 1
@@ -164,16 +234,31 @@ class StockTradingEnv(gym.Env):
             else self._get_observation()
         )
 
+        if self.dates is not None:
+            raw_date = self.dates[self.current_index - 1]
+            if isinstance(raw_date, np.datetime64):
+                # Use pandas to normalise numpy datetime64 (preserves tz if present)
+                date_value = pd.Timestamp(raw_date).isoformat()
+            elif hasattr(raw_date, "isoformat"):
+                date_value = raw_date.isoformat()
+            else:
+                date_value = str(raw_date)
+        else:
+            date_value = None
+
         info = {
             "portfolio_value": float(self.portfolio_value.item()),
             "step_return": float(step_return.item()),
-            "gross_exposure": float(gross_exposure.item()),
-            "turnover": float(turnover.sum().item()),
+            "gross_exposure": float(gross_for_info.item()),
+            "turnover": float(torch.abs(next_weights - self.current_weights).sum().item()),
             "transaction_cost": float(total_trading_cost.item()),
             "financing_cost": float(financing_cost.item()),
             "raw_profit": float(raw_profit.item()),
             "net_profit": float(net_profit.item()),
-            "date": self.dates[self.current_index - 1].isoformat() if self.dates is not None else None,
+            "date": date_value,
+            "trade_timing": self.trade_timing,
+            "max_intraday_leverage": float(self.max_intraday_leverage),
+            "max_overnight_leverage": float(self.max_overnight_leverage),
         }
         return observation, reward, terminated, truncated, info
 

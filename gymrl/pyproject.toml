@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gymrl"
+version = "0.1.0"
+description = "Reinforcement learning environments and allocators used across the trading workspace."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "stock-trading-suite",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "gymnasium>=0.29",
+    "stable-baselines3>=2.3",
+    "chronos-forecasting>=1.5.3",
+    "torch==2.9.0",
+    "einops>=0.8.1,<0.9",
+    "jaxtyping>=0.2.29",
+    "gluonts[torch]==0.16.2",
+    "rotary-embedding-torch==0.8.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[tool.uv.sources]
+stock-trading-suite = { workspace = true }
+
+[tool.setuptools]
+packages = ["gymrl"]
+
+[tool.setuptools.package-dir]
+gymrl = "."

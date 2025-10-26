@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timezone
 from time import sleep
 import traceback
@@ -31,6 +32,9 @@ logger = setup_logging("alpaca_cli.log")
 
 # We'll store strategy usage in a persistent shelf
 positions_shelf = FlatShelf("positions_shelf.json")
+
+BACKOUT_RAMP_MINUTES_DEFAULT = int(os.getenv("BACKOUT_RAMP_MINUTES", "30"))
+BACKOUT_MARKET_AFTER_MINUTES_DEFAULT = int(os.getenv("BACKOUT_MARKET_AFTER_MINUTES", "50"))
 
 
 def set_strategy_for_symbol(symbol: str, strategy: str) -> None:
@@ -108,17 +112,19 @@ client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
 def backout_near_market(
     pair,
     start_time=None,
-    ramp_minutes=15,
-    market_after=15,
+    ramp_minutes=BACKOUT_RAMP_MINUTES_DEFAULT,
+    market_after=BACKOUT_MARKET_AFTER_MINUTES_DEFAULT,
     sleep_interval=90,
 ):
     """Back out of an open position by progressively crossing the market.
 
     The function starts with a limit order slightly favourable to the
     current price and linearly ramps to the opposite side of the spread
-    over ``ramp_minutes``.  If the position is still open after
-    ``market_after`` minutes, a market order is sent to guarantee the
-    exit.
+    over ``ramp_minutes`` (default 30 minutes, configurable via
+    ``BACKOUT_RAMP_MINUTES`` env var). If the position is still open after
+    ``market_after`` minutes (default 50, configurable via
+    ``BACKOUT_MARKET_AFTER_MINUTES``), a market order is sent to guarantee
+    the exit.
 
     Args:
         pair: The trading pair symbol, e.g. ``"META"``.
@@ -132,6 +138,8 @@ def backout_near_market(
 
     retries = 0
     max_retries = 5
+    effective_ramp_minutes = max(int(ramp_minutes), 1)
+    effective_market_after = max(int(market_after), effective_ramp_minutes)
 
     while True:
         try:
@@ -168,8 +176,8 @@ def backout_near_market(
                     pct_final_offset = -0.02 if is_long else 0.02  # 2% past market
 
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
-                    progress = min(minutes_since_start / ramp_minutes, 1.0)
-                    if minutes_since_start >= market_after:
+                    progress = min(minutes_since_start / effective_ramp_minutes, 1.0)
+                    if minutes_since_start >= effective_market_after:
                         logger.info("Switching to market order to guarantee close")
                         succeeded = alpaca_wrapper.close_position_violently(position)
                         found_position = True
@@ -182,7 +190,7 @@ def backout_near_market(
                             sleep(60)
                             continue
                         break
-                    elif minutes_since_start >= ramp_minutes:
+                    elif minutes_since_start >= effective_ramp_minutes:
                         # After ramp period, set price well beyond market to guarantee fill
                         pct_above_market = pct_final_offset
                     else:

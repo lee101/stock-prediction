@@ -1,5 +1,6 @@
 .env
 .venv
+.venv314a
 .venv313
 .venv314
 *.pt 
@@ -23,6 +24,7 @@ lightning_logs*
 lightning_logsminute
 
 strategy_state/
+current_state_config/
 testresults/
 data/_simulator/
 
@@ -35,9 +37,9 @@ __pycache__*
 logfile.log
 *.log
 positions_shelf.json
-<<<<<<< HEAD
 *.pt
 trainingdata
+trainingdata2/
 traininglogs
 traininglogs_temp
 training_log.txt
@@ -99,6 +101,11 @@ training/training/improvement_cycles
 training/training/traininglogs
 training/training/visualizations
 training/differentiable_training_history.png
+#
+# Differentiable Market experiment artifacts
+differentiable_market/experiment_runs/
+differentiable_market/experiment_runs_*/
+differentiable_market/runs/
 pufferlibtraining/logs
 pufferlibtraining/models
 pufferlibtraining/cache
@@ -127,3 +134,43 @@ tototraining/artifacts/
 compiled_models/
 tototraining/checkpoints
 external/kronos/
+.tmp_bench_data
+.venv312
+runs
+runs
+hftraining/quick_test_logs_*
+hftraining/quick_test_output*
+.venv312c
+nanochat
+marketsimulator/environment.py
+tmp
+stock_trading_suite.egg-info
+gymrl/gymrl.egg-info/
+*.egg-info/
+pynvml
+kronostraining/artifacts/checkpoints
+kronostraining/artifacts
+metric_history.json
+# Allow tracked source model implementations while keeping build artifacts ignored
+!src/models/
+src/models/__pycache__/
+src/models/__pycache__/**
+!src/models/*.py
+!src/models/**/*.py
+differentiable_market/evals
+.env.local
+.envrc
+allresults.md
+gymrl/gymrl.egg-info/
+wandb/
+reports
+wandb
+tensorboard_logs/
+gymrl/cache
+trainingdatadaily
+trainingdatahourly/
+evaltests/backtests
+analysis
+analysis_runner_funcs
+analysis_listing.txt
+analysis_listing_repr.txt

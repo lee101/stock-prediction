@@ -1,0 +1,75 @@
+{
+  "balance": 99922.27626322926,
+  "cash": 99922.27626322926,
+  "entry_entries_goog": 6.0,
+  "entry_entries_msft": 6.0,
+  "entry_entries_nvda": 1.0,
+  "entry_limit_goog": 6.0,
+  "entry_limit_msft": 10.0,
+  "entry_limit_nvda": 1.0,
+  "entry_limits": {
+    "per_key": {
+      "GOOG": {
+        "approx_trade_limit": 12.0,
+        "entries": 6,
+        "entry_limit": 6.0,
+        "resolved_limit_key": "goog"
+      },
+      "MSFT": {
+        "approx_trade_limit": 20.0,
+        "entries": 6,
+        "entry_limit": 10.0,
+        "resolved_limit_key": "msft"
+      },
+      "NVDA": {
+        "approx_trade_limit": 2.0,
+        "entries": 1,
+        "entry_limit": 1.0,
+        "resolved_limit_key": "nvda"
+      }
+    },
+    "per_symbol": {
+      "GOOG": {
+        "approx_trade_limit": 12.0,
+        "entries": 6,
+        "entry_limit": 6.0
+      },
+      "MSFT": {
+        "approx_trade_limit": 20.0,
+        "entries": 6,
+        "entry_limit": 10.0
+      },
+      "NVDA": {
+        "approx_trade_limit": 2.0,
+        "entries": 1,
+        "entry_limit": 1.0
+      }
+    }
+  },
+  "entry_util_goog": 1.0,
+  "entry_util_msft": 0.6,
+  "entry_util_nvda": 1.0,
+  "fees_paid": 11.998576833715708,
+  "flatten_end": true,
+  "initial_cash": 100000.0,
+  "kronos_only": true,
+  "kronos_sharpe_cutoff": -1.0,
+  "max_drawdown": 135.68668897742464,
+  "max_drawdown_pct": 0.0013568668897742464,
+  "mode": "simulation",
+  "pnl": -77.72373677074211,
+  "real_analytics": true,
+  "return": -0.0007772373677074211,
+  "sharpe": -2.589653842552693,
+  "sharpe_cutoff": null,
+  "step_size": 1,
+  "steps": 20,
+  "symbols": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "GOOG"
+  ],
+  "top_k": 4
+}

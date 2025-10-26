@@ -42,7 +42,7 @@ The affine calibration is trained via `python tototraining/train_calibrated_toto
 
 ## Hyper-Parameter Store
 - `test_hyperparamtraining_kronos_toto.py` runs the focused search (validation window 20, test window 20) and persists per-symbol winners in `hyperparams/<model>/<symbol>.json` via the new `hyperparamstore` package.
-- `hyperparamstore` exposes `save_best_config` / `load_best_config` (see `tests/test_hyperparamstore.py`).
+- `hyperparamstore` exposes `save_best_config` / `load_best_config` (see `tests/experimental/hyperparam/test_hyperparamstore.py`).
 - Current BTCUSD entries:
   - Kronos → `kronos_temp0.145_p0.82_s208_k16_clip1.75_ctx224` (val MAE 359.5, test MAE 268.7).
   - Toto → `toto_trimmed10_3072` (val MAE 332.2, test MAE 259.1).

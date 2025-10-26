@@ -1,4 +1,5 @@
 import csv
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -43,6 +44,21 @@ KRONOS_TOP_P = 0.85
 def load_pipeline():
     global forecasting_wrapper
     if forecasting_wrapper is None:
+        sample_count = KRONOS_SAMPLE_COUNT
+        env_sample = os.getenv("MARKETSIM_KRONOS_SAMPLE_COUNT")
+        if env_sample:
+            try:
+                sample_override = max(1, int(env_sample))
+                if sample_override != sample_count:
+                    loguru_logger.info(
+                        f"Using MARKETSIM_KRONOS_SAMPLE_COUNT override: {sample_override} samples"
+                    )
+                sample_count = sample_override
+            except ValueError:
+                loguru_logger.warning(
+                    "Invalid MARKETSIM_KRONOS_SAMPLE_COUNT=%r; expected positive integer.",
+                    env_sample,
+                )
         forecasting_wrapper = KronosForecastingWrapper(
             model_name="NeoQuasar/Kronos-base",
             tokenizer_name="NeoQuasar/Kronos-Tokenizer-base",
@@ -52,7 +68,8 @@ def load_pipeline():
             temperature=KRONOS_TEMPERATURE,
             top_p=KRONOS_TOP_P,
             top_k=0,
-            sample_count=KRONOS_SAMPLE_COUNT,
+            sample_count=sample_count,
+            prefer_fp32=True,
         )
 
 
@@ -111,12 +128,23 @@ def series_to_df(series_pd):
     return pd.DataFrame(series_pd.values, columns=series_pd.columns)
 
 
-def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_wrapper=None):
+def make_predictions(
+    input_data_path=None,
+    pred_name='',
+    retrain=False,
+    alpaca_wrapper=None,
+    symbols=None,
+):
     """
     Make predictions for all csv files in directory.
     """
     results_dir = base_dir / "results"
     results_dir.mkdir(exist_ok=True)
+
+    if alpaca_wrapper is None:
+        import importlib
+        alpaca_wrapper = importlib.import_module("alpaca_wrapper")
+
     time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     save_file_name = results_dir / f"predictions-{time}.csv"
 
@@ -131,11 +159,14 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
         input_data_files = base_dir / "data"
     loguru_logger.info(f"input_data_files {input_data_files}")
 
+    allowed_symbols = {symbol.upper() for symbol in symbols} if symbols else None
     csv_files = list(input_data_files.glob("*.csv"))
     alpaca_clock = alpaca_wrapper.get_clock()
     for days_to_drop in [0]:  # [1,2,3,4,5,6,7,8,9,10,11]:
         for csv_file in csv_files:
             instrument_name = csv_file.stem.split('-')[0]
+            if allowed_symbols and instrument_name.upper() not in allowed_symbols:
+                continue
             # only trade crypto or stocks currently being traded - dont bother forecasting things that cant be traded.
             if not alpaca_clock.is_open:
                 # remove all stock pairs but not crypto
@@ -471,20 +502,16 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                                                                                   ).item()
             loguru_logger.info(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
             last_preds['maxdiffprofit_profit'] = calculated_profit
-            last_preds['maxdiffprofit_profit_values'] = list(calculate_profit_torch_with_entry_buysell_profit_values(
-                last_preds[
-                    "close_actual_movement_values"],
-                maxdiff_trades,
-                last_preds[
-                    "high_actual_movement_values"] + close_to_high,
-                last_preds[
-                    "high_predictions"] + close_to_high,
-                last_preds[
-                    "low_actual_movement_values"] - close_to_low,
-                last_preds[
-                    "low_predictions"] - close_to_low,
-
-            ).detach().cpu().numpy())
+            last_preds['maxdiffprofit_profit_values'] = list(
+                calculate_profit_torch_with_entry_buysell_profit_values(
+                    last_preds["close_actual_movement_values"],
+                    last_preds["high_actual_movement_values"] + close_to_high,
+                    last_preds["high_predictions"] + close_to_high,
+                    last_preds["low_actual_movement_values"] - close_to_low,
+                    last_preds["low_predictions"] - close_to_low,
+                    maxdiff_trades,
+                ).detach().cpu().numpy()
+            )
             latest_close_to_low = abs(1 - (last_preds['low_predicted_price_value'] / last_preds['close_last_price']))
             last_preds['latest_low_diff'] = latest_close_to_low
 
@@ -555,19 +582,16 @@ def make_predictions(input_data_path=None, pred_name='', retrain=False, alpaca_w
                                                                                   ).item()
             loguru_logger.info(f"{instrument_name} calculated_profit entry_: {calculated_profit}")
             last_preds['entry_takeprofit_profit'] = calculated_profit
-            last_preds['entry_takeprofit_profit_values'] = list(calculate_profit_torch_with_entry_buysell_profit_values(
-                last_preds["close_actual_movement_values"],
-                last_preds["close_trade_values"],
-                last_preds[
-                    "high_actual_movement_values"] + close_to_high,
-                last_preds[
-                    "high_predictions"] + close_to_high,
-                last_preds[
-                    "low_actual_movement_values"] - close_to_low,
-                last_preds[
-                    "low_predictions"] - close_to_low,
-
-            ).detach().cpu().numpy())
+            last_preds['entry_takeprofit_profit_values'] = list(
+                calculate_profit_torch_with_entry_buysell_profit_values(
+                    last_preds["close_actual_movement_values"],
+                    last_preds["high_actual_movement_values"] + close_to_high,
+                    last_preds["high_predictions"] + close_to_high,
+                    last_preds["low_actual_movement_values"] - close_to_low,
+                    last_preds["low_predictions"] - close_to_low,
+                    last_preds["close_trade_values"],
+                ).detach().cpu().numpy()
+            )
 
             # todo margin allocation tests
             current_profit = calculated_profit

@@ -36,8 +36,12 @@ python pufferlibtraining/train_ppo.py \
   --specialist-stocks AAPL,AMZN,MSFT \
   --trainingdata-dir trainingdata \
   --output-dir pufferlibtraining/models \
-  --tensorboard-dir pufferlibtraining/logs
+  --tensorboard-dir pufferlibtraining/logs \
+  --wandb-project pufferlib \
+  --wandb-entity stock
 ```
+
+The `--wandb-*` switches let you redirect runs into dedicated projects (for example `stock/pufferlib` for RL or `stock/hftraining` for the supervised stacks) while the logger continues to write TensorBoard events locally.
 
 Key Outputs
 -----------

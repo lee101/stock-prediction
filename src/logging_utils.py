@@ -41,11 +41,11 @@ class EDTFormatter(logging.Formatter):
 
             level_color = self.level_colors.get(record.levelname, "")
 
-            # Handle dict-like objects that may not support direct string formatting
-            message = str(record.msg)
+            # Handle parameter interpolation via logging's standard helper.
+            message = record.getMessage()
             if isinstance(record.msg, dict):
                 message = str(record.msg)
-            elif hasattr(record.msg, '__dict__'):
+            elif hasattr(record.msg, "__dict__"):
                 message = str(record.msg.__dict__)
 
             # Get file, function, and line number

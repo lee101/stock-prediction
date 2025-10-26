@@ -7,6 +7,8 @@ import hashlib
 import json
 import math
 import os
+import re
+from dataclasses import dataclass
 from collections.abc import Iterable, Sequence
 from decimal import Decimal
 from typing import Any, Dict, FrozenSet, Iterable as TypingIterable, List, Optional, Tuple
@@ -22,23 +24,377 @@ try:
 except ImportError:  # pragma: no cover - numpy is optional
     np = None  # type: ignore[assignment]
 
+try:  # pragma: no cover - jsonschema is optional but strongly recommended
+    import jsonschema
+    from jsonschema import ValidationError as _JsonSchemaValidationError
+except ImportError:  # pragma: no cover
+    jsonschema = None  # type: ignore[assignment]
+    _JsonSchemaValidationError = None  # type: ignore[assignment]
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 _ASYNC_CLIENT: Optional[AsyncOpenAI] = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 _SYNC_CLIENT: Optional[OpenAI] = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+gpt5_client: Optional[AsyncOpenAI] = _ASYNC_CLIENT
 
 MODEL_ID = os.getenv("GPT5_MODEL", "gpt-5")
 MAX_ATTEMPTS = int(os.getenv("GPT5_MAX_ATTEMPTS", "3"))
 _STRUCTURED_CACHE_NAMESPACE = "gpt5_structured_v3"
+_STRUCTURED_MAX_TOKEN_CAP = 16384
+STRUCTURED_DEFAULT_REASONING = os.getenv("GPT5_STRUCTURED_REASONING", "high")
 
 REPROMPT_TEMPLATE = (
     "The previous response failed schema validation because: {error}. "
     "Regenerate the plan strictly using the schema. Return only the JSON."
 )
 
+SCHEMA_REPROMPT_TEMPLATE = (
+    "The prior JSON violated the required schema: {error}. Update the specified fields and resend JSON only."
+)
+
 REFUSAL_TEMPLATE = (
     "The earlier reply refused with: {reason}. This request is for a harmless trading simulator "
     "benchmark to evaluate plan quality. Provide the JSON plan using the schema."
 )
+
+
+@dataclass(frozen=True)
+class ValidationIssue:
+    """Structured description of a schema validation failure."""
+
+    path: Tuple[Any, ...]
+    path_display: str
+    message: str
+    fix_hint: str
+    issue_type: str
+    value_snippet: Optional[str] = None
+    field: Optional[str] = None
+
+
+_RE_REQUIRED_PROPERTY = re.compile(r"""['"](?P<field>[^'"]+)['"] is a required property""")
+_RE_ADDITIONAL_PROPERTIES = re.compile(
+    r"Additional properties are not allowed \((?P<props>.+?) (?:was|were) unexpected\)"
+)
+
+
+def _humanize_location(path_display: str) -> str:
+    return "payload" if not path_display or path_display == "<root>" else path_display
+
+
+def _summarize_fragment(fragment: Any, *, max_chars: int = 400) -> Optional[str]:
+    if fragment is None:
+        return "null"
+    try:
+        if isinstance(fragment, (dict, list)):
+            text = json.dumps(fragment, ensure_ascii=False, indent=2)
+        else:
+            text = json.dumps(fragment, ensure_ascii=False)
+    except (TypeError, ValueError):
+        text = repr(fragment)
+    text = text.strip()
+    if not text:
+        return None
+    if len(text) > max_chars:
+        return text[:max_chars] + "..."
+    return text
+
+
+def _issues_from_jsonschema_error(error: Any) -> List[ValidationIssue]:
+    path_tokens = tuple(getattr(error, "absolute_path", ()) or getattr(error, "path", ()))
+    location = _format_json_path(path_tokens)
+    validator = getattr(error, "validator", "")
+    message = getattr(error, "message", "Schema violation")
+    instance = getattr(error, "instance", None)
+    issues: List[ValidationIssue] = []
+
+    if validator == "required":
+        required = getattr(error, "validator_value", ())
+        missing: List[str] = []
+        if isinstance(instance, dict):
+            missing = [field for field in required if field not in instance]
+        if not missing:
+            match = _RE_REQUIRED_PROPERTY.search(message)
+            if match:
+                missing = [match.group("field")]
+        if not missing:
+            missing = list(required) if isinstance(required, (list, tuple, set)) else []
+        parent_display = _humanize_location(location)
+        for field in missing or ("<missing>",):
+            issue_path = path_tokens + (field,)
+            issue_location = _format_json_path(issue_path)
+            issues.append(
+                ValidationIssue(
+                    path=issue_path,
+                    path_display=issue_location,
+                    message=f"{parent_display} is missing {field}",
+                    fix_hint=f"Add '{field}' under {parent_display} with a value that satisfies the schema.",
+                    issue_type="missing_required",
+                    value_snippet=_summarize_fragment(instance),
+                    field=field,
+                )
+            )
+        return issues
+
+    if validator == "type":
+        expected_raw = getattr(error, "validator_value", None)
+        if isinstance(expected_raw, (list, tuple, set, frozenset)):
+            expected_display = ", ".join(sorted(str(val) for val in expected_raw))
+        else:
+            expected_display = str(expected_raw)
+        actual_type = type(instance).__name__
+        issue_type = "null_disallowed" if instance is None else "type_mismatch"
+        human_location = _humanize_location(location)
+        issues.append(
+            ValidationIssue(
+                path=path_tokens,
+                path_display=location,
+                message=f"{human_location} must be of type {expected_display}; received {actual_type}",
+                fix_hint=(
+                    f"Replace null with a {expected_display} value."
+                    if instance is None
+                    else f"Provide a value matching type {expected_display}."
+                ),
+                issue_type=issue_type,
+                value_snippet=_summarize_fragment(instance),
+            )
+        )
+        return issues
+
+    if validator == "enum":
+        allowed_values = getattr(error, "validator_value", ())
+        allowed_display = ", ".join(str(val) for val in allowed_values) if allowed_values else "<enum>"
+        human_location = _humanize_location(location)
+        issues.append(
+            ValidationIssue(
+                path=path_tokens,
+                path_display=location,
+                message=f"{human_location} must be one of: {allowed_display}",
+                fix_hint=f"Choose one of the allowed options: {allowed_display}.",
+                issue_type="enum",
+                value_snippet=_summarize_fragment(instance),
+            )
+        )
+        return issues
+
+    if validator in {"minimum", "exclusiveMinimum"}:
+        comparator = ">=" if validator == "minimum" else ">"
+        threshold = getattr(error, "validator_value", None)
+        human_location = _humanize_location(location)
+        issues.append(
+            ValidationIssue(
+                path=path_tokens,
+                path_display=location,
+                message=f"{human_location} must be {comparator} {threshold}",
+                fix_hint=f"Ensure the value is {comparator} {threshold}.",
+                issue_type="range",
+                value_snippet=_summarize_fragment(instance),
+            )
+        )
+        return issues
+
+    if validator == "additionalProperties":
+        human_location = _humanize_location(location)
+        props_match = _RE_ADDITIONAL_PROPERTIES.search(message)
+        raw_props = props_match.group("props") if props_match else ""
+        extras = [prop.strip(" '\"") for prop in raw_props.split(",")] if raw_props else []
+        extras_display = ", ".join(extras) if extras else message
+        issues.append(
+            ValidationIssue(
+                path=path_tokens,
+                path_display=location,
+                message=f"{human_location} includes unexpected properties: {extras_display}",
+                fix_hint="Remove the properties that are not part of the schema.",
+                issue_type="additional_properties",
+                value_snippet=_summarize_fragment(instance),
+            )
+        )
+        return issues
+
+    human_location = _humanize_location(location)
+    issues.append(
+        ValidationIssue(
+            path=path_tokens,
+            path_display=location,
+            message=f"{message} (at {human_location})",
+            fix_hint="Adjust the field to satisfy the schema requirement.",
+            issue_type="schema",
+            value_snippet=_summarize_fragment(instance),
+        )
+    )
+    return issues
+
+
+def collect_structured_payload_issues(payload: Dict[str, Any], schema: Dict[str, Any]) -> List[ValidationIssue]:
+    """Return a stable list of schema/business-rule violations for a payload."""
+    issues_map: Dict[Tuple[str, str], ValidationIssue] = {}
+
+    def add_issue(issue: ValidationIssue, *, overwrite: bool = False) -> None:
+        key = (issue.path_display, issue.issue_type)
+        if overwrite and key in issues_map:
+            del issues_map[key]
+        if key not in issues_map:
+            issues_map[key] = issue
+
+    if jsonschema is not None:
+        validator = jsonschema.Draft202012Validator(schema)
+        sorted_errors = sorted(validator.iter_errors(payload), key=lambda err: list(getattr(err, "path", ())))
+        for error in sorted_errors:
+            for issue in _issues_from_jsonschema_error(error):
+                add_issue(issue)
+
+    plan_prefix: Tuple[Any, ...] = ()
+    plan_display_prefix = ""
+    plan_candidate = payload.get("plan") if isinstance(payload, dict) else None
+    if isinstance(plan_candidate, dict):
+        plan = plan_candidate
+        plan_prefix = ("plan",)
+        plan_display_prefix = "plan."
+    else:
+        plan = payload
+
+    if not isinstance(plan, dict):
+        display = "plan" if plan_display_prefix else "<root>"
+        add_issue(
+            ValidationIssue(
+                path=plan_prefix or ("<root>",),
+                path_display=display,
+                message=f"{display} must be an object",
+                fix_hint="Return the trading plan as an object with target_date, instructions, and optional metadata.",
+                issue_type="business_structure",
+                value_snippet=_summarize_fragment(plan),
+            ),
+            overwrite=True,
+        )
+        return list(issues_map.values())
+
+    instructions = plan.get("instructions")
+    if not isinstance(instructions, list):
+        path = plan_prefix + ("instructions",)
+        display = f"{plan_display_prefix}instructions"
+        add_issue(
+            ValidationIssue(
+                path=path,
+                path_display=display,
+                message=f"{display} must be an array",
+                fix_hint="Provide instructions as an array of instruction objects.",
+                issue_type="business_structure",
+                value_snippet=_summarize_fragment(instructions),
+            ),
+            overwrite=True,
+        )
+        return list(issues_map.values())
+
+    for idx, instruction in enumerate(instructions):
+        if not isinstance(instruction, dict):
+            path = plan_prefix + ("instructions", idx)
+            display = f"{plan_display_prefix}instructions[{idx}]"
+            add_issue(
+                ValidationIssue(
+                    path=path,
+                    path_display=display,
+                    message=f"{display} must be an object",
+                    fix_hint="Ensure each instruction is an object with symbol/action/quantity/etc.",
+                    issue_type="business_structure",
+                    value_snippet=_summarize_fragment(instruction),
+                ),
+                overwrite=True,
+            )
+            continue
+
+        quantity = instruction.get("quantity")
+        if quantity is None:
+            path = plan_prefix + ("instructions", idx, "quantity")
+            display = f"{plan_display_prefix}instructions[{idx}].quantity"
+            add_issue(
+                ValidationIssue(
+                    path=path,
+                    path_display=display,
+                    message=f"{display} is missing quantity",
+                    fix_hint="Add a numeric quantity matching the planned action.",
+                    issue_type="missing_required",
+                    value_snippet=_summarize_fragment(instruction),
+                    field="quantity",
+                ),
+                overwrite=True,
+            )
+            continue
+
+        try:
+            quantity_val = float(quantity)
+        except (TypeError, ValueError):
+            path = plan_prefix + ("instructions", idx, "quantity")
+            display = f"{plan_display_prefix}instructions[{idx}].quantity"
+            add_issue(
+                ValidationIssue(
+                    path=path,
+                    path_display=display,
+                    message=f"{display} must be numeric",
+                    fix_hint="Set quantity to a numeric value (integer or float).",
+                    issue_type="type_mismatch",
+                    value_snippet=_summarize_fragment(quantity),
+                ),
+                overwrite=True,
+            )
+            continue
+
+        action_raw = instruction.get("action")
+        action = str(action_raw).lower() if action_raw is not None else ""
+        if action in {"buy", "sell"} and quantity_val <= 0.0:
+            path = plan_prefix + ("instructions", idx, "quantity")
+            display = f"{plan_display_prefix}instructions[{idx}].quantity"
+            add_issue(
+                ValidationIssue(
+                    path=path,
+                    path_display=display,
+                    message=f"{display} must be greater than zero for action '{action}'",
+                    fix_hint="Use a strictly positive quantity when action is buy/sell.",
+                    issue_type="business_rule",
+                    value_snippet=_summarize_fragment(instruction),
+                ),
+                overwrite=True,
+            )
+
+    return list(issues_map.values())
+
+
+def _build_schema_retry_message(
+    issues: Sequence[ValidationIssue],
+    *,
+    raw_text: str,
+    max_snippet_chars: int = 4000,
+    max_issues: int = 6,
+) -> str:
+    if not issues:
+        snippet = raw_text if len(raw_text) <= max_snippet_chars else raw_text[:max_snippet_chars] + "..."
+        return f"{SCHEMA_REPROMPT_TEMPLATE.format(error='unknown issues')}\n\nPrevious response:\n{snippet}"
+
+    lead = SCHEMA_REPROMPT_TEMPLATE.format(error=issues[0].message)
+    lines: List[str] = []
+    for issue in issues[:max_issues]:
+        location = _humanize_location(issue.path_display)
+        entry = f"- {location}: {issue.message}"
+        if issue.fix_hint and issue.fix_hint not in issue.message:
+            entry = f"- {location}: {issue.message}. Fix: {issue.fix_hint}"
+        lines.append(entry)
+
+    message = (
+        f"{lead}\n\n"
+        "Only adjust the fields listed below and resend the complete JSON payload. "
+        "All other fields should remain unchanged unless a change is required for consistency.\n"
+        "Issues detected:\n"
+        + "\n".join(lines)
+    )
+
+    fragments: List[str] = []
+    for issue in issues[:3]:
+        if issue.value_snippet:
+            location = _humanize_location(issue.path_display)
+            fragments.append(f"{location} sample:\n{issue.value_snippet}")
+    if fragments:
+        message += "\n\nContext:\n" + "\n\n".join(fragments)
+
+    snippet = raw_text if len(raw_text) <= max_snippet_chars else raw_text[:max_snippet_chars] + "..."
+    message += f"\n\nPrevious response:\n{snippet}"
+    return message
 
 
 def _ensure_sync_client() -> OpenAI:
@@ -94,22 +450,80 @@ def _extract_output_text(response: Any) -> str:
     return combined
 
 
+def _schema_digest(schema: Dict[str, Any]) -> str:
+    serialized = json.dumps(schema, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()[:16]
+
+
+def _normalize_schema(node: Any) -> Any:
+    if isinstance(node, dict):
+        normalized: Dict[str, Any] = {}
+        for key, value in node.items():
+            normalized[key] = _normalize_schema(value)
+        if normalized.get("type") == "object" and "additionalProperties" not in normalized:
+            normalized["additionalProperties"] = False
+        return normalized
+    if isinstance(node, list):
+        return [_normalize_schema(item) for item in node]
+    return node
+
+
 def _send_structured_request(
     client: OpenAI,
     messages: List[Dict[str, str]],
     temperature: Optional[float],
     max_output_tokens: int,
+    response_schema: Dict[str, Any],
+    reasoning_effort: Optional[str],
 ) -> Any:
+    normalized_schema = _normalize_schema(response_schema)
+    schema_name = f"schema_{_schema_digest(normalized_schema)}"
+    text_format: Dict[str, Any] = {
+        "type": "json_schema",
+        "name": schema_name,
+        "schema": normalized_schema,
+    }
     kwargs = {
         "model": MODEL_ID,
         "input": messages,
         "max_output_tokens": max_output_tokens,
-        "response_format": {"type": "json_object"},
+        "text": {"format": text_format},
     }
+    effort = _coerce_reasoning_effort(reasoning_effort or STRUCTURED_DEFAULT_REASONING)
+    kwargs["reasoning"] = {"effort": effort}
     if temperature is not None:
         kwargs["temperature"] = temperature
     with log_time("GPT-5 query"):
         return client.responses.create(**kwargs)
+
+
+def _format_json_path(path: TypingIterable[Any]) -> str:
+    tokens = list(path)
+    if not tokens:
+        return "<root>"
+    formatted: List[str] = []
+    for token in tokens:
+        if isinstance(token, int):
+            formatted.append(f"[{token}]")
+        else:
+            formatted.append(f".{token}")
+    joined = "".join(formatted)
+    if joined.startswith("."):
+        joined = joined[1:]
+    return joined or "<root>"
+
+
+def validate_structured_payload(payload: Dict[str, Any], schema: Dict[str, Any]) -> Optional[str]:
+    """
+    Validate a structured GPT payload against the supplied JSON schema and business rules.
+
+    Returns
+    -------
+    Optional[str]
+        None when validation succeeds, otherwise a human-readable error string that pinpoints the violation.
+    """
+    issues = collect_structured_payload_issues(payload, schema)
+    return issues[0].message if issues else None
 
 
 def query_gpt5_structured(
@@ -120,6 +534,7 @@ def query_gpt5_structured(
     user_payload_json: Optional[str] = None,
     temperature: Optional[float] = None,
     max_output_tokens: int = 4096,
+    reasoning_effort: Optional[str] = None,
 ) -> str:
     schema_key = json.dumps(response_schema, sort_keys=True)
     cache_key = (
@@ -130,6 +545,7 @@ def query_gpt5_structured(
         None if temperature is None else round(temperature, 4),
         max_output_tokens,
         MODEL_ID,
+        (reasoning_effort or STRUCTURED_DEFAULT_REASONING).lower(),
     )
 
     cached = cache.get((_STRUCTURED_CACHE_NAMESPACE, cache_key))
@@ -140,8 +556,34 @@ def query_gpt5_structured(
     messages = _build_messages(system_message, user_prompt, user_payload_json)
 
     last_error: Optional[str] = None
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        response = _send_structured_request(client, messages, temperature, max_output_tokens)
+    current_max_tokens = max_output_tokens
+    attempt = 1
+    while attempt <= MAX_ATTEMPTS:
+        response = _send_structured_request(
+            client,
+            messages,
+            temperature,
+            current_max_tokens,
+            response_schema,
+            reasoning_effort,
+        )
+
+        status = getattr(response, "status", None)
+        if status == "incomplete":
+            incomplete = getattr(response, "incomplete_details", None)
+            reason = getattr(incomplete, "reason", None) if incomplete else None
+            if reason == "max_output_tokens" and current_max_tokens < _STRUCTURED_MAX_TOKEN_CAP:
+                next_tokens = min(
+                    _STRUCTURED_MAX_TOKEN_CAP,
+                    max(current_max_tokens * 2, current_max_tokens + 128),
+                )
+                logger.info(
+                    "GPT-5 structured response truncated at %d tokens. Retrying with max_output_tokens=%d.",
+                    current_max_tokens,
+                    next_tokens,
+                )
+                current_max_tokens = next_tokens
+                continue
 
         refusal_reason = _extract_refusal(response)
         if refusal_reason:
@@ -149,6 +591,7 @@ def query_gpt5_structured(
             if attempt == MAX_ATTEMPTS:
                 raise RuntimeError(f"GPT-5 refused the request: {refusal_reason}")
             messages.append({"role": "user", "content": REFUSAL_TEMPLATE.format(reason=refusal_reason)})
+            attempt += 1
             continue
 
         raw_text = _extract_output_text(response)
@@ -165,6 +608,20 @@ def query_gpt5_structured(
                     "content": f"{REPROMPT_TEMPLATE.format(error=exc)}\n\nPrevious response:\n{snippet}",
                 }
             )
+            attempt += 1
+            continue
+
+        payload = json.loads(raw_text)
+        issues = collect_structured_payload_issues(payload, response_schema)
+        if issues:
+            validation_summary = issues[0].message
+            last_error = validation_summary
+            if attempt == MAX_ATTEMPTS:
+                joined = "; ".join(issue.message for issue in issues[:3])
+                raise ValueError(f"GPT response failed schema validation: {joined}")
+            reprompt = _build_schema_retry_message(issues, raw_text=raw_text)
+            messages.append({"role": "user", "content": reprompt})
+            attempt += 1
             continue
 
         cache.set((_STRUCTURED_CACHE_NAMESPACE, cache_key), raw_text)
@@ -498,6 +955,9 @@ async def query_to_gpt5_async(
     have_adjusted_reasoning = False
 
     client = _ensure_async_client()
+    global gpt5_client
+    if gpt5_client is not None:
+        client = gpt5_client
 
     with log_time("GPT-5 async query"):
         while True:

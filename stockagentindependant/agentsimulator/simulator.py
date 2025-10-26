@@ -5,12 +5,14 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, asdict
 from datetime import date
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from collections.abc import Iterable
+from typing import cast
 
 import pandas as pd
 from loguru import logger
 
 from .data_models import ExecutionSession, PlanActionType, TradingInstruction, TradingPlan
+from .market_data import MarketDataBundle
 from ..constants import SIMULATION_DAYS, TRADING_FEE, CRYPTO_TRADING_FEE
 from src.fixtures import crypto_symbols
 
@@ -43,7 +45,7 @@ class TradeExecution:
     realized_pnl: float
     fee_paid: float
 
-    def to_dict(self) -> Dict[str, float]:
+    def to_dict(self) -> dict[str, float]:
         payload = asdict(self)
         payload["execution_session"] = self.execution_session.value
         return payload
@@ -53,18 +55,18 @@ class TradeExecution:
 class SimulationResult:
     realized_pnl: float
     total_fees: float
-    trades: List[Dict[str, float]]
+    trades: list[dict[str, float]]
 
 
 class AgentSimulator:
     """Simple simulator that assumes starting from cash each day."""
 
-    def __init__(self, market_data):
-        self.market_data = market_data
-        self.trade_log: List[TradeExecution] = []
+    def __init__(self, market_data: MarketDataBundle):
+        self.market_data: MarketDataBundle = market_data
+        self.trade_log: list[TradeExecution] = []
         self.realized_pnl: float = 0.0
         self.total_fees: float = 0.0
-        self.positions: Dict[str, PositionState] = {}
+        self.positions: dict[str, PositionState] = {}
 
     def reset(self) -> None:
         self.trade_log.clear()
@@ -81,10 +83,22 @@ class AgentSimulator:
     def _price_for(self, symbol: str, target_date: date, session: ExecutionSession) -> float:
         df = self._get_symbol_frame(symbol)
         try:
-            row = df[df.index.date == target_date].iloc[0]
+            index = cast(pd.DatetimeIndex, df.index)
+            matching_indices = [
+                position
+                for position, timestamp in enumerate(index)
+                if isinstance(timestamp, pd.Timestamp) and timestamp.date() == target_date
+            ]
+            if not matching_indices:
+                raise IndexError
+            row = cast(pd.Series, df.iloc[matching_indices[0]])
         except IndexError as exc:
             raise KeyError(f"No price data for {symbol} on {target_date}") from exc
-        return float(row.get("open" if session == ExecutionSession.MARKET_OPEN else "close"))
+        column = "open" if session == ExecutionSession.MARKET_OPEN else "close"
+        price_value = row.get(column)
+        if price_value is None:
+            raise KeyError(f"No {column} price for {symbol} on {target_date}")
+        return float(price_value)
 
     def _apply_trade(self, trade_date: date, instruction: TradingInstruction, price: float) -> None:
         symbol = instruction.symbol
@@ -133,8 +147,8 @@ class AgentSimulator:
 
     def simulate(self, plans: Iterable[TradingPlan]) -> SimulationResult:
         self.reset()
-        plans = sorted(plans, key=lambda plan: plan.target_date)
-        for index, plan in enumerate(plans):
+        sorted_plans = sorted(plans, key=lambda plan: plan.target_date)
+        for index, plan in enumerate(sorted_plans):
             if index >= SIMULATION_DAYS:
                 break
             instructions = [deepcopy(instr) for instr in plan.instructions]

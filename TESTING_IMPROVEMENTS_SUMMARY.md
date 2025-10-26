@@ -6,13 +6,13 @@ Created comprehensive test suites for both `hfinference` and `hftraining` module
 ## Files Created
 
 ### 1. Core Test Files
-- **`tests/test_hfinference_comprehensive.py`**: Comprehensive tests for hfinference modules
+- **`tests/experimental/hf/test_hfinference_comprehensive.py`**: Comprehensive tests for hfinference modules
   - Tests for HFTradingEngine
   - Tests for ProductionEngine
   - Integration tests
   - Total: 14 test cases
 
-- **`tests/test_hftraining_comprehensive.py`**: Comprehensive tests for hftraining modules
+- **`tests/experimental/hf/test_hftraining_comprehensive.py`**: Comprehensive tests for hftraining modules
   - Tests for TransformerTradingModel
   - Tests for HFTrainer/MixedPrecisionTrainer
   - Tests for StockDataProcessor
@@ -110,16 +110,16 @@ Created comprehensive test suites for both `hfinference` and `hftraining` module
 ### Basic Test Execution
 ```bash
 # Run all tests
-python -m pytest tests/test_hfinference_comprehensive.py tests/test_hftraining_comprehensive.py -v
+python -m pytest tests/experimental/hf/test_hfinference_comprehensive.py tests/experimental/hf/test_hftraining_comprehensive.py -v
 
 # Run with simple runner
 python tests/run_tests.py
 
 # Run specific test class
-python -m pytest tests/test_hfinference_comprehensive.py::TestHFTradingEngine -v
+python -m pytest tests/experimental/hf/test_hfinference_comprehensive.py::TestHFTradingEngine -v
 
 # Run with coverage
-python -m pytest tests/test_hf*.py --cov=hfinference --cov=hftraining
+python -m pytest tests/experimental/hf/test_hf*.py --cov=hfinference --cov=hftraining
 ```
 
 ### Test Status

@@ -1,0 +1,11 @@
+{
+  "windows": 1,
+  "objective_mean": 0.7537097334861755,
+  "reward_mean": 0.002944178646430373,
+  "reward_std": 0.038781359791755676,
+  "sharpe_mean": 0.07591736316680908,
+  "turnover_mean": 0.10393374413251877,
+  "cumulative_return_mean": 1.1248681077015616,
+  "max_drawdown_worst": 0.4840105175971985,
+  "objective_best": 0.7537097334861755
+}

@@ -60,7 +60,7 @@ class TradeExecution:
     realized_pnl: float
     fee_paid: float
 
-    def to_dict(self) -> Dict[str, float]:
+    def to_dict(self) -> Dict[str, float | str | None]:
         payload = asdict(self)
         payload["execution_session"] = self.execution_session.value
         return payload
@@ -73,9 +73,9 @@ class SimulationResult:
     ending_equity: float
     realized_pnl: float
     unrealized_pnl: float
-    equity_curve: List[Dict[str, float]]
-    trades: List[Dict[str, float]]
-    final_positions: Dict[str, Dict[str, float]]
+    equity_curve: List[Dict[str, float | str]]
+    trades: List[Dict[str, float | str | None]]
+    final_positions: Dict[str, Dict[str, float | str]]
     total_fees: float
 
     def to_dict(self) -> Dict:
@@ -101,7 +101,7 @@ class AgentSimulator:
     ):
         self.market_data = market_data
         self.trade_log: List[TradeExecution] = []
-        self.equity_curve: List[Dict[str, float]] = []
+        self.equity_curve: List[Dict[str, float | str]] = []
         self.positions: Dict[str, PositionState] = {}
         self.realized_pnl: float = 0.0
         self.cash: float = starting_cash if starting_cash is not None else 0.0
@@ -211,7 +211,7 @@ class AgentSimulator:
             )
         )
 
-    def _mark_to_market(self, target_date: date) -> Dict[str, float]:
+    def _mark_to_market(self, target_date: date) -> Dict[str, float | str]:
         equity = self.cash
         unrealized_total = 0.0
         for symbol, position in self.positions.items():
@@ -224,7 +224,7 @@ class AgentSimulator:
             unrealized = position.unrealized(price)
             unrealized_total += unrealized
             equity += position.market_value(price)
-        snapshot = {
+        snapshot: Dict[str, float | str] = {
             "date": target_date.isoformat(),
             "cash": self.cash,
             "equity": equity,

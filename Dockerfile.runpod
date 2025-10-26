@@ -1,0 +1,119 @@
+# syntax=docker/dockerfile:1.7-labs
+
+ARG TORCH_VER="2.9.0"
+ARG PYPI_INDEX_URL="https://pypi.org/simple"
+ARG TORCH_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cu129"
+
+# ---------- Build stage (toolchain + uv) ----------
+FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04 AS build
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG TORCH_VER
+ARG PYPI_INDEX_URL
+ARG TORCH_EXTRA_INDEX_URL
+
+SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
+
+ENV PATH="/root/.local/bin:/root/.cargo/bin:${PATH}" \
+    UV_CACHE_DIR=/workspace/.uvcache \
+    UV_INDEX_STRATEGY=unsafe-best-match
+
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-venv \
+        python3-dev \
+        ca-certificates \
+        curl \
+        git \
+        pkg-config \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+RUN python3 -m venv /opt/venv
+
+WORKDIR /workspace
+
+# Prime dependency install with project metadata first for better caching.
+COPY pyproject.toml uv.lock ./
+
+# Copy application packages required at runtime (avoids pulling large datasets).
+COPY runpodmarket ./runpodmarket
+COPY falmarket ./falmarket
+COPY fal_marketsimulator ./fal_marketsimulator
+COPY faltrain ./faltrain
+COPY marketsimulator ./marketsimulator
+COPY src ./src
+COPY traininglib ./traininglib
+COPY training ./training
+COPY rlinference ./rlinference
+COPY gymrl ./gymrl
+COPY analysis ./analysis
+COPY analysis_runner_funcs ./analysis_runner_funcs
+COPY fal_utils ./fal_utils
+COPY utils ./utils
+COPY toto ./toto
+COPY trade_stock_e2e.py ./trade_stock_e2e.py
+COPY trade_stock_e2e_trained.py ./trade_stock_e2e_trained.py
+COPY alpaca_wrapper.py ./alpaca_wrapper.py
+COPY backtest_test3_inline.py ./backtest_test3_inline.py
+COPY data_curate_daily.py ./data_curate_daily.py
+COPY env_real.py ./env_real.py
+COPY jsonshelve.py ./jsonshelve.py
+COPY stock ./stock
+COPY loss_utils.py ./loss_utils.py
+
+# Ensure directories expected by runtime exist during install.
+RUN mkdir -p trainingdata trainingdatadaily trainingdatahourly compiled_models hyperparams
+
+# Install core dependencies with CUDA-capable PyTorch.
+RUN uv pip install \
+        --python /opt/venv/bin/python \
+        --no-cache-dir \
+        --index-url "${PYPI_INDEX_URL}" \
+        --extra-index-url "${TORCH_EXTRA_INDEX_URL}" \
+        "torch==${TORCH_VER}" \
+        awscli
+
+# Install project in editable mode with serving extras to capture all runtime deps.
+RUN UV_LINK_MODE=copy uv pip install \
+        --python /opt/venv/bin/python \
+        --no-cache-dir \
+        --index-url "${PYPI_INDEX_URL}" \
+        --extra-index-url "${TORCH_EXTRA_INDEX_URL}" \
+        --editable ".[serving,hf]"
+
+# ---------- Runtime stage (slim image) ----------
+FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04 AS runtime
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_CACHE_DIR=/workspace/.uvcache \
+    PATH="/opt/venv/bin:/root/.cargo/bin:${PATH}" \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    TORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    RUNPODMARKET_DISABLE_SERVERLESS=0
+
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-venv \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Copy pre-built virtual environment and application code.
+COPY --from=build /opt/venv /opt/venv
+COPY --from=build /workspace /workspace
+
+# Recreate expected mutable directories (mount-compatible).
+RUN mkdir -p trainingdata trainingdatadaily trainingdatahourly compiled_models hyperparams
+
+CMD ["python", "-u", "-m", "runpodmarket.handler"]

@@ -145,7 +145,7 @@ def base_config():
 def sample_data():
     return load_test_data()
 
-# tests/test_unified_trainer.py
+# tests/experimental/hf/test_unified_trainer.py
 def test_all_optimizers(base_config, sample_data):
     for opt in ['adamw', 'shampoo', 'muon']:
         config = base_config.copy()
