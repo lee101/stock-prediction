@@ -55,6 +55,7 @@ dependencies = [
     "yarl>=1.9",
     "websocket-client>=1.7",
     "websockets>=9,<11",
+    "yfinance>=0.2.58,<0.2.66",
 ]
 
 [project.scripts]
