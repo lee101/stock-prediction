@@ -4961,6 +4961,7 @@ dependencies = [
     { name = "websocket-client", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "websockets", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "yarl", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "yfinance", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
@@ -5191,6 +5192,7 @@ requires-dist = [
     { name = "xgboost", marker = "extra == 'all'", specifier = ">=2.1.1" },
     { name = "xgboost", marker = "extra == 'boosting'", specifier = ">=2.1.1" },
     { name = "yarl", specifier = ">=1.9" },
+    { name = "yfinance", specifier = ">=0.2.58,<0.2.66" },
 ]
 provides-extras = ["dev", "forecasting", "hf", "rl", "mlops", "opt", "llm", "serving", "automation", "boosting", "all"]
 
