@@ -196,17 +196,37 @@ class KronosForecastingWrapper:
             verbose=verbose,
         )
 
-        forecast_df = predictor.predict(
-            payload.feature_frame,
-            x_timestamp=payload.history_series,
-            y_timestamp=payload.future_series,
-            pred_len=int(pred_len),
-            T=effective_temperature,
-            top_k=effective_top_k,
-            top_p=effective_top_p,
-            sample_count=effective_samples,
-            verbose=effective_verbose,
-        )
+        oom_retried = False
+        while True:
+            try:
+                forecast_df = predictor.predict(
+                    payload.feature_frame,
+                    x_timestamp=payload.history_series,
+                    y_timestamp=payload.future_series,
+                    pred_len=int(pred_len),
+                    T=effective_temperature,
+                    top_k=effective_top_k,
+                    top_p=effective_top_p,
+                    sample_count=effective_samples,
+                    verbose=effective_verbose,
+                )
+                break
+            except RuntimeError as exc:
+                message = str(exc)
+                if (
+                    not oom_retried
+                    and "out of memory" in message.lower()
+                    and self._device.startswith("cuda")
+                ):
+                    oom_retried = True
+                    logger.warning(
+                        "Kronos GPU inference ran out of memory on %s; retrying on CPU.",
+                        self._device,
+                    )
+                    self._handle_cuda_oom()
+                    predictor = self._ensure_predictor(device_override="cpu")
+                    continue
+                raise
 
         if not isinstance(forecast_df, pd.DataFrame):
             raise RuntimeError("Kronos predictor returned an unexpected result type.")
@@ -260,17 +280,42 @@ class KronosForecastingWrapper:
             verbose=verbose,
         )
 
-        forecast_list = batch_predict(
-            [payload.feature_frame for payload in payloads],
-            [payload.history_series for payload in payloads],
-            [payload.future_series for payload in payloads],
-            pred_len=int(pred_len),
-            T=effective_temperature,
-            top_k=effective_top_k,
-            top_p=effective_top_p,
-            sample_count=effective_samples,
-            verbose=effective_verbose,
-        )
+        oom_retried = False
+        while True:
+            try:
+                forecast_list = batch_predict(
+                    [payload.feature_frame for payload in payloads],
+                    [payload.history_series for payload in payloads],
+                    [payload.future_series for payload in payloads],
+                    pred_len=int(pred_len),
+                    T=effective_temperature,
+                    top_k=effective_top_k,
+                    top_p=effective_top_p,
+                    sample_count=effective_samples,
+                    verbose=effective_verbose,
+                )
+                break
+            except RuntimeError as exc:
+                message = str(exc)
+                if (
+                    not oom_retried
+                    and "out of memory" in message.lower()
+                    and self._device.startswith("cuda")
+                ):
+                    oom_retried = True
+                    logger.warning(
+                        "Kronos GPU batch inference ran out of memory on %s; retrying on CPU.",
+                        self._device,
+                    )
+                    self._handle_cuda_oom()
+                    predictor = self._ensure_predictor(device_override="cpu")
+                    batch_predict = getattr(predictor, "predict_batch", None)
+                    if batch_predict is None:
+                        raise AttributeError(
+                            "Kronos predictor does not expose 'predict_batch'. Update the Kronos package."
+                        )
+                    continue
+                raise
 
         if not isinstance(forecast_list, (list, tuple)):
             raise RuntimeError("Kronos batch predictor returned an unexpected result type.")
@@ -336,6 +381,16 @@ class KronosForecastingWrapper:
             if timestamps.tz is None:
                 timestamps = timestamps.tz_localize("UTC")
             timestamps = timestamps.tz_convert(None)
+
+            if timestamps.duplicated().any():
+                mask = ~timestamps.duplicated(keep="last")
+                duplicate_count = int(np.count_nonzero(~mask))
+                logger.debug(
+                    "Detected %d duplicate timestamps for Kronos payload; keeping last occurrence.",
+                    duplicate_count,
+                )
+                working = working.iloc[mask]
+                timestamps = timestamps[mask]
 
             if lookback:
                 span = int(max(1, lookback))
@@ -426,9 +481,13 @@ class KronosForecastingWrapper:
             return torch.bfloat16  # pragma: no cover - depends on hardware
         return None
 
-    def _ensure_predictor(self):
-        if self._predictor is not None:
-            return self._predictor
+    def _ensure_predictor(self, *, device_override: Optional[str] = None):
+        predictor = self._predictor
+        if predictor is not None:
+            if device_override is None or self._device == device_override:
+                return predictor
+            self.unload()
+            predictor = None
 
         original_model_module = sys.modules.get("model")
         stub_module: Optional[types.ModuleType] = None
@@ -459,7 +518,7 @@ class KronosForecastingWrapper:
                 if original_model_module is not None:
                     sys.modules["model"] = original_model_module
 
-        device = self.requested_device
+        device = device_override or self.requested_device
         if device.startswith("cuda") and not torch.cuda.is_available():
             logger.warning("CUDA device %s requested but unavailable; falling back to CPU.", device)
             device = "cpu"
@@ -543,8 +602,37 @@ class KronosForecastingWrapper:
         self._predictor = predictor
         return predictor
 
+    def _handle_cuda_oom(self) -> None:
+        if torch is not None and torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Failed to clear CUDA cache after OOM: %s", exc)
+        self.unload()
+
     def _prepare_feature_frame(self, df: pd.DataFrame) -> pd.DataFrame:
-        working = df.rename(columns=lambda c: str(c).lower()).copy()
+        working = df.copy()
+
+        def _flatten_column_label(label: Any) -> str:
+            if isinstance(label, tuple):
+                for part in label:
+                    if part is None:
+                        continue
+                    part_str = str(part).strip()
+                    if part_str:
+                        return part_str
+                if label:
+                    return str(label[-1])
+                return ""
+            return str(label)
+
+        if isinstance(working.columns, pd.MultiIndex):
+            working.columns = [_flatten_column_label(col) for col in working.columns]
+            working = working.loc[:, ~pd.Index(working.columns).duplicated(keep="first")]
+
+        working = working.rename(columns=lambda c: str(c).lower())
+        if working.columns.duplicated().any():
+            working = working.loc[:, ~working.columns.duplicated(keep="first")]
 
         price_columns = ["open", "high", "low", "close"]
         if "close" not in working.columns:
@@ -553,17 +641,45 @@ class KronosForecastingWrapper:
         for column in price_columns:
             if column not in working.columns:
                 working[column] = working["close"]
-            working[column] = pd.to_numeric(working[column], errors="coerce")
+            series = working[column]
+            if isinstance(series, pd.DataFrame):
+                if series.shape[1] == 0:
+                    series = pd.Series(np.nan, index=working.index, dtype=float)
+                else:
+                    series = series.iloc[:, 0]
+            elif getattr(series, "ndim", 1) != 1:
+                series = pd.Series(np.asarray(series).reshape(-1), index=working.index)
+            elif not isinstance(series, pd.Series):
+                series = pd.Series(series, index=working.index)
+            working[column] = pd.to_numeric(series, errors="coerce")
         working[price_columns] = working[price_columns].ffill().bfill()
 
         if "volume" not in working.columns:
             working["volume"] = 0.0
-        working["volume"] = pd.to_numeric(working["volume"], errors="coerce").fillna(0.0)
+        volume_series = working["volume"]
+        if isinstance(volume_series, pd.DataFrame):
+            volume_series = volume_series.iloc[:, 0] if volume_series.shape[1] else pd.Series(
+                np.nan, index=working.index, dtype=float
+            )
+        elif getattr(volume_series, "ndim", 1) != 1:
+            volume_series = pd.Series(np.asarray(volume_series).reshape(-1), index=working.index)
+        elif not isinstance(volume_series, pd.Series):
+            volume_series = pd.Series(volume_series, index=working.index)
+        working["volume"] = pd.to_numeric(volume_series, errors="coerce").fillna(0.0)
 
         if "amount" not in working.columns:
             working["amount"] = working["volume"] * working["close"]
         else:
-            working["amount"] = pd.to_numeric(working["amount"], errors="coerce")
+            amount_series = working["amount"]
+            if isinstance(amount_series, pd.DataFrame):
+                amount_series = amount_series.iloc[:, 0] if amount_series.shape[1] else pd.Series(
+                    np.nan, index=working.index, dtype=float
+                )
+            elif getattr(amount_series, "ndim", 1) != 1:
+                amount_series = pd.Series(np.asarray(amount_series).reshape(-1), index=working.index)
+            elif not isinstance(amount_series, pd.Series):
+                amount_series = pd.Series(amount_series, index=working.index)
+            working["amount"] = pd.to_numeric(amount_series, errors="coerce")
             working["amount"] = working["amount"].fillna(working["volume"] * working["close"])
 
         feature_cols = ["open", "high", "low", "close", "volume", "amount"]
