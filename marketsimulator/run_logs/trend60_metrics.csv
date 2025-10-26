@@ -1,2 +1,0 @@
-mode,steps,step_size,top_k,symbols,initial_cash,kronos_only,real_analytics,sharpe_cutoff,kronos_sharpe_cutoff,flatten_end,return,sharpe,pnl,cash,balance,max_drawdown,max_drawdown_pct,fees_paid,entry_limits
-simulation,60,1,4,"[""AAPL"", ""MSFT"", ""NVDA"", ""AMZN"", ""GOOG"", ""XLK"", ""SOXX""]",100000.0,True,True,,-1.0,True,-0.05784936690002723,-3.890423538239852,-5784.9366900027235,94215.06330999728,94215.06330999728,7737.754921122803,0.07737754921122804,851.5647963483779,"{""per_key"": {}, ""per_symbol"": {}}"
