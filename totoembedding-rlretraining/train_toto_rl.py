@@ -55,8 +55,8 @@ class TotoRLPipeline:
                 'train_dir': '../trainingdata/train',
                 'test_dir': '../trainingdata/test',
                 'symbols': [
-                    'AAPL', 'ADBE', 'ADSK', 'BTCUSD', 'COIN', 'COUR', 'CRWD',
-                    'ETHUSD', 'GOOG', 'LTCUSD', 'MSFT', 'NET', 'NFLX', 'NVDA',
+                    'AAPL', 'ADBE', 'ADSK', 'BTCUSD', 'COIN', 'COUR',
+                    'ETHUSD', 'GOOG', 'LTCUSD', 'MSFT', 'NFLX', 'NVDA',
                     'PAXGUSD', 'PYPL', 'SAP', 'SONY', 'TSLA', 'U', 'UNIUSD'
                 ]
             },

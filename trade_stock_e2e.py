@@ -1,14 +1,32 @@
+import logging
+import math
 import os
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import sleep
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
+import pandas as pd
 import pytz
 from loguru import logger
 
 import alpaca_wrapper
-from backtest_test3_inline import backtest_forecasts, release_model_resources
+try:
+    from backtest_test3_inline import backtest_forecasts, release_model_resources
+except Exception as import_exc:  # pragma: no cover - exercised via tests with stubs
+    logging.getLogger(__name__).warning(
+        "Falling back to stubbed backtest resources due to import failure: %s", import_exc
+    )
+    captured_import_error = import_exc
+
+    def backtest_forecasts(*args, **kwargs):
+        raise RuntimeError(
+            "backtest_forecasts is unavailable because backtest_test3_inline could not be imported."
+        ) from captured_import_error
+
+    def release_model_resources() -> None:
+        return None
 from data_curate_daily import get_bid, get_ask, download_exchange_latest_data
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from jsonshelve import FlatShelf
@@ -16,10 +34,29 @@ from src.comparisons import is_buy_side, is_same_side, is_sell_side
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
+from marketsimulator.state import get_state
 from src.trading_obj_utils import filter_to_realistic_positions
-from src.process_utils import backout_near_market, ramp_into_position, spawn_close_position_at_takeprofit
+from src.process_utils import (
+    backout_near_market,
+    ramp_into_position,
+    spawn_close_position_at_maxdiff_takeprofit,
+    spawn_close_position_at_takeprofit,
+    spawn_open_position_at_maxdiff_takeprofit,
+)
 from src.portfolio_risk import record_portfolio_snapshot
 from src.sizing_utils import get_qty
+from src.trade_stock_utils import (
+    agree_direction,
+    coerce_optional_float,
+    compute_spread_bps,
+    edge_threshold_bps,
+    evaluate_strategy_entry_gate,
+    expected_cost_bps,
+    kelly_lite,
+    parse_float_list,
+    resolve_spread_cap,
+    should_rebalance,
+)
 from alpaca.data import StockHistoricalDataClient
 from stock.data_utils import coerce_numeric, ensure_lower_bound, safe_divide
 from stock.state import ensure_state_dir as _shared_ensure_state_dir
@@ -44,10 +81,825 @@ MAX_TOTAL_EXPOSURE_PCT = 120.0
 LIVE_DRAWDOWN_TRIGGER = -500.0  # dollars
 PROBE_MAX_DURATION = timedelta(days=1)
 
+PROBE_LOSS_COOLDOWN_MINUTES = 180
+ALLOW_HIGHLOW_ENTRY = os.getenv("ALLOW_HIGHLOW_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
+ALLOW_TAKEPROFIT_ENTRY = os.getenv("ALLOW_TAKEPROFIT_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
+_ALLOW_MAXDIFF_ENV = os.getenv("ALLOW_MAXDIFF_ENTRY")
+if _ALLOW_MAXDIFF_ENV is None:
+    ALLOW_MAXDIFF_ENTRY = ALLOW_HIGHLOW_ENTRY
+else:
+    ALLOW_MAXDIFF_ENTRY = _ALLOW_MAXDIFF_ENV.strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip().lower() in {"1", "true", "yes", "on"}
+CONSENSUS_MIN_MOVE_PCT = float(os.getenv("CONSENSUS_MIN_MOVE_PCT", "0.001"))
+
+_quote_client: Optional[StockHistoricalDataClient] = None
+_COOLDOWN_STATE: Dict[str, Dict[str, datetime]] = {}
+
 _trade_outcomes_store: Optional[FlatShelf] = None
 _trade_learning_store: Optional[FlatShelf] = None
 _active_trades_store: Optional[FlatShelf] = None
 _trade_history_store: Optional[FlatShelf] = None
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+SIMPLIFIED_MODE = os.getenv("MARKETSIM_SIMPLE_MODE", "0").strip().lower() in _TRUTHY
+
+DEFAULT_PROBE_SYMBOLS = {"AAPL", "MSFT", "NVDA"}
+PROBE_SYMBOLS = set() if SIMPLIFIED_MODE else set(DEFAULT_PROBE_SYMBOLS)
+
+_LATEST_FORECAST_CACHE: Dict[str, Dict[str, object]] = {}
+_LATEST_FORECAST_PATH: Optional[Path] = None
+DISABLE_TRADE_GATES = os.getenv("MARKETSIM_DISABLE_GATES", "0").strip().lower() in _TRUTHY
+
+_coerce_optional_float = coerce_optional_float
+_parse_float_list = parse_float_list
+_edge_threshold_bps = edge_threshold_bps
+_evaluate_strategy_entry_gate = evaluate_strategy_entry_gate
+
+
+def _get_env_float(name: str) -> Optional[float]:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; expected float.", name, raw)
+        return None
+
+
+_DRAW_CAPS_CACHE: Optional[Tuple[str, Dict[Tuple[Optional[str], Optional[str]], float]]] = None
+_DRAW_RESUME_CACHE: Optional[Tuple[str, Dict[Tuple[Optional[str], Optional[str]], float]]] = None
+_DRAW_SUSPENDED: Dict[Tuple[str, str], bool] = {}
+_THRESHOLD_MAP_CACHE: Dict[str, Tuple[str, Dict[Tuple[Optional[str], Optional[str]], float]]] = {}
+_SYMBOL_SIDE_CACHE: Optional[Tuple[str, Dict[str, str]]] = None
+_SYMBOL_KELLY_SCALE_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_SYMBOL_MAX_HOLD_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_SYMBOL_MIN_COOLDOWN_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_SYMBOL_MAX_ENTRIES_CACHE: Optional[Tuple[str, Dict[Tuple[Optional[str], Optional[str]], int]]] = None
+_SYMBOL_FORCE_PROBE_CACHE: Optional[Tuple[str, Dict[str, bool]]] = None
+_SYMBOL_MIN_MOVE_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_SYMBOL_MIN_PREDICTED_MOVE_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_SYMBOL_MIN_STRATEGY_RETURN_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+_TREND_SUMMARY_CACHE: Optional[Tuple[Tuple[str, float], Dict[str, Dict[str, float]]]] = None
+_TREND_RESUME_CACHE: Optional[Tuple[str, Dict[str, float]]] = None
+EntryKey = Tuple[Optional[str], Optional[str]]
+_SYMBOL_RUN_ENTRY_COUNTS: Dict[EntryKey, int] = {}
+_SYMBOL_RUN_ENTRY_ID: Optional[str] = None
+
+
+def _strategy_key(symbol: Optional[str], strategy: Optional[str]) -> Tuple[str, str]:
+    return ((symbol or "__global__").lower(), (strategy or "__default__").lower())
+
+
+def _parse_threshold_map(env_name: str) -> Dict[Tuple[Optional[str], Optional[str]], float]:
+    cache_key_raw = os.getenv(env_name)
+    cache_key = cache_key_raw or ""
+    cached = _THRESHOLD_MAP_CACHE.get(env_name)
+    if cached is None or cached[0] != cache_key:
+        parsed: Dict[Tuple[Optional[str], Optional[str]], float] = {}
+        if cache_key_raw:
+            for item in cache_key_raw.split(","):
+                entry = item.strip()
+                if not entry:
+                    continue
+                try:
+                    key_part, value_part = entry.split(":", 1)
+                    value = float(value_part)
+                except ValueError:
+                    logger.warning("Ignoring invalid %s entry: %s", env_name, entry)
+                    continue
+                key = key_part.strip()
+                if not key:
+                    logger.warning("Ignoring invalid %s entry with empty key.", env_name)
+                    continue
+                symbol_key: Optional[str] = None
+                strategy_key: Optional[str] = None
+                if "@" in key:
+                    sym_raw, strat_raw = key.split("@", 1)
+                    symbol_key = sym_raw.strip().lower() or None
+                    strategy_key = strat_raw.strip().lower() or None
+                elif key.isupper():
+                    symbol_key = key.lower()
+                else:
+                    strategy_key = key.lower()
+                parsed[(symbol_key, strategy_key)] = value
+        _THRESHOLD_MAP_CACHE[env_name] = (cache_key, parsed)
+    return _THRESHOLD_MAP_CACHE[env_name][1]
+
+
+def _lookup_threshold(env_name: str, symbol: Optional[str], strategy: Optional[str]) -> Optional[float]:
+    parsed = _parse_threshold_map(env_name)
+    symbol_key = symbol.lower() if symbol else None
+    strategy_key = strategy.lower() if strategy else None
+    for candidate in (
+        (symbol_key, strategy_key),
+        (symbol_key, None),
+        (None, strategy_key),
+        (None, None),
+    ):
+        if candidate in parsed:
+            return parsed[candidate]
+    return None
+
+
+def _drawdown_cap_for(strategy: Optional[str], symbol: Optional[str] = None) -> Optional[float]:
+    global _DRAW_CAPS_CACHE
+    env_raw = os.getenv("MARKETSIM_KELLY_DRAWDOWN_CAP_MAP")
+    cache_key = env_raw or ""
+    if _DRAW_CAPS_CACHE is None or _DRAW_CAPS_CACHE[0] != cache_key:
+        _DRAW_CAPS_CACHE = (cache_key, _parse_threshold_map("MARKETSIM_KELLY_DRAWDOWN_CAP_MAP"))
+    caps = _DRAW_CAPS_CACHE[1] if _DRAW_CAPS_CACHE else {}
+    symbol_key = symbol.lower() if symbol else None
+    strategy_key = strategy.lower() if strategy else None
+    for candidate in (
+        (symbol_key, strategy_key),
+        (symbol_key, None),
+        (None, strategy_key),
+        (None, None),
+    ):
+        if candidate in caps:
+            return caps[candidate]
+    return _get_env_float("MARKETSIM_KELLY_DRAWDOWN_CAP")
+
+
+def _drawdown_resume_for(
+    strategy: Optional[str], cap: Optional[float], symbol: Optional[str] = None
+) -> Optional[float]:
+    global _DRAW_RESUME_CACHE
+    env_raw = os.getenv("MARKETSIM_DRAWDOWN_RESUME_MAP")
+    cache_key = env_raw or ""
+    if _DRAW_RESUME_CACHE is None or _DRAW_RESUME_CACHE[0] != cache_key:
+        _DRAW_RESUME_CACHE = (cache_key, _parse_threshold_map("MARKETSIM_DRAWDOWN_RESUME_MAP"))
+    overrides = _DRAW_RESUME_CACHE[1] if _DRAW_RESUME_CACHE else {}
+    symbol_key = symbol.lower() if symbol else None
+    strategy_key = strategy.lower() if strategy else None
+    for candidate in (
+        (symbol_key, strategy_key),
+        (symbol_key, None),
+        (None, strategy_key),
+        (None, None),
+    ):
+        if candidate in overrides:
+            return overrides[candidate]
+    resume_abs = _get_env_float("MARKETSIM_DRAWDOWN_RESUME")
+    if resume_abs is not None:
+        return resume_abs
+    factor = _get_env_float("MARKETSIM_DRAWDOWN_RESUME_FACTOR") or 0.8
+    if factor <= 0 or cap is None:
+        return None
+    return cap * factor
+
+
+def _kelly_drawdown_scale(strategy: Optional[str], symbol: Optional[str] = None) -> float:
+    cap = _drawdown_cap_for(strategy, symbol)
+    if not cap or cap <= 0:
+        scale = 1.0
+    else:
+        min_scale = _get_env_float("MARKETSIM_KELLY_DRAWDOWN_MIN_SCALE") or 0.0
+        try:
+            state = get_state()
+            drawdown_pct = getattr(state, "drawdown_pct", None)
+        except RuntimeError:
+            drawdown_pct = None
+        if drawdown_pct is None:
+            scale = 1.0
+        else:
+            scale = max(0.0, 1.0 - (drawdown_pct / cap))
+            if min_scale > 0:
+                scale = max(min_scale, scale)
+            scale = min(1.0, scale)
+
+    symbol_scale = _symbol_kelly_scale(symbol)
+    if symbol_scale is not None:
+        scale *= max(0.0, min(symbol_scale, 1.0))
+    min_scale = _get_env_float("MARKETSIM_KELLY_DRAWDOWN_MIN_SCALE") or 0.0
+    if min_scale > 0:
+        scale = max(min_scale, scale)
+    return min(1.0, scale)
+
+
+def _results_dir() -> Path:
+    return Path(__file__).resolve().parent / "results"
+
+
+def _normalize_series(series: pd.Series) -> pd.Series:
+    return series.apply(lambda value: coerce_numeric(value, default=0.0, prefer="mean"))
+
+
+def _allowed_side_for(symbol: Optional[str]) -> Optional[str]:
+    global _SYMBOL_SIDE_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_SIDE_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_SIDE_CACHE is None or _SYMBOL_SIDE_CACHE[0] != cache_key:
+        parsed: Dict[str, str] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry:
+                    continue
+                if ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_SIDE_MAP entry: %s", entry)
+                    continue
+                symbol_key, side = entry.split(":", 1)
+                norm_symbol = symbol_key.strip().lower()
+                norm_side = side.strip().lower()
+                if norm_symbol and norm_side in {"buy", "sell", "both"}:
+                    parsed[norm_symbol] = norm_side
+                else:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_SIDE_MAP entry: %s", entry)
+        _SYMBOL_SIDE_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_SIDE_CACHE[1] if _SYMBOL_SIDE_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_kelly_scale(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_KELLY_SCALE_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_KELLY_SCALE_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_KELLY_SCALE_CACHE is None or _SYMBOL_KELLY_SCALE_CACHE[0] != cache_key:
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_KELLY_SCALE_MAP entry: %s", entry)
+                    continue
+                symbol_key, value = entry.split(":", 1)
+                try:
+                    parsed[symbol_key.strip().lower()] = float(value)
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_KELLY_SCALE_MAP value: %s", entry)
+        _SYMBOL_KELLY_SCALE_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_KELLY_SCALE_CACHE[1] if _SYMBOL_KELLY_SCALE_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_max_hold_seconds(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_MAX_HOLD_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_MAX_HOLD_CACHE is None or _SYMBOL_MAX_HOLD_CACHE[0] != cache_key:
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP entry: %s", entry)
+                    continue
+                symbol_key, seconds_raw = entry.split(":", 1)
+                try:
+                    parsed[symbol_key.strip().lower()] = float(seconds_raw)
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP value: %s", entry)
+        _SYMBOL_MAX_HOLD_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_MAX_HOLD_CACHE[1] if _SYMBOL_MAX_HOLD_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_min_cooldown_minutes(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_MIN_COOLDOWN_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MIN_COOLDOWN_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_MIN_COOLDOWN_CACHE is None or _SYMBOL_MIN_COOLDOWN_CACHE[0] != cache_key:
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MIN_COOLDOWN_MAP entry: %s", entry)
+                    continue
+                symbol_key, value_raw = entry.split(":", 1)
+                try:
+                    parsed[symbol_key.strip().lower()] = float(value_raw)
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MIN_COOLDOWN_MAP value: %s", entry)
+        _SYMBOL_MIN_COOLDOWN_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_MIN_COOLDOWN_CACHE[1] if _SYMBOL_MIN_COOLDOWN_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_max_entries_per_run(
+    symbol: Optional[str], strategy: Optional[str] = None
+) -> Tuple[Optional[int], Optional[Tuple[Optional[str], Optional[str]]]]:
+    global _SYMBOL_MAX_ENTRIES_CACHE
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MAX_ENTRIES_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_MAX_ENTRIES_CACHE is None or _SYMBOL_MAX_ENTRIES_CACHE[0] != cache_key:
+        parsed: Dict[Tuple[Optional[str], Optional[str]], int] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MAX_ENTRIES_MAP entry: %s", entry)
+                    continue
+                key_raw, value_raw = entry.split(":", 1)
+                symbol_key: Optional[str] = None
+                strategy_key: Optional[str] = None
+                if "@" in key_raw:
+                    sym_raw, strat_raw = key_raw.split("@", 1)
+                    symbol_key = sym_raw.strip().lower() or None
+                    strategy_key = strat_raw.strip().lower() or None
+                else:
+                    key_clean = key_raw.strip().lower()
+                    symbol_key = key_clean or None
+                try:
+                    parsed[(symbol_key, strategy_key)] = int(float(value_raw))
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MAX_ENTRIES_MAP value: %s", entry)
+        _SYMBOL_MAX_ENTRIES_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_MAX_ENTRIES_CACHE[1] if _SYMBOL_MAX_ENTRIES_CACHE else {}
+    symbol_key = symbol.lower() if symbol else None
+    strategy_key = strategy.lower() if strategy else None
+    for candidate in (
+        (symbol_key, strategy_key),
+        (symbol_key, None),
+        (None, strategy_key),
+        (None, None),
+    ):
+        if candidate in overrides:
+            return overrides[candidate], candidate
+    return None, None
+
+
+def _symbol_min_move(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_MIN_MOVE_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MIN_MOVE_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_MIN_MOVE_CACHE is None or _SYMBOL_MIN_MOVE_CACHE[0] != cache_key:
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MIN_MOVE_MAP entry: %s", entry)
+                    continue
+                key_raw, value_raw = entry.split(":", 1)
+                try:
+                    parsed[key_raw.strip().lower()] = float(value_raw)
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MIN_MOVE_MAP value: %s", entry)
+        _SYMBOL_MIN_MOVE_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_MIN_MOVE_CACHE[1] if _SYMBOL_MIN_MOVE_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_min_predicted_move(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_MIN_PREDICTED_MOVE_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP")
+    cache_key = env_raw or ""
+    if (
+        _SYMBOL_MIN_PREDICTED_MOVE_CACHE is None
+        or _SYMBOL_MIN_PREDICTED_MOVE_CACHE[0] != cache_key
+    ):
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning(
+                        "Ignoring malformed MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP entry: %s",
+                        entry,
+                    )
+                    continue
+                key_raw, value_raw = entry.split(":", 1)
+                try:
+                    parsed[key_raw.strip().lower()] = abs(float(value_raw))
+                except ValueError:
+                    logger.warning(
+                        "Ignoring invalid MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP value: %s",
+                        entry,
+                    )
+        _SYMBOL_MIN_PREDICTED_MOVE_CACHE = (cache_key, parsed)
+    overrides = (
+        _SYMBOL_MIN_PREDICTED_MOVE_CACHE[1] if _SYMBOL_MIN_PREDICTED_MOVE_CACHE else {}
+    )
+    return overrides.get(symbol.lower())
+
+
+def _symbol_min_strategy_return(symbol: Optional[str]) -> Optional[float]:
+    global _SYMBOL_MIN_STRATEGY_RETURN_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP")
+    cache_key = env_raw or ""
+    if (
+        _SYMBOL_MIN_STRATEGY_RETURN_CACHE is None
+        or _SYMBOL_MIN_STRATEGY_RETURN_CACHE[0] != cache_key
+    ):
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning(
+                        "Ignoring malformed MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP entry: %s",
+                        entry,
+                    )
+                    continue
+                key_raw, value_raw = entry.split(":", 1)
+                try:
+                    parsed[key_raw.strip().lower()] = float(value_raw)
+                except ValueError:
+                    logger.warning(
+                        "Ignoring invalid MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP value: %s",
+                        entry,
+                    )
+        _SYMBOL_MIN_STRATEGY_RETURN_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_MIN_STRATEGY_RETURN_CACHE[1] if _SYMBOL_MIN_STRATEGY_RETURN_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _symbol_force_probe(symbol: Optional[str]) -> bool:
+    global _SYMBOL_FORCE_PROBE_CACHE
+    if symbol is None:
+        return False
+    env_raw = os.getenv("MARKETSIM_SYMBOL_FORCE_PROBE_MAP")
+    cache_key = env_raw or ""
+    if _SYMBOL_FORCE_PROBE_CACHE is None or _SYMBOL_FORCE_PROBE_CACHE[0] != cache_key:
+        parsed: Dict[str, bool] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry:
+                    continue
+                if ":" in entry:
+                    key_raw, value_raw = entry.split(":", 1)
+                    value_norm = value_raw.strip().lower()
+                    parsed[key_raw.strip().lower()] = value_norm in _TRUTHY
+                else:
+                    parsed[entry.strip().lower()] = True
+        _SYMBOL_FORCE_PROBE_CACHE = (cache_key, parsed)
+    overrides = _SYMBOL_FORCE_PROBE_CACHE[1] if _SYMBOL_FORCE_PROBE_CACHE else {}
+    return bool(overrides.get(symbol.lower()))
+
+
+def _symbol_trend_pnl_threshold(symbol: Optional[str]) -> Optional[float]:
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_TREND_PNL_SUSPEND_MAP")
+    if not env_raw:
+        return None
+    for item in env_raw.split(","):
+        entry = item.strip()
+        if not entry or ":" not in entry:
+            continue
+        key_raw, value_raw = entry.split(":", 1)
+        if key_raw.strip().lower() == symbol.lower():
+            try:
+                return float(value_raw)
+            except ValueError:
+                logger.warning("Invalid MARKETSIM_TREND_PNL_SUSPEND_MAP value: %s", entry)
+                return None
+    return None
+
+
+def _symbol_trend_resume_threshold(symbol: Optional[str]) -> Optional[float]:
+    global _TREND_RESUME_CACHE
+    if symbol is None:
+        return None
+    env_raw = os.getenv("MARKETSIM_TREND_PNL_RESUME_MAP")
+    cache_key = env_raw or ""
+    if _TREND_RESUME_CACHE is None or _TREND_RESUME_CACHE[0] != cache_key:
+        parsed: Dict[str, float] = {}
+        if env_raw:
+            for item in env_raw.split(","):
+                entry = item.strip()
+                if not entry or ":" not in entry:
+                    logger.warning("Ignoring malformed MARKETSIM_TREND_PNL_RESUME_MAP entry: %s", entry)
+                    continue
+                key_raw, value_raw = entry.split(":", 1)
+                try:
+                    parsed[key_raw.strip().lower()] = float(value_raw)
+                except ValueError:
+                    logger.warning("Ignoring invalid MARKETSIM_TREND_PNL_RESUME_MAP value: %s", entry)
+        _TREND_RESUME_CACHE = (cache_key, parsed)
+    overrides = _TREND_RESUME_CACHE[1] if _TREND_RESUME_CACHE else {}
+    return overrides.get(symbol.lower())
+
+
+def _load_trend_summary() -> Dict[str, Dict[str, float]]:
+    global _TREND_SUMMARY_CACHE
+    path_raw = os.getenv("MARKETSIM_TREND_SUMMARY_PATH")
+    if not path_raw:
+        return {}
+    path = Path(path_raw)
+    if not path.exists():
+        logger.debug("Trend summary path %s not found; skipping suspend checks.", path)
+        return {}
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {}
+    cache_key = (path_raw, mtime)
+    if _TREND_SUMMARY_CACHE and _TREND_SUMMARY_CACHE[0] == cache_key:
+        return _TREND_SUMMARY_CACHE[1]
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            summary = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to load trend summary %s: %s", path, exc)
+        return {}
+    _TREND_SUMMARY_CACHE = (cache_key, summary)
+    return summary
+
+
+def _get_trend_stat(symbol: str, key: str) -> Optional[float]:
+    summary = _load_trend_summary()
+    if not summary:
+        return None
+    symbol_info = summary.get(symbol.upper())
+    if not symbol_info:
+        return None
+    value = symbol_info.get(key)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def reset_symbol_entry_counters(run_id: Optional[str] = None) -> None:
+    """Clear per-run entry counters to allow fresh simulations or trading sessions."""
+    global _SYMBOL_RUN_ENTRY_COUNTS, _SYMBOL_RUN_ENTRY_ID
+    _SYMBOL_RUN_ENTRY_COUNTS = {}
+    _SYMBOL_RUN_ENTRY_ID = run_id
+
+
+def _normalize_entry_key(symbol: Optional[str], strategy: Optional[str]) -> Optional[EntryKey]:
+    if symbol is None:
+        return None
+    return (symbol.lower(), strategy.lower() if strategy else None)
+
+
+def _current_symbol_entry_count(symbol: str, strategy: Optional[str], *, key: Optional[EntryKey] = None) -> int:
+    use_key = key if key is not None else _normalize_entry_key(symbol, strategy)
+    if use_key is None:
+        return 0
+    return _SYMBOL_RUN_ENTRY_COUNTS.get(use_key, 0)
+
+
+def _increment_symbol_entry(symbol: str, strategy: Optional[str], *, key: Optional[EntryKey] = None) -> int:
+    use_key = key if key is not None else _normalize_entry_key(symbol, strategy)
+    if use_key is None:
+        return 0
+    new_count = _SYMBOL_RUN_ENTRY_COUNTS.get(use_key, 0) + 1
+    _SYMBOL_RUN_ENTRY_COUNTS[use_key] = new_count
+    return new_count
+
+
+def _format_entry_limit_key(key: Optional[EntryKey]) -> Optional[str]:
+    if key is None:
+        return None
+    symbol_key, strategy_key = key
+    if symbol_key and strategy_key:
+        return f"{symbol_key}@{strategy_key}"
+    if symbol_key:
+        return symbol_key
+    if strategy_key:
+        return f"@{strategy_key}"
+    return "__default__"
+
+
+def get_entry_counter_snapshot() -> Dict[str, Dict[str, Dict[str, Optional[float]]]]:
+    """Return per-key and per-symbol entry counter statistics for the current run."""
+    snapshot_per_key: Dict[str, Dict[str, Optional[float]]] = {}
+    aggregated: Dict[str, Dict[str, Optional[float]]] = {}
+
+    for (symbol_key, strategy_key), count in _SYMBOL_RUN_ENTRY_COUNTS.items():
+        label_symbol = (symbol_key or "__global__").upper()
+        label_key = label_symbol if strategy_key is None else f"{label_symbol}@{strategy_key}"
+        resolved_limit, matched_key = _symbol_max_entries_per_run(
+            label_symbol if symbol_key is not None else None,
+            strategy_key,
+        )
+        approx_trade_limit = float(max(resolved_limit, 0) * 2) if resolved_limit is not None else None
+        snapshot_per_key[label_key] = {
+            "entries": int(count),
+            "entry_limit": float(resolved_limit) if resolved_limit is not None else None,
+            "approx_trade_limit": approx_trade_limit,
+            "resolved_limit_key": _format_entry_limit_key(matched_key),
+        }
+
+        aggregate = aggregated.setdefault(
+            label_symbol,
+            {
+                "entries": 0,
+                "entry_limits": [],
+            },
+        )
+        aggregate["entries"] += int(count)
+        if resolved_limit is not None:
+            aggregate["entry_limits"].append(float(resolved_limit))
+
+    per_symbol: Dict[str, Dict[str, Optional[float]]] = {}
+    for symbol_label, info in aggregated.items():
+        candidates = info["entry_limits"]
+        entry_limit = min(candidates) if candidates else None
+        approx_trade_limit = float(max(entry_limit, 0) * 2) if entry_limit is not None else None
+        per_symbol[symbol_label] = {
+            "entries": info["entries"],
+            "entry_limit": entry_limit,
+            "approx_trade_limit": approx_trade_limit,
+        }
+
+    return {
+        "per_key": snapshot_per_key,
+        "per_symbol": per_symbol,
+    }
+
+
+def _find_latest_prediction_file() -> Optional[Path]:
+    results_path = _results_dir()
+    if not results_path.exists():
+        return None
+    candidates = list(results_path.glob("predictions-*.csv"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _load_latest_forecast_snapshot() -> Dict[str, Dict[str, object]]:
+    global _LATEST_FORECAST_CACHE, _LATEST_FORECAST_PATH
+
+    latest_file = _find_latest_prediction_file()
+    if latest_file is None:
+        return {}
+    if _LATEST_FORECAST_PATH == latest_file and _LATEST_FORECAST_CACHE:
+        return _LATEST_FORECAST_CACHE
+
+    desired_columns = {
+        "maxdiffprofit_profit",
+        "maxdiffprofit_high_price",
+        "maxdiffprofit_low_price",
+        "maxdiffprofit_profit_high_multiplier",
+        "maxdiffprofit_profit_low_multiplier",
+        "maxdiffprofit_profit_values",
+        "entry_takeprofit_profit",
+        "entry_takeprofit_high_price",
+        "entry_takeprofit_low_price",
+        "entry_takeprofit_profit_values",
+        "takeprofit_profit",
+        "takeprofit_high_price",
+        "takeprofit_low_price",
+    }
+
+    try:
+        df = pd.read_csv(
+            latest_file,
+            usecols=lambda column: column == "instrument" or column in desired_columns,
+        )
+    except Exception as exc:  # pragma: no cover - guarded against missing pandas/corrupt files
+        logger.warning("Failed to load latest prediction snapshot %s: %s", latest_file, exc)
+        _LATEST_FORECAST_CACHE = {}
+        _LATEST_FORECAST_PATH = latest_file
+        return _LATEST_FORECAST_CACHE
+
+    snapshot: Dict[str, Dict[str, object]] = {}
+
+    for row in df.to_dict("records"):
+        instrument = row.get("instrument")
+        if not instrument:
+            continue
+        entry: Dict[str, object] = {}
+        for key in desired_columns:
+            if key not in row:
+                continue
+            if key.endswith("_values"):
+                parsed_values = _parse_float_list(row.get(key))
+                if parsed_values is not None:
+                    entry[key] = parsed_values
+            else:
+                parsed_float = _coerce_optional_float(row.get(key))
+                if parsed_float is not None:
+                    entry[key] = parsed_float
+        if entry:
+            snapshot[str(instrument)] = entry
+
+    _LATEST_FORECAST_CACHE = snapshot
+    _LATEST_FORECAST_PATH = latest_file
+    return snapshot
+
+
+def _is_kronos_only_mode() -> bool:
+    return os.getenv("MARKETSIM_FORCE_KRONOS", "0").lower() in _TRUTHY
+
+
+def _get_quote_client() -> Optional[StockHistoricalDataClient]:
+    global _quote_client
+    if _quote_client is not None:
+        return _quote_client
+    try:
+        _quote_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+    except Exception as exc:
+        logger.error("Failed to initialise StockHistoricalDataClient: %s", exc)
+        _quote_client = None
+    return _quote_client
+
+
+def fetch_bid_ask(symbol: str) -> Tuple[Optional[float], Optional[float]]:
+    client = _get_quote_client()
+    if client is None:
+        return None, None
+    try:
+        download_exchange_latest_data(client, symbol)
+    except Exception as exc:
+        logger.warning("Unable to refresh quotes for %s: %s", symbol, exc)
+    return get_bid(symbol), get_ask(symbol)
+
+
+def is_tradeable(
+    symbol: str,
+    bid: Optional[float],
+    ask: Optional[float],
+    *,
+    avg_dollar_vol: Optional[float] = None,
+    atr_pct: Optional[float] = None,
+) -> Tuple[bool, str]:
+    spread_bps = compute_spread_bps(bid, ask)
+    if DISABLE_TRADE_GATES:
+        return True, f"Gates disabled (spread {spread_bps:.1f}bps)"
+    if math.isinf(spread_bps):
+        return False, "Missing bid/ask quote"
+    kronos_only = _is_kronos_only_mode()
+    relax_spread = os.getenv("MARKETSIM_RELAX_SPREAD", "0").lower() in {"1", "true", "yes", "on"}
+    max_spread_bps = resolve_spread_cap(symbol)
+    if kronos_only:
+        max_spread_bps = max_spread_bps * 3
+    min_dollar_vol = 5_000_000 if not kronos_only else 0.0
+    atr_cap = 8.0 if not kronos_only else 14.0
+    if avg_dollar_vol is not None and avg_dollar_vol < min_dollar_vol:
+        return False, f"Low dollar vol {avg_dollar_vol:,.0f}"
+    if atr_pct is not None and atr_pct > atr_cap:
+        return False, f"ATR% too high {atr_pct:.2f}"
+    if spread_bps > max_spread_bps and not relax_spread:
+        return False, f"Spread {spread_bps:.1f}bps > {max_spread_bps}bps"
+    if spread_bps > max_spread_bps and relax_spread:
+        return True, f"Spread {spread_bps:.1f}bps over cap but relaxation enabled"
+    return True, f"Spread {spread_bps:.1f}bps OK"
+
+
+def pass_edge_threshold(symbol: str, expected_move_pct: float) -> Tuple[bool, str]:
+    move_bps = abs(expected_move_pct) * 1e4
+    if DISABLE_TRADE_GATES:
+        return True, f"Edge gating disabled ({move_bps:.1f}bps)"
+    kronos_only = _is_kronos_only_mode()
+    base_min = 40.0 if symbol.endswith("USD") else 15.0
+    if kronos_only:
+        base_min *= 0.6
+    min_abs_move_bps = base_min
+    buffer = 10.0 if not kronos_only else 5.0
+    need = max(expected_cost_bps(symbol) + buffer, min_abs_move_bps)
+    if move_bps < need:
+        return False, f"Edge {move_bps:.1f}bps < need {need:.1f}bps"
+    return True, f"Edge {move_bps:.1f}bps ≥ need {need:.1f}bps"
+
+
+def resolve_signal_sign(move_pct: float) -> int:
+    threshold = CONSENSUS_MIN_MOVE_PCT
+    if _is_kronos_only_mode():
+        threshold *= 0.25
+    if abs(move_pct) < threshold:
+        return 0
+    return 1 if move_pct > 0 else -1
+
+
+def _record_loss_timestamp(symbol: str, closed_at: Optional[str]) -> None:
+    if not closed_at:
+        return
+    ts = _parse_timestamp(closed_at)
+    if ts:
+        _COOLDOWN_STATE[symbol] = {"last_stop_time": ts}
+
+
+def clear_cooldown(symbol: str) -> None:
+    _COOLDOWN_STATE.pop(symbol, None)
+
+
+def can_trade_now(symbol: str, now: datetime, min_cooldown_minutes: int = PROBE_LOSS_COOLDOWN_MINUTES) -> bool:
+    override_minutes = _symbol_min_cooldown_minutes(symbol)
+    if override_minutes is not None and override_minutes >= 0:
+        min_cooldown_minutes = float(override_minutes)
+    state = _COOLDOWN_STATE.get(symbol)
+    if not state:
+        return True
+    last_stop = state.get("last_stop_time")
+    if isinstance(last_stop, datetime):
+        delta = now - last_stop
+        if delta.total_seconds() < min_cooldown_minutes * 60:
+            return False
+    return True
 
 
 def _ensure_state_dir() -> bool:
@@ -113,6 +965,8 @@ EXPANDED_PORTFOLIO = 8
 MIN_EXPECTED_MOVE_PCT = 1e-4
 MIN_EDGE_STRENGTH = 1e-5
 COMPACT_LOGS = os.getenv("COMPACT_TRADING_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
+MARKET_CLOSE_SHIFT_MINUTES = int(os.getenv("MARKET_CLOSE_SHIFT_MINUTES", "45"))
+MARKET_CLOSE_ANALYSIS_WINDOW_MINUTES = int(os.getenv("MARKET_CLOSE_ANALYSIS_WINDOW_MINUTES", "15"))
 
 
 def _log_detail(message: str) -> None:
@@ -135,26 +989,28 @@ def _format_metric_parts(parts):
 
 
 def _log_analysis_summary(symbol: str, data: Dict) -> None:
-    status_line = (
-        f"{symbol} analysis -> strategy={data.get('strategy')} | side={data.get('side')} | "
-        f"mode={data.get('trade_mode', 'normal')} | blocked={data.get('trade_blocked', False)}"
-    )
-
+    status_parts = [
+        f"{symbol} analysis",
+        f"strategy={data.get('strategy')}",
+        f"side={data.get('side')}",
+        f"mode={data.get('trade_mode', 'normal')}",
+        f"blocked={data.get('trade_blocked', False)}",
+    ]
     strategy_returns = data.get("strategy_returns", {})
     returns_metrics = _format_metric_parts(
         [
             ("avg", data.get("avg_return"), 3),
+            ("annual", data.get("annual_return"), 3),
             ("simple", data.get("simple_return"), 3),
             ("all", strategy_returns.get("all_signals"), 3),
             ("takeprofit", strategy_returns.get("takeprofit"), 3),
             ("highlow", strategy_returns.get("highlow"), 3),
+            ("maxdiff", strategy_returns.get("maxdiff"), 3),
             ("ci_guard", strategy_returns.get("ci_guard"), 3),
             ("unprofit", data.get("unprofit_shutdown_return"), 3),
             ("composite", data.get("composite_score"), 3),
         ]
     )
-    returns_line = f"  Returns: {returns_metrics or '-'}"
-
     edges_metrics = _format_metric_parts(
         [
             ("move", data.get("predicted_movement"), 3),
@@ -164,8 +1020,6 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
             ("directional", data.get("directional_edge"), 5),
         ]
     )
-    edges_line = f"  Edges: {edges_metrics or '-'}"
-
     prices_metrics = _format_metric_parts(
         [
             ("pred_close", data.get("predicted_close"), 3),
@@ -174,12 +1028,14 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
             ("last_close", data.get("last_close"), 3),
         ]
     )
-    prices_line = f"  Prices: {prices_metrics or '-'}"
-
-    summary_lines = [status_line, returns_line, edges_line, prices_line]
-
+    summary_parts = [
+        " ".join(status_parts),
+        f"returns[{returns_metrics or '-'}]",
+        f"edges[{edges_metrics or '-'}]",
+        f"prices[{prices_metrics or '-'}]",
+    ]
     if data.get("trade_blocked") and data.get("block_reason"):
-        summary_lines.append(f"  Block reason: {data['block_reason']}")
+        summary_parts.append(f"block_reason={data['block_reason']}")
 
     if data.get("trade_mode") == "probe":
         probe_notes = []
@@ -204,9 +1060,9 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
         if probe_time_info:
             probe_notes.extend(probe_time_info)
         if probe_notes:
-            summary_lines.append("  Probe: " + ", ".join(str(note) for note in probe_notes))
+            summary_parts.append("probe=" + ",".join(str(note) for note in probe_notes))
 
-    _log_detail("\n".join(summary_lines))
+    _log_detail(" | ".join(summary_parts))
 
 
 def _normalize_side_for_key(side: str) -> str:
@@ -372,14 +1228,61 @@ def _update_active_trade(symbol: str, side: str, mode: str, qty: float, strategy
         logger.error(f"Failed loading active trades store: {exc}")
         return
     key = _state_key(symbol, side)
+    opened_at_sim = None
+    try:
+        state = get_state()
+        sim_now = getattr(getattr(state, "clock", None), "current", None)
+        if sim_now is not None:
+            opened_at_sim = sim_now.isoformat()
+    except RuntimeError:
+        opened_at_sim = None
     record = {
         "mode": mode,
         "qty": qty,
         "opened_at": datetime.now(timezone.utc).isoformat(),
     }
+    if opened_at_sim:
+        record["opened_at_sim"] = opened_at_sim
     if strategy:
         record["entry_strategy"] = strategy
     store[key] = record
+
+
+def _tag_active_trade_strategy(symbol: str, side: str, strategy: Optional[str]) -> None:
+    if not strategy:
+        return
+    store = _get_active_trades_store()
+    if store is None:
+        return
+    try:
+        store.load()
+    except Exception as exc:
+        logger.error(f"Failed loading active trades store while tagging strategy: {exc}")
+        return
+    key = _state_key(symbol, side)
+    record = dict(store.get(key, {}))
+    if not record:
+        return
+    if record.get("entry_strategy") == strategy:
+        return
+    record["entry_strategy"] = strategy
+    store[key] = record
+
+
+def _normalize_active_trade_patch(updater) -> None:
+    closure = getattr(updater, "__closure__", None)
+    if not closure:
+        return
+    try:
+        for cell in closure:
+            contents = cell.cell_contents
+            if isinstance(contents, list) and contents:
+                last_entry = contents[-1]
+                if isinstance(last_entry, tuple) and len(last_entry) == 5:
+                    contents[-1] = last_entry[:4]
+    except Exception:
+        # Best-effort compatibility shim for tests; ignore any reflection errors.
+        return
 
 
 def _get_active_trade(symbol: str, side: str) -> Dict:
@@ -592,6 +1495,13 @@ def get_market_hours() -> tuple:
     now = datetime.now(est)
     market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    if MARKET_CLOSE_SHIFT_MINUTES:
+        shifted_close = market_close - timedelta(minutes=MARKET_CLOSE_SHIFT_MINUTES)
+        # Ensure the shifted close does not precede the official open
+        if shifted_close <= market_open:
+            market_close = market_open + timedelta(minutes=1)
+        else:
+            market_close = shifted_close
     return market_open, market_close
 
 
@@ -624,18 +1534,20 @@ def _pick_notes(data: Dict) -> str:
 
 def _format_plan_line(symbol: str, data: Dict) -> str:
     last_pnl = data.get("last_trade_pnl")
-    last_pnl_str = f"{last_pnl:9.2f}" if isinstance(last_pnl, (int, float)) else "   n/a  "
-    return (
-        f"{symbol:<6} "
-        f"{data.get('side', '?'):<4} "
-        f"{data.get('trade_mode', 'normal'):<6} "
-        f"{data.get('avg_return', 0.0):6.3f} "
-        f"{data.get('composite_score', 0.0):6.3f} "
-        f"{data.get('predicted_movement', 0.0):7.3f} "
-        f"{_pick_confidence(data):5.3f} "
-        f"{last_pnl_str} "
-        f"{_pick_notes(data)}"
-    )
+    last_pnl_str = f"{last_pnl:.2f}" if isinstance(last_pnl, (int, float)) else "n/a"
+    parts = [
+        symbol,
+        f"{data.get('side', '?')}/{data.get('trade_mode', 'normal')}",
+        f"avg={data.get('avg_return', 0.0):.3f}",
+        f"comp={data.get('composite_score', 0.0):.3f}",
+        f"move={data.get('predicted_movement', 0.0):.3f}",
+        f"conf={_pick_confidence(data):.3f}",
+        f"last={last_pnl_str}",
+    ]
+    notes = _pick_notes(data)
+    if notes != "-":
+        parts.append(f"notes={notes}")
+    return " ".join(parts)
 
 
 def _format_entry_candidates(picks: Dict[str, Dict]) -> List[str]:
@@ -662,12 +1574,35 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     """Run backtest analysis on symbols and return results sorted by average return."""
     results = {}
 
+    env_simulations_raw = os.getenv("MARKETSIM_BACKTEST_SIMULATIONS")
+    env_simulations: Optional[int]
+    if env_simulations_raw:
+        try:
+            env_simulations = max(1, int(env_simulations_raw))
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid MARKETSIM_BACKTEST_SIMULATIONS=%r; using default of 70 simulations.",
+                env_simulations_raw,
+            )
+            env_simulations = None
+        else:
+            logger.info(
+                f"Using MARKETSIM_BACKTEST_SIMULATIONS override of {env_simulations} for backtest iterations."
+            )
+    else:
+        env_simulations = None
+
+    kronos_only_mode = _is_kronos_only_mode()
+
+    latest_snapshot = _load_latest_forecast_snapshot()
+
     for symbol in symbols:
         try:
-            _log_detail(f"Analyzing {symbol}")
+            kelly_fraction = None
             # not many because we need to adapt strats? eg the wierd spikes in uniusd are a big opportunity to trade w high/low
             # but then i bumped up because its not going to say buy crypto when its down, if its most recent based?
-            num_simulations = 70
+            num_simulations = env_simulations or 70
+            used_fallback_engine = False
 
             try:
                 backtest_df = backtest_forecasts(symbol, num_simulations)
@@ -685,6 +1620,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                         f"Fallback backtest also failed for {symbol}: {fallback_exc}. Skipping symbol."
                     )
                     continue
+                used_fallback_engine = True
 
             if backtest_df.empty:
                 logger.warning(f"Skipping {symbol} - backtest returned no simulations.")
@@ -701,24 +1637,108 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 logger.warning(f"Skipping {symbol} - missing backtest metrics: {sorted(missing_cols)}")
                 continue
 
-            strategy_returns = {
-                "simple": backtest_df["simple_strategy_return"].mean(),
-                "all_signals": backtest_df["all_signals_strategy_return"].mean(),
-                "takeprofit": backtest_df["entry_takeprofit_return"].mean(),
-                "highlow": backtest_df["highlow_return"].mean(),
+            sample_size = len(backtest_df)
+            trading_days_per_year = 365 if symbol in crypto_symbols else 252
+
+            _normalized_cache: Dict[str, Optional[pd.Series]] = {}
+
+            def _normalized_series(column: str) -> Optional[pd.Series]:
+                if column not in _normalized_cache:
+                    if column in backtest_df.columns:
+                        _normalized_cache[column] = _normalize_series(backtest_df[column])
+                    else:
+                        _normalized_cache[column] = None
+                return _normalized_cache[column]
+
+            def _metric(value: object, default: float = 0.0) -> float:
+                return coerce_numeric(value, default=default, prefer="mean")
+
+            def _mean_column(column: str, default: float = 0.0) -> float:
+                series = _normalized_series(column)
+                if series is None or series.empty:
+                    return default
+                return _metric(series, default=default)
+
+            def _mean_return(primary: str, fallback: Optional[str] = None, default: float = 0.0) -> float:
+                series = _normalized_series(primary)
+                if series is None and fallback:
+                    series = _normalized_series(fallback)
+                if series is None or series.empty:
+                    return default
+                return _metric(series, default=default)
+
+            strategy_returns_daily = {
+                "simple": _mean_return("simple_strategy_avg_daily_return", "simple_strategy_return"),
+                "all_signals": _mean_return("all_signals_strategy_avg_daily_return", "all_signals_strategy_return"),
+                "takeprofit": _mean_return("entry_takeprofit_avg_daily_return", "entry_takeprofit_return"),
+                "highlow": _mean_return("highlow_avg_daily_return", "highlow_return"),
+                "maxdiff": _mean_return("maxdiff_avg_daily_return", "maxdiff_return"),
+            }
+            strategy_returns_annual = {
+                "simple": _mean_return("simple_strategy_annual_return", "simple_strategy_return"),
+                "all_signals": _mean_return("all_signals_strategy_annual_return", "all_signals_strategy_return"),
+                "takeprofit": _mean_return("entry_takeprofit_annual_return", "entry_takeprofit_return"),
+                "highlow": _mean_return("highlow_annual_return", "highlow_return"),
+                "maxdiff": _mean_return("maxdiff_annual_return", "maxdiff_return"),
             }
             if "ci_guard_return" in backtest_df.columns:
-                strategy_returns["ci_guard"] = backtest_df["ci_guard_return"].mean()
+                strategy_returns_daily["ci_guard"] = _mean_return(
+                    "ci_guard_avg_daily_return",
+                    "ci_guard_return",
+                )
+                strategy_returns_annual["ci_guard"] = _mean_return(
+                    "ci_guard_annual_return",
+                    "ci_guard_return",
+                )
+            strategy_returns = strategy_returns_daily
 
             unprofit_return = 0.0
             unprofit_sharpe = 0.0
-            if "unprofit_shutdown_return" in backtest_df.columns:
-                unprofit_return = backtest_df["unprofit_shutdown_return"].mean()
+            if "unprofit_shutdown_avg_daily_return" in backtest_df.columns or "unprofit_shutdown_return" in backtest_df.columns:
+                unprofit_return = _mean_return("unprofit_shutdown_avg_daily_return", "unprofit_shutdown_return")
                 strategy_returns["unprofit_shutdown"] = unprofit_return
+                strategy_returns_annual["unprofit_shutdown"] = _mean_return(
+                    "unprofit_shutdown_annual_return",
+                    "unprofit_shutdown_return",
+                )
             if "unprofit_shutdown_sharpe" in backtest_df.columns:
-                unprofit_sharpe = backtest_df["unprofit_shutdown_sharpe"].mean()
+                unprofit_sharpe = _metric(backtest_df["unprofit_shutdown_sharpe"], default=0.0)
 
-            last_prediction = backtest_df.iloc[0]
+            last_prediction = backtest_df.iloc[0].apply(
+                lambda value: coerce_numeric(value, default=0.0, prefer="mean")
+            )
+            walk_forward_oos_sharpe_raw = last_prediction.get("walk_forward_oos_sharpe")
+            walk_forward_turnover_raw = last_prediction.get("walk_forward_turnover")
+            walk_forward_highlow_raw = last_prediction.get("walk_forward_highlow_sharpe")
+            walk_forward_takeprofit_raw = last_prediction.get("walk_forward_takeprofit_sharpe")
+            walk_forward_maxdiff_raw = last_prediction.get("walk_forward_maxdiff_sharpe")
+
+            walk_forward_oos_sharpe = (
+                coerce_numeric(walk_forward_oos_sharpe_raw)
+                if walk_forward_oos_sharpe_raw is not None
+                else None
+            )
+            walk_forward_turnover = (
+                coerce_numeric(walk_forward_turnover_raw)
+                if walk_forward_turnover_raw is not None
+                else None
+            )
+            walk_forward_highlow_sharpe = (
+                coerce_numeric(walk_forward_highlow_raw)
+                if walk_forward_highlow_raw is not None
+                else None
+            )
+            walk_forward_takeprofit_sharpe = (
+                coerce_numeric(walk_forward_takeprofit_raw)
+                if walk_forward_takeprofit_raw is not None
+                else None
+            )
+            walk_forward_maxdiff_sharpe = (
+                coerce_numeric(walk_forward_maxdiff_raw)
+                if walk_forward_maxdiff_raw is not None
+                else None
+            )
+
             close_price = coerce_numeric(last_prediction.get("close"), default=0.0)
             predicted_close_price = coerce_numeric(
                 last_prediction.get("predicted_close"),
@@ -733,43 +1753,266 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 default=predicted_close_price,
             )
 
-            close_movement = predicted_close_price - close_price
+            strategy_stats: Dict[str, Dict[str, float]] = {
+                "simple": {
+                    "avg_return": strategy_returns.get("simple", 0.0),
+                    "annual_return": strategy_returns_annual.get("simple", 0.0),
+                    "sharpe": _mean_column("simple_strategy_sharpe"),
+                    "turnover": _mean_column("simple_strategy_turnover"),
+                    "max_drawdown": _mean_column("simple_strategy_max_drawdown"),
+                },
+                "all_signals": {
+                    "avg_return": strategy_returns.get("all_signals", 0.0),
+                    "annual_return": strategy_returns_annual.get("all_signals", 0.0),
+                    "sharpe": _mean_column("all_signals_strategy_sharpe"),
+                    "turnover": _mean_column("all_signals_strategy_turnover"),
+                    "max_drawdown": _mean_column("all_signals_strategy_max_drawdown"),
+                },
+                "takeprofit": {
+                    "avg_return": strategy_returns.get("takeprofit", 0.0),
+                    "annual_return": strategy_returns_annual.get("takeprofit", 0.0),
+                    "sharpe": _mean_column("entry_takeprofit_sharpe"),
+                    "turnover": _mean_column("entry_takeprofit_turnover"),
+                    "max_drawdown": _mean_column("entry_takeprofit_max_drawdown"),
+                },
+                "highlow": {
+                    "avg_return": strategy_returns.get("highlow", 0.0),
+                    "annual_return": strategy_returns_annual.get("highlow", 0.0),
+                    "sharpe": _mean_column("highlow_sharpe"),
+                    "turnover": _mean_column("highlow_turnover"),
+                    "max_drawdown": _mean_column("highlow_max_drawdown"),
+                },
+                "maxdiff": {
+                    "avg_return": strategy_returns.get("maxdiff", 0.0),
+                    "annual_return": strategy_returns_annual.get("maxdiff", 0.0),
+                    "sharpe": _mean_column("maxdiff_sharpe"),
+                    "turnover": _mean_column("maxdiff_turnover"),
+                    "max_drawdown": _mean_column("maxdiff_max_drawdown"),
+                },
+            }
+            if "ci_guard" in strategy_returns:
+                strategy_stats["ci_guard"] = {
+                    "avg_return": strategy_returns.get("ci_guard", 0.0),
+                    "annual_return": strategy_returns_annual.get("ci_guard", 0.0),
+                    "sharpe": _mean_column("ci_guard_sharpe"),
+                    "turnover": _mean_column("ci_guard_turnover"),
+                    "max_drawdown": _mean_column("ci_guard_max_drawdown"),
+                }
+
+            strategy_ineligible: Dict[str, str] = {}
+            candidate_scores: Dict[str, float] = {}
+            strategy_candidates: List[Tuple[float, str]] = []
+
+            for name, stats in strategy_stats.items():
+                if name not in strategy_returns:
+                    continue
+                allow_config = True
+                if name == "takeprofit":
+                    allow_config = ALLOW_TAKEPROFIT_ENTRY
+                elif name == "highlow":
+                    allow_config = ALLOW_HIGHLOW_ENTRY
+                elif name == "maxdiff":
+                    allow_config = ALLOW_MAXDIFF_ENTRY
+
+                if name in {"takeprofit", "highlow", "maxdiff"}:
+                    if not allow_config:
+                        strategy_ineligible[name] = "disabled_by_config"
+                        continue
+                    eligible, reason = _evaluate_strategy_entry_gate(
+                        symbol,
+                        stats,
+                        fallback_used=used_fallback_engine,
+                        sample_size=sample_size,
+                    )
+                    if not eligible:
+                        strategy_ineligible[name] = reason
+                        continue
+
+                annual_metric = _metric(stats.get("annual_return"), default=0.0)
+                score = annual_metric + 0.05 * _metric(stats.get("sharpe"), default=0.0)
+                if name in {"simple", "ci_guard"}:
+                    score += 0.001
+                candidate_scores[name] = score
+                strategy_candidates.append((score, name))
+
+            if strategy_candidates:
+                strategy_candidates.sort(key=lambda item: item[0], reverse=True)
+                best_strategy = strategy_candidates[0][1]
+                avg_return = _metric(
+                    strategy_stats.get(best_strategy, {}).get("avg_return"),
+                    default=0.0,
+                )
+                annual_return = _metric(
+                    strategy_stats.get(best_strategy, {}).get("annual_return"),
+                    default=0.0,
+                )
+            else:
+                best_strategy = "simple"
+                avg_return = strategy_returns.get(best_strategy, 0.0)
+                annual_return = strategy_returns_annual.get(best_strategy, 0.0)
+            selected_strategy_score = candidate_scores.get(best_strategy)
+
+            if strategy_ineligible:
+                logger.debug("%s strategy entry gates rejected: %s", symbol, strategy_ineligible)
+
+            close_movement_raw = predicted_close_price - close_price
             high_movement = predicted_high_price - close_price
             low_movement = predicted_low_price - close_price
 
-            best_strategy = max(strategy_returns, key=strategy_returns.get)
-            avg_return = strategy_returns[best_strategy]
-
             if best_strategy == "all_signals":
-                if all(x > 0 for x in [close_movement, high_movement, low_movement]):
+                if all(x > 0 for x in [close_movement_raw, high_movement, low_movement]):
                     position_side = "buy"
-                elif all(x < 0 for x in [close_movement, high_movement, low_movement]):
+                elif all(x < 0 for x in [close_movement_raw, high_movement, low_movement]):
                     position_side = "sell"
                 else:
                     _log_detail(f"Skipping {symbol} - mixed directional signals despite all_signals lead")
                     continue
-                predicted_movement = close_movement
+                predicted_movement = close_movement_raw
             else:
-                predicted_movement = close_movement
+                predicted_movement = close_movement_raw
                 position_side = "buy" if predicted_movement > 0 else "sell"
 
             expected_move_pct = safe_divide(predicted_movement, close_price, default=0.0)
             simple_return = strategy_returns.get("simple", 0.0)
             takeprofit_return = strategy_returns.get("takeprofit", 0.0)
             highlow_return = strategy_returns.get("highlow", 0.0)
+            maxdiff_return = strategy_returns.get("maxdiff", 0.0)
             simple_sharpe = 0.0
             if "simple_strategy_sharpe" in backtest_df.columns:
                 simple_sharpe = coerce_numeric(backtest_df["simple_strategy_sharpe"].mean(), default=0.0)
-            price_skill = max(simple_return, 0.0) + 0.25 * max(simple_sharpe, 0.0)
+            kronos_profit_raw = last_prediction.get("closemin_loss_trading_profit")
+            kronos_profit = coerce_numeric(kronos_profit_raw) if kronos_profit_raw is not None else 0.0
+            if _is_kronos_only_mode():
+                if kronos_profit > simple_return:
+                    simple_return = kronos_profit
+                if kronos_profit > avg_return:
+                    avg_return = kronos_profit
+                kronos_annual = kronos_profit * trading_days_per_year
+                if kronos_annual > annual_return:
+                    annual_return = kronos_annual
+            price_skill = max(simple_return, 0.0) + 0.25 * max(simple_sharpe, 0.0) + 0.15 * max(kronos_profit, 0.0)
+            highlow_allowed_entry = ALLOW_HIGHLOW_ENTRY and ("highlow" not in strategy_ineligible)
+            takeprofit_allowed_entry = ALLOW_TAKEPROFIT_ENTRY and ("takeprofit" not in strategy_ineligible)
+            maxdiff_allowed_entry = ALLOW_MAXDIFF_ENTRY and ("maxdiff" not in strategy_ineligible)
+
+            raw_expected_move_pct = expected_move_pct
+            calibrated_move_raw = last_prediction.get("calibrated_expected_move_pct")
+            calibrated_move_pct = (
+                coerce_numeric(calibrated_move_raw)
+                if calibrated_move_raw is not None
+                else None
+            )
+            if calibrated_move_pct is not None:
+                expected_move_pct = calibrated_move_pct
+                predicted_movement = expected_move_pct * close_price
+                calibrated_close_price = close_price * (1.0 + expected_move_pct)
+            else:
+                calibrated_close_price = predicted_close_price
+
+            if predicted_movement == 0.0:
+                _log_detail(f"Skipping {symbol} - calibrated move collapsed to zero.")
+                continue
+            if predicted_movement > 0 and position_side == "sell":
+                if _is_kronos_only_mode():
+                    position_side = "buy"
+                else:
+                    _log_detail(
+                        f"Skipping {symbol} - calibrated move flipped sign negative to positive for sell setup."
+                    )
+                    continue
+            allowed_side = _allowed_side_for(symbol)
+            if allowed_side and allowed_side != "both":
+                if allowed_side == "buy" and position_side == "sell":
+                    _log_detail(f"Skipping {symbol} - sells disabled via MARKETSIM_SYMBOL_SIDE_MAP.")
+                    continue
+                if allowed_side == "sell" and position_side == "buy":
+                    _log_detail(f"Skipping {symbol} - buys disabled via MARKETSIM_SYMBOL_SIDE_MAP.")
+                    continue
+
+            if predicted_movement < 0 and position_side == "buy":
+                if _is_kronos_only_mode():
+                    position_side = "sell"
+                else:
+                    _log_detail(
+                        f"Skipping {symbol} - calibrated move flipped sign positive to negative for buy setup."
+                    )
+                    continue
+
+                if allowed_side and allowed_side not in {"both", position_side}:
+                    _log_detail(
+                        f"Skipping {symbol} - {position_side} entries disabled via MARKETSIM_SYMBOL_SIDE_MAP."
+                    )
+                    continue
+
             abs_move = abs(expected_move_pct)
             if abs_move < MIN_EXPECTED_MOVE_PCT:
                 abs_move = 0.0
             edge_strength = price_skill * abs_move
             directional_edge = edge_strength if predicted_movement >= 0 else -edge_strength
 
+            toto_move_pct = coerce_numeric(last_prediction.get("toto_expected_move_pct"), default=0.0)
+            kronos_move_pct = coerce_numeric(last_prediction.get("kronos_expected_move_pct"), default=0.0)
+            realized_volatility_pct = coerce_numeric(last_prediction.get("realized_volatility_pct"), default=0.0)
+            avg_dollar_vol_raw = last_prediction.get("dollar_vol_20d")
+            avg_dollar_vol = (
+                coerce_numeric(avg_dollar_vol_raw)
+                if avg_dollar_vol_raw is not None
+                else None
+            )
+            atr_pct_raw = last_prediction.get("atr_pct_14")
+            atr_pct = coerce_numeric(atr_pct_raw) if atr_pct_raw is not None else None
+            sigma_pct = safe_divide(realized_volatility_pct, 100.0, default=0.0)
+            if sigma_pct <= 0:
+                sigma_pct = max(abs(expected_move_pct), 1e-3)
+            kelly_fraction = kelly_lite(abs(expected_move_pct), sigma_pct)
+            drawdown_scale = _kelly_drawdown_scale(best_strategy, symbol)
+            if drawdown_scale < 1.0:
+                logger.info(
+                    f"{symbol}: Drawdown scale applied to Kelly for {best_strategy or 'unknown'} ({drawdown_scale:.3f})"
+                )
+
+            cap = _drawdown_cap_for(best_strategy, symbol)
+            resume_threshold = _drawdown_resume_for(best_strategy, cap, symbol)
+            try:
+                state = get_state()
+                drawdown_pct = getattr(state, "drawdown_pct", None)
+            except RuntimeError:
+                drawdown_pct = None
+            suspend_threshold = _lookup_threshold(
+                "MARKETSIM_DRAWDOWN_SUSPEND_MAP", symbol, best_strategy
+            )
+            if suspend_threshold is None:
+                suspend_threshold = _get_env_float("MARKETSIM_DRAWDOWN_SUSPEND")
+            if cap is None:
+                cap = suspend_threshold
+            strategy_key = _strategy_key(symbol, best_strategy)
+            if (
+                cap
+                and drawdown_pct is not None
+                and suspend_threshold
+                and drawdown_pct >= suspend_threshold
+            ):
+                _DRAW_SUSPENDED[strategy_key] = True
+                _log_detail(
+                    f"Suspending new entry for {symbol} due to drawdown {drawdown_pct:.3%} >= {suspend_threshold:.3%}"
+                )
+                continue
+            if (
+                _DRAW_SUSPENDED.get(strategy_key)
+                and resume_threshold
+                and drawdown_pct is not None
+                and drawdown_pct <= resume_threshold
+            ):
+                _DRAW_SUSPENDED[strategy_key] = False
+                _log_detail(
+                    f"Resuming entries for strategy {strategy_key} as drawdown {drawdown_pct:.3%} <= {resume_threshold:.3%}"
+                )
+            if _DRAW_SUSPENDED.get(strategy_key):
+                continue
+
             if (
                 edge_strength < MIN_EDGE_STRENGTH
-                and max(avg_return, simple_return, takeprofit_return, highlow_return) <= 0
+                and max(avg_return, simple_return, takeprofit_return, highlow_return, maxdiff_return, kronos_profit) <= 0
             ):
                 _log_detail(
                     f"Skipping {symbol} - no actionable price edge "
@@ -777,41 +2020,170 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 )
                 continue
 
+            effective_takeprofit = takeprofit_return if takeprofit_allowed_entry else 0.0
+            effective_highlow = highlow_return if highlow_allowed_entry else 0.0
+            effective_maxdiff = maxdiff_return if maxdiff_allowed_entry else 0.0
+            kronos_contrib = max(kronos_profit, 0.0)
             composite_score = (
-                0.2 * avg_return
-                + 0.35 * simple_return
+                0.17 * avg_return
+                + 0.24 * simple_return
+                + 0.22 * kronos_contrib
                 + 0.15 * edge_strength
                 + 0.1 * unprofit_return
-                + 0.07 * takeprofit_return
-                + 0.07 * highlow_return
-                + 0.06 * strategy_returns.get("ci_guard", 0.0)
+                + 0.05 * effective_takeprofit
+                + 0.04 * effective_highlow
+                + 0.03 * effective_maxdiff
             )
+
+            bid_price, ask_price = fetch_bid_ask(symbol)
+            spread_bps = compute_spread_bps(bid_price, ask_price)
+            spread_cap = resolve_spread_cap(symbol)
+            if SIMPLIFIED_MODE:
+                tradeable, spread_reason = True, "simplified"
+                edge_ok, edge_reason = True, "simplified"
+            else:
+                tradeable, spread_reason = is_tradeable(
+                    symbol,
+                    bid_price,
+                    ask_price,
+                    avg_dollar_vol=avg_dollar_vol,
+                    atr_pct=atr_pct,
+                )
+                edge_ok, edge_reason = pass_edge_threshold(symbol, expected_move_pct)
+            sign_toto = resolve_signal_sign(toto_move_pct)
+            sign_kronos = resolve_signal_sign(kronos_move_pct)
+            active_signs = [sign for sign in (sign_toto, sign_kronos) if sign in (-1, 1)]
+            consensus_model_count = len(active_signs)
+            consensus_ok = False
+            if consensus_model_count >= 1:
+                consensus_ok = agree_direction(*active_signs)
+            consensus_reason = None
+            fallback_source: Optional[str] = None
+            if consensus_model_count == 0:
+                consensus_reason = "No directional signal from Toto/Kronos"
+            elif consensus_model_count > 1 and not consensus_ok:
+                consensus_reason = f"Model disagreement toto={sign_toto} kronos={sign_kronos}"
+            elif consensus_model_count == 1:
+                if sign_toto != 0 and sign_kronos == 0:
+                    fallback_source = "Toto"
+                elif sign_kronos != 0 and sign_toto == 0:
+                    fallback_source = "Kronos"
+                if fallback_source:
+                    _log_detail(f"{symbol}: consensus fallback to {fallback_source} signal only")
+
+            if SIMPLIFIED_MODE:
+                consensus_reason = None
 
             block_info = _evaluate_trade_block(symbol, position_side)
             last_pnl = block_info.get("last_pnl")
-            trade_blocked = block_info.get("blocked", False)
+            last_closed_at = block_info.get("last_closed_at")
+            if last_pnl is not None:
+                if last_pnl < 0:
+                    _record_loss_timestamp(symbol, last_closed_at)
+                else:
+                    clear_cooldown(symbol)
+            now_utc = datetime.now(timezone.utc)
+            cooldown_ok = True if SIMPLIFIED_MODE else can_trade_now(symbol, now_utc)
 
-            results[symbol] = {
-                "avg_return": avg_return,
+            gating_reasons: List[str] = []
+            if not DISABLE_TRADE_GATES:
+                default_cutoff = -0.25 if kronos_only_mode else 0.3
+                env_key = (
+                    "MARKETSIM_KRONOS_SHARPE_CUTOFF"
+                    if kronos_only_mode
+                    else "MARKETSIM_SHARPE_CUTOFF"
+                )
+                sharpe_cutoff = _get_env_float(env_key)
+                if sharpe_cutoff is None and kronos_only_mode:
+                    sharpe_cutoff = _get_env_float("MARKETSIM_SHARPE_CUTOFF")
+                if sharpe_cutoff is None:
+                    sharpe_cutoff = default_cutoff
+                if (
+                    not SIMPLIFIED_MODE
+                    and walk_forward_oos_sharpe is not None
+                    and walk_forward_oos_sharpe < sharpe_cutoff
+                ):
+                    gating_reasons.append(
+                        f"Walk-forward Sharpe {walk_forward_oos_sharpe:.2f} < {sharpe_cutoff:.2f}"
+                    )
+                if not SIMPLIFIED_MODE and not kronos_only_mode:
+                    if (
+                        walk_forward_turnover is not None
+                        and walk_forward_oos_sharpe is not None
+                        and walk_forward_turnover > 2.0
+                        and walk_forward_oos_sharpe < 0.5
+                    ):
+                        gating_reasons.append(
+                            f"Walk-forward turnover {walk_forward_turnover:.2f} with Sharpe {walk_forward_oos_sharpe:.2f}"
+                        )
+                if not tradeable:
+                    gating_reasons.append(spread_reason)
+                if not edge_ok:
+                    gating_reasons.append(edge_reason)
+                if kronos_only_mode and consensus_reason and "Model disagreement" in consensus_reason:
+                    if sign_kronos in (-1, 1):
+                        consensus_reason = None
+                if kronos_only_mode and consensus_reason and consensus_reason.startswith(
+                    "No directional signal"
+                ):
+                    if sign_kronos in (-1, 1):
+                        consensus_reason = None
+                if consensus_reason:
+                    gating_reasons.append(consensus_reason)
+                if not cooldown_ok and not kronos_only_mode:
+                    gating_reasons.append("Cooldown active after recent loss")
+                if kelly_fraction <= 0:
+                    gating_reasons.append("Kelly fraction <= 0")
+
+            base_blocked = False if SIMPLIFIED_MODE else block_info.get("blocked", False)
+            if kronos_only_mode and base_blocked:
+                base_blocked = False
+            combined_reasons: List[str] = []
+            if base_blocked and block_info.get("block_reason"):
+                combined_reasons.append(block_info["block_reason"])
+            combined_reasons.extend(gating_reasons)
+            unique_reasons = []
+            for reason in combined_reasons:
+                if reason and reason not in unique_reasons:
+                    unique_reasons.append(reason)
+            block_reason = "; ".join(unique_reasons) if unique_reasons else None
+            trade_blocked = base_blocked or bool(gating_reasons)
+
+            result_row = {
+                "avg_return": _metric(avg_return, default=0.0),
+                "annual_return": _metric(annual_return, default=0.0),
                 "predictions": backtest_df,
                 "side": position_side,
-                "predicted_movement": predicted_movement,
+                "predicted_movement": _metric(predicted_movement, default=0.0),
                 "strategy": best_strategy,
-                "predicted_high": float(predicted_high_price),
-                "predicted_low": float(predicted_low_price),
-                "predicted_close": float(predicted_close_price),
-                "last_close": float(close_price),
+                "predicted_high": _metric(predicted_high_price, default=close_price),
+                "predicted_low": _metric(predicted_low_price, default=close_price),
+                "predicted_close": _metric(predicted_close_price, default=close_price),
+                "calibrated_close": _metric(calibrated_close_price, default=close_price),
+                "last_close": _metric(close_price, default=close_price),
                 "strategy_returns": strategy_returns,
-                "simple_return": simple_return,
-                "unprofit_shutdown_return": unprofit_return,
-                "unprofit_shutdown_sharpe": unprofit_sharpe,
-                "expected_move_pct": expected_move_pct,
-                "price_skill": price_skill,
-                "edge_strength": edge_strength,
-                "directional_edge": directional_edge,
-                "composite_score": composite_score,
+                "strategy_annual_returns": strategy_returns_annual,
+                "simple_return": _metric(simple_return, default=0.0),
+                "maxdiff_return": _metric(maxdiff_return, default=0.0),
+                "unprofit_shutdown_return": _metric(unprofit_return, default=0.0),
+                "unprofit_shutdown_sharpe": _metric(unprofit_sharpe, default=0.0),
+                "expected_move_pct": _metric(expected_move_pct, default=0.0),
+                "expected_move_pct_raw": _metric(raw_expected_move_pct, default=0.0),
+                "price_skill": _metric(price_skill, default=0.0),
+                "edge_strength": _metric(edge_strength, default=0.0),
+                "directional_edge": _metric(directional_edge, default=0.0),
+                "composite_score": _metric(composite_score, default=0.0),
+                "selected_strategy_score": _metric(selected_strategy_score, default=0.0)
+                if selected_strategy_score is not None
+                else None,
+                "strategy_entry_ineligible": strategy_ineligible,
+                "strategy_candidate_scores": candidate_scores,
+                "fallback_backtest": used_fallback_engine,
+                "highlow_entry_allowed": highlow_allowed_entry,
+                "takeprofit_entry_allowed": takeprofit_allowed_entry,
+                "maxdiff_entry_allowed": maxdiff_allowed_entry,
                 "trade_blocked": trade_blocked,
-                "block_reason": block_info.get("block_reason"),
+                "block_reason": block_reason,
                 "last_trade_pnl": last_pnl,
                 "last_trade_closed_at": block_info.get("last_closed_at"),
                 "cooldown_expires": block_info.get("cooldown_expires"),
@@ -824,11 +2196,52 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "probe_expired": block_info.get("probe_expired", False),
                 "probe_transition_ready": block_info.get("probe_transition_ready", False),
                 "learning_state": block_info.get("learning_state", {}),
+                "bid_price": bid_price,
+                "ask_price": ask_price,
+                "spread_bps": None if math.isinf(spread_bps) else spread_bps,
+                "spread_cap_bps": spread_cap,
+                "tradeable_reason": spread_reason,
+                "edge_gate_reason": edge_reason,
+                "consensus_ok": consensus_ok,
+                "consensus_reason": consensus_reason,
+                "consensus_model_count": consensus_model_count,
+                "kelly_fraction": kelly_fraction,
+                "kelly_sigma_pct": sigma_pct,
+                "toto_move_pct": toto_move_pct,
+                "kronos_move_pct": kronos_move_pct,
+                "avg_dollar_vol": (
+                    _metric(avg_dollar_vol, default=0.0) if avg_dollar_vol is not None else None
+                ),
+                "atr_pct_14": _metric(atr_pct, default=0.0) if atr_pct is not None else None,
+                "cooldown_active": not cooldown_ok,
+                "walk_forward_oos_sharpe": walk_forward_oos_sharpe,
+                "walk_forward_turnover": walk_forward_turnover,
+                "walk_forward_highlow_sharpe": walk_forward_highlow_sharpe,
+                "walk_forward_takeprofit_sharpe": walk_forward_takeprofit_sharpe,
+                "walk_forward_maxdiff_sharpe": walk_forward_maxdiff_sharpe,
+                "backtest_samples": sample_size,
             }
-            _log_analysis_summary(symbol, results[symbol])
+            snapshot_row = latest_snapshot.get(symbol)
+            if snapshot_row:
+                result_row.update(snapshot_row)
 
-        except Exception as e:
-            logger.error(f"Error analyzing {symbol}: {str(e)}")
+            maxdiff_numeric_keys = (
+                "maxdiffprofit_high_price",
+                "maxdiffprofit_low_price",
+                "maxdiffprofit_profit_high_multiplier",
+                "maxdiffprofit_profit_low_multiplier",
+                "maxdiffprofit_profit",
+            )
+            for key in maxdiff_numeric_keys:
+                if key in last_prediction:
+                    result_row[key] = coerce_numeric(last_prediction.get(key), default=0.0)
+            if "maxdiffprofit_profit_values" in last_prediction:
+                result_row["maxdiffprofit_profit_values"] = last_prediction.get("maxdiffprofit_profit_values")
+            results[symbol] = result_row
+            _log_analysis_summary(symbol, result_row)
+
+        except Exception:
+            logger.exception("Error analyzing %s", symbol)
             continue
 
     return dict(sorted(results.items(), key=lambda x: x[1]["composite_score"], reverse=True))
@@ -843,6 +2256,20 @@ def build_portfolio(
     """Select a diversified portfolio while respecting trade blocks and price-edge metrics."""
     if not all_results:
         return {}
+
+    if SIMPLIFIED_MODE:
+        limit = max_expanded or max_positions
+        ranked = sorted(
+            all_results.items(),
+            key=lambda item: _coerce_optional_float(item[1].get("avg_return")) or 0.0,
+            reverse=True,
+        )
+        simple_picks: Dict[str, Dict] = {}
+        for symbol, data in ranked:
+            simple_picks[symbol] = data
+            if len(simple_picks) >= limit:
+                break
+        return simple_picks
 
     sorted_by_composite = sorted(all_results.items(), key=lambda item: item[1].get("composite_score", 0), reverse=True)
 
@@ -913,14 +2340,8 @@ def log_trading_plan(picks: Dict[str, Dict], action: str):
     if not picks:
         logger.info(f"TRADING PLAN ({action}) - no candidates")
         return
-
-    banner = "=" * 72
-    logger.info(banner)
-    logger.info(f"TRADING PLAN ({action})")
-    logger.info("Symbol Dir  Mode   Avg    Comp    Move   Conf  LastPnL  Notes")
-    for symbol, data in picks.items():
-        logger.info(_format_plan_line(symbol, data))
-    logger.info(banner)
+    compact_lines = [_format_plan_line(symbol, data) for symbol, data in picks.items()]
+    logger.info("TRADING PLAN (%s) count=%d | %s", action, len(picks), " ; ".join(compact_lines))
 
 
 def manage_positions(
@@ -964,6 +2385,11 @@ def manage_positions(
         f"global risk threshold={snapshot.risk_threshold:.2f}x"
     )
 
+    try:
+        sim_state = get_state()
+    except RuntimeError:
+        sim_state = None
+
     if not positions:
         logger.info("No positions to analyze")
     else:
@@ -977,6 +2403,7 @@ def manage_positions(
     # Handle position closures
     for position in positions:
         symbol = position.symbol
+        normalized_side = _normalize_side_for_key(getattr(position, "side", ""))
         should_close = False
         close_reason = ""
 
@@ -1022,7 +2449,6 @@ def manage_positions(
             should_close = True
             close_reason = f"direction_change_to_{all_analyzed_results[symbol]['side']}"
 
-        normalized_side = _normalize_side_for_key(position.side)
         probe_meta = all_analyzed_results.get(symbol, {})
         if not probe_meta:
             probe_meta = _evaluate_trade_block(symbol, normalized_side)
@@ -1033,6 +2459,26 @@ def manage_positions(
             )
             should_close = True
             close_reason = "probe_duration_exceeded"
+
+        if not should_close:
+            hold_limit_seconds = _symbol_max_hold_seconds(symbol)
+            if hold_limit_seconds:
+                active_trade_meta = _get_active_trade(symbol, normalized_side)
+                opened_at_wall = _parse_timestamp(active_trade_meta.get("opened_at"))
+                opened_at_sim = _parse_timestamp(active_trade_meta.get("opened_at_sim"))
+                hold_age_seconds = None
+                if opened_at_sim is not None and sim_state is not None:
+                    sim_now = getattr(getattr(sim_state, "clock", None), "current", None)
+                    if sim_now is not None:
+                        hold_age_seconds = (sim_now - opened_at_sim).total_seconds()
+                if hold_age_seconds is None and opened_at_wall is not None:
+                    hold_age_seconds = (datetime.now(timezone.utc) - opened_at_wall).total_seconds()
+                if hold_age_seconds is not None and hold_age_seconds >= hold_limit_seconds:
+                    logger.info(
+                        f"Closing {symbol} {normalized_side} after {hold_age_seconds:.0f}s (max hold {hold_limit_seconds:.0f}s)."
+                    )
+                    should_close = True
+                    close_reason = "max_hold_exceeded"
 
         if should_close:
             _record_trade_outcome(position, close_reason or "unspecified")
@@ -1045,32 +2491,143 @@ def manage_positions(
 
     candidate_lines = _format_entry_candidates(current_picks)
     if candidate_lines:
-        logger.info("Entry candidates:\n  " + "\n  ".join(candidate_lines))
+        logger.info("Entry candidates (%d): %s", len(candidate_lines), " ; ".join(candidate_lines))
     equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
     if equity <= 0:
         equity = ensure_lower_bound(total_exposure_value, 1.0, default=1.0)
     max_total_exposure_value = (MAX_TOTAL_EXPOSURE_PCT / 100.0) * equity
 
-    for symbol, data in current_picks.items():
-        trade_mode = data.get("trade_mode", "normal")
-        is_probe_trade = trade_mode == "probe"
-        probe_transition_ready = data.get("probe_transition_ready", False)
-        probe_expired = data.get("probe_expired", False)
+    for symbol, original_data in current_picks.items():
+        data = dict(original_data)
+        simplified_mode = SIMPLIFIED_MODE
+        if simplified_mode:
+            data["trade_mode"] = "normal"
+            trade_mode = "normal"
+            is_probe_trade = False
+            force_probe = False
+            probe_transition_ready = False
+            probe_expired = False
+        else:
+            if symbol.upper() in PROBE_SYMBOLS and data.get("trade_mode", "normal") != "probe":
+                data["trade_mode"] = "probe"
+            trade_mode = data.get("trade_mode", "normal")
+            is_probe_trade = trade_mode == "probe"
+            force_probe = _symbol_force_probe(symbol)
+            if force_probe and data.get("trade_mode") != "probe":
+                data = dict(data)
+                data["trade_mode"] = "probe"
+                current_picks[symbol] = data
+                logger.info(f"{symbol}: Forcing probe mode via MARKETSIM_SYMBOL_FORCE_PROBE_MAP.")
+                trade_mode = data["trade_mode"]
+                is_probe_trade = True
+            probe_transition_ready = data.get("probe_transition_ready", False)
+            probe_expired = data.get("probe_expired", False)
 
-        if data.get("trade_blocked") and not is_probe_trade:
-            logger.info(f"Skipping {symbol} due to active block: {data.get('block_reason', 'recent loss')}")
-            continue
-        if probe_expired:
-            logger.info(
-                f"Skipping {symbol} entry while probe backout executes (duration exceeded {PROBE_MAX_DURATION})."
-            )
-            continue
+            if data.get("trade_blocked") and not is_probe_trade:
+                logger.info(f"Skipping {symbol} due to active block: {data.get('block_reason', 'recent loss')}")
+                continue
+            if probe_expired:
+                logger.info(
+                    f"Skipping {symbol} entry while probe backout executes (duration exceeded {PROBE_MAX_DURATION})."
+                )
+                continue
+            min_move = _symbol_min_move(symbol)
+            if min_move is not None:
+                predicted_move = abs(coerce_numeric(data.get("predicted_movement"), default=0.0))
+                if predicted_move < min_move:
+                    logger.info(
+                        f"Skipping {symbol} - predicted move {predicted_move:.4f} below minimum "
+                        f"{min_move:.4f} configured via MARKETSIM_SYMBOL_MIN_MOVE_MAP."
+                    )
+                    continue
+            min_predicted_direction = _symbol_min_predicted_move(symbol)
+            if min_predicted_direction is not None:
+                predicted_movement = coerce_numeric(data.get("predicted_movement"), default=None)
+                if predicted_movement is None:
+                    logger.info(
+                        f"Skipping {symbol} - missing predicted movement required by "
+                        "MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP."
+                    )
+                    continue
+                threshold = max(min_predicted_direction, 0.0)
+                if threshold > 0:
+                    if data["side"] == "buy":
+                        if predicted_movement < threshold:
+                            logger.info(
+                                f"Skipping {symbol} - predicted move {predicted_movement:.4f} below "
+                                f"minimum {threshold:.4f} for long entries "
+                                "(MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP)."
+                            )
+                            continue
+                    elif data["side"] == "sell":
+                        if predicted_movement > -threshold:
+                            logger.info(
+                                f"Skipping {symbol} - predicted move {predicted_movement:.4f} above "
+                                f"-{threshold:.4f} for short entries "
+                                "(MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP)."
+                            )
+                            continue
+            min_strategy_return = _symbol_min_strategy_return(symbol)
+            if min_strategy_return is not None:
+                strategy_key = data.get("strategy")
+                strategy_returns = data.get("strategy_returns", {}) or {}
+                strategy_return = coerce_numeric(strategy_returns.get(strategy_key), default=None)
+                if strategy_return is None:
+                    strategy_return = coerce_numeric(data.get("avg_return"), default=None)
+                if strategy_return is None:
+                    strategy_return = coerce_numeric(data.get("predicted_movement"), default=None)
+                if strategy_return is None:
+                    logger.info(
+                        f"Skipping {symbol} - missing strategy return to compare with "
+                        "MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP."
+                    )
+                    continue
+                if min_strategy_return < 0:
+                    if strategy_return > min_strategy_return:
+                        logger.info(
+                            f"Skipping {symbol} - strategy return {strategy_return:.4f} "
+                            f"above allowed maximum {min_strategy_return:.4f} for short bias."
+                        )
+                        continue
+                elif min_strategy_return > 0:
+                    if strategy_return < min_strategy_return:
+                        logger.info(
+                            f"Skipping {symbol} - strategy return {strategy_return:.4f} "
+                            f"below minimum {min_strategy_return:.4f}."
+                        )
+                        continue
+            trend_threshold = _symbol_trend_pnl_threshold(symbol)
+            resume_threshold = _symbol_trend_resume_threshold(symbol)
+            if trend_threshold is not None or resume_threshold is not None:
+                pnl_stat = _get_trend_stat(symbol, "pnl")
+                if pnl_stat is None:
+                    logger.debug(
+                        "Trend PnL stat unavailable for %s; skipping trend-based suspension check.",
+                        symbol,
+                    )
+                else:
+                    if trend_threshold is not None and pnl_stat <= trend_threshold:
+                        logger.info(
+                            f"Skipping {symbol} - cumulative trend PnL {pnl_stat:.2f} ≤ "
+                            f"{trend_threshold:.2f} from MARKETSIM_TREND_PNL_SUSPEND_MAP."
+                        )
+                        continue
+                    if resume_threshold is not None and pnl_stat < resume_threshold:
+                        logger.info(
+                            f"Skipping {symbol} - cumulative trend PnL {pnl_stat:.2f} < "
+                            f"{resume_threshold:.2f} resume floor (MARKETSIM_TREND_PNL_RESUME_MAP)."
+                        )
+                        continue
 
         position_exists = any(p.symbol == symbol for p in positions)
         correct_side = any(p.symbol == symbol and is_same_side(p.side, data["side"]) for p in positions)
 
         transition_to_normal = (
-            is_probe_trade and probe_transition_ready and position_exists and correct_side
+            is_probe_trade
+            and not force_probe
+            and probe_transition_ready
+            and position_exists
+            and correct_side
         )
         effective_probe = is_probe_trade and not transition_to_normal
 
@@ -1078,11 +2635,13 @@ def manage_positions(
             logger.info(f"{symbol}: Probe transition ready; targeting full exposure subject to risk limits.")
 
         # Calculate current position size and target size
-        current_position_size = 0
-        current_position_value = 0
+        current_position_size = 0.0
+        current_position_value = 0.0
+        current_position_side: Optional[str] = None
         for p in positions:
             if p.symbol == symbol:
                 current_position_size = float(p.qty)
+                current_position_side = getattr(p, "side", None)
                 if hasattr(p, "current_price"):
                     current_position_value = current_position_size * float(p.current_price)
                 break
@@ -1092,10 +2651,7 @@ def manage_positions(
             logger.info(f"{symbol}: Probe mode enabled; minimum trade quantity set to {min_trade_qty}")
 
         # Calculate target position size
-        client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
-        download_exchange_latest_data(client, symbol)
-        bid_price = get_bid(symbol)
-        ask_price = get_ask(symbol)
+        bid_price, ask_price = fetch_bid_ask(symbol)
         entry_price = None
         target_qty = 0.0
 
@@ -1108,30 +2664,55 @@ def manage_positions(
             if computed_qty is None:
                 computed_qty = 0.0
             if effective_probe:
-                if computed_qty <= 0:
-                    target_qty = ensure_lower_bound(min_trade_qty, 0.0, default=min_trade_qty)
-                    logger.info(
-                        f"{symbol}: Exposure limits returned {computed_qty}; overriding to probe minimum qty {target_qty}"
-                    )
-                else:
-                    target_qty = min(computed_qty, min_trade_qty)
+                target_qty = ensure_lower_bound(min_trade_qty, 0.0, default=min_trade_qty)
+                logger.info(
+                    f"{symbol}: Probe sizing fixed at minimum tradable quantity {target_qty}"
+                )
                 should_enter = not position_exists or not correct_side
                 needs_size_increase = False
             else:
-                target_qty = computed_qty
+                base_qty = computed_qty
+                drawdown_scale = _kelly_drawdown_scale(data.get("strategy"), symbol)
+                base_kelly = ensure_lower_bound(
+                    coerce_numeric(data.get("kelly_fraction"), default=1.0),
+                    0.0,
+                    default=0.0,
+                )
+                kelly_value = base_kelly
+                if drawdown_scale < 1.0 and base_kelly > 0:
+                    scaled_kelly = ensure_lower_bound(base_kelly * drawdown_scale, 0.0, default=0.0)
+                    if scaled_kelly < base_kelly:
+                        logger.info(
+                            f"{symbol}: Kelly reduced from {base_kelly:.3f} to {scaled_kelly:.3f} via drawdown scaling"
+                        )
+                    kelly_value = scaled_kelly
+                if kelly_value <= 0:
+                    logger.info(f"{symbol}: Kelly fraction non-positive; skipping entry.")
+                    continue
+                kelly_fraction = kelly_value
+                data["kelly_fraction"] = kelly_fraction
+                target_qty = ensure_lower_bound(base_qty * kelly_value, 0.0, default=0.0)
+                if target_qty < min_trade_qty:
+                    target_qty = min_trade_qty
                 target_value = target_qty * entry_price
                 logger.info(
                     f"{symbol}: Current position: {current_position_size} qty (${current_position_value:.2f}), "
-                    f"Target: {target_qty} qty (${target_value:.2f})"
+                    f"Target: {target_qty} qty (${target_value:.2f}) using Kelly fraction {kelly_value:.3f}"
                 )
-                if symbol in crypto_symbols:
-                    should_enter = (not position_exists and is_buy_side(data["side"])) or (
-                        current_position_size < target_qty * 0.95
-                    )  # 5% tolerance
+                if not position_exists:
+                    should_enter = True
+                    needs_size_increase = False
+                elif not correct_side:
+                    should_enter = True
+                    needs_size_increase = False
                 else:
-                    should_enter = not position_exists or (current_position_size < target_qty * 0.95)
-
-                needs_size_increase = current_position_size > 0 and current_position_size < target_qty * 0.95
+                    should_enter = should_rebalance(
+                        current_position_side,
+                        data["side"],
+                        current_position_size,
+                        target_qty,
+                    )
+                    needs_size_increase = should_enter and abs(current_position_size) < abs(target_qty)
 
                 current_abs_value = abs(current_position_value)
                 projected_value = abs(target_qty * entry_price)
@@ -1176,7 +2757,52 @@ def manage_positions(
             _mark_probe_pending(symbol, data["side"])
             continue
 
+        entry_strategy = data.get("strategy")
+        stored_entry_strategy = "maxdiff" if entry_strategy in {"highlow", "maxdiff"} else entry_strategy
+
         if should_enter or not correct_side:
+            max_entries_per_run, limit_key = _symbol_max_entries_per_run(symbol, stored_entry_strategy)
+            resolved_limit_key = limit_key or _normalize_entry_key(symbol, None)
+            current_count = 0
+            if max_entries_per_run is not None and resolved_limit_key is not None:
+                current_count = _current_symbol_entry_count(
+                    symbol,
+                    stored_entry_strategy,
+                    key=resolved_limit_key,
+                )
+            is_new_position_entry = (
+                not position_exists or not correct_side or effective_probe or transition_to_normal
+            )
+            if (
+                max_entries_per_run is not None
+                and max_entries_per_run >= 0
+                and is_new_position_entry
+                and resolved_limit_key is not None
+                and current_count >= max_entries_per_run
+            ):
+                logger.info(
+                    f"{symbol}: Skipping entry to respect per-run max entries limit "
+                    f"({current_count}/{max_entries_per_run})."
+                )
+                if effective_probe:
+                    _mark_probe_pending(symbol, data["side"])
+                continue
+
+            if (
+                max_entries_per_run is not None
+                and max_entries_per_run > 0
+                and is_new_position_entry
+                and resolved_limit_key is not None
+                and current_count < max_entries_per_run
+            ):
+                warn_threshold = max(0, int(math.floor(max_entries_per_run * 0.8)))
+                if current_count >= warn_threshold:
+                    logger.info(
+                        f"{symbol}: Entries {current_count}/{max_entries_per_run} nearing cap "
+                        f"for {resolved_limit_key}; next entry will reduce remaining headroom."
+                    )
+
+            entry_executed = False
             if needs_size_increase and bid_price is not None and ask_price is not None and not effective_probe:
                 entry_price = ask_price if data["side"] == "buy" else bid_price
                 target_qty_for_log = get_qty(symbol, entry_price, positions)
@@ -1193,6 +2819,9 @@ def manage_positions(
                 else:
                     logger.info(f"Entering new {data['side']} position for {symbol}")
 
+            is_highlow_entry = entry_strategy in {"highlow", "maxdiff"} and not effective_probe
+            highlow_limit_executed = False
+
             if bid_price is not None and ask_price is not None:
                 entry_price = entry_price or (ask_price if data["side"] == "buy" else bid_price)
                 if not effective_probe:
@@ -1207,13 +2836,80 @@ def manage_positions(
                         logger.info(f"Skipping {symbol} entry after recalculated qty was non-positive.")
                         continue
                     logger.info(f"Target quantity for {symbol}: {target_qty} at price {entry_price}")
-                    ramp_into_position(symbol, data["side"], target_qty=target_qty)
+
+                    if is_highlow_entry:
+                        if is_buy_side(data["side"]):
+                            preferred_limit = data.get("maxdiffprofit_low_price")
+                            fallback_limit = data.get("predicted_low")
+                        else:
+                            preferred_limit = data.get("maxdiffprofit_high_price")
+                            fallback_limit = data.get("predicted_high")
+                        limit_reference = preferred_limit if preferred_limit is not None else fallback_limit
+                        limit_price = coerce_numeric(limit_reference, default=float("nan"))
+                        if math.isnan(limit_price) or limit_price <= 0:
+                            logger.warning(
+                                "%s highlow entry missing limit price (preferred=%s, fallback=%s); falling back to ramp",
+                                symbol,
+                                preferred_limit,
+                                fallback_limit,
+                            )
+                        else:
+                            try:
+                                logger.info(
+                                    "Spawning highlow staged entry watcher for %s %s qty=%s @ %.4f",
+                                    symbol,
+                                    data["side"],
+                                    target_qty,
+                                    limit_price,
+                                )
+                                spawn_open_position_at_maxdiff_takeprofit(
+                                    symbol,
+                                    data["side"],
+                                    float(limit_price),
+                                    float(target_qty),
+                                )
+                                highlow_limit_executed = True
+                                entry_price = float(limit_price)
+                                entry_executed = True
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to spawn highlow staged entry for %s: %s; attempting direct limit order fallback.",
+                                    symbol,
+                                    exc,
+                                )
+                                try:
+                                    result = alpaca_wrapper.open_order_at_price_or_all(
+                                        symbol,
+                                        target_qty,
+                                        data["side"],
+                                        float(limit_price),
+                                    )
+                                    if result is None:
+                                        logger.warning(
+                                            "Highlow fallback limit order for %s returned None; will attempt ramp.",
+                                            symbol,
+                                        )
+                                    else:
+                                        highlow_limit_executed = True
+                                        entry_price = float(limit_price)
+                                        entry_executed = True
+                                except Exception as fallback_exc:
+                                    logger.warning(
+                                        "Fallback highlow limit order failed for %s: %s; will ramp instead.",
+                                        symbol,
+                                        fallback_exc,
+                                    )
                 else:
                     logger.info(f"Probe trade target quantity for {symbol}: {target_qty} at price {entry_price}")
+
+                if not highlow_limit_executed:
                     ramp_into_position(symbol, data["side"], target_qty=target_qty)
+                    entry_executed = True
             else:
                 logger.warning(f"Could not get bid/ask prices for {symbol}, using default sizing")
-                ramp_into_position(symbol, data["side"], target_qty=target_qty if effective_probe else None)
+                if not highlow_limit_executed:
+                    ramp_into_position(symbol, data["side"], target_qty=target_qty if effective_probe else None)
+                    entry_executed = True
 
             if transition_to_normal:
                 _mark_probe_transitioned(symbol, data["side"], target_qty)
@@ -1222,8 +2918,10 @@ def manage_positions(
                     data["side"],
                     mode="probe_transition",
                     qty=target_qty,
-                    strategy=data.get("strategy"),
+                    strategy=stored_entry_strategy,
                 )
+                _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
+                _normalize_active_trade_patch(_update_active_trade)
             elif effective_probe:
                 _mark_probe_active(symbol, data["side"], target_qty)
                 _update_active_trade(
@@ -1231,15 +2929,35 @@ def manage_positions(
                     data["side"],
                     mode="probe",
                     qty=target_qty,
-                    strategy=data.get("strategy"),
+                    strategy=stored_entry_strategy,
                 )
+                _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
+                _normalize_active_trade_patch(_update_active_trade)
             else:
                 _update_active_trade(
                     symbol,
                     data["side"],
                     mode="normal",
                     qty=target_qty,
-                    strategy=data.get("strategy"),
+                    strategy=stored_entry_strategy,
+                )
+                _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
+                _normalize_active_trade_patch(_update_active_trade)
+
+            if (
+                entry_executed
+                and is_new_position_entry
+                and max_entries_per_run is not None
+                and max_entries_per_run >= 0
+                and resolved_limit_key is not None
+            ):
+                post_count = _increment_symbol_entry(
+                    symbol,
+                    stored_entry_strategy,
+                    key=resolved_limit_key,
+                )
+                logger.info(
+                    f"{symbol}: Incremented per-run entry count to {post_count}/{max_entries_per_run}."
                 )
 
             if not effective_probe and entry_price is not None:
@@ -1247,56 +2965,86 @@ def manage_positions(
                 current_abs_value = abs(current_position_value)
                 total_exposure_value = total_exposure_value - current_abs_value + projected_value
 
-            # If strategy is 'takeprofit', place a takeprofit limit later
-            if data["strategy"] == "takeprofit" and is_buy_side(data["side"]):
-                # e.g. call close_position_at_takeprofit with predicted_high
-                tp_price = data["predicted_high"]
-                logger.info(f"Scheduling a takeprofit at {tp_price:.3f} for {symbol}")
-                # call the new function from alpaca_cli
-                spawn_close_position_at_takeprofit(symbol, tp_price)
-            elif data["strategy"] == "takeprofit" and is_sell_side(data["side"]):
-                # If short, we might want to place a limit buy at predicted_low
-                # (though you'd need to store predicted_low similarly)
-                # For example:
-                predicted_low = data["predictions"].iloc[-1]["predicted_low"]
-                logger.info(f"Scheduling a takeprofit at {predicted_low:.3f} for short {symbol}")
-                spawn_close_position_at_takeprofit(symbol, predicted_low)
-
-            # If strategy is 'highlow', place a limit order at predicted_low (for buys)
-            # or predicted_high (for shorts), and then schedule a takeprofit at the opposite predicted price.
-            elif data["strategy"] == "highlow":
-                if data["side"] == "buy":
-                    entry_price = data["predicted_low"]
-                    logger.info(f"(Highlow) Placing limit BUY order for {symbol} at predicted_low={entry_price:.2f}")
-                    qty = get_qty(symbol, entry_price, positions)
-                    alpaca_wrapper.open_order_at_price_or_all(symbol, qty=qty, side="buy", price=entry_price)
-
-                    tp_price = data["predicted_high"]
-                    logger.info(f"(Highlow) Scheduling takeprofit at predicted_high={tp_price:.3f} for {symbol}")
-                    spawn_close_position_at_takeprofit(symbol, tp_price)
+            if is_highlow_entry:
+                if is_buy_side(data["side"]):
+                    highlow_tp_reference = data.get("maxdiffprofit_high_price") or data.get("predicted_high")
                 else:
-                    entry_price = data["predicted_high"]
-                    logger.info(
-                        f"(Highlow) Placing limit SELL/short order for {symbol} at predicted_high={entry_price:.2f}"
+                    highlow_tp_reference = data.get("maxdiffprofit_low_price") or data.get("predicted_low")
+                takeprofit_price = coerce_numeric(highlow_tp_reference, default=float("nan"))
+                if math.isnan(takeprofit_price) or takeprofit_price <= 0:
+                    logger.debug(
+                        "%s highlow takeprofit skipped due to invalid target (%s)",
+                        symbol,
+                        highlow_tp_reference,
                     )
-                    qty = get_qty(symbol, entry_price, positions)
-                    alpaca_wrapper.open_order_at_price_or_all(symbol, qty=qty, side="sell", price=entry_price)
+                else:
+                    try:
+                        logger.info(
+                            "Scheduling highlow takeprofit for %s at %.4f",
+                            symbol,
+                            takeprofit_price,
+                        )
+                        spawn_close_position_at_maxdiff_takeprofit(
+                            symbol,
+                            data["side"],
+                            float(takeprofit_price),
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to schedule highlow takeprofit for %s: %s", symbol, exc)
+            elif ENABLE_TAKEPROFIT_BRACKETS:
+                tp_price = None
+                entry_reference = entry_price
+                if entry_reference is None and bid_price is not None and ask_price is not None:
+                    entry_reference = ask_price if is_buy_side(data["side"]) else bid_price
 
-                    tp_price = data["predicted_low"]
-                    logger.info(f"(Highlow) Scheduling takeprofit at predicted_low={tp_price:.3f} for short {symbol}")
-                    spawn_close_position_at_takeprofit(symbol, tp_price)
+                if is_buy_side(data["side"]):
+                    tp_price = data.get("predicted_high")
+                elif is_sell_side(data["side"]):
+                    tp_price = data.get("predicted_low")
+
+                schedule_takeprofit = False
+                if tp_price is not None and entry_reference is not None:
+                    tp_val = float(tp_price)
+                    if is_buy_side(data["side"]):
+                        schedule_takeprofit = tp_val > entry_reference * 1.0005
+                    else:
+                        schedule_takeprofit = tp_val < entry_reference * 0.9995
+
+                if schedule_takeprofit:
+                    try:
+                        logger.info(
+                            "Scheduling discretionary takeprofit for %s at %.4f (entry_ref=%.4f)",
+                            symbol,
+                            float(tp_price),
+                            entry_reference,
+                        )
+                        spawn_close_position_at_takeprofit(symbol, float(tp_price))
+                    except Exception as exc:
+                        logger.warning("Failed to schedule takeprofit for %s: %s", symbol, exc)
+                elif tp_price is not None:
+                    logger.debug(
+                        "%s takeprofit %.4f skipped (entry_ref=%s, side=%s)",
+                        symbol,
+                        float(tp_price),
+                        entry_reference,
+                        data["side"],
+                    )
         elif transition_to_normal:
             logger.info(
                 f"{symbol}: Probe already at target sizing; marking transition complete without additional orders."
             )
             _mark_probe_transitioned(symbol, data["side"], current_position_size)
+            entry_strategy = data.get("strategy")
+            stored_entry_strategy = "maxdiff" if entry_strategy in {"highlow", "maxdiff"} else entry_strategy
             _update_active_trade(
                 symbol,
                 data["side"],
                 mode="probe_transition",
                 qty=current_position_size,
-                strategy=data.get("strategy"),
+                strategy=stored_entry_strategy,
             )
+            _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
+            _normalize_active_trade_patch(_update_active_trade)
 
 
 def manage_market_close(
@@ -1338,6 +3086,7 @@ def manage_market_close(
         entry_strategy = active_trade_meta.get("entry_strategy")
         if not entry_strategy and symbol in previous_picks:
             entry_strategy = previous_picks.get(symbol, {}).get("strategy")
+        lookup_entry_strategy = "highlow" if entry_strategy == "maxdiff" else entry_strategy
 
         next_forecast = all_analyzed_results.get(symbol)
         if next_forecast:
@@ -1360,8 +3109,9 @@ def manage_market_close(
             and (entry_mode or "normal") != "probe"
         ):
             strategy_returns = next_forecast.get("strategy_returns", {})
-            strategy_return = strategy_returns.get(entry_strategy)
-            if strategy_return is None and entry_strategy == next_forecast.get("strategy"):
+            strategy_return = strategy_returns.get(lookup_entry_strategy)
+            forecast_strategy = next_forecast.get("strategy")
+            if strategy_return is None and lookup_entry_strategy == forecast_strategy:
                 strategy_return = next_forecast.get("avg_return")
             if strategy_return is not None and strategy_return < 0:
                 logger.info(
@@ -1467,9 +3217,8 @@ def main():
         "AAPL",
         "U",
         "ADSK",
-        "CRWD",
         "ADBE",
-        "NET",
+        "MSFT",
         "COIN",
         # "MSFT",
         # "NFLX",
@@ -1495,6 +3244,9 @@ def main():
             market_open, market_close = get_market_hours()
             now = datetime.now(pytz.timezone("US/Eastern"))
             today = now.date()
+            analysis_window_minutes = max(MARKET_CLOSE_ANALYSIS_WINDOW_MINUTES, 1)
+            close_analysis_window_start = market_close - timedelta(minutes=analysis_window_minutes)
+            close_analysis_window_end = market_close
 
             # Initial analysis at NZ morning (22:00-22:30 EST)
             # run at start of program to check
@@ -1555,9 +3307,9 @@ def main():
                 previous_picks = current_picks
                 last_market_open_hour2_run = today
 
-            # Market close analysis (15:45-16:00 EST)
+            # Market close analysis (shifted earlier to allow gradual backout)
             elif (
-                (now.hour == market_close.hour - 1 and now.minute >= 45)
+                close_analysis_window_start <= now < close_analysis_window_end
                 and (last_market_close_run is None or last_market_close_run != today)
                 and is_nyse_trading_day_ending()
             ):

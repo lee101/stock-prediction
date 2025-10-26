@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import warnings
 import os
+import sys
 import tempfile
 import shutil
 from pathlib import Path
@@ -29,13 +30,31 @@ def pytest_configure(config):
         torch.cuda.manual_seed(42)
     
     # Configure torch for testing
-    torch.set_deterministic(True, warn_only=True)
+    set_deterministic = getattr(torch, "set_deterministic", None)
+    if callable(set_deterministic):
+        set_deterministic(True, warn_only=True)
+    else:
+        use_deterministic = getattr(torch, "use_deterministic_algorithms", None)
+        if callable(use_deterministic):
+            use_deterministic(True, warn_only=True)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     
     # Set environment variables for testing
     os.environ['TESTING'] = '1'
     os.environ['PYTHONHASHSEED'] = '0'
+
+    for marker in (
+        "unit: Unit tests for individual components",
+        "integration: Integration tests for system components",
+        "performance: Performance and scalability tests",
+        "regression: Regression tests to detect behavior changes",
+        "slow: Tests that take a long time to run",
+        "gpu: Tests that require GPU hardware",
+        "data_quality: Tests for data validation and preprocessing",
+        "training: Tests related to model training",
+    ):
+        config.addinivalue_line("markers", marker)
 
 
 def pytest_unconfigure(config):
@@ -145,24 +164,7 @@ def pytest_addoption(parser):
         help="run GPU tests"
     )
 
-
 # Custom pytest markers
-pytest_plugins = []
-
-# Register custom markers
-def pytest_configure_markers():
-    """Register custom markers"""
-    return [
-        "unit: Unit tests for individual components",
-        "integration: Integration tests for system components", 
-        "performance: Performance and scalability tests",
-        "regression: Regression tests to detect behavior changes",
-        "slow: Tests that take a long time to run",
-        "gpu: Tests that require GPU hardware",
-        "data_quality: Tests for data validation and preprocessing",
-        "training: Tests related to model training",
-    ]
-
 
 # Fixtures for mocking external dependencies
 @pytest.fixture
@@ -372,3 +374,11 @@ def performance_tracker():
     # Log performance if test took more than 5 seconds or used > 100MB
     if duration > 5.0 or abs(memory_delta) > 100:
         print(f"\nPerformance: {duration:.2f}s, Memory: {memory_delta:+.1f}MB")
+# Ensure project root is importable
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+MODULE_ROOT = Path(__file__).resolve().parent
+if str(MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(MODULE_ROOT))

@@ -83,7 +83,7 @@ uv pip install -r requirements.txt
 ### Verify GPU Access
 
 ```python
-# tests/test_gpu_setup.py
+# tests/prod/infra/test_gpu_setup.py
 import torch
 
 def test_gpu_availability():
@@ -115,7 +115,7 @@ if __name__ == "__main__":
 
 Run test:
 ```bash
-python tests/test_gpu_setup.py
+python tests/prod/infra/test_gpu_setup.py
 ```
 
 ## Environment Configuration
@@ -449,10 +449,17 @@ def optimize_gpu_memory():
         # Set memory fraction
         torch.cuda.set_per_process_memory_fraction(0.9)  # Use 90% of VRAM
         
-        # Enable memory efficient attention (if available)
+        # Enable the tuned SDPA mix (flash + Triton + math fallback) across architectures.
         if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
-            torch.backends.cuda.enable_mem_efficient_sdp(True)
-            torch.backends.cuda.enable_flash_sdp(True)
+            from traininglib.runtime_flags import enable_fast_kernels
+
+            with enable_fast_kernels():
+                pass  # The context manager toggles the backend flags safely.
+
+        # Note: `flash-attn` wheels for torch==2.9.0 are not yet published. When they arrive, we can
+        # swap them in here, but today the built-in flash kernel plus Triton mem-efficient path
+        # provide the fastest option. Installing `sageattention>=1.0.6` lets us experiment with
+        # even newer kernels for inference-only paths where dropout is disabled.
 
 def profile_gpu_memory(func):
     """Decorator to profile GPU memory usage"""

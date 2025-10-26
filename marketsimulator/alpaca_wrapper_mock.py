@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Dict, Iterable, List, Optional
+import os
+
+from src.leverage_settings import get_leverage_settings
 
 from .logging_utils import logger
 
@@ -11,7 +14,7 @@ from .state import SimulationState, SimulatedOrder, SimulatedPosition, get_state
 equity: float = 100_000.0
 cash: float = 100_000.0
 total_buying_power: float = 100_000.0
-margin_multiplier: float = 2.0
+margin_multiplier: float = get_leverage_settings().max_gross_leverage
 
 
 def _sync_account_metrics(state: Optional[SimulationState] = None) -> None:
@@ -28,7 +31,7 @@ class MockAccount:
     cash: float
     equity: float
     buying_power: float
-    multiplier: float = margin_multiplier
+    multiplier: float
 
 
 @dataclass
@@ -47,6 +50,8 @@ class MockClock:
 
     @property
     def is_open(self) -> bool:
+        if os.getenv("MARKETSIM_FORCE_MARKET_OPEN", "0").lower() in {"1", "true", "yes", "on"}:
+            return True
         return self._state.clock.is_open
 
     @property
@@ -63,12 +68,18 @@ class MockClock:
 
 
 def reset_account(initial_cash: float = 100_000.0) -> None:
+    global margin_multiplier
     state = get_state()
+    settings = get_leverage_settings()
+    margin_multiplier = settings.max_gross_leverage
+    state.leverage_settings = settings
     state.cash = initial_cash
     state.positions.clear()
     state.open_orders.clear()
     state.take_profit_targets.clear()
     state.fees_paid = 0.0
+    state.financing_cost_paid = 0.0
+    state.last_financing_timestamp = state.clock.current
     state.update_market_prices()
     _sync_account_metrics(state)
 
@@ -80,10 +91,13 @@ def get_clock() -> MockClock:
 def get_account() -> MockAccount:
     state = get_state()
     _sync_account_metrics(state)
+    settings = state.leverage_settings or get_leverage_settings()
+    current_multiplier = getattr(settings, "max_gross_leverage", margin_multiplier)
     return MockAccount(
         cash=state.cash,
         equity=state.equity,
         buying_power=state.buying_power,
+        multiplier=current_multiplier,
     )
 
 

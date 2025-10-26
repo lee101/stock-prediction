@@ -1,0 +1,1790 @@
+[
+  {
+    "timestamp": "2025-10-22T17:38:41.297171Z",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251022)",
+        "module": "gymrl",
+        "score": -0.09263753890991211,
+        "details": {
+          "cumulative_return": -0.09263753890991211,
+          "average_daily_return": -0.004419906996190548,
+          "sharpe": -0.005283173173666,
+          "turnover": 0.6539698839187622
+        },
+        "score_per_day": -0.004419906996190548,
+        "relative_to_baseline": 3.705401535535601e-06
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-22T17:41:25.345054+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251022)",
+        "module": "gymrl",
+        "score": -0.09263753890991211,
+        "details": {
+          "cumulative_return": -0.09263753890991211,
+          "average_daily_return": -0.004419906996190548,
+          "sharpe": -0.005283173173666,
+          "turnover": 0.6539698839187622
+        },
+        "score_per_day": -0.004419906996190548,
+        "relative_to_baseline": 3.705401535535601e-06
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-22T17:42:06.483371+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251022)",
+        "module": "gymrl",
+        "score": -0.09263753890991211,
+        "details": {
+          "cumulative_return": -0.09263753890991211,
+          "average_daily_return": -0.004419906996190548,
+          "sharpe": -0.005283173173666,
+          "turnover": 0.6539698839187622
+        },
+        "score_per_day": -0.004419906996190548,
+        "relative_to_baseline": 3.705401535535601e-06
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-22T18:22:04.259176+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251023_penalized)",
+        "module": "gymrl",
+        "score": -0.0843845009803772,
+        "details": {
+          "cumulative_return": -0.0843845009803772,
+          "average_daily_return": -0.004076449666172266,
+          "sharpe": -0.004673892632126808,
+          "turnover": 0.1903425008058548
+        },
+        "score_per_day": -0.004076449666172266,
+        "relative_to_baseline": 3.417466219444657e-06
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-22T19:00:38.038117+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251023_penalized)",
+        "module": "gymrl",
+        "score": -0.0843845009803772,
+        "details": {
+          "cumulative_return": -0.0843845009803772,
+          "average_daily_return": -0.004076449666172266,
+          "sharpe": -0.004673892632126808,
+          "turnover": 0.1903425008058548
+        },
+        "score_per_day": -0.004076449666172266,
+        "relative_to_baseline": 3.417466219444657e-06
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-22T19:01:26.152795+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251023_lossprobe)",
+        "module": "gymrl",
+        "score": 0.0941857099533081,
+        "details": {
+          "cumulative_return": 0.0941857099533081,
+          "average_daily_return": 0.004324608016759157,
+          "sharpe": -0.007004608865827322,
+          "turnover": 0.22594808042049408
+        },
+        "score_per_day": 0.004324608016759157,
+        "relative_to_baseline": -3.6255082289514578e-06
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-22T19:40:00.444016+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v2)",
+        "module": "gymrl",
+        "score": 0.10779857635498047,
+        "details": {
+          "cumulative_return": 0.10779857635498047,
+          "average_daily_return": 0.00490690628066659,
+          "sharpe": -0.010090288706123829,
+          "turnover": 0.16989025473594666
+        },
+        "score_per_day": 0.00490690628066659,
+        "relative_to_baseline": -4.113674356221095e-06
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-22T21:52:10.468562+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v2)",
+        "module": "gymrl",
+        "score": 0.10779857635498047,
+        "details": {
+          "cumulative_return": 0.10779857635498047,
+          "average_daily_return": 0.00490690628066659,
+          "sharpe": -0.010090288706123829,
+          "turnover": 0.16989025473594666
+        },
+        "score_per_day": 0.00490690628066659,
+        "relative_to_baseline": -4.113674356221095e-06
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-22T21:53:00.500977+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v3)",
+        "module": "gymrl",
+        "score": 0.11211848258972168,
+        "details": {
+          "cumulative_return": 0.11211848258972168,
+          "average_daily_return": 0.005092360079288483,
+          "sharpe": -0.007065885234624147,
+          "turnover": 0.17440839111804962
+        },
+        "score_per_day": 0.005092360079288483,
+        "relative_to_baseline": -4.269148394651483e-06
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-22T22:36:32.665697+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v4)",
+        "module": "gymrl",
+        "score": 0.11862039566040039,
+        "details": {
+          "cumulative_return": 0.11862039566040039,
+          "average_daily_return": 0.005373469088226557,
+          "sharpe": -0.00678901607170701,
+          "turnover": 0.1745883971452713
+        },
+        "score_per_day": 0.005373469088226557,
+        "relative_to_baseline": -4.5048143836122894e-06
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-22T23:57:49.029363+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v4)",
+        "module": "gymrl",
+        "score": 0.11862039566040039,
+        "details": {
+          "cumulative_return": 0.11862039566040039,
+          "average_daily_return": 0.005373469088226557,
+          "sharpe": -0.00678901607170701,
+          "turnover": 0.1745883971452713
+        },
+        "score_per_day": 0.005373469088226557,
+        "relative_to_baseline": -4.5048143836122894e-06
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-22T23:58:36.930398+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v6)",
+        "module": "gymrl",
+        "score": 0.11876177787780762,
+        "details": {
+          "cumulative_return": 0.11876177787780762,
+          "average_daily_return": 0.005374973174184561,
+          "sharpe": -0.003737538354471326,
+          "turnover": 0.14962749183177948
+        },
+        "score_per_day": 0.005374973174184561,
+        "relative_to_baseline": -4.506075324718781e-06
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-23T00:36:33.116300+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v6)",
+        "module": "gymrl",
+        "score": 0.11876177787780762,
+        "details": {
+          "cumulative_return": 0.11876177787780762,
+          "average_daily_return": 0.005374973174184561,
+          "sharpe": -0.003737538354471326,
+          "turnover": 0.14962749183177948
+        },
+        "score_per_day": 0.005374973174184561,
+        "relative_to_baseline": -4.506075324718781e-06
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-23T00:37:08.249925+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251023_lossprobe_v7)",
+        "module": "gymrl",
+        "score": 0.1143040657043457,
+        "details": {
+          "cumulative_return": 0.1143040657043457,
+          "average_daily_return": 0.0051820240914821625,
+          "sharpe": -0.003256584517657757,
+          "turnover": 0.14388185739517212
+        },
+        "score_per_day": 0.0051820240914821625,
+        "relative_to_baseline": -4.344317661505084e-06
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-23T12:12:39.321559+00:00",
+    "scoreboard": [
+      {
+        "name": "deepseek_base_plan",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "deepseek_neural",
+        "module": "deepseek",
+        "score": 6.6525,
+        "details": {
+          "net_pnl": 6.6525,
+          "realized_pnl": 7.21625,
+          "fees": 0.56375
+        },
+        "score_per_day": 0.9161341894682661,
+        "relative_to_baseline": -0.000768035398785126
+      },
+      {
+        "name": "pufferlib pipeline summary",
+        "module": "pufferlibtraining",
+        "score": 0.11112783537634408,
+        "details": {
+          "best_pair": "AMZN_MSFT",
+          "cumulative_return": 0.11112783537634408,
+          "annualized_return": 0.1026463874423571,
+          "avg_daily_return": 0.0003878255708115376,
+          "run": "20251020_puffer_rl400_lr2e4_adamw"
+        },
+        "score_per_day": 0.0003878255708115376,
+        "relative_to_baseline": -3.251311547604087e-07
+      },
+      {
+        "name": "gymrl ppo allocator (sweep_20251026_guard_confirm)",
+        "module": "gymrl",
+        "score": 0.10960030555725098,
+        "details": {
+          "cumulative_return": 0.10960030555725098,
+          "average_daily_return": 0.004977280739694834,
+          "sharpe": 0.0011868280125781894,
+          "turnover": 0.16013744473457336,
+          "guard_negative_hit_rate": 0.0,
+          "guard_turnover_hit_rate": 0.0476190485060215,
+          "guard_drawdown_hit_rate": 0.0
+        },
+        "score_per_day": 0.004977280739694834,
+        "relative_to_baseline": -4.172672346172126e-06
+      },
+      {
+        "name": "differentiable market GRPO run 20251021_094014",
+        "module": "differentiable_market",
+        "score": -0.0030525955371558666,
+        "details": {
+          "total_return": -0.005226529395239362,
+          "annual_return": -0.007507097030414487,
+          "sharpe": -0.4516964256763458,
+          "turnover": 0.020010411739349365,
+          "periods_per_year": null,
+          "report_cumulative_return": -0.0030525955371558666,
+          "report_sharpe": -0.6423972845077515,
+          "report_objective": -0.003057264257222414
+        },
+        "score_per_day": -0.0030525955371558666,
+        "relative_to_baseline": 2.559124479428036e-06
+      },
+      {
+        "name": "hftraining quick_test_output_20251017_143438",
+        "module": "hftraining",
+        "score": -0.018165069746060504,
+        "details": {
+          "final_eval_return": -0.018165069746060504,
+          "final_eval_loss": 0.7620276167367895,
+          "best_eval_loss": 0.7620276167367895
+        },
+        "score_per_day": -0.018165069746060504,
+        "relative_to_baseline": 1.5228573222960664e-05
+      },
+      {
+        "name": "deepseek_entry_takeprofit",
+        "module": "deepseek",
+        "score": -0.56375,
+        "details": {
+          "net_pnl": -0.56375,
+          "realized_pnl": 0.0,
+          "fees": 0.56375
+        },
+        "score_per_day": -0.07763557298951297,
+        "relative_to_baseline": 6.508529967156932e-05
+      },
+      {
+        "name": "baseline_production",
+        "module": "baseline",
+        "score": -8661.710138,
+        "details": {
+          "total_realized_pnl": -8661.710138
+        },
+        "score_per_day": -1192.8280791710927,
+        "relative_to_baseline": 1.0
+      },
+      {
+        "name": "deepseek_maxdiff",
+        "module": "deepseek",
+        "score": 0.0,
+        "details": {
+          "net_pnl": 0.0,
+          "realized_pnl": 0.0,
+          "fees": 0.0
+        },
+        "score_per_day": 0.0,
+        "relative_to_baseline": -0.0
+      }
+    ]
+  }
+]

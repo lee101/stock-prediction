@@ -9,41 +9,47 @@
     "layer_norm_eps": 1e-12,
     "use_layer_norm_bias": false
   },
-  
   "toto_embeddings": {
     "embedding_dim": 128,
     "freeze_toto_embeddings": true,
     "toto_pretrained_path": "../training/models/modern_best_sharpe.pth",
     "use_pretrained_backbone": true
   },
-  
   "optimizer_configs": {
     "gpro": {
-      "learning_rate": 5e-5,
-      "betas": [0.9, 0.999],
-      "eps": 1e-8,
+      "learning_rate": 5e-05,
+      "betas": [
+        0.9,
+        0.999
+      ],
+      "eps": 1e-08,
       "weight_decay": 0.01,
       "projection_factor": 0.5
     },
     "adamw": {
-      "learning_rate": 5e-5,
-      "betas": [0.9, 0.999],
-      "eps": 1e-8,
+      "learning_rate": 5e-05,
+      "betas": [
+        0.9,
+        0.999
+      ],
+      "eps": 1e-08,
       "weight_decay": 0.01
     },
     "lion": {
-      "learning_rate": 1e-5,
-      "betas": [0.9, 0.99],
+      "learning_rate": 1e-05,
+      "betas": [
+        0.9,
+        0.99
+      ],
       "weight_decay": 0.01
     },
     "adafactor": {
-      "learning_rate": 1e-4,
+      "learning_rate": 0.0001,
       "scale_parameter": true,
       "relative_step": false,
       "warmup_init": false
     }
   },
-  
   "training": {
     "num_train_epochs": 100,
     "batch_size": 32,
@@ -55,7 +61,6 @@
     "gradient_checkpointing": true,
     "use_8bit_adam": false
   },
-  
   "rl_specific": {
     "gamma": 0.99,
     "gae_lambda": 0.95,
@@ -66,7 +71,6 @@
     "rollout_steps": 2048,
     "ppo_epochs": 10
   },
-  
   "evaluation": {
     "eval_steps": 500,
     "save_steps": 1000,
@@ -75,7 +79,6 @@
     "early_stopping_patience": 10,
     "early_stopping_threshold": 0.0001
   },
-  
   "environment": {
     "initial_balance": 100000,
     "max_positions": 3,
@@ -90,22 +93,35 @@
     "confidence_threshold": 0.3,
     "diversification_bonus": 0.001
   },
-  
   "data": {
     "train_dir": "../trainingdata/train",
     "test_dir": "../trainingdata/test",
     "symbols": [
-      "AAPL", "ADBE", "ADSK", "BTCUSD", "COIN", "COUR", "CRWD",
-      "ETHUSD", "GOOG", "LTCUSD", "MSFT", "NET", "NFLX", "NVDA",
-      "PAXGUSD", "PYPL", "SAP", "SONY", "TSLA", "U", "UNIUSD"
+      "AAPL",
+      "ADBE",
+      "ADSK",
+      "BTCUSD",
+      "COIN",
+      "COUR",
+      "ETHUSD",
+      "GOOG",
+      "LTCUSD",
+      "MSFT",
+      "NFLX",
+      "NVDA",
+      "PAXGUSD",
+      "PYPL",
+      "SAP",
+      "SONY",
+      "TSLA",
+      "U",
+      "UNIUSD"
     ]
   },
-  
   "output": {
     "output_dir": "models/hf_rl",
     "logging_dir": "logs/hf_rl"
   },
-  
   "experimental_features": {
     "use_flash_attention": false,
     "rope_scaling": null,

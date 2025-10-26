@@ -20,12 +20,12 @@ if __name__ == "__main__":
     _ensure_torch()
 
     test_files = [
-        "tests/test_hfinference_comprehensive.py",
-        "tests/test_hftraining_comprehensive.py",
-        "tests/test_hfinference_engine_sim.py",
-        "tests/test_hftraining_data_utils.py",
-        "tests/test_hftraining_model.py",
-        "tests/test_hftraining_training.py",
+        "tests/experimental/hf/test_hfinference_comprehensive.py",
+        "tests/experimental/hf/test_hftraining_comprehensive.py",
+        "tests/experimental/hf/test_hfinference_engine_sim.py",
+        "tests/experimental/hf/test_hftraining_data_utils.py",
+        "tests/experimental/hf/test_hftraining_model.py",
+        "tests/experimental/hf/test_hftraining_training.py",
     ]
 
     existing_tests = [f for f in test_files if Path(f).exists()]

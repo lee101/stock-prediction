@@ -1,0 +1,41 @@
+{
+  "generated_at": "2025-10-22T15:59:00Z",
+  "tasks": [
+    {
+      "name": "gymrl_ppo_retrain_turnover_sweep",
+      "module": "gymrl",
+      "priority": 1,
+      "description": "Retrain PPO allocator with higher turnover penalty and chronos forecasts; target >0 cumulative return.",
+      "command": "source .venv312/bin/activate && python -m gymrl.train_ppo_allocator --data-dir tototraining/trainingdata/train --forecast-backend auto --num-timesteps 300000 --learning-rate 2.5e-4 --turnover-penalty 0.001 --save-frequency 25000 --output-dir gymrl/artifacts/sweep_20251022 --tensorboard-log gymrl/runs",
+      "expected_duration_hours": 6,
+      "status": "completed"
+    },
+    {
+      "name": "pufferlib_pairs_optuna_stage2",
+      "module": "pufferlibtraining",
+      "priority": 2,
+      "description": "Run Optuna sweep on portfolio pairs to lift AMZN_MSFT cumulative return and stabilize negative runs.",
+      "command": "source .venv312/bin/activate && python pufferlibtraining/train_ppo.py --base-stocks AAPL,AMZN,MSFT,NVDA,GOOGL --specialist-stocks AAPL,AMZN,MSFT --trainingdata-dir trainingdata --output-dir pufferlibtraining/models/optuna_20251022 --tensorboard-dir pufferlibtraining/logs/optuna_20251022 --rl-epochs 250 --rl-learning-rate 0.0003 --transaction-cost-bps 5 --risk-penalty 0.05 --leverage-limit 1.5 --borrowing-cost 0.0675 --verbose",
+      "expected_duration_hours": 6,
+      "status": "completed"
+    },
+    {
+      "name": "diff_market_backtest_risk_sweep",
+      "module": "differentiable_market",
+      "priority": 3,
+      "description": "Backtest GRPO checkpoint with higher risk_aversion and drawdown penalty to improve Sharpe.",
+      "command": "source .venv312/bin/activate && python -m differentiable_market.marketsimulator.run --checkpoint differentiable_market/runs/20251021_094014/checkpoints/best.pt --window-length 256 --stride 64 --report-dir differentiable_market/evals/risk_sweep_20251023 --data-glob '[A-Z]*.csv' --risk-aversion 0.25 --drawdown-lambda 0.05",
+      "expected_duration_hours": 2,
+      "status": "completed"
+    },
+    {
+      "name": "gymrl_confirmation_guarded_v12",
+      "module": "gymrl",
+      "priority": 1,
+      "description": "Short confirmation sweep with calibrated regime guards (turnover penalty 0.0071, loss probe 0.002) once cooldown ends.",
+      "command": "source .venv312/bin/activate && python -m gymrl.train_ppo_allocator --data-dir tototraining/trainingdata/train --forecast-backend auto --num-timesteps 40000 --learning-rate 5.5e-5 --turnover-penalty 0.0071 --loss-shutdown-probe-weight 0.002 --loss-shutdown-penalty 0.6 --loss-shutdown-cooldown 12 --ent-coef 0.00015 --ent-coef-final 0.0 --base-gross-exposure 0.5 --max-gross-leverage 1.08 --intraday-leverage-cap 1.18 --daily-leverage-rate 0.001 --closing-leverage-cap 1.08 --enable-loss-shutdown --regime-filters-enabled --regime-drawdown-threshold 0.036 --regime-negative-return-threshold -0.03 --regime-turnover-threshold 0.55 --regime-turnover-probe-weight 0.002 --regime-leverage-scale 0.6 --validation-days 21 --output-dir gymrl/artifacts/sweep_20251026_guard_confirm --tensorboard-log gymrl/runs/guard_confirm --regime-config-path gymrl/guard_config_calibrated.json",
+      "expected_duration_hours": 1.5,
+      "status": "completed"
+    }
+  ]
+}

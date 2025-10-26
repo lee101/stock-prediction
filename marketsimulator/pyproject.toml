@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "marketsimulator"
+version = "0.1.0"
+description = "Backtesting and live-trading simulators used for strategy evaluation."
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "stock-trading-suite",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "matplotlib>=3.9",
+    "loguru>=0.7",
+    "alpaca-trade-api>=3.1",
+    "alpaca-py>=0.42",
+    "pytz>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[tool.uv.sources]
+stock-trading-suite = { workspace = true }
+
+[tool.setuptools]
+packages = ["marketsimulator"]
+
+[tool.setuptools.package-dir]
+marketsimulator = "."

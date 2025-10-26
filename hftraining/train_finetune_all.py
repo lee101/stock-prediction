@@ -11,11 +11,14 @@ Outputs are written under hftraining/output/ with timestamped subfolders.
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
+import random
 import sys
-from pathlib import Path
 from datetime import datetime
-from typing import List, Tuple, Dict, Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -97,22 +100,45 @@ def split_and_normalize(data: np.ndarray, seq_len: int, pred_horizon: int,
     return train, val, test, mean, std
 
 
-def train_base_model(base_output_dir: Path, device_str: str = 'cuda') -> Tuple[str, HFTrainingConfig, np.ndarray, np.ndarray]:
-    """Train on all trainingdata/train and return (final_ckpt_path, config, mean, std)."""
+def _adjust_step_intervals(config: HFTrainingConfig) -> None:
+    """Ensure logging/eval/save intervals remain valid even for short runs."""
+    for field_name in ('logging_steps', 'eval_steps', 'save_steps'):
+        value = getattr(config, field_name, None)
+        if value is None:
+            continue
+        if config.max_steps <= 0:
+            setattr(config, field_name, 1)
+            continue
+        if value > config.max_steps:
+            setattr(config, field_name, max(1, config.max_steps))
+
+
+def train_base_model(
+    base_output_dir: Path,
+    device_str: str = 'cuda',
+    *,
+    max_steps: Optional[int] = None,
+    batch_size: Optional[int] = None,
+    learning_rate: Optional[float] = None,
+    sequence_length: int = 60,
+    prediction_horizon: int = 5,
+    max_files: Optional[int] = None,
+) -> Tuple[str, HFTrainingConfig, np.ndarray, np.ndarray, List[str], str]:
+    """Train on all trainingdata/train and return (final_ckpt_path, config, mean, std, symbols, device)."""
     data_root = find_trainingdata_root()
-    data_all, _symbols = load_all_training_data(data_root)
-    seq_len = 60
-    pred_h = 5
+    data_all, symbols = load_all_training_data(data_root, max_files=max_files)
+    seq_len = sequence_length
+    pred_h = prediction_horizon
     train, val, _test, mean, std = split_and_normalize(data_all, seq_len, pred_h)
 
     config = HFTrainingConfig(
         hidden_size=256 if device_str == 'cuda' else 128,
         num_layers=6 if device_str == 'cuda' else 3,
         num_heads=8 if device_str == 'cuda' else 4,
-        learning_rate=3e-4,
+        learning_rate=learning_rate or 3e-4,
         warmup_steps=100,
-        max_steps=5000 if device_str == 'cuda' else 1000,
-        batch_size=128 if device_str == 'cuda' else 64,
+        max_steps=max_steps or (5000 if device_str == 'cuda' else 1000),
+        batch_size=batch_size or (128 if device_str == 'cuda' else 64),
         optimizer_name='lion' if device_str == 'cuda' else 'adamw',
         weight_decay=0.01,
         eval_steps=100,
@@ -139,6 +165,9 @@ def train_base_model(base_output_dir: Path, device_str: str = 'cuda') -> Tuple[s
         output_dir=str(base_output_dir),
         logging_dir=str(base_output_dir / 'logs')
     )
+    config.sequence_length = seq_len
+    config.prediction_horizon = pred_h
+    _adjust_step_intervals(config)
 
     train_ds = StockDataset(train, sequence_length=config.sequence_length, prediction_horizon=config.prediction_horizon)
     val_ds = StockDataset(val, sequence_length=config.sequence_length, prediction_horizon=config.prediction_horizon) if len(val) > seq_len + pred_h else None
@@ -146,8 +175,15 @@ def train_base_model(base_output_dir: Path, device_str: str = 'cuda') -> Tuple[s
     model = TransformerTradingModel(config, input_dim=data_all.shape[1])
     trainer = HFTrainer(model=model, config=config, train_dataset=train_ds, eval_dataset=val_ds)
     trainer.train()
+    actual_device = getattr(trainer, "device", torch.device(device_str))
     final_ckpt = Path(config.output_dir) / 'final_model.pth'
-    return str(final_ckpt), config, mean, std
+    stats_path = base_output_dir / 'normalization_stats.npz'
+    try:
+        np.savez(stats_path, mean=mean, std=std)
+    except Exception as exc:
+        print(f"Warning: failed to persist normalization stats to {stats_path}: {exc}")
+    actual_device_str = actual_device.type if hasattr(actual_device, "type") else str(actual_device)
+    return str(final_ckpt), config, mean, std, symbols, actual_device_str
 
 
 def finetune_symbol(csv_path: Path, base_ckpt: str, base_config: HFTrainingConfig, mean: np.ndarray, std: np.ndarray,
@@ -168,6 +204,7 @@ def finetune_symbol(csv_path: Path, base_ckpt: str, base_config: HFTrainingConfi
     cfg.learning_rate = max(1e-5, base_config.learning_rate / 10)
     cfg.output_dir = str(output_dir)
     cfg.logging_dir = str(output_dir / 'logs')
+    _adjust_step_intervals(cfg)
 
     train_ds = StockDataset(train, sequence_length=cfg.sequence_length, prediction_horizon=cfg.prediction_horizon)
     val_ds = StockDataset(val, sequence_length=cfg.sequence_length, prediction_horizon=cfg.prediction_horizon) if len(val) > cfg.sequence_length + cfg.prediction_horizon else None
@@ -175,8 +212,13 @@ def finetune_symbol(csv_path: Path, base_ckpt: str, base_config: HFTrainingConfi
     model = TransformerTradingModel(cfg, input_dim=norm.shape[1])
     # Load base weights
     try:
-        state = torch.load(base_ckpt, map_location='cpu')
-        model.load_state_dict(state['model_state_dict'], strict=False)
+        state = torch.load(base_ckpt, map_location='cpu', weights_only=False)
+        state_dict = state.get('model_state_dict', state)
+        if all(k.startswith('module.') for k in state_dict.keys()):
+            state_dict = {k[len('module.'):]: v for k, v in state_dict.items()}
+        missing = model.load_state_dict(state_dict, strict=False)
+        if missing.missing_keys:
+            print(f"Warning: missing keys when loading base checkpoint for {csv_path.stem}: {missing.missing_keys}")
     except Exception as e:
         print(f"Warning: failed to load base checkpoint {base_ckpt}: {e}")
 
@@ -248,23 +290,89 @@ def compute_pnl_for_dataset(model: TransformerTradingModel, dataset: StockDatase
     }
 
 
-def main():
-    device_str = 'cuda' if torch.cuda.is_available() else 'cpu'
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train base model and per-symbol fine-tunes.")
+    parser.add_argument('--device', choices=('cuda', 'cpu'), default=None, help="Force training device.")
+    parser.add_argument('--max-base-steps', type=int, default=None, help="Override base training max_steps.")
+    parser.add_argument('--base-batch-size', type=int, default=None, help="Override base training batch size.")
+    parser.add_argument('--base-learning-rate', type=float, default=None, help="Override base learning rate.")
+    parser.add_argument('--base-sequence-length', type=int, default=60, help="Sequence length for base training.")
+    parser.add_argument('--base-prediction-horizon', type=int, default=5, help="Prediction horizon for base training.")
+    parser.add_argument('--base-max-files', type=int, default=None, help="Limit number of CSV files for base training.")
+    parser.add_argument('--finetune-steps', type=int, default=1500, help="Steps for each symbol fine-tune.")
+    parser.add_argument('--finetune-symbol-limit', type=int, default=None, help="Limit number of symbols to fine-tune.")
+    parser.add_argument('--symbols', nargs='+', default=None, help="Only fine-tune specified symbol tickers.")
+    parser.add_argument('--skip-eval', action='store_true', help="Skip post-finetune evaluation metrics.")
+    parser.add_argument('--output-root', type=Path, default=None, help="Root directory for outputs.")
+    parser.add_argument('--seed', type=int, default=None, help="Random seed for reproducibility.")
+    return parser.parse_args(argv)
+
+
+def maybe_set_seed(seed: Optional[int]) -> None:
+    if seed is None:
+        return
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def main(argv: Optional[List[str]] = None):
+    args = parse_args(argv)
+    maybe_set_seed(args.seed)
+
+    auto_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device_str = args.device or auto_device
+    if device_str == 'cuda' and not torch.cuda.is_available():
+        print("Requested CUDA but no GPU detected, falling back to CPU.")
+        device_str = 'cpu'
+
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    base_out = this_dir / 'output' / f'base_{ts}'
+    output_root = args.output_root or (this_dir / 'output')
+    base_out = output_root / f'base_{ts}'
     base_out.mkdir(parents=True, exist_ok=True)
 
     print(f"Training base model on aggregated trainingdata → {base_out}")
-    base_ckpt, base_cfg, mean, std = train_base_model(base_out, device_str=device_str)
+    base_ckpt, base_cfg, mean, std, base_symbols, actual_device = train_base_model(
+        base_out,
+        device_str=device_str,
+        max_steps=args.max_base_steps,
+        batch_size=args.base_batch_size,
+        learning_rate=args.base_learning_rate,
+        sequence_length=args.base_sequence_length,
+        prediction_horizon=args.base_prediction_horizon,
+        max_files=args.base_max_files,
+    )
     print(f"Base checkpoint: {base_ckpt}")
+
+    stats_meta = {
+        "timestamp": ts,
+        "base_checkpoint": base_ckpt,
+        "symbols": base_symbols,
+        "sequence_length": base_cfg.sequence_length,
+        "prediction_horizon": base_cfg.prediction_horizon,
+        "device": actual_device,
+        "max_steps": base_cfg.max_steps,
+    }
+    try:
+        with open(base_out / 'run_metadata.json', 'w') as fh:
+            json.dump(stats_meta, fh, indent=2)
+    except Exception as exc:
+        print(f"Warning: unable to write metadata file: {exc}")
 
     # Fine-tune per symbol and evaluate PnL on held-out slice
     data_root = find_trainingdata_root()
     symbols_dir = data_root / 'train'
     csvs = sorted(symbols_dir.glob('*.csv'))
+    if args.symbols:
+        target_set = {sym.upper() for sym in args.symbols}
+        csvs = [csv for csv in csvs if csv.stem.upper() in target_set]
+    if args.finetune_symbol_limit is not None:
+        csvs = csvs[:args.finetune_symbol_limit]
     print(f"Found {len(csvs)} symbols to fine-tune")
 
-    finetune_root = this_dir / 'output' / f'finetune_{ts}'
+    finetune_root = output_root / f'finetune_{ts}'
     finetune_root.mkdir(parents=True, exist_ok=True)
 
     results: Dict[str, str] = {}
@@ -276,8 +384,10 @@ def main():
         print(f"→ Fine-tuning {sym} → {out_dir}")
         try:
             # Fine-tune
-            ckpt = finetune_symbol(csv, base_ckpt, base_cfg, mean, std, out_dir, device_str=device_str)
+            ckpt = finetune_symbol(csv, base_ckpt, base_cfg, mean, std, out_dir, device_str=device_str, steps=args.finetune_steps)
             results[sym] = ckpt
+            if args.skip_eval:
+                continue
             # Evaluate on held-out 10% for this symbol
             data = load_csv_ohlc(csv)
             if data is None:
@@ -291,13 +401,18 @@ def main():
             test_ds = StockDataset(test, sequence_length=base_cfg.sequence_length, prediction_horizon=base_cfg.prediction_horizon)
             # Load model for eval
             cfg = HFTrainingConfig(**vars(base_cfg))
+            cfg.output_dir = str(out_dir)
+            cfg.logging_dir = str(out_dir / 'logs')
             model = TransformerTradingModel(cfg, input_dim=norm.shape[1])
             try:
-                state = torch.load(ckpt, map_location='cpu')
-                model.load_state_dict(state['model_state_dict'], strict=False)
+                state = torch.load(ckpt, map_location='cpu', weights_only=False)
+                state_dict = state.get('model_state_dict', state)
+                if all(k.startswith('module.') for k in state_dict.keys()):
+                    state_dict = {k[len('module.'):]: v for k, v in state_dict.items()}
+                model.load_state_dict(state_dict, strict=False)
             except Exception as e:
                 print(f"  Warning: failed to load fine-tuned weights for {sym}: {e}")
-            metrics = compute_pnl_for_dataset(model, test_ds, device=torch.device(device_str))
+            metrics = compute_pnl_for_dataset(model, test_ds, device=torch.device(actual_device))
             metrics_rows.append({'symbol': sym, **metrics})
             print(f"  {sym} PnL — total_return: {metrics['total_return']*100:.2f}% final_equity: ${metrics['final_equity']:.2f} sharpe: {metrics['sharpe']:.2f} mdd: {metrics['max_drawdown']*100:.2f}% trades: {metrics['num_trades']} win_rate: {metrics['win_rate']*100:.1f}%")
         except Exception as e:
@@ -306,6 +421,13 @@ def main():
     print("Done. Fine-tuned checkpoints:")
     for k, v in results.items():
         print(f"  {k}: {v}")
+
+    if results:
+        try:
+            with open(finetune_root / 'checkpoint_index.json', 'w') as fh:
+                json.dump(results, fh, indent=2)
+        except Exception as exc:
+            print(f"Warning: unable to write checkpoint index: {exc}")
 
     # Save metrics summary
     if metrics_rows:

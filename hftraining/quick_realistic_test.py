@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 def quick_test():
     """Quick test with minimal episodes"""
     
+    np.random.seed(42)
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+    
     # Configuration
     config = RealisticTradingConfig()
     config.sequence_length = 30  # Shorter sequence
@@ -164,10 +169,10 @@ def quick_test():
     logger.info(f"Commission: ${val_metrics.total_commission:.2f}")
     logger.info(f"Slippage: ${val_metrics.total_slippage:.2f}")
     
-    return model, val_metrics
+    return model, val_metrics, val_env.equity_curve
 
 if __name__ == "__main__":
-    model, metrics = quick_test()
+    model, metrics, equity_curve = quick_test()
     
     if metrics:
         print("\n" + "="*50)
