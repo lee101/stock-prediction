@@ -1,5 +1,0 @@
-Total runs: 27
-Provider totals:
-- yahoo: 27 runs (last 2025-10-24T22:06:21.130468+00:00)
-Timeline (last 20): YYYYYYYYYYYYYYYYYYYY
-Latest run: 2025-10-24T22:06:21.130468+00:00 provider=yahoo count=16
