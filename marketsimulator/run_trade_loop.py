@@ -495,6 +495,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     runner_module = _load_runner()
     simulate_strategy = getattr(runner_module, "simulate_strategy")
+    lookahead_value = str(max(1, args.step_size))
+    previous_lookahead = os.environ.get("MARKETSIM_FORECAST_LOOKAHEAD")
+    os.environ["MARKETSIM_FORECAST_LOOKAHEAD"] = lookahead_value
 
     try:
         report = simulate_strategy(
@@ -510,6 +513,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         logger.exception("[sim] Simulation run failed.")
         return 1
     finally:
+        _restore_env("MARKETSIM_FORECAST_LOOKAHEAD", previous_lookahead)
         for key, prev in previous_overrides.items():
             _restore_env(key, prev)
         _restore_env(ENV_MOCK_ANALYTICS, previous_mock_setting)

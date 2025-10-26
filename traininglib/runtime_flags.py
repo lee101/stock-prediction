@@ -8,7 +8,7 @@ from typing import Callable, Optional
 import torch
 import torch.nn.functional as F
 
-from src.torch_backend import configure_tf32_backends
+from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
 
 try:
     from flash_attn.flash_attn_interface import flash_attn_func as _flash_attn_func
@@ -194,8 +194,8 @@ def enable_fast_kernels():
     # These tweaks must be guarded because CUDA initialisation might fail on CPU-only nodes.
     try:
         state = configure_tf32_backends(torch)
-        if not any(state.values()) and hasattr(torch, "set_float32_matmul_precision"):
-            torch.set_float32_matmul_precision("high")  # type: ignore[attr-defined]
+        if torch.cuda.is_available() and not any(state.values()):
+            maybe_set_float32_precision(torch, mode="high")
     except Exception as exc:
         warnings.warn(f"Unable to configure TF32 fast matmul: {exc}")
 

@@ -38,7 +38,7 @@ sys.path.append(os.path.dirname(current_dir))
 from config import create_config, ExperimentConfig
 from data_utils import load_training_data, StockDataProcessor, create_sequences, split_data
 from train_hf import StockDataset, HFTrainer
-from src.torch_backend import configure_tf32_backends
+from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
 from hf_trainer import TransformerTradingModel
 from modern_optimizers import get_optimizer
 from toto_features import TotoOptions
@@ -143,18 +143,13 @@ def setup_environment(config: ExperimentConfig):
                 print("TF32 fast paths disabled per configuration")
             except Exception:
                 pass
-        try:
-            torch.set_float32_matmul_precision("high")
-        except Exception:
-            pass
+        if torch.cuda.is_available():
+            maybe_set_float32_precision(torch, mode="high")
         print(f"CUDA devices: {torch.cuda.device_count()}")
         for i in range(torch.cuda.device_count()):
             print(f"  Device {i}: {torch.cuda.get_device_name(i)}")
     else:
-        try:
-            torch.set_float32_matmul_precision("high")
-        except Exception:
-            pass
+        pass
     
     return device
 
