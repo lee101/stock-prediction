@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pufferlib-training"
+version = "0.1.0"
+description = "RL training pipelines and utilities for the workspace PufferLib experiments."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "stock-trading-suite[rl,hf,mlops,opt]",
+    "gymrl",
+    "hftraining",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.3",
+]
+
+[tool.uv.sources]
+stock-trading-suite = { workspace = true }
+gymrl = { workspace = true }
+hftraining = { workspace = true }
+
+[tool.setuptools]
+packages = ["pufferlibtraining"]
+
+[tool.setuptools.package-dir]
+pufferlibtraining = "."
+
+[tool.setuptools.package-data]
+pufferlibtraining = [
+    "envs/**/*.json",
+    "logs/**/*.json",
+]

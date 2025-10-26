@@ -19,8 +19,18 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from hftraining.base_model_trainer import BaseModelTrainer, PortfolioRLConfig
-from hftraining.toto_features import TotoOptions
+from src.leverage_settings import get_leverage_settings
+
+try:  # Defer heavy hftraining imports until the optional extras are installed.
+    from hftraining.base_model_trainer import BaseModelTrainer, PortfolioRLConfig
+    from hftraining.toto_features import TotoOptions
+except Exception as exc:  # pragma: no cover - triggered when extras missing
+    BaseModelTrainer = None  # type: ignore[assignment]
+    PortfolioRLConfig = None  # type: ignore[assignment]
+    TotoOptions = None  # type: ignore[assignment]
+    _HFTRAINING_IMPORT_ERROR: Exception | None = exc
+else:  # pragma: no cover - exercised when extras present
+    _HFTRAINING_IMPORT_ERROR = None
 
 
 LOGGER = logging.getLogger("pufferlibtraining.pipeline")
@@ -102,6 +112,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the full multi-stage Toto-enhanced RL training pipeline."
     )
+
+    leverage_defaults = get_leverage_settings()
 
     parser.add_argument(
         "--base-stocks",
@@ -238,6 +250,48 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Batch size for portfolio RL.",
     )
     parser.add_argument(
+        "--rl-optimizer",
+        type=str,
+        default="adamw",
+        choices=["adamw", "lion", "adan", "shampoo", "adafactor", "muon", "muon_mix"],
+        help="Optimizer used for the allocation transformer.",
+    )
+    parser.add_argument(
+        "--rl-weight-decay",
+        type=float,
+        default=0.01,
+        help="Weight decay applied to RL optimiser parameter groups.",
+    )
+    parser.add_argument(
+        "--rl-warmup-steps",
+        type=int,
+        default=500,
+        help="Warmup steps for the RL cosine schedule.",
+    )
+    parser.add_argument(
+        "--rl-min-lr",
+        type=float,
+        default=0.0,
+        help="Minimum learning rate for the RL cosine schedule.",
+    )
+    parser.add_argument(
+        "--rl-initial-checkpoint-dir",
+        type=str,
+        default="",
+        help="Optional directory containing per-pair RL checkpoints (<SYMA>_<SYMB>_portfolio_best.pt) to resume from.",
+    )
+    parser.add_argument(
+        "--rl-grad-clip",
+        type=float,
+        default=1.0,
+        help="Gradient clipping norm for RL training.",
+    )
+    parser.add_argument(
+        "--rl-no-compile",
+        action="store_true",
+        help="Disable torch.compile for the allocation transformer.",
+    )
+    parser.add_argument(
         "--transaction-cost-bps",
         type=float,
         default=10.0,
@@ -252,19 +306,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--leverage-limit",
         type=float,
-        default=2.0,
+        default=leverage_defaults.max_gross_leverage,
         help="Maximum gross exposure for the RL allocation head.",
     )
     parser.add_argument(
         "--borrowing-cost",
         type=float,
-        default=0.0675,
+        default=leverage_defaults.annual_cost,
         help="Annualised borrowing cost applied to leverage above 1×.",
     )
     parser.add_argument(
         "--trading-days-per-year",
         type=int,
-        default=252,
+        default=leverage_defaults.trading_days_per_year,
         help="Trading days per year used to annualise borrowing cost.",
     )
 
@@ -273,6 +327,48 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=str,
         default="cuda" if TotoOptions().toto_device == "cuda" else "cpu",
         help="Torch device string for Toto forecasts and RL training.",
+    )
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default="pufferlib",
+        help="Weights & Biases project name for RL runs (default: 'pufferlib').",
+    )
+    parser.add_argument(
+        "--wandb-entity",
+        type=str,
+        default="stock",
+        help="Weights & Biases entity/organisation (default: 'stock').",
+    )
+    parser.add_argument(
+        "--wandb-group",
+        type=str,
+        default="portfolio-rl",
+        help="Optional group label for Weights & Biases.",
+    )
+    parser.add_argument(
+        "--wandb-tags",
+        type=str,
+        default="pufferlib,rl",
+        help="Comma-separated list of Weights & Biases tags.",
+    )
+    parser.add_argument(
+        "--wandb-run-name",
+        type=str,
+        default="",
+        help="Override the auto-generated Weights & Biases run name.",
+    )
+    parser.add_argument(
+        "--wandb-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "online", "offline", "disabled"],
+        help="Set the Weights & Biases logging mode.",
+    )
+    parser.add_argument(
+        "--disable-wandb",
+        action="store_true",
+        help="Disable Weights & Biases logging while keeping TensorBoard.",
     )
     parser.add_argument(
         "--sequence-length",
@@ -332,6 +428,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
+    if _HFTRAINING_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hftraining optional dependencies are unavailable. Install with `uv pip sync --extra hf --extra rl --extra mlops` "
+            "or install the workspace package via `uv pip install -e pufferlibtraining`."
+        ) from _HFTRAINING_IMPORT_ERROR
+
     data_root = Path(args.trainingdata_dir).expanduser().resolve()
     if not data_root.exists():
         fallback = Path("tototraining") / "trainingdata" / "train"
@@ -411,6 +513,16 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
                 "leverage_limit": args.leverage_limit,
                 "borrowing_cost": args.borrowing_cost,
                 "trading_days_per_year": args.trading_days_per_year,
+                "initial_checkpoint_dir": args.rl_initial_checkpoint_dir,
+            },
+            "wandb": {
+                "enabled": not args.disable_wandb,
+                "project": args.wandb_project or None,
+                "entity": args.wandb_entity or None,
+                "group": args.wandb_group or None,
+                "tags": [tag.strip() for tag in args.wandb_tags.split(",") if tag.strip()],
+                "mode": args.wandb_mode,
+                "run_name": args.wandb_run_name or None,
             },
             "progressive_base_steps": progressive_schedule,
         },
@@ -489,11 +601,32 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
             leverage_limit=args.leverage_limit,
             borrowing_cost=args.borrowing_cost,
             trading_days_per_year=args.trading_days_per_year,
+            optimizer=args.rl_optimizer,
+            weight_decay=args.rl_weight_decay,
+            compile=not args.rl_no_compile,
+            grad_clip=args.rl_grad_clip,
+            warmup_steps=args.rl_warmup_steps,
+            min_learning_rate=args.rl_min_lr,
+            use_wandb=not args.disable_wandb,
+            wandb_project=args.wandb_project or None,
+            wandb_entity=args.wandb_entity or None,
+            wandb_group=args.wandb_group or None,
+            wandb_tags=tuple(tag.strip() for tag in args.wandb_tags.split(",") if tag.strip()),
+            wandb_run_name=args.wandb_run_name or None,
+            wandb_mode=args.wandb_mode,
+            tensorboard_subdir=args.wandb_run_name or None,
         )
         pair_metrics: Dict[str, Dict[str, float]] = {}
+        initial_dir = Path(args.rl_initial_checkpoint_dir).expanduser().resolve() if args.rl_initial_checkpoint_dir else None
         for sym_a, sym_b in pairs:
             LOGGER.info("Training allocation policy for pair %s/%s", sym_a, sym_b)
-            metrics = trainer.train_pair_portfolio((sym_a, sym_b), rl_config=rl_config)
+            init_ckpt = None
+            if initial_dir:
+                candidate = initial_dir / f"{sym_a}_{sym_b}_portfolio_best.pt"
+                if candidate.exists():
+                    init_ckpt = candidate
+                    LOGGER.info("Resuming pair %s/%s from %s", sym_a, sym_b, candidate)
+            metrics = trainer.train_pair_portfolio((sym_a, sym_b), rl_config=rl_config, initial_checkpoint=init_ckpt)
             pair_metrics[f"{sym_a}_{sym_b}"] = metrics
             LOGGER.info("Pair %s/%s metrics: %s", sym_a, sym_b, metrics)
         summary["portfolio_pairs"] = pair_metrics

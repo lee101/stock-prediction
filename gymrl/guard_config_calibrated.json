@@ -1,0 +1,10 @@
+{
+  "regime_filters_enabled": true,
+  "regime_drawdown_threshold": 0.036,
+  "regime_leverage_scale": 0.6,
+  "regime_negative_return_window": 42,
+  "regime_negative_return_threshold": -0.03,
+  "regime_negative_return_turnover_penalty": 0.0075,
+  "regime_turnover_threshold": 0.55,
+  "regime_turnover_probe_weight": 0.002
+}

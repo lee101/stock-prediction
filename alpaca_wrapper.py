@@ -30,6 +30,7 @@ from retry import retry
 
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT
 from typing import Iterable, Dict, Any, List, Optional, Tuple
+from types import SimpleNamespace
 from src.comparisons import is_buy_side, is_sell_side
 from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols
@@ -38,6 +39,45 @@ from src.stock_utils import pairs_equal, remap_symbols
 from src.trading_obj_utils import filter_to_realistic_positions
 
 logger = setup_logging("alpaca_cli.log")
+
+_PLACEHOLDER_TOKEN = "placeholder"
+
+
+def _missing_alpaca_credentials() -> bool:
+    return (
+        not ALP_KEY_ID
+        or not ALP_SECRET_KEY
+        or _PLACEHOLDER_TOKEN in ALP_KEY_ID
+        or _PLACEHOLDER_TOKEN in ALP_SECRET_KEY
+    )
+
+
+def _is_unauthorized_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    if "unauthorized" in message or "authentication" in message:
+        return True
+    status = getattr(exc, "status_code", None)
+    if status == 401:
+        return True
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            if getattr(response, "status_code", None) == 401:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _mock_clock() -> SimpleNamespace:
+    now = datetime.now(timezone.utc)
+    return SimpleNamespace(
+        is_open=True,
+        timestamp=now,
+        next_open=now,
+        next_close=now + timedelta(hours=6),
+    )
+
 
 alpaca_api = TradingClient(
     ALP_KEY_ID,
@@ -64,7 +104,7 @@ EXTENDED_STOCK_SYMBOLS: List[str] = [
     'AMD', 'AMT', 'AMZN', 'APD', 'ARKG', 'ARKK', 'ARKQ', 'ARKW', 'ASML', 'ATVI', 'AVB', 'AVGO', 'AXP',
     'AZN', 'AZO', 'BA', 'BABA', 'BAC', 'BIIB', 'BKNG', 'BKR', 'BLK', 'BNTX', 'BP', 'BSX', 'BUD', 'BXP',
     'C', 'CAG', 'CAT', 'CCI', 'CCL', 'CHD', 'CHTR', 'CL', 'CLF', 'CLX', 'CMCSA', 'CME', 'CMG', 'CMI',
-    'CNP', 'COF', 'COIN', 'COP', 'COST', 'COUR', 'CPB', 'CPT', 'CRM', 'CRWD', 'CVS', 'CVX', 'D', 'DAL',
+    'CNP', 'COF', 'COIN', 'COP', 'COST', 'COUR', 'CPB', 'CPT', 'CRM', 'CVS', 'CVX', 'D', 'DAL',
     'DASH', 'DDOG', 'DE', 'DEO', 'DHR', 'DIS', 'DISH', 'DOCU', 'DOV', 'DTE', 'DUK', 'EA', 'EBAY', 'ECL',
     'ED', 'EIX', 'EMR', 'ENB', 'ENPH', 'EOG', 'EPD', 'EQIX', 'EQR', 'ES', 'ESS', 'ESTC', 'ET', 'ETN',
     'ETR', 'ETSY', 'EW', 'EXC', 'EXR', 'F', 'FCX', 'FDX', 'GD', 'GE', 'GILD', 'GIS', 'GM', 'GOLD',
@@ -72,7 +112,7 @@ EXTENDED_STOCK_SYMBOLS: List[str] = [
     'ILMN', 'INTC', 'ISRG', 'ITW', 'JNJ', 'JPM', 'K', 'KHC', 'KLAC', 'KMB', 'KMI', 'KO', 'LC', 'LIN',
     'LLY', 'LMT', 'LOW', 'LRCX', 'LYFT', 'MA', 'MAA', 'MAR', 'MCD', 'MCO', 'MDB', 'MDT', 'MELI', 'META',
     'MGM', 'MLM', 'MMM', 'MNST', 'MPC', 'MPWR', 'MRK', 'MRNA', 'MRVL', 'MS', 'MSFT', 'MTCH', 'MU',
-    'NDAQ', 'NEE', 'NEM', 'NET', 'NFLX', 'NI', 'NKE', 'NOC', 'NOW', 'NUE', 'NVDA', 'NVO', 'NVS', 'NXPI',
+    'NDAQ', 'NEE', 'NEM', 'NFLX', 'NI', 'NKE', 'NOC', 'NOW', 'NUE', 'NVDA', 'NVO', 'NVS', 'NXPI',
     'O', 'OIH', 'OKTA', 'ON', 'ORCL', 'ORLY', 'OXY', 'PANW', 'PCG', 'PEP', 'PFE', 'PG', 'PH', 'PINS',
     'PLD', 'PLTR', 'PNC', 'PPG', 'PPL', 'PSA', 'PSX', 'PTON', 'PYPL', 'QCOM', 'RBLX', 'RCL', 'REGN',
     'RHHBY', 'ROK', 'ROKU', 'RPM', 'RS', 'RTX', 'SAP', 'SBUX', 'SCHW', 'SE', 'SEDG', 'SHEL', 'SHOP',
@@ -108,6 +148,9 @@ def get_clock_internal(retries=3):
         return alpaca_api.get_clock()
     except Exception as e:
         logger.error(e)
+        if _missing_alpaca_credentials() or _is_unauthorized_error(e):
+            logger.warning("Alpaca clock unavailable; returning synthetic open clock.")
+            return _mock_clock()
         if retries > 0:
             sleep(.1)
             logger.error("retrying get clock")
@@ -120,6 +163,9 @@ def get_all_positions(retries=3):
         return alpaca_api.get_all_positions()
     except Exception as e:
         logger.error(e)
+        if _missing_alpaca_credentials() or _is_unauthorized_error(e):
+            logger.warning("Alpaca positions unavailable; returning empty list.")
+            return []
         if retries > 0:
             sleep(.1)
             logger.error("retrying get all positions")
@@ -656,7 +702,14 @@ def close_position_at_almost_current_price(position, row):
 
 @retry(delay=.1, tries=3)
 def get_orders():
-    return alpaca_api.get_orders()
+    try:
+        return alpaca_api.get_orders()
+    except Exception as e:
+        logger.error(e)
+        if _missing_alpaca_credentials() or _is_unauthorized_error(e):
+            logger.warning("Alpaca orders unavailable; returning empty list.")
+            return []
+        raise
 
 
 def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side="long", bid=None, ask=None):
@@ -943,18 +996,23 @@ def download_symbol_history(
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
     include_latest: bool = True,
+    timeframe: Optional[TimeFrame] = None,
 ) -> pd.DataFrame:
     symbol = symbol.upper()
     is_crypto = symbol in DEFAULT_CRYPTO_SYMBOLS or symbol.endswith("USD")
 
     end_dt = end or datetime.now(timezone.utc)
     start_dt = start or (end_dt - timedelta(days=DEFAULT_HISTORY_DAYS))
+    requested_timeframe = timeframe or TimeFrame(1, TimeFrameUnit.Day)
+
+    if not is_crypto and requested_timeframe.unit != TimeFrameUnit.Day:
+        raise ValueError("Stock history currently supports only daily timeframes.")
 
     try:
         if is_crypto:
             request = CryptoBarsRequest(
                 symbol_or_symbols=remap_symbols(symbol),
-                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                timeframe=requested_timeframe,
                 start=start_dt,
                 end=end_dt,
             )
@@ -962,7 +1020,7 @@ def download_symbol_history(
         else:
             request = StockBarsRequest(
                 symbol_or_symbols=symbol,
-                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                timeframe=requested_timeframe,
                 start=start_dt,
                 end=end_dt,
                 adjustment="raw",
@@ -1204,7 +1262,19 @@ def download_training_pairs(
 
 @retry(delay=.1, tries=3)
 def get_account():
-    return alpaca_api.get_account()
+    try:
+        return alpaca_api.get_account()
+    except Exception as e:
+        logger.error(e)
+        if _missing_alpaca_credentials() or _is_unauthorized_error(e):
+            logger.warning("Alpaca account unavailable; returning synthetic account snapshot.")
+            return SimpleNamespace(
+                equity="0",
+                cash="0",
+                multiplier="1.0",
+                buying_power="0",
+            )
+        raise
 
 
 equity = 30000

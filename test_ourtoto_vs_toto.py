@@ -12,7 +12,7 @@ import json
 import argparse
 import os
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -81,22 +81,43 @@ def _extract_model_kwargs(config: Dict) -> Dict:
     return model_kwargs
 
 
-def _build_pipeline_from_checkpoint(checkpoint_path: Path, device: str) -> TotoPipeline:
+def _build_pipeline_from_checkpoint(
+    checkpoint_path: Path,
+    device: str,
+    *,
+    torch_dtype: Optional[torch.dtype] = None,
+    max_oom_retries: int = 2,
+    min_samples_per_batch: int = 32,
+    min_num_samples: int = 256,
+) -> TotoPipeline:
     config, state_dict = _load_checkpoint_config(checkpoint_path)
-    model_kwargs = _extract_model_kwargs(config)
-    model = Toto(**model_kwargs)
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+
+    pretrained_model_id = config.get("pretrained_model_id") or "Datadog/Toto-Open-Base-1.0"
+    base_model = Toto.from_pretrained(pretrained_model_id, map_location="cpu")
+    missing, unexpected = base_model.load_state_dict(state_dict, strict=False)
     if missing:
         raise RuntimeError(f"Missing parameters in state_dict: {missing}")
     if unexpected:
         raise RuntimeError(f"Unexpected parameters in state_dict: {unexpected}")
-    return TotoPipeline(model=model, device=device)
+    return TotoPipeline(
+        model=base_model,
+        device=device,
+        torch_dtype=torch_dtype,
+        max_oom_retries=max_oom_retries,
+        min_samples_per_batch=min_samples_per_batch,
+        min_num_samples=min_num_samples,
+    )
 
 
 def _collect_predictions(
     pipeline: TotoPipeline,
     prices: np.ndarray,
     eval_points: int,
+    *,
+    num_samples: int,
+    samples_per_batch: int,
+    quantile: float,
+    std_scale: float,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     preds = []
     actuals = []
@@ -119,14 +140,14 @@ def _collect_predictions(
         forecast = pipeline.predict(
             context=context,
             prediction_length=1,
-            num_samples=NUM_SAMPLES,
-            samples_per_batch=SAMPLES_PER_BATCH,
+            num_samples=num_samples,
+            samples_per_batch=samples_per_batch,
         )
         samples = forecast[0].samples if hasattr(forecast[0], "samples") else forecast[0]
         aggregated = aggregate_quantile_plus_std(
             samples,
-            quantile=QUANTILE,
-            std_scale=STD_SCALE,
+            quantile=quantile,
+            std_scale=std_scale,
         )
         preds.append(float(np.atleast_1d(aggregated)[0]))
         actuals.append(float(prices[idx]))
@@ -141,15 +162,22 @@ def _collect_predictions(
     return np.asarray(preds, dtype=np.float64), np.asarray(actuals, dtype=np.float64), prev_price
 
 
-def _compute_return_mae(preds: np.ndarray, actuals: np.ndarray, prev_price: float) -> float:
+def _compute_return_metrics(preds: np.ndarray, actuals: np.ndarray, prev_price: float) -> Tuple[float, float]:
     prev = prev_price
-    errors = []
+    abs_errors: list[float] = []
+    sq_errors: list[float] = []
+    eps = 1e-6
     for pred, actual in zip(preds, actuals):
-        pred_return = (pred - prev) / prev if prev != 0 else 0.0
-        actual_return = (actual - prev) / prev if prev != 0 else 0.0
-        errors.append(abs(pred_return - actual_return))
+        denom = prev if abs(prev) > eps else (eps if prev >= 0 else -eps)
+        pred_return = (pred - prev) / denom
+        actual_return = (actual - prev) / denom
+        diff = pred_return - actual_return
+        abs_errors.append(abs(diff))
+        sq_errors.append(diff * diff)
         prev = actual
-    return float(np.mean(errors))
+    mae = float(np.mean(abs_errors))
+    rmse = float(np.sqrt(np.mean(sq_errors)))
+    return mae, rmse
 
 
 def main() -> None:
@@ -165,6 +193,54 @@ def main() -> None:
         type=int,
         default=EVAL_POINTS,
         help="Number of evaluation points from the end of the series.",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=NUM_SAMPLES,
+        help="Number of Monte Carlo samples per forecast.",
+    )
+    parser.add_argument(
+        "--samples-per-batch",
+        type=int,
+        default=SAMPLES_PER_BATCH,
+        help="Samples processed per batch to control GPU memory.",
+    )
+    parser.add_argument(
+        "--quantile",
+        type=float,
+        default=QUANTILE,
+        help="Quantile used in the quantile+std aggregator (0-1).",
+    )
+    parser.add_argument(
+        "--std-scale",
+        type=float,
+        default=STD_SCALE,
+        help="Standard deviation multiplier in the aggregator.",
+    )
+    parser.add_argument(
+        "--torch-dtype",
+        choices=["float32", "float16", "bfloat16", None],
+        default=None,
+        help="Optional torch dtype override for both models when running on GPU.",
+    )
+    parser.add_argument(
+        "--max-oom-retries",
+        type=int,
+        default=2,
+        help="Number of automatic OOM retries inside TotoPipeline.",
+    )
+    parser.add_argument(
+        "--min-samples-per-batch",
+        type=int,
+        default=32,
+        help="Minimum samples per batch when autotuning after OOM.",
+    )
+    parser.add_argument(
+        "--min-num-samples",
+        type=int,
+        default=256,
+        help="Minimum total samples when autotuning after OOM.",
     )
     parser.add_argument(
         "--device",
@@ -187,39 +263,97 @@ def main() -> None:
     df = _load_dataset()
     prices = df["close"].to_numpy(dtype=np.float64)
 
+    dtype_map = {
+        "float32": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+    }
+    torch_dtype = dtype_map.get(args.torch_dtype) if args.torch_dtype else None
+
     print("Loading Toto baselines...")
-    base_pipeline = TotoPipeline.from_pretrained(model_id=BASE_MODEL_ID, device_map=device)
-    our_pipeline = _build_pipeline_from_checkpoint(checkpoint_path, device=device)
+    base_pipeline = TotoPipeline.from_pretrained(
+        model_id=BASE_MODEL_ID,
+        device_map=device,
+        torch_dtype=torch_dtype,
+        max_oom_retries=args.max_oom_retries,
+        min_samples_per_batch=args.min_samples_per_batch,
+        min_num_samples=args.min_num_samples,
+    )
+    our_pipeline = _build_pipeline_from_checkpoint(
+        checkpoint_path,
+        device=device,
+        torch_dtype=torch_dtype,
+        max_oom_retries=args.max_oom_retries,
+        min_samples_per_batch=args.min_samples_per_batch,
+        min_num_samples=args.min_num_samples,
+    )
 
     print("Collecting forecasts...")
     eval_points = args.eval_points
-    base_preds, actuals, prev_price = _collect_predictions(base_pipeline, prices, eval_points)
-    our_preds, _, _ = _collect_predictions(our_pipeline, prices, eval_points)
+    base_preds, actuals, prev_price = _collect_predictions(
+        base_pipeline,
+        prices,
+        eval_points,
+        num_samples=args.num_samples,
+        samples_per_batch=args.samples_per_batch,
+        quantile=args.quantile,
+        std_scale=args.std_scale,
+    )
+    our_preds, _, _ = _collect_predictions(
+        our_pipeline,
+        prices,
+        eval_points,
+        num_samples=args.num_samples,
+        samples_per_batch=args.samples_per_batch,
+        quantile=args.quantile,
+        std_scale=args.std_scale,
+    )
 
     base_mae = float(np.mean(np.abs(actuals - base_preds)))
     our_mae = float(np.mean(np.abs(actuals - our_preds)))
+    base_mse = float(np.mean((actuals - base_preds) ** 2))
+    our_mse = float(np.mean((actuals - our_preds) ** 2))
+    base_rmse = float(np.sqrt(base_mse))
+    our_rmse = float(np.sqrt(our_mse))
 
-    base_return_mae = _compute_return_mae(base_preds, actuals, prev_price)
-    our_return_mae = _compute_return_mae(our_preds, actuals, prev_price)
+    base_pct_return_mae, base_return_rmse = _compute_return_metrics(base_preds, actuals, prev_price)
+    our_pct_return_mae, our_return_rmse = _compute_return_metrics(our_preds, actuals, prev_price)
 
     summary = {
         "evaluation_points": len(actuals),
         "base_price_mae": base_mae,
         "our_price_mae": our_mae,
         "price_mae_delta": our_mae - base_mae,
-        "base_return_mae": base_return_mae,
-        "our_return_mae": our_return_mae,
-        "return_mae_delta": our_return_mae - base_return_mae,
+        "base_price_rmse": base_rmse,
+        "our_price_rmse": our_rmse,
+        "price_rmse_delta": our_rmse - base_rmse,
+        "base_price_mse": base_mse,
+        "our_price_mse": our_mse,
+        "base_pct_return_mae": base_pct_return_mae,
+        "our_pct_return_mae": our_pct_return_mae,
+        "pct_return_mae_delta": our_pct_return_mae - base_pct_return_mae,
+        "base_return_rmse": base_return_rmse,
+        "our_return_rmse": our_return_rmse,
+        "return_rmse_delta": our_return_rmse - base_return_rmse,
         "checkpoint_path": str(checkpoint_path),
         "device": device,
+        "num_samples": args.num_samples,
+        "samples_per_batch": args.samples_per_batch,
+        "quantile": args.quantile,
+        "std_scale": args.std_scale,
+        "torch_dtype": args.torch_dtype,
     }
 
     print("\n=== Toto Baseline vs Our Trained Toto ===")
     print(f"Evaluation points: {summary['evaluation_points']}")
     print(f"Base Toto price MAE: {base_mae:.6f}")
     print(f"Our Toto price MAE:  {our_mae:.6f} (Δ {summary['price_mae_delta']:+.6f})")
-    print(f"Base Toto return MAE: {base_return_mae:.6f}")
-    print(f"Our Toto return MAE:  {our_return_mae:.6f} (Δ {summary['return_mae_delta']:+.6f})")
+    print(f"Base Toto price RMSE: {base_rmse:.6f}")
+    print(f"Our Toto price RMSE:  {our_rmse:.6f} (Δ {summary['price_rmse_delta']:+.6f})")
+    print(f"Base Toto return MAE: {base_pct_return_mae:.6f}")
+    print(f"Our Toto return MAE:  {our_pct_return_mae:.6f} (Δ {summary['pct_return_mae_delta']:+.6f})")
+    print(f"Base Toto return RMSE: {base_return_rmse:.6f}")
+    print(f"Our Toto return RMSE:  {our_return_rmse:.6f} (Δ {summary['return_rmse_delta']:+.6f})")
     print(f"Checkpoint: {checkpoint_path}")
     print(f"Device: {device}")
     print("\nJSON summary:")

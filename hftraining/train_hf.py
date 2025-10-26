@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
-from typing import Optional
+from typing import Optional, List
 from pathlib import Path
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -16,8 +16,10 @@ import json
 from datetime import datetime
 import warnings
 import random
+import contextlib
+import math
+from dataclasses import asdict
 warnings.filterwarnings('ignore')
-from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, Dataset
 import sys
 import os
@@ -34,13 +36,11 @@ sys.path.append(os.path.dirname(current_dir))
 from hf_trainer import (
     HFTrainingConfig,
     TransformerTradingModel,
-    get_linear_schedule_with_warmup,
-    get_cosine_schedule_with_warmup,
     MixedPrecisionTrainer,
     EarlyStopping,
     adaptive_clip_grad_
 )
-from modern_optimizers import get_optimizer
+from modern_optimizers import get_optimizer as legacy_get_optimizer
 from logging_utils import get_logger, MetricsTracker
 try:
     import psutil  # Optional for CPU metrics
@@ -49,12 +49,114 @@ except Exception:
 from auto_tune import AutoBatchTuner
 from differentiable_profit import compute_portfolio_pnl, sharpe_like_ratio
 
+from wandboard import WandBoardLogger
+
 try:
     from .asset_metadata import get_asset_class, get_asset_class_id, get_trading_fee
 except ImportError:  # pragma: no cover - script execution
     from asset_metadata import get_asset_class, get_asset_class_id, get_trading_fee  # type: ignore
 
 from loss_utils import TRADING_FEE
+
+from traininglib import (
+    bf16_supported,
+    make_optimizer,
+    WarmupCosine,
+    write_report_markdown,
+)
+from hftraining.engine_speed import compile_model as compile_for_speed, fast_context
+from hftraining.metrics import crps_from_quantiles, dm_test
+
+
+_NATIVE_SCALED_DOT_PRODUCT_ATTENTION = getattr(F, "scaled_dot_product_attention", None)
+
+
+def _scaled_dot_product_attention_reference(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+) -> torch.Tensor:
+    """Pure PyTorch reference implementation used as a CPU fallback."""
+    d_k = q.size(-1)
+    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
+
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            scores = scores.masked_fill(attn_mask, float("-inf"))
+        else:
+            scores = scores + attn_mask
+
+    if is_causal:
+        causal_mask = torch.triu(
+            torch.ones(
+                scores.size(-2),
+                scores.size(-1),
+                dtype=torch.bool,
+                device=scores.device,
+            ),
+            diagonal=1,
+        )
+        scores = scores.masked_fill(causal_mask, float("-inf"))
+
+    attn = torch.softmax(scores, dim=-1)
+    if dropout_p > 0.0:
+        attn = torch.nn.functional.dropout(
+            attn, p=dropout_p, training=torch.is_grad_enabled()
+        )
+    return torch.matmul(attn, v)
+
+
+def _scaled_dot_product_attention_with_fallback(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+) -> torch.Tensor:
+    """Uses native kernel when available, otherwise falls back to the reference path."""
+
+    native_fn = _NATIVE_SCALED_DOT_PRODUCT_ATTENTION
+    if native_fn is not None:
+        try:
+            return native_fn(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                dropout_p=dropout_p,
+                is_causal=is_causal,
+            )
+        except (RuntimeError, NotImplementedError) as exc:
+            if q.device.type != "cpu":
+                raise
+            message = str(exc).lower()
+            fallback_indicators = (
+                "not implemented",
+                "not available",
+                "only available",
+                "does not support",
+            )
+            if not any(indicator in message for indicator in fallback_indicators):
+                raise
+
+    return _scaled_dot_product_attention_reference(
+        q,
+        k,
+        v,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+    )
+
+
+if _NATIVE_SCALED_DOT_PRODUCT_ATTENTION is not None:
+    F.scaled_dot_product_attention = _scaled_dot_product_attention_with_fallback  # type: ignore[attr-defined]
+else:
+    F.scaled_dot_product_attention = _scaled_dot_product_attention_reference  # type: ignore[attr-defined]
 
 
 class StockDataset(Dataset):
@@ -162,32 +264,21 @@ class HFTrainer:
         # Setup device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
-
-        # Modern CUDA math settings
-        if torch.cuda.is_available() and getattr(self.config, 'allow_tf32', True):
-            try:
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
-                torch.backends.cudnn.benchmark = True
-            except Exception:
-                pass
-        try:
-            torch.set_float32_matmul_precision('high')
-        except Exception:
-            pass
+        self._fast_ctx = contextlib.ExitStack()
+        self._fast_ctx.enter_context(fast_context())
         
         # Setup data parallel if available
         if torch.cuda.device_count() > 1 and config.use_data_parallel:
             self.model = nn.DataParallel(self.model)
         
+        compile_requested = bool(getattr(self.config, 'use_compile', False))
+        original_model_ref = self.model
+        if compile_requested:
+            self.model = compile_for_speed(self.model, dynamic=True)
+        self._compile_enabled = compile_requested and self.model is not original_model_ref
+
         # Setup mixed precision (prefer BF16 on capable GPUs)
-        mp_dtype = None
-        if torch.cuda.is_available() and getattr(self.config, 'use_bfloat16', True):
-            try:
-                if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
-                    mp_dtype = torch.bfloat16
-            except Exception:
-                pass
+        mp_dtype = torch.bfloat16 if (bf16_supported() and getattr(self.config, 'use_bfloat16', True)) else None
         self.mp_trainer = MixedPrecisionTrainer(config.use_mixed_precision, dtype=mp_dtype)
         
         # Setup optimizer
@@ -207,13 +298,11 @@ class HFTrainer:
         self.training_logger = get_logger(config.logging_dir, "training")
         self.metrics_tracker = MetricsTracker()
         
-        # Optional torch.compile (PyTorch 2.0+)
-        if getattr(self.config, 'use_compile', False):
-            try:
-                self.model = torch.compile(self.model, mode='max-autotune')
+        if compile_requested:
+            if self._compile_enabled:
                 self.training_logger.info('Enabled torch.compile for the model')
-            except Exception as e:
-                self.training_logger.logger.warning(f'torch.compile unavailable or failed: {e}')
+            else:
+                self.training_logger.logger.warning('torch.compile unavailable or disabled by runtime guards.')
 
         # Setup logging (TensorBoard)
         self.setup_logging()
@@ -230,7 +319,16 @@ class HFTrainer:
         self.cum_return_crypto = 0.0
         self.train_equity_steps = 0
         self.train_crypto_steps = 0
-        
+
+    @property
+    def step(self) -> int:
+        """Backwards-compatible alias for ``global_step`` used by legacy tests."""
+        return self.global_step
+
+    @step.setter
+    def step(self, value: int) -> None:
+        self.global_step = int(value)
+
     def _get_gpu_metrics(self):
         """Safely collect GPU metrics if CUDA is available."""
         metrics = {}
@@ -261,46 +359,76 @@ class HFTrainer:
         return metrics
         
     def _create_optimizer(self):
-        """Create optimizer based on config using modern_optimizers factory"""
+        """Create optimizer using the shared traininglib factory."""
         name = (self.config.optimizer_name or "adamw").lower()
-        # Parameter groups: do not decay biases and (Layer)Norm parameters
-        decay_params, no_decay_params = [], []
-        for n, p in self.model.named_parameters():
-            if not p.requires_grad:
-                continue
-            if n.endswith('.bias') or 'norm' in n.lower():
-                no_decay_params.append(p)
-            else:
-                decay_params.append(p)
-        param_groups = [
-            {"params": decay_params, "weight_decay": self.config.weight_decay},
-            {"params": no_decay_params, "weight_decay": 0.0},
-        ]
+        extra_kwargs = {}
+        if name.startswith("muon"):
+            extra_kwargs.update({
+                "momentum": getattr(self.config, "muon_momentum", 0.95),
+                "nesterov": getattr(self.config, "muon_nesterov", True),
+                "ns_steps": getattr(self.config, "muon_ns_steps", 5),
+            })
 
         try:
-            return get_optimizer(
-                name,
-                param_groups,
+            return make_optimizer(
+                self.model,
+                name=name,
+                lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay,
+                betas=(self.config.adam_beta1, self.config.adam_beta2),
+                eps=self.config.adam_epsilon,
+                fused=True,
+                **{k: v for k, v in extra_kwargs.items() if v is not None},
+            )
+        except ValueError:
+            # Unknown optimizer name, fall back to legacy registry.
+            try:
+                return legacy_get_optimizer(
+                    name,
+                    self.model.parameters(),
+                    lr=self.config.learning_rate,
+                    betas=(self.config.adam_beta1, self.config.adam_beta2),
+                    eps=self.config.adam_epsilon,
+                    weight_decay=self.config.weight_decay,
+                    **extra_kwargs,
+                )
+            except Exception as exc:
+                if hasattr(self, 'training_logger'):
+                    self.training_logger.logger.warning(f"Falling back to AdamW optimizer due to: {exc}")
+                return torch.optim.AdamW(
+                    self.model.parameters(),
+                    lr=self.config.learning_rate,
+                    betas=(self.config.adam_beta1, self.config.adam_beta2),
+                    eps=self.config.adam_epsilon,
+                    weight_decay=self.config.weight_decay,
+                )
+        except Exception as exc:  # pragma: no cover - runtime guard.
+            if hasattr(self, 'training_logger'):
+                self.training_logger.logger.warning(f"Optimizer setup failed ({name}), defaulting to AdamW: {exc}")
+            return torch.optim.AdamW(
+                self.model.parameters(),
                 lr=self.config.learning_rate,
                 betas=(self.config.adam_beta1, self.config.adam_beta2),
                 eps=self.config.adam_epsilon,
-                weight_decay=self.config.weight_decay
+                weight_decay=self.config.weight_decay,
             )
-        except Exception as e:
-            # Fallback to AdamW on any issue
-            if hasattr(self, 'training_logger'):
-                self.training_logger.logger.warning(f"Falling back to AdamW optimizer due to: {e}")
-            return torch.optim.AdamW(param_groups,
-                                     lr=self.config.learning_rate,
-                                     betas=(self.config.adam_beta1, self.config.adam_beta2),
-                                     eps=self.config.adam_epsilon)
-    
+
     def _create_scheduler(self):
         """Create learning rate scheduler"""
-        return get_cosine_schedule_with_warmup(
+        total_steps = getattr(self.config, "max_steps", 0)
+        if total_steps <= 0:
+            dataset_size = len(self.train_dataset) if hasattr(self.train_dataset, "__len__") else 0
+            if dataset_size and getattr(self.config, "batch_size", 0):
+                steps_per_epoch = math.ceil(dataset_size / max(1, self.config.batch_size))
+                total_steps = steps_per_epoch * max(1, getattr(self.config, "num_train_epochs", 1))
+            else:
+                total_steps = 1
+        min_lr = float(getattr(self.config, "min_learning_rate", 0.0))
+        return WarmupCosine(
             self.optimizer,
-            num_warmup_steps=self.config.warmup_steps,
-            num_training_steps=self.config.max_steps
+            warmup_steps=self.config.warmup_steps,
+            total_steps=total_steps,
+            min_lr=min_lr,
         )
     
     def setup_logging(self):
@@ -325,21 +453,52 @@ class HFTrainer:
         Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
         Path(self.config.logging_dir).mkdir(parents=True, exist_ok=True)
         Path(self.config.cache_dir).mkdir(parents=True, exist_ok=True)
-        
-        # Setup tensorboard
+
+        # Setup experiment tracking
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        log_dir = f"{self.config.logging_dir}/hf_training_{timestamp}"
-        self.writer = SummaryWriter(log_dir)
-        self.tb_log_dir = log_dir
+        default_run_name = f"hf_training_{timestamp}"
+        run_name = getattr(self.config, "wandb_run_name", None) or default_run_name
+        tb_subdir = getattr(self.config, "tensorboard_subdir", None) or run_name
+        wandb_config = (
+            asdict(self.config)
+            if hasattr(self.config, "__dataclass_fields__")
+            else dict(self.config.__dict__)
+        )
+        self.metrics_logger = WandBoardLogger(
+            run_name=run_name,
+            project=getattr(self.config, "wandb_project", None),
+            entity=getattr(self.config, "wandb_entity", None),
+            tags=tuple(getattr(self.config, "wandb_tags", ()) or ()),
+            group=getattr(self.config, "wandb_group", None),
+            notes=getattr(self.config, "wandb_notes", None),
+            mode=getattr(self.config, "wandb_mode", "auto"),
+            enable_wandb=bool(getattr(self.config, "use_wandb", True)),
+            log_dir=self.config.logging_dir,
+            tensorboard_subdir=tb_subdir,
+            config=wandb_config,
+            settings=getattr(self.config, "wandb_settings", None),
+        )
+        self.tb_log_dir = str(self.metrics_logger.tensorboard_log_dir)
+        # Preserve backwards compatibility for code paths that still expect a raw writer
+        self.writer = self.metrics_logger.tensorboard_writer
+        if self.metrics_logger.wandb_enabled:
+            self.training_logger.info(
+                f"W&B logging enabled - project: {self.metrics_logger.project}, run: {self.metrics_logger.run_name}"
+            )
+        else:
+            msg = "W&B logging disabled; mirroring metrics to TensorBoard only."
+            if self.metrics_logger.last_error is not None:
+                msg += f" Last error: {self.metrics_logger.last_error}"
+            self.training_logger.info(msg)
         # Perf CSV file
-        self.perf_csv_path = Path(log_dir) / 'perf_metrics.csv'
+        self.perf_csv_path = Path(self.tb_log_dir) / 'perf_metrics.csv'
         try:
             with open(self.perf_csv_path, 'w') as f:
-                f.write('step,epoch,step_time_s,samples_per_sec,lr,gpu_mem_alloc_mb\n')
+                f.write('step,epoch,step_time_s,samples_per_sec,tokens_per_sec,lr,gpu_mem_alloc_mb\n')
         except Exception:
             pass
         
-        self.training_logger.info(f"TensorBoard logging to: {log_dir}")
+        self.training_logger.info(f"TensorBoard logging to: {self.tb_log_dir}")
         self.training_logger.info(f"Output directory: {self.config.output_dir}")
     
     def train(self):
@@ -447,6 +606,11 @@ class HFTrainer:
                 # Training step
                 step_start = time.time()
                 loss = self.training_step(batch)
+                if torch.cuda.is_available():
+                    try:
+                        torch.cuda.synchronize()
+                    except Exception:
+                        pass
                 self.last_step_time = max(1e-9, time.time() - step_start)
                 epoch_loss += loss
                 epoch_steps += 1
@@ -456,6 +620,9 @@ class HFTrainer:
                     # Log to TensorBoard
                     batch_size = self.config.batch_size
                     samples_per_sec = float(batch_size) / self.last_step_time if self.last_step_time else 0.0
+                    # Estimate tokens/sec akin to nanochat logging
+                    seq_len = getattr(self.config, 'sequence_length', None)
+                    tokens_per_sec = float(samples_per_sec * seq_len) if seq_len else None
                     sys_metrics = self._get_gpu_metrics()
                     avg_total_return = self.cum_return_train / max(1, self.train_return_steps)
                     equity_steps = max(1, self.train_equity_steps)
@@ -473,6 +640,8 @@ class HFTrainer:
                         'train/avg_return_equity': avg_equity_return,
                         'train/avg_return_crypto': avg_crypto_return,
                     }
+                    if tokens_per_sec is not None:
+                        tb_metrics['train/tokens_per_sec'] = tokens_per_sec
                     # Add GPU metrics to TB if present
                     for k, v in sys_metrics.items():
                         tb_metrics[f'system/{k}'] = v
@@ -493,6 +662,8 @@ class HFTrainer:
                         'avg_return_equity': avg_equity_return,
                         'avg_return_crypto': avg_crypto_return,
                     }
+                    if tokens_per_sec is not None:
+                        metrics['tokens_per_sec'] = tokens_per_sec
                     # Also report GPU mem to file logger if available
                     cpu_pct = None
                     if psutil is not None:
@@ -509,8 +680,9 @@ class HFTrainer:
                     # Write perf CSV
                     try:
                         with open(self.perf_csv_path, 'a') as f:
+                            tok_str = f"{tokens_per_sec:.1f}" if tokens_per_sec is not None else "0.0"
                             f.write(
-                                f"{self.global_step},{epoch},{self.last_step_time:.6f},{samples_per_sec:.3f},{self.scheduler.get_last_lr()[0]:.6e},{sys_metrics.get('gpu_memory_allocated_mb', 0):.1f}\n"
+                                f"{self.global_step},{epoch},{self.last_step_time:.6f},{samples_per_sec:.3f},{tok_str},{self.scheduler.get_last_lr()[0]:.6e},{sys_metrics.get('gpu_memory_allocated_mb', 0):.1f}\n"
                             )
                     except Exception:
                         pass
@@ -581,16 +753,73 @@ class HFTrainer:
         
         # Get final metrics
         final_metrics = {
-            'final_loss': self.metrics_tracker.get_recent_avg('loss', 10),
-            'total_steps': self.global_step,
-            'total_epochs': epoch
+            'final_loss': float(self.metrics_tracker.get_recent_avg('loss', 10)),
+            'total_steps': int(self.global_step),
+            'total_epochs': int(epoch),
         }
+        avg_total_return = self.cum_return_train / max(1, self.train_return_steps)
+        avg_equity_return = self.cum_return_equity / max(1, self.train_equity_steps)
+        avg_crypto_return = self.cum_return_crypto / max(1, self.train_crypto_steps)
+        final_metrics.update(
+            {
+                'avg_train_return': float(avg_total_return),
+                'avg_equity_return': float(avg_equity_return),
+                'avg_crypto_return': float(avg_crypto_return),
+                'train_return_samples': int(self.train_return_steps),
+            }
+        )
         
         # Log training completion
         self.training_logger.log_training_complete(total_training_time, final_metrics)
-        
+
+        report_args = asdict(self.config) if hasattr(self.config, "__dataclass_fields__") else dict(self.config.__dict__)
+        eval_summary = dict(getattr(self.training_logger, "best_metrics", {}))
+        notes = None
+        if eval_summary.get('best_eval_loss') is not None:
+            best_step = eval_summary.get('best_step')
+            notes = f"Best eval loss {eval_summary['best_eval_loss']:.6f} at global step {best_step}."
+        report_path = Path(self.config.output_dir) / "run_report.md"
+        try:
+            write_report_markdown(
+                str(report_path),
+                title="HF Training Run",
+                args=report_args,
+                train_metrics=final_metrics,
+                eval_metrics=eval_summary or None,
+                notes=notes,
+            )
+            self.training_logger.info(f"Run report written to {report_path}")
+        except Exception as exc:
+            self.training_logger.logger.debug(f"Failed to write report.md: {exc}")
+
+        if hasattr(self, "metrics_logger"):
+            final_prefixed = {f"final/{k}": v for k, v in final_metrics.items()}
+            final_prefixed["final/training_time_s"] = float(total_training_time)
+            try:
+                self.metrics_logger.log(final_prefixed, step=self.global_step, commit=True)
+            except Exception:
+                pass
+            try:
+                self.metrics_logger.finish()
+            except Exception:
+                pass
+
+        self._fast_ctx.close()
         return self.model
-    
+
+    def evaluation_step(self):
+        """Execute a validation pass and return aggregated metrics."""
+        if self.eval_dataset is None:
+            return {}
+        eval_loader = DataLoader(
+            self.eval_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=False,
+            num_workers=self.config.dataloader_num_workers,
+            pin_memory=torch.cuda.is_available(),
+        )
+        return self.evaluate(eval_loader)
+
     def training_step(self, batch):
         """Single training step with gradient accumulation"""
         # Only zero grad on accumulation boundary
@@ -756,7 +985,7 @@ class HFTrainer:
         # Optional: log grad norm to TensorBoard
         if grad_norm is not None and self.global_step % max(1, self.config.logging_steps) == 0:
             try:
-                self.writer.add_scalar('train/grad_norm', float(grad_norm), self.global_step)
+                self.metrics_logger.add_scalar('train/grad_norm', float(grad_norm), self.global_step)
             except Exception:
                 pass
 
@@ -822,42 +1051,70 @@ class HFTrainer:
         return loss_val
     
     def evaluate(self, eval_loader):
-        """Evaluation loop"""
+        """Evaluation loop."""
         self.model.eval()
-        
-        total_loss = 0
-        total_action_loss = 0
-        total_price_loss = 0
+
+        total_loss = 0.0
+        total_action_loss = 0.0
+        total_price_loss = 0.0
         total_steps = 0
         total_return = 0.0
         total_return_equity = 0.0
         total_return_crypto = 0.0
-        
+        mae_samples: List[np.ndarray] = []
+        baseline_mae_samples: List[np.ndarray] = []
+        sum_squared_error = 0.0
+        total_points = 0
+        crps_values: List[float] = []
+        quantile_levels = getattr(self.config, "quantile_levels", None)
+        tau_tensor = None
+
         with torch.no_grad():
             for batch in tqdm(eval_loader, desc="Evaluating", leave=False):
                 non_block = bool(torch.cuda.is_available())
                 batch = {k: v.to(self.device, non_blocking=non_block) for k, v in batch.items()}
-                
+
                 outputs = self.model(
                     batch['input_ids'],
                     attention_mask=batch['attention_mask']
                 )
-                
+
                 action_loss = F.cross_entropy(
                     outputs['action_logits'],
                     batch['action_labels']
                 )
-                
-                price_loss = F.mse_loss(
-                    outputs['price_predictions'],
-                    batch['labels'][:, :self.config.prediction_horizon, self.close_index]
-                )
-                
+
+                targets = batch['labels'][:, :self.config.prediction_horizon, self.close_index]
+                preds = outputs['price_predictions']
+
+                price_loss = F.mse_loss(preds, targets)
+
                 total_loss += action_loss.item() + 0.5 * price_loss.item()
                 total_action_loss += action_loss.item()
                 total_price_loss += price_loss.item()
                 total_steps += 1
-                # Compute realized 1-step return under predicted action
+
+                mae_batch = torch.mean(torch.abs(preds - targets), dim=1)
+                mae_samples.append(mae_batch.detach().cpu().numpy())
+
+                baseline = batch['input_ids'][:, -1, self.close_index].unsqueeze(1).expand_as(targets)
+                baseline_mae = torch.mean(torch.abs(baseline - targets), dim=1)
+                baseline_mae_samples.append(baseline_mae.detach().cpu().numpy())
+
+                sum_squared_error += torch.sum((preds - targets) ** 2).item()
+                total_points += int(preds.numel())
+
+                price_quantiles = outputs.get('price_quantiles')
+                if price_quantiles is not None and quantile_levels:
+                    if tau_tensor is None:
+                        tau_tensor = torch.tensor(
+                            quantile_levels,
+                            device=price_quantiles.device,
+                            dtype=price_quantiles.dtype,
+                        )
+                    crps_val = crps_from_quantiles(targets, price_quantiles, tau_tensor)
+                    crps_values.append(float(crps_val.detach().cpu()))
+
                 try:
                     future_returns = batch.get('future_returns')
                     if future_returns is None:
@@ -891,14 +1148,14 @@ class HFTrainer:
                                 total_return_crypto += float((per_asset_net * crypto_mask).sum(dim=-1).mean().item())
                 except Exception:
                     pass
-        
+
         self.model.train()
-        
+
         denom = max(1, total_steps)
-        return {
-            'loss': total_loss / total_steps,
-            'action_loss': total_action_loss / total_steps,
-            'price_loss': total_price_loss / total_steps,
+        metrics = {
+            'loss': total_loss / max(total_steps, 1),
+            'action_loss': total_action_loss / max(total_steps, 1),
+            'price_loss': total_price_loss / max(total_steps, 1),
             'avg_return': (total_return / denom),
             'cum_return': total_return,
             'avg_return_equity': (total_return_equity / denom),
@@ -906,13 +1163,34 @@ class HFTrainer:
             'cum_return_equity': total_return_equity,
             'cum_return_crypto': total_return_crypto,
         }
+
+        if mae_samples:
+            mae_array = np.concatenate(mae_samples)
+            baseline_mae_array = np.concatenate(baseline_mae_samples)
+            metrics['mae'] = float(mae_array.mean())
+            metrics['baseline_mae'] = float(baseline_mae_array.mean())
+            if total_points > 0:
+                metrics['rmse'] = float(math.sqrt(sum_squared_error / total_points))
+            dm_stat, dm_p = dm_test(mae_array, baseline_mae_array)
+            metrics['dm_stat_vs_naive'] = float(dm_stat)
+            metrics['dm_pvalue_vs_naive'] = float(dm_p)
+
+        if crps_values:
+            metrics['crps'] = float(np.mean(crps_values))
+
+        return metrics
     
-    def log_metrics(self, metrics, prefix='train'):
-        """Log metrics to tensorboard"""
+    def log_metrics(self, metrics, prefix='train', step=None, commit=None):
+        """Log metrics to the unified experiment tracker."""
+        if not hasattr(self, "metrics_logger"):
+            return
+        if step is None:
+            step = self.global_step
+        formatted = {}
         for key, value in metrics.items():
-            if not key.startswith(prefix):
-                key = f"{prefix}/{key}"
-            self.writer.add_scalar(key, value, self.global_step)
+            metric_key = key if key.startswith(prefix) else f"{prefix}/{key}"
+            formatted[metric_key] = value
+        self.metrics_logger.log(formatted, step=step, commit=commit)
     
     def save_checkpoint(self, is_final=False):
         """Save model checkpoint"""
@@ -1063,9 +1341,9 @@ def main():
         num_heads=8 if device_str == "cuda" else 4,        # More heads for GPU
         
         # Training
-        learning_rate=3e-4,  # Optimal LR
-        warmup_steps=100,    # Reasonable warmup
-        max_steps=5000 if device_str == "cuda" else 1000,  # More steps for GPU
+        learning_rate=1e-4,
+        warmup_steps=400,
+        max_steps=20000 if device_str == "cuda" else 4000,
         batch_size=batch_size,
         
         # Optimizer
@@ -1075,9 +1353,9 @@ def main():
         adam_beta2=0.999,
         
         # Evaluation
-        eval_steps=100,      # Regular evaluation
-        save_steps=500,      # Save periodically
-        logging_steps=20,    # Frequent logging
+        eval_steps=200,
+        save_steps=800,
+        logging_steps=20,
         
         # Training stability
         max_grad_norm=1.0,   # Global gradient clipping
@@ -1099,9 +1377,9 @@ def main():
         prefetch_factor=2,
 
         # Micro augmentation (normalized inputs)
-        input_noise_std=0.001,
-        input_noise_prob=0.5,
-        input_noise_clip=0.02,
+        input_noise_std=0.0005,
+        input_noise_prob=0.2,
+        input_noise_clip=0.015,
         
         # Early stopping
         early_stopping_patience=15,
@@ -1109,7 +1387,11 @@ def main():
         
         # Output
         output_dir="hftraining/output",
-        logging_dir="hftraining/logs"
+        logging_dir="hftraining/logs",
+        wandb_project="hftraining",
+        wandb_entity="stock",
+        wandb_group="hftraining_longrun",
+        wandb_tags=("hftraining", "supervised"),
     )
     
     # Load data

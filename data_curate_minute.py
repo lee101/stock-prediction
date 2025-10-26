@@ -32,9 +32,8 @@ def download_minute_stock_data(path=None):
         "U",
         "ADSK",
         # "RBLX",
-        "CRWD",
         "ADBE",
-        "NET",
+        "MSFT",
         'COIN',
         # 'QUBT',  no data
         # 'ARQQ',  no data
@@ -52,7 +51,7 @@ def download_minute_stock_data(path=None):
         # 'PFE',
         # 'MRNA',
         'AMD',
-#        'MSFT',
+        'MSFT',
         'META',
         'CRM',
         'NFLX',

@@ -2,23 +2,23 @@
   "symbol": "BTCUSD",
   "model": "kronos",
   "config": {
-    "name": "kronos_temp0.145_p0.82_s208_k16_clip1.75_ctx224",
-    "temperature": 0.145,
-    "top_p": 0.82,
-    "top_k": 16,
-    "sample_count": 208,
+    "name": "kronos_temp0.12_p0.78_s224_k24_clip1.5_ctx224",
+    "temperature": 0.12,
+    "top_p": 0.78,
+    "top_k": 24,
+    "sample_count": 224,
     "max_context": 224,
-    "clip": 1.75
+    "clip": 1.5
   },
   "validation": {
-    "price_mae": 359.54199109808513,
-    "return_mae": 0.03286508330516908,
-    "latency_s": 0.04973456542938948
+    "price_mae": 1034.850884375001,
+    "pct_return_mae": 0.009091910907884276,
+    "latency_s": 15.242566708475351
   },
   "test": {
-    "price_mae": 268.680429474047,
-    "return_mae": 0.028034440123308458,
-    "latency_s": 0.049138146452605724
+    "price_mae": 2537.6852124999996,
+    "pct_return_mae": 0.021786093903153038,
+    "latency_s": 18.157239321619272
   },
   "windows": {
     "val_window": 20,

@@ -8,12 +8,15 @@ DEFAULT_SYMBOLS = [
     "AAPL",
     "U",
     "ADSK",
+    "CRWD",
     "ADBE",
-    "MSFT",
+    "NET",
     "COIN",
+    "META",
     "AMZN",
     "AMD",
     "INTC",
+    "LCID",
     "QUBT",
     "BTCUSD",
     "ETHUSD",
@@ -27,3 +30,6 @@ SIMULATION_CLOSE_TIME = "16:00"
 # approx taker fees (per-side) used in simulator
 TRADING_FEE = 0.0005  # equities
 CRYPTO_TRADING_FEE = 0.0015  # crypto
+
+# GPT-5 reasoning effort used for plan generation.
+DEFAULT_REASONING_EFFORT = "high"

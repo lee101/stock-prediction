@@ -1,0 +1,29 @@
+{
+  "AAPL": {
+    "average_holding_seconds": 14400.0,
+    "average_slip_bps": 29.354516105954442,
+    "buy_trades": 1,
+    "cash_delta": 378.8709839748153,
+    "fees": 23.893882433204006,
+    "gross_notional": 47787.76486640802,
+    "holding_cycles": 1,
+    "sell_trades": 2,
+    "slip_bps_sum": 88.06354831786332,
+    "total_qty": 225.0,
+    "trades": 3
+  },
+  "__overall__": {
+    "average_holding_seconds": 14400.0,
+    "average_slip_bps": 29.354516105954442,
+    "buy_trades": 1,
+    "cash_delta": 378.8709839748153,
+    "fees": 23.893882433204006,
+    "gross_notional": 47787.76486640802,
+    "holding_cycles": 1,
+    "sell_trades": 2,
+    "slip_bps_sum": 88.06354831786332,
+    "total_qty": 225.0,
+    "trades": 3,
+    "worst_cumulative_cash": 0.0
+  }
+}

@@ -3,32 +3,35 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Dict, List
+from datetime import date
+from typing_extensions import override
 
 from loguru import logger
 
-from .data_models import ExecutionSession, PlanActionType, TradingInstruction
+from .data_models import PlanActionType, TradingInstruction
 from .interfaces import BaseRiskStrategy, DaySummary
 
 
 class ProbeTradeStrategy(BaseRiskStrategy):
     def __init__(self, probe_multiplier: float = 0.05, min_quantity: float = 0.01):
-        self.probe_multiplier = probe_multiplier
-        self.min_quantity = min_quantity
-        self._status: Dict[tuple[str, str], bool] = {}
+        self.probe_multiplier: float = probe_multiplier
+        self.min_quantity: float = min_quantity
+        self._status: dict[tuple[str, str], bool] = {}
 
+    @override
     def on_simulation_start(self) -> None:
         self._status = {}
 
+    @override
     def before_day(
         self,
         *,
         day_index: int,
-        date,
-        instructions: List[TradingInstruction],
-        simulator,
-    ) -> List[TradingInstruction]:
-        adjusted: List[TradingInstruction] = []
+        date: date,
+        instructions: list[TradingInstruction],
+        simulator: object,
+    ) -> list[TradingInstruction]:
+        adjusted: list[TradingInstruction] = []
         for instruction in instructions:
             item = deepcopy(instruction)
             if item.action in (PlanActionType.BUY, PlanActionType.SELL):
@@ -43,6 +46,7 @@ class ProbeTradeStrategy(BaseRiskStrategy):
             adjusted.append(item)
         return adjusted
 
+    @override
     def after_day(self, summary: DaySummary) -> None:
         for (symbol, direction), pnl in summary.per_symbol_direction.items():
             if pnl > 0:
@@ -53,25 +57,27 @@ class ProbeTradeStrategy(BaseRiskStrategy):
 
 class ProfitShutdownStrategy(BaseRiskStrategy):
     def __init__(self, probe_multiplier: float = 0.05, min_quantity: float = 0.01):
-        self.probe_multiplier = probe_multiplier
-        self.min_quantity = min_quantity
-        self._probe_mode = False
+        self.probe_multiplier: float = probe_multiplier
+        self.min_quantity: float = min_quantity
+        self._probe_mode: bool = False
 
+    @override
     def on_simulation_start(self) -> None:
         self._probe_mode = False
 
+    @override
     def before_day(
         self,
         *,
         day_index: int,
-        date,
-        instructions: List[TradingInstruction],
-        simulator,
-    ) -> List[TradingInstruction]:
+        date: date,
+        instructions: list[TradingInstruction],
+        simulator: object,
+    ) -> list[TradingInstruction]:
         if not self._probe_mode:
             return instructions
 
-        adjusted: List[TradingInstruction] = []
+        adjusted: list[TradingInstruction] = []
         for instruction in instructions:
             item = deepcopy(instruction)
             if item.action in (PlanActionType.BUY, PlanActionType.SELL) and item.quantity > 0:
@@ -81,5 +87,6 @@ class ProfitShutdownStrategy(BaseRiskStrategy):
             adjusted.append(item)
         return adjusted
 
+    @override
     def after_day(self, summary: DaySummary) -> None:
         self._probe_mode = summary.realized_pnl <= 0

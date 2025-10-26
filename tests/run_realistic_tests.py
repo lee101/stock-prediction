@@ -19,9 +19,9 @@ def run_realistic_tests():
     """Run all realistic integration tests."""
     
     test_files = [
-        'tests/integ/test_training_realistic.py',
-        'tests/integ/test_hftraining_realistic.py', 
-        'tests/integ/test_totoembedding_realistic.py'
+        "tests/experimental/integration/integ/test_training_realistic.py",
+        "tests/experimental/integration/integ/test_hftraining_realistic.py",
+        "tests/experimental/integration/integ/test_totoembedding_realistic.py",
     ]
     
     print("=" * 60)
@@ -59,9 +59,9 @@ def run_single_test_module(module_name):
     """Run tests for a single module."""
     
     module_map = {
-        'training': 'tests/integ/test_training_realistic.py',
-        'hftraining': 'tests/integ/test_hftraining_realistic.py',
-        'totoembedding': 'tests/integ/test_totoembedding_realistic.py'
+        "training": "tests/experimental/integration/integ/test_training_realistic.py",
+        "hftraining": "tests/experimental/integration/integ/test_hftraining_realistic.py",
+        "totoembedding": "tests/experimental/integration/integ/test_totoembedding_realistic.py",
     }
     
     if module_name not in module_map:

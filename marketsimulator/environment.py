@@ -8,14 +8,9 @@ from typing import Iterable, Optional
 
 import os
 
-# Ensure the simulator defaults to mock analytics before any dependent modules load.
-os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
-os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
-
+from src.leverage_settings import get_leverage_settings
 from . import alpaca_wrapper_mock
-from . import backtest_test3_inline as backtest_module
 from . import data_curate_daily_mock
-from . import predict_stock_forecasting_proxy as predict_stock_forecasting_module
 from . import process_utils_mock
 from .logging_utils import logger
 from .data_feed import DEFAULT_DATA_ROOT, load_price_series
@@ -23,6 +18,10 @@ from .state import SimulationState, SimulatedClock, set_state
 
 
 def _install_env_stub() -> None:
+    os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
+    os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "0")
+    os.environ.setdefault("MARKETSIM_RELAX_SPREAD", "1")
+
     if "env_real" in sys.modules:
         pass
     else:
@@ -160,6 +159,18 @@ def _install_env_stub() -> None:
     os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
 
 
+def _load_mock_backtest_module():
+    from . import backtest_test3_inline as module
+
+    return module
+
+
+def _load_mock_forecasting_module():
+    from . import predict_stock_forecasting_proxy as module
+
+    return module
+
+
 def _patch_third_party(use_mock_analytics: bool, force_kronos: bool):
     replaced_modules = {}
 
@@ -174,19 +185,21 @@ def _patch_third_party(use_mock_analytics: bool, force_kronos: bool):
     replace_module("data_curate_daily", data_curate_daily_mock)
 
     if use_mock_analytics:
-        replace_module("backtest_test3_inline", backtest_module)
-        replace_module("predict_stock_forecasting", predict_stock_forecasting_module)
+        mock_backtest = _load_mock_backtest_module()
+        mock_forecasting = _load_mock_forecasting_module()
+        replace_module("backtest_test3_inline", mock_backtest)
+        replace_module("predict_stock_forecasting", mock_forecasting)
     else:
         try:
             real_backtest = importlib.import_module("backtest_test3_inline")
         except Exception:
-            real_backtest = backtest_module
+            real_backtest = _load_mock_backtest_module()
         replace_module("backtest_test3_inline", real_backtest)
 
         try:
             real_forecasting = importlib.import_module("predict_stock_forecasting")
         except Exception:
-            real_forecasting = predict_stock_forecasting_module
+            real_forecasting = _load_mock_forecasting_module()
         replace_module("predict_stock_forecasting", real_forecasting)
 
     # Ensure downstream modules reuse the patched modules.
@@ -209,10 +222,18 @@ def _patch_third_party(use_mock_analytics: bool, force_kronos: bool):
         process_utils.backout_near_market,
         process_utils.ramp_into_position,
         process_utils.spawn_close_position_at_takeprofit,
+        process_utils.spawn_open_position_at_maxdiff_takeprofit,
+        process_utils.spawn_close_position_at_maxdiff_takeprofit,
     )
     process_utils.backout_near_market = process_utils_mock.backout_near_market
     process_utils.ramp_into_position = process_utils_mock.ramp_into_position
     process_utils.spawn_close_position_at_takeprofit = process_utils_mock.spawn_close_position_at_takeprofit
+    process_utils.spawn_open_position_at_maxdiff_takeprofit = (
+        process_utils_mock.spawn_open_position_at_maxdiff_takeprofit
+    )
+    process_utils.spawn_close_position_at_maxdiff_takeprofit = (
+        process_utils_mock.spawn_close_position_at_maxdiff_takeprofit
+    )
     if force_kronos:
         logger.info("[sim] Kronos-only forecasting flag active for simulation environment.")
 
@@ -236,10 +257,22 @@ class SimulationController:
         return self.state.clock.current
 
     def summary(self):
+        positions_detail = {}
+        for symbol, pos in self.state.positions.items():
+            market_value = pos.market_value
+            positions_detail[symbol] = {
+                "qty": pos.qty,
+                "side": pos.side,
+                "price": pos.current_price,
+                "market_value": market_value,
+            }
+
         return {
             "cash": self.state.cash,
             "equity": self.state.equity,
             "positions": {symbol: pos.qty for symbol, pos in self.state.positions.items()},
+            "positions_detail": positions_detail,
+            "liquidation_value": self.state.equity,
         }
 
 
@@ -254,6 +287,28 @@ def activate_simulation(
     if use_mock_analytics is None:
         env_flag = os.getenv("MARKETSIM_USE_MOCK_ANALYTICS", "0").lower()
         use_mock_analytics = env_flag in {"1", "true", "yes"}
+
+    allow_env_key = "MARKETSIM_ALLOW_MOCK_ANALYTICS"
+    skip_env_key = "MARKETSIM_SKIP_REAL_IMPORT"
+    previous_allow_value = os.environ.get(allow_env_key)
+    previous_skip_value = os.environ.get(skip_env_key)
+    had_allow_env = allow_env_key in os.environ
+    had_skip_env = skip_env_key in os.environ
+
+    if use_mock_analytics:
+        os.environ[allow_env_key] = "1"
+        os.environ[skip_env_key] = "1"
+    else:
+        if not had_allow_env:
+            os.environ[allow_env_key] = "1"
+        os.environ[skip_env_key] = "0"
+
+    relax_spread_key = "MARKETSIM_RELAX_SPREAD"
+    previous_relax_value = os.environ.get(relax_spread_key)
+    had_relax_env = relax_spread_key in os.environ
+    if use_mock_analytics:
+        os.environ[relax_spread_key] = "1"
+
     env_force_key = "MARKETSIM_FORCE_KRONOS"
     previous_force_value = os.environ.get(env_force_key)
     had_force_env = env_force_key in os.environ
@@ -270,7 +325,6 @@ def activate_simulation(
         )
 
     kronos_sample_key = "MARKETSIM_KRONOS_SAMPLE_COUNT"
-    previous_sample_value = os.environ.get(kronos_sample_key)
     had_sample_env = kronos_sample_key in os.environ
     sample_override_applied = False
     if force_kronos and not had_sample_env:
@@ -282,8 +336,22 @@ def activate_simulation(
         os.environ[kronos_sample_key] = str(default_sample)
         sample_override_applied = True
         logger.info(
-            "[sim] Kronos sample_count override set to %d for this simulation via MARKETSIM_KRONOS_SAMPLE_COUNT.",
-            default_sample,
+            f"[sim] Kronos sample_count override set to {default_sample} via MARKETSIM_KRONOS_SAMPLE_COUNT."
+        )
+
+    backtest_sim_key = "MARKETSIM_BACKTEST_SIMULATIONS"
+    had_backtest_env = backtest_sim_key in os.environ
+    backtest_override_applied = False
+    if force_kronos and not had_backtest_env:
+        default_backtest_raw = os.getenv("MARKETSIM_FORCE_KRONOS_BACKTEST_SIMULATIONS", "20")
+        try:
+            default_backtest = max(1, int(default_backtest_raw))
+        except ValueError:
+            default_backtest = 20
+        os.environ[backtest_sim_key] = str(default_backtest)
+        backtest_override_applied = True
+        logger.info(
+            f"[sim] Backtest simulation count override set to {default_backtest} via MARKETSIM_BACKTEST_SIMULATIONS."
         )
 
     if force_kronos:
@@ -295,12 +363,14 @@ def activate_simulation(
     prices = load_price_series(symbols, data_root=data_root)
     first_timestamp = min(series.timestamp for series in prices.values())
     clock = SimulatedClock(first_timestamp)
+    leverage_settings = get_leverage_settings()
+    alpaca_wrapper_mock.margin_multiplier = leverage_settings.max_gross_leverage
     state = SimulationState(
         clock=clock,
         prices=prices,
         cash=initial_cash,
-        buying_power=initial_cash * alpaca_wrapper_mock.margin_multiplier,
         equity=initial_cash,
+        leverage_settings=leverage_settings,
     )
     set_state(state)
     alpaca_wrapper_mock.reset_account(initial_cash)
@@ -317,6 +387,8 @@ def activate_simulation(
             process_utils.backout_near_market,
             process_utils.ramp_into_position,
             process_utils.spawn_close_position_at_takeprofit,
+            process_utils.spawn_open_position_at_maxdiff_takeprofit,
+            process_utils.spawn_close_position_at_maxdiff_takeprofit,
         ) = originals
         for name, original in restore_handles["replaced_modules"].items():
             if original is None:
@@ -325,6 +397,8 @@ def activate_simulation(
                 sys.modules[name] = original
         if sample_override_applied and not had_sample_env:
             os.environ.pop(kronos_sample_key, None)
+        if backtest_override_applied and not had_backtest_env:
+            os.environ.pop(backtest_sim_key, None)
         if override_force_env:
             if had_force_env:
                 if previous_force_value is not None:
@@ -334,3 +408,24 @@ def activate_simulation(
                     os.environ[env_force_key] = ""
             else:
                 os.environ.pop(env_force_key, None)
+        if had_allow_env:
+            if previous_allow_value is not None:
+                os.environ[allow_env_key] = previous_allow_value
+            else:
+                os.environ.pop(allow_env_key, None)
+        else:
+            os.environ.pop(allow_env_key, None)
+        if had_skip_env:
+            if previous_skip_value is not None:
+                os.environ[skip_env_key] = previous_skip_value
+            else:
+                os.environ.pop(skip_env_key, None)
+        else:
+            os.environ.pop(skip_env_key, None)
+        if had_relax_env:
+            if previous_relax_value is not None:
+                os.environ[relax_spread_key] = previous_relax_value
+            else:
+                os.environ.pop(relax_spread_key, None)
+        else:
+            os.environ.pop(relax_spread_key, None)

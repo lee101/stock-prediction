@@ -115,7 +115,7 @@ if not KRONOS_TRAIN_SWEEP or not TOTO_TRAIN_SWEEP:
 @dataclass
 class EvaluationResult:
     price_mae: float
-    return_mae: float
+    pct_return_mae: float
     latency_s: float
     predictions: List[float]
 
@@ -207,10 +207,10 @@ def _sequential_kronos(
             actual_returns.append((actual_price - prev_price) / prev_price)
 
     price_mae = mean_absolute_error(actual_prices, preds)
-    return_mae = mean_absolute_error(actual_returns, returns)
+    pct_return_mae = mean_absolute_error(actual_returns, returns)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return EvaluationResult(price_mae, return_mae, total_latency, preds)
+    return EvaluationResult(price_mae, pct_return_mae, total_latency, preds)
 
 
 def _sequential_toto(
@@ -254,10 +254,10 @@ def _sequential_toto(
             torch.cuda.empty_cache()
 
     price_mae = mean_absolute_error(actual_prices, preds)
-    return_mae = mean_absolute_error(actual_returns, returns)
+    pct_return_mae = mean_absolute_error(actual_returns, returns)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return EvaluationResult(price_mae, return_mae, total_latency, preds)
+    return EvaluationResult(price_mae, pct_return_mae, total_latency, preds)
 
 
 def _select_best(
@@ -385,12 +385,12 @@ def _persist_result(
     config_dict = asdict(config)
     validation_payload = {
         "price_mae": val_result.price_mae,
-        "return_mae": val_result.return_mae,
+        "pct_return_mae": val_result.pct_return_mae,
         "latency_s": val_result.latency_s,
     }
     test_payload = {
         "price_mae": test_result.price_mae,
-        "return_mae": test_result.return_mae,
+        "pct_return_mae": test_result.pct_return_mae,
         "latency_s": test_result.latency_s,
     }
     windows_payload = {

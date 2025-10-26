@@ -1,9 +1,8 @@
 import functools
 import hashlib
 import pickle
-from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Optional, TypeVar, cast
+from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar, cast
 
 from diskcache import Cache
 
@@ -19,7 +18,7 @@ def async_cache_decorator(
     typed: bool = False,
     expire: Optional[int] = None,
     tag: Optional[str] = None,
-    ignore: tuple[Any, ...] = (),
+    ignore: Tuple[Any, ...] = (),
 ) -> Callable[[F], F]:
     """Cache decorator for async functions that works with running event loops"""
     def decorator(func: F) -> F:
