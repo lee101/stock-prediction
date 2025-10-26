@@ -16,9 +16,10 @@ from stockagent.agentsimulator.market_data import MarketDataBundle, fetch_latest
 from stockagentdeepseek.agent import simulate_deepseek_plan
 from stockagentdeepseek_entrytakeprofit.agent import simulate_deepseek_entry_takeprofit_plan
 from stockagentdeepseek_maxdiff.agent import simulate_deepseek_maxdiff_plan
+from stockagentdeepseek_combinedmaxdiff.agent import simulate_deepseek_combined_maxdiff_plan
 from stockagentdeepseek_neural.agent import simulate_deepseek_neural_plan
 
-STRATEGIES = ("baseline", "entry_takeprofit", "maxdiff", "neural")
+STRATEGIES = ("baseline", "entry_takeprofit", "maxdiff", "neural", "combined_maxdiff")
 
 
 def _default_account_snapshot(equity: float, symbols: Sequence[str]) -> AccountSnapshot:
@@ -103,7 +104,7 @@ def main() -> int:
                 include_market_history=args.include_history,
             )
             summary = result.simulation.summary(starting_nav=snapshot.equity, periods=1)
-            plan = result.plan.to_dict()
+            plan_dict = result.plan.to_dict()
         elif args.strategy == "maxdiff":
             result = simulate_deepseek_maxdiff_plan(
                 market_data=bundle,
@@ -112,7 +113,7 @@ def main() -> int:
                 include_market_history=args.include_history,
             )
             summary = result.simulation.summary(starting_nav=snapshot.equity, periods=1)
-            plan = result.plan.to_dict()
+            plan_dict = result.plan.to_dict()
         elif args.strategy == "neural":
             result = simulate_deepseek_neural_plan(
                 market_data=bundle,
@@ -126,7 +127,17 @@ def main() -> int:
                 "ending_cash": result.simulation.ending_cash,
                 "ending_equity": result.simulation.ending_equity,
             }
-            plan = result.plan.to_dict()
+            plan_dict = result.plan.to_dict()
+        elif args.strategy == "combined_maxdiff":
+            combined = simulate_deepseek_combined_maxdiff_plan(
+                market_data=bundle,
+                account_snapshot=snapshot,
+                target_date=target_date,
+                include_market_history=args.include_history,
+            )
+            summary = dict(combined.summary)
+            summary.update({f"calibration_{k}": v for k, v in combined.calibration.items()})
+            plan_dict = combined.plan.to_dict()
         else:
             result = simulate_deepseek_plan(
                 market_data=bundle,
@@ -140,9 +151,9 @@ def main() -> int:
                 "ending_cash": result.simulation.ending_cash,
                 "ending_equity": result.simulation.ending_equity,
             }
-            plan = result.plan.to_dict()
+            plan_dict = result.plan.to_dict()
 
-        print(json.dumps({"date": target_date.isoformat(), "plan": plan, "summary": summary}, indent=2))
+        print(json.dumps({"date": target_date.isoformat(), "plan": plan_dict, "summary": summary}, indent=2))
 
     logger.info("Simulation complete.")
     return 0
