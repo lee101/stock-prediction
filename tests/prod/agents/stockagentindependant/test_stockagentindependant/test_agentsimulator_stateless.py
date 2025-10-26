@@ -88,6 +88,16 @@ def test_dump_prompt_package_stateless_json() -> None:
     assert payload["market_data"]["MSFT"][2]["close_pct"] == pytest.approx((54.0 - 52.0) / 52.0)
 
     schema = plan_response_schema()
-    assert "instructions" in schema["required"]
-    required_fields = schema["properties"]["instructions"]["items"]["required"]
+    assert set(schema.get("required", [])) >= {"target_date", "instructions"}
+    required_fields = set(schema["properties"]["instructions"]["items"].get("required", []))
+    assert {
+        "symbol",
+        "action",
+        "quantity",
+        "execution_session",
+        "entry_price",
+        "exit_price",
+        "exit_reason",
+        "notes",
+    } <= required_fields
     assert "notes" in required_fields

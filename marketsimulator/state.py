@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List, Optional
 import pandas as pd
 import pytz
 
+from stock.data_utils import coerce_numeric
 from src.leverage_settings import LeverageSettings, get_leverage_settings
 from loss_utils import CRYPTO_TRADING_FEE, TRADING_FEE
 from .execution import classify_liquidity, simulate_fill
@@ -31,8 +32,8 @@ def _normalise_side(side: str) -> str:
 def _row_value(row: pd.Series, *names: str, default: float) -> float:
     for name in names:
         if name in row and pd.notna(row[name]):
-            return float(row[name])
-    return float(default)
+            return coerce_numeric(row[name], default=default)
+    return coerce_numeric(default, default=default)
 
 
 def _as_utc_timestamp(value: datetime) -> pd.Timestamp:
@@ -74,7 +75,10 @@ class PriceSeries:
         return self.cursor < len(self.frame) - 1
 
     def price(self, column: str = "Close") -> float:
-        return float(self.current_row[column])
+        value = self.current_row.get(column)
+        if value is None:
+            return coerce_numeric(self.current_row.get("Close"), default=0.0)
+        return coerce_numeric(value, default=0.0)
 
 
 @dataclass
@@ -280,13 +284,15 @@ class SimulationState:
         series = self.prices.get(symbol)
         if series is None:
             return None
-        return float(series.current_row.get("Low", series.price("Close")))
+        close_price = series.price("Close")
+        return _row_value(series.current_row, "Low", "low", default=close_price)
 
     def current_ask(self, symbol: str) -> Optional[float]:
         series = self.prices.get(symbol)
         if series is None:
             return None
-        return float(series.current_row.get("High", series.price("Close")))
+        close_price = series.price("Close")
+        return _row_value(series.current_row, "High", "high", default=close_price)
 
     @property
     def drawdown(self) -> float:
@@ -545,8 +551,9 @@ class SimulationState:
             series = self.prices.get(target.symbol)
             if series is None:
                 continue
-            last_high = float(series.current_row.get("High", series.price("Close")))
-            last_low = float(series.current_row.get("Low", series.price("Close")))
+            close_price = series.price("Close")
+            last_high = _row_value(series.current_row, "High", "high", default=close_price)
+            last_low = _row_value(series.current_row, "Low", "low", default=close_price)
             met = False
             if target.side == "sell":
                 met = last_high >= target.price

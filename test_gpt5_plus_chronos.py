@@ -1,4 +1,5 @@
 import os
+import pytest
 
 from loguru import logger
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
@@ -13,6 +14,9 @@ from pathlib import Path
 import asyncio
 from gpt5_queries import query_to_gpt5_async
 from src.cache import async_cache_decorator
+
+if not os.getenv("OPENAI_API_KEY"):
+    pytest.skip("OpenAI API key required for GPT-5 chronos integration test", allow_module_level=True)
 
 # Load data
 base_dir = Path(__file__).parent
@@ -134,10 +138,11 @@ async def predict_chronos(context_values):
     """Cached prediction function that doesn't include the model in the cache key."""
     with torch.inference_mode():
         transformers.set_seed(42)
+        chronos_inputs = torch.from_numpy(context_values)
         pred = chronos_model.predict(
-            context=torch.from_numpy(context_values),
+            chronos_inputs,
             prediction_length=1,
-            num_samples=100
+            num_samples=100,
         ).detach().cpu().numpy().flatten()
         return np.mean(pred)
 

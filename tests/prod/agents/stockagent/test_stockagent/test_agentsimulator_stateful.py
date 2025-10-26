@@ -106,6 +106,16 @@ def test_dump_prompt_package_serializes_expected_payload() -> None:
     assert payload["market_data"]["AAPL"][2]["high_pct"] == pytest.approx((104.0 - 102.0) / 102.0)
 
     schema = plan_response_schema()
-    instruction_schema = schema["properties"]["instructions"]["items"]
-    requirements = set(instruction_schema["required"])
-    assert {"symbol", "action", "quantity", "execution_session"} <= requirements
+    instructions_schema = schema["properties"]["instructions"]["items"]
+    required_fields = set(instructions_schema.get("required", []))
+    assert {
+        "symbol",
+        "action",
+        "quantity",
+        "execution_session",
+        "entry_price",
+        "exit_price",
+        "exit_reason",
+        "notes",
+    } <= required_fields
+    assert set(schema.get("required", [])) >= {"target_date", "instructions"}
