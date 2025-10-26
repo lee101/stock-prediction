@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from src.comparisons import is_buy_side
 from src.logging_utils import setup_logging
-from src.torch_backend import configure_tf32_backends
+from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
 
 logger = setup_logging("backtest_test3_inline.log")
 
@@ -41,6 +41,7 @@ def _maybe_enable_fast_torch_settings() -> None:
         return
     _FAST_TORCH_SETTINGS_CONFIGURED = True
 
+    state = {"new_api": False, "legacy_api": False}
     try:
         state = configure_tf32_backends(torch, logger=logger)
         if state["legacy_api"]:
@@ -66,6 +67,9 @@ def _maybe_enable_fast_torch_settings() -> None:
                 logger.debug("Unable to configure scaled dot product kernels: %s", exc)
     except Exception as exc:  # pragma: no cover - defensive guardrail
         logger.debug("Torch backend optimisation setup failed: %s", exc)
+
+    if torch.cuda.is_available() and not state.get("new_api"):
+        maybe_set_float32_precision(torch, mode="high")
 
 from data_curate_daily import download_daily_stock_data, fetch_spread
 from disk_cache import disk_cache

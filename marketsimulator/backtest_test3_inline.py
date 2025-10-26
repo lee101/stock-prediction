@@ -17,6 +17,7 @@ _REAL_BACKTEST_MODULE = None
 _REAL_BACKTEST_ERROR: Optional[Exception] = None
 _DEFAULT_NUM_SIMULATIONS = int(os.getenv("MARKETSIM_NUM_SIMULATIONS", "20"))
 _SKIP_REAL_IMPORT = os.getenv("MARKETSIM_SKIP_REAL_IMPORT", "0").lower() in {"1", "true", "yes", "on"}
+_LOOKAHEAD_ENV_KEY = "MARKETSIM_FORECAST_LOOKAHEAD"
 
 _REAL_BACKTEST_PATH = Path(__file__).resolve().parent.parent / "backtest_test3_inline.py"
 if _REAL_BACKTEST_PATH.exists() and not _SKIP_REAL_IMPORT:
@@ -37,6 +38,17 @@ if _REAL_BACKTEST_PATH.exists() and not _SKIP_REAL_IMPORT:
         )
 elif _SKIP_REAL_IMPORT:
     logger.info("[sim] Skipping real backtest_test3_inline import (mock analytics enabled).")
+
+
+def _resolve_lookahead(default: int = 1) -> int:
+    raw = os.getenv(_LOOKAHEAD_ENV_KEY)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, value)
 
 
 def _window_from_state(symbol: str, num_simulations: int) -> Optional[pd.DataFrame]:
@@ -251,9 +263,42 @@ def _fallback_backtest(symbol: str, num_simulations: int | None = None) -> pd.Da
     window["high_return"] = window["High"].pct_change().fillna(0.0)
     window["low_return"] = window["Low"].pct_change().fillna(0.0)
 
-    predicted_close = window["Close"].shift(-1).fillna(window["Close"])
-    predicted_high = window["High"].shift(-1).fillna(window["High"])
-    predicted_low = window["Low"].shift(-1).fillna(window["Low"])
+    lookahead = _resolve_lookahead()
+
+    def _future_last(series: pd.Series, steps: int) -> pd.Series:
+        values = series.to_numpy(copy=False)
+        n = len(values)
+        result = np.empty(n, dtype=float)
+        for idx in range(n):
+            future_idx = min(n - 1, idx + steps)
+            result[idx] = float(values[future_idx])
+        return pd.Series(result, index=series.index, dtype=float)
+
+    def _future_extreme(series: pd.Series, steps: int, op) -> pd.Series:
+        values = series.to_numpy(copy=False)
+        n = len(values)
+        result = np.empty(n, dtype=float)
+        for idx in range(n):
+            start = min(n, idx + 1)
+            end = min(n, idx + steps + 1)
+            if start >= end:
+                fallback_val = float(values[min(n - 1, idx)])
+                result[idx] = fallback_val
+                continue
+            window_vals = values[start:end]
+            if window_vals.size == 0:
+                result[idx] = float(values[min(n - 1, idx)])
+                continue
+            agg = op(window_vals)
+            if np.isnan(agg):
+                result[idx] = float(values[min(n - 1, idx)])
+            else:
+                result[idx] = float(agg)
+        return pd.Series(result, index=series.index, dtype=float)
+
+    predicted_close = _future_last(window["Close"], lookahead)
+    predicted_high = _future_extreme(window["High"], lookahead, np.nanmax)
+    predicted_low = _future_extreme(window["Low"], lookahead, np.nanmin)
 
     simple = predicted_close.pct_change().fillna(0.0)
     all_signals = (predicted_close + predicted_high + predicted_low) / 3.0

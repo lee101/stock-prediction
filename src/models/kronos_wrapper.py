@@ -24,6 +24,17 @@ for _path in _KRONOS_CANDIDATES:
 
 logger = logging.getLogger(__name__)
 
+
+def _is_cuda_oom_error(exc: BaseException) -> bool:
+    if torch is None:
+        return False
+    cuda_mod = getattr(torch, "cuda", None)
+    oom_error = getattr(cuda_mod, "OutOfMemoryError", None)
+    if oom_error is not None and isinstance(exc, oom_error):
+        return True
+    return "out of memory" in str(exc).lower()
+
+
 def _optional_import(module_name: str) -> ModuleType | None:
     try:
         return import_module(module_name)
@@ -536,13 +547,46 @@ class KronosForecastingWrapper:
             except Exception as exc:  # pragma: no cover - dtype conversions may fail on older checkpoints
                 logger.debug("Unable to convert Kronos model to dtype %s: %s", self._preferred_dtype, exc)
 
-        predictor = KronosPredictor(
-            model=model,
-            tokenizer=tokenizer,
-            device=device,
-            max_context=self.max_context,
-            clip=self.clip,
-        )
+        def _build_predictor(target_device: str):
+            return KronosPredictor(
+                model=model,
+                tokenizer=tokenizer,
+                device=target_device,
+                max_context=self.max_context,
+                clip=self.clip,
+            )
+
+        try:
+            predictor = _build_predictor(device)
+        except Exception as exc:
+            if device.startswith("cuda") and _is_cuda_oom_error(exc):
+                logger.warning(
+                    "Kronos predictor initialisation OOM on %s; retrying on CPU. (%s)",
+                    device,
+                    exc,
+                )
+                if torch is not None:
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:  # pragma: no cover - cache clearing best effort
+                        pass
+                device = "cpu"
+                self._device = device
+                if torch is not None:
+                    cpu_device = torch.device("cpu")
+                else:  # pragma: no cover - torch unavailable
+                    cpu_device = "cpu"
+                try:
+                    model = model.to(device=cpu_device)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                try:
+                    tokenizer = tokenizer.to(device=cpu_device)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                predictor = _build_predictor(device)
+            else:
+                raise
         if self._preferred_dtype is not None:
             try:
                 predictor.model = predictor.model.to(dtype=self._preferred_dtype)  # type: ignore[attr-defined]
