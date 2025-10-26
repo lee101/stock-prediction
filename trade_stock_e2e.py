@@ -1910,11 +1910,24 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 calibrated_close_price = predicted_close_price
 
             if predicted_movement == 0.0:
-                _log_detail(f"Skipping {symbol} - calibrated move collapsed to zero.")
-                continue
+                if DISABLE_TRADE_GATES and raw_expected_move_pct:
+                    expected_move_pct = raw_expected_move_pct
+                    predicted_movement = expected_move_pct * close_price
+                    calibrated_close_price = close_price * (1.0 + expected_move_pct)
+                    _log_detail(
+                        f"{symbol}: calibrated move was zero; using raw expected move {expected_move_pct:.6f} under MARKETSIM_DISABLE_GATES"
+                    )
+                else:
+                    _log_detail(f"Skipping {symbol} - calibrated move collapsed to zero.")
+                    continue
             if predicted_movement > 0 and position_side == "sell":
                 if _is_kronos_only_mode():
                     position_side = "buy"
+                elif DISABLE_TRADE_GATES:
+                    position_side = "buy"
+                    _log_detail(
+                        f"{symbol}: overriding sell setup due to positive move (gates disabled)."
+                    )
                 else:
                     _log_detail(
                         f"Skipping {symbol} - calibrated move flipped sign negative to positive for sell setup."
@@ -1923,15 +1936,28 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             allowed_side = _allowed_side_for(symbol)
             if allowed_side and allowed_side != "both":
                 if allowed_side == "buy" and position_side == "sell":
-                    _log_detail(f"Skipping {symbol} - sells disabled via MARKETSIM_SYMBOL_SIDE_MAP.")
-                    continue
+                    if DISABLE_TRADE_GATES:
+                        position_side = "buy"
+                        _log_detail(f"{symbol}: overriding side restriction to buy (gates disabled).")
+                    else:
+                        _log_detail(f"Skipping {symbol} - sells disabled via MARKETSIM_SYMBOL_SIDE_MAP.")
+                        continue
                 if allowed_side == "sell" and position_side == "buy":
-                    _log_detail(f"Skipping {symbol} - buys disabled via MARKETSIM_SYMBOL_SIDE_MAP.")
-                    continue
+                    if DISABLE_TRADE_GATES:
+                        position_side = "sell"
+                        _log_detail(f"{symbol}: overriding side restriction to sell (gates disabled).")
+                    else:
+                        _log_detail(f"Skipping {symbol} - buys disabled via MARKETSIM_SYMBOL_SIDE_MAP.")
+                        continue
 
             if predicted_movement < 0 and position_side == "buy":
                 if _is_kronos_only_mode():
                     position_side = "sell"
+                elif DISABLE_TRADE_GATES:
+                    position_side = "sell"
+                    _log_detail(
+                        f"{symbol}: overriding buy setup due to negative move (gates disabled)."
+                    )
                 else:
                     _log_detail(
                         f"Skipping {symbol} - calibrated move flipped sign positive to negative for buy setup."

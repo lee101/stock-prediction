@@ -85,6 +85,8 @@ def _normalise_price_columns(frame: pd.DataFrame) -> pd.DataFrame:
             rename_map[column] = "Low"
         elif key == "close":
             rename_map[column] = "Close"
+        elif key == "volume":
+            rename_map[column] = "Volume"
     if rename_map:
         frame = frame.rename(columns=rename_map)
     return frame

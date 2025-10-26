@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import types
 from dataclasses import dataclass
@@ -127,7 +128,7 @@ class KronosForecastingWrapper:
         sample_count: int = 8,
         cache_dir: Optional[str] = None,
         verbose: bool = False,
-        prefer_fp32: bool = False,
+        prefer_fp32: bool = True,
     ) -> None:
         if torch is None or np is None or pd is None:
             raise RuntimeError(
@@ -144,8 +145,12 @@ class KronosForecastingWrapper:
         self.sample_count = sample_count
         self.cache_dir = cache_dir
         self.verbose = verbose
-        self._prefer_fp32 = bool(prefer_fp32)
-
+        self._bf16_allowed = self._env_flag("MARKETSIM_KRONOS_ALLOW_BF16")
+        try:
+            self._max_oom_retries = max(0, int(os.getenv("MARKETSIM_KRONOS_OOM_RETRIES", "1")))
+        except ValueError:
+            self._max_oom_retries = 1
+        self._prefer_fp32 = bool(prefer_fp32 or not self._bf16_allowed)
         self._device = device
         self._predictor = None
         self._preferred_dtype = self._compute_preferred_dtype(device, prefer_fp32=self._prefer_fp32)
@@ -196,7 +201,15 @@ class KronosForecastingWrapper:
             verbose=verbose,
         )
 
-        oom_retried = False
+        gpu_oom_retries = 0
+        total_gpu_retries = max(0, self._max_oom_retries)
+        bf16_available = (
+            self._device.startswith("cuda")
+            and self._bf16_allowed
+            and getattr(torch, "bfloat16", None) is not None
+            and self._preferred_dtype != getattr(torch, "bfloat16", None)
+        )
+        total_attempts = total_gpu_retries + (1 if bf16_available else 0)
         while True:
             try:
                 forecast_df = predictor.predict(
@@ -214,17 +227,29 @@ class KronosForecastingWrapper:
             except RuntimeError as exc:
                 message = str(exc)
                 if (
-                    not oom_retried
+                    self._device.startswith("cuda")
                     and "out of memory" in message.lower()
-                    and self._device.startswith("cuda")
+                    and (
+                        gpu_oom_retries < total_gpu_retries
+                        or (bf16_available and gpu_oom_retries == total_gpu_retries)
+                    )
                 ):
-                    oom_retried = True
+                    gpu_oom_retries += 1
                     logger.warning(
-                        "Kronos GPU inference ran out of memory on %s; retrying on CPU.",
+                        "Kronos GPU inference OOM on %s (attempt %d/%d); retrying.",
                         self._device,
+                        gpu_oom_retries,
+                        total_attempts or 1,
                     )
                     self._handle_cuda_oom()
-                    predictor = self._ensure_predictor(device_override="cpu")
+                    if bf16_available and gpu_oom_retries == total_gpu_retries + 1:
+                        new_dtype = self._compute_preferred_dtype(self._device, prefer_fp32=False)
+                        if new_dtype is not None and new_dtype != self._preferred_dtype:
+                            logger.warning("Kronos enabling bfloat16 fallback after repeated GPU OOM.")
+                            self._preferred_dtype = new_dtype
+                            self._prefer_fp32 = False
+                        bf16_available = False
+                    predictor = self._ensure_predictor(device_override=self._device)
                     continue
                 raise
 
@@ -280,7 +305,15 @@ class KronosForecastingWrapper:
             verbose=verbose,
         )
 
-        oom_retried = False
+        gpu_oom_retries = 0
+        total_gpu_retries = max(0, self._max_oom_retries)
+        bf16_available = (
+            self._device.startswith("cuda")
+            and self._bf16_allowed
+            and getattr(torch, "bfloat16", None) is not None
+            and self._preferred_dtype != getattr(torch, "bfloat16", None)
+        )
+        total_attempts = total_gpu_retries + (1 if bf16_available else 0)
         while True:
             try:
                 forecast_list = batch_predict(
@@ -298,17 +331,29 @@ class KronosForecastingWrapper:
             except RuntimeError as exc:
                 message = str(exc)
                 if (
-                    not oom_retried
+                    self._device.startswith("cuda")
                     and "out of memory" in message.lower()
-                    and self._device.startswith("cuda")
+                    and (
+                        gpu_oom_retries < total_gpu_retries
+                        or (bf16_available and gpu_oom_retries == total_gpu_retries)
+                    )
                 ):
-                    oom_retried = True
+                    gpu_oom_retries += 1
                     logger.warning(
-                        "Kronos GPU batch inference ran out of memory on %s; retrying on CPU.",
+                        "Kronos GPU batch inference OOM on %s (attempt %d/%d); retrying.",
                         self._device,
+                        gpu_oom_retries,
+                        total_attempts or 1,
                     )
                     self._handle_cuda_oom()
-                    predictor = self._ensure_predictor(device_override="cpu")
+                    if bf16_available and gpu_oom_retries == total_gpu_retries + 1:
+                        new_dtype = self._compute_preferred_dtype(self._device, prefer_fp32=False)
+                        if new_dtype is not None and new_dtype != self._preferred_dtype:
+                            logger.warning("Kronos enabling bfloat16 fallback after repeated GPU OOM.")
+                            self._preferred_dtype = new_dtype
+                            self._prefer_fp32 = False
+                        bf16_available = False
+                    predictor = self._ensure_predictor(device_override=self._device)
                     batch_predict = getattr(predictor, "predict_batch", None)
                     if batch_predict is None:
                         raise AttributeError(
@@ -556,6 +601,8 @@ class KronosForecastingWrapper:
             "dtype": dtype_token,
             "device": self._device,
             "prefer_fp32": self._prefer_fp32,
+            "bf16_allowed": self._bf16_allowed,
+            "oom_retries": self._max_oom_retries,
             "torch_version": getattr(torch, "__version__", "unknown"),
         }
         metadata_payload = {
@@ -566,6 +613,8 @@ class KronosForecastingWrapper:
             "top_p": float(self.top_p),
             "top_k": int(self.top_k),
             "sample_count": int(self.sample_count),
+            "max_oom_retries": int(self._max_oom_retries),
+            "bf16_allowed": self._bf16_allowed,
         }
 
         should_persist = True
@@ -609,6 +658,11 @@ class KronosForecastingWrapper:
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("Failed to clear CUDA cache after OOM: %s", exc)
         self.unload()
+
+    @staticmethod
+    def _env_flag(name: str) -> bool:
+        value = os.getenv(name, "").strip().lower()
+        return value in {"1", "true", "yes", "on"}
 
     def _prepare_feature_frame(self, df: pd.DataFrame) -> pd.DataFrame:
         working = df.copy()
