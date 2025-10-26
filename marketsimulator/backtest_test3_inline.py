@@ -427,10 +427,10 @@ def backtest_forecasts(symbol: str, num_simulations: int | None = None) -> pd.Da
         try:
             return _REAL_BACKTEST_MODULE.backtest_forecasts(symbol, num_simulations=num_simulations)  # type: ignore[return-value]
         except Exception as exc:  # pragma: no cover - mirrors behaviour if real stack fails at runtime
+            import traceback
+
             logger.warning(
-                "[sim] Real backtest_forecasts failed for %s (%s); using fallback simulator analytics.",
-                symbol,
-                exc,
+                f"[sim] Real backtest_forecasts failed for {symbol} ({exc}); using fallback simulator analytics.\n{traceback.format_exc()}"
             )
     elif _REAL_BACKTEST_ERROR:
         logger.debug(

@@ -109,6 +109,7 @@ PROBE_SYMBOLS = set() if SIMPLIFIED_MODE else set(DEFAULT_PROBE_SYMBOLS)
 
 _LATEST_FORECAST_CACHE: Dict[str, Dict[str, object]] = {}
 _LATEST_FORECAST_PATH: Optional[Path] = None
+DISABLE_TRADE_GATES = os.getenv("MARKETSIM_DISABLE_GATES", "0").strip().lower() in _TRUTHY
 
 _coerce_optional_float = coerce_optional_float
 _parse_float_list = parse_float_list
@@ -280,6 +281,10 @@ def _kelly_drawdown_scale(strategy: Optional[str], symbol: Optional[str] = None)
 
 def _results_dir() -> Path:
     return Path(__file__).resolve().parent / "results"
+
+
+def _normalize_series(series: pd.Series) -> pd.Series:
+    return series.apply(lambda value: coerce_numeric(value, default=0.0, prefer="mean"))
 
 
 def _allowed_side_for(symbol: Optional[str]) -> Optional[str]:
@@ -823,6 +828,8 @@ def is_tradeable(
     atr_pct: Optional[float] = None,
 ) -> Tuple[bool, str]:
     spread_bps = compute_spread_bps(bid, ask)
+    if DISABLE_TRADE_GATES:
+        return True, f"Gates disabled (spread {spread_bps:.1f}bps)"
     if math.isinf(spread_bps):
         return False, "Missing bid/ask quote"
     kronos_only = _is_kronos_only_mode()
@@ -845,6 +852,8 @@ def is_tradeable(
 
 def pass_edge_threshold(symbol: str, expected_move_pct: float) -> Tuple[bool, str]:
     move_bps = abs(expected_move_pct) * 1e4
+    if DISABLE_TRADE_GATES:
+        return True, f"Edge gating disabled ({move_bps:.1f}bps)"
     kronos_only = _is_kronos_only_mode()
     base_min = 40.0 if symbol.endswith("USD") else 15.0
     if kronos_only:
@@ -1631,17 +1640,32 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             sample_size = len(backtest_df)
             trading_days_per_year = 365 if symbol in crypto_symbols else 252
 
+            _normalized_cache: Dict[str, Optional[pd.Series]] = {}
+
+            def _normalized_series(column: str) -> Optional[pd.Series]:
+                if column not in _normalized_cache:
+                    if column in backtest_df.columns:
+                        _normalized_cache[column] = _normalize_series(backtest_df[column])
+                    else:
+                        _normalized_cache[column] = None
+                return _normalized_cache[column]
+
+            def _metric(value: object, default: float = 0.0) -> float:
+                return coerce_numeric(value, default=default, prefer="mean")
+
             def _mean_column(column: str, default: float = 0.0) -> float:
-                if column in backtest_df.columns:
-                    return coerce_numeric(backtest_df[column].mean(), default=default)
-                return default
+                series = _normalized_series(column)
+                if series is None or series.empty:
+                    return default
+                return _metric(series, default=default)
 
             def _mean_return(primary: str, fallback: Optional[str] = None, default: float = 0.0) -> float:
-                if primary in backtest_df.columns:
-                    return coerce_numeric(backtest_df[primary].mean(), default=default)
-                if fallback and fallback in backtest_df.columns:
-                    return coerce_numeric(backtest_df[fallback].mean(), default=default)
-                return default
+                series = _normalized_series(primary)
+                if series is None and fallback:
+                    series = _normalized_series(fallback)
+                if series is None or series.empty:
+                    return default
+                return _metric(series, default=default)
 
             strategy_returns_daily = {
                 "simple": _mean_return("simple_strategy_avg_daily_return", "simple_strategy_return"),
@@ -1678,9 +1702,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     "unprofit_shutdown_return",
                 )
             if "unprofit_shutdown_sharpe" in backtest_df.columns:
-                unprofit_sharpe = backtest_df["unprofit_shutdown_sharpe"].mean()
+                unprofit_sharpe = _metric(backtest_df["unprofit_shutdown_sharpe"], default=0.0)
 
-            last_prediction = backtest_df.iloc[0]
+            last_prediction = backtest_df.iloc[0].apply(
+                lambda value: coerce_numeric(value, default=0.0, prefer="mean")
+            )
             walk_forward_oos_sharpe_raw = last_prediction.get("walk_forward_oos_sharpe")
             walk_forward_turnover_raw = last_prediction.get("walk_forward_turnover")
             walk_forward_highlow_raw = last_prediction.get("walk_forward_highlow_sharpe")
@@ -1802,8 +1828,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                         strategy_ineligible[name] = reason
                         continue
 
-                annual_metric = float(stats.get("annual_return") or 0.0)
-                score = annual_metric + 0.05 * float(stats.get("sharpe") or 0.0)
+                annual_metric = _metric(stats.get("annual_return"), default=0.0)
+                score = annual_metric + 0.05 * _metric(stats.get("sharpe"), default=0.0)
                 if name in {"simple", "ci_guard"}:
                     score += 0.001
                 candidate_scores[name] = score
@@ -1812,8 +1838,14 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if strategy_candidates:
                 strategy_candidates.sort(key=lambda item: item[0], reverse=True)
                 best_strategy = strategy_candidates[0][1]
-                avg_return = float(strategy_stats.get(best_strategy, {}).get("avg_return", 0.0))
-                annual_return = float(strategy_stats.get(best_strategy, {}).get("annual_return", 0.0))
+                avg_return = _metric(
+                    strategy_stats.get(best_strategy, {}).get("avg_return"),
+                    default=0.0,
+                )
+                annual_return = _metric(
+                    strategy_stats.get(best_strategy, {}).get("annual_return"),
+                    default=0.0,
+                )
             else:
                 best_strategy = "simple"
                 avg_return = strategy_returns.get(best_strategy, 0.0)
@@ -2054,49 +2086,54 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             cooldown_ok = True if SIMPLIFIED_MODE else can_trade_now(symbol, now_utc)
 
             gating_reasons: List[str] = []
-            default_cutoff = -0.25 if kronos_only_mode else 0.3
-            env_key = (
-                "MARKETSIM_KRONOS_SHARPE_CUTOFF"
-                if kronos_only_mode
-                else "MARKETSIM_SHARPE_CUTOFF"
-            )
-            sharpe_cutoff = _get_env_float(env_key)
-            if sharpe_cutoff is None and kronos_only_mode:
-                sharpe_cutoff = _get_env_float("MARKETSIM_SHARPE_CUTOFF")
-            if sharpe_cutoff is None:
-                sharpe_cutoff = default_cutoff
-            if not SIMPLIFIED_MODE and walk_forward_oos_sharpe is not None and walk_forward_oos_sharpe < sharpe_cutoff:
-                gating_reasons.append(
-                    f"Walk-forward Sharpe {walk_forward_oos_sharpe:.2f} < {sharpe_cutoff:.2f}"
+            if not DISABLE_TRADE_GATES:
+                default_cutoff = -0.25 if kronos_only_mode else 0.3
+                env_key = (
+                    "MARKETSIM_KRONOS_SHARPE_CUTOFF"
+                    if kronos_only_mode
+                    else "MARKETSIM_SHARPE_CUTOFF"
                 )
-            if not SIMPLIFIED_MODE and not kronos_only_mode:
+                sharpe_cutoff = _get_env_float(env_key)
+                if sharpe_cutoff is None and kronos_only_mode:
+                    sharpe_cutoff = _get_env_float("MARKETSIM_SHARPE_CUTOFF")
+                if sharpe_cutoff is None:
+                    sharpe_cutoff = default_cutoff
                 if (
-                    walk_forward_turnover is not None
+                    not SIMPLIFIED_MODE
                     and walk_forward_oos_sharpe is not None
-                    and walk_forward_turnover > 2.0
-                    and walk_forward_oos_sharpe < 0.5
+                    and walk_forward_oos_sharpe < sharpe_cutoff
                 ):
                     gating_reasons.append(
-                        f"Walk-forward turnover {walk_forward_turnover:.2f} with Sharpe {walk_forward_oos_sharpe:.2f}"
+                        f"Walk-forward Sharpe {walk_forward_oos_sharpe:.2f} < {sharpe_cutoff:.2f}"
                     )
-            if not tradeable:
-                gating_reasons.append(spread_reason)
-            if not edge_ok:
-                gating_reasons.append(edge_reason)
-            if kronos_only_mode and consensus_reason and "Model disagreement" in consensus_reason:
-                if sign_kronos in (-1, 1):
-                    consensus_reason = None
-            if kronos_only_mode and consensus_reason and consensus_reason.startswith(
-                "No directional signal"
-            ):
-                if sign_kronos in (-1, 1):
-                    consensus_reason = None
-            if consensus_reason:
-                gating_reasons.append(consensus_reason)
-            if not cooldown_ok and not kronos_only_mode:
-                gating_reasons.append("Cooldown active after recent loss")
-            if kelly_fraction <= 0:
-                gating_reasons.append("Kelly fraction <= 0")
+                if not SIMPLIFIED_MODE and not kronos_only_mode:
+                    if (
+                        walk_forward_turnover is not None
+                        and walk_forward_oos_sharpe is not None
+                        and walk_forward_turnover > 2.0
+                        and walk_forward_oos_sharpe < 0.5
+                    ):
+                        gating_reasons.append(
+                            f"Walk-forward turnover {walk_forward_turnover:.2f} with Sharpe {walk_forward_oos_sharpe:.2f}"
+                        )
+                if not tradeable:
+                    gating_reasons.append(spread_reason)
+                if not edge_ok:
+                    gating_reasons.append(edge_reason)
+                if kronos_only_mode and consensus_reason and "Model disagreement" in consensus_reason:
+                    if sign_kronos in (-1, 1):
+                        consensus_reason = None
+                if kronos_only_mode and consensus_reason and consensus_reason.startswith(
+                    "No directional signal"
+                ):
+                    if sign_kronos in (-1, 1):
+                        consensus_reason = None
+                if consensus_reason:
+                    gating_reasons.append(consensus_reason)
+                if not cooldown_ok and not kronos_only_mode:
+                    gating_reasons.append("Cooldown active after recent loss")
+                if kelly_fraction <= 0:
+                    gating_reasons.append("Kelly fraction <= 0")
 
             base_blocked = False if SIMPLIFIED_MODE else block_info.get("blocked", False)
             if kronos_only_mode and base_blocked:
@@ -2113,30 +2150,32 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             trade_blocked = base_blocked or bool(gating_reasons)
 
             result_row = {
-                "avg_return": avg_return,
-                "annual_return": annual_return,
+                "avg_return": _metric(avg_return, default=0.0),
+                "annual_return": _metric(annual_return, default=0.0),
                 "predictions": backtest_df,
                 "side": position_side,
-                "predicted_movement": predicted_movement,
+                "predicted_movement": _metric(predicted_movement, default=0.0),
                 "strategy": best_strategy,
-                "predicted_high": float(predicted_high_price),
-                "predicted_low": float(predicted_low_price),
-                "predicted_close": float(predicted_close_price),
-                "calibrated_close": float(calibrated_close_price),
-                "last_close": float(close_price),
+                "predicted_high": _metric(predicted_high_price, default=close_price),
+                "predicted_low": _metric(predicted_low_price, default=close_price),
+                "predicted_close": _metric(predicted_close_price, default=close_price),
+                "calibrated_close": _metric(calibrated_close_price, default=close_price),
+                "last_close": _metric(close_price, default=close_price),
                 "strategy_returns": strategy_returns,
                 "strategy_annual_returns": strategy_returns_annual,
-                "simple_return": simple_return,
-                "maxdiff_return": maxdiff_return,
-                "unprofit_shutdown_return": unprofit_return,
-                "unprofit_shutdown_sharpe": unprofit_sharpe,
-                "expected_move_pct": expected_move_pct,
-                "expected_move_pct_raw": raw_expected_move_pct,
-                "price_skill": price_skill,
-                "edge_strength": edge_strength,
-                "directional_edge": directional_edge,
-                "composite_score": composite_score,
-                "selected_strategy_score": selected_strategy_score,
+                "simple_return": _metric(simple_return, default=0.0),
+                "maxdiff_return": _metric(maxdiff_return, default=0.0),
+                "unprofit_shutdown_return": _metric(unprofit_return, default=0.0),
+                "unprofit_shutdown_sharpe": _metric(unprofit_sharpe, default=0.0),
+                "expected_move_pct": _metric(expected_move_pct, default=0.0),
+                "expected_move_pct_raw": _metric(raw_expected_move_pct, default=0.0),
+                "price_skill": _metric(price_skill, default=0.0),
+                "edge_strength": _metric(edge_strength, default=0.0),
+                "directional_edge": _metric(directional_edge, default=0.0),
+                "composite_score": _metric(composite_score, default=0.0),
+                "selected_strategy_score": _metric(selected_strategy_score, default=0.0)
+                if selected_strategy_score is not None
+                else None,
                 "strategy_entry_ineligible": strategy_ineligible,
                 "strategy_candidate_scores": candidate_scores,
                 "fallback_backtest": used_fallback_engine,
@@ -2170,8 +2209,10 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "kelly_sigma_pct": sigma_pct,
                 "toto_move_pct": toto_move_pct,
                 "kronos_move_pct": kronos_move_pct,
-                "avg_dollar_vol": float(avg_dollar_vol) if avg_dollar_vol is not None else None,
-                "atr_pct_14": float(atr_pct) if atr_pct is not None else None,
+                "avg_dollar_vol": (
+                    _metric(avg_dollar_vol, default=0.0) if avg_dollar_vol is not None else None
+                ),
+                "atr_pct_14": _metric(atr_pct, default=0.0) if atr_pct is not None else None,
                 "cooldown_active": not cooldown_ok,
                 "walk_forward_oos_sharpe": walk_forward_oos_sharpe,
                 "walk_forward_turnover": walk_forward_turnover,
@@ -2199,8 +2240,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             results[symbol] = result_row
             _log_analysis_summary(symbol, result_row)
 
-        except Exception as e:
-            logger.error(f"Error analyzing {symbol}: {str(e)}")
+        except Exception:
+            logger.exception("Error analyzing %s", symbol)
             continue
 
     return dict(sorted(results.items(), key=lambda x: x[1]["composite_score"], reverse=True))

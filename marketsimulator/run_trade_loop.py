@@ -31,8 +31,12 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         argv_list = sys.argv[1:]
 
     if "--stub-config" in argv_list:
-        Path("analysis").mkdir(parents=True, exist_ok=True)
-        Path("analysis/stub_hit.txt").write_text("1", encoding="utf-8")
+        stub_path = Path("analysis") / "stub_hit.txt"
+        try:
+            stub_path.parent.mkdir(parents=True, exist_ok=True)
+            stub_path.write_text("1", encoding="utf-8")
+        except OSError:
+            print(f"warning: unable to record stub hit at {stub_path}", file=sys.stderr)
 
     parser = argparse.ArgumentParser(
         description="Simulate trade_stock_e2e with a mocked Alpaca stack."
