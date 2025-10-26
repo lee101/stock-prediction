@@ -44,7 +44,5 @@ def test_simulate_strategy_real(monkeypatch, tmp_path):
 
     assert report.initial_cash == pytest.approx(25_000.0)
     assert report.daily_snapshots, "simulation produced no snapshots"
-    assert report.trade_executions >= 0
-
-    if report.trade_executions == 0:
-        pytest.xfail("No trades executed; analytics returned empty signals")
+    execution_count = len(report.trade_executions)
+    assert execution_count >= 0
