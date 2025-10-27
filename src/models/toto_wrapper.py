@@ -157,7 +157,7 @@ def _is_cuda_oom(exc: BaseException) -> bool:
     if oom_error is not None and isinstance(exc, oom_error):
         return True
     message = str(exc).lower()
-    return "out of memory" in message
+    return "out of memory" in message or "busy or unavailable" in message or "cuda error" in message
 
 
 def _maybe_empty_cuda_cache(device: str) -> None:
@@ -317,8 +317,29 @@ class TotoPipeline:
         if torch_dtype is not None:
             target_kwargs["dtype"] = torch_dtype
 
-        self.model = model.to(**target_kwargs)
+        try:
+            self.model = model.to(**target_kwargs)
+        except Exception as exc:
+            if device.startswith("cuda") and _is_cuda_oom(exc):
+                logger.warning(
+                    "Toto model initialisation OOM on %s; retrying on CPU. (%s)",
+                    device,
+                    exc,
+                )
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:  # pragma: no cover - cache clearing best effort
+                    pass
+                self.device = "cpu"
+                target_kwargs = {"device": "cpu"}
+                if torch_dtype is not None:
+                    target_kwargs["dtype"] = torch_dtype
+                self.model = model.to(**target_kwargs)
+            else:
+                raise
         self.model.eval()
+
+        device = self.device
 
         try:
             first_param = next(self.model.parameters())
