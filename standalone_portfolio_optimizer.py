@@ -9,7 +9,7 @@ import json
 import itertools
 import random
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
@@ -21,10 +21,14 @@ class StandalonePortfolioOptimizer:
     Standalone version for optimizing portfolio parameters without full trading setup.
     """
     
-    def __init__(self, base_config_path: str = None):
+    def __init__(self, base_config_path: Optional[str] = None, output_dir: Optional[Union[str, Path]] = None):
         self.logger = logger
-        log_file = f"portfolio_optimization_{datetime.now():%Y%m%d_%H%M%S}.log"
-        self.logger.add(log_file)
+        default_output_dir = Path("results") / "portfolio_optimizer"
+        self.output_dir = Path(output_dir) if output_dir else default_output_dir
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        log_file = self.output_dir / f"portfolio_optimization_{datetime.now():%Y%m%d_%H%M%S}.log"
+        self.logger.add(str(log_file))
         
         # Base configuration
         self.base_config = self._load_base_config(base_config_path)
@@ -309,14 +313,26 @@ class StandalonePortfolioOptimizer:
         self.logger.info(f"Optimization completed. Best score: {best_score:.3f}")
         return best_result
     
-    def save_results(self, output_path: str = None):
+    def save_results(self, output_path: Optional[Union[str, Path]] = None):
         """Save optimization results."""
-        if not output_path:
-            output_path = f"portfolio_optimization_results_{datetime.now():%Y%m%d_%H%M%S}.json"
+        timestamp = datetime.now()
+        if output_path:
+            output_path = Path(output_path)
+            if output_path.suffix.lower() != ".json":
+                output_dir = output_path
+                file_path = output_dir / f"portfolio_optimization_results_{timestamp:%Y%m%d_%H%M%S}.json"
+            else:
+                output_dir = output_path.parent
+                file_path = output_path
+        else:
+            output_dir = self.output_dir
+            file_path = output_dir / f"portfolio_optimization_results_{timestamp:%Y%m%d_%H%M%S}.json"
+
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         # Prepare results for saving
         save_data = {
-            'optimization_date': datetime.now().isoformat(),
+            'optimization_date': timestamp.isoformat(),
             'base_config': self.base_config,
             'param_grid': self.param_grid,
             'results': self.results,
@@ -324,10 +340,10 @@ class StandalonePortfolioOptimizer:
             'summary_stats': self._calculate_summary_stats()
         }
         
-        with open(output_path, 'w') as f:
+        with open(file_path, 'w') as f:
             json.dump(save_data, f, indent=2, default=str)
         
-        self.logger.info(f"Results saved to {output_path}")
+        self.logger.info(f"Results saved to {file_path}")
         
         # Save best config
         if self.results:
@@ -335,13 +351,13 @@ class StandalonePortfolioOptimizer:
             best_config = self.base_config.copy()
             best_config.update(best_result['params'])
             
-            best_config_path = output_path.replace('.json', '_best_config.json')
+            best_config_path = file_path.with_name(file_path.stem + "_best_config.json")
             with open(best_config_path, 'w') as f:
                 json.dump(best_config, f, indent=2)
             
             self.logger.info(f"Best configuration saved to {best_config_path}")
         
-        return output_path
+        return str(file_path)
     
     def _calculate_summary_stats(self) -> Dict:
         """Calculate summary statistics across all tests."""
@@ -438,16 +454,23 @@ def main():
     parser.add_argument('--config', type=str, help='Base configuration file')
     parser.add_argument('--sample-size', type=int, default=25, help='Number of parameter combinations to test')
     parser.add_argument('--simulation-days', type=int, default=10, help='Days to simulate for each test')
-    parser.add_argument('--output', type=str, help='Output file path')
+    parser.add_argument('--output', type=str, help='Output file path or directory for results')
+    parser.add_argument('--output-dir', type=str, help='Directory to store logs and results (defaults to results/portfolio_optimizer)')
     
     args = parser.parse_args()
     
     # Run optimization
-    optimizer = StandalonePortfolioOptimizer(args.config)
+    output_dir = None
+    if args.output_dir:
+        output_dir = args.output_dir
+    elif args.output and not args.output.endswith(".json"):
+        output_dir = args.output
+
+    optimizer = StandalonePortfolioOptimizer(args.config, output_dir=output_dir)
     best_result = optimizer.optimize_parameters(args.sample_size, args.simulation_days)
     
     # Save and print results
-    output_path = optimizer.save_results(args.output)
+    output_path = optimizer.save_results(args.output or output_dir)
     optimizer.print_summary()
     
     print(f"\n✅ Optimization complete!")
