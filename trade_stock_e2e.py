@@ -2261,11 +2261,23 @@ def build_portfolio(
         limit = max_expanded or max_positions
         ranked = sorted(
             all_results.items(),
-            key=lambda item: _coerce_optional_float(item[1].get("avg_return")) or 0.0,
+            key=lambda item: _coerce_optional_float(item[1].get("avg_return")) or float("-inf"),
             reverse=True,
         )
         simple_picks: Dict[str, Dict] = {}
         for symbol, data in ranked:
+            avg_val = _coerce_optional_float(data.get("avg_return"))
+            if avg_val is None or avg_val <= 0:
+                continue
+            pred_move = _coerce_optional_float(data.get("predicted_movement"))
+            side = (data.get("side") or "").lower()
+            if pred_move is not None:
+                if side == "buy" and pred_move <= 0:
+                    continue
+                if side == "sell" and pred_move >= 0:
+                    continue
+            if data.get("trade_blocked"):
+                continue
             simple_picks[symbol] = data
             if len(simple_picks) >= limit:
                 break

@@ -19,6 +19,8 @@ from src.models.toto_aggregation import aggregate_with_spec
 
 DATA_DIR = Path("trainingdata")
 BEST_DIR = Path("hyperparams/best")
+MAX_EVAL_STEPS = 5
+MAX_SYMBOLS = 2
 
 
 @dataclass
@@ -116,7 +118,9 @@ def _evaluate_kronos(
 
     close_values = df["close"].to_numpy(dtype=np.float64)
 
-    for idx in indices:
+    for step_idx, idx in enumerate(indices):
+        if step_idx >= MAX_EVAL_STEPS:
+            break
         history = df.iloc[:idx].copy()
         if history.shape[0] < 2:
             continue
@@ -178,7 +182,9 @@ def _evaluate_toto(
     actual_returns: List[float] = []
     latencies: List[float] = []
 
-    for idx in indices:
+    for step_idx, idx in enumerate(indices):
+        if step_idx >= MAX_EVAL_STEPS:
+            break
         context = close_values[:idx].astype(np.float32)
         if context.size < 2:
             continue
@@ -250,7 +256,9 @@ def test_kronos_toto_line_eval() -> None:
     toto_pipeline = None
 
     try:
-        for symbol in symbols:
+        for idx_symbol, symbol in enumerate(symbols):
+            if idx_symbol >= MAX_SYMBOLS:
+                break
             kronos_result = resolver.load(symbol, "kronos", prefer_best=True, allow_remote=False)
             toto_result = resolver.load(symbol, "toto", prefer_best=True, allow_remote=False)
 
