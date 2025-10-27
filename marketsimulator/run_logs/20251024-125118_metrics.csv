@@ -1,2 +1,0 @@
-mode,steps,step_size,top_k,symbols,initial_cash,kronos_only,real_analytics,sharpe_cutoff,kronos_sharpe_cutoff,flatten_end,return,sharpe,pnl,cash,balance,max_drawdown,max_drawdown_pct,fees_paid
-simulation,20,1,4,"['AAPL', 'MSFT', 'NVDA']",100000.0,True,True,,-1.0,True,0.010392339945882123,0.8982866313687845,1039.2339945882122,101039.23399458821,101039.23399458821,1431.3327362610726,0.014189077612018012,116.8600358069323
