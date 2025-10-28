@@ -179,8 +179,11 @@ def evaluate_strategy_entry_gate(
         return False, f"edge {edge_bps:.1f}bps < need {needed_edge:.1f}bps"
     if sharpe < 0.5:
         return False, f"sharpe {sharpe:.2f} below 0.50 gate"
-    if sample_size < 120:
-        return False, f"insufficient samples {sample_size} < 120"
+    min_samples = 120
+    if symbol.endswith("USD") and symbol.startswith(LIQUID_CRYPTO_PREFIXES):
+        min_samples = 60
+    if sample_size < min_samples:
+        return False, f"insufficient samples {sample_size} < {min_samples}"
     if max_drawdown < -0.08:
         return False, f"max drawdown {max_drawdown:.2f} below -0.08 gate"
     if turnover > 2.0 and sharpe < 0.8:

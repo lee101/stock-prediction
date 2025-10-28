@@ -8,7 +8,7 @@ All requested features have been implemented and tested:
 ✅ **Organized directory structure (hftraining/models, tensorboard, etc.)**  
 ✅ **Base model training on multiple stocks**  
 ✅ **Fine-tuning pipeline for individual stocks & stock pairs**  
-✅ **Amazon Toto forecasts baked into every dataset**  
+✅ **Datadog Toto forecasts baked into every dataset**  
 ✅ **Differentiable profit-loss objective driving the core trainer**  
 ✅ **Portfolio RL module that learns allocations with rebalancing**
 
@@ -89,7 +89,7 @@ term. A transaction-cost penalty (configurable via `transaction_cost_bps`) is
 applied so allocations remain realistic. TensorBoard logging continues to track
 PnL, Sharpe, drawdown, and win rate.
 
-### Amazon Toto Forecast Integration
+### Datadog Toto Forecast Integration
 
 - Set `config.data.use_toto_forecasts = True` (default) to enrich every sample
   with Toto forecast means and standard deviations for the configured horizon.
@@ -99,6 +99,7 @@ PnL, Sharpe, drawdown, and win rate.
   reduce this if you hit memory or latency limits.
 - If Toto dependencies are missing, the pipeline automatically falls back to a
   differentiable statistical approximation so training can still proceed.
+- Toto forecasting now requires a CUDA-capable GPU; CPU execution is disabled to avoid inconsistent accuracy.
 
 ### Portfolio Allocation RL
 

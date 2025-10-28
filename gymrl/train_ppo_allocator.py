@@ -25,16 +25,18 @@ import json
 import logging
 import os
 import subprocess
+import time
 import types
 from dataclasses import asdict
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
 from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.logger import configure as sb3_configure
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from gymrl import (
@@ -48,6 +50,13 @@ import torch
 from gymrl.cache_utils import load_feature_cache, save_feature_cache
 from gymrl.config import OfflineDatasetConfig
 from gymrl.eval_utils import evaluate_trained_policy
+from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
+from wandboard import WandBoardLogger
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+configure_tf32_backends(torch)
+if torch.cuda.is_available():
+    maybe_set_float32_precision(torch)
 
 logger = logging.getLogger("gymrl.train")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -119,6 +128,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda parameter.")
     parser.add_argument("--clip-range", type=float, default=0.2, help="PPO clip range.")
     parser.add_argument("--tensorboard-log", type=Path, default=Path("gymrl/runs"), help="TensorBoard log directory.")
+    parser.add_argument("--run-name", type=str, default=None, help="Run name used for logging directories and reports.")
+    parser.add_argument("--tensorboard-subdir", type=str, default=None, help="Override TensorBoard subdirectory under --tensorboard-log.")
+    parser.add_argument("--wandb-project", type=str, default=None, help="Weights & Biases project name.")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="Weights & Biases entity/account.")
+    parser.add_argument("--wandb-group", type=str, default=None, help="Weights & Biases run group.")
+    parser.add_argument("--wandb-tags", type=str, default=None, help="Comma-separated list of tags for the run.")
+    parser.add_argument("--wandb-run-name", type=str, default=None, help="Explicit Weights & Biases run name override.")
+    parser.add_argument("--wandb-notes", type=str, default=None, help="Optional run notes/description for Weights & Biases.")
+    parser.add_argument(
+        "--wandb-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "online", "offline", "disabled", "dryrun"],
+        help="Weights & Biases mode to use (auto honours WANDB_MODE environment).",
+    )
+    parser.add_argument("--wandb-log-frequency", type=int, default=2048, help="Timesteps between mirrored WandB metric payloads.")
+    parser.add_argument("--wandb-log-metrics", action="store_true", help="Emit mirrored metric payload previews to the Python logger.")
+    parser.add_argument("--wandb", dest="use_wandb", action="store_true", help="Enable Weights & Biases logging (default).")
+    parser.add_argument("--no-wandb", dest="use_wandb", action="store_false", help="Disable Weights & Biases logging.")
     parser.add_argument("--output-dir", type=Path, default=Path("gymrl/artifacts"), help="Directory for checkpoints and artefacts.")
     parser.add_argument("--save-frequency", type=int, default=50_000, help="Checkpoint frequency (timesteps).")
     parser.add_argument("--behaviour-dataset", type=Path, default=None, help="Optional path to save offline behaviour dataset (.npz).")
@@ -246,7 +274,7 @@ def parse_args() -> argparse.Namespace:
         default="R2_ENDPOINT",
         help="Environment variable carrying a custom endpoint URL for aws s3 cp (default: R2_ENDPOINT).",
     )
-    parser.set_defaults(include_cash=True, leverage_head=True, enforce_eod_cap=True, regime_filters_enabled=False)
+    parser.set_defaults(include_cash=True, leverage_head=True, enforce_eod_cap=True, regime_filters_enabled=False, use_wandb=True)
     return parser.parse_args()
 
 
@@ -364,6 +392,43 @@ class EntropyAnnealCallback(BaseCallback):
         if hasattr(self.model.policy, "entropy_coef"):
             self.model.policy.entropy_coef = new_coef
         return True
+
+
+class WandBoardMetricsCallback(BaseCallback):
+    """Mirror Stable-Baselines3 logger scalars to WandBoard."""
+
+    def __init__(self, metrics_logger: WandBoardLogger, *, log_every: int = 2048) -> None:
+        super().__init__(verbose=0)
+        self._metrics_logger = metrics_logger
+        self._log_every = max(1, int(log_every))
+        self._last_logged_step: int = -1
+
+    @staticmethod
+    def _collect_scalars(source: Mapping[str, Any]) -> Dict[str, float]:
+        scalars: Dict[str, float] = {}
+        for key, value in source.items():
+            if isinstance(value, (int, float, bool)):
+                scalars[f"sb3/{key}"] = float(value)
+        return scalars
+
+    def _on_step(self) -> bool:
+        if self._metrics_logger is None:
+            return True
+        if self.model is None or self.logger is None:
+            return True
+        if self.num_timesteps - self._last_logged_step < self._log_every:
+            return True
+
+        payload = self._collect_scalars(getattr(self.logger, "name_to_value", {}))
+        payload["training/num_timesteps"] = float(self.num_timesteps)
+        if payload:
+            self._metrics_logger.log(payload, step=int(self.num_timesteps))
+            self._last_logged_step = self.num_timesteps
+        return True
+
+    def _on_training_end(self) -> None:
+        if self._metrics_logger is not None:
+            self._metrics_logger.flush()
 
 
 def main() -> None:
@@ -571,247 +636,343 @@ def main() -> None:
     train_episode_len = max(8, train_steps - 1)
     eval_episode_len = max(8, validation_steps)
 
-    train_env = DummyVecEnv(
-        [make_env_factory(cube.features, cube.realized_returns, cube_meta, env_config, start_index=0, episode_length=train_episode_len)]
-    )
-    eval_env = DummyVecEnv(
-        [
-            make_env_factory(
-                cube.features,
-                cube.realized_returns,
-                cube_meta,
-                env_config,
-                start_index=eval_start,
-                episode_length=eval_episode_len,
-            )
-        ]
-    )
-
-    model = PPO(
-        "MlpPolicy",
-        train_env,
-        verbose=1,
-        tensorboard_log=str(args.tensorboard_log),
-        device=args.device,
-        learning_rate=args.learning_rate,
-        batch_size=args.batch_size,
-        n_steps=args.n_steps,
-        ent_coef=args.ent_coef,
-        gamma=args.gamma,
-        gae_lambda=args.gae_lambda,
-        clip_range=args.clip_range,
-        seed=args.seed,
-    )
-
-    if args.policy_dtype == "bfloat16":
-        try:
-            torch.ones(1, device=model.device, dtype=torch.bfloat16)
-        except RuntimeError as exc:
-            raise RuntimeError(
-                f"policy-dtype bfloat16 requested but not supported on device {model.device}"
-            ) from exc
-        logger.info("Enabling bfloat16 autocast for PPO policy (device=%s).", model.device)
-    else:
-        logger.info("Using float32 policy dtype (device=%s).", model.device)
-
-    def _autocast_context() -> contextlib.AbstractContextManager:
-        if args.policy_dtype == "bfloat16":
-            device_type = "cuda" if model.device.type == "cuda" else "cpu"
-            return torch.autocast(device_type=device_type, dtype=torch.bfloat16)
-        return contextlib.nullcontext()
-
-    if args.policy_dtype == "bfloat16":
-        original_forward = model.policy.forward
-        original_predict_values = model.policy.predict_values
-        original_predict = model.policy._predict
-        original_evaluate_actions = model.policy.evaluate_actions
-
-        def _forward_with_cast(self, obs, deterministic: bool = False):
-            actions, values, log_prob = original_forward(obs, deterministic=deterministic)
-            return actions.to(torch.float32), values.to(torch.float32), log_prob.to(torch.float32)
-
-        def _predict_values_with_cast(self, obs):
-            values = original_predict_values(obs)
-            return values.to(torch.float32)
-
-        def _evaluate_actions_with_cast(self, obs, actions):
-            values, log_prob, entropy = original_evaluate_actions(obs, actions)
-            return values.to(torch.float32), log_prob.to(torch.float32), entropy.to(torch.float32)
-
-        def _predict_with_cast(self, obs, deterministic: bool = False):
-            actions = original_predict(obs, deterministic=deterministic)
-            return actions.to(torch.float32)
-
-        model.policy.forward = types.MethodType(_forward_with_cast, model.policy)
-        model.policy.predict_values = types.MethodType(_predict_values_with_cast, model.policy)
-        model.policy._predict = types.MethodType(_predict_with_cast, model.policy)
-        model.policy.evaluate_actions = types.MethodType(_evaluate_actions_with_cast, model.policy)
-
-    checkpoint_callback = CheckpointCallback(
-        save_freq=max(args.save_frequency // args.n_steps, 1),
-        save_path=str(args.output_dir),
-        name_prefix="ppo_allocator",
-    )
-
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path=str(args.output_dir / "best"),
-        log_path=str(args.output_dir / "eval"),
-        eval_freq=args.n_steps,
-        deterministic=True,
-    )
-
-    topk_callback = TopKCheckpointCallback(
-        eval_env,
-        save_dir=args.output_dir / "topk",
-        top_k=args.topk_checkpoints,
-        eval_freq=args.topk_eval_freq,
-        n_eval_episodes=args.eval_episodes,
-    )
-
-    logger.info(
-        "Starting PPO training with %d timesteps (train steps=%d, eval start idx=%d, backend=%s).",
-        args.num_timesteps,
-        train_steps,
-        eval_start,
-        backend_label,
-    )
-
-    callbacks: List[BaseCallback] = [checkpoint_callback, eval_callback, topk_callback]
-    if args.ent_coef_final is not None:
-        callbacks.append(EntropyAnnealCallback(args.num_timesteps, args.ent_coef, args.ent_coef_final))
-
-    with _autocast_context():
-        model.learn(total_timesteps=args.num_timesteps, callback=callbacks)
-    model_path = args.output_dir / "ppo_allocator_final.zip"
-    model.save(str(model_path))
-
-    rollout_env = make_env_factory(
-        cube.features,
-        cube.realized_returns,
-        cube_meta,
-        env_config,
-        start_index=eval_start,
-        episode_length=eval_episode_len,
-    )()
-    with _autocast_context():
-        validation_metrics = evaluate_trained_policy(model, rollout_env)
-
-    total_validation_steps = int(validation_metrics.get("total_steps") or validation_steps)
-    cumulative_return = float(validation_metrics.get("cumulative_return", 0.0))
-    avg_daily_return = None
-    annual_return_simple = None
-    if total_validation_steps > 0:
-        avg_daily_return = cumulative_return / float(total_validation_steps)
-        annual_return_simple = avg_daily_return * 365.0
-        validation_metrics["average_daily_return_simple"] = avg_daily_return
-        validation_metrics["annualized_return_simple"] = annual_return_simple
-        logger.info(
-            "Average daily return: %.6f, annualised (simple) return: %.2f%%",
-            avg_daily_return,
-            annual_return_simple * 100.0,
-        )
-
-    logger.info(
-        "Validation (last %d days) -> final value: %.4f, cumulative return: %.2f%%, annualized return: %.2f%%, "
-        "avg turnover: %.4f, avg trading cost: %.6f, avg interest cost: %.6f, avg close gross: %.3f",
-        validation_steps,
-        validation_metrics["final_portfolio_value"],
-        validation_metrics["cumulative_return"] * 100.0,
-        validation_metrics["annualized_return"] * 100.0,
-        validation_metrics["average_turnover"],
-        validation_metrics["average_trading_cost"],
-        validation_metrics.get("average_interest_cost", 0.0),
-        validation_metrics.get("average_gross_exposure_close", 0.0),
-    )
-
-    formatted_model_path = model_path
-    if args.annotate_final_artifact and total_validation_steps > 0:
-        def _format_metric(prefix: str, value: float, scale: float = 100.0, decimals: int = 2) -> str:
-            sign = "p" if value >= 0 else "m"
-            magnitude = abs(value) * scale
-            return f"{prefix}{sign}{magnitude:.{decimals}f}"
-
-        fragments = [_format_metric("pnlpct", cumulative_return)]
-        avg_log_reward = validation_metrics.get("average_log_reward")
-        if avg_daily_return is not None:
-            fragments.append(_format_metric("daily", avg_daily_return))
-        if annual_return_simple is not None:
-            fragments.append(_format_metric("annual", annual_return_simple))
-        if avg_log_reward is not None:
-            fragments.append(_format_metric("log", avg_log_reward, scale=1.0, decimals=4))
-
-        annotated = f"{model_path.stem}_{'_'.join(fragments)}{model_path.suffix}"
-        target_path = model_path.with_name(annotated)
-        try:
-            model_path.rename(target_path)
-            formatted_model_path = target_path
-            logger.info("Renamed final checkpoint to %s", formatted_model_path)
-        except OSError as exc:
-            logger.warning("Failed to annotate checkpoint filename (%s); keeping original name.", exc)
-            formatted_model_path = model_path
-    else:
-        formatted_model_path = model_path
-
-    if args.s3_upload_uri:
-        endpoint_env = args.s3_endpoint_env or "R2_ENDPOINT"
-        endpoint_url = os.getenv(endpoint_env)
-        cmd = ["aws", "s3", "cp", str(formatted_model_path), args.s3_upload_uri]
-        if endpoint_url:
-            cmd.extend(["--endpoint-url", endpoint_url])
-        logger.info("Uploading final checkpoint to %s (endpoint env=%s).", args.s3_upload_uri, endpoint_env)
-        try:
-            result = subprocess.run(cmd, check=False, capture_output=True, text=True)
-            if result.returncode != 0:
-                logger.warning("aws s3 upload failed (exit %s): %s", result.returncode, result.stderr.strip())
-            else:
-                logger.info("aws s3 upload succeeded: %s", result.stdout.strip())
-        except FileNotFoundError:
-            logger.warning("aws CLI not available; skipping S3 upload.")
-
-    logger.info("Saved final PPO model to %s", formatted_model_path)
-
-    topk_records = [
-        {"reward": entry["reward"], "path": entry["path"]}
-        for entry in topk_callback._leaderboard
-    ]
-    if topk_records:
-        logger.info(
-            "Top-%d checkpoints: %s",
-            args.topk_checkpoints,
-            ", ".join(f"{rec['reward']:.4f}" for rec in topk_records),
-        )
-
-    metadata_path = args.output_dir / "training_metadata.json"
     args_serializable = {
         key: (str(value) if isinstance(value, Path) else value)
         for key, value in vars(args).items()
     }
-    metadata_payload = {
+    base_run_name = args.run_name or f"gymrl_ppo_{time.strftime('%Y%m%d_%H%M%S')}"
+    wandb_run_name = args.wandb_run_name or base_run_name
+    tensorboard_subdir = args.tensorboard_subdir or base_run_name
+    wandb_tags = (
+        tuple(tag.strip() for tag in str(args.wandb_tags).split(",") if tag.strip())
+        if args.wandb_tags
+        else tuple()
+    )
+
+    wandboard_config = {
         "args": args_serializable,
+        "feature_builder": asdict(builder_config),
         "env_config": asdict(env_config),
         "train_steps": train_steps,
         "eval_start": eval_start,
         "validation_steps": validation_steps,
-        "num_features": len(cube.feature_names),
-        "num_assets": len(cube.symbols),
-        "total_steps": total_steps,
-        "validation_metrics": validation_metrics,
-        "average_daily_return": avg_daily_return,
-        "annualised_return_simple": annual_return_simple,
-        "final_checkpoint": str(formatted_model_path),
-        "topk_checkpoints": topk_records,
-        "features_cache_loaded": cube_loaded_from_cache,
-        "features_cache_path": str(args.features_cache) if args.features_cache else None,
-        "features_cache_written": str(args.cache_features_to) if args.cache_features_to else None,
-        "feature_extra_metadata": extra_meta,
-        "forecast_backend_used": backend_label,
-        "forecast_backend_errors": backend_errors,
-        "policy_dtype": args.policy_dtype,
+        "backend_label": backend_label,
+        "backend_errors": backend_errors,
+        "cube_loaded_from_cache": cube_loaded_from_cache,
+        "selected_symbols": extra_meta.get("selected_symbols"),
     }
-    with metadata_path.open("w", encoding="utf-8") as f:
-        json.dump(metadata_payload, f, indent=2)
-    logger.info("Wrote metadata to %s", metadata_path)
+
+    wandboard_logger_ctx = WandBoardLogger(
+        run_name=wandb_run_name,
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        tags=wandb_tags,
+        group=args.wandb_group,
+        notes=args.wandb_notes,
+        mode=args.wandb_mode,
+        enable_wandb=args.use_wandb,
+        log_dir=args.tensorboard_log,
+        tensorboard_subdir=tensorboard_subdir,
+        config=wandboard_config,
+        log_metrics=args.wandb_log_metrics,
+    )
+
+    with wandboard_logger_ctx as metrics_logger:
+        dataset_summary = {
+            "dataset/total_steps": float(total_steps),
+            "dataset/train_steps": float(train_steps),
+            "dataset/validation_steps": float(validation_steps),
+            "dataset/num_assets": float(len(cube.symbols)),
+            "dataset/num_features": float(len(cube.feature_names)),
+        }
+        metrics_logger.log(dataset_summary, step=0)
+        if backend_errors:
+            metrics_logger.log_text("dataset/backend_warnings", "\n".join(backend_errors), step=0)
+
+        train_env = DummyVecEnv(
+            [make_env_factory(cube.features, cube.realized_returns, cube_meta, env_config, start_index=0, episode_length=train_episode_len)]
+        )
+        eval_env = DummyVecEnv(
+            [
+                make_env_factory(
+                    cube.features,
+                    cube.realized_returns,
+                    cube_meta,
+                    env_config,
+                    start_index=eval_start,
+                    episode_length=eval_episode_len,
+                )
+            ]
+        )
+
+        sb3_logger = sb3_configure(str(metrics_logger.tensorboard_log_dir), ["stdout", "csv", "tensorboard"])
+
+        model = PPO(
+            "MlpPolicy",
+            train_env,
+            verbose=1,
+            tensorboard_log=None,
+            device=args.device,
+            learning_rate=args.learning_rate,
+            batch_size=args.batch_size,
+            n_steps=args.n_steps,
+            ent_coef=args.ent_coef,
+            gamma=args.gamma,
+            gae_lambda=args.gae_lambda,
+            clip_range=args.clip_range,
+            seed=args.seed,
+        )
+        model.set_logger(sb3_logger)
+
+        if metrics_logger.wandb_enabled:
+            try:
+                metrics_logger.watch(
+                    model.policy,
+                    log="gradients",
+                    log_freq=max(1, args.wandb_log_frequency // max(args.n_steps, 1)),
+                )
+            except Exception:
+                logger.debug("Unable to enable wandb model watching; continuing without gradient tracking.")
+
+        if args.policy_dtype == "bfloat16":
+            try:
+                torch.ones(1, device=model.device, dtype=torch.bfloat16)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"policy-dtype bfloat16 requested but not supported on device {model.device}"
+                ) from exc
+            logger.info("Enabling bfloat16 autocast for PPO policy (device=%s).", model.device)
+        else:
+            logger.info("Using float32 policy dtype (device=%s).", model.device)
+
+        def _autocast_context() -> contextlib.AbstractContextManager:
+            if args.policy_dtype == "bfloat16":
+                device_type = "cuda" if model.device.type == "cuda" else "cpu"
+                return torch.autocast(device_type=device_type, dtype=torch.bfloat16)
+            return contextlib.nullcontext()
+
+        if args.policy_dtype == "bfloat16":
+            original_forward = model.policy.forward
+            original_predict_values = model.policy.predict_values
+            original_predict = model.policy._predict
+            original_evaluate_actions = model.policy.evaluate_actions
+
+            def _forward_with_cast(self, obs, deterministic: bool = False):
+                actions, values, log_prob = original_forward(obs, deterministic=deterministic)
+                return actions.to(torch.float32), values.to(torch.float32), log_prob.to(torch.float32)
+
+            def _predict_values_with_cast(self, obs):
+                values = original_predict_values(obs)
+                return values.to(torch.float32)
+
+            def _evaluate_actions_with_cast(self, obs, actions):
+                values, log_prob, entropy = original_evaluate_actions(obs, actions)
+                return values.to(torch.float32), log_prob.to(torch.float32), entropy.to(torch.float32)
+
+            def _predict_with_cast(self, obs, deterministic: bool = False):
+                actions = original_predict(obs, deterministic=deterministic)
+                return actions.to(torch.float32)
+
+            model.policy.forward = types.MethodType(_forward_with_cast, model.policy)
+            model.policy.predict_values = types.MethodType(_predict_values_with_cast, model.policy)
+            model.policy._predict = types.MethodType(_predict_with_cast, model.policy)
+            model.policy.evaluate_actions = types.MethodType(_evaluate_actions_with_cast, model.policy)
+
+        checkpoint_callback = CheckpointCallback(
+            save_freq=max(args.save_frequency // args.n_steps, 1),
+            save_path=str(args.output_dir),
+            name_prefix="ppo_allocator",
+        )
+
+        eval_callback = EvalCallback(
+            eval_env,
+            best_model_save_path=str(args.output_dir / "best"),
+            log_path=str(args.output_dir / "eval"),
+            eval_freq=args.n_steps,
+            deterministic=True,
+        )
+
+        topk_callback = TopKCheckpointCallback(
+            eval_env,
+            save_dir=args.output_dir / "topk",
+            top_k=args.topk_checkpoints,
+            eval_freq=args.topk_eval_freq,
+            n_eval_episodes=args.eval_episodes,
+        )
+
+        logger.info(
+            "Starting PPO training with %d timesteps (train steps=%d, eval start idx=%d, backend=%s).",
+            args.num_timesteps,
+            train_steps,
+            eval_start,
+            backend_label,
+        )
+
+        wandboard_callback = WandBoardMetricsCallback(metrics_logger, log_every=max(1, args.wandb_log_frequency))
+
+        callbacks: List[BaseCallback] = [wandboard_callback, checkpoint_callback, eval_callback, topk_callback]
+        if args.ent_coef_final is not None:
+            callbacks.append(EntropyAnnealCallback(args.num_timesteps, args.ent_coef, args.ent_coef_final))
+
+        with _autocast_context():
+            model.learn(total_timesteps=args.num_timesteps, callback=callbacks)
+        model_path = args.output_dir / "ppo_allocator_final.zip"
+        model.save(str(model_path))
+
+        rollout_env = make_env_factory(
+            cube.features,
+            cube.realized_returns,
+            cube_meta,
+            env_config,
+            start_index=eval_start,
+            episode_length=eval_episode_len,
+        )()
+        try:
+            with _autocast_context():
+                validation_metrics = evaluate_trained_policy(model, rollout_env)
+        finally:
+            close_fn = getattr(rollout_env, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
+
+        total_validation_steps = int(validation_metrics.get("total_steps") or validation_steps)
+        cumulative_return = float(validation_metrics.get("cumulative_return", 0.0))
+        avg_daily_return = None
+        annual_return_simple = None
+        if total_validation_steps > 0:
+            avg_daily_return = cumulative_return / float(total_validation_steps)
+            annual_return_simple = avg_daily_return * 365.0
+            validation_metrics["average_daily_return_simple"] = avg_daily_return
+            validation_metrics["annualized_return_simple"] = annual_return_simple
+            logger.info(
+                "Average daily return: %.6f, annualised (simple) return: %.2f%%",
+                avg_daily_return,
+                annual_return_simple * 100.0,
+            )
+
+        logger.info(
+            "Validation (last %d days) -> final value: %.4f, cumulative return: %.2f%%, annualized return: %.2f%%, "
+            "avg turnover: %.4f, avg trading cost: %.6f, avg interest cost: %.6f, avg close gross: %.3f",
+            validation_steps,
+            validation_metrics["final_portfolio_value"],
+            validation_metrics["cumulative_return"] * 100.0,
+            validation_metrics["annualized_return"] * 100.0,
+            validation_metrics["average_turnover"],
+            validation_metrics["average_trading_cost"],
+            validation_metrics.get("average_interest_cost", 0.0),
+            validation_metrics.get("average_gross_exposure_close", 0.0),
+        )
+
+        validation_payload = {
+            f"validation/{k}": float(v)
+            for k, v in validation_metrics.items()
+            if isinstance(v, (int, float))
+        }
+        validation_payload["training/final_checkpoint_step"] = float(args.num_timesteps)
+        metrics_logger.log(validation_payload, step=int(args.num_timesteps))
+
+        formatted_model_path = model_path
+        if args.annotate_final_artifact and total_validation_steps > 0:
+            def _format_metric(prefix: str, value: float, scale: float = 100.0, decimals: int = 2) -> str:
+                sign = "p" if value >= 0 else "m"
+                magnitude = abs(value) * scale
+                return f"{prefix}{sign}{magnitude:.{decimals}f}"
+
+            fragments = [_format_metric("pnlpct", cumulative_return)]
+            avg_log_reward = validation_metrics.get("average_log_reward")
+            if avg_daily_return is not None:
+                fragments.append(_format_metric("daily", avg_daily_return))
+            if annual_return_simple is not None:
+                fragments.append(_format_metric("annual", annual_return_simple))
+            if avg_log_reward is not None:
+                fragments.append(_format_metric("log", avg_log_reward, scale=1.0, decimals=4))
+
+            annotated = f"{model_path.stem}_{'_'.join(fragments)}{model_path.suffix}"
+            target_path = model_path.with_name(annotated)
+            try:
+                model_path.rename(target_path)
+                formatted_model_path = target_path
+                logger.info("Renamed final checkpoint to %s", formatted_model_path)
+            except OSError as exc:
+                logger.warning("Failed to annotate checkpoint filename (%s); keeping original name.", exc)
+                formatted_model_path = model_path
+        else:
+            formatted_model_path = model_path
+
+        if args.s3_upload_uri:
+            endpoint_env = args.s3_endpoint_env or "R2_ENDPOINT"
+            endpoint_url = os.getenv(endpoint_env)
+            cmd = ["aws", "s3", "cp", str(formatted_model_path), args.s3_upload_uri]
+            if endpoint_url:
+                cmd.extend(["--endpoint-url", endpoint_url])
+            logger.info("Uploading final checkpoint to %s (endpoint env=%s).", args.s3_upload_uri, endpoint_env)
+            try:
+                result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+                if result.returncode != 0:
+                    logger.warning("aws s3 upload failed (exit %s): %s", result.returncode, result.stderr.strip())
+                else:
+                    logger.info("aws s3 upload succeeded: %s", result.stdout.strip())
+            except FileNotFoundError:
+                logger.warning("aws CLI not available; skipping S3 upload.")
+
+        logger.info("Saved final PPO model to %s", formatted_model_path)
+
+        topk_records = [
+            {"reward": entry["reward"], "path": entry["path"]}
+            for entry in topk_callback._leaderboard
+        ]
+        if topk_records:
+            logger.info(
+                "Top-%d checkpoints: %s",
+                args.topk_checkpoints,
+                ", ".join(f"{rec['reward']:.4f}" for rec in topk_records),
+            )
+
+        metadata_path = args.output_dir / "training_metadata.json"
+        metadata_payload = {
+            "args": args_serializable,
+            "env_config": asdict(env_config),
+            "train_steps": train_steps,
+            "eval_start": eval_start,
+            "validation_steps": validation_steps,
+            "num_features": len(cube.feature_names),
+            "num_assets": len(cube.symbols),
+            "total_steps": total_steps,
+            "validation_metrics": validation_metrics,
+            "average_daily_return": avg_daily_return,
+            "annualised_return_simple": annual_return_simple,
+            "final_checkpoint": str(formatted_model_path),
+            "topk_checkpoints": topk_records,
+            "features_cache_loaded": cube_loaded_from_cache,
+            "features_cache_path": str(args.features_cache) if args.features_cache else None,
+            "features_cache_written": str(args.cache_features_to) if args.cache_features_to else None,
+            "feature_extra_metadata": extra_meta,
+            "forecast_backend_used": backend_label,
+            "forecast_backend_errors": backend_errors,
+            "policy_dtype": args.policy_dtype,
+        }
+        with metadata_path.open("w", encoding="utf-8") as f:
+            json.dump(metadata_payload, f, indent=2)
+        logger.info("Wrote metadata to %s", metadata_path)
+
+        hparam_metrics = {
+            "validation/cumulative_return": cumulative_return,
+            "validation/annualized_return": float(validation_metrics.get("annualized_return", 0.0)),
+        }
+        metrics_logger.log_hparams(
+            {"backend": backend_label, "num_assets": len(cube.symbols), "num_features": len(cube.feature_names)},
+            hparam_metrics,
+            step=int(args.num_timesteps),
+        )
+
+        for _env in (train_env, eval_env):
+            try:
+                _env.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

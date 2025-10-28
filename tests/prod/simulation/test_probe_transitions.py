@@ -227,3 +227,126 @@ def test_manage_positions_backouts_expired_probe(monkeypatch):
 
     assert record_calls == [(symbol, "probe_duration_exceeded")]
     assert backout_calls == [symbol]
+
+
+def test_manage_positions_promotes_large_notional_probe(monkeypatch):
+    module = trade_stock_e2e
+    symbol = "NVDA"
+
+    monkeypatch.setattr(module, "PROBE_NOTIONAL_LIMIT", 300.0)
+
+    positions = [make_position(symbol, qty=12.0, price=191.0, side="long")]
+    module.alpaca_wrapper.equity = 25000.0
+
+    monkeypatch.setattr(module.alpaca_wrapper, "get_all_positions", lambda: positions)
+    monkeypatch.setattr(module, "filter_to_realistic_positions", lambda pos: pos)
+    monkeypatch.setattr(module, "_handle_live_drawdown", lambda *_: None)
+    monkeypatch.setattr(module, "is_nyse_trading_day_now", lambda: True)
+    monkeypatch.setattr(module, "is_nyse_trading_day_ending", lambda: True)
+
+    account = SimpleNamespace(equity=25000.0, last_equity=24000.0)
+    monkeypatch.setattr(module.alpaca_wrapper, "get_account", lambda: account)
+
+    monkeypatch.setattr(
+        module,
+        "record_portfolio_snapshot",
+        lambda total_value, **_: SimpleNamespace(
+            observed_at=datetime.now(timezone.utc),
+            portfolio_value=total_value,
+            risk_threshold=1.0,
+        ),
+    )
+
+    monkeypatch.setattr(module, "StockHistoricalDataClient", lambda *args, **kwargs: object())
+    monkeypatch.setattr(module, "download_exchange_latest_data", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "get_bid", lambda sym: 191.0)
+    monkeypatch.setattr(module, "get_ask", lambda sym: 191.5)
+    monkeypatch.setattr(module, "get_qty", lambda sym, price, _positions: 12.0)
+    monkeypatch.setattr(module, "spawn_close_position_at_takeprofit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "spawn_close_position_at_maxdiff_takeprofit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "ramp_into_position", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "backout_near_market", lambda *args, **kwargs: None)
+
+    record_calls = []
+    monkeypatch.setattr(
+        module,
+        "_record_trade_outcome",
+        lambda pos, reason: record_calls.append((pos.symbol, reason)),
+    )
+
+    active_trade_updates = []
+    monkeypatch.setattr(
+        module,
+        "_update_active_trade",
+        lambda sym, side, mode, qty, strategy=None: active_trade_updates.append(
+            (sym, side, mode, qty, strategy)
+        ),
+    )
+
+    monkeypatch.setattr(
+        module,
+        "_get_active_trade",
+        lambda sym, side: {"entry_strategy": "simple", "qty": 6.0},
+    )
+
+    probe_state = {
+        "pending_probe": True,
+        "probe_active": True,
+        "probe_expired": True,
+        "trade_mode": "probe",
+        "probe_transition_ready": False,
+    }
+
+    transition_calls = []
+
+    def fake_mark_probe_transitioned(sym, side, qty):
+        transition_calls.append((sym, side, qty))
+        probe_state.update(
+            pending_probe=False,
+            probe_active=False,
+            probe_expired=False,
+            trade_mode="normal",
+            probe_transition_ready=False,
+        )
+        return dict(probe_state)
+
+    monkeypatch.setattr(module, "_mark_probe_transitioned", fake_mark_probe_transitioned)
+    monkeypatch.setattr(module, "_mark_probe_active", lambda *args, **kwargs: {})
+    monkeypatch.setattr(module, "_mark_probe_pending", lambda *args, **kwargs: {})
+    monkeypatch.setattr(module, "_normalize_active_trade_patch", lambda *_: None)
+
+    monkeypatch.setattr(
+        module,
+        "_evaluate_trade_block",
+        lambda sym, side: dict(probe_state),
+    )
+
+    current_pick = {
+        "trade_mode": "probe",
+        "probe_transition_ready": False,
+        "probe_expired": True,
+        "side": "buy",
+        "strategy": "simple",
+        "trade_blocked": False,
+        "pending_probe": True,
+        "probe_active": True,
+        "predicted_movement": 0.5,
+        "composite_score": 0.7,
+    }
+    current_picks = {symbol: current_pick}
+    analyzed_results = {symbol: dict(current_pick)}
+
+    module.manage_positions(current_picks, previous_picks={}, all_analyzed_results=analyzed_results)
+
+    assert record_calls == []
+    assert len(transition_calls) == 1
+    trans_symbol, trans_side, trans_qty = transition_calls[0]
+    assert (trans_symbol, trans_side) == (symbol, "buy")
+    assert trans_qty == pytest.approx(12.0)
+    assert probe_state["pending_probe"] is False
+    assert probe_state["probe_active"] is False
+    assert probe_state["trade_mode"] == "normal"
+    assert active_trade_updates
+    act_symbol, act_side, act_mode, act_qty, _ = active_trade_updates[-1]
+    assert (act_symbol, act_side, act_mode) == (symbol, "buy", "probe_transition")
+    assert act_qty == pytest.approx(12.0)

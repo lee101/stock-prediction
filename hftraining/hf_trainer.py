@@ -197,6 +197,7 @@ class HFTrainingConfig:
     adam_beta1: float = 0.9
     adam_beta2: float = 0.999
     adam_epsilon: float = 1e-8
+    use_fused_optimizer: bool = True
     
     # Training dynamics
     batch_size: int = 32
@@ -213,10 +214,17 @@ class HFTrainingConfig:
     sequence_length: int = 60
     prediction_horizon: int = 5
     quantile_levels: Optional[Tuple[float, ...]] = None
+    max_tokens_per_batch: int = 0
+    length_bucketing: Tuple[int, ...] = (60,)
+    horizon_bucketing: Tuple[int, ...] = (5,)
+    window_stride: int = 1
+    pack_windows: bool = True
+    bucket_warmup_steps: int = 0
     
     # Advanced features
     use_mixed_precision: bool = True
     use_bfloat16: bool = True
+    precision: str = "bf16"
     use_compile: bool = False
     allow_tf32: bool = True
     use_gradient_checkpointing: bool = True

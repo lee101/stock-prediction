@@ -3,12 +3,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, List, Sequence
 
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
+
+from traininglib.dynamic_batcher import WindowSpec
 
 
 def _load_close_prices(path: Path) -> np.ndarray:
@@ -51,28 +53,68 @@ class SlidingWindowDataset(Dataset):
 
     def __init__(self, root: Path, config: WindowConfig):
         self.config = config
-        self.windows: list[np.ndarray] = []
+        self.series_data: List[np.ndarray] = []
         for path in _iter_series_files(root):
             series = _load_close_prices(path)
-            horizon = config.context_length + config.prediction_length
-            if series.size < horizon:
+            if series.size < config.context_length + config.prediction_length:
                 continue
-            for start in range(0, series.size - horizon + 1, config.stride):
-                window = series[start : start + horizon]
-                self.windows.append(window)
-        if not self.windows:
+            self.series_data.append(series)
+        if not self.series_data:
             raise ValueError(f"No usable windows found in {root}")
+        self._default_specs = self.enumerate_window_specs(
+            config.context_length, config.prediction_length, config.stride
+        )
+        if not self._default_specs:
+            raise ValueError("Dataset initialisation produced zero windows with the provided configuration.")
 
     def __len__(self) -> int:
-        return len(self.windows)
+        return len(self._default_specs)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        window = self.windows[idx]
-        ctx = window[: self.config.context_length]
-        tgt = window[self.config.context_length :]
-        context_tensor = torch.from_numpy(ctx).unsqueeze(0)  # (variates=1, time)
-        target_tensor = torch.from_numpy(tgt).unsqueeze(0)
-        return context_tensor, target_tensor
+        spec = self._default_specs[idx]
+        return self.load_window(spec, self.config.context_length, self.config.prediction_length)
+
+    @property
+    def series_ids(self) -> tuple[int, ...]:
+        return tuple(range(len(self.series_data)))
+
+    def enumerate_window_specs(self, context: int, horizon: int, stride: int) -> List[WindowSpec]:
+        if context <= 0 or horizon <= 0:
+            raise ValueError("context and horizon must be positive for window enumeration.")
+        specs: List[WindowSpec] = []
+        for series_id, series in enumerate(self.series_data):
+            limit = series.shape[0]
+            max_context_end = limit - horizon
+            if max_context_end < context:
+                continue
+            for context_end in range(context, max_context_end + 1, stride):
+                left = context_end - context
+                specs.append(WindowSpec(series_id=series_id, left=left))
+        return specs
+
+    def load_window(self, spec: WindowSpec, context: int, horizon: int) -> tuple[torch.Tensor, torch.Tensor]:
+        series = self.series_data[spec.series_id]
+        start = spec.left
+        ctx_end = start + context
+        tgt_end = ctx_end + horizon
+        if tgt_end > series.shape[0]:
+            raise IndexError(f"Requested window exceeds series length for id={spec.series_id}")
+        context_slice = torch.from_numpy(series[start:ctx_end].astype(np.float32, copy=False)).unsqueeze(0)
+        target_slice = torch.from_numpy(series[ctx_end:tgt_end].astype(np.float32, copy=False)).unsqueeze(0)
+        return context_slice, target_slice
+
+    def collate_windows(
+        self,
+        samples: Sequence[tuple[torch.Tensor, torch.Tensor]],
+        context: int,
+        horizon: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not samples:
+            raise ValueError("Cannot collate an empty Toto batch.")
+        contexts, targets = zip(*samples)
+        batch_context = torch.stack(contexts, dim=0)
+        batch_target = torch.stack(targets, dim=0)
+        return batch_context, batch_target
 
 
 def _resolve_workers(num_workers: int) -> int:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import Iterable, List, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -12,6 +12,7 @@ from .data_utils import (
     TIME_FEATURES,
     iter_symbol_dataframes,
 )
+from traininglib.dynamic_batcher import WindowSpec
 
 
 @dataclass
@@ -53,6 +54,7 @@ class KronosMultiTickerDataset(Dataset):
 
         self.symbol_data: List[dict[str, np.ndarray]] = []
         self.indices: List[SymbolWindowIndex] = []
+        self._series_ids: List[int] = []
 
         self._build_index(data_dir, min_symbol_length)
         if not self.indices:
@@ -106,6 +108,7 @@ class KronosMultiTickerDataset(Dataset):
             added = len(self.indices) - prev_count
             if added > 0:
                 self.symbol_data.append(entry)
+                self._series_ids.append(base_index)
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -133,3 +136,62 @@ class KronosMultiTickerDataset(Dataset):
         for idx in self.indices:
             counts[idx.symbol] = counts.get(idx.symbol, 0) + 1
         return counts
+
+    # Dynamic window batching helpers -------------------------------------
+    @property
+    def series_ids(self) -> Tuple[int, ...]:
+        return tuple(self._series_ids)
+
+    def enumerate_window_specs(self, context: int, horizon: int, stride: int) -> Iterable[WindowSpec]:
+        if context <= 0 or horizon <= 0:
+            raise ValueError("context and horizon must be positive integers.")
+        specs: List[WindowSpec] = []
+        for series_id in self._series_ids:
+            entry = self.symbol_data[series_id]
+            limit = entry["train_end"] if self.split == "train" else entry["total_len"]
+            if limit <= context:
+                continue
+            max_context_end = limit - horizon
+            if max_context_end < context:
+                continue
+            for context_end in range(context, max_context_end + 1, stride):
+                left = context_end - context
+                right = context_end + horizon
+                if self.split == "train" and right > entry["train_end"]:
+                    continue
+                specs.append(WindowSpec(series_id=series_id, left=left))
+        return specs
+
+    def load_window(self, spec: WindowSpec, context: int, horizon: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        entry = self.symbol_data[spec.series_id]
+        left = spec.left
+        right = left + context + horizon
+        if right > entry["total_len"]:
+            raise IndexError(
+                f"Window ({left}, {right}) exceeds available length {entry['total_len']} for series {spec.series_id}"
+            )
+
+        feat_window = entry["features"][left:right]
+        time_window = entry["time"][left:right]
+
+        mean = feat_window.mean(axis=0, dtype=np.float32)
+        std = feat_window.std(axis=0, dtype=np.float32)
+        normed = (feat_window - mean) / (std + 1e-5)
+        normed = np.clip(normed, -self.clip, self.clip)
+
+        features = torch.from_numpy(normed.astype(np.float32, copy=False))
+        stamps = torch.from_numpy(time_window.astype(np.float32, copy=False))
+        return features, stamps
+
+    def collate_windows(
+        self,
+        samples: Sequence[Tuple[torch.Tensor, torch.Tensor]],
+        context: int,
+        horizon: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not samples:
+            raise ValueError("Cannot collate an empty batch.")
+        features, stamps = zip(*samples)
+        batch_x = torch.stack(features, dim=0)
+        batch_stamp = torch.stack(stamps, dim=0)
+        return batch_x, batch_stamp

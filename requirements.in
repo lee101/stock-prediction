@@ -29,6 +29,7 @@ beautifulsoup4>=4.12
 PyYAML>=6.0,<6.1
 jsonschema>=4.19
 pydantic>=2.9
+pydantic>=2.12.3; python_version >= "3.14"
 torch==2.9.0+cu126
 pytorch-lightning>=2.4.0,<3.0
 torch-optimizer>=0.3
@@ -43,7 +44,7 @@ optuna>=3.6
 hyperopt>=0.2.7
 cmaes>=0.10
 wandb>=0.22.2
-weave>=0.52.10
+weave>=0.52.10; python_version < "3.14"
 tensorboard>=2.17
 transformers>=4.50
 datasets>=2.17

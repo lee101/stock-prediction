@@ -48,7 +48,7 @@ class DataConfig:
     scaling_factor: float = 0.05
     augmentation_multiplier: int = 0  # extra augmented copies of training split
 
-    # Amazon Toto integration
+    # Datadog Toto integration
     use_toto_forecasts: bool = True
     toto_model_id: str = "Datadog/Toto-Open-Base-1.0"
     toto_device: str = "cuda"
@@ -65,6 +65,7 @@ class TrainingConfig:
     weight_decay: float = 0.01
     gradient_accumulation_steps: int = 4
     max_grad_norm: float = 1.0
+    use_fused_optimizer: bool = True
     # Stability
     use_adaptive_grad_clip: bool = False
     agc_clip_factor: float = 0.01
@@ -91,10 +92,18 @@ class TrainingConfig:
     batch_size: int = 32
     dataloader_num_workers: int = 4
     dataloader_pin_memory: bool = True
+    max_tokens_per_batch: int = 0
+    length_bucketing: List[int] = field(default_factory=lambda: [60])
+    horizon_bucketing: List[int] = field(default_factory=lambda: [5])
+    window_stride: int = 1
+    pack_windows: bool = True
+    bucket_warmup_steps: int = 0
+    max_auto_batch_size: Optional[int] = None
     
     # Mixed precision
     use_mixed_precision: bool = True
     gradient_checkpointing: bool = True
+    precision: str = "bf16"
     
     # Regularization
     dropout_rate: float = 0.1
@@ -159,6 +168,8 @@ class SystemConfig:
     debug_mode: bool = False
     profile_training: bool = False
     allow_tf32: bool = True
+    auto_batch_size: bool = True
+    auto_batch_allow_increase: bool = True
 
 
 @dataclass

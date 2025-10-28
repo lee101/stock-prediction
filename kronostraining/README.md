@@ -44,3 +44,24 @@ under `trainingdata/`.
 
 All components are designed to run inside the repo without modifying the
 upstream Kronos sources.
+
+### Adapter-based fine-tuning
+
+Set `--adapter lora` to train low-rank adapters instead of updating the full
+Kronos backbone. By default the script freezes the base weights, injects LoRA
+modules into the attention/FFN layers, and stores the resulting adapter at
+`<output-dir>/adapters/<adapter-name>/adapter.pt`. Example:
+
+```bash
+python -m kronostraining.run_training \
+  --data-dir trainingdata/AAPL \
+  --output-dir kronostraining/artifacts \
+  --adapter lora \
+  --adapter-name AAPL \
+  --adapter-r 8 \
+  --adapter-alpha 16 \
+  --adapter-dropout 0.05
+```
+
+Disable backbone freezing with `--no-freeze-backbone` when you deliberately
+want to fine-tune the full model alongside the adapters.
