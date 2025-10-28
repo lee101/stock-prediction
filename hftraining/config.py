@@ -48,7 +48,7 @@ class DataConfig:
     scaling_factor: float = 0.05
     augmentation_multiplier: int = 0  # extra augmented copies of training split
 
-    # Amazon Toto integration
+    # Datadog Toto integration
     use_toto_forecasts: bool = True
     toto_model_id: str = "Datadog/Toto-Open-Base-1.0"
     toto_device: str = "cuda"

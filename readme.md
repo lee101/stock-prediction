@@ -6,7 +6,7 @@ A collection of scripts for trading stocks and crypto on Alpaca Markets and Bina
 
 This neural network trading bot trades stocks (long/short) and crypto (long-only) daily at market open/close. It successfully grew my portfolio from $38k to $66k over several months in favorable conditions at the end of 2024.
 
-The bot uses the Amazon Chronos model for time series forecasting.
+The bot uses the Datadog Toto model for time series forecasting (CUDA GPUs required; CPU execution is disabled).
 
 Breakdown of how it works
 
