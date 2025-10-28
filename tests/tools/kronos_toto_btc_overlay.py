@@ -105,7 +105,7 @@ def build_variants(symbol: str) -> List[ForecastVariant]:
                 label="kronos_high_samples",
                 model_type="kronos",
                 config=clone_kronos_config(
-                    kvs.KRONOS_SWEEP[min(5, len(kvs.KRONOS_SWEEP) - 1)],
+                    kvs.KRONOS_SWEEP[min(2, len(kvs.KRONOS_SWEEP) - 1)],
                     name="kronos_high_samples",
                 ),
                 env_overrides={},
@@ -118,6 +118,11 @@ def build_variants(symbol: str) -> List[ForecastVariant]:
         raise RuntimeError(f"No stored Toto hyperparameters for {symbol}.")
 
     bf16_supported = bool(getattr(torch.cuda, "is_bf16_supported", lambda: False)())
+
+    cache_fp32 = REPO_ROOT / "compiled_models" / "toto" / "inductor_cache_fp32"
+    cache_bf16 = REPO_ROOT / "compiled_models" / "toto" / "inductor_cache_bf16"
+    cache_fp32.mkdir(parents=True, exist_ok=True)
+    cache_bf16.mkdir(parents=True, exist_ok=True)
 
     toto_variants: List[ForecastVariant] = [
         ForecastVariant(
@@ -141,6 +146,7 @@ def build_variants(symbol: str) -> List[ForecastVariant]:
                 "TOTO_TORCH_DTYPE": "float32",
                 "TOTO_COMPILE_MODE": "max-autotune",
                 "TOTO_COMPILE_BACKEND": "inductor",
+                "TORCHINDUCTOR_CACHE_DIR": str(REPO_ROOT / "compiled_models" / "toto" / "inductor_cache_fp32"),
             },
             description="torch.compile with FP32 execution.",
         ),
@@ -162,6 +168,7 @@ def build_variants(symbol: str) -> List[ForecastVariant]:
                     "TOTO_TORCH_DTYPE": "bfloat16",
                     "TOTO_COMPILE_MODE": "max-autotune",
                     "TOTO_COMPILE_BACKEND": "inductor",
+                    "TORCHINDUCTOR_CACHE_DIR": str(REPO_ROOT / "compiled_models" / "toto" / "inductor_cache_bf16"),
                 },
                 description="torch.compile with BF16 execution and trimmed-mean aggregation.",
             )
@@ -361,6 +368,11 @@ def parse_args() -> argparse.Namespace:
         default=REPO_ROOT / "testresults" / "btc_kronos_toto_overlay",
         help="Directory to store artefacts (default: %(default)s).",
     )
+    parser.add_argument(
+        "--include",
+        default=None,
+        help="Comma-separated list of variant labels to run (default: all).",
+    )
     return parser.parse_args()
 
 
@@ -384,6 +396,15 @@ def main() -> None:
     actual_prices = prices[eval_indices]
 
     variants = build_variants(symbol)
+    include = args.include
+    if include:
+        include_labels = {label.strip() for label in str(include).split(',') if label.strip()}
+        if not include_labels:
+            raise ValueError('No valid variant labels provided to --include.')
+        variants = [variant for variant in variants if variant.label in include_labels]
+        if not variants:
+            raise ValueError(f'No variants matched the --include filter: {sorted(include_labels)}')
+
     runs: List[ForecastRunResult] = []
     for variant in variants:
         run = run_variant(variant, df, prices, eval_indices)

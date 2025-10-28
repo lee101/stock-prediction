@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Utilities for enriching price data with Amazon Toto forecasts.
+Utilities for enriching price data with Datadog Toto forecasts.
 
 The generator attempts to use the real Toto model when the dependency stack is
 available; otherwise it falls back to light-weight statistical approximations so
 the training pipeline remains usable even without the Toto runtime.
+Toto forecasting now requires a CUDA-capable GPU; CPU execution attempts raise
+clear exceptions upstream so misconfigurations surface immediately.
 """
 
 from __future__ import annotations
@@ -47,7 +49,7 @@ class TotoOptions:
 
 class TotoFeatureGenerator:
     """
-    Create forward-looking features derived from Amazon Toto forecasts.
+    Create forward-looking features derived from Datadog Toto forecasts.
 
     The generator produces a matrix whose width equals
     (2 * horizon * len(target_columns)), containing the forecast means and

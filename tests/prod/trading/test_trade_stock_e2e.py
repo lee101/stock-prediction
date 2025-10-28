@@ -160,6 +160,11 @@ def test_analyze_symbols(mock_backtest, mock_snapshot, test_data):
     assert "annual_return" in results[first_symbol]
     assert "side" in results[first_symbol]
     assert "predicted_movement" in results[first_symbol]
+    expected_penalty = trade_module.resolve_spread_cap(first_symbol) / 10000.0
+    expected_primary = results[first_symbol]["avg_return"]
+    assert results[first_symbol]["composite_score"] == pytest.approx(
+        expected_primary - expected_penalty, rel=1e-4
+    )
 
 
 def test_get_market_hours():
@@ -703,6 +708,24 @@ def test_build_portfolio_expands_to_meet_minimum():
 
     assert len(picks) == 2
     assert {"AAA", "BBB"} == set(picks.keys())
+
+
+def test_build_portfolio_default_max_positions_allows_ten():
+    assert trade_module.DEFAULT_MAX_PORTFOLIO == 10
+    results = {
+        f"SYM{i}": {
+            "avg_return": 0.05 - i * 0.001,
+            "unprofit_shutdown_return": 0.03,
+            "simple_return": 0.02,
+            "composite_score": 1.0 - i * 0.05,
+            "trade_blocked": False,
+        }
+        for i in range(12)
+    }
+
+    picks = build_portfolio(results)
+
+    assert len(picks) == trade_module.DEFAULT_MAX_PORTFOLIO
 
 
 def test_build_portfolio_includes_probe_candidate():

@@ -960,7 +960,7 @@ def _get_trade_history_store() -> Optional[FlatShelf]:
 
 LOSS_BLOCK_COOLDOWN = timedelta(days=3)
 DEFAULT_MIN_CORE_POSITIONS = 4
-DEFAULT_MAX_PORTFOLIO = 6
+DEFAULT_MAX_PORTFOLIO = 10
 EXPANDED_PORTFOLIO = 8
 MIN_EXPECTED_MOVE_PCT = 1e-4
 MIN_EDGE_STRENGTH = 1e-5
@@ -2024,20 +2024,25 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             effective_highlow = highlow_return if highlow_allowed_entry else 0.0
             effective_maxdiff = maxdiff_return if maxdiff_allowed_entry else 0.0
             kronos_contrib = max(kronos_profit, 0.0)
-            composite_score = (
-                0.17 * avg_return
-                + 0.24 * simple_return
-                + 0.22 * kronos_contrib
-                + 0.15 * edge_strength
-                + 0.1 * unprofit_return
-                + 0.05 * effective_takeprofit
-                + 0.04 * effective_highlow
-                + 0.03 * effective_maxdiff
+            primary_return = max(
+                avg_return,
+                simple_return,
+                effective_takeprofit,
+                effective_highlow,
+                effective_maxdiff,
+                kronos_contrib,
+                0.0,
             )
 
             bid_price, ask_price = fetch_bid_ask(symbol)
             spread_bps = compute_spread_bps(bid_price, ask_price)
             spread_cap = resolve_spread_cap(symbol)
+            if not math.isfinite(spread_bps):
+                spread_penalty_bps = float(spread_cap)
+            else:
+                spread_penalty_bps = min(max(spread_bps, 0.0), float(spread_cap))
+            spread_penalty = spread_penalty_bps / 10000.0
+            composite_score = primary_return - spread_penalty
             if SIMPLIFIED_MODE:
                 tradeable, spread_reason = True, "simplified"
                 edge_ok, edge_reason = True, "simplified"

@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -98,6 +98,9 @@ _kronos_params_cache: Dict[str, dict] = {}
 _BOOL_TRUE = {"1", "true", "yes", "on"}
 _GPU_FALLBACK_ENV = "MARKETSIM_ALLOW_CPU_FALLBACK"
 _cpu_fallback_log_state: Set[Tuple[str, Optional[str]]] = set()
+
+# GPU memory observation cache keyed by (num_samples, samples_per_batch)
+_toto_memory_observations: Dict[Tuple[int, int], Dict[str, object]] = {}
 
 pipeline: Optional[TotoPipeline] = None
 TOTO_DEVICE_OVERRIDE: Optional[str] = None
@@ -581,6 +584,148 @@ def _maybe_empty_cuda_cache() -> None:
         logger.debug("Failed to empty CUDA cache: %s", exc)
 
 
+
+def _gpu_memory_snapshot(label: str, *, reset_max: bool = False) -> Optional[Dict[str, object]]:
+    if not torch.cuda.is_available():
+        return None
+    try:
+        device_index = torch.cuda.current_device()
+        torch.cuda.synchronize()
+        allocated = torch.cuda.memory_allocated(device_index)
+        reserved = torch.cuda.memory_reserved(device_index)
+        peak_allocated = torch.cuda.max_memory_allocated(device_index)
+        peak_reserved = torch.cuda.max_memory_reserved(device_index)
+        snapshot: Dict[str, object] = {
+            "label": label,
+            "device": device_index,
+            "allocated_bytes": float(allocated),
+            "reserved_bytes": float(reserved),
+            "peak_allocated_bytes": float(peak_allocated),
+            "peak_reserved_bytes": float(peak_reserved),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        logger.info(
+            "GPU[%s] %s alloc=%.1f MB reserved=%.1f MB peak=%.1f MB",
+            device_index,
+            label,
+            allocated / 1e6,
+            reserved / 1e6,
+            peak_allocated / 1e6,
+        )
+        if reset_max:
+            torch.cuda.reset_peak_memory_stats(device_index)
+        return snapshot
+    except Exception as exc:  # pragma: no cover - best effort diagnostics
+        logger.debug("Failed to capture GPU memory snapshot for %s: %s", label, exc)
+        return None
+
+
+def _record_toto_memory_stats(
+    symbol: Optional[str],
+    num_samples: int,
+    samples_per_batch: int,
+    start_snapshot: Optional[Dict[str, object]],
+    end_snapshot: Optional[Dict[str, object]],
+) -> None:
+    if end_snapshot is None:
+        return
+    peak_bytes = float(end_snapshot.get("peak_allocated_bytes", 0.0) or 0.0)
+    baseline_bytes = (
+        float(start_snapshot.get("allocated_bytes", 0.0) or 0.0)
+        if start_snapshot
+        else 0.0
+    )
+    delta_bytes = max(0.0, peak_bytes - baseline_bytes)
+    key = (int(num_samples), int(samples_per_batch))
+    stats = _toto_memory_observations.setdefault(
+        key,
+        {
+            "count": 0,
+            "peak_bytes": 0.0,
+            "max_delta_bytes": 0.0,
+        },
+    )
+    stats["count"] = int(stats["count"]) + 1
+    stats["peak_bytes"] = max(float(stats["peak_bytes"]), peak_bytes)
+    stats["max_delta_bytes"] = max(float(stats["max_delta_bytes"]), delta_bytes)
+    stats["last_peak_bytes"] = peak_bytes
+    stats["last_delta_bytes"] = delta_bytes
+    stats["last_symbol"] = symbol
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
+    logger.info(
+        "Toto GPU usage symbol=%s num_samples=%d samples_per_batch=%d peak=%.1f MB delta=%.1f MB (count=%d)",
+        symbol or "<unknown>",
+        key[0],
+        key[1],
+        peak_bytes / 1e6,
+        delta_bytes / 1e6,
+        stats["count"],
+    )
+
+
+def profile_toto_memory(
+    *,
+    symbol: str = "AAPL",
+    num_samples: int,
+    samples_per_batch: int,
+    context_length: int = 256,
+    prediction_length: int = 7,
+    runs: int = 1,
+    reset_between_runs: bool = True,
+) -> Dict[str, float]:
+    pipeline_instance = load_toto_pipeline()
+    max_peak = 0.0
+    max_delta = 0.0
+    total_runs = max(1, int(runs))
+    for run_idx in range(total_runs):
+        context = torch.randn(int(context_length), dtype=torch.float32)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        start_snapshot = _gpu_memory_snapshot(
+            f"toto_profile_{symbol}_run{run_idx}_begin",
+            reset_max=True,
+        )
+        inference_mode_ctor = getattr(torch, "inference_mode", None)
+        context_manager = inference_mode_ctor() if callable(inference_mode_ctor) else torch.no_grad()
+        with context_manager:
+            pipeline_instance.predict(
+                context=context,
+                prediction_length=int(prediction_length),
+                num_samples=int(num_samples),
+                samples_per_batch=int(samples_per_batch),
+            )
+        end_snapshot = _gpu_memory_snapshot(
+            f"toto_profile_{symbol}_run{run_idx}_end",
+            reset_max=reset_between_runs,
+        )
+        _record_toto_memory_stats(
+            symbol,
+            num_samples,
+            samples_per_batch,
+            start_snapshot,
+            end_snapshot,
+        )
+        if end_snapshot:
+            peak = float(end_snapshot.get("peak_allocated_bytes", 0.0) or 0.0)
+            baseline = (
+                float(start_snapshot.get("allocated_bytes", 0.0) or 0.0)
+                if start_snapshot
+                else 0.0
+            )
+            delta = max(0.0, peak - baseline)
+            max_peak = max(max_peak, peak)
+            max_delta = max(max_delta, delta)
+    summary = {
+        "symbol": symbol,
+        "num_samples": int(num_samples),
+        "samples_per_batch": int(samples_per_batch),
+        "peak_mb": max_peak / 1e6,
+        "delta_mb": max_delta / 1e6,
+        "runs": total_runs,
+    }
+    return summary
+
+
 def _drop_toto_pipeline() -> None:
     global pipeline
     if pipeline is None:
@@ -641,13 +786,31 @@ def cached_predict(context, prediction_length, num_samples, samples_per_batch, *
     pipeline_instance = load_toto_pipeline()
     inference_mode_ctor = getattr(torch, "inference_mode", None)
     context_manager = inference_mode_ctor() if callable(inference_mode_ctor) else torch.no_grad()
+    start_snapshot = _gpu_memory_snapshot(
+        f"toto_predict_begin({symbol})",
+        reset_max=True,
+    )
     with context_manager:
-        return pipeline_instance.predict(
+        result = pipeline_instance.predict(
             context=context,
             prediction_length=prediction_length,
             num_samples=num_samples,
             samples_per_batch=samples_per_batch,
         )
+    end_snapshot = _gpu_memory_snapshot(
+        f"toto_predict_end({symbol})",
+        reset_max=True,
+    )
+    _record_toto_memory_stats(
+        symbol,
+        num_samples,
+        samples_per_batch,
+        start_snapshot,
+        end_snapshot,
+    )
+    if hasattr(pipeline_instance, "__dict__"):
+        pipeline_instance.memory_observations = dict(_toto_memory_observations)
+    return result
 
 
 def _compute_toto_forecast(
@@ -1148,7 +1311,21 @@ def load_toto_pipeline() -> TotoPipeline:
 
         torch_dtype: Optional[torch.dtype] = torch.float32 if device == "cpu" else None
         if FAST_TESTING:
-            torch_dtype = torch.float32
+            if device.startswith("cuda") and torch.cuda.is_available():
+                bf16_supported = False
+                try:
+                    checker = getattr(torch.cuda, "is_bf16_supported", None)
+                    bf16_supported = bool(checker() if callable(checker) else False)
+                except Exception:
+                    bf16_supported = False
+                if bf16_supported:
+                    torch_dtype = torch.bfloat16
+                    logger.info("FAST_TESTING active — using bfloat16 Toto weights.")
+                else:
+                    torch_dtype = torch.float32
+                    logger.info("FAST_TESTING active but bf16 unsupported; using float32 Toto weights.")
+            else:
+                torch_dtype = torch.float32
 
         disable_compile_flag = _read_env_flag(("TOTO_DISABLE_COMPILE", "MARKETSIM_TOTO_DISABLE_COMPILE"))
         enable_compile_flag = _read_env_flag(("TOTO_COMPILE", "MARKETSIM_TOTO_COMPILE"))
@@ -1187,6 +1364,9 @@ def load_toto_pipeline() -> TotoPipeline:
             min_samples_per_batch=TOTO_MIN_SAMPLES_PER_BATCH,
             min_num_samples=TOTO_MIN_NUM_SAMPLES,
         )
+        if torch.cuda.is_available():
+            _gpu_memory_snapshot("toto_pipeline_loaded", reset_max=True)
+        pipeline.memory_observations = dict(_toto_memory_observations)
     return pipeline
 
 

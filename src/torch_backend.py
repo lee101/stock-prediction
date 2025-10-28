@@ -21,12 +21,15 @@ def configure_tf32_backends(torch_module: Any, *, logger: Optional[Any] = None) 
 
     cuda_backend = getattr(torch_module.backends, "cuda", None)
     cudnn_backend = getattr(torch_module.backends, "cudnn", None)
-    cuda_available = False
+
+    cuda_available = True
     try:
-        is_available = getattr(torch_module.cuda, "is_available", None)
-        cuda_available = bool(is_available()) if callable(is_available) else False
+        cuda_module = getattr(torch_module, "cuda", None)
+        is_available = getattr(cuda_module, "is_available", None)
+        if callable(is_available):
+            cuda_available = bool(is_available())
     except Exception:
-        cuda_available = False
+        cuda_available = True
 
     # Prefer the PyTorch 2.9+ precision controls when the backend exposes them.
     if cuda_available:
@@ -54,7 +57,7 @@ def configure_tf32_backends(torch_module: Any, *, logger: Optional[Any] = None) 
             except Exception:
                 _debug("Failed to configure torch.backends.cudnn.conv.fp32_precision")
 
-    if state["new_api"] or not cuda_available:
+    if state["new_api"]:
         return state
 
     # Fallback for torch builds that still rely on the legacy switches.

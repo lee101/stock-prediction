@@ -1,11 +1,11 @@
-PufferLib RL Training (Amazon Toto Enhanced)
+PufferLib RL Training (Datadog Toto Enhanced)
 ============================================
 
 Overview
 --------
 
 - Multi-stage training pipeline for portfolio RL:
-  1. **Generic forecaster** trained on all equities in `trainingdata/` with Amazon Toto features.
+  1. **Generic forecaster** trained on all equities in `trainingdata/` with Datadog Toto features.
   2. **Per-stock specialists** fine-tuned on individual tickers.
   3. **Differentiable portfolio RL** that allocates across stock pairs with leverage-aware profit.
 - Uses the new multi-asset Gymnasium environment backed by Torch tensors, enforcing 2× leverage limits and 6.75 % annual financing costs.
@@ -24,6 +24,7 @@ Data
 - Place raw OHLCV CSVs under `trainingdata/` (one file per symbol) or provide a custom folder via `--trainingdata-dir`.
 - If files already live in `tototraining/trainingdata/train`, the trainer discovers them automatically.
 - The pipeline augments each asset with Toto forecasts (falling back to statistical features if Toto is unavailable).
+- Toto inference requires a CUDA-capable GPU; CPU execution is disabled to catch misconfiguration early.
 
 Quick Start
 -----------
