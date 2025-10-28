@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Multi-stage RL training pipeline for stock trading using Amazon Toto forecasts.
+Multi-stage RL training pipeline for stock trading using Datadog Toto forecasts.
+
+Note: Toto forecasting requires a CUDA-capable GPU; CPU execution paths now raise errors to prevent silent regressions.
 
 The pipeline consists of three stages:
     1. Generic forecaster training on all available stocks.
@@ -20,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from src.leverage_settings import get_leverage_settings
+from src.gpu_utils import cli_flag_was_provided, detect_total_vram_bytes, recommend_batch_size
 
 try:  # Defer heavy hftraining imports until the optional extras are installed.
     from hftraining.base_model_trainer import BaseModelTrainer, PortfolioRLConfig
@@ -34,6 +37,9 @@ else:  # pragma: no cover - exercised when extras present
 
 
 LOGGER = logging.getLogger("pufferlibtraining.pipeline")
+
+BASE_BATCH_THRESHOLDS = [(12, 24), (16, 32), (24, 48), (40, 64), (64, 96)]
+RL_BATCH_THRESHOLDS = [(12, 64), (16, 96), (24, 128), (40, 192), (64, 256)]
 
 
 def _parse_symbol_list(raw: str, field: str) -> List[str]:
@@ -106,6 +112,56 @@ def sync_vecnormalize_stats(source: Any, target: Any) -> None:
 
     if hasattr(target, "training"):
         target.training = False
+
+
+def _detect_vram_for_device(device: str) -> Optional[int]:
+    normalized = device.lower()
+    if normalized == "cpu":
+        return None
+    if normalized.startswith("cuda"):
+        query = None if normalized == "cuda" else device
+        return detect_total_vram_bytes(query)
+    return detect_total_vram_bytes(device)
+
+
+def _maybe_autotune_batches(args: argparse.Namespace) -> None:
+    total_vram = _detect_vram_for_device(getattr(args, "device", "cuda"))
+    if total_vram is None:
+        return
+
+    gb = total_vram / (1024 ** 3)
+
+    allow_base_increase = not cli_flag_was_provided("--base-batch-size")
+    recommended_base = recommend_batch_size(
+        total_vram,
+        args.base_batch_size,
+        BASE_BATCH_THRESHOLDS,
+        allow_increase=allow_base_increase,
+    )
+    if recommended_base != args.base_batch_size:
+        LOGGER.info(
+            "Auto-tuning base batch size from %d to %d for detected %.1f GiB VRAM",
+            args.base_batch_size,
+            recommended_base,
+            gb,
+        )
+        args.base_batch_size = recommended_base
+
+    allow_rl_increase = not cli_flag_was_provided("--rl-batch-size")
+    recommended_rl = recommend_batch_size(
+        total_vram,
+        args.rl_batch_size,
+        RL_BATCH_THRESHOLDS,
+        allow_increase=allow_rl_increase,
+    )
+    if recommended_rl != args.rl_batch_size:
+        LOGGER.info(
+            "Auto-tuning RL batch size from %d to %d for detected %.1f GiB VRAM",
+            args.rl_batch_size,
+            recommended_rl,
+            gb,
+        )
+        args.rl_batch_size = recommended_rl
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -182,6 +238,49 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=float,
         default=1e-4,
         help="Learning rate for the generic forecaster.",
+    )
+    parser.add_argument(
+        "--max-tokens-per-batch",
+        type=int,
+        default=0,
+        help="Token budget for each HF training step (0 disables dynamic batching).",
+    )
+    parser.add_argument(
+        "--length-bucketing",
+        type=str,
+        default="",
+        help="Comma-separated context lengths to use when dynamic batching is enabled.",
+    )
+    parser.add_argument(
+        "--horizon-bucketing",
+        type=str,
+        default="",
+        help="Comma-separated prediction horizons to use when dynamic batching is enabled.",
+    )
+    parser.add_argument(
+        "--bucket-warmup-steps",
+        type=int,
+        default=0,
+        help="Warm-up forward passes per (context, horizon) bucket before collecting gradients.",
+    )
+    parser.add_argument(
+        "--precision",
+        choices=["bf16", "fp16", "fp32"],
+        default="bf16",
+        help="Numerical precision for HF training stages.",
+    )
+    parser.add_argument(
+        "--use-fused-optim",
+        dest="use_fused_optimizer",
+        action="store_true",
+        default=True,
+        help="Enable fused AdamW optimizers when supported.",
+    )
+    parser.add_argument(
+        "--no-fused-optim",
+        dest="use_fused_optimizer",
+        action="store_false",
+        help="Disable fused optimizers even if supported.",
     )
     parser.add_argument(
         "--progressive-base-steps",
@@ -484,6 +583,24 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
         data_dir=str(data_root),
         toto_predictions_dir=str(predictions_dir) if predictions_dir else None,
     )
+    length_values = (
+        [int(item) for item in args.length_bucketing.split(",") if item.strip()]
+        if args.length_bucketing
+        else [args.sequence_length]
+    )
+    horizon_values = (
+        [int(item) for item in args.horizon_bucketing.split(",") if item.strip()]
+        if args.horizon_bucketing
+        else [args.toto_horizon]
+    )
+    trainer.set_training_overrides(
+        max_tokens_per_batch=max(0, args.max_tokens_per_batch),
+        length_bucketing=length_values,
+        horizon_bucketing=horizon_values,
+        bucket_warmup_steps=max(0, args.bucket_warmup_steps),
+        precision=args.precision,
+        use_fused_optimizer=args.use_fused_optimizer,
+    )
 
     progressive_schedule: Optional[List[int]] = None
 
@@ -525,6 +642,14 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
                 "run_name": args.wandb_run_name or None,
             },
             "progressive_base_steps": progressive_schedule,
+            "training_overrides": {
+                "max_tokens_per_batch": args.max_tokens_per_batch,
+                "length_bucketing": length_values,
+                "horizon_bucketing": horizon_values,
+                "bucket_warmup_steps": args.bucket_warmup_steps,
+                "precision": args.precision,
+                "use_fused_optimizer": args.use_fused_optimizer,
+            },
         },
     }
 
@@ -640,6 +765,7 @@ def main() -> None:
     parser = build_argument_parser()
     args = parser.parse_args()
     _setup_logging(args.verbose)
+    _maybe_autotune_batches(args)
 
     try:
         summary = run_pipeline(args)

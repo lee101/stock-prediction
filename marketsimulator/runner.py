@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 try:  # pragma: no cover - dependency optional at import
     import matplotlib
@@ -16,6 +16,8 @@ except Exception:  # pragma: no cover
     plt = None  # type: ignore
 
 from marketsimulator.logging_utils import logger
+
+from src.fixtures import crypto_symbols
 
 from .environment import activate_simulation
 from .state import SimulationState, TradeExecution
@@ -29,6 +31,7 @@ class DailySnapshot:
     equity: float
     cash: float
     positions: Dict[str, float]
+    positions_detail: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -51,6 +54,8 @@ class SimulationReport:
     total_return: float
     total_return_pct: float
     fees_paid: float
+    trading_fees_paid: float
+    financing_cost_paid: float
     trades_executed: int
     max_drawdown: float
     max_drawdown_pct: float
@@ -58,6 +63,9 @@ class SimulationReport:
     symbol_performance: List[SymbolPerformance] = field(default_factory=list)
     generated_files: List[Path] = field(default_factory=list)
     trade_executions: List[TradeExecution] = field(default_factory=list)
+    symbol_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    price_history: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    daily_analysis: List[Dict[str, Any]] = field(default_factory=list)
 
     def render_summary(self) -> str:
         lines = [
@@ -124,7 +132,15 @@ def _symbol_performance(state: SimulationState) -> List[SymbolPerformance]:
     return performance
 
 
-def _build_report(state: SimulationState, daily_snapshots: List[DailySnapshot], initial_cash: float) -> SimulationReport:
+def _build_report(
+    state: SimulationState,
+    daily_snapshots: List[DailySnapshot],
+    initial_cash: float,
+    *,
+    symbol_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
+    price_history: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    daily_analysis: Optional[List[Dict[str, Any]]] = None,
+) -> SimulationReport:
     final_cash = float(state.cash)
     final_equity = float(state.equity)
     total_return = final_equity - initial_cash
@@ -138,12 +154,17 @@ def _build_report(state: SimulationState, daily_snapshots: List[DailySnapshot], 
         total_return=total_return,
         total_return_pct=total_return_pct,
         fees_paid=float(state.fees_paid),
+        trading_fees_paid=max(0.0, float(state.fees_paid) - float(state.financing_cost_paid)),
+        financing_cost_paid=float(state.financing_cost_paid),
         trades_executed=len(state.trade_log),
         max_drawdown=max_dd_value,
         max_drawdown_pct=max_dd_pct,
         daily_snapshots=daily_snapshots,
         symbol_performance=_symbol_performance(state),
         trade_executions=list(state.trade_log),
+        symbol_metadata=dict(symbol_metadata or {}),
+        price_history=dict(price_history or {}),
+        daily_analysis=list(daily_analysis or []),
     )
 
 
@@ -243,6 +264,9 @@ def simulate_strategy(
     daily_snapshots: List[DailySnapshot] = []
     symbols = list(symbols)
     output_path = Path(output_dir) if output_dir else None
+    symbol_metadata: Dict[str, Dict[str, Any]] = {}
+    price_history: Dict[str, List[Dict[str, Any]]] = {}
+    daily_analysis: List[Dict[str, Any]] = []
 
     with activate_simulation(
         symbols=symbols,
@@ -264,6 +288,7 @@ def simulate_strategy(
             current_time = controller.current_time()
             logger.info(f"[sim] Trading day {day + 1}/{days} @ {current_time}")
 
+            forecasts = None
             try:
                 forecasts = predict_module.make_predictions(
                     input_data_path="_simulator",
@@ -283,11 +308,32 @@ def simulate_strategy(
                 max_positions=max(top_k, trade_module.DEFAULT_MIN_CORE_POSITIONS),
                 max_expanded=max(top_k, trade_module.EXPANDED_PORTFOLIO),
             )
+
+            for symbol, data in analyzed.items():
+                symbol_str = str(symbol)
+                symbol_upper = symbol_str.upper()
+                meta = symbol_metadata.setdefault(symbol_str, {})
+                meta["symbol"] = symbol_str
+                strategy = data.get("strategy")
+                if strategy:
+                    meta["strategy"] = strategy
+                trade_mode = data.get("trade_mode")
+                if trade_mode:
+                    meta["trade_mode"] = trade_mode
+                side = data.get("side")
+                if side:
+                    meta["side"] = side
+                meta["asset_class"] = "crypto" if symbol_upper in crypto_symbols else "equity"
+                meta["is_crypto"] = symbol_upper in crypto_symbols
+
             if portfolio:
                 trade_module.log_trading_plan(portfolio, f"SIM-DAY-{day + 1}-OPEN")
             trade_module.manage_positions(portfolio, previous_picks, analyzed)
 
             open_summary = controller.summary()
+            open_positions_detail = {
+                symbol: dict(details) for symbol, details in open_summary.get("positions_detail", {}).items()
+            }
             daily_snapshots.append(
                 DailySnapshot(
                     day_index=day,
@@ -296,6 +342,7 @@ def simulate_strategy(
                     equity=open_summary["equity"],
                     cash=open_summary["cash"],
                     positions=open_summary["positions"],
+                    positions_detail=open_positions_detail,
                 )
             )
 
@@ -303,6 +350,9 @@ def simulate_strategy(
 
             close_picks = trade_module.manage_market_close(symbols, portfolio, analyzed)
             close_summary = controller.summary()
+            close_positions_detail = {
+                symbol: dict(details) for symbol, details in close_summary.get("positions_detail", {}).items()
+            }
             daily_snapshots.append(
                 DailySnapshot(
                     day_index=day,
@@ -311,17 +361,78 @@ def simulate_strategy(
                     equity=close_summary["equity"],
                     cash=close_summary["cash"],
                     positions=close_summary["positions"],
+                    positions_detail=close_positions_detail,
                 )
             )
             previous_picks = close_picks
 
             controller.advance_steps(end_steps)
+            strategy_counts: Dict[str, int] = defaultdict(int)
+            trade_mode_counts: Dict[str, int] = defaultdict(int)
+            for symbol, data in portfolio.items():
+                strategy = data.get("strategy") or "unknown"
+                strategy_counts[strategy] += 1
+                mode = data.get("trade_mode") or symbol_metadata.get(symbol, {}).get("trade_mode") or "normal"
+                trade_mode_counts[mode] += 1
+            probe_candidates = sum(1 for data in analyzed.values() if data.get("trade_mode") == "probe")
+            blocked_candidates = sum(1 for data in analyzed.values() if data.get("trade_blocked"))
+            daily_analysis.append(
+                {
+                    "day_index": day,
+                    "timestamp": current_time.isoformat(),
+                    "symbols_analyzed": len(analyzed),
+                    "portfolio_size": len(portfolio),
+                    "forecasts_generated": len(forecasts) if forecasts is not None else 0,
+                    "strategy_counts": dict(strategy_counts),
+                    "trade_mode_counts": dict(trade_mode_counts),
+                    "probe_candidates": probe_candidates,
+                    "blocked_candidates": blocked_candidates,
+                }
+            )
+
+        sim_state = controller.state
+        for symbol, series in sim_state.prices.items():
+            frame = series.frame.iloc[: series.cursor + 1]
+            symbol_history: List[Dict[str, Any]] = []
+            for _, row in frame.iterrows():
+                raw_ts = row.get("timestamp")
+                if hasattr(raw_ts, "isoformat"):
+                    ts_value = raw_ts.isoformat()
+                else:
+                    ts_value = str(raw_ts)
+                symbol_history.append(
+                    {
+                        "timestamp": ts_value,
+                        "close": row.get("Close"),
+                        "open": row.get("Open"),
+                        "high": row.get("High"),
+                        "low": row.get("Low"),
+                        "volume": row.get("Volume"),
+                    }
+                )
+            price_history[symbol] = symbol_history
+        for position_symbol in sim_state.positions.keys():
+            if position_symbol in symbol_metadata:
+                continue
+            symbol_upper = position_symbol.upper()
+            symbol_metadata[position_symbol] = {
+                "symbol": position_symbol,
+                "asset_class": "crypto" if symbol_upper in crypto_symbols else "equity",
+                "is_crypto": symbol_upper in crypto_symbols,
+            }
 
         state = controller.state
         if flatten_end:
             _flatten_positions(controller)
             state = controller.state
-        report = _build_report(state, daily_snapshots, initial_cash)
+        report = _build_report(
+            state,
+            daily_snapshots,
+            initial_cash,
+            symbol_metadata=symbol_metadata,
+            price_history=price_history,
+            daily_analysis=daily_analysis,
+        )
         logger.info("\n" + report.render_summary())
         if output_path:
             generated = _generate_plots(report, output_path)

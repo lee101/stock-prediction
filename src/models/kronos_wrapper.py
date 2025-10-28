@@ -144,6 +144,15 @@ class KronosForecastingWrapper:
             raise RuntimeError(
                 "Torch, NumPy, and pandas must be configured via setup_kronos_wrapper_imports before instantiating KronosForecastingWrapper."
             )
+        if not device.startswith("cuda"):
+            raise RuntimeError(
+                f"KronosForecastingWrapper requires a CUDA device; received {device!r}. CPU execution is currently unsupported."
+            )
+        cuda_mod = getattr(torch, "cuda", None)
+        is_available = bool(getattr(cuda_mod, "is_available", lambda: False)()) if cuda_mod is not None else False
+        if not is_available:
+            raise RuntimeError("CUDA is unavailable. KronosForecastingWrapper requires a CUDA-capable PyTorch installation.")
+
         self.model_name = model_name
         self.tokenizer_name = tokenizer_name
         self.requested_device = device
@@ -230,13 +239,14 @@ class KronosForecastingWrapper:
                     and self._device.startswith("cuda")
                 ):
                     oom_retried = True
-                    logger.warning(
-                        "Kronos GPU inference ran out of memory on %s; retrying on CPU.",
+                    logger.error(
+                        "Kronos GPU inference ran out of memory on %s; CPU fallback is disabled.",
                         self._device,
                     )
                     self._handle_cuda_oom()
-                    predictor = self._ensure_predictor(device_override="cpu")
-                    continue
+                    raise RuntimeError(
+                        f"Kronos GPU inference ran out of memory on device {self._device}. Reduce sampling requirements or provision a larger GPU."
+                    ) from exc
                 raise
 
         if not isinstance(forecast_df, pd.DataFrame):
@@ -314,18 +324,14 @@ class KronosForecastingWrapper:
                     and self._device.startswith("cuda")
                 ):
                     oom_retried = True
-                    logger.warning(
-                        "Kronos GPU batch inference ran out of memory on %s; retrying on CPU.",
+                    logger.error(
+                        "Kronos GPU batch inference ran out of memory on %s; CPU fallback is disabled.",
                         self._device,
                     )
                     self._handle_cuda_oom()
-                    predictor = self._ensure_predictor(device_override="cpu")
-                    batch_predict = getattr(predictor, "predict_batch", None)
-                    if batch_predict is None:
-                        raise AttributeError(
-                            "Kronos predictor does not expose 'predict_batch'. Update the Kronos package."
-                        )
-                    continue
+                    raise RuntimeError(
+                        f"Kronos GPU inference ran out of memory on device {self._device}. Reduce sampling requirements or provision a larger GPU."
+                    ) from exc
                 raise
 
         if not isinstance(forecast_list, (list, tuple)):
@@ -530,9 +536,12 @@ class KronosForecastingWrapper:
                     sys.modules["model"] = original_model_module
 
         device = device_override or self.requested_device
-        if device.startswith("cuda") and not torch.cuda.is_available():
-            logger.warning("CUDA device %s requested but unavailable; falling back to CPU.", device)
-            device = "cpu"
+        if not device.startswith("cuda"):
+            raise RuntimeError(
+                f"KronosForecastingWrapper requires a CUDA device; received {device!r}. CPU execution is currently unsupported."
+            )
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is unavailable. KronosForecastingWrapper requires a CUDA-capable environment.")
         self._device = device
 
         cache_manager = ModelCacheManager("kronos")
@@ -560,33 +569,10 @@ class KronosForecastingWrapper:
             predictor = _build_predictor(device)
         except Exception as exc:
             if device.startswith("cuda") and _is_cuda_oom_error(exc):
-                logger.warning(
-                    "Kronos predictor initialisation OOM on %s; retrying on CPU. (%s)",
-                    device,
-                    exc,
-                )
-                if torch is not None:
-                    try:
-                        torch.cuda.empty_cache()
-                    except Exception:  # pragma: no cover - cache clearing best effort
-                        pass
-                device = "cpu"
-                self._device = device
-                if torch is not None:
-                    cpu_device = torch.device("cpu")
-                else:  # pragma: no cover - torch unavailable
-                    cpu_device = "cpu"
-                try:
-                    model = model.to(device=cpu_device)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-                try:
-                    tokenizer = tokenizer.to(device=cpu_device)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-                predictor = _build_predictor(device)
-            else:
-                raise
+                raise RuntimeError(
+                    f"Kronos predictor initialisation ran out of memory on device {device}. CPU fallback is disabled; reduce sampling requirements or provision a larger GPU."
+                ) from exc
+            raise
         if self._preferred_dtype is not None:
             try:
                 predictor.model = predictor.model.to(dtype=self._preferred_dtype)  # type: ignore[attr-defined]
