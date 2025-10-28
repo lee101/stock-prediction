@@ -142,6 +142,7 @@ class BaseModelTrainer:
         self.max_rows = max_rows
         self.toto_predictions_dir = Path(toto_predictions_dir).expanduser() if toto_predictions_dir else None
         self._feature_dim: Optional[int] = None
+        self._hf_training_overrides: Dict[str, object] = {}
         
         # Create directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -195,6 +196,10 @@ class BaseModelTrainer:
             toto_prediction_features=self._toto_prediction_features,
             toto_prediction_columns=self._toto_prediction_columns,
         )
+
+    def set_training_overrides(self, **overrides: object) -> None:
+        """Persist optional HF training overrides supplied by the pipeline."""
+        self._hf_training_overrides.update(overrides)
 
     def _configure_processor_from_config(self, data_config):
         """Ensure processor follows the latest data configuration."""
@@ -342,7 +347,11 @@ class BaseModelTrainer:
         config.data.toto_device = self.toto_options.toto_device
         config.training.use_mixed_precision = False
         config.training.gradient_checkpointing = False
-        
+        if self._hf_training_overrides:
+            for key, value in self._hf_training_overrides.items():
+                if hasattr(config.training, key):
+                    setattr(config.training, key, value)
+
         # Update paths for base model
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         config.output.output_dir = str(self.base_model_dir / f"base_{timestamp}")
@@ -395,6 +404,14 @@ class BaseModelTrainer:
         hf_config.dataloader_num_workers = 0
         hf_config.persistent_workers = False
         hf_config.prefetch_factor = 2
+        hf_config.max_tokens_per_batch = getattr(config.training, "max_tokens_per_batch", 0)
+        hf_config.length_bucketing = tuple(getattr(config.training, "length_bucketing", [config.data.sequence_length]))
+        hf_config.horizon_bucketing = tuple(getattr(config.training, "horizon_bucketing", [config.data.prediction_horizon]))
+        hf_config.window_stride = getattr(config.training, "window_stride", 1)
+        hf_config.pack_windows = getattr(config.training, "pack_windows", True)
+        hf_config.bucket_warmup_steps = getattr(config.training, "bucket_warmup_steps", 0)
+        hf_config.precision = getattr(config.training, "precision", "bf16")
+        hf_config.use_fused_optimizer = getattr(config.training, "use_fused_optimizer", True)
 
         model = TransformerTradingModel(hf_config, input_dim=input_dim)
         
@@ -511,6 +528,10 @@ class BaseModelTrainer:
         finetune_config.logging_dir = str(self.tensorboard_dir / f"finetune_{stock_symbol}_{timestamp}")
         finetune_config.dataloader_num_workers = 0
         finetune_config.persistent_workers = False
+        if self._hf_training_overrides:
+            for key, value in self._hf_training_overrides.items():
+                if hasattr(finetune_config, key):
+                    setattr(finetune_config, key, value)
         
         # Create trainer
         trainer = HFTrainer(

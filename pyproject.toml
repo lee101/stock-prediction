@@ -66,6 +66,7 @@ diff-market-toto-train = "differentiable_market_totoembedding.train:main"
 diff-market-kronos-train = "differentiable_market_kronos.train:main"
 stockagent2-pipeline = "stockagent2.cli:main"
 puffer-training2 = "pufferlibtraining2.cli:main"
+puffer-training3 = "pufferlibtraining3.pufferrl:main"
 
 [project.optional-dependencies]
 dev = [
