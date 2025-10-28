@@ -44,6 +44,7 @@ dependencies = [
     "torch-optimizer>=0.3",
     "pytorch-optimizer>=2.11",
     "dill==0.3.8",
+    "gymnasium>=0.29",
     "aioboto3==12.4.0",
     "boto3==1.34.69",
     "python-binance>=1.0.21",
