@@ -35,7 +35,6 @@ from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
 from marketsimulator.state import get_state
-from marketsimulator.data_feed import load_price_series
 from src.trading_obj_utils import filter_to_realistic_positions
 from src.process_utils import (
     backout_near_market,
@@ -111,17 +110,11 @@ PROBE_SYMBOLS = set() if SIMPLIFIED_MODE else set(DEFAULT_PROBE_SYMBOLS)
 _LATEST_FORECAST_CACHE: Dict[str, Dict[str, object]] = {}
 _LATEST_FORECAST_PATH: Optional[Path] = None
 DISABLE_TRADE_GATES = os.getenv("MARKETSIM_DISABLE_GATES", "0").strip().lower() in _TRUTHY
-ALLOW_CALIBRATION_FALLBACK = os.getenv("MARKETSIM_ALLOW_CALIBRATION_FALLBACK", "0").strip().lower() in _TRUTHY
 
 _coerce_optional_float = coerce_optional_float
 _parse_float_list = parse_float_list
 _edge_threshold_bps = edge_threshold_bps
 _evaluate_strategy_entry_gate = evaluate_strategy_entry_gate
-
-
-class FallbackSignalUnavailable(RuntimeError):
-    """Raised when a heuristic signal is requested instead of ML inference."""
-
 
 
 def _get_env_float(name: str) -> Optional[float]:
@@ -815,117 +808,15 @@ def _get_quote_client() -> Optional[StockHistoricalDataClient]:
     return _quote_client
 
 
-def _resolve_price_history(symbol: str) -> pd.DataFrame:
-    """
-    Retrieve price history for ``symbol`` prioritising simulator state data and
-    falling back to the training corpus when necessary.
-    """
-    try:
-        state = get_state()
-    except RuntimeError:
-        state = None
-    if state is not None:
-        series = state.prices.get(symbol)
-        if series is not None:
-            end_idx = min(max(series.cursor, 0), len(series.frame) - 1)
-            if end_idx >= 0:
-                window = series.frame.iloc[: end_idx + 1]
-                if not window.empty:
-                    if len(window) >= 10:
-                        return window
-                    history = window
-                else:
-                    history = None
-            else:
-                history = None
-        else:
-            history = None
-    else:
-        history = None
-    if history is None or len(history) < 10:
-        try:
-            price_map = load_price_series([symbol])
-        except Exception as exc:
-            logger.debug("Fallback price history load failed for %s: %s", symbol, exc)
-            return pd.DataFrame()
-        series = price_map.get(symbol)
-        if series is None or series.frame.empty:
-            return history if history is not None else pd.DataFrame()
-        return series.frame
-    return history
-
-
-def _compute_fallback_signal(symbol: str, frame: Optional[pd.DataFrame] = None) -> Optional[Dict[str, float]]:
-    """
-    Fallback signals are no longer supported; Toto/Kronos inference must succeed upstream.
-    """
-    logger.error(
-        "Fallback trading signal requested for %s; Toto/Kronos GPU inference should provide predictions.",
-        symbol,
-    )
-    raise FallbackSignalUnavailable(
-        f"Fallback trading signal path is disabled; ensure Toto/Kronos predictions are available for {symbol}."
-    )
-
-
-def _fallback_quotes(symbol: str) -> Optional[Tuple[float, float]]:
-    """
-    Derive synthetic quotes from simulator data when live bid/ask is unavailable.
-    """
-    try:
-        state = get_state()
-    except RuntimeError:
-        state = None
-    row: Optional[pd.Series]
-    if state is not None:
-        series = state.prices.get(symbol)
-        row = series.current_row if series is not None else None
-    else:
-        row = None
-    if row is None:
-        history = _resolve_price_history(symbol)
-        if history.empty:
-            return None
-        row = history.iloc[-1]
-    close_price = coerce_numeric(row.get("Close"), default=0.0)
-    if close_price is None or not math.isfinite(close_price) or close_price <= 0:
-        return None
-    last_row = history.iloc[-1]
-    high_price = coerce_numeric(
-        (high_series.dropna().iloc[-1] if high_series is not None and not high_series.dropna().empty else last_row.get("High")),
-        default=close_price,
-    )
-    low_price = coerce_numeric(
-        (low_series.dropna().iloc[-1] if low_series is not None and not low_series.dropna().empty else last_row.get("Low")),
-        default=close_price,
-    )
-    mid_price = float(close_price)
-    range_span = 0.0
-    if high_price is not None and low_price is not None:
-        try:
-            range_span = max(0.0, float(high_price) - float(low_price))
-        except (TypeError, ValueError):
-            range_span = 0.0
-    base_spread = max(0.0008 * mid_price, range_span * 0.25, 0.01)
-    bid = max(0.01, mid_price - base_spread / 2.0)
-    ask = max(bid + 1e-6, mid_price + base_spread / 2.0)
-    return bid, ask
-
-
 def fetch_bid_ask(symbol: str) -> Tuple[Optional[float], Optional[float]]:
     client = _get_quote_client()
-    if client is not None:
-        try:
-            download_exchange_latest_data(client, symbol)
-        except Exception as exc:
-            logger.warning("Unable to refresh quotes for %s: %s", symbol, exc)
-    bid = get_bid(symbol)
-    ask = get_ask(symbol)
-    if bid is None or ask is None:
-        fallback = _fallback_quotes(symbol)
-        if fallback is not None:
-            bid, ask = fallback
-    return bid, ask
+    if client is None:
+        return None, None
+    try:
+        download_exchange_latest_data(client, symbol)
+    except Exception as exc:
+        logger.warning("Unable to refresh quotes for %s: %s", symbol, exc)
+    return get_bid(symbol), get_ask(symbol)
 
 
 def is_tradeable(
@@ -1968,18 +1859,15 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             high_movement = predicted_high_price - close_price
             low_movement = predicted_low_price - close_price
 
-            force_fallback = False
             if best_strategy == "all_signals":
                 if all(x > 0 for x in [close_movement_raw, high_movement, low_movement]):
                     position_side = "buy"
-                    predicted_movement = close_movement_raw
                 elif all(x < 0 for x in [close_movement_raw, high_movement, low_movement]):
                     position_side = "sell"
-                    predicted_movement = close_movement_raw
                 else:
-                    _log_detail(f"{symbol}: mixed directional signals with all_signals lead; forcing fallback analysis")
-                    predicted_movement = 0.0
-                    force_fallback = True
+                    _log_detail(f"Skipping {symbol} - mixed directional signals despite all_signals lead")
+                    continue
+                predicted_movement = close_movement_raw
             else:
                 predicted_movement = close_movement_raw
                 position_side = "buy" if predicted_movement > 0 else "sell"
@@ -2007,39 +1895,13 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             takeprofit_allowed_entry = ALLOW_TAKEPROFIT_ENTRY and ("takeprofit" not in strategy_ineligible)
             maxdiff_allowed_entry = ALLOW_MAXDIFF_ENTRY and ("maxdiff" not in strategy_ineligible)
 
-            fallback_signal = None
-            fallback_edge_strength: Optional[float] = None
-            fallback_directional_edge: Optional[float] = None
-            fallback_strategy_name: Optional[str] = None
-            fallback_kelly_fraction: Optional[float] = None
-
-            needs_fallback = (
-                force_fallback
-                or
-                predicted_movement == 0.0
-                or price_skill <= 0
-                or max(
-                    avg_return,
-                    simple_return,
-                    takeprofit_return,
-                    highlow_return,
-                    maxdiff_return,
-                    kronos_profit,
-                )
-                <= 0
-            )
-            if needs_fallback:
-                _compute_fallback_signal(symbol)
-
             raw_expected_move_pct = expected_move_pct
-            calibrated_move_pct = None
-            if fallback_signal is None:
-                calibrated_move_raw = last_prediction.get("calibrated_expected_move_pct")
-                calibrated_move_pct = (
-                    coerce_numeric(calibrated_move_raw)
-                    if calibrated_move_raw is not None
-                    else None
-                )
+            calibrated_move_raw = last_prediction.get("calibrated_expected_move_pct")
+            calibrated_move_pct = (
+                coerce_numeric(calibrated_move_raw)
+                if calibrated_move_raw is not None
+                else None
+            )
             if calibrated_move_pct is not None:
                 expected_move_pct = calibrated_move_pct
                 predicted_movement = expected_move_pct * close_price
@@ -2048,12 +1910,12 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 calibrated_close_price = predicted_close_price
 
             if predicted_movement == 0.0:
-                if (DISABLE_TRADE_GATES or ALLOW_CALIBRATION_FALLBACK) and raw_expected_move_pct:
+                if DISABLE_TRADE_GATES and raw_expected_move_pct:
                     expected_move_pct = raw_expected_move_pct
                     predicted_movement = expected_move_pct * close_price
                     calibrated_close_price = close_price * (1.0 + expected_move_pct)
                     _log_detail(
-                        f"{symbol}: calibrated move was zero; using raw expected move {expected_move_pct:.6f}"
+                        f"{symbol}: calibrated move was zero; using raw expected move {expected_move_pct:.6f} under MARKETSIM_DISABLE_GATES"
                     )
                 else:
                     _log_detail(f"Skipping {symbol} - calibrated move collapsed to zero.")
@@ -2061,10 +1923,10 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if predicted_movement > 0 and position_side == "sell":
                 if _is_kronos_only_mode():
                     position_side = "buy"
-                elif DISABLE_TRADE_GATES or ALLOW_CALIBRATION_FALLBACK:
+                elif DISABLE_TRADE_GATES:
                     position_side = "buy"
                     _log_detail(
-                        f"{symbol}: overriding sell setup due to positive move (calibration fallback)."
+                        f"{symbol}: overriding sell setup due to positive move (gates disabled)."
                     )
                 else:
                     _log_detail(
@@ -2091,10 +1953,10 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if predicted_movement < 0 and position_side == "buy":
                 if _is_kronos_only_mode():
                     position_side = "sell"
-                elif DISABLE_TRADE_GATES or ALLOW_CALIBRATION_FALLBACK:
+                elif DISABLE_TRADE_GATES:
                     position_side = "sell"
                     _log_detail(
-                        f"{symbol}: overriding buy setup due to negative move (calibration fallback)."
+                        f"{symbol}: overriding buy setup due to negative move (gates disabled)."
                     )
                 else:
                     _log_detail(
@@ -2112,11 +1974,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if abs_move < MIN_EXPECTED_MOVE_PCT:
                 abs_move = 0.0
             edge_strength = price_skill * abs_move
-            if fallback_edge_strength is not None:
-                edge_strength = max(edge_strength, fallback_edge_strength)
             directional_edge = edge_strength if predicted_movement >= 0 else -edge_strength
-            if fallback_directional_edge is not None:
-                directional_edge = fallback_directional_edge
 
             toto_move_pct = coerce_numeric(last_prediction.get("toto_expected_move_pct"), default=0.0)
             kronos_move_pct = coerce_numeric(last_prediction.get("kronos_expected_move_pct"), default=0.0)
@@ -2133,11 +1991,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if sigma_pct <= 0:
                 sigma_pct = max(abs(expected_move_pct), 1e-3)
             kelly_fraction = kelly_lite(abs(expected_move_pct), sigma_pct)
-            if fallback_kelly_fraction is not None:
-                if kelly_fraction is None:
-                    kelly_fraction = fallback_kelly_fraction
-                else:
-                    kelly_fraction = max(kelly_fraction, fallback_kelly_fraction)
             drawdown_scale = _kelly_drawdown_scale(best_strategy, symbol)
             if drawdown_scale < 1.0:
                 logger.info(
@@ -2311,19 +2164,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             base_blocked = False if SIMPLIFIED_MODE else block_info.get("blocked", False)
             if kronos_only_mode and base_blocked:
                 base_blocked = False
-            if fallback_signal is not None and gating_reasons:
-                fallback_filter_terms = (
-                    "Walk-forward",
-                    "Low dollar vol",
-                    "No directional signal",
-                    "Cooldown active",
-                    "Kelly fraction <= 0",
-                )
-                gating_reasons = [
-                    reason
-                    for reason in gating_reasons
-                    if not any(term in reason for term in fallback_filter_terms)
-                ]
             combined_reasons: List[str] = []
             if base_blocked and block_info.get("block_reason"):
                 combined_reasons.append(block_info["block_reason"])
@@ -2342,8 +2182,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "side": position_side,
                 "predicted_movement": _metric(predicted_movement, default=0.0),
                 "strategy": best_strategy,
-                "fallback_strategy": fallback_strategy_name,
-                "fallback_signal_applied": bool(fallback_signal),
                 "predicted_high": _metric(predicted_high_price, default=close_price),
                 "predicted_low": _metric(predicted_low_price, default=close_price),
                 "predicted_close": _metric(predicted_close_price, default=close_price),
@@ -2366,7 +2204,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 else None,
                 "strategy_entry_ineligible": strategy_ineligible,
                 "strategy_candidate_scores": candidate_scores,
-                "fallback_details": fallback_signal,
                 "fallback_backtest": used_fallback_engine,
                 "highlow_entry_allowed": highlow_allowed_entry,
                 "takeprofit_entry_allowed": takeprofit_allowed_entry,
