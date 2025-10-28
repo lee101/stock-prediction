@@ -493,8 +493,10 @@ class TotoPipeline:
             "model_id": model_id,
             "dtype": dtype_token,
             "amp_dtype": amp_token,
+            "amp_autocast": bool(amp_autocast),
             "compile_mode": (compile_mode or "none"),
             "compile_backend": (compile_backend or "none"),
+            "torch_compile_requested": bool(torch_compile),
             "torch_version": torch.__version__,
         }
 
@@ -727,8 +729,13 @@ class TotoPipeline:
             logger.debug("Failed to move Toto model to CPU during unload: %s", exc)
         self.model = None
         self.forecaster = None
-        if torch.cuda.is_available():
+        torch_module: Optional[ModuleType]
+        try:
+            torch_module = _require_torch()
+        except RuntimeError:
+            torch_module = None
+        if torch_module is not None and hasattr(torch_module, "cuda") and torch_module.cuda.is_available():
             try:
-                torch.cuda.empty_cache()
+                torch_module.cuda.empty_cache()
             except Exception as exc:  # pragma: no cover - best effort
                 logger.debug("Failed to empty CUDA cache after Toto unload: %s", exc)

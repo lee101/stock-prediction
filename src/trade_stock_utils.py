@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import math
 from typing import Iterable, List, Mapping, Optional, Tuple
+import os
 
 LIQUID_CRYPTO_PREFIXES: Tuple[str, ...] = ("BTC", "ETH", "SOL", "UNI")
 TIGHT_SPREAD_EQUITIES = {"AAPL", "MSFT", "AMZN", "NVDA", "META", "GOOG"}
@@ -133,9 +134,14 @@ def should_rebalance(
     return delta > eps
 
 
+_EDGE_EXTRA_COST_BPS = float(os.getenv("MARKETSIM_EDGE_EXTRA_COST_BPS", "10.0"))
+_EDGE_FLOOR_EQUITY_BPS = float(os.getenv("MARKETSIM_EDGE_FLOOR_BPS", "15.0"))
+_EDGE_FLOOR_CRYPTO_BPS = float(os.getenv("MARKETSIM_EDGE_FLOOR_BPS_CRYPTO", "40.0"))
+
+
 def edge_threshold_bps(symbol: str) -> float:
-    base_cost = expected_cost_bps(symbol) + 10.0
-    hard_floor = 40.0 if symbol.endswith("USD") else 15.0
+    base_cost = expected_cost_bps(symbol) + _EDGE_EXTRA_COST_BPS
+    hard_floor = _EDGE_FLOOR_CRYPTO_BPS if symbol.endswith("USD") else _EDGE_FLOOR_EQUITY_BPS
     return max(base_cost, hard_floor)
 
 
@@ -161,6 +167,12 @@ def evaluate_strategy_entry_gate(
     sample_size:
         Number of samples backing the metrics.
     """
+    sharpe_gate = float(os.getenv("MARKETSIM_STRATEGY_SHARPE_GATE", "0.5"))
+    min_samples = int(os.getenv("MARKETSIM_STRATEGY_MIN_SAMPLES", "120"))
+    max_drawdown_gate = float(os.getenv("MARKETSIM_STRATEGY_MAX_DRAWDOWN_GATE", "-0.08"))
+    turnover_gate = float(os.getenv("MARKETSIM_STRATEGY_TURNOVER_GATE", "2.0"))
+    turnover_sharpe_gate = float(os.getenv("MARKETSIM_STRATEGY_TURNOVER_SHARPE_GATE", "0.8"))
+
     if fallback_used:
         return False, "fallback_metrics"
 
@@ -177,12 +189,12 @@ def evaluate_strategy_entry_gate(
     needed_edge = edge_threshold_bps(symbol)
     if edge_bps < needed_edge:
         return False, f"edge {edge_bps:.1f}bps < need {needed_edge:.1f}bps"
-    if sharpe < 0.5:
-        return False, f"sharpe {sharpe:.2f} below 0.50 gate"
-    if sample_size < 120:
-        return False, f"insufficient samples {sample_size} < 120"
-    if max_drawdown < -0.08:
-        return False, f"max drawdown {max_drawdown:.2f} below -0.08 gate"
-    if turnover > 2.0 and sharpe < 0.8:
+    if sharpe < sharpe_gate:
+        return False, f"sharpe {sharpe:.2f} below {sharpe_gate:.2f} gate"
+    if sample_size < min_samples:
+        return False, f"insufficient samples {sample_size} < {min_samples}"
+    if max_drawdown < max_drawdown_gate:
+        return False, f"max drawdown {max_drawdown:.2f} below {max_drawdown_gate:.2f} gate"
+    if turnover > turnover_gate and sharpe < turnover_sharpe_gate:
         return False, f"turnover {turnover:.2f} with sharpe {sharpe:.2f}"
     return True, "ok"

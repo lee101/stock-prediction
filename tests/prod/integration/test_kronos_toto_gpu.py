@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
 from typing import Dict, Iterator, Optional
 
@@ -53,8 +52,7 @@ def kronos_wrapper() -> Iterator[KronosForecastingWrapper]:
     try:
         yield wrapper
     finally:
-        with contextlib.suppress(Exception):
-            wrapper.unload()
+        wrapper.unload()
 
 
 @pytest.fixture(scope="module")
@@ -75,38 +73,49 @@ def toto_pipeline() -> Iterator[TotoPipeline]:
             )
         )
     preferred_dtype = torch.float32
-    pipeline = TotoPipeline.from_pretrained(
-        model_id="Datadog/Toto-Open-Base-1.0",
-        device_map="cuda",
-        torch_dtype=preferred_dtype,
-        amp_dtype=None,
-        amp_autocast=False,
-        compile_model=False,
-        torch_compile=False,
-        warmup_sequence=0,
-        cache_policy="prefer",
-        force_refresh=refresh_needed,
-        min_num_samples=64,
-        min_samples_per_batch=16,
-        max_oom_retries=0,
-    )
+    try:
+        pipeline = TotoPipeline.from_pretrained(
+            model_id="Datadog/Toto-Open-Base-1.0",
+            device_map="cuda",
+            torch_dtype=preferred_dtype,
+            amp_dtype=None,
+            amp_autocast=False,
+            compile_model=False,
+            torch_compile=False,
+            warmup_sequence=0,
+            cache_policy="prefer",
+            force_refresh=refresh_needed,
+            min_num_samples=64,
+            min_samples_per_batch=16,
+            max_oom_retries=0,
+        )
+    except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+        message = str(exc).lower()
+        if "out of memory" in message or "cuda error" in message:
+            pytest.skip(f"Toto GPU fixture skipped due to insufficient CUDA memory: {exc}")
+        raise
     try:
         yield pipeline
     finally:
-        with contextlib.suppress(Exception):
-            pipeline.unload()
+        pipeline.unload()
 
 
 @pytest.mark.cuda_required
 @pytest.mark.integration
 def test_kronos_gpu_forecast(kronos_wrapper: KronosForecastingWrapper, btc_series: pd.DataFrame) -> None:
     window = btc_series[["timestamp", "open", "high", "low", "close", "volume"]].tail(320).copy()
-    results = kronos_wrapper.predict_series(
-        data=window,
-        timestamp_col="timestamp",
-        columns=["close"],
-        pred_len=4,
-    )
+    try:
+        results = kronos_wrapper.predict_series(
+            data=window,
+            timestamp_col="timestamp",
+            columns=["close"],
+            pred_len=4,
+        )
+    except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+        message = str(exc).lower()
+        if "out of memory" in message or "cuda error" in message:
+            pytest.skip(f"Kronos GPU forecast skipped due to insufficient CUDA memory: {exc}")
+        raise
 
     assert "close" in results, "Kronos forecast missing 'close' column."
     forecast: KronosForecastResult = results["close"]
@@ -164,3 +173,65 @@ def test_toto_gpu_forecast(toto_pipeline: TotoPipeline, btc_series: pd.DataFrame
     assert cache_metadata.get("dtype") == "fp32", "Cached Toto model dtype mismatch."
     assert cache_metadata.get("amp_dtype") == "fp32", "Cached Toto model amp dtype mismatch."
     assert cache_metadata.get("amp_autocast") is False, "Compiled cache indicates autocast enabled when disabled."
+
+
+@pytest.mark.cuda_required
+@pytest.mark.integration
+def test_toto_gpu_compiled_fp32(tmp_path) -> None:
+    _require_cuda()
+    setup_toto_wrapper_imports(torch_module=torch, numpy_module=np)
+
+    cache_root = tmp_path / "compiled_models"
+    manager = ModelCacheManager("toto", root=cache_root)
+    dtype_token = dtype_to_token(torch.float32)
+
+    try:
+        pipeline = TotoPipeline.from_pretrained(
+            model_id="Datadog/Toto-Open-Base-1.0",
+            device_map="cuda",
+            torch_dtype=torch.float32,
+            amp_autocast=False,
+            torch_compile=True,
+            compile_mode="reduce-overhead",
+            compile_backend="inductor",
+            max_oom_retries=0,
+            min_samples_per_batch=16,
+            min_num_samples=64,
+            warmup_sequence=0,
+            cache_manager=manager,
+        )
+    except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+        message = str(exc).lower()
+        if "out of memory" in message or "cuda error" in message:
+            pytest.skip(f"Toto GPU compile test skipped due to insufficient CUDA memory: {exc}")
+        raise
+
+    try:
+        context = torch.linspace(0.0, 1.0, steps=256, dtype=torch.float32, device="cuda")
+        try:
+            forecast = pipeline.predict(
+                context=context,
+                prediction_length=4,
+                num_samples=64,
+                samples_per_batch=16,
+            )[0].numpy()
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+            message = str(exc).lower()
+            if "out of memory" in message or "cuda error" in message:
+                pytest.skip(f"Toto GPU compile test skipped during forecast due to CUDA OOM: {exc}")
+            raise
+
+        assert forecast.shape == (64, 4), "Compiled Toto forecast produced unexpected shape."
+        assert np.isfinite(forecast).all(), "Compiled Toto forecast contained non-finite values."
+        assert pipeline._torch_compile_success, "torch.compile did not report success for Toto pipeline."
+
+        metadata = manager.load_metadata("Datadog/Toto-Open-Base-1.0", dtype_token)
+        assert metadata is not None, "Compiled metadata missing for Toto FP32 cache."
+        assert metadata.get("torch_compile") is True, "Metadata did not record successful torch.compile."
+        assert metadata.get("torch_compile_requested") is True, "Metadata missing torch_compile request flag."
+        assert metadata.get("amp_autocast") is False, "Metadata indicates AMP autocast still enabled."
+        assert metadata.get("dtype") == "fp32", "Metadata recorded incorrect dtype token."
+        assert metadata.get("amp_dtype") == "fp32", "Metadata recorded incorrect amp dtype token."
+        assert metadata.get("compile_backend") in {"inductor", "none"}, "Unexpected compile backend in metadata."
+    finally:
+        pipeline.unload()

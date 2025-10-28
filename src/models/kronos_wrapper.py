@@ -249,6 +249,16 @@ class KronosForecastingWrapper:
                             self._preferred_dtype = new_dtype
                             self._prefer_fp32 = False
                         bf16_available = False
+                    if effective_samples > 1:
+                        reduced_samples = max(1, effective_samples // 2)
+                        if reduced_samples < effective_samples:
+                            logger.warning(
+                                "Kronos reducing sample_count from %d to %d after GPU OOM.",
+                                effective_samples,
+                                reduced_samples,
+                            )
+                            effective_samples = reduced_samples
+                            self.sample_count = reduced_samples
                     predictor = self._ensure_predictor(device_override=self._device)
                     continue
                 raise
@@ -353,6 +363,16 @@ class KronosForecastingWrapper:
                             self._preferred_dtype = new_dtype
                             self._prefer_fp32 = False
                         bf16_available = False
+                    if effective_samples > 1:
+                        reduced_samples = max(1, effective_samples // 2)
+                        if reduced_samples < effective_samples:
+                            logger.warning(
+                                "Kronos reducing batch sample_count from %d to %d after GPU OOM.",
+                                effective_samples,
+                                reduced_samples,
+                            )
+                            effective_samples = reduced_samples
+                            self.sample_count = reduced_samples
                     predictor = self._ensure_predictor(device_override=self._device)
                     batch_predict = getattr(predictor, "predict_batch", None)
                     if batch_predict is None:
@@ -508,8 +528,15 @@ class KronosForecastingWrapper:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Failed to move Kronos tokenizer to CPU during unload: %s", exc)
         self._predictor = None
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            torch_module = _require_torch()
+        except RuntimeError:
+            return
+        if hasattr(torch_module, "cuda") and torch_module.cuda.is_available():
+            try:
+                torch_module.cuda.empty_cache()
+            except Exception as exc:  # pragma: no cover - best effort cleanup
+                logger.debug("Failed to empty CUDA cache after Kronos unload: %s", exc)
 
     # ------------------------------------------------------------------ #
     # Internal helpers

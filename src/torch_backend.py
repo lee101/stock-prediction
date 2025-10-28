@@ -19,6 +19,38 @@ def configure_tf32_backends(torch_module: Any, *, logger: Optional[Any] = None) 
         if logger is not None:
             logger.debug(msg)
 
+    def _sync_legacy_toggles(enabled: bool) -> None:
+        """
+        Mirror TF32 state to the legacy allow_tf32 toggles so downstream code
+        that still probes them (e.g. torch.compile/inductor checks) does not
+        raise runtime errors. Prefer the internal setters to avoid triggering
+        getter warnings during assignment.
+        """
+        try:
+            set_cublas = getattr(getattr(torch_module, "_C", None), "_set_cublas_allow_tf32", None)
+            set_cudnn = getattr(getattr(torch_module, "_C", None), "_set_cudnn_allow_tf32", None)
+            if callable(set_cublas):
+                set_cublas(enabled)
+            if callable(set_cudnn):
+                set_cudnn(enabled)
+            state["legacy_api"] = state["legacy_api"] or callable(set_cublas) or callable(set_cudnn)
+        except Exception:
+            _debug("Internal TF32 legacy setters unavailable; falling back to public attributes")
+            matmul = getattr(getattr(torch_module.backends, "cuda", None), "matmul", None)
+            if matmul is not None and hasattr(matmul, "allow_tf32"):
+                try:
+                    matmul.allow_tf32 = enabled
+                    state["legacy_api"] = True
+                except Exception:
+                    _debug("Failed to mirror torch.backends.cuda.matmul.allow_tf32")
+            cudnn_backend = getattr(torch_module.backends, "cudnn", None)
+            if cudnn_backend is not None and hasattr(cudnn_backend, "allow_tf32"):
+                try:
+                    cudnn_backend.allow_tf32 = enabled
+                    state["legacy_api"] = True
+                except Exception:
+                    _debug("Failed to mirror torch.backends.cudnn.allow_tf32")
+
     # Prefer the PyTorch 2.9+ precision controls.
     try:
         matmul = getattr(getattr(torch_module.backends, "cuda", None), "matmul", None)
@@ -26,6 +58,7 @@ def configure_tf32_backends(torch_module: Any, *, logger: Optional[Any] = None) 
             matmul.fp32_precision = "tf32"
             state["new_api"] = True
             _debug("Configured torch.backends.cuda.matmul.fp32_precision = 'tf32'")
+            _sync_legacy_toggles(True)
     except Exception:
         _debug("Failed to configure torch.backends.cuda.matmul.fp32_precision")
 
@@ -35,6 +68,7 @@ def configure_tf32_backends(torch_module: Any, *, logger: Optional[Any] = None) 
             cudnn_conv.fp32_precision = "tf32"
             state["new_api"] = True
             _debug("Configured torch.backends.cudnn.conv.fp32_precision = 'tf32'")
+            _sync_legacy_toggles(True)
     except Exception:
         _debug("Failed to configure torch.backends.cudnn.conv.fp32_precision")
 

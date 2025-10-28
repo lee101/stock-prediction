@@ -253,14 +253,17 @@ def test_evaluate_unprofit_shutdown_buy_hold():
     actual_returns = pd.Series([0.02, 0.01, 0.01, 0.02, 0.03])
 
     strategy_signals = unprofit_shutdown_buy_hold(predictions, actual_returns)
+    guarded_signals = backtest_module._guard_signals_by_recent_pnl(strategy_signals, actual_returns)
     evaluation = evaluate_strategy(strategy_signals, actual_returns, trading_fee, 252)
     total_return = evaluation.total_return
     sharpe_ratio = evaluation.sharpe_ratio
     avg_daily_return = evaluation.avg_daily_return
     annual_return = evaluation.annualized_return
 
-    # The code’s logic yields about 0.041420068...
-    expected_total_return_according_to_code = 0.041420068089422335
+    # Guard suppresses fourth and fifth trades because the trailing two realized trades lost money on average.
+    assert guarded_signals.tolist() == [1.0, 1.0, -1.0, 0.0, 0.0]
+
+    expected_total_return_according_to_code = 0.012801341572339808
 
     assert pytest.approx(total_return, rel=1e-4) == expected_total_return_according_to_code, \
         f"Expected total return {expected_total_return_according_to_code}, but got {total_return}"

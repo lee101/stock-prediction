@@ -71,6 +71,7 @@ from data_curate_daily import download_daily_stock_data, fetch_spread
 from disk_cache import disk_cache
 from src.fixtures import crypto_symbols
 from scripts.alpaca_cli import set_strategy_for_symbol
+from src.adaptive_sampling import AdaptiveSamplerBounds
 from src.models.toto_wrapper import TotoPipeline
 from src.models.toto_aggregation import aggregate_with_spec
 from src.models.kronos_wrapper import KronosForecastingWrapper
@@ -97,6 +98,9 @@ _cpu_fallback_log_state: Set[Tuple[str, Optional[str]]] = set()
 
 pipeline: Optional[TotoPipeline] = None
 TOTO_DEVICE_OVERRIDE: Optional[str] = None
+_TOTO_FP16_ENV_FLAG = _read_env_flag(("MARKETSIM_TOTO_ALLOW_FP16", "TOTO_ALLOW_FP16"))
+TOTO_MIXED_PRECISION_ENABLED = bool(_TOTO_FP16_ENV_FLAG) if _TOTO_FP16_ENV_FLAG is not None else False
+TOTO_DISABLE_COMPILE = False
 kronos_wrapper_cache: Dict[tuple, KronosForecastingWrapper] = {}
 
 ReturnSeries = Union[np.ndarray, pd.Series]
@@ -118,6 +122,42 @@ def _in_test_mode() -> bool:
     if mock_flag is not None and mock_flag.strip().lower() in _BOOL_TRUE:
         return True
     return False
+
+
+def _guard_signals_by_recent_pnl(
+    signals: torch.Tensor,
+    actual_returns: pd.Series,
+    *,
+    window: int = 2,
+) -> torch.Tensor:
+    """
+    Suppress entries when the trailing ``window`` realized trades produced
+    a non-positive average PnL. The guard is symmetric for longs/shorts.
+    """
+    if window <= 0:
+        return torch.as_tensor(signals, dtype=torch.float32)
+
+    guarded = torch.as_tensor(signals, dtype=torch.float32).clone()
+    actual_array = torch.as_tensor(actual_returns.values, dtype=torch.float32)
+    if guarded.numel() != actual_array.numel():
+        raise ValueError("Signals and returns must share the same length.")
+
+    realized_history: List[float] = []
+    for idx in range(guarded.numel()):
+        signal = float(guarded[idx].item())
+        if signal == 0.0:
+            continue
+
+        if len(realized_history) >= window:
+            recent_avg = sum(realized_history[-window:]) / window
+            if recent_avg <= 0.0:
+                guarded[idx] = 0.0
+                continue
+
+        pnl = signal * float(actual_array[idx].item())
+        realized_history.append(pnl)
+
+    return guarded
 
 
 def _require_cuda(feature: str, *, symbol: Optional[str] = None, allow_cpu_fallback: bool = True) -> None:
@@ -677,7 +717,7 @@ def _compute_toto_forecast(
 
         attempts = 0
         cpu_fallback_used = False
-        global TOTO_DEVICE_OVERRIDE
+        global TOTO_DEVICE_OVERRIDE, TOTO_MIXED_PRECISION_ENABLED, TOTO_DISABLE_COMPILE
         while True:
             requested_num_samples, requested_batch = _normalise_sampling_params(
                 requested_num_samples,
@@ -696,9 +736,25 @@ def _compute_toto_forecast(
                 )
                 break
             except RuntimeError as exc:
-                if not _is_cuda_oom_error(exc) or attempts >= TOTO_BACKTEST_MAX_RETRIES:
-                    if not _is_cuda_oom_error(exc):
-                        raise
+                if not _is_cuda_oom_error(exc):
+                    raise
+                if attempts >= TOTO_BACKTEST_MAX_RETRIES:
+                    minima_lowered = TOTO_SAMPLING_BOUNDS.reduce()
+                    if minima_lowered:
+                        min_num, min_batch = TOTO_SAMPLING_BOUNDS.minima()
+                        logger.warning(
+                            "Toto forecast OOM for %s %s after %d GPU retries; lowering sampling minima to %d/%d.",
+                            symbol,
+                            target_key,
+                            attempts,
+                            min_num,
+                            min_batch,
+                        )
+                        attempts = 0
+                        requested_num_samples = max(min_num, requested_num_samples // 2)
+                        requested_batch = max(min_batch, min(requested_batch // 2, requested_num_samples))
+                        _drop_toto_pipeline()
+                        continue
                     if cpu_fallback_used:
                         raise
                     logger.warning(
@@ -709,18 +765,27 @@ def _compute_toto_forecast(
                     )
                     cpu_fallback_used = True
                     TOTO_DEVICE_OVERRIDE = "cpu"
+                    if not TOTO_MIXED_PRECISION_ENABLED:
+                        logger.warning(
+                            "Enabling Toto mixed precision inference after repeated GPU OOM; "
+                            "subsequent GPU reloads will request FP16 weights."
+                        )
+                    TOTO_MIXED_PRECISION_ENABLED = True
+                    if not TOTO_DISABLE_COMPILE:
+                        logger.warning("Disabling Toto torch.compile after persistent GPU OOM conditions.")
+                        TOTO_DISABLE_COMPILE = True
                     _drop_toto_pipeline()
                     attempts = 0
-                    requested_num_samples = max(TOTO_MIN_NUM_SAMPLES, requested_num_samples // 2)
-                    requested_batch = max(TOTO_MIN_SAMPLES_PER_BATCH, requested_batch // 2)
+                    requested_num_samples = max(TOTO_SAMPLING_BOUNDS.min_num, requested_num_samples // 2)
+                    requested_batch = max(TOTO_SAMPLING_BOUNDS.min_batch, requested_batch // 2)
                     continue
                 attempts += 1
                 requested_num_samples = max(
-                    TOTO_MIN_NUM_SAMPLES,
+                    TOTO_SAMPLING_BOUNDS.min_num,
                     requested_num_samples // 2,
                 )
                 requested_batch = max(
-                    TOTO_MIN_SAMPLES_PER_BATCH,
+                    TOTO_SAMPLING_BOUNDS.min_batch,
                     min(requested_batch // 2, requested_num_samples),
                 )
                 logger.warning(
@@ -733,6 +798,15 @@ def _compute_toto_forecast(
                     TOTO_BACKTEST_MAX_RETRIES,
                 )
                 continue
+
+        if cpu_fallback_used and torch.cuda.is_available():
+            TOTO_DEVICE_OVERRIDE = None
+            _drop_toto_pipeline()
+            logger.info(
+                "Resetting Toto device override after CPU fallback for %s %s; next run will retry on GPU.",
+                symbol,
+                target_key,
+            )
 
         updated_params = _apply_toto_runtime_feedback(symbol, toto_params, requested_num_samples, requested_batch)
         if updated_params is not None:
@@ -859,6 +933,15 @@ TOTO_BACKTEST_MAX_RETRIES = _read_int_env("MARKETSIM_TOTO_BACKTEST_MAX_RETRIES",
 
 _toto_runtime_adjust_log_state: Dict[str, Tuple[int, int]] = {}
 
+_TOTO_MIN_BATCH_FLOOR = max(4, (TOTO_MIN_SAMPLES_PER_BATCH // 8) or 1)
+_TOTO_MIN_NUM_FLOOR = max(8, _TOTO_MIN_BATCH_FLOOR)
+TOTO_SAMPLING_BOUNDS = AdaptiveSamplerBounds(
+    base_min_num=TOTO_MIN_NUM_SAMPLES,
+    base_min_batch=TOTO_MIN_SAMPLES_PER_BATCH,
+    num_floor=_TOTO_MIN_NUM_FLOOR,
+    batch_floor=_TOTO_MIN_BATCH_FLOOR,
+)
+
 
 def _clamp_toto_params(symbol: str, params: dict) -> dict:
     """Clamp Toto runtime parameters to safe bounds and log adjustments."""
@@ -866,10 +949,11 @@ def _clamp_toto_params(symbol: str, params: dict) -> dict:
     num_samples = int(params.get("num_samples", DEFAULT_TOTO_NUM_SAMPLES))
     samples_per_batch = int(params.get("samples_per_batch", DEFAULT_TOTO_SAMPLES_PER_BATCH))
 
-    num_samples = max(TOTO_MIN_NUM_SAMPLES, min(TOTO_MAX_NUM_SAMPLES, num_samples))
-    samples_per_batch = max(
-        TOTO_MIN_SAMPLES_PER_BATCH,
-        min(TOTO_MAX_SAMPLES_PER_BATCH, samples_per_batch, num_samples),
+    num_samples, samples_per_batch = TOTO_SAMPLING_BOUNDS.clamp(
+        num_samples,
+        samples_per_batch,
+        max_num=TOTO_MAX_NUM_SAMPLES,
+        max_batch=TOTO_MAX_SAMPLES_PER_BATCH,
     )
 
     params["num_samples"] = num_samples
@@ -915,19 +999,27 @@ def _apply_toto_runtime_feedback(
         return None
 
     updated = params.copy()
-    updated["num_samples"] = used_samples
-    updated["samples_per_batch"] = used_batch
+    clamped_num, clamped_batch = TOTO_SAMPLING_BOUNDS.clamp(
+        used_samples,
+        used_batch,
+        max_num=TOTO_MAX_NUM_SAMPLES,
+        max_batch=TOTO_MAX_SAMPLES_PER_BATCH,
+    )
+    updated["num_samples"] = clamped_num
+    updated["samples_per_batch"] = clamped_batch
     updated = _clamp_toto_params(symbol, updated)
     params.update(updated)
     _toto_params_cache[symbol] = updated.copy()
     _toto_params_log_state[symbol] = ("runtime_adjusted", repr((used_samples, used_batch)))
     logger.info(
-        "Cached Toto params adjusted after runtime fallback for %s: requested %d/%d, using %d/%d.",
+        "Cached Toto params adjusted after runtime fallback for %s: requested %d/%d, using %d/%d (clamped to %d/%d).",
         symbol,
         requested_num_samples,
         requested_batch,
         used_samples,
         used_batch,
+        updated["num_samples"],
+        updated["samples_per_batch"],
     )
     return updated
 
@@ -945,18 +1037,12 @@ def _is_cuda_oom_error(exc: BaseException) -> bool:
 
 def _normalise_sampling_params(num_samples: int, samples_per_batch: int) -> Tuple[int, int]:
     """Ensure Toto sampling params satisfy divisibility and configured bounds."""
-    num_samples = max(TOTO_MIN_NUM_SAMPLES, min(TOTO_MAX_NUM_SAMPLES, num_samples))
-    samples_per_batch = max(TOTO_MIN_SAMPLES_PER_BATCH, min(samples_per_batch, num_samples))
-    if samples_per_batch <= 0:
-        samples_per_batch = TOTO_MIN_SAMPLES_PER_BATCH
-    if num_samples < samples_per_batch:
-        num_samples = samples_per_batch
-    remainder = num_samples % samples_per_batch
-    if remainder != 0:
-        num_samples -= remainder
-        if num_samples < samples_per_batch:
-            num_samples = samples_per_batch
-    return num_samples, samples_per_batch
+    return TOTO_SAMPLING_BOUNDS.clamp(
+        num_samples,
+        samples_per_batch,
+        max_num=TOTO_MAX_NUM_SAMPLES,
+        max_batch=TOTO_MAX_SAMPLES_PER_BATCH,
+    )
 
 
 DEFAULT_KRONOS_PARAMS = {
@@ -1142,9 +1228,19 @@ def load_toto_pipeline() -> TotoPipeline:
         if not compile_backend:
             compile_backend = None
 
-        torch_dtype: Optional[torch.dtype] = torch.float32 if device == "cpu" else None
-        if FAST_TESTING:
+        mixed_precision_requested = bool(TOTO_MIXED_PRECISION_ENABLED)
+        torch_dtype: Optional[torch.dtype]
+        amp_dtype: Optional[torch.dtype] = None
+        if device == "cpu":
             torch_dtype = torch.float32
+        else:
+            if FAST_TESTING:
+                torch_dtype = torch.float32
+            elif mixed_precision_requested:
+                torch_dtype = getattr(torch, "float16", None)
+                amp_dtype = torch_dtype
+            else:
+                torch_dtype = None
 
         disable_compile_flag = _read_env_flag(("TOTO_DISABLE_COMPILE", "MARKETSIM_TOTO_DISABLE_COMPILE"))
         enable_compile_flag = _read_env_flag(("TOTO_COMPILE", "MARKETSIM_TOTO_COMPILE"))
@@ -1153,6 +1249,10 @@ def load_toto_pipeline() -> TotoPipeline:
             torch_compile_enabled = False
         elif enable_compile_flag is not None:
             torch_compile_enabled = bool(enable_compile_flag and hasattr(torch, "compile"))
+        if TOTO_DISABLE_COMPILE:
+            torch_compile_enabled = False
+            compile_mode = None
+            compile_backend = None
 
         if torch_compile_enabled:
             _ensure_compilation_artifacts()
@@ -1169,19 +1269,28 @@ def load_toto_pipeline() -> TotoPipeline:
                     hasattr(torch, "compile"),
                     disable_compile_flag,
                 )
-        if REAL_TESTING and device.startswith("cuda"):
-            logger.info("REAL_TESTING active — defaulting to float32 inference (bf16 disabled due to accuracy guard).")
+        if REAL_TESTING and device.startswith("cuda") and torch_dtype in {None, torch.float32}:
+            logger.info(
+                "REAL_TESTING active — keeping Toto inference in float32 (mixed precision disabled)."
+            )
+        if mixed_precision_requested and device.startswith("cuda") and torch_dtype is not None:
+            logger.warning(
+                "Toto mixed precision enabled (torch_dtype=%s) to mitigate GPU memory pressure.",
+                torch_dtype,
+            )
 
         pipeline = TotoPipeline.from_pretrained(
             model_id=TOTO_MODEL_ID,
             device_map=device,
             torch_dtype=torch_dtype,
+            compile_model=not TOTO_DISABLE_COMPILE,
+            amp_dtype=amp_dtype,
             torch_compile=torch_compile_enabled,
             compile_mode=compile_mode,
             compile_backend=compile_backend,
             max_oom_retries=TOTO_MAX_OOM_RETRIES,
-            min_samples_per_batch=TOTO_MIN_SAMPLES_PER_BATCH,
-            min_num_samples=TOTO_MIN_NUM_SAMPLES,
+            min_samples_per_batch=TOTO_SAMPLING_BOUNDS.min_batch,
+            min_num_samples=TOTO_SAMPLING_BOUNDS.min_num,
         )
     return pipeline
 
@@ -1321,8 +1430,7 @@ def evaluate_strategy(
 ) -> StrategyEvaluation:
     global SPREAD
     """Evaluate the performance of a strategy, factoring in trading fees."""
-    strategy_signals = strategy_signals.numpy()  # Convert to numpy array
-
+    strategy_signals = torch.as_tensor(strategy_signals, dtype=torch.float32)
     actual_returns = actual_returns.copy()
     sig_len = strategy_signals.shape[0]
     ret_len = len(actual_returns)
@@ -1344,6 +1452,9 @@ def evaluate_strategy(
         )
         strategy_signals = strategy_signals[-min_len:]
         actual_returns = actual_returns.iloc[-min_len:]
+
+    guarded_signals = _guard_signals_by_recent_pnl(strategy_signals, actual_returns)
+    strategy_signals = guarded_signals.numpy()
 
     # Calculate fees: apply fee for each trade (both buy and sell)
     # Adjust fees: only apply when position changes
