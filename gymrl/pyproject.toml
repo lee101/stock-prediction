@@ -7,7 +7,7 @@ name = "gymrl"
 version = "0.1.0"
 description = "Reinforcement learning environments and allocators used across the trading workspace."
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     "stock-trading-suite",
     "numpy>=1.26",

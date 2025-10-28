@@ -42,6 +42,12 @@ from traininglib.prof import maybe_profile  # noqa: E402
 from traininglib.prefetch import CudaPrefetcher  # noqa: E402
 from traininglib.ema import EMA  # noqa: E402
 from traininglib.losses import huber_loss, heteroscedastic_gaussian_nll, pinball_loss  # noqa: E402
+from src.parameter_efficient import (  # noqa: E402
+    LoraMetadata,
+    freeze_module_parameters,
+    inject_lora_adapters,
+    save_lora_adapter,
+)
 
 
 def _bool_flag(value: str) -> bool:
@@ -93,7 +99,47 @@ def create_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--cuda-graphs", action="store_true")
     parser.add_argument("--cuda-graph-warmup", type=int, default=3)
     parser.add_argument("--global-batch", type=int, default=None)
+    parser.add_argument("--adapter", choices=["none", "lora"], default="none", help="Adapter type (LoRA for PEFT).")
+    parser.add_argument("--adapter-r", type=int, default=8, help="LoRA adapter rank.")
+    parser.add_argument("--adapter-alpha", type=float, default=16.0, help="LoRA scaling factor.")
+    parser.add_argument("--adapter-dropout", type=float, default=0.05, help="LoRA dropout probability.")
+    parser.add_argument(
+        "--adapter-targets",
+        type=str,
+        default="model.patch_embed.projection,attention.wQKV,attention.wO,mlp.0,model.unembed,output_distribution",
+        help="Comma separated substrings of module names to LoRA wrap.",
+    )
+    parser.add_argument(
+        "--adapter-dir",
+        type=Path,
+        default=None,
+        help="Directory root for saving adapter weights (defaults to output_dir/adapters).",
+    )
+    parser.add_argument("--adapter-name", type=str, default=None, help="Adapter identifier (e.g., ticker).")
+    parser.add_argument(
+        "--freeze-backbone",
+        dest="freeze_backbone",
+        action="store_true",
+        default=True,
+        help="Freeze Toto base parameters when adapters are enabled.",
+    )
+    parser.add_argument(
+        "--no-freeze-backbone",
+        dest="freeze_backbone",
+        action="store_false",
+        help="Allow Toto base weights to train alongside adapters.",
+    )
+    parser.add_argument(
+        "--train-head",
+        action="store_true",
+        help="Keep unembed/output distribution parameters trainable in addition to adapters.",
+    )
     return parser
+
+
+def _parse_targets(raw: str) -> tuple[str, ...]:
+    items = [item.strip() for item in (raw or "").split(",")]
+    return tuple(sorted({item for item in items if item}))
 
 
 def _prepare_forecast_tensors(distr, context, target, prediction_length):
@@ -336,13 +382,65 @@ def run_with_namespace(args: argparse.Namespace) -> None:
         prefetch_factor=args.prefetch_factor,
     )
 
-    model = Toto.from_pretrained("Datadog/Toto-Open-Base-1.0").to(device)
+    base_model_id = "Datadog/Toto-Open-Base-1.0"
+    model = Toto.from_pretrained(base_model_id).to(device)
 
     if args.compile and not args.cuda_graphs and hasattr(model, "compile"):
         model.compile(mode=args.compile_mode)
 
+    adapter_targets = _parse_targets(args.adapter_targets)
+    adapter_metadata: LoraMetadata | None = None
+    adapter_save_path: Path | None = None
+
+    if args.adapter == "lora":
+        if args.freeze_backbone:
+            freeze_module_parameters(model)
+
+        def _model_filter(name: str, child: torch.nn.Module) -> bool:
+            return name.startswith("model.")
+
+        replacements = inject_lora_adapters(
+            model,
+            target_patterns=adapter_targets,
+            rank=args.adapter_r,
+            alpha=args.adapter_alpha,
+            dropout=args.adapter_dropout,
+            module_filter=_model_filter,
+        )
+        if args.train_head:
+            for name, param in model.named_parameters():
+                if not name.startswith("model."):
+                    continue
+                if any(
+                    name.startswith(prefix)
+                    for prefix in (
+                        "model.unembed",
+                        "model.output_distribution",
+                    )
+                ):
+                    param.requires_grad_(True)
+
+        trainable = [p for p in model.parameters() if p.requires_grad]
+        if not trainable:
+            raise RuntimeError("LoRA enabled but no parameters marked trainable.")
+        adapter_root = args.adapter_dir or (args.output_dir / "adapters")
+        adapter_name = args.adapter_name or args.checkpoint_name
+        adapter_save_path = Path(adapter_root) / adapter_name / "adapter.pt"
+        adapter_metadata = LoraMetadata(
+            adapter_type="lora",
+            rank=args.adapter_r,
+            alpha=args.adapter_alpha,
+            dropout=args.adapter_dropout,
+            targets=replacements,
+            base_model=base_model_id,
+        )
+        print(f"[toto] Injected LoRA adapters on {len(replacements)} modules.")
+
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if not trainable_params:
+        trainable_params = list(model.parameters())
     optimizer = AdamW(
-        model.parameters(),
+        trainable_params,
         lr=args.learning_rate,
         betas=(0.9, 0.95),
         weight_decay=args.weight_decay,
@@ -408,11 +506,22 @@ def run_with_namespace(args: argparse.Namespace) -> None:
                 best_val_loss = val_loss
                 best_epoch = epoch
                 _save_model(model, args.output_dir, args.checkpoint_name)
+                if adapter_metadata and adapter_save_path is not None:
+                    try:
+                        save_lora_adapter(model, adapter_save_path, metadata=adapter_metadata)
+                        print(f"[toto] Saved LoRA adapter to {adapter_save_path}")
+                    except Exception as exc:  # pragma: no cover - defensive
+                        print(f"[toto] Failed to save LoRA adapter: {exc}")
 
     if best_epoch > 0:
         print(f"Best validation loss {best_val_loss:.6f} achieved at epoch {best_epoch}.")
     else:
         _save_model(model, args.output_dir, args.checkpoint_name)
+        if adapter_metadata and adapter_save_path is not None:
+            try:
+                save_lora_adapter(model, adapter_save_path, metadata=adapter_metadata)
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"[toto] Failed to save LoRA adapter: {exc}")
 
 
 def train() -> None:
