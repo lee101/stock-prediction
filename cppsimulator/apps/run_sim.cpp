@@ -7,9 +7,25 @@ namespace idx = torch::indexing;
 
 using namespace msim;
 
+torch::Device pick_device() {
+  if (!torch::cuda::is_available()) {
+    return torch::kCPU;
+  }
+  try {
+    auto probe = torch::rand({1}, torch::dtype(torch::kFloat32).device(torch::kCUDA));
+    (void)probe;
+    return torch::kCUDA;
+  } catch (const c10::Error& err) {
+    std::cerr << "[warn] CUDA reported available but probe tensor failed; "
+                 "falling back to CPU. "
+              << err.what_without_backtrace() << std::endl;
+    return torch::kCPU;
+  }
+}
+
 int main() {
   torch::manual_seed(123);
-  auto device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
+  auto device = pick_device();
 
   const int64_t B = 1024;
   const int64_t T = 2048;

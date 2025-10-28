@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -110,9 +111,32 @@ _cpu_fallback_log_state: Set[Tuple[str, Optional[str]]] = set()
 # GPU memory observation cache keyed by (num_samples, samples_per_batch)
 _toto_memory_observations: Dict[Tuple[int, int], Dict[str, object]] = {}
 
+_FORCE_RELEASE_ENV = "MARKETSIM_FORCE_RELEASE_MODELS"
+
+
+def _coerce_keepalive_seconds(env_name: str, *, default: float) -> float:
+    value = os.getenv(env_name)
+    if value is None or not value.strip():
+        return float(default)
+    try:
+        seconds = float(value)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; expected number of seconds.", env_name, value)
+        return float(default)
+    if seconds < 0.0:
+        logger.warning("Ignoring negative %s=%r; defaulting to %.1f.", env_name, value, default)
+        return float(default)
+    return seconds
+
+
+TOTO_KEEPALIVE_SECONDS = _coerce_keepalive_seconds("MARKETSIM_TOTO_KEEPALIVE_SECONDS", default=900.0)
+KRONOS_KEEPALIVE_SECONDS = _coerce_keepalive_seconds("MARKETSIM_KRONOS_KEEPALIVE_SECONDS", default=900.0)
+
 pipeline: Optional[TotoPipeline] = None
+_pipeline_last_used_at: Optional[float] = None
 TOTO_DEVICE_OVERRIDE: Optional[str] = None
 kronos_wrapper_cache: Dict[tuple, KronosForecastingWrapper] = {}
+_kronos_last_used_at: Dict[tuple, float] = {}
 
 ReturnSeries = Union[np.ndarray, pd.Series]
 
@@ -739,8 +763,30 @@ def profile_toto_memory(
     return summary
 
 
+def _touch_toto_pipeline() -> None:
+    global _pipeline_last_used_at
+    _pipeline_last_used_at = time.monotonic()
+
+
+def _touch_kronos_wrapper(key: tuple) -> None:
+    _kronos_last_used_at[key] = time.monotonic()
+
+
+def _drop_single_kronos_wrapper(key: tuple) -> None:
+    wrapper = kronos_wrapper_cache.pop(key, None)
+    _kronos_last_used_at.pop(key, None)
+    if wrapper is None:
+        return
+    unload = getattr(wrapper, "unload", None)
+    if callable(unload):
+        try:
+            unload()
+        except Exception as exc:  # pragma: no cover - cleanup best effort
+            logger.debug("Kronos wrapper unload raised error: %s", exc)
+
+
 def _drop_toto_pipeline() -> None:
-    global pipeline
+    global pipeline, _pipeline_last_used_at
     if pipeline is None:
         return
     unload = getattr(pipeline, "unload", None)
@@ -758,27 +804,39 @@ def _drop_toto_pipeline() -> None:
             except Exception as exc:
                 logger.debug("Failed to move Toto model to CPU: %s", exc)
     pipeline = None
+    _pipeline_last_used_at = None
     _maybe_empty_cuda_cache()
 
 
 def _drop_kronos_wrappers() -> None:
     if not kronos_wrapper_cache:
         return
-    for wrapper in list(kronos_wrapper_cache.values()):
-        unload = getattr(wrapper, "unload", None)
-        if callable(unload):
-            try:
-                unload()
-            except Exception as exc:  # pragma: no cover - cleanup best effort
-                logger.debug("Kronos wrapper unload raised error: %s", exc)
-    kronos_wrapper_cache.clear()
+    for key in list(kronos_wrapper_cache.keys()):
+        _drop_single_kronos_wrapper(key)
     _maybe_empty_cuda_cache()
+
+
+def _release_stale_kronos_wrappers(current_time: float) -> None:
+    if not kronos_wrapper_cache:
+        return
+    keepalive = KRONOS_KEEPALIVE_SECONDS
+    if keepalive <= 0.0:
+        _drop_kronos_wrappers()
+        return
+    released = False
+    for key, last_used in list(_kronos_last_used_at.items()):
+        if current_time - last_used >= keepalive:
+            _drop_single_kronos_wrapper(key)
+            released = True
+    if released:
+        _maybe_empty_cuda_cache()
 
 
 def _reset_model_caches() -> None:
     """Accessible from tests to clear any in-process caches."""
     _drop_toto_pipeline()
     _drop_kronos_wrappers()
+    _kronos_last_used_at.clear()
     _model_selection_cache.clear()
     _toto_params_cache.clear()
     _kronos_params_cache.clear()
@@ -788,10 +846,52 @@ def _reset_model_caches() -> None:
     _cpu_fallback_log_state.clear()
 
 
-def release_model_resources() -> None:
-    """Public helper to free GPU-resident inference models between runs."""
-    _drop_toto_pipeline()
-    _drop_kronos_wrappers()
+def release_model_resources(*, force: bool = False) -> None:
+    """Free GPU-resident inference models when idle.
+
+    By default the Toto pipeline and Kronos wrappers are retained for a short keepalive window to
+    avoid repeated model compilation. Set MARKETSIM_FORCE_RELEASE_MODELS=1 or pass force=True to
+    drop everything immediately.
+    """
+    force_env = _read_env_flag((_FORCE_RELEASE_ENV,))
+    if force_env is True:
+        force = True
+    if force:
+        _drop_toto_pipeline()
+        _drop_kronos_wrappers()
+        _kronos_last_used_at.clear()
+        return
+
+    global _pipeline_last_used_at
+    now = time.monotonic()
+    keepalive = TOTO_KEEPALIVE_SECONDS
+    if pipeline is None:
+        _pipeline_last_used_at = None
+    else:
+        drop_pipeline = False
+        last_used = _pipeline_last_used_at
+        if keepalive <= 0.0:
+            drop_pipeline = True
+        elif last_used is None:
+            drop_pipeline = True
+        else:
+            idle = now - last_used
+            if idle >= keepalive:
+                drop_pipeline = True
+            else:
+                logger.debug(
+                    "Keeping Toto pipeline resident (idle %.1fs < keepalive %.1fs).",
+                    idle,
+                    keepalive,
+                )
+        if drop_pipeline:
+            _drop_toto_pipeline()
+
+    if kronos_wrapper_cache and not _kronos_last_used_at:
+        _drop_kronos_wrappers()
+        return
+
+    _release_stale_kronos_wrappers(now)
 
 
 @disk_cache
@@ -1286,100 +1386,104 @@ tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 def load_toto_pipeline() -> TotoPipeline:
     """Lazily load the Toto forecasting pipeline."""
     global pipeline, TOTO_DEVICE_OVERRIDE
+    if pipeline is not None:
+        _touch_toto_pipeline()
+        return pipeline
+
     _drop_kronos_wrappers()
-    if pipeline is None:
-        _maybe_enable_fast_torch_settings()
-        preferred_device = "cuda" if torch.cuda.is_available() else "cpu"
-        override_env = os.getenv("MARKETSIM_TOTO_DEVICE")
-        override = TOTO_DEVICE_OVERRIDE
-        if override_env:
-            env_value = override_env.strip().lower()
-            if env_value in {"cuda", "cpu"}:
-                override = env_value
-        device = override or preferred_device
-        if device == "cuda":
-            _require_cuda("Toto forecasting pipeline")
-        else:
-            logger.warning(
-                "Toto forecasting pipeline running on CPU (override=%s); inference will be slower.",
-                override or "auto",
-            )
-        logger.info(f"Loading Toto pipeline '{TOTO_MODEL_ID}' on {device}")
-
-        compile_mode_env = (
-            os.getenv("REAL_TOTO_COMPILE_MODE")
-            or os.getenv("TOTO_COMPILE_MODE")
-            or "max-autotune"
+    _maybe_enable_fast_torch_settings()
+    preferred_device = "cuda" if torch.cuda.is_available() else "cpu"
+    override_env = os.getenv("MARKETSIM_TOTO_DEVICE")
+    override = TOTO_DEVICE_OVERRIDE
+    if override_env:
+        env_value = override_env.strip().lower()
+        if env_value in {"cuda", "cpu"}:
+            override = env_value
+    device = override or preferred_device
+    if device == "cuda":
+        _require_cuda("Toto forecasting pipeline")
+    else:
+        logger.warning(
+            "Toto forecasting pipeline running on CPU (override=%s); inference will be slower.",
+            override or "auto",
         )
-        compile_mode = (compile_mode_env or "").strip() or "max-autotune"
+    logger.info(f"Loading Toto pipeline '{TOTO_MODEL_ID}' on {device}")
 
-        compile_backend_env = (
-            os.getenv("REAL_TOTO_COMPILE_BACKEND")
-            or os.getenv("TOTO_COMPILE_BACKEND")
-            or "inductor"
-        )
-        compile_backend = (compile_backend_env or "").strip()
-        if not compile_backend:
-            compile_backend = None
+    compile_mode_env = (
+        os.getenv("REAL_TOTO_COMPILE_MODE")
+        or os.getenv("TOTO_COMPILE_MODE")
+        or "max-autotune"
+    )
+    compile_mode = (compile_mode_env or "").strip() or "max-autotune"
 
-        torch_dtype: Optional[torch.dtype] = torch.float32 if device == "cpu" else None
-        if FAST_TESTING:
-            if device.startswith("cuda") and torch.cuda.is_available():
+    compile_backend_env = (
+        os.getenv("REAL_TOTO_COMPILE_BACKEND")
+        or os.getenv("TOTO_COMPILE_BACKEND")
+        or "inductor"
+    )
+    compile_backend = (compile_backend_env or "").strip()
+    if not compile_backend:
+        compile_backend = None
+
+    torch_dtype: Optional[torch.dtype] = torch.float32 if device == "cpu" else None
+    if FAST_TESTING:
+        if device.startswith("cuda") and torch.cuda.is_available():
+            bf16_supported = False
+            try:
+                checker = getattr(torch.cuda, "is_bf16_supported", None)
+                bf16_supported = bool(checker() if callable(checker) else False)
+            except Exception:
                 bf16_supported = False
-                try:
-                    checker = getattr(torch.cuda, "is_bf16_supported", None)
-                    bf16_supported = bool(checker() if callable(checker) else False)
-                except Exception:
-                    bf16_supported = False
-                if bf16_supported:
-                    torch_dtype = torch.bfloat16
-                    logger.info("FAST_TESTING active — using bfloat16 Toto weights.")
-                else:
-                    torch_dtype = torch.float32
-                    logger.info("FAST_TESTING active but bf16 unsupported; using float32 Toto weights.")
+            if bf16_supported:
+                torch_dtype = torch.bfloat16
+                logger.info("FAST_TESTING active — using bfloat16 Toto weights.")
             else:
                 torch_dtype = torch.float32
-
-        disable_compile_flag = _read_env_flag(("TOTO_DISABLE_COMPILE", "MARKETSIM_TOTO_DISABLE_COMPILE"))
-        enable_compile_flag = _read_env_flag(("TOTO_COMPILE", "MARKETSIM_TOTO_COMPILE"))
-        torch_compile_enabled = device.startswith("cuda") and hasattr(torch, "compile")
-        if disable_compile_flag is True:
-            torch_compile_enabled = False
-        elif enable_compile_flag is not None:
-            torch_compile_enabled = bool(enable_compile_flag and hasattr(torch, "compile"))
-
-        if torch_compile_enabled:
-            _ensure_compilation_artifacts()
-            logger.info(
-                "Using torch.compile for Toto (mode=%s, backend=%s, cache_dir=%s).",
-                compile_mode,
-                compile_backend or "default",
-                os.environ.get("TORCHINDUCTOR_CACHE_DIR"),
-            )
+                logger.info("FAST_TESTING active but bf16 unsupported; using float32 Toto weights.")
         else:
-            if REAL_TESTING:
-                logger.info(
-                    "REAL_TESTING active but torch.compile disabled (available=%s, disable_flag=%s).",
-                    hasattr(torch, "compile"),
-                    disable_compile_flag,
-                )
-        if REAL_TESTING and device.startswith("cuda"):
-            logger.info("REAL_TESTING active — defaulting to float32 inference (bf16 disabled due to accuracy guard).")
+            torch_dtype = torch.float32
 
-        pipeline = TotoPipeline.from_pretrained(
-            model_id=TOTO_MODEL_ID,
-            device_map=device,
-            torch_dtype=torch_dtype,
-            torch_compile=torch_compile_enabled,
-            compile_mode=compile_mode,
-            compile_backend=compile_backend,
-            max_oom_retries=TOTO_MAX_OOM_RETRIES,
-            min_samples_per_batch=TOTO_MIN_SAMPLES_PER_BATCH,
-            min_num_samples=TOTO_MIN_NUM_SAMPLES,
+    disable_compile_flag = _read_env_flag(("TOTO_DISABLE_COMPILE", "MARKETSIM_TOTO_DISABLE_COMPILE"))
+    enable_compile_flag = _read_env_flag(("TOTO_COMPILE", "MARKETSIM_TOTO_COMPILE"))
+    torch_compile_enabled = device.startswith("cuda") and hasattr(torch, "compile")
+    if disable_compile_flag is True:
+        torch_compile_enabled = False
+    elif enable_compile_flag is not None:
+        torch_compile_enabled = bool(enable_compile_flag and hasattr(torch, "compile"))
+
+    if torch_compile_enabled:
+        _ensure_compilation_artifacts()
+        logger.info(
+            "Using torch.compile for Toto (mode=%s, backend=%s, cache_dir=%s).",
+            compile_mode,
+            compile_backend or "default",
+            os.environ.get("TORCHINDUCTOR_CACHE_DIR"),
         )
-        if torch.cuda.is_available():
-            _gpu_memory_snapshot("toto_pipeline_loaded", reset_max=True)
-        pipeline.memory_observations = dict(_toto_memory_observations)
+    else:
+        if REAL_TESTING:
+            logger.info(
+                "REAL_TESTING active but torch.compile disabled (available=%s, disable_flag=%s).",
+                hasattr(torch, "compile"),
+                disable_compile_flag,
+            )
+    if REAL_TESTING and device.startswith("cuda"):
+        logger.info("REAL_TESTING active — defaulting to float32 inference (bf16 disabled due to accuracy guard).")
+
+    pipeline = TotoPipeline.from_pretrained(
+        model_id=TOTO_MODEL_ID,
+        device_map=device,
+        torch_dtype=torch_dtype,
+        torch_compile=torch_compile_enabled,
+        compile_mode=compile_mode,
+        compile_backend=compile_backend,
+        max_oom_retries=TOTO_MAX_OOM_RETRIES,
+        min_samples_per_batch=TOTO_MIN_SAMPLES_PER_BATCH,
+        min_num_samples=TOTO_MIN_NUM_SAMPLES,
+    )
+    if torch.cuda.is_available():
+        _gpu_memory_snapshot("toto_pipeline_loaded", reset_max=True)
+    pipeline.memory_observations = dict(_toto_memory_observations)
+    _touch_toto_pipeline()
     return pipeline
 
 
@@ -1409,6 +1513,7 @@ def load_kronos_wrapper(params: Dict[str, float]) -> KronosForecastingWrapper:
             sample_count=int(params["sample_count"]),
         )
         kronos_wrapper_cache[key] = wrapper
+    _touch_kronos_wrapper(key)
     return wrapper
 
 
