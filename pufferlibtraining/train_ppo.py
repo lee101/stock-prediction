@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Multi-stage RL training pipeline for stock trading using Amazon Toto forecasts.
+Multi-stage RL training pipeline for stock trading using Datadog Toto forecasts.
+
+Note: Toto forecasting requires a CUDA-capable GPU; CPU execution paths now raise errors to prevent silent regressions.
 
 The pipeline consists of three stages:
     1. Generic forecaster training on all available stocks.

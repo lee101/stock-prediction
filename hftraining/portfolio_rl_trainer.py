@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Differentiable portfolio allocation trainer that optimises allocations across
-stock pairs using Amazon Toto forecasts and real profit as the objective.
+stock pairs using Datadog Toto forecasts and real profit as the objective.
 
 The trainer consumes `PairStockDataset` examples and learns a continuous
 allocation policy that is rebalanced at market open and market close.

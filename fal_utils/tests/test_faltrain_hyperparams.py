@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import pytest
 from pathlib import Path
 from typing import Any
 
@@ -82,7 +83,7 @@ def test_resolver_remote_fallback(monkeypatch) -> None:
 
 
 def test_create_kronos_wrapper_applies_config(monkeypatch) -> None:
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
     payload = {
         "symbol": "AAPL",
@@ -112,20 +113,21 @@ def test_create_kronos_wrapper_applies_config(monkeypatch) -> None:
         "AAPL",
         resolver=_Resolver(),
         wrapper_ctor=_Ctor,
-        device="cpu",
+        device="cuda:1",
     )
 
     assert isinstance(bundle.wrapper, _Ctor)
     assert bundle.wrapper.kwargs["temperature"] == 0.31
     assert bundle.wrapper.kwargs["top_p"] == 0.87
     assert bundle.wrapper.kwargs["sample_count"] == 128
+    assert bundle.wrapper.kwargs["device"] == "cuda:1"
     assert bundle.temperature == 0.31
     assert bundle.top_k == 4
     assert bundle.max_context == 256
 
 
 def test_create_toto_pipeline_applies_config(monkeypatch) -> None:
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
     payload = {
         "symbol": "AAPL",
@@ -152,16 +154,121 @@ def test_create_toto_pipeline_applies_config(monkeypatch) -> None:
         "AAPL",
         resolver=_Resolver(),
         pipeline_factory=factory,
-        device_map="cpu",
+        device_map="cuda:0",
         cache_policy="prefer",
     )
 
     assert bundle.aggregate == "trimmed_mean_10"
     assert bundle.num_samples == 256
     assert bundle.samples_per_batch == 32
-    assert factory_calls["device_map"] == "cpu"
+    assert factory_calls["device_map"] == "cuda:0"
     assert factory_calls["torch_dtype"] == torch.float32
     assert factory_calls["amp_dtype"] is None
     assert factory_calls["torch_compile"] is True
     assert factory_calls["compile_mode"] == "max-autotune"
     assert factory_calls["cache_policy"] == "prefer"
+
+
+def test_create_kronos_wrapper_requires_cuda(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    payload = {
+        "symbol": "AAPL",
+        "model": "kronos",
+        "config": {
+            "temperature": 0.31,
+            "top_p": 0.87,
+            "top_k": 4,
+        },
+    }
+    result = HyperparamResult(payload=payload, source="file://fake", kind="kronos")
+
+    class _Resolver:
+        def load(self, *_: Any, **__: Any) -> HyperparamResult:
+            return result
+
+    with pytest.raises(RuntimeError, match="CUDA"):
+        create_kronos_wrapper(
+            "AAPL",
+            resolver=_Resolver(),
+            wrapper_ctor=lambda **_: None,
+            device="cuda:0",
+        )
+
+
+def test_create_kronos_wrapper_rejects_cpu(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    payload = {
+        "symbol": "AAPL",
+        "model": "kronos",
+        "config": {},
+    }
+    result = HyperparamResult(payload=payload, source="file://fake", kind="kronos")
+
+    class _Resolver:
+        def load(self, *_: Any, **__: Any) -> HyperparamResult:
+            return result
+
+    with pytest.raises(RuntimeError, match="CUDA"):
+        create_kronos_wrapper(
+            "AAPL",
+            resolver=_Resolver(),
+            wrapper_ctor=lambda **_: None,
+            device="cpu",
+        )
+
+
+def test_create_toto_pipeline_requires_cuda(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    payload = {
+        "symbol": "AAPL",
+        "model": "toto",
+        "config": {
+            "aggregate": "mean",
+            "num_samples": 128,
+            "samples_per_batch": 16,
+        },
+    }
+    result = HyperparamResult(payload=payload, source="file://fake", kind="toto")
+
+    class _Resolver:
+        def load(self, *_: Any, **__: Any) -> HyperparamResult:
+            return result
+
+    with pytest.raises(RuntimeError, match="CUDA"):
+        create_toto_pipeline(
+            "AAPL",
+            resolver=_Resolver(),
+            pipeline_factory=lambda **_: None,
+            cache_policy="prefer",
+        )
+
+
+def test_create_toto_pipeline_rejects_cpu_device(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    payload = {
+        "symbol": "AAPL",
+        "model": "toto",
+        "config": {},
+    }
+    result = HyperparamResult(payload=payload, source="file://fake", kind="toto")
+
+    class _Resolver:
+        def load(self, *_: Any, **__: Any) -> HyperparamResult:
+            return result
+
+    def _factory(**kwargs: Any) -> None:
+        raise AssertionError("Pipeline factory should not be invoked when device is invalid.")
+
+    with pytest.raises(RuntimeError, match="CUDA"):
+        create_toto_pipeline(
+            "AAPL",
+            resolver=_Resolver(),
+            pipeline_factory=_factory,
+            device_map="cpu",
+            cache_policy="prefer",
+        )
+

@@ -16,7 +16,7 @@ class StockTradingEnv(gym.Env):
     Multi-asset trading environment with differentiable Torch PnL.
 
     The environment expects a dictionary mapping asset symbols to dataframes that
-    already contain price history and (optionally) Amazon Toto forecast features.
+    already contain price history and (optionally) Datadog Toto forecast features.
     Each episode simulates portfolio rebalancing at market open and closes at the
     same day's close. Actions control target portfolio weights; the environment
     enforces a configurable leverage ceiling and applies financing charges for
