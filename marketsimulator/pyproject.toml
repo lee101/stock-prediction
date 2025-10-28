@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "marketsimulator"
 version = "0.1.0"
 description = "Backtesting and live-trading simulators used for strategy evaluation."
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     "stock-trading-suite",
     "numpy>=1.26",

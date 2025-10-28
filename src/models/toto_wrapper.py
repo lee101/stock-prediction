@@ -303,6 +303,19 @@ class TotoPipeline:
                 "Torch and NumPy must be configured via setup_toto_wrapper_imports before instantiating TotoPipeline."
             )
 
+        normalised = device.lower()
+        is_cuda_request = normalised.startswith("cuda")
+        is_cpu_request = normalised == "cpu" or normalised.startswith("cpu:")
+        if not (is_cuda_request or is_cpu_request):
+            raise RuntimeError(
+                f"TotoPipeline requires a CUDA or CPU device; received {device!r}."
+            )
+        if is_cuda_request:
+            cuda_mod = getattr(torch, "cuda", None)
+            is_available = bool(getattr(cuda_mod, "is_available", lambda: False)()) if cuda_mod is not None else False
+            if not is_available:
+                raise RuntimeError("CUDA is unavailable. TotoPipeline requires a CUDA-capable PyTorch installation.")
+
         if not amp_autocast:
             amp_dtype = None
         elif amp_dtype is None:
@@ -501,7 +514,22 @@ class TotoPipeline:
         manager = cache_manager or ModelCacheManager("toto")
         dtype_token = dtype_to_token(torch_dtype)
         amp_token = dtype_to_token(effective_amp_dtype)
-        device = device_map if device_map != "mps" else "cpu"
+        device_str = str(device_map) if not isinstance(device_map, str) else device_map
+        device = device_str if device_str != "mps" else "cpu"
+        normalised = device.lower()
+        is_cuda_request = normalised.startswith("cuda")
+        is_cpu_request = normalised == "cpu" or normalised.startswith("cpu:")
+        if not (is_cuda_request or is_cpu_request):
+            raise RuntimeError(
+                "TotoPipeline requires a device_map of 'cuda' or 'cpu'; received "
+                f"{device_map!r}."
+            )
+
+        if is_cuda_request:
+            cuda_mod = getattr(torch_module, "cuda", None)
+            is_available = bool(getattr(cuda_mod, "is_available", lambda: False)()) if cuda_mod is not None else False
+            if not is_available:
+                raise RuntimeError("CUDA is unavailable. TotoPipeline requires a CUDA-capable PyTorch installation.")
 
         extra_kwargs: Dict[str, Any] = dict(kwargs)
         pipeline_kwargs: Dict[str, Any] = {}

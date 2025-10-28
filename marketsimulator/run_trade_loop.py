@@ -6,11 +6,14 @@ import importlib
 import json
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
-from datetime import datetime
+from subprocess import CalledProcessError, check_output
+from typing import Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 if __package__ in (None, ""):
     repo_root = Path(__file__).resolve().parent.parent
@@ -18,8 +21,32 @@ if __package__ in (None, ""):
     if repo_str not in sys.path:
         sys.path.insert(0, repo_str)
     from marketsimulator.logging_utils import logger
+    from marketsimulator.telemetry import (
+        build_symbol_performance_table,
+        build_portfolio_stack_series,
+        build_price_history_table,
+        build_trade_events_table,
+        compute_breakdowns,
+        compute_equity_timeseries,
+        compute_fee_breakdown,
+        compute_risk_timeseries,
+        summarize_daily_analysis,
+    )
+    from wandboard import WandBoardLogger
 else:  # pragma: no cover
     from .logging_utils import logger
+    from .telemetry import (
+        build_symbol_performance_table,
+        build_portfolio_stack_series,
+        build_price_history_table,
+        build_trade_events_table,
+        compute_breakdowns,
+        compute_equity_timeseries,
+        compute_fee_breakdown,
+        compute_risk_timeseries,
+        summarize_daily_analysis,
+    )
+    from wandboard import WandBoardLogger
 
 
 ENV_MOCK_ANALYTICS = "MARKETSIM_USE_MOCK_ANALYTICS"
@@ -442,6 +469,357 @@ def _export_trade_summary(summary: Dict[str, Dict[str, float]], json_path: Optio
     json_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _collect_run_metadata() -> Dict[str, object]:
+    metadata: Dict[str, object] = {}
+    try:
+        metadata["git_sha"] = check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()
+    except (CalledProcessError, FileNotFoundError):
+        metadata["git_sha"] = "unknown"
+    else:
+        try:
+            status = check_output(["git", "status", "--porcelain"], cwd=REPO_ROOT, text=True)
+            metadata["git_dirty"] = bool(status.strip())
+        except (CalledProcessError, FileNotFoundError):
+            metadata["git_dirty"] = None
+    metadata["python_version"] = sys.version.split()[0]
+    metadata["data_root"] = os.getenv("MARKETSIM_DATA_ROOT", "")
+    metadata["wandb_project"] = os.getenv("WANDB_PROJECT", "")
+    metadata["wandb_entity"] = os.getenv("WANDB_ENTITY", "")
+    return metadata
+
+
+def _make_portfolio_stack_figure(report) -> Optional["plt.Figure"]:
+    try:
+        import matplotlib.pyplot as plt  # type: ignore
+    except Exception:
+        return None
+
+    closes = [snap for snap in report.daily_snapshots if snap.phase == "close"]
+    if not closes:
+        closes = list(report.daily_snapshots)
+    closes = sorted(closes, key=lambda snap: snap.timestamp)
+    if not closes:
+        return None
+    value_map: Dict[str, List[float]] = {}
+    for snap in closes:
+        for symbol, details in (snap.positions_detail or {}).items():
+            value_map.setdefault(symbol, []).append(abs(float(details.get("market_value", 0.0))))
+        missing_symbols = set(value_map.keys()) - set((snap.positions_detail or {}).keys())
+        for symbol in missing_symbols:
+            value_map[symbol].append(0.0)
+        for symbol in set((snap.positions_detail or {}).keys()) - set(value_map.keys()):
+            prior_len = len(next(iter(value_map.values()))) if value_map else 0
+            value_map[symbol] = [0.0] * prior_len + [abs(float(snap.positions_detail[symbol].get("market_value", 0.0)))]
+    if not value_map:
+        return None
+
+    lengths = {len(series) for series in value_map.values()}
+    max_len = max(lengths)
+    for series in value_map.values():
+        if len(series) < max_len:
+            series.extend([0.0] * (max_len - len(series)))
+
+    symbol_order = sorted(value_map.keys(), key=lambda sym: value_map[sym][-1], reverse=True)
+    top_symbols = symbol_order[:8]
+    other_symbols = symbol_order[8:]
+
+    times = [snap.timestamp for snap in closes]
+    stack_series: List[List[float]] = [value_map[sym] for sym in top_symbols]
+    labels = list(top_symbols)
+    if other_symbols:
+        aggregated = [0.0] * max_len
+        for idx in range(max_len):
+            aggregated[idx] = sum(value_map[sym][idx] for sym in other_symbols)
+        stack_series.append(aggregated)
+        labels.append("OTHER")
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.stackplot(times, stack_series, labels=labels)
+    ax.set_title("Portfolio Allocation (Abs Market Value)")
+    ax.set_xlabel("Timestamp")
+    ax.set_ylabel("Absolute Market Value ($)")
+    ax.legend(loc="upper left", fontsize="small", ncol=2)
+    ax.grid(alpha=0.3)
+    fig.autofmt_xdate()
+    return fig
+
+
+def _parse_timestamp(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _make_trade_price_figure(report, symbol: str) -> Optional["plt.Figure"]:
+    try:
+        import matplotlib.pyplot as plt  # type: ignore
+    except Exception:
+        return None
+
+    history = report.price_history.get(symbol)
+    if not history:
+        return None
+    times: List[datetime] = []
+    closes: List[float] = []
+    for entry in history:
+        ts = _parse_timestamp(entry.get("timestamp"))
+        close = entry.get("close")
+        if ts is None or close is None:
+            continue
+        try:
+            close_val = float(close)
+        except (TypeError, ValueError):
+            continue
+        times.append(ts)
+        closes.append(close_val)
+    if not times or not closes:
+        return None
+
+    trades = [trade for trade in report.trade_executions if trade.symbol == symbol]
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.plot(times, closes, label="Close", color="tab:blue")
+
+    if trades:
+        buy_times = [trade.timestamp for trade in trades if trade.side.lower() == "buy"]
+        buy_prices = [float(trade.price) for trade in trades if trade.side.lower() == "buy"]
+        sell_times = [trade.timestamp for trade in trades if trade.side.lower() == "sell"]
+        sell_prices = [float(trade.price) for trade in trades if trade.side.lower() == "sell"]
+        if buy_times:
+            ax.scatter(buy_times, buy_prices, marker="^", color="tab:green", label="Buy", zorder=3)
+        if sell_times:
+            ax.scatter(sell_times, sell_prices, marker="v", color="tab:red", label="Sell", zorder=3)
+
+    meta = report.symbol_metadata.get(symbol, {})
+    strategy = meta.get("strategy", "unknown")
+    trade_mode = meta.get("trade_mode", "unknown")
+    ax.set_title(f"{symbol} Close Price with Trades (strategy={strategy}, mode={trade_mode})")
+    ax.set_xlabel("Timestamp")
+    ax.set_ylabel("Price ($)")
+    ax.legend(loc="best", fontsize="small")
+    ax.grid(alpha=0.3)
+    fig.autofmt_xdate()
+    return fig
+
+
+def _log_to_wandboard(
+    args: argparse.Namespace,
+    report,
+    metrics_payload: Dict[str, object],
+    trade_summary: Dict[str, Dict[str, float]],
+    *,
+    risk_series: Optional[List[Dict[str, Any]]] = None,
+    analysis_summary: Optional[Dict[str, Any]] = None,
+) -> None:
+    tags = ["marketsimulator", "simulation"]
+    tags.append("real-analytics" if args.real_analytics else "mock-analytics")
+    if args.kronos_only:
+        tags.append("kronos-only")
+
+    config = {
+        "symbols": list(args.symbols),
+        "steps": int(args.steps),
+        "step_size": int(args.step_size),
+        "top_k": int(args.top_k),
+        "initial_cash": float(args.initial_cash),
+        "flatten_end": bool(args.flatten_end),
+        "real_analytics": bool(args.real_analytics),
+        "kronos_only": bool(args.kronos_only),
+        "sharpe_cutoff": args.sharpe_cutoff,
+        "kronos_sharpe_cutoff": args.kronos_sharpe_cutoff,
+    }
+    config.update({key: value for key, value in _collect_run_metadata().items() if value not in ("", None)})
+
+    try:
+        wand_logger = WandBoardLogger(
+            run_name=f"marketsim_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
+            tags=tags,
+            config=config,
+            notes="Automated market simulator run.",
+            log_metrics=True,
+        )
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.warning(f"[sim] Unable to initialise WandBoardLogger: {exc}")
+        return
+
+    with wand_logger as metrics_logger:
+        metrics_logger.log(metrics_payload, step=0)
+
+        equity_curve = compute_equity_timeseries(report)
+        for entry in equity_curve:
+            step = int(entry["day_index"]) + 1
+            metrics_logger.log(
+                {
+                    "equity/close": float(entry["equity"]),
+                    "cash/close": float(entry["cash"]),
+                    "returns/daily": float(entry["daily_return"]),
+                    "returns/cumulative": float(entry["cumulative_return"]),
+                    "positions/open_count": float(entry["open_positions"]),
+                    "positions/gross_qty": float(entry["gross_position_qty"]),
+                },
+                step=step,
+            )
+
+        final_step = int(equity_curve[-1]["day_index"]) + 1 if equity_curve else 0
+
+        risk_series = risk_series or compute_risk_timeseries(report)
+        risk_columns = [
+            "timestamp",
+            "day_index",
+            "phase",
+            "equity",
+            "cash",
+            "gross_exposure",
+            "net_exposure",
+            "leverage",
+            "drawdown",
+            "drawdown_pct",
+        ]
+        risk_rows: List[Sequence[Any]] = []
+        for idx, entry in enumerate(risk_series, start=1):
+            metrics_logger.log(
+                {
+                    "risk/gross_exposure": float(entry["gross_exposure"]),
+                    "risk/net_exposure": float(entry["net_exposure"]),
+                    "risk/leverage": float(entry["leverage"]),
+                    "risk/drawdown": float(entry["drawdown"]),
+                    "risk/drawdown_pct": float(entry["drawdown_pct"]),
+                    "risk/cash": float(entry["cash"]),
+                    "risk/equity": float(entry["equity"]),
+                },
+                step=len(equity_curve) + idx,
+            )
+            timestamp = entry["timestamp"]
+            ts_value = timestamp.isoformat() if hasattr(timestamp, "isoformat") else timestamp
+            risk_rows.append(
+                [
+                    ts_value,
+                    entry["day_index"],
+                    entry["phase"],
+                    float(entry["equity"]),
+                    float(entry["cash"]),
+                    float(entry["gross_exposure"]),
+                    float(entry["net_exposure"]),
+                    float(entry["leverage"]),
+                    float(entry["drawdown"]),
+                    float(entry["drawdown_pct"]),
+                ]
+            )
+        if risk_rows:
+            metrics_logger.log_table("risk/snapshots", risk_columns, risk_rows, step=len(equity_curve) + len(risk_rows))
+        final_step = max(final_step, len(equity_curve) + len(risk_rows))
+
+        fee_metrics = compute_fee_breakdown(report)
+        metrics_logger.log(fee_metrics, step=final_step)
+
+        breakdowns = compute_breakdowns(report)
+
+        asset_metrics: Dict[str, float] = {}
+        for asset_key, stats in breakdowns.get("asset", {}).items():
+            asset_metrics[f"asset/{asset_key}/realised_pnl"] = float(stats["realised_pnl"])
+            asset_metrics[f"asset/{asset_key}/total_value"] = float(stats["total_value"])
+            asset_metrics[f"asset/{asset_key}/trades"] = float(stats["trades"])
+        if asset_metrics:
+            metrics_logger.log(asset_metrics, step=final_step)
+
+        mode_metrics: Dict[str, float] = {}
+        for mode_key, stats in breakdowns.get("trade_mode", {}).items():
+            mode_metrics[f"trade_mode/{mode_key}/realised_pnl"] = float(stats["realised_pnl"])
+            mode_metrics[f"trade_mode/{mode_key}/cash_flow"] = float(stats["cash_flow"])
+        if mode_metrics:
+            metrics_logger.log(mode_metrics, step=final_step)
+
+        strategy_metrics: Dict[str, float] = {}
+        for strategy_key, stats in breakdowns.get("strategy", {}).items():
+            strategy_metrics[f"strategy/{strategy_key}/realised_pnl"] = float(stats["realised_pnl"])
+            strategy_metrics[f"strategy/{strategy_key}/unrealized_pl"] = float(stats["unrealized_pl"])
+        if strategy_metrics:
+            metrics_logger.log(strategy_metrics, step=final_step)
+
+        summary_metrics: Dict[str, float] = {}
+        equity_pnl_key = "asset/equity/realised_pnl"
+        crypto_pnl_key = "asset/crypto/realised_pnl"
+        normal_mode_key = "trade_mode/normal/realised_pnl"
+        if equity_pnl_key in asset_metrics:
+            summary_metrics["summary/non_crypto_realised_pnl"] = asset_metrics[equity_pnl_key]
+        if crypto_pnl_key in asset_metrics:
+            summary_metrics["summary/crypto_realised_pnl"] = asset_metrics[crypto_pnl_key]
+        if normal_mode_key in mode_metrics:
+            summary_metrics["summary/strategy_only_realised_pnl"] = mode_metrics[normal_mode_key]
+        summary_metrics["summary/trading_fees"] = float(report.trading_fees_paid)
+        summary_metrics["summary/financing_cost"] = float(report.financing_cost_paid)
+        if summary_metrics:
+            metrics_logger.log(summary_metrics, step=final_step)
+
+        overall = trade_summary.get("__overall__")
+        if overall:
+            overall_payload = {}
+            for key, value in overall.items():
+                if isinstance(value, (int, float)):
+                    overall_payload[f"trades/overall/{key}"] = float(value)
+            if overall_payload:
+                metrics_logger.log(overall_payload, step=final_step)
+
+        columns, rows = build_symbol_performance_table(report)
+        if rows:
+            metrics_logger.log_table("symbol_performance", columns, rows, step=final_step)
+
+        stack_columns, stack_rows = build_portfolio_stack_series(report)
+        if stack_rows:
+            metrics_logger.log_table("portfolio/stack", stack_columns, stack_rows, step=final_step)
+
+        trade_columns, trade_rows = build_trade_events_table(report)
+        if trade_rows:
+            metrics_logger.log_table("trades/events", trade_columns, trade_rows, step=final_step)
+
+        price_columns, price_rows = build_price_history_table(report)
+        if price_rows:
+            metrics_logger.log_table("prices/history_preview", price_columns, price_rows[:2000], step=final_step)
+
+        analysis_summary = analysis_summary or summarize_daily_analysis(report)
+        if analysis_summary:
+            analysis_metrics: Dict[str, float] = {}
+            for key, value in analysis_summary.items():
+                if isinstance(value, (int, float)):
+                    analysis_metrics[f"analysis/{key}"] = float(value)
+            for strategy, count in analysis_summary.get("strategy_counts", {}).items():
+                analysis_metrics[f"analysis/strategy/{strategy}"] = float(count)
+            for mode, count in analysis_summary.get("trade_mode_counts", {}).items():
+                analysis_metrics[f"analysis/trade_mode/{mode}"] = float(count)
+            if analysis_metrics:
+                metrics_logger.log(analysis_metrics, step=final_step)
+
+        summary_text = report.render_summary()
+        metrics_logger.log_text("simulation/summary", summary_text, step=final_step)
+
+        stack_fig = _make_portfolio_stack_figure(report)
+        if stack_fig is not None:
+            metrics_logger.log_figure("figures/portfolio_stack", stack_fig, step=final_step)
+            try:
+                import matplotlib.pyplot as plt  # type: ignore
+            except Exception:
+                pass
+            else:
+                plt.close(stack_fig)
+
+        symbols_with_trades = sorted({trade.symbol for trade in report.trade_executions})
+        for symbol in symbols_with_trades[:5]:
+            fig = _make_trade_price_figure(report, symbol)
+            if fig is None:
+                continue
+            metrics_logger.log_figure(f"figures/trades/{symbol}", fig, step=final_step)
+            try:
+                import matplotlib.pyplot as plt  # type: ignore
+            except Exception:
+                pass
+            else:
+                plt.close(fig)
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parse_args(argv)
     if getattr(args, "stub_config", False):
@@ -548,6 +926,20 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         "flatten_end": bool(args.flatten_end),
         **metrics,
     }
+    metrics_payload["trading_fees_paid"] = float(report.trading_fees_paid)
+    metrics_payload["financing_cost_paid"] = float(report.financing_cost_paid)
+
+    risk_series = compute_risk_timeseries(report)
+    if risk_series:
+        metrics_payload["max_leverage"] = max(float(entry["leverage"]) for entry in risk_series)
+        metrics_payload["final_gross_exposure"] = float(risk_series[-1]["gross_exposure"])
+        metrics_payload["final_net_exposure"] = float(risk_series[-1]["net_exposure"])
+        metrics_payload["final_drawdown_pct"] = float(risk_series[-1]["drawdown_pct"])
+
+    analysis_summary = summarize_daily_analysis(report)
+    if analysis_summary:
+        metrics_payload["analysis_summary"] = analysis_summary
+
     if entry_snapshot:
         metrics_payload["entry_limits"] = entry_snapshot
         metrics_payload.update(_flatten_entry_limits(entry_snapshot))
@@ -555,6 +947,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     _export_trades(report.trade_executions, args.trades_csv)
     trade_summary = _summarize_trades(report.trade_executions)
     _export_trade_summary(trade_summary, args.trades_summary_json)
+    _log_to_wandboard(
+        args,
+        report,
+        metrics_payload,
+        trade_summary,
+        risk_series=risk_series,
+        analysis_summary=analysis_summary,
+    )
     print("sim-summary=" + json.dumps(metrics_payload, sort_keys=True))
     ordered_keys = [
         "return",
