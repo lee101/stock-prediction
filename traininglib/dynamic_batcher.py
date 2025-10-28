@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+import warnings
 from typing import Callable, Dict, Generic, Iterable, List, Sequence, Tuple, TypeVar
 
 
@@ -63,7 +64,9 @@ class WindowBatcher(Generic[SampleT, BatchT]):
     The batcher groups windows by ``(context, horizon)`` buckets to keep tensor
     shapes static, computes a per-bucket micro-batch that respects the provided
     ``max_tokens_per_batch`` budget, and yields collated batches ready for GPU
-    transfer.
+    transfer. Buckets whose single-window token counts exceed the budget are
+    skipped with a warning; if all buckets are skipped, initialisation raises
+    ``ValueError`` with guidance on adjusting bucket sizes or budget.
     """
 
     def __init__(
@@ -95,34 +98,51 @@ class WindowBatcher(Generic[SampleT, BatchT]):
         self._bins: Dict[Tuple[int, int], List[WindowSpec]] = {}
         for context in self.context_buckets:
             for horizon in self.horizon_buckets:
+                # Enforce token budget at bucket granularity: if a single window
+                # cannot fit under the declared budget, skip the entire bucket.
+                if (context + horizon) > self.max_tokens:
+                    warnings.warn(
+                        (
+                            "Skipping bucket (context=%d, horizon=%d): "
+                            "tokens per sample %d exceed max_tokens_per_batch=%d."
+                        )
+                        % (context, horizon, context + horizon, self.max_tokens),
+                        RuntimeWarning,
+                    )
+                    continue
                 specs = list(dataset.enumerate_window_specs(context, horizon, self.stride))
                 if specs:
                     self._bins[(context, horizon)] = specs
         if not self._bins:
-            raise ValueError("WindowBatcher initialisation produced no windows; check dataset and bucket sizes.")
+            raise ValueError(
+                "WindowBatcher initialisation produced no windows; check dataset, bucket sizes, and token budget."
+            )
         self._total_samples = sum(len(specs) for specs in self._bins.values())
 
     def __len__(self) -> int:
         return self._total_samples
 
     def __iter__(self) -> Iterable[WindowBatch[BatchT]]:
-        keys = list(self._bins.keys())
+        bins = self._bins
+        keys = list(bins.keys())
         if self.shuffle:
             random.shuffle(keys)
 
         for key in keys:
             context, horizon = key
-            specs = self._bins[key]
+            specs = bins[key]
             if self.shuffle:
                 random.shuffle(specs)
             tokens_per_sample = context + horizon
             micro_batch = max(1, self.max_tokens // max(tokens_per_sample, 1))
             idx = 0
             length = len(specs)
+            load = self.dataset.load_window
+            collate = self._collate
             while idx < length:
                 end = min(idx + micro_batch, length)
                 chunk = specs[idx:end]
                 idx = end
-                samples = [self.dataset.load_window(spec, context, horizon) for spec in chunk]
-                batch_payload = self._collate(samples, context, horizon)
+                samples = [load(spec, context, horizon) for spec in chunk]
+                batch_payload = collate(samples, context, horizon)
                 yield WindowBatch(context=context, horizon=horizon, batch=batch_payload, size=len(chunk))

@@ -71,6 +71,14 @@ def _maybe_enable_fast_torch_settings() -> None:
     if torch.cuda.is_available() and not state.get("new_api"):
         maybe_set_float32_precision(torch, mode="high")
 
+
+def _canonicalize_path(path_like: Union[str, Path]) -> Path:
+    """Return an absolute path for cache directories regardless of environment input."""
+    path = Path(path_like).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.resolve(strict=False)
+
 from data_curate_daily import download_daily_stock_data, fetch_spread
 from disk_cache import disk_cache
 from src.fixtures import crypto_symbols
@@ -542,7 +550,7 @@ REAL_TESTING = os.getenv("REAL_TESTING", "0").strip().lower() in _BOOL_TRUE
 
 _maybe_enable_fast_torch_settings()
 
-COMPILED_MODELS_DIR = Path(os.getenv("COMPILED_MODELS_DIR", "compiled_models"))
+COMPILED_MODELS_DIR = _canonicalize_path(os.getenv("COMPILED_MODELS_DIR", "compiled_models"))
 INDUCTOR_CACHE_DIR = COMPILED_MODELS_DIR / "torch_inductor"
 
 
@@ -550,7 +558,12 @@ def _ensure_compilation_artifacts() -> None:
     try:
         COMPILED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
         INDUCTOR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(INDUCTOR_CACHE_DIR))
+        os.environ["COMPILED_MODELS_DIR"] = str(COMPILED_MODELS_DIR)
+        cache_dir_env = os.getenv("TORCHINDUCTOR_CACHE_DIR")
+        if cache_dir_env:
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(_canonicalize_path(cache_dir_env))
+        else:
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(INDUCTOR_CACHE_DIR)
     except Exception as exc:  # pragma: no cover - filesystem best effort
         logger.debug("Failed to prepare torch.compile artifact directories: %s", exc)
 

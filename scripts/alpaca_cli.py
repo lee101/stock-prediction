@@ -35,6 +35,16 @@ positions_shelf = FlatShelf("positions_shelf.json")
 
 BACKOUT_RAMP_MINUTES_DEFAULT = int(os.getenv("BACKOUT_RAMP_MINUTES", "30"))
 BACKOUT_MARKET_AFTER_MINUTES_DEFAULT = int(os.getenv("BACKOUT_MARKET_AFTER_MINUTES", "50"))
+_MARKET_SPREAD_CAP_RAW = os.getenv("BACKOUT_MARKET_MAX_SPREAD_PCT", "0.01")
+try:
+    BACKOUT_MARKET_MAX_SPREAD_PCT = max(float(_MARKET_SPREAD_CAP_RAW), 0.0)
+except ValueError:
+    BACKOUT_MARKET_MAX_SPREAD_PCT = 0.01
+    logger.warning(
+        "Invalid BACKOUT_MARKET_MAX_SPREAD_PCT=%r; defaulting to %.2f%%",
+        _MARKET_SPREAD_CAP_RAW,
+        BACKOUT_MARKET_MAX_SPREAD_PCT * 100,
+    )
 
 
 def set_strategy_for_symbol(symbol: str, strategy: str) -> None:
@@ -106,7 +116,40 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy", target_
         debug_raw_data(pair)
 
 
-client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+_DATA_CLIENT: Optional[StockHistoricalDataClient] = None
+
+
+def _get_data_client() -> Optional[StockHistoricalDataClient]:
+    global _DATA_CLIENT
+    if _DATA_CLIENT is not None:
+        return _DATA_CLIENT
+    try:
+        _DATA_CLIENT = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+    except Exception as exc:
+        logger.error("Failed to initialise StockHistoricalDataClient: %s", exc)
+        _DATA_CLIENT = None
+    return _DATA_CLIENT
+
+
+def _current_spread_pct(symbol: str) -> Optional[float]:
+    """Fetch latest bid/ask and compute relative spread."""
+    client = _get_data_client()
+    if client is None:
+        return None
+    try:
+        download_exchange_latest_data(client, symbol)
+    except Exception as exc:
+        logger.warning("Unable to refresh quotes for %s: %s", symbol, exc)
+    bid = get_bid(symbol)
+    ask = get_ask(symbol)
+    if bid is None or ask is None:
+        return None
+    if bid <= 0 or ask <= 0:
+        return None
+    mid = (bid + ask) / 2.0
+    if mid <= 0:
+        return None
+    return (ask - bid) / mid
 
 
 def backout_near_market(
@@ -177,25 +220,45 @@ def backout_near_market(
 
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
                     progress = min(minutes_since_start / effective_ramp_minutes, 1.0)
+                    pct_above_market = pct_offset + (pct_final_offset - pct_offset) * progress
+
                     if minutes_since_start >= effective_market_after:
-                        logger.info("Switching to market order to guarantee close")
-                        succeeded = alpaca_wrapper.close_position_violently(position)
-                        found_position = True
-                        if not succeeded:
-                            logger.info("Market order failed, will retry after delay")
-                            retries += 1
-                            if retries >= max_retries:
-                                logger.error("Max retries reached, exiting")
-                                return False
-                            sleep(60)
-                            continue
-                        break
+                        spread_pct = _current_spread_pct(pair)
+                        if spread_pct is not None and spread_pct > BACKOUT_MARKET_MAX_SPREAD_PCT:
+                            logger.info(
+                                "Spread %.2f%% exceeds %.2f%% cap; holding limit order instead of market for %s",
+                                spread_pct * 100.0,
+                                BACKOUT_MARKET_MAX_SPREAD_PCT * 100.0,
+                                pair,
+                            )
+                            pct_above_market = pct_final_offset
+                        else:
+                            if spread_pct is None:
+                                logger.warning(
+                                    "Spread unavailable for %s; proceeding with market order fallback",
+                                    pair,
+                                )
+                            else:
+                                logger.info(
+                                    "Spread %.2f%% within %.2f%% cap; switching to market order for %s",
+                                    spread_pct * 100.0,
+                                    BACKOUT_MARKET_MAX_SPREAD_PCT * 100.0,
+                                    pair,
+                                )
+                            succeeded = alpaca_wrapper.close_position_violently(position)
+                            found_position = True
+                            if not succeeded:
+                                logger.info("Market order failed, will retry after delay")
+                                retries += 1
+                                if retries >= max_retries:
+                                    logger.error("Max retries reached, exiting")
+                                    return False
+                                sleep(60)
+                                continue
+                            break
                     elif minutes_since_start >= effective_ramp_minutes:
                         # After ramp period, set price well beyond market to guarantee fill
                         pct_above_market = pct_final_offset
-                    else:
-                        # During ramp period - linear progression from start to final offset
-                        pct_above_market = pct_offset + (pct_final_offset - pct_offset) * progress
 
                     logger.info(f"Position side: {'long' if is_long else 'short'}, "
                               f"pct_above_market: {pct_above_market:.4f}, "
@@ -249,7 +312,9 @@ def close_all_positions():
         symbol = position.symbol
 
         # get latest data then bid/ask
-        download_exchange_latest_data(client, symbol)
+        data_client = _get_data_client()
+        if data_client is not None:
+            download_exchange_latest_data(data_client, symbol)
         bid = get_bid(symbol)
         ask = get_ask(symbol)
 
@@ -308,7 +373,9 @@ def ramp_into_position(pair, side, start_time=None, target_qty=None):
             # If target_qty not provided, use the centralized get_qty function for consistent risk management
             if target_qty is None:
                 # Get current market price to calculate target qty
-                download_exchange_latest_data(client, pair)
+                data_client = _get_data_client()
+                if data_client is not None:
+                    download_exchange_latest_data(data_client, pair)
                 bid_price = get_bid(pair)
                 ask_price = get_ask(pair)
                 if bid_price is None or ask_price is None:
@@ -397,7 +464,15 @@ def ramp_into_position(pair, side, start_time=None, target_qty=None):
 
             # Get current market prices
             try:
-                download_exchange_latest_data(client, pair)
+                data_client = _get_data_client()
+                if data_client is None:
+                    logger.error("Quote client unavailable; cannot fetch data for %s", pair)
+                    retries += 1
+                    if retries >= max_retries:
+                        return False
+                    sleep(30)
+                    continue
+                download_exchange_latest_data(data_client, pair)
                 bid_price = get_bid(pair)
                 ask_price = get_ask(pair)
 

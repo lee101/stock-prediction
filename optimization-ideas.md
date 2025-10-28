@@ -31,6 +31,9 @@ High‑impact optimizations
 - Mixed precision and TF32
   - Keep `training.use_mixed_precision=true` on NVIDIA GPUs; expect 1.5–2.5x speedups.
   - If using Ampere+ GPUs, enable TF32 for matmul/convs: `torch.backends.cuda.matmul.allow_tf32 = True` and `torch.backends.cudnn.allow_tf32 = True` (safe for training most transformer workloads).
+- Timing and measurement
+  - Replace per-step `torch.cuda.synchronize()` with CUDA events drained asynchronously so the host keeps queuing work while metrics stay accurate.
+  - Only force synchronization when emitting logs or checkpoints; batch timing reads for smoother throughput stats.
 
 - Model dimensions
   - Ensure `hidden_size % num_heads == 0` to avoid hidden reshapes and underutilized kernels.

@@ -42,6 +42,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision  # noqa: E402
+from src.gpu_utils import cli_flag_was_provided, detect_total_vram_bytes, recommend_batch_size  # noqa: E402
 from toto.inference.forecaster import TotoForecaster  # noqa: E402
 from toto.model.toto import Toto  # noqa: E402
 
@@ -57,6 +58,7 @@ from src.parameter_efficient import (  # noqa: E402
     save_lora_adapter,
 )
 from traininglib.dynamic_batcher import WindowBatcher  # noqa: E402
+from traininglib.window_utils import sanitize_bucket_choices  # noqa: E402
 
 
 def _bool_flag(value: str) -> bool:
@@ -77,8 +79,6 @@ def _resolve_precision_dtype(precision: str) -> Optional[torch.dtype]:
     if lowered == "fp16":
         return torch.float16
     return None
-
-
 def create_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--train-root", type=Path, required=True, help="Directory or file with training series.")
@@ -570,6 +570,23 @@ def run_with_namespace(args: argparse.Namespace) -> None:
         maybe_set_float32_precision(torch, mode="medium")
 
     device = torch.device(args.device)
+    total_vram = (
+        detect_total_vram_bytes(args.device if device.type == "cuda" else None) if device.type == "cuda" else None
+    )
+    if total_vram is not None:
+        batch_flag_set = cli_flag_was_provided("--batch-size")
+        thresholds = [(10, 1), (16, 2), (24, 4), (40, 6), (64, 8)]
+        recommended_batch = recommend_batch_size(
+            total_vram,
+            args.batch_size,
+            thresholds,
+            allow_increase=not batch_flag_set,
+        )
+        if recommended_batch != args.batch_size:
+            action = "capping" if recommended_batch < args.batch_size else "adjusting"
+            gb = total_vram / (1024 ** 3)
+            print(f"[toto] {action} batch size to {recommended_batch} for detected {gb:.1f} GiB VRAM")
+            args.batch_size = recommended_batch
 
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     if args.global_batch:
@@ -586,12 +603,20 @@ def run_with_namespace(args: argparse.Namespace) -> None:
         if args.prefetch_to_gpu:
             args.prefetch_to_gpu = False
 
-    length_buckets = sorted({int(args.context_length), *[int(v) for v in args.length_bucketing]})
-    horizon_buckets = sorted({int(args.prediction_length), *[int(v) for v in args.horizon_bucketing]})
-    args.length_bucketing = tuple(length_buckets)
-    args.horizon_bucketing = tuple(horizon_buckets)
-    max_context = length_buckets[-1]
-    max_horizon = horizon_buckets[-1]
+    args.length_bucketing = sanitize_bucket_choices(
+        args.context_length,
+        args.length_bucketing,
+        "--length-bucketing",
+        logger=lambda msg: print(f"[toto] {msg}"),
+    )
+    args.horizon_bucketing = sanitize_bucket_choices(
+        args.prediction_length,
+        args.horizon_bucketing,
+        "--horizon-bucketing",
+        logger=lambda msg: print(f"[toto] {msg}"),
+    )
+    max_context = max(args.length_bucketing)
+    max_horizon = max(args.horizon_bucketing)
 
     if not args.cuda_graphs and args.max_tokens_per_batch <= 0:
         raise ValueError("--max-tokens-per-batch must be positive when dynamic batching is enabled.")

@@ -182,6 +182,9 @@ class DifferentiablePortfolioTrainer:
         else:
             self.metrics_logger = metrics_logger
 
+        self._epoch_timings: list[float] = []
+        self._epoch_sample_counts: list[int] = []
+
     def _step(self, batch: Dict[str, torch.Tensor], training: bool = True) -> Dict[str, float]:
         inputs = batch['input_ids'].to(self.config.device)
         future_returns = batch['future_returns'].to(self.config.device)
@@ -255,6 +258,7 @@ class DifferentiablePortfolioTrainer:
 
         return {
             'loss': float(loss.detach().cpu().item()),
+            'batch_size': int(inputs.shape[0]),
             'profit': float(profit.detach().cpu().item()),
             'sharpe': float(sharpe.detach().cpu().item()),
             'profit_equity': float(profit_equity.detach().cpu().item()) if profit_equity is not None else 0.0,
@@ -269,12 +273,14 @@ class DifferentiablePortfolioTrainer:
             step=0,
         )
         for epoch in range(self.config.epochs):
+            epoch_start = time.perf_counter()
             self.model.train()
             epoch_loss = 0.0
             epoch_profit = 0.0
             epoch_profit_equity = 0.0
             epoch_profit_crypto = 0.0
             epoch_cvar = 0.0
+            epoch_samples = 0
             for batch in self.train_loader:
                 stats = self._step(batch, training=True)
                 epoch_loss += stats['loss']
@@ -282,6 +288,7 @@ class DifferentiablePortfolioTrainer:
                 epoch_profit_equity += stats.get('profit_equity', 0.0)
                 epoch_profit_crypto += stats.get('profit_crypto', 0.0)
                 epoch_cvar += stats.get('cvar', 0.0)
+                epoch_samples += int(stats.get('batch_size', 0))
 
             epoch_loss /= max(1, len(self.train_loader))
             epoch_profit /= max(1, len(self.train_loader))
@@ -361,6 +368,25 @@ class DifferentiablePortfolioTrainer:
                 if ema_applied:
                     self.ema.restore(module)
 
+            epoch_duration = time.perf_counter() - epoch_start
+            batches_per_epoch = max(1, len(self.train_loader))
+            epoch_samples = max(epoch_samples, batches_per_epoch)
+            steps_per_sec = batches_per_epoch / max(epoch_duration, 1e-9)
+            samples_per_sec = epoch_samples / max(epoch_duration, 1e-9)
+            metrics[f'timing/epoch_seconds_{epoch}'] = float(epoch_duration)
+            metrics[f'timing/steps_per_sec_{epoch}'] = float(steps_per_sec)
+            metrics[f'timing/samples_per_sec_{epoch}'] = float(samples_per_sec)
+            self.metrics_logger.log(
+                {
+                    'timing/epoch_seconds': epoch_duration,
+                    'timing/steps_per_sec': steps_per_sec,
+                    'timing/samples_per_sec': samples_per_sec,
+                },
+                step=epoch,
+            )
+            self._epoch_timings.append(epoch_duration)
+            self._epoch_sample_counts.append(epoch_samples)
+
         self._stack.close()
         summary_metrics = {
             'best/val_profit': self._best_val_profit,
@@ -371,6 +397,24 @@ class DifferentiablePortfolioTrainer:
             self.metrics_logger.finish()
         metrics["best_val_profit"] = self._best_val_profit
         metrics["best_epoch"] = self._best_epoch
+        if self._epoch_timings:
+            mean_duration = sum(self._epoch_timings) / len(self._epoch_timings)
+            fastest = min(self._epoch_timings)
+            total_samples = sum(self._epoch_sample_counts)
+            total_time = sum(self._epoch_timings)
+            aggregate_samples_per_sec = total_samples / max(total_time, 1e-9)
+            metrics["timing/epoch_seconds_mean"] = float(mean_duration)
+            metrics["timing/epoch_seconds_min"] = float(fastest)
+            metrics["timing/samples_per_sec_mean"] = float(aggregate_samples_per_sec)
+            self.metrics_logger.log(
+                {
+                    'timing/epoch_seconds_mean': mean_duration,
+                    'timing/epoch_seconds_min': fastest,
+                    'timing/samples_per_sec_mean': aggregate_samples_per_sec,
+                },
+                step=self.config.epochs,
+                commit=True,
+            )
         return metrics
 
     def best_state_dict(self) -> Optional[Dict[str, torch.Tensor]]:

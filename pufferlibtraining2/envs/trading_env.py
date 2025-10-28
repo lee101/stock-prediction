@@ -62,8 +62,8 @@ def build_env_creator(
             env = RewardScaleWrapper(env, plan.env.reward_scale)
         return env
 
-    def _puffer_env() -> gym.Env:
-        return pufferlib.emulation.GymnasiumPufferEnv(env_creator=_base_env)
+    def _puffer_env(*args, **kwargs) -> gym.Env:
+        return pufferlib.emulation.GymnasiumPufferEnv(env_creator=_base_env, *args, **kwargs)
 
     return _puffer_env
 

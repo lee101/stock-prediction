@@ -198,6 +198,7 @@ members = [
     "differentiable_market",
     "differentiable_market_kronos",
     "differentiable_market_totoembedding",
+    "rlinc_market",
     "gymrl",
     "hfshared",
     "hfinference",

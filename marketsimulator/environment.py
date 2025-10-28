@@ -4,7 +4,7 @@ import importlib
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Dict, Iterable, Optional, Tuple
 
 import os
 
@@ -240,6 +240,72 @@ def _patch_third_party(use_mock_analytics: bool, force_kronos: bool):
     return {"process_utils": (process_utils, original), "replaced_modules": replaced_modules}
 
 
+def _patch_simulated_time(clock: SimulatedClock) -> Optional[Tuple]:
+    try:
+        from src import date_utils
+    except Exception:
+        return None
+
+    original_is_now = date_utils.is_nyse_trading_day_now
+    original_is_ending = date_utils.is_nyse_trading_day_ending
+
+    def simulated_is_now(timestamp=None):
+        if timestamp is None:
+            timestamp = clock.current
+        return original_is_now(timestamp)
+
+    def simulated_is_ending(timestamp=None):
+        if timestamp is None:
+            timestamp = clock.current
+        return original_is_ending(timestamp)
+
+    date_utils.is_nyse_trading_day_now = simulated_is_now
+    date_utils.is_nyse_trading_day_ending = simulated_is_ending
+
+    module_overrides: Dict[str, Dict[str, object]] = {}
+    for module_name in (
+        "trade_stock_e2e",
+        "trade_stock_e2e_trained",
+        "predict_stock_e2e",
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        overrides: Dict[str, object] = {}
+        if hasattr(module, "is_nyse_trading_day_now"):
+            overrides["now"] = getattr(module, "is_nyse_trading_day_now")
+            setattr(module, "is_nyse_trading_day_now", simulated_is_now)
+        if hasattr(module, "is_nyse_trading_day_ending"):
+            overrides["ending"] = getattr(module, "is_nyse_trading_day_ending")
+            setattr(module, "is_nyse_trading_day_ending", simulated_is_ending)
+        if overrides:
+            module_overrides[module_name] = overrides
+
+    return (original_is_now, original_is_ending, module_overrides)
+
+
+def _restore_simulated_time(patch_handle: Optional[Tuple]) -> None:
+    if not patch_handle:
+        return
+    original_is_now, original_is_ending, module_overrides = patch_handle
+    try:
+        from src import date_utils
+    except Exception:
+        date_utils = None
+    if date_utils is not None:
+        date_utils.is_nyse_trading_day_now = original_is_now
+        date_utils.is_nyse_trading_day_ending = original_is_ending
+
+    for module_name, overrides in module_overrides.items():
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        if "now" in overrides:
+            setattr(module, "is_nyse_trading_day_now", overrides["now"])
+        if "ending" in overrides:
+            setattr(module, "is_nyse_trading_day_ending", overrides["ending"])
+
+
 @dataclass
 class SimulationController:
     state: SimulationState
@@ -294,6 +360,12 @@ def activate_simulation(
     previous_skip_value = os.environ.get(skip_env_key)
     had_allow_env = allow_env_key in os.environ
     had_skip_env = skip_env_key in os.environ
+
+    skip_equity_key = "MARKETSIM_SKIP_CLOSED_EQUITY"
+    had_skip_equity_env = skip_equity_key in os.environ
+    previous_skip_equity = os.environ.get(skip_equity_key)
+    if not had_skip_equity_env:
+        os.environ[skip_equity_key] = "0"
 
     if use_mock_analytics:
         os.environ[allow_env_key] = "1"
@@ -378,10 +450,12 @@ def activate_simulation(
         use_mock_analytics=use_mock_analytics,
         force_kronos=bool(force_kronos),
     )
+    time_patch = _patch_simulated_time(state.clock)
     controller = SimulationController(state)
     try:
         yield controller
     finally:
+        _restore_simulated_time(time_patch)
         process_utils, originals = restore_handles["process_utils"]
         (
             process_utils.backout_near_market,
@@ -429,3 +503,10 @@ def activate_simulation(
                 os.environ.pop(relax_spread_key, None)
         else:
             os.environ.pop(relax_spread_key, None)
+        if had_skip_equity_env:
+            if previous_skip_equity is not None:
+                os.environ[skip_equity_key] = previous_skip_equity
+            else:
+                os.environ.pop(skip_equity_key, None)
+        else:
+            os.environ.pop(skip_equity_key, None)
