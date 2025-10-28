@@ -500,6 +500,7 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
     if data.get("trade_blocked") and data.get("block_reason"):
         summary_parts.append(f"block_reason={data['block_reason']}")
 
+    probe_summary = None
     if data.get("trade_mode") == "probe":
         probe_notes = []
         if data.get("pending_probe"):
@@ -523,9 +524,43 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
         if probe_time_info:
             probe_notes.extend(probe_time_info)
         if probe_notes:
-            summary_parts.append("probe=" + ",".join(str(note) for note in probe_notes))
+            probe_summary = "probe=" + ",".join(str(note) for note in probe_notes)
+            summary_parts.append(probe_summary)
 
-    _log_detail(" | ".join(summary_parts))
+    compact_message = " | ".join(summary_parts)
+    if COMPACT_LOGS:
+        _log_detail(compact_message)
+        return
+
+    detail_lines = [" ".join(status_parts)]
+    detail_lines.append(f"  returns: {returns_metrics or '-'}")
+    detail_lines.append(f"  edges: {edges_metrics or '-'}")
+    detail_lines.append(f"  prices: {prices_metrics or '-'}")
+
+    walk_forward_metrics = _format_metric_parts(
+        [
+            ("oos", data.get("walk_forward_oos_sharpe"), 2),
+            ("turnover", data.get("walk_forward_turnover"), 2),
+            ("highlow", data.get("walk_forward_highlow_sharpe"), 2),
+            ("takeprofit", data.get("walk_forward_takeprofit_sharpe"), 2),
+            ("maxdiff", data.get("walk_forward_maxdiff_sharpe"), 2),
+        ]
+    )
+    if walk_forward_metrics:
+        detail_lines.append(f"  walk_forward: {walk_forward_metrics}")
+
+    block_reason = data.get("block_reason")
+    if data.get("trade_blocked") and block_reason:
+        detail_lines.append(f"  block_reason: {block_reason}")
+
+    walk_forward_notes = data.get("walk_forward_notes")
+    if walk_forward_notes:
+        detail_lines.append("  walk_forward_notes: " + "; ".join(str(note) for note in walk_forward_notes))
+
+    if probe_summary:
+        detail_lines.append("  " + probe_summary.replace("=", ": ", 1))
+
+    _log_detail("\n".join(detail_lines))
 
 
 def _normalize_side_for_key(side: str) -> str:
