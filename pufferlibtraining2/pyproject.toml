@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pufferlib-training2"
+version = "0.1.0"
+description = "Next-generation PufferLib training pipeline for the stock trading simulator."
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "stock-trading-suite[rl,mlops]",
+    "pufferlib>=2.0.2",
+    "gym<=0.23.1",
+    "gymnasium>=0.29",
+    "pandas>=2.1",
+    "torch>=2.2",
+    "wandb>=0.22",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+]
+
+[tool.setuptools]
+packages = ["pufferlibtraining2"]
+
+[tool.setuptools.package-dir]
+pufferlibtraining2 = "."
