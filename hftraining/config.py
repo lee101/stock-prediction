@@ -98,6 +98,7 @@ class TrainingConfig:
     window_stride: int = 1
     pack_windows: bool = True
     bucket_warmup_steps: int = 0
+    max_auto_batch_size: Optional[int] = None
     
     # Mixed precision
     use_mixed_precision: bool = True
@@ -167,6 +168,8 @@ class SystemConfig:
     debug_mode: bool = False
     profile_training: bool = False
     allow_tf32: bool = True
+    auto_batch_size: bool = True
+    auto_batch_allow_increase: bool = True
 
 
 @dataclass

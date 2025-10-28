@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel", "numpy>=2.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rlinc_market"
+version = "0.0.1"
+description = "Ultra-fast C market simulator with Gym wrapper (RL Incubator)."
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "numpy>=2.0",
+  "gymnasium>=0.29",
+  "pufferlib>=2.0.2",
+]
+
+[tool.setuptools]
+packages = ["rlinc_market"]
+ext-modules = []
+
+[tool.setuptools.package-dir]
+rlinc_market = "."
+
+[tool.uv.sources]
+stock-trading-suite = { workspace = true }
+

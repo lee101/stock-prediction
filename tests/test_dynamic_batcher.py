@@ -71,3 +71,32 @@ def test_window_batcher_no_windows_raises():
     dataset = DummyDataset(length=3)
     with pytest.raises(ValueError):
         WindowBatcher(dataset, max_tokens_per_batch=8, context_buckets=[5], horizon_buckets=[2], stride=1)
+
+
+def test_oversized_buckets_are_skipped():
+    dataset = DummyDataset(length=40)
+    # Budget too small for (10+10) but fine for (3+1)
+    batcher = WindowBatcher(
+        dataset,
+        max_tokens_per_batch=12,
+        context_buckets=[3, 10],
+        horizon_buckets=[1, 10],
+        stride=2,
+        shuffle=False,
+    )
+    shapes = {(b.batch[0].shape[1], b.batch[1].shape[1]) for b in batcher}
+    assert (3, 1) in shapes
+    assert (10, 10) not in shapes
+
+
+def test_all_buckets_oversized_raises():
+    dataset = DummyDataset(length=200)
+    with pytest.raises(ValueError):
+        # Every (context+horizon) exceeds budget
+        WindowBatcher(
+            dataset,
+            max_tokens_per_batch=8,
+            context_buckets=[12, 16],
+            horizon_buckets=[4, 8],
+            stride=1,
+        )

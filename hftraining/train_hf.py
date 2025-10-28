@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -19,6 +19,7 @@ import random
 import contextlib
 import math
 from dataclasses import asdict
+from collections import deque
 warnings.filterwarnings('ignore')
 from torch.utils.data import DataLoader, Dataset
 import sys
@@ -336,6 +337,17 @@ class HFTrainer:
 
         # Setup logging (TensorBoard)
         self.setup_logging()
+
+        # Performance benchmarking state
+        self._benchmark_enabled = bool(getattr(self.config, "enable_benchmark_metrics", True))
+        window = int(getattr(self.config, "benchmark_step_window", 256))
+        if window <= 0:
+            window = 1
+        self._benchmark_step_window = window if self._benchmark_enabled else 1
+        self._step_durations = deque(maxlen=self._benchmark_step_window)
+        # Track CUDA timing events so we can measure step durations without hard synchronisation.
+        self._step_event_queue: deque[tuple["torch.cuda.Event", "torch.cuda.Event"]] = deque()
+        self._epoch_stats = []
         
         # Training state
         self.global_step = 0
@@ -543,6 +555,105 @@ class HFTrainer:
         
         self.training_logger.info(f"TensorBoard logging to: {self.tb_log_dir}")
         self.training_logger.info(f"Output directory: {self.config.output_dir}")
+
+    def _record_step_timing(self, duration: float) -> None:
+        """Record per-step duration for benchmarking."""
+        if not self._benchmark_enabled:
+            return
+        if duration <= 0:
+            return
+        self._step_durations.append(float(duration))
+
+    def _drain_step_events(self, wait_for_one: bool = False) -> List[float]:
+        """Consume any completed CUDA timing events and return their durations (seconds)."""
+        if not self._step_event_queue:
+            return []
+        drained: List[float] = []
+        while self._step_event_queue:
+            start_event, end_event = self._step_event_queue[0]
+            try:
+                if not end_event.query():
+                    if wait_for_one and not drained:
+                        end_event.synchronize()
+                    else:
+                        break
+                self._step_event_queue.popleft()
+                elapsed_ms = start_event.elapsed_time(end_event)
+                drained.append(max(0.0, elapsed_ms / 1000.0))
+            except Exception:
+                # Drop malformed/cleared events without interrupting training.
+                self._step_event_queue.popleft()
+        return drained
+
+    def _record_epoch_stats(self, epoch: int, epoch_time: float, epoch_steps: int, avg_loss: float) -> None:
+        """Capture epoch-level performance metrics for later inspection."""
+        if not self._benchmark_enabled:
+            return
+        time_s = float(max(epoch_time, 0.0))
+        steps = int(max(epoch_steps, 0))
+        avg_loss_val = float(avg_loss)
+        avg_step_time = time_s / steps if steps > 0 and time_s > 0 else 0.0
+        steps_per_sec = steps / time_s if steps > 0 and time_s > 0 else 0.0
+        samples_per_sec = steps_per_sec * self.config.batch_size if steps_per_sec > 0 else 0.0
+        seq_len = getattr(self.config, "sequence_length", None)
+        tokens_per_sec = samples_per_sec * seq_len if seq_len and samples_per_sec > 0 else None
+
+        stats = {
+            "epoch": int(epoch),
+            "time_s": time_s,
+            "steps": steps,
+            "avg_loss": avg_loss_val,
+            "avg_step_time_s": avg_step_time,
+            "steps_per_sec": steps_per_sec,
+            "samples_per_sec": samples_per_sec,
+        }
+        if tokens_per_sec is not None:
+            stats["tokens_per_sec"] = tokens_per_sec
+        self._epoch_stats.append(stats)
+
+    @staticmethod
+    def _percentile(values, q: float) -> float:
+        """Compute percentile for a sorted list."""
+        if not values:
+            return 0.0
+        if q <= 0:
+            return float(values[0])
+        if q >= 1:
+            return float(values[-1])
+        idx = (len(values) - 1) * q
+        lower = math.floor(idx)
+        upper = math.ceil(idx)
+        if lower == upper:
+            return float(values[int(idx)])
+        lower_val = values[lower]
+        upper_val = values[upper]
+        return float(lower_val + (upper_val - lower_val) * (idx - lower))
+
+    def get_benchmark_summary(self) -> Dict[str, Any]:
+        """Return recent step timing stats and per-epoch metrics."""
+        durations = list(self._step_durations) if self._benchmark_enabled else []
+        durations_sorted = sorted(durations)
+        window = len(durations)
+        avg_step_time = sum(durations) / window if window else 0.0
+        step_stats: Dict[str, Any] = {
+            "window": window,
+            "avg_step_time_s": avg_step_time,
+            "median_step_time_s": self._percentile(durations_sorted, 0.5) if window else 0.0,
+            "p90_step_time_s": self._percentile(durations_sorted, 0.9) if window else 0.0,
+            "max_step_time_s": max(durations_sorted) if window else 0.0,
+            "steps_per_sec": 1.0 / avg_step_time if avg_step_time > 0 else 0.0,
+        }
+        samples_per_sec = step_stats["steps_per_sec"] * self.config.batch_size if step_stats["steps_per_sec"] > 0 else 0.0
+        step_stats["samples_per_sec"] = samples_per_sec
+        seq_len = getattr(self.config, "sequence_length", None)
+        if seq_len and samples_per_sec > 0:
+            step_stats["tokens_per_sec"] = samples_per_sec * seq_len
+
+        epoch_stats = [dict(item) for item in self._epoch_stats] if self._benchmark_enabled else []
+        return {
+            "step_stats": step_stats,
+            "epoch_stats": epoch_stats,
+        }
     
     def train(self):
         """Main training loop"""
@@ -664,21 +775,50 @@ class HFTrainer:
                 # Move batch to device
                 non_block = bool(torch.cuda.is_available())
                 batch = {k: v.to(self.device, non_blocking=non_block) for k, v in batch.items()}
-                
-                # Training step
-                step_start = time.time()
-                loss = self.training_step(batch)
+
+                # Training step timing (prefer CUDA events to avoid full synchronisation)
+                cuda_timing: Optional[tuple[torch.cuda.Event, torch.cuda.Event]] = None
+                cpu_start: Optional[float] = None
                 if torch.cuda.is_available():
                     try:
-                        torch.cuda.synchronize()
+                        start_event = torch.cuda.Event(enable_timing=True)
+                        end_event = torch.cuda.Event(enable_timing=True)
+                        start_event.record()
+                        cuda_timing = (start_event, end_event)
                     except Exception:
-                        pass
-                self.last_step_time = max(1e-9, time.time() - step_start)
+                        cpu_start = time.perf_counter()
+                        cuda_timing = None
+                else:
+                    cpu_start = time.perf_counter()
+
+                loss = self.training_step(batch)
+
+                if cuda_timing is not None:
+                    _, end_event = cuda_timing
+                    end_event.record()
+                    self._step_event_queue.append(cuda_timing)
+                    drained = self._drain_step_events()
+                    if drained:
+                        self.last_step_time = drained[-1]
+                        for duration in drained:
+                            self._record_step_timing(duration)
+                else:
+                    duration = max(1e-9, time.perf_counter() - (cpu_start or time.perf_counter()))
+                    self.last_step_time = duration
+                    self._record_step_timing(duration)
                 epoch_loss += loss
                 epoch_steps += 1
                 
                 # Enhanced Logging
-                if self.global_step % self.config.logging_steps == 0:
+                should_log = (self.global_step % self.config.logging_steps == 0)
+                if should_log and torch.cuda.is_available():
+                    drained = self._drain_step_events(wait_for_one=True)
+                    if drained:
+                        self.last_step_time = drained[-1]
+                        for duration in drained:
+                            self._record_step_timing(duration)
+
+                if should_log:
                     # Log to TensorBoard
                     batch_size = self.config.batch_size
                     samples_per_sec = float(batch_size) / self.last_step_time if self.last_step_time else 0.0
@@ -801,12 +941,26 @@ class HFTrainer:
                 break
             
             # Log epoch summary
+            if torch.cuda.is_available():
+                drained = self._drain_step_events(wait_for_one=True)
+                if drained:
+                    self.last_step_time = drained[-1]
+                    for duration in drained:
+                        self._record_step_timing(duration)
             epoch_time = time.time() - epoch_start_time
             avg_epoch_loss = epoch_loss / epoch_steps if epoch_steps > 0 else 0
+            self._record_epoch_stats(epoch, epoch_time, epoch_steps, avg_epoch_loss)
             self.training_logger.log_epoch_summary(epoch, avg_epoch_loss, epoch_time)
         
         pbar.close()
         
+        if torch.cuda.is_available():
+            drained = self._drain_step_events(wait_for_one=True)
+            if drained:
+                self.last_step_time = drained[-1]
+                for duration in drained:
+                    self._record_step_timing(duration)
+
         # Calculate total training time
         total_training_time = time.time() - self.start_time
         
