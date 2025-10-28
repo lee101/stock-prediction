@@ -491,6 +491,7 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
             ("last_close", data.get("last_close"), 3),
         ]
     )
+    walk_forward_notes = data.get("walk_forward_notes")
     summary_parts = [
         " ".join(status_parts),
         f"returns[{returns_metrics or '-'}]",
@@ -499,6 +500,8 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
     ]
     if data.get("trade_blocked") and data.get("block_reason"):
         summary_parts.append(f"block_reason={data['block_reason']}")
+    if walk_forward_notes:
+        summary_parts.append("walk_forward_notes=" + "; ".join(str(note) for note in walk_forward_notes))
 
     probe_summary = None
     if data.get("trade_mode") == "probe":
@@ -553,7 +556,6 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
     if data.get("trade_blocked") and block_reason:
         detail_lines.append(f"  block_reason: {block_reason}")
 
-    walk_forward_notes = data.get("walk_forward_notes")
     if walk_forward_notes:
         detail_lines.append("  walk_forward_notes: " + "; ".join(str(note) for note in walk_forward_notes))
 
@@ -1679,8 +1681,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             now_utc = datetime.now(timezone.utc)
             cooldown_ok = True if SIMPLIFIED_MODE else can_trade_now(symbol, now_utc)
 
-            gating_reasons: List[str] = []
-            if not DISABLE_TRADE_GATES:
+            walk_forward_notes: List[str] = []
+            sharpe_cutoff: Optional[float] = None
+            if not SIMPLIFIED_MODE:
                 default_cutoff = -0.25 if kronos_only_mode else 0.3
                 env_key = "MARKETSIM_KRONOS_SHARPE_CUTOFF" if kronos_only_mode else "MARKETSIM_SHARPE_CUTOFF"
                 sharpe_cutoff = _get_env_float(env_key)
@@ -1688,22 +1691,24 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     sharpe_cutoff = _get_env_float("MARKETSIM_SHARPE_CUTOFF")
                 if sharpe_cutoff is None:
                     sharpe_cutoff = default_cutoff
-                if (
-                    not SIMPLIFIED_MODE
-                    and walk_forward_oos_sharpe is not None
-                    and walk_forward_oos_sharpe < sharpe_cutoff
-                ):
-                    gating_reasons.append(f"Walk-forward Sharpe {walk_forward_oos_sharpe:.2f} < {sharpe_cutoff:.2f}")
-                if not SIMPLIFIED_MODE and not kronos_only_mode:
-                    if (
-                        walk_forward_turnover is not None
-                        and walk_forward_oos_sharpe is not None
-                        and walk_forward_turnover > 2.0
-                        and walk_forward_oos_sharpe < 0.5
-                    ):
-                        gating_reasons.append(
-                            f"Walk-forward turnover {walk_forward_turnover:.2f} with Sharpe {walk_forward_oos_sharpe:.2f}"
+                if walk_forward_oos_sharpe is not None and sharpe_cutoff is not None:
+                    if walk_forward_oos_sharpe < sharpe_cutoff:
+                        walk_forward_notes.append(
+                            f"Walk-forward Sharpe {walk_forward_oos_sharpe:.2f} below cutoff {sharpe_cutoff:.2f}"
                         )
+                if (
+                    not kronos_only_mode
+                    and walk_forward_turnover is not None
+                    and walk_forward_oos_sharpe is not None
+                    and walk_forward_turnover > 2.0
+                    and walk_forward_oos_sharpe < 0.5
+                ):
+                    walk_forward_notes.append(
+                        f"Walk-forward turnover {walk_forward_turnover:.2f} high with Sharpe {walk_forward_oos_sharpe:.2f}"
+                    )
+
+            gating_reasons: List[str] = []
+            if not DISABLE_TRADE_GATES:
                 if not tradeable:
                     gating_reasons.append(spread_reason)
                 if not edge_ok:
@@ -1812,6 +1817,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "walk_forward_highlow_sharpe": walk_forward_highlow_sharpe,
                 "walk_forward_takeprofit_sharpe": walk_forward_takeprofit_sharpe,
                 "walk_forward_maxdiff_sharpe": walk_forward_maxdiff_sharpe,
+                "walk_forward_sharpe_cutoff": sharpe_cutoff,
+                "walk_forward_notes": walk_forward_notes,
                 "backtest_samples": sample_size,
             }
             if selection_notes:
