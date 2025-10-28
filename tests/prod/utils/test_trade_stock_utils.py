@@ -100,3 +100,14 @@ def test_evaluate_strategy_entry_gate_rejects_fallback_and_low_edge():
     )
     assert ok_fallback is False
     assert reason_fallback == "fallback_metrics"
+
+
+def test_evaluate_strategy_entry_gate_accepts_liquid_crypto_with_smaller_sample():
+    ok, reason = evaluate_strategy_entry_gate(
+        "UNIUSD",
+        {"avg_return": 0.015, "sharpe": 1.5, "turnover": 1.2, "max_drawdown": -0.04},
+        fallback_used=False,
+        sample_size=70,
+    )
+    assert ok is True
+    assert reason == "ok"

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import random
 from datetime import datetime
+from typing import Optional
 
 try:  # Prefer injected heavy dependencies when available.
     from .injection import get_numpy, get_torch
@@ -35,13 +36,17 @@ sys.path.insert(0, current_dir)
 # Add parent directory to path
 sys.path.append(os.path.dirname(current_dir))
 
-from config import create_config, ExperimentConfig
+from config import create_config, ExperimentConfig, TrainingConfig
 from data_utils import load_training_data, StockDataProcessor, create_sequences, split_data
 from train_hf import StockDataset, HFTrainer
 from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
+from src.gpu_utils import cli_flag_was_provided, detect_total_vram_bytes, recommend_batch_size
 from hf_trainer import TransformerTradingModel
 from modern_optimizers import get_optimizer
 from toto_features import TotoOptions
+
+
+HF_BATCH_THRESHOLDS = [(8, 8), (16, 16), (24, 24), (40, 32), (64, 48), (80, 64)]
 
 
 def set_seed(seed: int, deterministic: bool = True):
@@ -152,6 +157,57 @@ def setup_environment(config: ExperimentConfig):
         pass
     
     return device
+
+
+def maybe_autotune_batch_size(config: ExperimentConfig, device: str) -> None:
+    """Adjust batch size heuristically based on detected GPU memory."""
+
+    if not getattr(config.system, "auto_batch_size", True):
+        return
+
+    if device == "cpu":
+        return
+
+    query_device: Optional[str] = None
+    if device == "auto":
+        if not torch.cuda.is_available():
+            return
+    elif device.startswith("cuda"):
+        query_device = device
+    else:
+        return
+
+    total_vram = detect_total_vram_bytes(query_device)
+    if total_vram is None:
+        return
+
+    allow_increase = bool(getattr(config.system, "auto_batch_allow_increase", True))
+    if cli_flag_was_provided("--batch_size") or cli_flag_was_provided("--batch-size"):
+        allow_increase = False
+
+    default_batch = TrainingConfig().batch_size
+    if config.training.batch_size > default_batch:
+        # Only cap when overrides request a larger batch than defaults.
+        allow_increase = False
+
+    recommended = recommend_batch_size(
+        total_vram,
+        config.training.batch_size,
+        HF_BATCH_THRESHOLDS,
+        allow_increase=allow_increase,
+    )
+
+    max_auto = getattr(config.training, "max_auto_batch_size", None)
+    if max_auto is not None:
+        recommended = min(recommended, max_auto)
+
+    if recommended != config.training.batch_size:
+        gb = total_vram / (1024 ** 3)
+        print(
+            f"[hftraining] adjusting batch size from {config.training.batch_size} to {recommended}"
+            f" for detected {gb:.1f} GiB VRAM"
+        )
+        config.training.batch_size = recommended
 
 
 def load_and_process_data(config: ExperimentConfig):
@@ -355,7 +411,8 @@ def run_training(config: ExperimentConfig):
     
     # Setup environment
     device = setup_environment(config)
-    
+    maybe_autotune_batch_size(config, device)
+
     # Load and process data
     train_dataset, val_dataset, processor = load_and_process_data(config)
     

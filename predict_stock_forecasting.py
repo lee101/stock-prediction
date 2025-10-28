@@ -16,6 +16,7 @@ from loss_utils import calculate_trading_profit_torch, get_trading_profits_list,
     calculate_trading_profit_torch_with_buysell_profit_values, calculate_profit_torch_with_entry_buysell_profit_values
 from src.conversion_utils import unwrap_tensor
 from src.fixtures import crypto_symbols
+from src.gpu_utils import detect_total_vram_bytes, recommend_batch_size
 
 transformers.set_seed(42)
 
@@ -24,6 +25,7 @@ from loguru import logger as loguru_logger
 
 base_dir = Path(__file__).parent
 loguru_logger.info(base_dir)
+
 from sklearn.preprocessing import MinMaxScaler
 
 from torch.utils.tensorboard import SummaryWriter
@@ -36,9 +38,25 @@ tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 forecasting_wrapper = None
 
 FORECAST_HORIZON = 7
-KRONOS_SAMPLE_COUNT = 32
+DEFAULT_KRONOS_SAMPLE_COUNT = 32
+KRONOS_SAMPLE_COUNT = DEFAULT_KRONOS_SAMPLE_COUNT
 KRONOS_TEMPERATURE = 0.6
 KRONOS_TOP_P = 0.85
+
+_KRONOS_THRESHOLDS = [(8, 16), (16, 32), (24, 48), (40, 64), (64, 96)]
+_detected_vram = detect_total_vram_bytes()
+if _detected_vram is not None:
+    prev_samples = KRONOS_SAMPLE_COUNT
+    _auto_samples = recommend_batch_size(_detected_vram, prev_samples, _KRONOS_THRESHOLDS)
+    if _auto_samples != prev_samples:
+        gb = _detected_vram / (1024 ** 3)
+        loguru_logger.info(
+            "Auto-tuning Kronos sample count from %d to %d for detected %.1f GiB VRAM",
+            prev_samples,
+            _auto_samples,
+            gb,
+        )
+        KRONOS_SAMPLE_COUNT = _auto_samples
 
 
 def load_pipeline():

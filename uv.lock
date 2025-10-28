@@ -22,6 +22,8 @@ members = [
     "marketsimulator",
     "pufferlib-inference",
     "pufferlib-training",
+    "pufferlib-training2",
+    "rlinc-market",
     "stock-trading-suite",
     "toto-ts",
     "traininglib",
@@ -3932,6 +3934,38 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
+name = "pufferlib-training2"
+version = "0.1.0"
+source = { editable = "pufferlibtraining2" }
+dependencies = [
+    { name = "gym", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "gymnasium", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "pandas", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "pufferlib", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "stock-trading-suite", extra = ["mlops", "rl"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "wandb", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "gym", specifier = "<=0.23.1" },
+    { name = "gymnasium", specifier = ">=0.29" },
+    { name = "pandas", specifier = ">=2.1" },
+    { name = "pufferlib", specifier = ">=2.0.2" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
+    { name = "stock-trading-suite", extras = ["rl", "mlops"], editable = "." },
+    { name = "torch", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "wandb", specifier = ">=0.22" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "pure-eval"
 version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
@@ -4791,6 +4825,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/e2/41/e8a55e06fe66f7bfe32b04b3f7b3055a64d37b223a8021c6e49e77a41316/rignore-0.7.1-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:81dd8fb0356c8826862783b8bf3f404cf0f049927414522dacf2fe72850bc175", size = 952963, upload-time = "2025-10-15T20:57:54.753Z" },
     { url = "https://files.pythonhosted.org/packages/fb/a7/c25e9c6e77e1ea88ef39614e008a53de7f3eaff00d7ffb8547120de50117/rignore-0.7.1-pp311-pypy311_pp73-musllinux_1_2_armv7l.whl", hash = "sha256:54d47cf63226c12b56f0d6b3b3c50ee8e945776bf8146895dc9d6b28f31c1d70", size = 1132091, upload-time = "2025-10-15T20:58:39.337Z" },
     { url = "https://files.pythonhosted.org/packages/65/73/abf94b0697d8ca7aa953dacc2378bdaffb9f20b95316f5af07fcf9c9bb0b/rignore-0.7.1-pp311-pypy311_pp73-musllinux_1_2_x86_64.whl", hash = "sha256:dd87a68eee7aefc0d51d1a69dc8448b2ab1de8666da0bd6013e87b4a2ae71852", size = 1119460, upload-time = "2025-10-15T20:59:06.066Z" },
+]
+
+[[package]]
+name = "rlinc-market"
+version = "0.0.1"
+source = { editable = "rlinc_market" }
+dependencies = [
+    { name = "gymnasium", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "pufferlib", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "gymnasium", specifier = ">=0.29" },
+    { name = "numpy", specifier = ">=2.0", index = "https://pypi.org/simple" },
+    { name = "pufferlib", specifier = ">=2.0.2" },
 ]
 
 [[package]]
