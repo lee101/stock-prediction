@@ -186,6 +186,49 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Learning rate for the generic forecaster.",
     )
     parser.add_argument(
+        "--max-tokens-per-batch",
+        type=int,
+        default=0,
+        help="Token budget for each HF training step (0 disables dynamic batching).",
+    )
+    parser.add_argument(
+        "--length-bucketing",
+        type=str,
+        default="",
+        help="Comma-separated context lengths to use when dynamic batching is enabled.",
+    )
+    parser.add_argument(
+        "--horizon-bucketing",
+        type=str,
+        default="",
+        help="Comma-separated prediction horizons to use when dynamic batching is enabled.",
+    )
+    parser.add_argument(
+        "--bucket-warmup-steps",
+        type=int,
+        default=0,
+        help="Warm-up forward passes per (context, horizon) bucket before collecting gradients.",
+    )
+    parser.add_argument(
+        "--precision",
+        choices=["bf16", "fp16", "fp32"],
+        default="bf16",
+        help="Numerical precision for HF training stages.",
+    )
+    parser.add_argument(
+        "--use-fused-optim",
+        dest="use_fused_optimizer",
+        action="store_true",
+        default=True,
+        help="Enable fused AdamW optimizers when supported.",
+    )
+    parser.add_argument(
+        "--no-fused-optim",
+        dest="use_fused_optimizer",
+        action="store_false",
+        help="Disable fused optimizers even if supported.",
+    )
+    parser.add_argument(
         "--progressive-base-steps",
         type=str,
         default="",
@@ -486,6 +529,24 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
         data_dir=str(data_root),
         toto_predictions_dir=str(predictions_dir) if predictions_dir else None,
     )
+    length_values = (
+        [int(item) for item in args.length_bucketing.split(",") if item.strip()]
+        if args.length_bucketing
+        else [args.sequence_length]
+    )
+    horizon_values = (
+        [int(item) for item in args.horizon_bucketing.split(",") if item.strip()]
+        if args.horizon_bucketing
+        else [args.toto_horizon]
+    )
+    trainer.set_training_overrides(
+        max_tokens_per_batch=max(0, args.max_tokens_per_batch),
+        length_bucketing=length_values,
+        horizon_bucketing=horizon_values,
+        bucket_warmup_steps=max(0, args.bucket_warmup_steps),
+        precision=args.precision,
+        use_fused_optimizer=args.use_fused_optimizer,
+    )
 
     progressive_schedule: Optional[List[int]] = None
 
@@ -527,6 +588,14 @@ def run_pipeline(args: argparse.Namespace) -> Dict[str, object]:
                 "run_name": args.wandb_run_name or None,
             },
             "progressive_base_steps": progressive_schedule,
+            "training_overrides": {
+                "max_tokens_per_batch": args.max_tokens_per_batch,
+                "length_bucketing": length_values,
+                "horizon_bucketing": horizon_values,
+                "bucket_warmup_steps": args.bucket_warmup_steps,
+                "precision": args.precision,
+                "use_fused_optimizer": args.use_fused_optimizer,
+            },
         },
     }
 

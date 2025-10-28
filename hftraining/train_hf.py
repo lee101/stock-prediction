@@ -278,12 +278,39 @@ class HFTrainer:
         self._compile_enabled = compile_requested and self.model is not original_model_ref
 
         # Setup mixed precision (prefer BF16 on capable GPUs)
-        mp_dtype = torch.bfloat16 if (bf16_supported() and getattr(self.config, 'use_bfloat16', True)) else None
-        self.mp_trainer = MixedPrecisionTrainer(config.use_mixed_precision, dtype=mp_dtype)
-        
+        precision = str(getattr(self.config, "precision", "bf16")).lower()
+        mp_dtype = None
+        precision_warning = None
+        if precision == "bf16":
+            if bf16_supported():
+                mp_dtype = torch.bfloat16
+            else:
+                precision_warning = "bf16 requested but not supported on this device; using fp32."
+        elif precision == "fp16":
+            if torch.cuda.is_available():
+                mp_dtype = torch.float16
+            else:
+                precision_warning = "fp16 requested but CUDA is unavailable; using fp32."
+        elif precision == "fp32":
+            config.use_mixed_precision = False
+        else:
+            precision_warning = f"Unknown precision '{precision}' requested; defaulting to bf16 when available."
+            if bf16_supported():
+                mp_dtype = torch.bfloat16
+                precision = "bf16"
+
+        enabled_mp = bool(config.use_mixed_precision and mp_dtype is not None)
+        if not enabled_mp:
+            mp_dtype = None
+
+        self.config.precision = precision
+        self.config.use_bfloat16 = precision == "bf16"
+        self.mp_trainer = MixedPrecisionTrainer(enabled_mp, dtype=mp_dtype)
+        self._precision_warning = precision_warning
+
         # Setup optimizer
         self.optimizer = self._create_optimizer()
-        
+
         # Setup scheduler
         self.scheduler = self._create_scheduler()
         
@@ -297,6 +324,9 @@ class HFTrainer:
         # Enhanced logging (initialize first)
         self.training_logger = get_logger(config.logging_dir, "training")
         self.metrics_tracker = MetricsTracker()
+
+        if self._precision_warning:
+            self.training_logger.logger.warning(self._precision_warning)
         
         if compile_requested:
             if self._compile_enabled:
@@ -369,6 +399,8 @@ class HFTrainer:
                 "ns_steps": getattr(self.config, "muon_ns_steps", 5),
             })
 
+        fused_flag = bool(getattr(self.config, "use_fused_optimizer", True) and torch.cuda.is_available())
+
         try:
             return make_optimizer(
                 self.model,
@@ -377,21 +409,22 @@ class HFTrainer:
                 weight_decay=self.config.weight_decay,
                 betas=(self.config.adam_beta1, self.config.adam_beta2),
                 eps=self.config.adam_epsilon,
-                fused=True,
+                fused=fused_flag,
                 **{k: v for k, v in extra_kwargs.items() if v is not None},
             )
         except ValueError:
             # Unknown optimizer name, fall back to legacy registry.
+            base_kwargs = dict(
+                lr=self.config.learning_rate,
+                betas=(self.config.adam_beta1, self.config.adam_beta2),
+                eps=self.config.adam_epsilon,
+                weight_decay=self.config.weight_decay,
+                **extra_kwargs,
+            )
+            if fused_flag and name in {"adamw", "adam"}:
+                base_kwargs["fused"] = True
             try:
-                return legacy_get_optimizer(
-                    name,
-                    self.model.parameters(),
-                    lr=self.config.learning_rate,
-                    betas=(self.config.adam_beta1, self.config.adam_beta2),
-                    eps=self.config.adam_epsilon,
-                    weight_decay=self.config.weight_decay,
-                    **extra_kwargs,
-                )
+                return legacy_get_optimizer(name, self.model.parameters(), **base_kwargs)
             except Exception as exc:
                 if hasattr(self, 'training_logger'):
                     self.training_logger.logger.warning(f"Falling back to AdamW optimizer due to: {exc}")
@@ -405,13 +438,23 @@ class HFTrainer:
         except Exception as exc:  # pragma: no cover - runtime guard.
             if hasattr(self, 'training_logger'):
                 self.training_logger.logger.warning(f"Optimizer setup failed ({name}), defaulting to AdamW: {exc}")
-            return torch.optim.AdamW(
-                self.model.parameters(),
-                lr=self.config.learning_rate,
-                betas=(self.config.adam_beta1, self.config.adam_beta2),
-                eps=self.config.adam_epsilon,
-                weight_decay=self.config.weight_decay,
-            )
+            try:
+                return torch.optim.AdamW(
+                    self.model.parameters(),
+                    lr=self.config.learning_rate,
+                    betas=(self.config.adam_beta1, self.config.adam_beta2),
+                    eps=self.config.adam_epsilon,
+                    weight_decay=self.config.weight_decay,
+                    fused=fused_flag and torch.cuda.is_available(),
+                )
+            except TypeError:
+                return torch.optim.AdamW(
+                    self.model.parameters(),
+                    lr=self.config.learning_rate,
+                    betas=(self.config.adam_beta1, self.config.adam_beta2),
+                    eps=self.config.adam_epsilon,
+                    weight_decay=self.config.weight_decay,
+                )
 
     def _create_scheduler(self):
         """Create learning rate scheduler"""
@@ -553,21 +596,40 @@ class HFTrainer:
         num_workers = max(0, int(getattr(self.config, 'dataloader_num_workers', 0)))
         persistent_workers = bool(getattr(self.config, 'persistent_workers', True) and num_workers > 0)
         prefetch_factor = int(getattr(self.config, 'prefetch_factor', 2)) if num_workers > 0 else None
+
+        train_batch_size = int(self.config.batch_size)
+        tokens_per_sample = int(getattr(self.config, 'sequence_length', 0)) + int(getattr(self.config, 'prediction_horizon', 0))
+        max_tokens = int(getattr(self.config, 'max_tokens_per_batch', 0))
+        if max_tokens > 0 and tokens_per_sample > 0:
+            dynamic_batch = max(1, max_tokens // tokens_per_sample)
+            if dynamic_batch < train_batch_size:
+                self.training_logger.info(
+                    "Adjusting batch size from %d to %d to respect %d tokens/step budget",
+                    train_batch_size,
+                    dynamic_batch,
+                    max_tokens,
+                )
+                train_batch_size = dynamic_batch
+        self.effective_batch_size = train_batch_size
+        self.config.batch_size = train_batch_size
+        self.config.max_tokens_per_batch = max_tokens
+
         train_loader = DataLoader(
             self.train_dataset,
-            batch_size=self.config.batch_size,
+            batch_size=train_batch_size,
             shuffle=True,
             num_workers=num_workers,
             pin_memory=pin_mem,
             persistent_workers=persistent_workers,
             **({"prefetch_factor": prefetch_factor} if prefetch_factor else {})
         )
-        
+
         eval_loader = None
         if self.eval_dataset:
+            eval_batch_size = min(train_batch_size, int(self.config.batch_size))
             eval_loader = DataLoader(
                 self.eval_dataset,
-                batch_size=self.config.batch_size,
+                batch_size=eval_batch_size,
                 shuffle=False,
                 num_workers=num_workers,
                 pin_memory=pin_mem,

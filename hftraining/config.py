@@ -65,6 +65,7 @@ class TrainingConfig:
     weight_decay: float = 0.01
     gradient_accumulation_steps: int = 4
     max_grad_norm: float = 1.0
+    use_fused_optimizer: bool = True
     # Stability
     use_adaptive_grad_clip: bool = False
     agc_clip_factor: float = 0.01
@@ -91,10 +92,17 @@ class TrainingConfig:
     batch_size: int = 32
     dataloader_num_workers: int = 4
     dataloader_pin_memory: bool = True
+    max_tokens_per_batch: int = 0
+    length_bucketing: List[int] = field(default_factory=lambda: [60])
+    horizon_bucketing: List[int] = field(default_factory=lambda: [5])
+    window_stride: int = 1
+    pack_windows: bool = True
+    bucket_warmup_steps: int = 0
     
     # Mixed precision
     use_mixed_precision: bool = True
     gradient_checkpointing: bool = True
+    precision: str = "bf16"
     
     # Regularization
     dropout_rate: float = 0.1
