@@ -7,7 +7,7 @@ name = "pufferlib-training"
 version = "0.1.0"
 description = "RL training pipelines and utilities for the workspace PufferLib experiments."
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     "stock-trading-suite[rl,hf,mlops,opt]",
     "gymrl",

@@ -538,7 +538,7 @@ def _make_portfolio_stack_figure(report) -> Optional["plt.Figure"]:
     ax.set_title("Portfolio Allocation (Abs Market Value)")
     ax.set_xlabel("Timestamp")
     ax.set_ylabel("Absolute Market Value ($)")
-    ax.legend(loc="upper left", fontsize="small", ncols=2)
+    ax.legend(loc="upper left", fontsize="small", ncol=2)
     ax.grid(alpha=0.3)
     fig.autofmt_xdate()
     return fig

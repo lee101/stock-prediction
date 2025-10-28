@@ -7,7 +7,7 @@ name = "pufferlib-inference"
 version = "0.1.0"
 description = "Inference utilities for deploying PufferLib portfolio allocators."
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     "stock-trading-suite[rl,hf]",
     "hfinference",
