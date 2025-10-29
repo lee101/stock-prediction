@@ -48,8 +48,54 @@ else:  # pragma: no cover
     )
     from wandboard import WandBoardLogger
 
+from src.cache_utils import ensure_huggingface_cache_dir
+
+ensure_huggingface_cache_dir(logger=logger)
+
 
 ENV_MOCK_ANALYTICS = "MARKETSIM_USE_MOCK_ANALYTICS"
+
+DEFAULT_FAST_BACKTEST_SIMS = 24
+DEFAULT_FAST_SWEEP_POINTS = 101
+DEFAULT_FAST_KRONOS_SAMPLES = 64
+
+
+def _configure_fast_mode(
+    enabled: bool,
+    *,
+    backtest_sims: Optional[int] = None,
+    sweep_points: Optional[int] = None,
+    kronos_samples: Optional[int] = None,
+) -> Dict[str, Optional[str]]:
+    overrides: Dict[str, Optional[str]] = {}
+    if not enabled:
+        return overrides
+
+    def _set_env(key: str, value: object) -> None:
+        overrides[key] = os.environ.get(key)
+        os.environ[key] = str(value)
+
+    backtests = backtest_sims if backtest_sims and backtest_sims > 0 else DEFAULT_FAST_BACKTEST_SIMS
+    sweep = sweep_points if sweep_points and sweep_points > 0 else DEFAULT_FAST_SWEEP_POINTS
+    if sweep % 2 == 0:
+        sweep += 1
+    if sweep < 3:
+        sweep = 3
+    kronos = kronos_samples if kronos_samples and kronos_samples > 0 else DEFAULT_FAST_KRONOS_SAMPLES
+
+    _set_env("MARKETSIM_FAST_MODE", 1)
+    _set_env("FAST_TESTING", 1)
+    _set_env("MARKETSIM_BACKTEST_SIMULATIONS", backtests)
+    _set_env("MARKETSIM_SWEEP_POINTS", sweep)
+    _set_env("MARKETSIM_KRONOS_SAMPLE_COUNT", max(1, kronos))
+
+    logger.info(
+        "[sim] Fast simulation mode enabled (backtests=%d, sweep_points=%d, kronos_samples=%d).",
+        backtests,
+        sweep,
+        kronos,
+    )
+    return overrides
 
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
@@ -107,6 +153,29 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         "--flatten-end",
         action="store_true",
         help="Liquidate all open positions at the end of the run for realised PnL metrics.",
+    )
+    parser.add_argument(
+        "--fast-sim",
+        action="store_true",
+        help="Enable reduced-cost analytics settings for quicker experimentation.",
+    )
+    parser.add_argument(
+        "--fast-backtest-sims",
+        type=int,
+        default=None,
+        help="Backtest simulations per symbol when --fast-sim is enabled (default: 24).",
+    )
+    parser.add_argument(
+        "--fast-sweep-points",
+        type=int,
+        default=None,
+        help="Sweep points for take-profit optimisation when --fast-sim is enabled (default: 101).",
+    )
+    parser.add_argument(
+        "--fast-kronos-samples",
+        type=int,
+        default=None,
+        help="Kronos sampling count when --fast-sim is enabled (default: 64).",
     )
     parser.add_argument(
         "--sharpe-cutoff",
@@ -853,6 +922,12 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             print(metric_line)
         print(f"stub-summary={summary_json}")
         return 0
+    fast_env_overrides: Dict[str, Optional[str]] = _configure_fast_mode(
+        args.fast_sim,
+        backtest_sims=args.fast_backtest_sims,
+        sweep_points=args.fast_sweep_points,
+        kronos_samples=args.fast_kronos_samples,
+    )
     _configure_compact_logging_pre(args.compact_logs)
 
     use_mock = not args.real_analytics
@@ -895,6 +970,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         for key, prev in previous_overrides.items():
             _restore_env(key, prev)
         _restore_env(ENV_MOCK_ANALYTICS, previous_mock_setting)
+        for key, prev in fast_env_overrides.items():
+            _restore_env(key, prev)
         _configure_compact_logging_post(args.compact_logs)
 
     if report is None:  # pragma: no cover - defensive
