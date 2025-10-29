@@ -66,6 +66,33 @@ jobs:
         run: |
           python -m pytest tests/prod -m integration
 
+      - name: Run fast env benchmark
+        run: |
+          make fast-env-benchmark
+
+      - name: Report benchmark drift
+        run: |
+          . .venv/bin/activate && python analysis/fast_env_drift.py --csv results/bench_fast_vs_python.csv
+
+      - name: Fast PPO smoke run
+        run: |
+          . .venv/bin/activate && python training/run_fastppo.py \
+            --symbol AAPL \
+            --data-root trainingdata \
+            --context-len 32 \
+            --total-timesteps 512 \
+            --num-envs 1 \
+            --learning-rate 1e-4 \
+            --env-backend python \
+            --log-json results/fastppo_ci.json \
+            --plot \
+            --plot-path results \
+            --html-report \
+            --html-path results/fastppo_ci_report.html \
+            --sma-window 32 \
+            --ema-window 32 \
+            --device cpu
+
       - name: Run simulator report
         env:
           MARKETSIM_ALLOW_MOCK_ANALYTICS: "1"
@@ -113,3 +140,8 @@ jobs:
           path: |
             marketsimulator/run_logs/${{ env.CI_SIM_PREFIX }}_*
             marketsimulator/run_logs/trend_summary.json
+            results/bench_fast_vs_python.json
+            results/bench_fast_vs_python.csv
+            results/fastppo_ci.json
+            results/fastppo_ci_report.html
+            results/aapl_fastppo_trace.png

@@ -1,0 +1,29 @@
+{
+  "symbol": "QQQ",
+  "model": "toto",
+  "config": {
+    "name": "toto_trimmed10_3072",
+    "num_samples": 3072,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 384
+  },
+  "validation": {
+    "price_mae": 2.5146900497200706,
+    "pct_return_mae": 0.004486344281914379,
+    "latency_s": 5.699378931996762
+  },
+  "test": {
+    "price_mae": 3.91339176688881,
+    "pct_return_mae": 0.00685711380356359,
+    "latency_s": 5.935085946999607
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/QQQ.json",
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}
