@@ -184,3 +184,6 @@ cppsimulator/build/run_sim
 external
 cache
 marketsimulator/run_logs
+githubagent/actions-runner/externals/
+githubagent/actions-runner/externals/bin
+githubagent/actions-runner/bin
