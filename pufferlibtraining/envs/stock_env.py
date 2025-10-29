@@ -64,8 +64,11 @@ class StockTradingEnv(gym.Env):
         self.borrowing_cost_annual = float(resolved_borrowing_cost)
         self.transaction_cost = float(transaction_cost_bps) / 10_000.0
         self.spread_cost = float(spread_bps) / 10_000.0
-        self.trading_days_per_year = int(resolved_trading_days)
-        self.borrowing_cost_daily = self.borrowing_cost_annual / self.trading_days_per_year
+        self.trading_days_per_year = max(1, int(resolved_trading_days))
+        if self.borrowing_cost_annual > 0.0:
+            self.borrowing_cost_daily = (1.0 + self.borrowing_cost_annual) ** (1.0 / self.trading_days_per_year) - 1.0
+        else:
+            self.borrowing_cost_daily = 0.0
         # Risk dial influences the effective intraday/overnight caps (monotonic)
         risk_scale = float(max(0.0, min(1.0, risk_scale)))
         intraday_cap = 1.0 + (float(max_intraday_leverage) - 1.0) * risk_scale

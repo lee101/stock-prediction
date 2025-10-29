@@ -169,6 +169,7 @@ class KronosForecastingWrapper:
         self._device = device
         self._predictor = None
         self._preferred_dtype = self._compute_preferred_dtype(device, prefer_fp32=self._prefer_fp32)
+        self._adaptive_sample_count: Optional[int] = None
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -201,7 +202,6 @@ class KronosForecastingWrapper:
             lookback=lookback,
         )[0]
 
-        predictor = self._ensure_predictor()
         (
             effective_temperature,
             effective_top_p,
@@ -216,8 +216,10 @@ class KronosForecastingWrapper:
             verbose=verbose,
         )
 
-        oom_retried = False
+        current_samples = effective_samples
+        oom_attempts = 0
         while True:
+            predictor = self._ensure_predictor()
             try:
                 forecast_df = predictor.predict(
                     payload.feature_frame,
@@ -227,30 +229,54 @@ class KronosForecastingWrapper:
                     T=effective_temperature,
                     top_k=effective_top_k,
                     top_p=effective_top_p,
-                    sample_count=effective_samples,
+                    sample_count=current_samples,
                     verbose=effective_verbose,
                 )
                 break
             except RuntimeError as exc:
-                message = str(exc)
-                if (
-                    not oom_retried
-                    and "out of memory" in message.lower()
-                    and self._device.startswith("cuda")
-                ):
-                    oom_retried = True
+                if not _is_cuda_oom_error(exc) or not self._device.startswith("cuda"):
+                    raise
+                next_samples = self._next_sample_count_after_oom(current_samples)
+                self._handle_cuda_oom()
+                if next_samples is None:
                     logger.error(
-                        "Kronos GPU inference ran out of memory on %s; CPU fallback is disabled.",
+                        "Kronos GPU inference ran out of memory on %s with sample_count=%d; no smaller retry possible.",
                         self._device,
+                        current_samples,
                     )
-                    self._handle_cuda_oom()
                     raise RuntimeError(
                         f"Kronos GPU inference ran out of memory on device {self._device}. Reduce sampling requirements or provision a larger GPU."
                     ) from exc
-                raise
+                oom_attempts += 1
+                if oom_attempts == 1:
+                    logger.warning(
+                        "Kronos GPU inference ran out of memory on %s with sample_count=%d; retrying with %d.",
+                        self._device,
+                        current_samples,
+                        next_samples,
+                    )
+                else:
+                    logger.warning(
+                        "Kronos GPU inference still OOM on %s; reducing sample_count from %d to %d (attempt %d).",
+                        self._device,
+                        current_samples,
+                        next_samples,
+                        oom_attempts,
+                    )
+                self._register_adaptive_sample_limit(next_samples)
+                current_samples = next_samples
+                continue
 
         if not isinstance(forecast_df, pd.DataFrame):
             raise RuntimeError("Kronos predictor returned an unexpected result type.")
+
+        if oom_attempts > 0 and current_samples < effective_samples:
+            logger.info(
+                "Kronos inference recovered after OOM on %s using sample_count=%d (requested %d).",
+                self._device,
+                current_samples,
+                effective_samples,
+            )
 
         return self._assemble_results(payload, forecast_df, columns)
 
@@ -282,11 +308,6 @@ class KronosForecastingWrapper:
             lookback=lookback,
         )
 
-        predictor = self._ensure_predictor()
-        batch_predict = getattr(predictor, "predict_batch", None)
-        if batch_predict is None:
-            raise AttributeError("Kronos predictor does not expose 'predict_batch'. Update the Kronos package.")
-
         (
             effective_temperature,
             effective_top_p,
@@ -301,8 +322,13 @@ class KronosForecastingWrapper:
             verbose=verbose,
         )
 
-        oom_retried = False
+        current_samples = effective_samples
+        oom_attempts = 0
         while True:
+            predictor = self._ensure_predictor()
+            batch_predict = getattr(predictor, "predict_batch", None)
+            if batch_predict is None:
+                raise AttributeError("Kronos predictor does not expose 'predict_batch'. Update the Kronos package.")
             try:
                 forecast_list = batch_predict(
                     [payload.feature_frame for payload in payloads],
@@ -312,32 +338,56 @@ class KronosForecastingWrapper:
                     T=effective_temperature,
                     top_k=effective_top_k,
                     top_p=effective_top_p,
-                    sample_count=effective_samples,
+                    sample_count=current_samples,
                     verbose=effective_verbose,
                 )
                 break
             except RuntimeError as exc:
-                message = str(exc)
-                if (
-                    not oom_retried
-                    and "out of memory" in message.lower()
-                    and self._device.startswith("cuda")
-                ):
-                    oom_retried = True
+                if not _is_cuda_oom_error(exc) or not self._device.startswith("cuda"):
+                    raise
+                next_samples = self._next_sample_count_after_oom(current_samples)
+                self._handle_cuda_oom()
+                if next_samples is None:
                     logger.error(
-                        "Kronos GPU batch inference ran out of memory on %s; CPU fallback is disabled.",
+                        "Kronos GPU batch inference ran out of memory on %s with sample_count=%d; no smaller retry possible.",
                         self._device,
+                        current_samples,
                     )
-                    self._handle_cuda_oom()
                     raise RuntimeError(
                         f"Kronos GPU inference ran out of memory on device {self._device}. Reduce sampling requirements or provision a larger GPU."
                     ) from exc
-                raise
+                oom_attempts += 1
+                if oom_attempts == 1:
+                    logger.warning(
+                        "Kronos GPU batch inference ran out of memory on %s with sample_count=%d; retrying with %d.",
+                        self._device,
+                        current_samples,
+                        next_samples,
+                    )
+                else:
+                    logger.warning(
+                        "Kronos GPU batch inference still OOM on %s; reducing sample_count from %d to %d (attempt %d).",
+                        self._device,
+                        current_samples,
+                        next_samples,
+                        oom_attempts,
+                    )
+                self._register_adaptive_sample_limit(next_samples)
+                current_samples = next_samples
+                continue
 
         if not isinstance(forecast_list, (list, tuple)):
             raise RuntimeError("Kronos batch predictor returned an unexpected result type.")
         if len(forecast_list) != len(payloads):
             raise RuntimeError("Kronos batch predictor returned a result with mismatched length.")
+
+        if oom_attempts > 0 and current_samples < effective_samples:
+            logger.info(
+                "Kronos batch inference recovered after OOM on %s using sample_count=%d (requested %d).",
+                self._device,
+                current_samples,
+                effective_samples,
+            )
 
         results: List[Dict[str, KronosForecastResult]] = []
         for payload, forecast_df in zip(payloads, forecast_list):
@@ -358,7 +408,11 @@ class KronosForecastingWrapper:
         effective_temperature = float(temperature if temperature is not None else self.temperature)
         effective_top_p = float(top_p if top_p is not None else self.top_p)
         effective_top_k = int(top_k if top_k is not None else self.top_k)
-        effective_samples = int(sample_count if sample_count is not None else self.sample_count)
+        base_samples = int(sample_count if sample_count is not None else self.sample_count)
+        adaptive_limit = self._adaptive_sample_count
+        if adaptive_limit is not None and adaptive_limit < base_samples:
+            base_samples = adaptive_limit
+        effective_samples = max(1, base_samples)
         effective_verbose = bool(verbose if verbose is not None else self.verbose)
         return (
             effective_temperature,
@@ -639,6 +693,21 @@ class KronosForecastingWrapper:
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("Failed to clear CUDA cache after OOM: %s", exc)
         self.unload()
+
+    def _next_sample_count_after_oom(self, current_samples: int) -> Optional[int]:
+        if current_samples <= 1:
+            return None
+        next_samples = max(1, current_samples // 2)
+        if next_samples == current_samples and current_samples > 1:
+            next_samples = current_samples - 1
+        if next_samples < 1:
+            return None
+        return next_samples
+
+    def _register_adaptive_sample_limit(self, candidate: int) -> None:
+        candidate = max(1, int(candidate))
+        if self._adaptive_sample_count is None or candidate < self._adaptive_sample_count:
+            self._adaptive_sample_count = candidate
 
     def _prepare_feature_frame(self, df: pd.DataFrame) -> pd.DataFrame:
         working = df.copy()
