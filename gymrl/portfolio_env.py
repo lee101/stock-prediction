@@ -507,6 +507,7 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             weights = self._project_long_only_weights(action)
 
         weights = self._apply_loss_shutdown(weights)
+        weights = self._enforce_crypto_limits(weights)
         return weights.astype(np.float32, copy=False)
 
     def _normalise_long_only(self, weights: np.ndarray) -> np.ndarray:
@@ -541,7 +542,8 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
             if self.config.weight_cap is not None:
                 weights = np.minimum(weights, float(self.config.weight_cap))
         weights = self._apply_loss_shutdown(weights)
-        return weights
+        weights = self._enforce_crypto_limits(weights)
+        return weights.astype(np.float32, copy=False)
 
     def _project_long_only_weights(self, action: np.ndarray) -> np.ndarray:
         if self.intraday_leverage_cap > 1.0:
@@ -564,6 +566,7 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
                 else:
                     weights = capped / capped_sum
 
+        weights = self._enforce_crypto_limits(weights)
         return weights.astype(np.float32, copy=False)
 
     def _apply_closing_leverage_limit(self, weights: np.ndarray) -> np.ndarray:
@@ -636,6 +639,27 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
 
         return weights.astype(np.float32, copy=False)
 
+    def _enforce_crypto_limits(self, weights: np.ndarray) -> np.ndarray:
+        """
+        Enforce the brokerage constraint that crypto positions remain unlevered and long-only.
+
+        Crypto venues we connect to do not allow shorting or gross exposure above 1×. We therefore
+        clamp the executed allocation for recognised crypto symbols to the [0, 1] interval. Any
+        excess leverage that would have otherwise been assigned to crypto is dropped instead of
+        being silently redistributed to other assets.
+        """
+        arr = np.asarray(weights, dtype=np.float32)
+        if arr.shape != (self.N,) or not np.any(self.crypto_mask):
+            return arr.astype(np.float32, copy=False)
+
+        crypto_slice = arr[self.crypto_mask]
+        if not np.any(crypto_slice > 1.0 + 1e-8) and not np.any(crypto_slice < -1e-8):
+            return arr.astype(np.float32, copy=False)
+
+        adjusted = arr.copy()
+        np.clip(adjusted[self.crypto_mask], 0.0, 1.0, out=adjusted[self.crypto_mask])
+        return adjusted.astype(np.float32, copy=False)
+
     def _update_loss_shutdown_counters(self, executed_weights: np.ndarray, net_asset_returns: np.ndarray) -> None:
         if not self.config.loss_shutdown_enabled:
             self._loss_shutdown_active_long = 0.0
@@ -707,6 +731,8 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
                 self._loss_shutdown_probe_override = float(probe_override)
                 executed_weights = self._apply_loss_shutdown(executed_weights)
 
+        executed_weights = self._enforce_crypto_limits(executed_weights)
+
         deltas = np.abs(executed_weights - previous_weights)
         turnover = float(deltas.sum())
         per_asset_cost = deltas * self.costs_vector
@@ -717,6 +743,7 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
         gross_intraday = float(np.sum(np.abs(executed_weights)))
 
         closing_weights = self._apply_closing_leverage_limit(executed_weights)
+        closing_weights = self._enforce_crypto_limits(closing_weights)
         closing_turnover = 0.0
         closing_trading_cost = 0.0
         if not np.allclose(closing_weights, executed_weights):
@@ -742,6 +769,8 @@ class PortfolioEnv(gym.Env[np.ndarray, np.ndarray]):
                 closing_weights = clamped_weights
             else:
                 closing_weights = clamped_weights
+
+        closing_weights = self._enforce_crypto_limits(closing_weights)
 
         trading_cost = float(per_asset_cost.sum())
         crypto_cost = float(per_asset_cost[self.crypto_mask].sum()) if np.any(self.crypto_mask) else 0.0
