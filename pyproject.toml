@@ -194,19 +194,16 @@ default-groups = []
 
 [tool.uv.workspace]
 # Explicit workspace members for per-package installs. Add more as they stabilize.
+# Default workspace keeps core packages that resolve cleanly under Python 3.12+.
 members = [
     "differentiable_market",
     "differentiable_market_kronos",
     "differentiable_market_totoembedding",
-    "rlinc_market",
     "gymrl",
     "hfshared",
     "hfinference",
     "hftraining",
     "marketsimulator",
-    "pufferlibinference",
-    "pufferlibtraining",
-    "pufferlibtraining2",
     "toto",
     "traininglib",
 ]
