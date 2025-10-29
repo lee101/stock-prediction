@@ -30,6 +30,7 @@ from data_curate_daily import get_bid, get_ask, download_exchange_latest_data
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from jsonshelve import FlatShelf
 from marketsimulator.state import get_state
+from src.cache_utils import ensure_huggingface_cache_dir
 from src.comparisons import is_buy_side, is_same_side, is_sell_side
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols
@@ -92,6 +93,8 @@ _EXPORTED_ENV_HELPERS = (reset_symbol_entry_counters, get_entry_counter_snapshot
 
 # Configure logging
 logger = setup_logging("trade_stock_e2e.log")
+
+ensure_huggingface_cache_dir(logger=logger)
 
 
 STATE_DIR = get_state_dir()
