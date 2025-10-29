@@ -22,6 +22,15 @@ logger = setup_logging("backtest_test3_inline.log")
 _BOOL_FALSE = {"0", "false", "no", "off"}
 _FAST_TORCH_SETTINGS_CONFIGURED = False
 
+_GPU_METRICS_MODE = os.getenv("MARKETSIM_GPU_METRICS_MODE", "summary").strip().lower()
+if _GPU_METRICS_MODE not in {"off", "summary", "verbose"}:
+    _GPU_METRICS_MODE = "summary"
+try:
+    _GPU_METRICS_PEAK_TOLERANCE_MB = float(os.getenv("MARKETSIM_GPU_METRICS_PEAK_TOLERANCE_MB", "16.0"))
+except ValueError:
+    _GPU_METRICS_PEAK_TOLERANCE_MB = 16.0
+_GPU_METRICS_PEAK_TOLERANCE_BYTES = max(0.0, _GPU_METRICS_PEAK_TOLERANCE_MB) * 1e6
+
 
 def _read_env_flag(names: Iterable[str]) -> Optional[bool]:
     for name in names:
@@ -319,6 +328,11 @@ def evaluate_maxdiff_strategy(
             "maxdiffprofit_high_price": high_price,
             "maxdiffprofit_low_price": low_price,
             "maxdiff_turnover": 0.0,
+            "maxdiff_primary_side": "neutral",
+            "maxdiff_trade_bias": 0.0,
+            "maxdiff_trades_positive": 0,
+            "maxdiff_trades_negative": 0,
+            "maxdiff_trades_total": 0,
         }
 
     if validation_len == 0:
@@ -468,6 +482,23 @@ def evaluate_maxdiff_strategy(
     daily_returns_np = final_profit_values.detach().cpu().numpy().astype(float, copy=False)
     evaluation = _evaluate_daily_returns(daily_returns_np, trading_days_per_year)
 
+    trades_tensor = maxdiff_trades.detach()
+    positive_trades = int((trades_tensor > 0).sum().item())
+    negative_trades = int((trades_tensor < 0).sum().item())
+    total_active_trades = int((trades_tensor != 0).sum().item())
+    net_direction = float(trades_tensor.sum().item())
+    if positive_trades and not negative_trades:
+        primary_side = "buy"
+    elif negative_trades and not positive_trades:
+        primary_side = "sell"
+    elif net_direction > 0:
+        primary_side = "buy"
+    elif net_direction < 0:
+        primary_side = "sell"
+    else:
+        primary_side = "neutral"
+    trade_bias = net_direction / float(total_active_trades) if total_active_trades else 0.0
+
     high_price_reference = float(last_preds.get("high_predicted_price_value", 0.0))
     low_price_reference = float(last_preds.get("low_predicted_price_value", 0.0))
     metadata = {
@@ -478,6 +509,11 @@ def evaluate_maxdiff_strategy(
         "maxdiffprofit_high_price": high_price_reference * (1.0 + best_high_multiplier),
         "maxdiffprofit_low_price": low_price_reference * (1.0 + best_low_multiplier),
         "maxdiff_turnover": float(np.mean(np.abs(daily_returns_np))) if daily_returns_np.size else 0.0,
+        "maxdiff_primary_side": primary_side,
+        "maxdiff_trade_bias": float(trade_bias),
+        "maxdiff_trades_positive": positive_trades,
+        "maxdiff_trades_negative": negative_trades,
+        "maxdiff_trades_total": total_active_trades,
     }
 
     return evaluation, daily_returns_np, metadata
@@ -621,6 +657,26 @@ def _maybe_empty_cuda_cache() -> None:
         logger.debug("Failed to empty CUDA cache: %s", exc)
 
 
+def _should_emit_gpu_log(
+    category: str,
+    *,
+    summary_trigger: bool = False,
+    count: Optional[int] = None,
+) -> bool:
+    mode = _GPU_METRICS_MODE
+    if mode == "off":
+        return False
+    if mode == "verbose":
+        return True
+    if category == "load":
+        return True
+    if summary_trigger:
+        return True
+    if count is not None and count <= 1:
+        return True
+    return False
+
+
 
 def _gpu_memory_snapshot(label: str, *, reset_max: bool = False) -> Optional[Dict[str, object]]:
     if not torch.cuda.is_available():
@@ -641,7 +697,9 @@ def _gpu_memory_snapshot(label: str, *, reset_max: bool = False) -> Optional[Dic
             "peak_reserved_bytes": float(peak_reserved),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        logger.info(
+        category = "load" if "loaded" in label else "snapshot"
+        summary_trigger = "profile" in label
+        message_args = (
             "GPU[%s] %s alloc=%.1f MB reserved=%.1f MB peak=%.1f MB",
             device_index,
             label,
@@ -649,6 +707,10 @@ def _gpu_memory_snapshot(label: str, *, reset_max: bool = False) -> Optional[Dic
             reserved / 1e6,
             peak_allocated / 1e6,
         )
+        if _should_emit_gpu_log(category, summary_trigger=summary_trigger):
+            logger.info(*message_args)
+        else:
+            logger.debug(*message_args)
         if reset_max:
             torch.cuda.reset_peak_memory_stats(device_index)
         return snapshot
@@ -682,22 +744,35 @@ def _record_toto_memory_stats(
             "max_delta_bytes": 0.0,
         },
     )
+    prev_peak = float(stats.get("peak_bytes", 0.0))
+    prev_delta = float(stats.get("max_delta_bytes", 0.0))
+    prev_symbol = stats.get("last_symbol")
+
     stats["count"] = int(stats["count"]) + 1
-    stats["peak_bytes"] = max(float(stats["peak_bytes"]), peak_bytes)
-    stats["max_delta_bytes"] = max(float(stats["max_delta_bytes"]), delta_bytes)
+    count = int(stats["count"])
+    stats["peak_bytes"] = max(prev_peak, peak_bytes)
+    stats["max_delta_bytes"] = max(prev_delta, delta_bytes)
     stats["last_peak_bytes"] = peak_bytes
     stats["last_delta_bytes"] = delta_bytes
     stats["last_symbol"] = symbol
     stats["last_updated"] = datetime.now(timezone.utc).isoformat()
-    logger.info(
+    peak_growth = peak_bytes - prev_peak > _GPU_METRICS_PEAK_TOLERANCE_BYTES
+    delta_growth = delta_bytes - prev_delta > _GPU_METRICS_PEAK_TOLERANCE_BYTES
+    symbol_changed = symbol is not None and symbol != prev_symbol
+    summary_trigger = peak_growth or delta_growth or symbol_changed
+    message_args = (
         "Toto GPU usage symbol=%s num_samples=%d samples_per_batch=%d peak=%.1f MB delta=%.1f MB (count=%d)",
         symbol or "<unknown>",
         key[0],
         key[1],
         peak_bytes / 1e6,
         delta_bytes / 1e6,
-        stats["count"],
+        count,
     )
+    if _should_emit_gpu_log("toto_predict", summary_trigger=summary_trigger, count=count):
+        logger.info(*message_args)
+    else:
+        logger.debug(*message_args)
 
 
 def profile_toto_memory(
@@ -1488,7 +1563,6 @@ def load_toto_pipeline() -> TotoPipeline:
 
 
 def load_kronos_wrapper(params: Dict[str, float]) -> KronosForecastingWrapper:
-    _drop_toto_pipeline()
     _maybe_enable_fast_torch_settings()
     _require_cuda("Kronos inference", allow_cpu_fallback=False)
     key = (
@@ -1501,17 +1575,37 @@ def load_kronos_wrapper(params: Dict[str, float]) -> KronosForecastingWrapper:
     )
     wrapper = kronos_wrapper_cache.get(key)
     if wrapper is None:
-        wrapper = KronosForecastingWrapper(
-            model_name="NeoQuasar/Kronos-base",
-            tokenizer_name="NeoQuasar/Kronos-Tokenizer-base",
-            device="cuda:0",
-            max_context=int(params["max_context"]),
-            clip=float(params["clip"]),
-            temperature=float(params["temperature"]),
-            top_p=float(params["top_p"]),
-            top_k=int(params["top_k"]),
-            sample_count=int(params["sample_count"]),
-        )
+        def _build_wrapper() -> KronosForecastingWrapper:
+            return KronosForecastingWrapper(
+                model_name="NeoQuasar/Kronos-base",
+                tokenizer_name="NeoQuasar/Kronos-Tokenizer-base",
+                device="cuda:0",
+                max_context=int(params["max_context"]),
+                clip=float(params["clip"]),
+                temperature=float(params["temperature"]),
+                top_p=float(params["top_p"]),
+                top_k=int(params["top_k"]),
+                sample_count=int(params["sample_count"]),
+            )
+
+        try:
+            wrapper = _build_wrapper()
+        except Exception as exc:
+            if not _is_cuda_oom_error(exc):
+                raise
+            logger.warning(
+                "Kronos wrapper initialisation OOM with Toto resident; releasing Toto pipeline and retrying."
+            )
+            _drop_toto_pipeline()
+            try:
+                wrapper = _build_wrapper()
+            except Exception as retry_exc:
+                if _is_cuda_oom_error(retry_exc):
+                    logger.error(
+                        "Kronos wrapper initialisation OOM even after releasing Toto pipeline (params=%s).",
+                        params,
+                    )
+                raise
         kronos_wrapper_cache[key] = wrapper
     _touch_kronos_wrapper(key)
     return wrapper

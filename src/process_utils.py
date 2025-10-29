@@ -38,13 +38,63 @@ def _persist_watcher_metadata(path: Path, payload: dict) -> None:
         logger.warning("Failed to persist watcher metadata %s: %s", path, exc)
 
 
+def _backout_key(symbol: str, **kwargs) -> str:
+    extras = []
+    for key in (
+        "start_offset_minutes",
+        "ramp_minutes",
+        "market_after_minutes",
+        "sleep_seconds",
+        "market_close_buffer_minutes",
+        "market_close_force_minutes",
+    ):
+        value = kwargs.get(key)
+        if value is not None:
+            extras.append(f"{key}={value}")
+    suffix = "|".join(extras)
+    return f"{symbol}|{suffix}" if suffix else symbol
+
+
 @debounce(
-    60 * 10, key_func=lambda symbol: symbol
+    60 * 10, key_func=_backout_key
 )  # 10 minutes to not call too much for the same symbol
-def backout_near_market(symbol):
+def backout_near_market(
+    symbol: str,
+    *,
+    start_offset_minutes: Optional[int] = None,
+    ramp_minutes: Optional[int] = None,
+    market_after_minutes: Optional[int] = None,
+    sleep_seconds: Optional[int] = None,
+    market_close_buffer_minutes: Optional[int] = None,
+    market_close_force_minutes: Optional[int] = None,
+):
     command = (
         f"PYTHONPATH={cwd} python scripts/alpaca_cli.py backout_near_market {symbol}"
     )
+    option_map = {
+        "start_offset_minutes": "--start-offset-minutes",
+        "ramp_minutes": "--ramp-minutes",
+        "market_after_minutes": "--market-after-minutes",
+        "sleep_seconds": "--sleep-seconds",
+        "market_close_buffer_minutes": "--market-close-buffer-minutes",
+        "market_close_force_minutes": "--market-close-force-minutes",
+    }
+    options = []
+    local_values = {
+        "start_offset_minutes": start_offset_minutes,
+        "ramp_minutes": ramp_minutes,
+        "market_after_minutes": market_after_minutes,
+        "sleep_seconds": sleep_seconds,
+        "market_close_buffer_minutes": market_close_buffer_minutes,
+        "market_close_force_minutes": market_close_force_minutes,
+    }
+    for key, flag in option_map.items():
+        value = local_values.get(key)
+        if value is None:
+            continue
+        options.append(f"{flag}={value}")
+    if options:
+        command = f"{command} {' '.join(options)}"
     logger.info(f"Running command {command}")
     # Run process in background without waiting
     subprocess.Popen(
