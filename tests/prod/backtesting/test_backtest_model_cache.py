@@ -129,7 +129,7 @@ def test_resolve_best_model_cached(monkeypatch):
     assert call_count["value"] == 1
 
 
-def test_load_kronos_unloads_toto_pipeline(monkeypatch):
+def test_load_kronos_keeps_toto_pipeline_when_sufficient_memory(monkeypatch):
     module = _fresh_module()
     monkeypatch.setattr(module.torch.cuda, "is_available", lambda: True)
 
@@ -166,7 +166,53 @@ def test_load_kronos_unloads_toto_pipeline(monkeypatch):
     }
 
     module.load_kronos_wrapper(params)
+    assert module.pipeline is pipeline_obj
+
+
+def test_load_kronos_drops_toto_pipeline_on_oom(monkeypatch):
+    module = _fresh_module()
+    monkeypatch.setattr(module.torch.cuda, "is_available", lambda: True)
+
+    class DummyPipeline:
+        def __init__(self):
+            self.model = SimpleNamespace(to=lambda *a, **k: None)
+
+    pipeline_obj = DummyPipeline()
+
+    def fake_from_pretrained(cls, *args, **kwargs):
+        return pipeline_obj
+
+    monkeypatch.setattr(module.TotoPipeline, "from_pretrained", classmethod(fake_from_pretrained))
+
+    attempts = {"value": 0}
+
+    class DummyWrapper:
+        def __init__(self, *args, **kwargs):
+            attempts["value"] += 1
+            if attempts["value"] == 1:
+                raise RuntimeError("CUDA out of memory while initialising Kronos")
+
+    monkeypatch.setattr(module, "KronosForecastingWrapper", DummyWrapper)
+
+    module.pipeline = None
+    module.kronos_wrapper_cache.clear()
+
+    module.load_toto_pipeline()
+    assert module.pipeline is pipeline_obj
+
+    params = {
+        "temperature": 0.15,
+        "top_p": 0.9,
+        "top_k": 32,
+        "sample_count": 192,
+        "max_context": 256,
+        "clip": 1.8,
+    }
+
+    module.load_kronos_wrapper(params)
+    assert attempts["value"] == 2
     assert module.pipeline is None
+    assert module.kronos_wrapper_cache
 
 
 def test_load_toto_clears_kronos_cache(monkeypatch):

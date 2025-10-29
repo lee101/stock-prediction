@@ -125,7 +125,7 @@ ALLOW_HIGHLOW_ENTRY = os.getenv("ALLOW_HIGHLOW_ENTRY", "0").strip().lower() in {
 ALLOW_TAKEPROFIT_ENTRY = os.getenv("ALLOW_TAKEPROFIT_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
 _ALLOW_MAXDIFF_ENV = os.getenv("ALLOW_MAXDIFF_ENTRY")
 if _ALLOW_MAXDIFF_ENV is None:
-    ALLOW_MAXDIFF_ENTRY = ALLOW_HIGHLOW_ENTRY
+    ALLOW_MAXDIFF_ENTRY = True
 else:
     ALLOW_MAXDIFF_ENTRY = _ALLOW_MAXDIFF_ENV.strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -430,6 +430,10 @@ MIN_EDGE_STRENGTH = 1e-5
 COMPACT_LOGS = os.getenv("COMPACT_TRADING_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
 MARKET_CLOSE_SHIFT_MINUTES = int(os.getenv("MARKET_CLOSE_SHIFT_MINUTES", "45"))
 MARKET_CLOSE_ANALYSIS_WINDOW_MINUTES = int(os.getenv("MARKET_CLOSE_ANALYSIS_WINDOW_MINUTES", "15"))
+BACKOUT_START_OFFSET_MINUTES = int(os.getenv("BACKOUT_START_OFFSET_MINUTES", "30"))
+BACKOUT_SLEEP_SECONDS = int(os.getenv("BACKOUT_SLEEP_SECONDS", "45"))
+BACKOUT_MARKET_CLOSE_BUFFER_MINUTES = int(os.getenv("BACKOUT_MARKET_CLOSE_BUFFER_MINUTES", "30"))
+BACKOUT_MARKET_CLOSE_FORCE_MINUTES = int(os.getenv("BACKOUT_MARKET_CLOSE_FORCE_MINUTES", "3"))
 
 
 def _log_detail(message: str) -> None:
@@ -1257,7 +1261,10 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if "unprofit_shutdown_sharpe" in backtest_df.columns:
                 unprofit_sharpe = _metric(backtest_df["unprofit_shutdown_sharpe"], default=0.0)
 
-            last_prediction = backtest_df.iloc[0].apply(lambda value: coerce_numeric(value, default=0.0, prefer="mean"))
+            raw_last_prediction = backtest_df.iloc[0]
+            last_prediction = raw_last_prediction.apply(
+                lambda value: coerce_numeric(value, default=0.0, prefer="mean")
+            )
             walk_forward_oos_sharpe_raw = last_prediction.get("walk_forward_oos_sharpe")
             walk_forward_turnover_raw = last_prediction.get("walk_forward_turnover")
             walk_forward_highlow_raw = last_prediction.get("walk_forward_highlow_sharpe")
@@ -1293,6 +1300,40 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 last_prediction.get("predicted_low"),
                 default=predicted_close_price,
             )
+
+            def _optional_numeric(value: object) -> Optional[float]:
+                raw = coerce_numeric(value, default=float("nan")) if value is not None else float("nan")
+                return raw if math.isfinite(raw) else None
+
+            maxdiff_high_price = _optional_numeric(last_prediction.get("maxdiffprofit_high_price"))
+            maxdiff_low_price = _optional_numeric(last_prediction.get("maxdiffprofit_low_price"))
+            maxdiff_trade_bias = _optional_numeric(last_prediction.get("maxdiff_trade_bias"))
+            maxdiff_primary_side_raw = raw_last_prediction.get("maxdiff_primary_side")
+            maxdiff_primary_side = (
+                str(maxdiff_primary_side_raw).strip().lower()
+                if maxdiff_primary_side_raw is not None
+                else None
+            )
+            if maxdiff_primary_side == "":
+                maxdiff_primary_side = None
+
+            snapshot_parts = [
+                f"{symbol} prediction snapshot",
+                f"close={close_price:.4f}",
+                f"pred_close={predicted_close_price:.4f}",
+                f"pred_high={predicted_high_price:.4f}",
+                f"pred_low={predicted_low_price:.4f}",
+            ]
+            if maxdiff_high_price is not None:
+                snapshot_parts.append(f"maxdiff_high={maxdiff_high_price:.4f}")
+            if maxdiff_low_price is not None:
+                snapshot_parts.append(f"maxdiff_low={maxdiff_low_price:.4f}")
+            if maxdiff_primary_side:
+                bias_fragment = maxdiff_primary_side
+                if maxdiff_trade_bias is not None and math.isfinite(maxdiff_trade_bias):
+                    bias_fragment = f"{bias_fragment}({maxdiff_trade_bias:+.3f})"
+                snapshot_parts.append(f"maxdiff_side={bias_fragment}")
+            _log_detail(" ".join(snapshot_parts))
 
             strategy_stats: Dict[str, Dict[str, float]] = {
                 "simple": {
@@ -1425,7 +1466,19 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 candidate_position_side: Optional[str] = None
                 candidate_predicted_movement = close_movement_raw
 
-                if candidate_name == "all_signals":
+                if candidate_name == "maxdiff":
+                    if maxdiff_primary_side in {"buy", "sell"}:
+                        candidate_position_side = maxdiff_primary_side
+                        target_price = maxdiff_high_price if candidate_position_side == "buy" else maxdiff_low_price
+                        if target_price is not None and math.isfinite(target_price):
+                            candidate_predicted_movement = target_price - close_price
+                    elif maxdiff_primary_side == "neutral" and maxdiff_trade_bias is not None:
+                        if maxdiff_trade_bias > 0:
+                            candidate_position_side = "buy"
+                        elif maxdiff_trade_bias < 0:
+                            candidate_position_side = "sell"
+
+                if candidate_position_side is None and candidate_name == "all_signals":
                     if all(x > 0 for x in [close_movement_raw, high_movement, low_movement]):
                         candidate_position_side = "buy"
                     elif all(x < 0 for x in [close_movement_raw, high_movement, low_movement]):
@@ -1436,7 +1489,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                             strategy_ineligible["all_signals"] = note
                         selection_notes.append(f"all_signals={note}")
                         continue
-                else:
+                if candidate_position_side is None:
                     candidate_position_side = "buy" if candidate_predicted_movement > 0 else "sell"
 
                 disallowed_reason: Optional[str] = None
@@ -1829,6 +1882,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if snapshot_row:
                 result_row.update(snapshot_row)
 
+            if maxdiff_primary_side_raw is not None:
+                result_row["maxdiff_primary_side"] = str(maxdiff_primary_side_raw).strip().lower() or "neutral"
+            if maxdiff_trade_bias is not None:
+                result_row["maxdiff_trade_bias"] = _metric(maxdiff_trade_bias, default=0.0)
+
             maxdiff_numeric_keys = (
                 "maxdiffprofit_high_price",
                 "maxdiffprofit_low_price",
@@ -1839,6 +1897,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             for key in maxdiff_numeric_keys:
                 if key in last_prediction:
                     result_row[key] = coerce_numeric(last_prediction.get(key), default=0.0)
+            for count_key in ("maxdiff_trades_positive", "maxdiff_trades_negative", "maxdiff_trades_total"):
+                if count_key in last_prediction:
+                    result_row[count_key] = int(
+                        round(coerce_numeric(last_prediction.get(count_key), default=0.0))
+                    )
             if "maxdiffprofit_profit_values" in last_prediction:
                 result_row["maxdiffprofit_profit_values"] = last_prediction.get("maxdiffprofit_profit_values")
             results[symbol] = result_row
@@ -2105,7 +2168,13 @@ def manage_positions(
 
         if should_close:
             _record_trade_outcome(position, close_reason or "unspecified")
-            backout_near_market(symbol)
+            backout_near_market(
+                symbol,
+                start_offset_minutes=BACKOUT_START_OFFSET_MINUTES,
+                sleep_seconds=BACKOUT_SLEEP_SECONDS,
+                market_close_buffer_minutes=BACKOUT_MARKET_CLOSE_BUFFER_MINUTES,
+                market_close_force_minutes=BACKOUT_MARKET_CLOSE_FORCE_MINUTES,
+            )
 
     # Enter new positions from current_picks
     if not current_picks:
@@ -2739,7 +2808,13 @@ def manage_market_close(
 
         if should_close:
             _record_trade_outcome(position, close_reason or "market_close")
-            backout_near_market(symbol)
+            backout_near_market(
+                symbol,
+                start_offset_minutes=BACKOUT_START_OFFSET_MINUTES,
+                sleep_seconds=BACKOUT_SLEEP_SECONDS,
+                market_close_buffer_minutes=BACKOUT_MARKET_CLOSE_BUFFER_MINUTES,
+                market_close_force_minutes=BACKOUT_MARKET_CLOSE_FORCE_MINUTES,
+            )
 
     # Return top picks for next day
     return build_portfolio(
