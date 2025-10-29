@@ -28,36 +28,31 @@ sudo apt-get install libxml2-dev
 sudo apt-get install libxslt1-dev
 ```
 
-## UV Workspace Layout (Updated October 19, 2025)
+## UV Workspace Layout (Updated October 29, 2025)
 
-- The root `stock-trading-suite` package now installs only the production trading core (data pipelines, execution bridges, cvxpy optimisers, Torch 2.9). Experimental stacks live behind optional extras so UV resolves faster and environments stay lean.
-- Workspace members: `toto/`, `pufferlibtraining/`, and `pufferlibinference/` each ship their own `pyproject.toml`. Install them on demand with `uv pip install -e <path>` whenever you need their tooling.
-- Optional extras:
-  - `forecasting` → Chronos, NeuralForecast, GluonTS (grab with `uv pip sync --extra forecasting`).
-  - `hf` → Hugging Face toolchain (Transformers, Accelerate, etc.).
-  - `rl` → Stable-Baselines3, Gymnasium, PufferLib runtime.
-  - `mlops` → MLflow, Weights & Biases, Weave telemetry.
-  - `opt` → Optuna/Hyperopt/CMA-ES search stack.
-  - `llm` → Anthropic + OpenAI SDKs for hybrid strategies.
-  - `serving` → FastAPI + ASGI workers for REST services.
-  - `automation` → Selenium harness used by legacy scraping scripts.
-  - `boosting` → XGBoost (falls back to scikit-learn if omitted).
-- Recommended flow for a fresh Python 3.12 shell:
+- The default workspace (defined in `pyproject.toml`) keeps only the core trading + simulator packages so it resolves cleanly on Python 3.12–3.14 with `numpy>=2`.
+- RL-oriented projects (`rlinc_market`, `pufferlibtraining*`, `pufferlibinference`) live behind an alternate config `uv.workspace-rl.toml`. Load it only when you need the full PufferLib toolchain (requires Python ≥3.14 and `numpy<2`).
+- Optional extras remain available:
+  - `forecasting` → Chronos, NeuralForecast, GluonTS (`uv pip sync --extra forecasting`).
+  - `hf`, `rl`, `mlops`, `opt`, `llm`, `serving`, `automation`, `boosting` → same as before.
+- Typical flows:
 
 ```bash
-uv venv .venv312
-source .venv312/bin/activate
-uv pip sync                                  # core trading stack only
-uv pip sync --extra forecasting --extra hf   # opt in per experiment
+# Core stack on Python 3.12+
+uv venv --python 3.12 .venv312
+UV_PROJECT_ENVIRONMENT=.venv312 uv sync --python 3.12
 
-# Install workspace projects when needed
-uv pip install -e pufferlibtraining
-uv pip install -e pufferlibinference
+# Full RL stack on Python 3.14 (enables pufferlib>=3)
+uv venv --python 3.14 .venv314
+UV_PROJECT_ENVIRONMENT=.venv314 uv sync \
+  --python 3.14 \
+  --config-file uv.workspace-rl.toml \
+  --index-strategy unsafe-best-match
 ```
 
-> Already have the environment activated? You can drop the `uv run` prefix shown in later examples and call `python ...` or `pytest ...` directly from the shell.
+> Already have the environment activated? You can drop the `uv run` prefix shown later and call `python ...` or `pytest ...` directly.
 
-The `dev` extra now pulls every stack plus formatting and typing tools, so `uv pip sync --extra dev` reproduces the previous “kitchen sink” environment without slowing down the default sync path.
+The `dev` extra still pulls every stack plus formatting/typing tools, so `uv pip sync --extra dev` recreates the “kitchen sink” setup without slowing down the default install. See `docs/uv-workspaces.md` for details and troubleshooting notes.
 
 ### Scripts
 

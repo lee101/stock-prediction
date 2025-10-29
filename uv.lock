@@ -3914,8 +3914,10 @@ name = "pufferlib-training"
 version = "0.1.0"
 source = { editable = "pufferlibtraining" }
 dependencies = [
+    { name = "gymnasium", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "gymrl", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "hftraining", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "pufferlib", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "stock-trading-suite", extra = ["hf", "mlops", "opt", "rl"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 
@@ -3926,8 +3928,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "gymnasium", specifier = ">=0.29" },
     { name = "gymrl", editable = "gymrl" },
     { name = "hftraining", editable = "hftraining" },
+    { name = "pufferlib", specifier = ">=2.0.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.3" },
     { name = "stock-trading-suite", extras = ["rl", "hf", "mlops", "opt"], editable = "." },
 ]
