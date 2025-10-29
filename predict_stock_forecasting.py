@@ -8,6 +8,7 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import transformers
+from loguru import logger as loguru_logger
 
 from env_real import PAPER
 from loss_utils import calculate_trading_profit_torch, get_trading_profits_list, percent_movements_augment, \
@@ -21,10 +22,13 @@ from src.gpu_utils import detect_total_vram_bytes, recommend_batch_size
 transformers.set_seed(42)
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-from loguru import logger as loguru_logger
+
+from src.cache_utils import ensure_huggingface_cache_dir
 
 base_dir = Path(__file__).parent
 loguru_logger.info(base_dir)
+
+ensure_huggingface_cache_dir(logger=loguru_logger)
 
 from sklearn.preprocessing import MinMaxScaler
 
@@ -57,6 +61,25 @@ if _detected_vram is not None:
             gb,
         )
         KRONOS_SAMPLE_COUNT = _auto_samples
+
+_SWEEP_POINTS = os.getenv("MARKETSIM_SWEEP_POINTS", "500")
+try:
+    _SWEEP_POINTS_INT = int(_SWEEP_POINTS)
+except ValueError:
+    _SWEEP_POINTS_INT = 500
+if _SWEEP_POINTS_INT < 3:
+    _SWEEP_POINTS_INT = 3
+if _SWEEP_POINTS_INT % 2 == 0:
+    _SWEEP_POINTS_INT += 1
+SWEEP_POINTS = _SWEEP_POINTS_INT
+
+_SWEEP_RANGE = os.getenv("MARKETSIM_SWEEP_RANGE", "0.03")
+try:
+    SWEEP_RANGE = abs(float(_SWEEP_RANGE))
+except ValueError:
+    SWEEP_RANGE = 0.03
+if SWEEP_RANGE <= 0.0:
+    SWEEP_RANGE = 0.03
 
 
 def load_pipeline():
@@ -168,8 +191,9 @@ def make_predictions(
 
     headers_written = False
 
-    total_val_loss = 0
-    total_forecasted_profit = 0
+    total_val_loss = 0.0
+    total_forecasted_profit = 0.0
+    processed_symbols = 0
 
     if input_data_path:
         input_data_files = base_dir / "data" / input_data_path
@@ -179,6 +203,9 @@ def make_predictions(
 
     allowed_symbols = {symbol.upper() for symbol in symbols} if symbols else None
     csv_files = list(input_data_files.glob("*.csv"))
+    if not csv_files:
+        loguru_logger.warning("No CSV files found under %s; skipping forecast generation.", input_data_files)
+        return pd.DataFrame()
     alpaca_clock = alpaca_wrapper.get_clock()
     for days_to_drop in [0]:  # [1,2,3,4,5,6,7,8,9,10,11]:
         for csv_file in csv_files:
@@ -454,7 +481,7 @@ def make_predictions(
             # todo margin allocation tests
             current_profit = calculated_profit
             max_profit = float('-Inf')
-            for buy_take_profit_multiplier in np.linspace(-.03, .03, 500):
+            for buy_take_profit_multiplier in np.linspace(-SWEEP_RANGE, SWEEP_RANGE, SWEEP_POINTS):
                 calculated_profit = calculate_trading_profit_torch_with_buysell(scaler, None,
                                                                                 last_preds[
                                                                                     "close_actual_movement_values"],
@@ -476,7 +503,7 @@ def make_predictions(
                     # loguru_logger.info(f"{instrument_name} buy_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
             max_profit = float('-Inf')
-            for low_take_profit_multiplier in np.linspace(-.03, .03, 500):
+            for low_take_profit_multiplier in np.linspace(-SWEEP_RANGE, SWEEP_RANGE, SWEEP_POINTS):
                 calculated_profit = calculate_trading_profit_torch_with_buysell(scaler, None,
                                                                                 last_preds[
                                                                                     "close_actual_movement_values"],
@@ -539,7 +566,7 @@ def make_predictions(
             # todo margin allocation tests
             current_profit = calculated_profit
             max_profit = float('-Inf')
-            for buy_take_profit_multiplier in np.linspace(-.03, .03, 500):
+            for buy_take_profit_multiplier in np.linspace(-SWEEP_RANGE, SWEEP_RANGE, SWEEP_POINTS):
                 calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
                                                                                       last_preds[
                                                                                           "close_actual_movement_values"],
@@ -560,7 +587,7 @@ def make_predictions(
                     last_preds['maxdiffprofit_high_profit'] = max_profit
 
             max_profit = float('-Inf')
-            for low_take_profit_multiplier in np.linspace(-.03, .03, 500):
+            for low_take_profit_multiplier in np.linspace(-SWEEP_RANGE, SWEEP_RANGE, SWEEP_POINTS):
                 calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
                                                                                       last_preds[
                                                                                           "close_actual_movement_values"],
@@ -614,7 +641,7 @@ def make_predictions(
             # todo margin allocation tests
             current_profit = calculated_profit
             max_profit = float('-Inf')
-            for buy_take_profit_multiplier in np.linspace(-.03, .03, 500):
+            for buy_take_profit_multiplier in np.linspace(-SWEEP_RANGE, SWEEP_RANGE, SWEEP_POINTS):
                 calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
                                                                                       last_preds[
                                                                                           "close_actual_movement_values"],
@@ -636,7 +663,7 @@ def make_predictions(
                     #     f"{instrument_name} buy_entry_take_profit_multiplier: {buy_take_profit_multiplier} calculated_profit: {calculated_profit}")
 
             max_profit = float('-Inf')
-            for low_take_profit_multiplier in np.linspace(-.03, .03, 500):
+            for low_take_profit_multiplier in np.linspace(-SWEEP_RANGE, SWEEP_RANGE, SWEEP_POINTS):
                 calculated_profit = calculate_trading_profit_torch_with_entry_buysell(scaler, None,
                                                                                       last_preds[
                                                                                           "close_actual_movement_values"],
@@ -682,6 +709,7 @@ def make_predictions(
             with open(save_file_name, "a") as f:
                 writer = csv.DictWriter(f, CSV_KEYS)
                 writer.writerow(last_preds)
+                processed_symbols += 1
 
                 # # shift train predictions for plotting
                 # trainPredictPlot = np.empty_like(price)
@@ -756,11 +784,19 @@ def make_predictions(
                 #
                 # fig.show()
 
-    loguru_logger.info(f"val_loss: {total_val_loss / len(csv_files)}")
-    loguru_logger.info(f"total_forecasted_profit: {total_forecasted_profit / len(csv_files)}")
-    loguru_logger.info(f"total_val_loss oer symbol: {total_val_loss / len(csv_files)}")
-    loguru_logger.info(f"total_forecasted_profit avg per symbol: {total_forecasted_profit / len(csv_files)}")
-    return pd.read_csv(save_file_name)
+    if processed_symbols:
+        avg_val_loss = total_val_loss / processed_symbols
+        avg_profit = total_forecasted_profit / processed_symbols
+        loguru_logger.info(f"val_loss: {avg_val_loss}")
+        loguru_logger.info(f"total_forecasted_profit: {avg_profit}")
+        loguru_logger.info(f"total_val_loss oer symbol: {avg_val_loss}")
+        loguru_logger.info(f"total_forecasted_profit avg per symbol: {avg_profit}")
+        return pd.read_csv(save_file_name)
+
+    loguru_logger.info("No forecasts generated after processing %d files; returning empty DataFrame.", len(csv_files))
+    if save_file_name.exists() and save_file_name.stat().st_size:
+        return pd.read_csv(save_file_name)
+    return pd.DataFrame()
 
 
 def df_to_torch(df):

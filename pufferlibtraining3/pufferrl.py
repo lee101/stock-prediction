@@ -6,6 +6,7 @@ import argparse
 import dataclasses
 import json
 import logging
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
@@ -136,8 +137,9 @@ def _build_env_creator(cfg: MarketEnvConfig, collectors: List[MetricsCollector])
         collectors.append(wrapper)
         return wrapper
 
-    def _puffer_env() -> gym.Env:
-        return emulation.GymnasiumPufferEnv(env_creator=_gym_env)
+    def _puffer_env(*, buf=None, seed: Optional[int] = None, **kwargs) -> gym.Env:
+        # PufferLib vector backends pass shared-memory buffers and seeds; forward them explicitly.
+        return emulation.GymnasiumPufferEnv(env_creator=_gym_env, buf=buf, seed=seed)
 
     return _puffer_env
 
@@ -323,7 +325,12 @@ def train(args: argparse.Namespace) -> Dict[str, Any]:
     vecenv = _build_vecenv(vec_cfg, env_creator, device)
 
     pufferl = _import_pufferlib_module("pufferlib.pufferl")
-    base_cfg = pufferl.load_config("default")
+    original_argv = sys.argv[:]
+    try:
+        sys.argv = [original_argv[0]]
+        base_cfg = pufferl.load_config("default")
+    finally:
+        sys.argv = original_argv
     train_cfg = dict(base_cfg["train"])
     _update_train_config(train_cfg, ppo_cfg, device=device, seed=args.seed)
     train_cfg["env"] = "pufferlibtraining3.market_env"
