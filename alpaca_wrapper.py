@@ -1339,45 +1339,35 @@ def close_position_near_market(position, pct_above_market=0.0):
 
     result = None
     try:
-        order_payload = {
-            "symbol": remap_symbols(position.symbol),
-            "qty": abs(float(position.qty)),
-            "side": OrderSide.SELL if position.side == "long" else OrderSide.BUY,
-            "type": OrderType.LIMIT,
-            "time_in_force": "gtc",
-        }
-
         if position.side == "long":
             sell_price = price * (1 + pct_above_market)
-            sell_price = str(round(sell_price, 2))
+            sell_price = round(sell_price, 2)
             logger.info(f"selling {position.symbol} at {sell_price}")
-            order_payload["limit_price"] = sell_price
+            request = LimitOrderRequest(
+                symbol=remap_symbols(position.symbol),
+                qty=abs(float(position.qty)),
+                side=OrderSide.SELL,
+                type=OrderType.LIMIT,
+                time_in_force="gtc",
+                limit_price=sell_price,
+            )
         else:
             buy_price = price * (1 + pct_above_market)
-            buy_price = str(round(buy_price, 2))
+            buy_price = round(buy_price, 2)
             logger.info(f"buying {position.symbol} at {buy_price}")
-            order_payload["limit_price"] = buy_price
+            request = LimitOrderRequest(
+                symbol=remap_symbols(position.symbol),
+                qty=abs(float(position.qty)),
+                side=OrderSide.BUY,
+                type=OrderType.LIMIT,
+                time_in_force="gtc",
+                limit_price=buy_price,
+            )
 
-        try:
-            request = LimitOrderRequest(**order_payload)
-            if hasattr(request, "model_dump"):
-                order_data = request.model_dump()
-            elif hasattr(request, "dict"):
-                order_data = request.dict()
-            elif isinstance(request, dict):
-                order_data = request
-            else:
-                order_data = order_payload
-        except Exception:
-            order_data = order_payload
-
-        if not isinstance(order_data, dict):
-            order_data = order_payload
-
-        result = alpaca_api.submit_order(order_data=order_data)
+        result = alpaca_api.submit_order(order_data=request)
 
     except Exception as e:
-        logger.error(e)
+        logger.error(f"Failed to submit close order for {position.symbol}: {e}")
         traceback.print_exc()
         return False
 
