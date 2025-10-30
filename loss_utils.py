@@ -7,9 +7,14 @@ CRYPTO_TRADING_FEE = .0015  # maker fee taker is .0025
 
 TRADING_FEE = 0.0005
 # equities .0000278
-import torch
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Try to import torch, but allow graceful fallback for testing
+try:
+    import torch
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+except ImportError:
+    torch = None
+    DEVICE = None
 
 
 def calculate_trading_profit(scaler, x_test, y_test, y_test_pred):

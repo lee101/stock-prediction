@@ -1,0 +1,346 @@
+{
+  "results": [
+    {
+      "symbol": "AAPL",
+      "status": "ask_zero",
+      "bid": 255.72,
+      "ask": 0.0,
+      "error": null,
+      "timestamp": "2025-10-29 20:00:03.666970+00:00",
+      "response_time_ms": 199.75
+    },
+    {
+      "symbol": "GOOGL",
+      "status": "ask_zero",
+      "bid": 259.69,
+      "ask": 0.0,
+      "error": null,
+      "timestamp": "2025-10-29 20:00:02.098861+00:00",
+      "response_time_ms": 37.77
+    },
+    {
+      "symbol": "MSFT",
+      "status": "ask_zero",
+      "bid": 516.99,
+      "ask": 0.0,
+      "error": null,
+      "timestamp": "2025-10-29 20:00:01.297956+00:00",
+      "response_time_ms": 40.1
+    },
+    {
+      "symbol": "AMZN",
+      "status": "ask_zero",
+      "bid": 209.0,
+      "ask": 0.0,
+      "error": null,
+      "timestamp": "2025-10-29 20:00:04.955018+00:00",
+      "response_time_ms": 35.48
+    },
+    {
+      "symbol": "TSLA",
+      "status": "ask_zero",
+      "bid": 430.35,
+      "ask": 0.0,
+      "error": null,
+      "timestamp": "2025-10-29 20:00:02.373992+00:00",
+      "response_time_ms": 37.52
+    },
+    {
+      "symbol": "NVDA",
+      "status": "success",
+      "bid": 197.41,
+      "ask": 218.38,
+      "error": null,
+      "timestamp": "2025-10-29 20:00:00.004040+00:00",
+      "response_time_ms": 36.24,
+      "spread_pct": 10.6226
+    },
+    {
+      "symbol": "META",
+      "status": "success",
+      "bid": 687.0,
+      "ask": 780.0,
+      "error": null,
+      "timestamp": "2025-10-29 20:25:41.110352+00:00",
+      "response_time_ms": 37.86,
+      "spread_pct": 13.5371
+    },
+    {
+      "symbol": "NFLX",
+      "status": "success",
+      "bid": 1099.17,
+      "ask": 1111.0,
+      "error": null,
+      "timestamp": "2025-10-29 19:59:53.566955+00:00",
+      "response_time_ms": 38.75,
+      "spread_pct": 1.0763
+    },
+    {
+      "symbol": "AMD",
+      "status": "ask_zero",
+      "bid": 250.8,
+      "ask": 0.0,
+      "error": null,
+      "timestamp": "2025-10-29 20:00:03.327030+00:00",
+      "response_time_ms": 38.52
+    },
+    {
+      "symbol": "COIN",
+      "status": "success",
+      "bid": 331.74,
+      "ask": 368.55,
+      "error": null,
+      "timestamp": "2025-10-29 20:00:00.008153+00:00",
+      "response_time_ms": 35.19,
+      "spread_pct": 11.096
+    },
+    {
+      "symbol": "SPY",
+      "status": "success",
+      "bid": 668.06,
+      "ask": 709.43,
+      "error": null,
+      "timestamp": "2025-10-29 20:00:00.004361+00:00",
+      "response_time_ms": 35.27,
+      "spread_pct": 6.1926
+    },
+    {
+      "symbol": "QQQ",
+      "status": "success",
+      "bid": 635.34,
+      "ask": 635.43,
+      "error": null,
+      "timestamp": "2025-10-29 20:42:35.398244+00:00",
+      "response_time_ms": 83.64,
+      "spread_pct": 0.0142
+    },
+    {
+      "symbol": "DIA",
+      "status": "success",
+      "bid": 476.37,
+      "ask": 477.08,
+      "error": null,
+      "timestamp": "2025-10-29 19:59:59.995318+00:00",
+      "response_time_ms": 35.18,
+      "spread_pct": 0.149
+    },
+    {
+      "symbol": "IWM",
+      "status": "ask_zero",
+      "bid": 238.86,
+      "ask": 0.0,
+      "error": null,
+      "timestamp": "2025-10-29 20:00:02.756401+00:00",
+      "response_time_ms": 35.56
+    },
+    {
+      "symbol": "VTI",
+      "status": "success",
+      "bid": 337.58,
+      "ask": 337.76,
+      "error": null,
+      "timestamp": "2025-10-29 19:59:59.992379+00:00",
+      "response_time_ms": 35.46,
+      "spread_pct": 0.0533
+    },
+    {
+      "symbol": "ADAUSD",
+      "status": "error",
+      "bid": null,
+      "ask": null,
+      "error": "'ADA/USD'",
+      "timestamp": null,
+      "response_time_ms": 192.2
+    },
+    {
+      "symbol": "ALGOUSD",
+      "status": "both_zero",
+      "bid": 0.0,
+      "ask": 0.0,
+      "error": null,
+      "timestamp": "2023-05-08 20:47:52.898266+00:00",
+      "response_time_ms": 35.9
+    },
+    {
+      "symbol": "ATOMUSD",
+      "status": "error",
+      "bid": null,
+      "ask": null,
+      "error": "'ATOM/USD'",
+      "timestamp": null,
+      "response_time_ms": 38.86
+    },
+    {
+      "symbol": "AVAXUSD",
+      "status": "success",
+      "bid": 19.405,
+      "ask": 19.526,
+      "error": null,
+      "timestamp": "2025-10-30 09:41:01.320868+00:00",
+      "response_time_ms": 37.62,
+      "spread_pct": 0.6236
+    },
+    {
+      "symbol": "BNBUSD",
+      "status": "error",
+      "bid": null,
+      "ask": null,
+      "error": "'BNB/USD'",
+      "timestamp": null,
+      "response_time_ms": 37.85
+    },
+    {
+      "symbol": "BTCUSD",
+      "status": "success",
+      "bid": 110102.547,
+      "ask": 110339.7,
+      "error": null,
+      "timestamp": "2025-10-30 09:41:03.172817+00:00",
+      "response_time_ms": 37.6,
+      "spread_pct": 0.2154
+    },
+    {
+      "symbol": "DOGEUSD",
+      "status": "success",
+      "bid": 0.18937,
+      "ask": 0.189985,
+      "error": null,
+      "timestamp": "2025-10-30 09:39:37.840171+00:00",
+      "response_time_ms": 37.57,
+      "spread_pct": 0.3248
+    },
+    {
+      "symbol": "DOTUSD",
+      "status": "success",
+      "bid": 3.01568,
+      "ask": 3.022,
+      "error": null,
+      "timestamp": "2025-10-30 09:39:42.975636+00:00",
+      "response_time_ms": 38.29,
+      "spread_pct": 0.2096
+    },
+    {
+      "symbol": "ETHUSD",
+      "status": "success",
+      "bid": 3895.99,
+      "ask": 3903.147,
+      "error": null,
+      "timestamp": "2025-10-30 09:39:40.720908+00:00",
+      "response_time_ms": 34.81,
+      "spread_pct": 0.1837
+    },
+    {
+      "symbol": "LINKUSD",
+      "status": "success",
+      "bid": 18.05,
+      "ask": 18.088,
+      "error": null,
+      "timestamp": "2025-10-30 09:39:39.980903+00:00",
+      "response_time_ms": 35.44,
+      "spread_pct": 0.2105
+    },
+    {
+      "symbol": "LTCUSD",
+      "status": "success",
+      "bid": 97.17,
+      "ask": 97.738,
+      "error": null,
+      "timestamp": "2025-10-30 09:39:59.216575+00:00",
+      "response_time_ms": 35.32,
+      "spread_pct": 0.5845
+    },
+    {
+      "symbol": "MATICUSD",
+      "status": "both_zero",
+      "bid": 0.0,
+      "ask": 0.0,
+      "error": null,
+      "timestamp": "2023-06-23 20:42:54.824618+00:00",
+      "response_time_ms": 34.31
+    },
+    {
+      "symbol": "PAXGUSD",
+      "status": "both_zero",
+      "bid": 0.0,
+      "ask": 0.0,
+      "error": null,
+      "timestamp": "2023-06-28 16:12:23.755675+00:00",
+      "response_time_ms": 35.22
+    },
+    {
+      "symbol": "SHIBUSD",
+      "status": "success",
+      "bid": 9.99e-06,
+      "ask": 1.002e-05,
+      "error": null,
+      "timestamp": "2025-10-30 09:41:02.386978+00:00",
+      "response_time_ms": 35.02,
+      "spread_pct": 0.3003
+    },
+    {
+      "symbol": "SOLUSD",
+      "status": "success",
+      "bid": 192.582,
+      "ask": 193.3,
+      "error": null,
+      "timestamp": "2025-10-30 09:41:02.394618+00:00",
+      "response_time_ms": 37.7,
+      "spread_pct": 0.3728
+    },
+    {
+      "symbol": "TRXUSD",
+      "status": "both_zero",
+      "bid": 0.0,
+      "ask": 0.0,
+      "error": null,
+      "timestamp": "2023-04-18 16:33:48.601059+00:00",
+      "response_time_ms": 38.64
+    },
+    {
+      "symbol": "UNIUSD",
+      "status": "success",
+      "bid": 6.025,
+      "ask": 6.038,
+      "error": null,
+      "timestamp": "2025-10-30 09:41:02.379152+00:00",
+      "response_time_ms": 37.54,
+      "spread_pct": 0.2158
+    },
+    {
+      "symbol": "VETUSD",
+      "status": "error",
+      "bid": null,
+      "ask": null,
+      "error": "'VET/USD'",
+      "timestamp": null,
+      "response_time_ms": 38.08
+    },
+    {
+      "symbol": "XLMUSD",
+      "status": "error",
+      "bid": null,
+      "ask": null,
+      "error": "'XLM/USD'",
+      "timestamp": null,
+      "response_time_ms": 37.33
+    },
+    {
+      "symbol": "XRPUSD",
+      "status": "success",
+      "bid": 2.554,
+      "ask": 2.5643,
+      "error": null,
+      "timestamp": "2025-10-30 09:40:49.283818+00:00",
+      "response_time_ms": 37.59,
+      "spread_pct": 0.4033
+    }
+  ],
+  "stats": {
+    "ask_zero": 7,
+    "success": 19,
+    "error": 5,
+    "both_zero": 4
+  },
+  "total": 35,
+  "timestamp": "2025-10-30T09:41:08.012519+00:00"
+}

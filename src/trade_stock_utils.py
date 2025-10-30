@@ -168,7 +168,12 @@ def evaluate_strategy_entry_gate(
         Number of samples backing the metrics.
     """
     sharpe_gate = float(os.getenv("MARKETSIM_STRATEGY_SHARPE_GATE", "0.5"))
-    min_samples = int(os.getenv("MARKETSIM_STRATEGY_MIN_SAMPLES", "120"))
+    base_min_samples = max(1, int(os.getenv("MARKETSIM_STRATEGY_MIN_SAMPLES", "120")))
+    crypto_default = max(1, base_min_samples // 2)
+    crypto_min_samples = max(
+        1,
+        int(os.getenv("MARKETSIM_STRATEGY_MIN_SAMPLES_CRYPTO", str(crypto_default))),
+    )
     max_drawdown_gate = float(os.getenv("MARKETSIM_STRATEGY_MAX_DRAWDOWN_GATE", "-0.08"))
     turnover_gate = float(os.getenv("MARKETSIM_STRATEGY_TURNOVER_GATE", "2.0"))
     turnover_sharpe_gate = float(os.getenv("MARKETSIM_STRATEGY_TURNOVER_SHARPE_GATE", "0.8"))
@@ -191,8 +196,11 @@ def evaluate_strategy_entry_gate(
         return False, f"edge {edge_bps:.1f}bps < need {needed_edge:.1f}bps"
     if sharpe < sharpe_gate:
         return False, f"sharpe {sharpe:.2f} below {sharpe_gate:.2f} gate"
-    if sample_size < min_samples:
-        return False, f"insufficient samples {sample_size} < {min_samples}"
+    effective_min_samples = base_min_samples
+    if symbol.endswith("USD") and symbol.startswith(LIQUID_CRYPTO_PREFIXES):
+        effective_min_samples = crypto_min_samples
+    if sample_size < effective_min_samples:
+        return False, f"insufficient samples {sample_size} < {effective_min_samples}"
     if max_drawdown < max_drawdown_gate:
         return False, f"max drawdown {max_drawdown:.2f} below {max_drawdown_gate:.2f} gate"
     if turnover > turnover_gate and sharpe < turnover_sharpe_gate:

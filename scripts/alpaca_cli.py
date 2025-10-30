@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from time import sleep
 import traceback
 from typing import Optional
@@ -22,6 +22,9 @@ from src.trading_obj_utils import filter_to_realistic_positions
 # Import position sizing utilities
 from src.sizing_utils import get_qty
 
+# Import portfolio risk utilities
+from src.portfolio_risk import get_global_risk_threshold
+
 alpaca_api = tradeapi.REST(
     ALP_KEY_ID,
     ALP_SECRET_KEY,
@@ -35,6 +38,24 @@ positions_shelf = FlatShelf("positions_shelf.json")
 
 BACKOUT_RAMP_MINUTES_DEFAULT = int(os.getenv("BACKOUT_RAMP_MINUTES", "30"))
 BACKOUT_MARKET_AFTER_MINUTES_DEFAULT = int(os.getenv("BACKOUT_MARKET_AFTER_MINUTES", "50"))
+_MARKET_SPREAD_CAP_RAW = os.getenv("BACKOUT_MARKET_MAX_SPREAD_PCT", "0.01")
+try:
+    BACKOUT_MARKET_MAX_SPREAD_PCT = max(float(_MARKET_SPREAD_CAP_RAW), 0.0)
+except ValueError:
+    BACKOUT_MARKET_MAX_SPREAD_PCT = 0.01
+    logger.warning(
+        "Invalid BACKOUT_MARKET_MAX_SPREAD_PCT=%r; defaulting to %.2f%%",
+        _MARKET_SPREAD_CAP_RAW,
+        BACKOUT_MARKET_MAX_SPREAD_PCT * 100,
+    )
+
+
+BACKOUT_INITIAL_OFFSET_PCT = float(os.getenv("BACKOUT_INITIAL_OFFSET_PCT", "0.003"))
+BACKOUT_SOFT_CROSS_PCT = float(os.getenv("BACKOUT_SOFT_CROSS_PCT", "0.004"))
+BACKOUT_FINAL_CROSS_PCT = float(os.getenv("BACKOUT_FINAL_CROSS_PCT", "0.02"))
+BACKOUT_POLL_INTERVAL_SECONDS_DEFAULT = int(os.getenv("BACKOUT_POLL_INTERVAL_SECONDS", "45"))
+BACKOUT_MARKET_CLOSE_BUFFER_MINUTES_DEFAULT = int(os.getenv("BACKOUT_MARKET_CLOSE_BUFFER_MINUTES", "30"))
+BACKOUT_MARKET_CLOSE_FORCE_MINUTES_DEFAULT = int(os.getenv("BACKOUT_MARKET_CLOSE_FORCE_MINUTES", "3"))
 
 
 def set_strategy_for_symbol(symbol: str, strategy: str) -> None:
@@ -54,7 +75,68 @@ def get_strategy_for_symbol(symbol: str) -> str:
     return positions_shelf.get(shelf_key, None)
 
 
-def main(command: str, pair: Optional[str], side: Optional[str] = "buy", target_qty: Optional[float] = None):
+def _calculate_total_exposure_value(positions) -> float:
+    """Calculate total exposure value across all positions."""
+    total_value = 0.0
+    for position in positions:
+        try:
+            market_value = float(getattr(position, "market_value", 0.0) or 0.0)
+        except Exception:
+            market_value = 0.0
+        total_value += abs(market_value)
+    return total_value
+
+
+def main(
+    command: str,
+    pair: Optional[str],
+    side: Optional[str] = typer.Option("buy", "--side", help="Order side for ramp/entry commands."),
+    target_qty: Optional[float] = typer.Option(
+        None, "--target-qty", help="Target quantity for ramp_into_position."
+    ),
+    maxdiff_overflow: bool = typer.Option(
+        False, "--maxdiff-overflow", help="Check leverage before placing orders for maxdiff overflow trades."
+    ),
+    risk_threshold: Optional[float] = typer.Option(
+        None, "--risk-threshold", help="Risk threshold to check against for maxdiff overflow."
+    ),
+    start_offset_minutes: int = typer.Option(
+        0,
+        "--start-offset-minutes",
+        min=0,
+        help="Extend backout ramp duration by this many minutes before forcing market.",
+    ),
+    ramp_minutes: Optional[int] = typer.Option(
+        None,
+        "--ramp-minutes",
+        min=1,
+        help="Base number of minutes used for the backout ramp before any start offset.",
+    ),
+    market_after_minutes: Optional[int] = typer.Option(
+        None,
+        "--market-after-minutes",
+        min=1,
+        help="Minutes before forcing a market order during backout (before start offset).",
+    ),
+    sleep_seconds: Optional[int] = typer.Option(
+        None,
+        "--sleep-seconds",
+        min=0,
+        help="Polling interval between backout iterations.",
+    ),
+    market_close_buffer_minutes: Optional[int] = typer.Option(
+        None,
+        "--market-close-buffer-minutes",
+        min=0,
+        help="Minutes from the close to keep tighter limit offsets before widening.",
+    ),
+    market_close_force_minutes: Optional[int] = typer.Option(
+        None,
+        "--market-close-force-minutes",
+        min=0,
+        help="Force market order when this close to market close even if ramp not completed.",
+    ),
+):
     """
     cancel_all_orders - cancel all orders
 
@@ -85,11 +167,38 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy", target_
         alpaca_wrapper.cancel_all_orders()
     elif command == "backout_near_market":
         # loop around until the order is closed at market
+        if not pair:
+            logger.error("Symbol is required for backout_near_market command")
+            return
         now = datetime.now()
-        backout_near_market(pair, start_time=now)
+        backout_near_market(
+            pair,
+            start_time=now,
+            ramp_minutes=ramp_minutes or BACKOUT_RAMP_MINUTES_DEFAULT,
+            market_after=market_after_minutes or BACKOUT_MARKET_AFTER_MINUTES_DEFAULT,
+            sleep_interval=sleep_seconds,
+            start_offset_minutes=start_offset_minutes,
+            market_close_buffer_minutes=(
+                market_close_buffer_minutes
+                if market_close_buffer_minutes is not None
+                else BACKOUT_MARKET_CLOSE_BUFFER_MINUTES_DEFAULT
+            ),
+            market_close_force_minutes=(
+                market_close_force_minutes
+                if market_close_force_minutes is not None
+                else BACKOUT_MARKET_CLOSE_FORCE_MINUTES_DEFAULT
+            ),
+        )
     elif command == "ramp_into_position":
         now = datetime.now()
-        ramp_into_position(pair, side, start_time=now, target_qty=target_qty)
+        ramp_into_position(
+            pair,
+            side,
+            start_time=now,
+            target_qty=target_qty,
+            maxdiff_overflow=maxdiff_overflow,
+            risk_threshold=risk_threshold,
+        )
     elif command == "close_position_at_takeprofit":
         close_position_at_takeprofit(pair, float(side))  # Use side param as target price
     elif command == 'show_account':
@@ -106,7 +215,88 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy", target_
         debug_raw_data(pair)
 
 
-client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+_DATA_CLIENT: Optional[StockHistoricalDataClient] = None
+
+
+def _get_data_client() -> Optional[StockHistoricalDataClient]:
+    global _DATA_CLIENT
+    if _DATA_CLIENT is not None:
+        return _DATA_CLIENT
+    try:
+        _DATA_CLIENT = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+    except Exception as exc:
+        logger.error("Failed to initialise StockHistoricalDataClient: %s", exc)
+        _DATA_CLIENT = None
+    return _DATA_CLIENT
+
+
+def _current_spread_pct(symbol: str) -> Optional[float]:
+    """Fetch latest bid/ask and compute relative spread."""
+    client = _get_data_client()
+    if client is None:
+        return None
+    try:
+        download_exchange_latest_data(client, symbol)
+    except Exception as exc:
+        logger.warning("Unable to refresh quotes for %s: %s", symbol, exc)
+    bid = get_bid(symbol)
+    ask = get_ask(symbol)
+    if bid is None or ask is None:
+        return None
+    if bid <= 0 or ask <= 0:
+        return None
+    mid = (bid + ask) / 2.0
+    if mid <= 0:
+        return None
+    return (ask - bid) / mid
+
+
+def _minutes_until_market_close(now_utc: Optional[datetime] = None) -> Optional[float]:
+    """Return minutes until NYSE close (16:00 ET) for the provided or current time."""
+    try:
+        eastern = pytz.timezone("US/Eastern")
+    except Exception:
+        return None
+
+    now = now_utc or datetime.now(timezone.utc)
+    aware_now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    now_et = aware_now.astimezone(eastern)
+
+    if now_et.weekday() >= 5:  # weekend
+        return None
+
+    close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+    if now_et > close:
+        return 0.0
+
+    delta = close - now_et
+    return max(delta.total_seconds() / 60.0, 0.0)
+
+
+def _resolve_offset_profile(is_long: bool, minutes_to_close: Optional[float], market_close_buffer_minutes: int):
+    """
+    Determine offset behaviour for the ramp.
+
+    Returns (initial_offset, target_offset) already signed for the position side.
+    """
+    buffer_minutes = max(market_close_buffer_minutes, 0)
+    initial = BACKOUT_INITIAL_OFFSET_PCT if is_long else -BACKOUT_INITIAL_OFFSET_PCT
+    soft_cross = -BACKOUT_SOFT_CROSS_PCT if is_long else BACKOUT_SOFT_CROSS_PCT
+    final_cross = -BACKOUT_FINAL_CROSS_PCT if is_long else BACKOUT_FINAL_CROSS_PCT
+
+    if minutes_to_close is None:
+        return initial, final_cross
+
+    if buffer_minutes == 0 or minutes_to_close <= 0:
+        return initial, final_cross
+
+    if minutes_to_close >= buffer_minutes:
+        return initial, soft_cross
+
+    ratio = 1.0 - max(minutes_to_close, 0.0) / float(buffer_minutes)
+    ratio = max(0.0, min(ratio, 1.0))
+    dynamic_target = soft_cross + (final_cross - soft_cross) * ratio
+    return initial, dynamic_target
 
 
 def backout_near_market(
@@ -114,17 +304,24 @@ def backout_near_market(
     start_time=None,
     ramp_minutes=BACKOUT_RAMP_MINUTES_DEFAULT,
     market_after=BACKOUT_MARKET_AFTER_MINUTES_DEFAULT,
-    sleep_interval=90,
+    sleep_interval=None,
+    *,
+    start_offset_minutes: int = 0,
+    market_close_buffer_minutes: int = BACKOUT_MARKET_CLOSE_BUFFER_MINUTES_DEFAULT,
+    market_close_force_minutes: int = BACKOUT_MARKET_CLOSE_FORCE_MINUTES_DEFAULT,
 ):
     """Back out of an open position by progressively crossing the market.
 
     The function starts with a limit order slightly favourable to the
-    current price and linearly ramps to the opposite side of the spread
-    over ``ramp_minutes`` (default 30 minutes, configurable via
-    ``BACKOUT_RAMP_MINUTES`` env var). If the position is still open after
+    current price and linearly ramps to the opposite side of the spread.
+    The base ramp lasts ``ramp_minutes`` (default 30, configurable via
+    ``BACKOUT_RAMP_MINUTES``) and can be extended by ``start_offset_minutes``
+    to give more time before crossing. If the position is still open after
     ``market_after`` minutes (default 50, configurable via
-    ``BACKOUT_MARKET_AFTER_MINUTES``), a market order is sent to guarantee
-    the exit.
+    ``BACKOUT_MARKET_AFTER_MINUTES``) plus any start offset, or the market
+    close is imminent, a market order is sent to guarantee the exit. During
+    regular trading hours the limit offsets remain tight until within
+    ``market_close_buffer_minutes`` of the close to minimise taker fees.
 
     Args:
         pair: The trading pair symbol, e.g. ``"META"``.
@@ -138,8 +335,14 @@ def backout_near_market(
 
     retries = 0
     max_retries = 5
-    effective_ramp_minutes = max(int(ramp_minutes), 1)
-    effective_market_after = max(int(market_after), effective_ramp_minutes)
+    extra_minutes = max(int(start_offset_minutes), 0)
+    effective_ramp_minutes = max(int(ramp_minutes) + extra_minutes, 1)
+    effective_market_after = max(int(market_after) + extra_minutes, effective_ramp_minutes)
+    if sleep_interval is None:
+        sleep_interval = BACKOUT_POLL_INTERVAL_SECONDS_DEFAULT
+    sleep_interval = int(max(float(sleep_interval), 0.0))
+    market_close_force_minutes = max(int(market_close_force_minutes), 0)
+    market_close_buffer_minutes = max(int(market_close_buffer_minutes), 0)
 
     while True:
         try:
@@ -170,37 +373,71 @@ def backout_near_market(
                     logger.info(f"Found matching position for {pair}")
                     is_long = hasattr(position, 'side') and position.side == 'long'
 
-                    # Initial and final offsets from market price. Start slightly
-                    # favourable, then cross to the other side over ``ramp_minutes``.
-                    pct_offset = 0.003 if is_long else -0.003  # 0.3% away
-                    pct_final_offset = -0.02 if is_long else 0.02  # 2% past market
-
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
                     progress = min(minutes_since_start / effective_ramp_minutes, 1.0)
-                    if minutes_since_start >= effective_market_after:
-                        logger.info("Switching to market order to guarantee close")
-                        succeeded = alpaca_wrapper.close_position_violently(position)
-                        found_position = True
-                        if not succeeded:
-                            logger.info("Market order failed, will retry after delay")
-                            retries += 1
-                            if retries >= max_retries:
-                                logger.error("Max retries reached, exiting")
-                                return False
-                            sleep(60)
-                            continue
-                        break
+                    minutes_to_close = _minutes_until_market_close()
+                    pct_offset, pct_final_offset = _resolve_offset_profile(
+                        is_long,
+                        minutes_to_close,
+                        market_close_buffer_minutes,
+                    )
+                    pct_above_market = pct_offset + (pct_final_offset - pct_offset) * progress
+
+                    force_market_due_to_time = (
+                        minutes_to_close is not None
+                        and minutes_to_close <= market_close_force_minutes
+                    )
+
+                    if minutes_since_start >= effective_market_after or force_market_due_to_time:
+                        spread_pct = _current_spread_pct(pair)
+                        if spread_pct is not None and spread_pct > BACKOUT_MARKET_MAX_SPREAD_PCT:
+                            logger.info(
+                                "Spread %.2f%% exceeds %.2f%% cap; holding limit order instead of market for %s",
+                                spread_pct * 100.0,
+                                BACKOUT_MARKET_MAX_SPREAD_PCT * 100.0,
+                                pair,
+                            )
+                            pct_above_market = pct_final_offset
+                        else:
+                            if spread_pct is None:
+                                logger.warning(
+                                    "Spread unavailable for %s; proceeding with market order fallback",
+                                    pair,
+                                )
+                            else:
+                                logger.info(
+                                    "Spread %.2f%% within %.2f%% cap; switching to market order for %s",
+                                    spread_pct * 100.0,
+                                    BACKOUT_MARKET_MAX_SPREAD_PCT * 100.0,
+                                    pair,
+                                )
+                            succeeded = alpaca_wrapper.close_position_violently(position)
+                            found_position = True
+                            if succeeded:
+                                logger.info("Market order fallback succeeded for %s", pair)
+                            if not succeeded:
+                                logger.info("Market order failed, will retry after delay")
+                                retries += 1
+                                if retries >= max_retries:
+                                    logger.error("Max retries reached, exiting")
+                                    return False
+                                sleep(60)
+                                continue
+                            break
                     elif minutes_since_start >= effective_ramp_minutes:
                         # After ramp period, set price well beyond market to guarantee fill
                         pct_above_market = pct_final_offset
-                    else:
-                        # During ramp period - linear progression from start to final offset
-                        pct_above_market = pct_offset + (pct_final_offset - pct_offset) * progress
 
-                    logger.info(f"Position side: {'long' if is_long else 'short'}, "
-                              f"pct_above_market: {pct_above_market:.4f}, "
-                              f"minutes_since_start: {minutes_since_start}, "
-                              f"progress: {progress:.2f}")
+                    minutes_to_close_display = (
+                        f"{minutes_to_close:.1f}" if minutes_to_close is not None else "n/a"
+                    )
+                    logger.info(
+                        f"Position side: {'long' if is_long else 'short'}, "
+                        f"pct_above_market: {pct_above_market:.4f}, "
+                        f"minutes_since_start: {minutes_since_start}, "
+                        f"progress: {progress:.2f}, "
+                        f"minutes_to_close: {minutes_to_close_display}"
+                    )
 
                     try:
                         succeeded = alpaca_wrapper.close_position_near_market(position,
@@ -226,9 +463,14 @@ def backout_near_market(
             if not found_position:
                 logger.info(f"no position found or error closing for {pair}")
                 return True
-
             retries = 0
-            sleep(sleep_interval)  # configurable retry interval
+            if sleep_interval > 0:
+                dynamic_interval = sleep_interval
+                sleep_minutes_to_close = _minutes_until_market_close()
+                if sleep_minutes_to_close is not None:
+                    scaled_interval = max(5, int(math.ceil(sleep_minutes_to_close * 6)))
+                    dynamic_interval = min(sleep_interval, scaled_interval)
+                sleep(dynamic_interval)
 
         except Exception as e:
             logger.error(f"Error in backout_near_market: {e}")
@@ -249,7 +491,9 @@ def close_all_positions():
         symbol = position.symbol
 
         # get latest data then bid/ask
-        download_exchange_latest_data(client, symbol)
+        data_client = _get_data_client()
+        if data_client is not None:
+            download_exchange_latest_data(data_client, symbol)
         bid = get_bid(symbol)
         ask = get_ask(symbol)
 
@@ -272,12 +516,27 @@ def violently_close_all_positions():
         alpaca_wrapper.close_position_violently(position)
 
 
-def ramp_into_position(pair, side, start_time=None, target_qty=None):
+def ramp_into_position(
+    pair,
+    side,
+    start_time=None,
+    target_qty=None,
+    maxdiff_overflow=False,
+    risk_threshold=None,
+):
     """
     Ramp into a position with different strategies for crypto vs stocks:
     - Crypto: Start slightly worse than market price, ramp to opposite side over 1 hour
     - Stocks: More aggressive pricing starting at market, ramp over 1 hour
     - If target_qty is provided, will add to existing position to reach that target
+
+    Args:
+        pair: Trading symbol
+        side: 'buy' or 'sell'
+        start_time: Start time for the ramp
+        target_qty: Optional target quantity
+        maxdiff_overflow: If True, check leverage before placing orders
+        risk_threshold: Risk threshold to check against (will be fetched if not provided)
     """
     if pair in crypto_symbols and side.lower() == "sell":
         logger.error(f"Cannot short crypto {pair}")
@@ -308,7 +567,9 @@ def ramp_into_position(pair, side, start_time=None, target_qty=None):
             # If target_qty not provided, use the centralized get_qty function for consistent risk management
             if target_qty is None:
                 # Get current market price to calculate target qty
-                download_exchange_latest_data(client, pair)
+                data_client = _get_data_client()
+                if data_client is not None:
+                    download_exchange_latest_data(data_client, pair)
                 bid_price = get_bid(pair)
                 ask_price = get_ask(pair)
                 if bid_price is None or ask_price is None:
@@ -397,7 +658,15 @@ def ramp_into_position(pair, side, start_time=None, target_qty=None):
 
             # Get current market prices
             try:
-                download_exchange_latest_data(client, pair)
+                data_client = _get_data_client()
+                if data_client is None:
+                    logger.error("Quote client unavailable; cannot fetch data for %s", pair)
+                    retries += 1
+                    if retries >= max_retries:
+                        return False
+                    sleep(30)
+                    continue
+                download_exchange_latest_data(data_client, pair)
                 bid_price = get_bid(pair)
                 ask_price = get_ask(pair)
 
@@ -468,6 +737,86 @@ def ramp_into_position(pair, side, start_time=None, target_qty=None):
                     logger.info(f"Estimated order cost: ${estimated_cost:.2f}")
                 except Exception as e:
                     logger.error(f"Error checking account status: {e}")
+
+                # Check leverage constraint for maxdiff overflow trades
+                if maxdiff_overflow:
+                    try:
+                        # Get current risk threshold
+                        effective_risk_threshold = risk_threshold
+                        if effective_risk_threshold is None:
+                            effective_risk_threshold = get_global_risk_threshold()
+
+                        # Calculate current total exposure
+                        all_positions = alpaca_wrapper.get_all_positions()
+                        current_positions = filter_to_realistic_positions(all_positions)
+                        current_exposure = _calculate_total_exposure_value(current_positions)
+
+                        # Calculate max allowed exposure and available room
+                        equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
+                        if equity <= 0:
+                            logger.warning(f"Invalid equity ${equity:.2f} for {pair}, skipping leverage check")
+                        else:
+                            max_allowed_exposure = equity * effective_risk_threshold
+                            available_room = max_allowed_exposure - current_exposure
+
+                            # Calculate projected exposure including this order
+                            order_value = abs(qty * order_price)
+                            projected_exposure = current_exposure + order_value
+                            projected_leverage = projected_exposure / equity
+
+                            # Check if leverage would exceed threshold
+                            if projected_leverage > effective_risk_threshold:
+                                # Try to shrink the order to fit within leverage budget
+                                if available_room > 0:
+                                    # Calculate adjusted quantity to fit
+                                    adjusted_order_value = available_room * 0.99  # Use 99% to leave buffer
+                                    adjusted_qty = adjusted_order_value / abs(order_price)
+
+                                    # Check minimum order size
+                                    min_order_size = 0.01 if pair in crypto_symbols else 1.0
+
+                                    if adjusted_qty >= min_order_size:
+                                        logger.info(
+                                            f"{pair} maxdiff overflow: shrinking order from {qty:.4f} to {adjusted_qty:.4f} "
+                                            f"to fit within leverage threshold {effective_risk_threshold:.2f}x. "
+                                            f"Available room: ${available_room:.2f}, Current exposure: ${current_exposure:.2f}, "
+                                            f"Equity: ${equity:.2f}"
+                                        )
+                                        qty = adjusted_qty
+                                        qty_to_add = adjusted_qty  # Keep qty_to_add in sync
+                                        # Recalculate order value with adjusted qty
+                                        order_value = abs(qty * order_price)
+                                    else:
+                                        logger.info(
+                                            f"Skipping {pair} maxdiff overflow order: adjusted qty {adjusted_qty:.4f} "
+                                            f"below minimum {min_order_size}. Available room: ${available_room:.2f}. "
+                                            f"Will retry in next iteration."
+                                        )
+                                        # Reset retries since this is not an error
+                                        retries = 0
+                                        sleep_time = 5 * 60 if pair in crypto_symbols else 2 * 60
+                                        sleep(sleep_time)
+                                        continue
+                                else:
+                                    logger.info(
+                                        f"Skipping {pair} maxdiff overflow order: no available leverage room. "
+                                        f"Projected leverage {projected_leverage:.2f}x exceeds threshold {effective_risk_threshold:.2f}x. "
+                                        f"Current exposure: ${current_exposure:.2f}, Max allowed: ${max_allowed_exposure:.2f}, "
+                                        f"Equity: ${equity:.2f}. Will retry in next iteration."
+                                    )
+                                    # Reset retries since this is not an error
+                                    retries = 0
+                                    sleep_time = 5 * 60 if pair in crypto_symbols else 2 * 60
+                                    sleep(sleep_time)
+                                    continue
+                            else:
+                                logger.info(
+                                    f"{pair} maxdiff overflow leverage check passed: projected leverage "
+                                    f"{projected_leverage:.2f}x <= risk threshold {effective_risk_threshold:.2f}x. "
+                                    f"Proceeding with order qty={qty:.4f}."
+                                )
+                    except Exception as e:
+                        logger.warning(f"Error during leverage check for {pair}: {e}. Proceeding with order anyway.")
 
                 # Place the order with error handling using new function that allows adding to positions
                 try:
@@ -583,6 +932,59 @@ def show_account():
             if hasattr(order, 'symbol') and hasattr(order, 'qty'):
                 price_str = f"@ ${float(order.limit_price):,.2f}" if hasattr(order, 'limit_price') else "(market)"
                 logger.info(f"{order.symbol}: {order.side.upper()} {order.qty} {price_str}")
+
+    # Display maxdiff plans for today
+    try:
+        from trade_stock_e2e import _load_maxdiff_plans_for_today, _calculate_total_exposure_value
+        from src.portfolio_risk import get_global_risk_threshold
+        from src.trading_obj_utils import filter_to_realistic_positions
+
+        maxdiff_plans = _load_maxdiff_plans_for_today()
+        if maxdiff_plans:
+            logger.info("\n=== Maxdiff Plans (Parallel Trading Layer) ===")
+
+            # Calculate leverage info
+            all_positions = alpaca_wrapper.get_all_positions()
+            realistic_positions = filter_to_realistic_positions(all_positions)
+            current_exposure = _calculate_total_exposure_value(realistic_positions)
+            equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
+
+            if equity > 0:
+                current_leverage = current_exposure / equity
+                risk_threshold = get_global_risk_threshold()
+                max_allowed_exposure = equity * risk_threshold
+                available_room = max(0, max_allowed_exposure - current_exposure)
+
+                logger.info(f"Current Leverage: {current_leverage:.2f}x (${current_exposure:,.2f} / ${equity:,.2f})")
+                logger.info(f"Global Risk Threshold: {risk_threshold:.2f}x")
+                logger.info(f"Available for Maxdiff: ${available_room:,.2f}")
+
+            # Sort plans by avg_return
+            sorted_plans = sorted(
+                maxdiff_plans.items(),
+                key=lambda x: x[1].get("avg_return", 0.0),
+                reverse=True
+            )
+
+            active_plans = [(sym, plan) for sym, plan in sorted_plans if plan.get("status") in {"identified", "listening", "spawned"}]
+            filled_plans = [(sym, plan) for sym, plan in sorted_plans if plan.get("status") == "filled"]
+
+            if active_plans:
+                logger.info(f"\nActive Maxdiff Opportunities ({len(active_plans)}):")
+                for symbol, plan in active_plans:
+                    avg_ret = plan.get("avg_return", 0.0)
+                    high = plan.get("maxdiffprofit_high_price") or plan.get("high_target", 0.0)
+                    low = plan.get("maxdiffprofit_low_price") or plan.get("low_target", 0.0)
+                    status = plan.get("status", "unknown")
+                    logger.info(f"  {symbol}: high=${high:.2f} low=${low:.2f} avg_return={avg_ret:.4f} [{status}]")
+
+            if filled_plans:
+                logger.info(f"\nFilled Maxdiff Today ({len(filled_plans)}):")
+                for symbol, plan in filled_plans:
+                    avg_ret = plan.get("avg_return", 0.0)
+                    logger.info(f"  {symbol}: avg_return={avg_ret:.4f} [filled]")
+    except Exception as e:
+        logger.warning(f"Failed to load maxdiff plans: {e}")
 
 
 def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=None):

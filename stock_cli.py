@@ -19,6 +19,7 @@ from src.portfolio_risk import (
     fetch_snapshots,
     get_global_risk_threshold,
     get_configured_max_risk_threshold,
+    record_portfolio_snapshot,
 )
 from src.leverage_settings import get_leverage_settings
 from src.trading_obj_utils import filter_to_realistic_positions
@@ -650,6 +651,61 @@ def probe_status(
         typer.echo(f"    last_closed={last_closed} active_mode={status.active_mode or 'n/a'}")
         typer.echo(f"    active_qty={qty_repr} opened={active_opened}")
         typer.echo(f"    learning_updated={learning_updated}")
+
+
+@app.command("set-risk")
+def set_risk(
+    day_pl: Optional[float] = typer.Option(
+        None,
+        help="Day P&L value. If >= 0, sets risk to max leverage; if < 0, sets to minimum (0.01).",
+    ),
+):
+    """Manually record a portfolio snapshot and update the risk threshold.
+
+    This will set the global risk threshold based on current account equity and day P&L.
+    Use GLOBAL_MAX_GROSS_LEVERAGE environment variable to control the max threshold.
+
+    Example:
+        PAPER=0 GLOBAL_MAX_GROSS_LEVERAGE=1.0 python stock_cli.py set-risk --day-pl 0
+    """
+    typer.echo("== Setting Risk Threshold ==")
+
+    # Get current account to determine portfolio value
+    try:
+        account = alpaca_wrapper.get_account()
+    except Exception as exc:
+        typer.secho(f"Failed to fetch account: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    if account is None:
+        typer.secho("Account unavailable.", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    equity = _safe_float(getattr(account, "equity", 0.0))
+    if equity <= 0:
+        typer.secho("Invalid equity value.", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    # Get current leverage settings
+    leverage_settings = get_leverage_settings()
+    typer.echo(f"Current max gross leverage setting: {leverage_settings.max_gross_leverage:.2f}x")
+    typer.echo(f"Current portfolio equity: {_format_currency(equity)}")
+
+    # Record snapshot
+    try:
+        if day_pl is not None:
+            typer.echo(f"Recording snapshot with day P&L: {_format_currency(day_pl)}")
+            snapshot = record_portfolio_snapshot(equity, day_pl=day_pl)
+        else:
+            typer.echo("Recording snapshot (no day P&L specified)")
+            snapshot = record_portfolio_snapshot(equity)
+    except Exception as exc:
+        typer.secho(f"Failed to record snapshot: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"\n✓ Risk threshold updated to: {snapshot.risk_threshold:.2f}x")
+    typer.echo(f"  Portfolio value: {_format_currency(snapshot.portfolio_value)}")
+    typer.echo(f"  Recorded at: {_format_timestamp(snapshot.observed_at, 'US/Eastern')}")
 
 
 if __name__ == "__main__":

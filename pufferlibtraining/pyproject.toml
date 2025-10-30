@@ -12,6 +12,8 @@ dependencies = [
     "stock-trading-suite[rl,hf,mlops,opt]",
     "gymrl",
     "hftraining",
+    "pufferlib>=2.0.2",
+    "gymnasium>=0.29",
 ]
 
 [project.optional-dependencies]
