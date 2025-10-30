@@ -434,6 +434,9 @@ BACKOUT_START_OFFSET_MINUTES = int(os.getenv("BACKOUT_START_OFFSET_MINUTES", "30
 BACKOUT_SLEEP_SECONDS = int(os.getenv("BACKOUT_SLEEP_SECONDS", "45"))
 BACKOUT_MARKET_CLOSE_BUFFER_MINUTES = int(os.getenv("BACKOUT_MARKET_CLOSE_BUFFER_MINUTES", "30"))
 BACKOUT_MARKET_CLOSE_FORCE_MINUTES = int(os.getenv("BACKOUT_MARKET_CLOSE_FORCE_MINUTES", "3"))
+MAXDIFF_ENTRY_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_ENTRY_POLL_SECONDS", "12")))
+MAXDIFF_EXIT_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_EXIT_POLL_SECONDS", "12")))
+MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE = float(os.getenv("MAXDIFF_EXIT_PRICE_TOLERANCE", "0.001"))
 
 
 def _log_detail(message: str) -> None:
@@ -2551,6 +2554,7 @@ def manage_positions(
                                     data["side"],
                                     float(limit_price),
                                     float(target_qty),
+                                    poll_seconds=MAXDIFF_ENTRY_WATCHER_POLL_SECONDS,
                                 )
                                 highlow_limit_executed = True
                                 entry_price = float(limit_price)
@@ -2670,6 +2674,8 @@ def manage_positions(
                             symbol,
                             data["side"],
                             float(takeprofit_price),
+                            poll_seconds=MAXDIFF_EXIT_WATCHER_POLL_SECONDS,
+                            price_tolerance=MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE,
                         )
                     except Exception as exc:
                         logger.warning("Failed to schedule highlow takeprofit for %s: %s", symbol, exc)
