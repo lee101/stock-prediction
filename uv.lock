@@ -20,10 +20,6 @@ members = [
     "hfshared",
     "hftraining",
     "marketsimulator",
-    "pufferlib-inference",
-    "pufferlib-training",
-    "pufferlib-training2",
-    "rlinc-market",
     "stock-trading-suite",
     "toto-ts",
     "traininglib",
@@ -3888,84 +3884,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a4/b5/d07437260ef34699922333a864dfb49e2ace328cd5e517ffd748a965cd7c/pufferlib-2.0.6.tar.gz", hash = "sha256:0768d1a6d2a7320990339fc730a988025cf5ae6e772d2e51f5392b5e32212fff", size = 31927618, upload-time = "2025-01-15T19:29:06.419Z" }
 
 [[package]]
-name = "pufferlib-inference"
-version = "0.1.0"
-source = { editable = "pufferlibinference" }
-dependencies = [
-    { name = "hfinference", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "stock-trading-suite", extra = ["hf", "rl"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "hfinference", editable = "hfinference" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.3" },
-    { name = "stock-trading-suite", extras = ["rl", "hf"], editable = "." },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "pufferlib-training"
-version = "0.1.0"
-source = { editable = "pufferlibtraining" }
-dependencies = [
-    { name = "gymrl", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "hftraining", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "stock-trading-suite", extra = ["hf", "mlops", "opt", "rl"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "gymrl", editable = "gymrl" },
-    { name = "hftraining", editable = "hftraining" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.3" },
-    { name = "stock-trading-suite", extras = ["rl", "hf", "mlops", "opt"], editable = "." },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "pufferlib-training2"
-version = "0.1.0"
-source = { editable = "pufferlibtraining2" }
-dependencies = [
-    { name = "gym", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "gymnasium", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "pandas", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "pufferlib", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "stock-trading-suite", extra = ["mlops", "rl"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "wandb", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "gym", specifier = "<=0.23.1" },
-    { name = "gymnasium", specifier = ">=0.29" },
-    { name = "pandas", specifier = ">=2.1" },
-    { name = "pufferlib", specifier = ">=2.0.2" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
-    { name = "stock-trading-suite", extras = ["rl", "mlops"], editable = "." },
-    { name = "torch", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "wandb", specifier = ">=0.22" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "pure-eval"
 version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
@@ -4828,23 +4746,6 @@ wheels = [
 ]
 
 [[package]]
-name = "rlinc-market"
-version = "0.0.1"
-source = { editable = "rlinc_market" }
-dependencies = [
-    { name = "gymnasium", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "pufferlib", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "gymnasium", specifier = ">=0.29" },
-    { name = "numpy", specifier = ">=2.0", index = "https://pypi.org/simple" },
-    { name = "pufferlib", specifier = ">=2.0.2" },
-]
-
-[[package]]
 name = "rotary-embedding-torch"
 version = "0.8.6"
 source = { registry = "https://pypi.org/simple" }
@@ -5304,6 +5205,7 @@ dependencies = [
     { name = "diskcache", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "filelock", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "fsspec", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "gymnasium", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "joblib", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "jsonschema", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "loguru", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -5490,6 +5392,7 @@ requires-dist = [
     { name = "gluonts", extras = ["torch"], marker = "extra == 'forecasting'", specifier = ">=0.15.1" },
     { name = "gunicorn", marker = "extra == 'all'", specifier = ">=23.0" },
     { name = "gunicorn", marker = "extra == 'serving'", specifier = ">=23.0" },
+    { name = "gymnasium", specifier = ">=0.29" },
     { name = "gymnasium", marker = "extra == 'all'", specifier = ">=0.29" },
     { name = "gymnasium", marker = "extra == 'rl'", specifier = ">=0.29" },
     { name = "huggingface-hub", marker = "extra == 'all'", specifier = ">=0.24" },

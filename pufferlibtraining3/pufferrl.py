@@ -6,6 +6,7 @@ import argparse
 import dataclasses
 import json
 import logging
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
@@ -125,19 +126,36 @@ def _resolve_device(device: str) -> torch.device:
     return requested
 
 
-def _build_env_creator(cfg: MarketEnvConfig, collectors: List[MetricsCollector]):
-    tracked = ("trading_cost", "financing_cost", "deleverage_notional")
+def _build_env_creator(cfg: MarketEnvConfig, collectors: List[MetricsCollector], *, backend: str = "python"):
+    tracked = ("trading_cost", "financing_cost", "deleverage_notional", "deleverage_cost")
     emulation = _import_pufferlib_module("pufferlib.emulation")
 
     def _gym_env() -> gym.Env:
         env_cfg = replace(cfg)
-        env = MarketEnv(cfg=env_cfg)
+        env_backend = backend.lower()
+        env: gym.Env
+        if env_backend == "fast":
+            try:
+                from fastmarketsim import FastMarketEnv
+
+                env = FastMarketEnv(cfg=env_cfg)
+            except Exception as err:  # pragma: no cover - defensive path
+                logging.warning(
+                    "Falling back to python MarketEnv backend after fast backend failure: %s",
+                    err,
+                )
+                env = MarketEnv(cfg=env_cfg)
+        else:
+            env = MarketEnv(cfg=env_cfg)
         wrapper = MetricsCollector(env, tracked)
         collectors.append(wrapper)
         return wrapper
 
-    def _puffer_env() -> gym.Env:
-        return emulation.GymnasiumPufferEnv(env_creator=_gym_env)
+    def _puffer_env(*, buf=None, seed: Optional[int] = None, **kwargs) -> gym.Env:
+        # PufferLib vector backends pass shared-memory buffers and seeds; the simulator handles
+        # reproducibility internally so we ignore the seed parameter for now.
+        del seed
+        return emulation.GymnasiumPufferEnv(env_creator=_gym_env, buf=buf)
 
     return _puffer_env
 
@@ -154,7 +172,6 @@ def _build_vecenv(vec_cfg: VecConfig, env_creator, device: torch.device):
         env_kwargs=env_kwargs,
         backend=backend,
         num_envs=vec_cfg.num_envs,
-        seed=vec_cfg.seed,
         num_workers=vec_cfg.num_workers,
     )
     vecenv.device = device
@@ -235,6 +252,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1337, help="PRNG seed")
     parser.add_argument("--device", type=str, default="cuda", help="Training device (e.g. 'cuda', 'cuda:1', 'cpu')")
     parser.add_argument("--backend", type=str, default="Serial", choices=["Serial", "Multiprocessing"], help="Vector environment backend")
+    parser.add_argument(
+        "--env-backend",
+        type=str,
+        default="python",
+        choices=["python", "fast"],
+        help="Environment implementation: 'python' for torch MarketEnv, 'fast' for the C++ accelerator",
+    )
     parser.add_argument("--num-envs", type=int, default=16, help="Number of parallel environment replicas")
     parser.add_argument("--num-workers", type=int, default=1, help="Worker processes for vector backend")
     parser.add_argument("--total-timesteps", type=int, default=5_000_000, help="Total agent timesteps")
@@ -319,11 +343,16 @@ def train(args: argparse.Namespace) -> Dict[str, Any]:
     env_cfg, ppo_cfg, vec_cfg, device = build_configs(args)
 
     collectors: List[MetricsCollector] = []
-    env_creator = _build_env_creator(env_cfg, collectors)
+    env_creator = _build_env_creator(env_cfg, collectors, backend=args.env_backend)
     vecenv = _build_vecenv(vec_cfg, env_creator, device)
 
     pufferl = _import_pufferlib_module("pufferlib.pufferl")
-    base_cfg = pufferl.load_config("default")
+    original_argv = sys.argv[:]
+    try:
+        sys.argv = [original_argv[0]]
+        base_cfg = pufferl.load_config("default")
+    finally:
+        sys.argv = original_argv
     train_cfg = dict(base_cfg["train"])
     _update_train_config(train_cfg, ppo_cfg, device=device, seed=args.seed)
     train_cfg["env"] = "pufferlibtraining3.market_env"

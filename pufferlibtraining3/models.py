@@ -141,10 +141,7 @@ class MarketPolicy(nn.Module):
         elif self._is_continuous:
             mean = self.actor_mean(actor_hidden)
             std = torch.exp(self.actor_logstd).expand_as(mean)
-            logits = torch.distributions.Independent(
-                torch.distributions.Normal(mean, std),
-                1,
-            )
+            logits = torch.distributions.Normal(mean, std)
         else:
             logits = self.actor_head(actor_hidden)
 

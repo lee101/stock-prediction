@@ -59,6 +59,8 @@ class MarketEnvConfig:
     # RNG / device
     seed: int = 1337
     device: str = "cuda"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
 
     # Synthetic fallback
     synth_T: int = 200_000
@@ -204,7 +206,11 @@ class MarketEnv(gym.Env):
         price_cols = self._infer_price_columns(frame)
         price_values = frame[list(price_cols)].to_numpy(dtype="float32")
         prices_tensor = torch.from_numpy(price_values)
-        exog_cols = [col for col in frame.columns if col not in price_cols]
+        exog_cols = [
+            col
+            for col in frame.columns
+            if col not in price_cols and pd.api.types.is_numeric_dtype(frame[col])
+        ]
         exog_tensor = None
         if exog_cols:
             exog_values = frame[exog_cols].to_numpy(dtype="float32")
@@ -219,7 +225,20 @@ class MarketEnv(gym.Env):
             frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
             frame = frame.sort_values("date")
             frame = frame.set_index("date")
+        elif "timestamp" in frame.columns:
+            frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
+            frame = frame.sort_values("timestamp")
+            frame = frame.set_index("timestamp")
         frame = frame.dropna(axis=0, how="any")
+        start = self.cfg.start_date
+        end = self.cfg.end_date
+        if (start is not None or end is not None) and isinstance(frame.index, pd.DatetimeIndex):
+            start_ts = pd.to_datetime(start) if start is not None else None
+            end_ts = pd.to_datetime(end) if end is not None else None
+            if start_ts is not None:
+                frame = frame[frame.index >= start_ts]
+            if end_ts is not None:
+                frame = frame[frame.index <= end_ts]
         return frame
 
     def _infer_price_columns(self, frame: "pd.DataFrame") -> Tuple[str, ...]:  # type: ignore[override]
@@ -228,8 +247,15 @@ class MarketEnv(gym.Env):
         if missing:
             raise ValueError(f"CSV is missing required price columns: {missing}")
         ordered = ["open", "high", "low", "close"]
-        extra = [col for col in frame.columns if col not in ordered]
-        return tuple(list(ordered) + extra[: max(0, len(frame.columns) - len(ordered))])
+        # Only treat additional numeric columns as price features to avoid pulling in string indices.
+        extra_numeric = []
+        for col in frame.columns:
+            if col in ordered:
+                continue
+            series = frame[col]
+            if pd.api.types.is_numeric_dtype(series):
+                extra_numeric.append(col)
+        return tuple(ordered + extra_numeric)
 
     def _make_synth_prices(self, T: int, mu: float, sigma: float) -> torch.Tensor:
         steps = torch.randn((T,), generator=self._g) * float(sigma) + float(mu)
