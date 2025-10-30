@@ -44,6 +44,7 @@ dependencies = [
     "torch-optimizer>=0.3",
     "pytorch-optimizer>=2.11",
     "dill==0.3.8",
+    "gymnasium>=0.29",
     "aioboto3==12.4.0",
     "boto3==1.34.69",
     "python-binance>=1.0.21",
@@ -194,19 +195,16 @@ default-groups = []
 
 [tool.uv.workspace]
 # Explicit workspace members for per-package installs. Add more as they stabilize.
+# Default workspace keeps core packages that resolve cleanly under Python 3.12+.
 members = [
     "differentiable_market",
     "differentiable_market_kronos",
     "differentiable_market_totoembedding",
-    "rlinc_market",
     "gymrl",
     "hfshared",
     "hfinference",
     "hftraining",
     "marketsimulator",
-    "pufferlibinference",
-    "pufferlibtraining",
-    "pufferlibtraining2",
     "toto",
     "traininglib",
 ]

@@ -1,0 +1,31 @@
+{
+  "symbol": "QQQ",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.16_p0.80_s192_k16_clip2_ctx256",
+    "temperature": 0.16,
+    "top_p": 0.8,
+    "top_k": 16,
+    "sample_count": 192,
+    "max_context": 256,
+    "clip": 2.0
+  },
+  "validation": {
+    "price_mae": 2.9220805664062537,
+    "pct_return_mae": 0.009262572067256218,
+    "latency_s": 108.46627669100417
+  },
+  "test": {
+    "price_mae": 2.32941259765625,
+    "pct_return_mae": 0.008845362905803938,
+    "latency_s": 5.503228574998502
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}

@@ -179,3 +179,12 @@ PufferLib
 .venv313fast
 resources
 rlinc_market/rlinc_cmarket.cpython-312-x86_64-linux-gnu.so
+cppsimulator/build/CMakeFiles/
+cppsimulator/build/run_sim
+external
+cache
+marketsimulator/run_logs
+githubagent/actions-runner/externals/
+githubagent/actions-runner/externals/bin
+githubagent/actions-runner/bin
+cppsimulator/build_py/market_sim_ext.so

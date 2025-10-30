@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from time import sleep
 import traceback
 from typing import Optional
@@ -50,6 +50,14 @@ except ValueError:
     )
 
 
+BACKOUT_INITIAL_OFFSET_PCT = float(os.getenv("BACKOUT_INITIAL_OFFSET_PCT", "0.003"))
+BACKOUT_SOFT_CROSS_PCT = float(os.getenv("BACKOUT_SOFT_CROSS_PCT", "0.004"))
+BACKOUT_FINAL_CROSS_PCT = float(os.getenv("BACKOUT_FINAL_CROSS_PCT", "0.02"))
+BACKOUT_POLL_INTERVAL_SECONDS_DEFAULT = int(os.getenv("BACKOUT_POLL_INTERVAL_SECONDS", "45"))
+BACKOUT_MARKET_CLOSE_BUFFER_MINUTES_DEFAULT = int(os.getenv("BACKOUT_MARKET_CLOSE_BUFFER_MINUTES", "30"))
+BACKOUT_MARKET_CLOSE_FORCE_MINUTES_DEFAULT = int(os.getenv("BACKOUT_MARKET_CLOSE_FORCE_MINUTES", "3"))
+
+
 def set_strategy_for_symbol(symbol: str, strategy: str) -> None:
     """Record that a symbol is traded under the given strategy for today's date."""
     day_key = datetime.now().strftime('%Y-%m-%d')
@@ -82,10 +90,52 @@ def _calculate_total_exposure_value(positions) -> float:
 def main(
     command: str,
     pair: Optional[str],
-    side: Optional[str] = "buy",
-    target_qty: Optional[float] = None,
-    maxdiff_overflow: bool = False,
-    risk_threshold: Optional[float] = None,
+    side: Optional[str] = typer.Option("buy", "--side", help="Order side for ramp/entry commands."),
+    target_qty: Optional[float] = typer.Option(
+        None, "--target-qty", help="Target quantity for ramp_into_position."
+    ),
+    maxdiff_overflow: bool = typer.Option(
+        False, "--maxdiff-overflow", help="Check leverage before placing orders for maxdiff overflow trades."
+    ),
+    risk_threshold: Optional[float] = typer.Option(
+        None, "--risk-threshold", help="Risk threshold to check against for maxdiff overflow."
+    ),
+    start_offset_minutes: int = typer.Option(
+        0,
+        "--start-offset-minutes",
+        min=0,
+        help="Extend backout ramp duration by this many minutes before forcing market.",
+    ),
+    ramp_minutes: Optional[int] = typer.Option(
+        None,
+        "--ramp-minutes",
+        min=1,
+        help="Base number of minutes used for the backout ramp before any start offset.",
+    ),
+    market_after_minutes: Optional[int] = typer.Option(
+        None,
+        "--market-after-minutes",
+        min=1,
+        help="Minutes before forcing a market order during backout (before start offset).",
+    ),
+    sleep_seconds: Optional[int] = typer.Option(
+        None,
+        "--sleep-seconds",
+        min=0,
+        help="Polling interval between backout iterations.",
+    ),
+    market_close_buffer_minutes: Optional[int] = typer.Option(
+        None,
+        "--market-close-buffer-minutes",
+        min=0,
+        help="Minutes from the close to keep tighter limit offsets before widening.",
+    ),
+    market_close_force_minutes: Optional[int] = typer.Option(
+        None,
+        "--market-close-force-minutes",
+        min=0,
+        help="Force market order when this close to market close even if ramp not completed.",
+    ),
 ):
     """
     cancel_all_orders - cancel all orders
@@ -117,8 +167,28 @@ def main(
         alpaca_wrapper.cancel_all_orders()
     elif command == "backout_near_market":
         # loop around until the order is closed at market
+        if not pair:
+            logger.error("Symbol is required for backout_near_market command")
+            return
         now = datetime.now()
-        backout_near_market(pair, start_time=now)
+        backout_near_market(
+            pair,
+            start_time=now,
+            ramp_minutes=ramp_minutes or BACKOUT_RAMP_MINUTES_DEFAULT,
+            market_after=market_after_minutes or BACKOUT_MARKET_AFTER_MINUTES_DEFAULT,
+            sleep_interval=sleep_seconds,
+            start_offset_minutes=start_offset_minutes,
+            market_close_buffer_minutes=(
+                market_close_buffer_minutes
+                if market_close_buffer_minutes is not None
+                else BACKOUT_MARKET_CLOSE_BUFFER_MINUTES_DEFAULT
+            ),
+            market_close_force_minutes=(
+                market_close_force_minutes
+                if market_close_force_minutes is not None
+                else BACKOUT_MARKET_CLOSE_FORCE_MINUTES_DEFAULT
+            ),
+        )
     elif command == "ramp_into_position":
         now = datetime.now()
         ramp_into_position(
@@ -181,22 +251,77 @@ def _current_spread_pct(symbol: str) -> Optional[float]:
     return (ask - bid) / mid
 
 
+def _minutes_until_market_close(now_utc: Optional[datetime] = None) -> Optional[float]:
+    """Return minutes until NYSE close (16:00 ET) for the provided or current time."""
+    try:
+        eastern = pytz.timezone("US/Eastern")
+    except Exception:
+        return None
+
+    now = now_utc or datetime.now(timezone.utc)
+    aware_now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    now_et = aware_now.astimezone(eastern)
+
+    if now_et.weekday() >= 5:  # weekend
+        return None
+
+    close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+    if now_et > close:
+        return 0.0
+
+    delta = close - now_et
+    return max(delta.total_seconds() / 60.0, 0.0)
+
+
+def _resolve_offset_profile(is_long: bool, minutes_to_close: Optional[float], market_close_buffer_minutes: int):
+    """
+    Determine offset behaviour for the ramp.
+
+    Returns (initial_offset, target_offset) already signed for the position side.
+    """
+    buffer_minutes = max(market_close_buffer_minutes, 0)
+    initial = BACKOUT_INITIAL_OFFSET_PCT if is_long else -BACKOUT_INITIAL_OFFSET_PCT
+    soft_cross = -BACKOUT_SOFT_CROSS_PCT if is_long else BACKOUT_SOFT_CROSS_PCT
+    final_cross = -BACKOUT_FINAL_CROSS_PCT if is_long else BACKOUT_FINAL_CROSS_PCT
+
+    if minutes_to_close is None:
+        return initial, final_cross
+
+    if buffer_minutes == 0 or minutes_to_close <= 0:
+        return initial, final_cross
+
+    if minutes_to_close >= buffer_minutes:
+        return initial, soft_cross
+
+    ratio = 1.0 - max(minutes_to_close, 0.0) / float(buffer_minutes)
+    ratio = max(0.0, min(ratio, 1.0))
+    dynamic_target = soft_cross + (final_cross - soft_cross) * ratio
+    return initial, dynamic_target
+
+
 def backout_near_market(
     pair,
     start_time=None,
     ramp_minutes=BACKOUT_RAMP_MINUTES_DEFAULT,
     market_after=BACKOUT_MARKET_AFTER_MINUTES_DEFAULT,
-    sleep_interval=90,
+    sleep_interval=None,
+    *,
+    start_offset_minutes: int = 0,
+    market_close_buffer_minutes: int = BACKOUT_MARKET_CLOSE_BUFFER_MINUTES_DEFAULT,
+    market_close_force_minutes: int = BACKOUT_MARKET_CLOSE_FORCE_MINUTES_DEFAULT,
 ):
     """Back out of an open position by progressively crossing the market.
 
     The function starts with a limit order slightly favourable to the
-    current price and linearly ramps to the opposite side of the spread
-    over ``ramp_minutes`` (default 30 minutes, configurable via
-    ``BACKOUT_RAMP_MINUTES`` env var). If the position is still open after
+    current price and linearly ramps to the opposite side of the spread.
+    The base ramp lasts ``ramp_minutes`` (default 30, configurable via
+    ``BACKOUT_RAMP_MINUTES``) and can be extended by ``start_offset_minutes``
+    to give more time before crossing. If the position is still open after
     ``market_after`` minutes (default 50, configurable via
-    ``BACKOUT_MARKET_AFTER_MINUTES``), a market order is sent to guarantee
-    the exit.
+    ``BACKOUT_MARKET_AFTER_MINUTES``) plus any start offset, or the market
+    close is imminent, a market order is sent to guarantee the exit. During
+    regular trading hours the limit offsets remain tight until within
+    ``market_close_buffer_minutes`` of the close to minimise taker fees.
 
     Args:
         pair: The trading pair symbol, e.g. ``"META"``.
@@ -210,8 +335,14 @@ def backout_near_market(
 
     retries = 0
     max_retries = 5
-    effective_ramp_minutes = max(int(ramp_minutes), 1)
-    effective_market_after = max(int(market_after), effective_ramp_minutes)
+    extra_minutes = max(int(start_offset_minutes), 0)
+    effective_ramp_minutes = max(int(ramp_minutes) + extra_minutes, 1)
+    effective_market_after = max(int(market_after) + extra_minutes, effective_ramp_minutes)
+    if sleep_interval is None:
+        sleep_interval = BACKOUT_POLL_INTERVAL_SECONDS_DEFAULT
+    sleep_interval = int(max(float(sleep_interval), 0.0))
+    market_close_force_minutes = max(int(market_close_force_minutes), 0)
+    market_close_buffer_minutes = max(int(market_close_buffer_minutes), 0)
 
     while True:
         try:
@@ -242,16 +373,22 @@ def backout_near_market(
                     logger.info(f"Found matching position for {pair}")
                     is_long = hasattr(position, 'side') and position.side == 'long'
 
-                    # Initial and final offsets from market price. Start slightly
-                    # favourable, then cross to the other side over ``ramp_minutes``.
-                    pct_offset = 0.003 if is_long else -0.003  # 0.3% away
-                    pct_final_offset = -0.02 if is_long else 0.02  # 2% past market
-
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
                     progress = min(minutes_since_start / effective_ramp_minutes, 1.0)
+                    minutes_to_close = _minutes_until_market_close()
+                    pct_offset, pct_final_offset = _resolve_offset_profile(
+                        is_long,
+                        minutes_to_close,
+                        market_close_buffer_minutes,
+                    )
                     pct_above_market = pct_offset + (pct_final_offset - pct_offset) * progress
 
-                    if minutes_since_start >= effective_market_after:
+                    force_market_due_to_time = (
+                        minutes_to_close is not None
+                        and minutes_to_close <= market_close_force_minutes
+                    )
+
+                    if minutes_since_start >= effective_market_after or force_market_due_to_time:
                         spread_pct = _current_spread_pct(pair)
                         if spread_pct is not None and spread_pct > BACKOUT_MARKET_MAX_SPREAD_PCT:
                             logger.info(
@@ -276,6 +413,8 @@ def backout_near_market(
                                 )
                             succeeded = alpaca_wrapper.close_position_violently(position)
                             found_position = True
+                            if succeeded:
+                                logger.info("Market order fallback succeeded for %s", pair)
                             if not succeeded:
                                 logger.info("Market order failed, will retry after delay")
                                 retries += 1
@@ -289,10 +428,16 @@ def backout_near_market(
                         # After ramp period, set price well beyond market to guarantee fill
                         pct_above_market = pct_final_offset
 
-                    logger.info(f"Position side: {'long' if is_long else 'short'}, "
-                              f"pct_above_market: {pct_above_market:.4f}, "
-                              f"minutes_since_start: {minutes_since_start}, "
-                              f"progress: {progress:.2f}")
+                    minutes_to_close_display = (
+                        f"{minutes_to_close:.1f}" if minutes_to_close is not None else "n/a"
+                    )
+                    logger.info(
+                        f"Position side: {'long' if is_long else 'short'}, "
+                        f"pct_above_market: {pct_above_market:.4f}, "
+                        f"minutes_since_start: {minutes_since_start}, "
+                        f"progress: {progress:.2f}, "
+                        f"minutes_to_close: {minutes_to_close_display}"
+                    )
 
                     try:
                         succeeded = alpaca_wrapper.close_position_near_market(position,
@@ -318,9 +463,14 @@ def backout_near_market(
             if not found_position:
                 logger.info(f"no position found or error closing for {pair}")
                 return True
-
             retries = 0
-            sleep(sleep_interval)  # configurable retry interval
+            if sleep_interval > 0:
+                dynamic_interval = sleep_interval
+                sleep_minutes_to_close = _minutes_until_market_close()
+                if sleep_minutes_to_close is not None:
+                    scaled_interval = max(5, int(math.ceil(sleep_minutes_to_close * 6)))
+                    dynamic_interval = min(sleep_interval, scaled_interval)
+                sleep(dynamic_interval)
 
         except Exception as e:
             logger.error(f"Error in backout_near_market: {e}")

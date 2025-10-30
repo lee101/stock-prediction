@@ -13,13 +13,20 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Iterable, List, Sequence
 
 from loguru import logger
+
+# Ensure repository root is importable when running the script directly.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import alpaca_wrapper
 from src.fixtures import crypto_symbols
