@@ -100,6 +100,7 @@ TRADE_OUTCOME_FILE = get_state_file("trade_outcomes", STATE_SUFFIX)
 TRADE_LEARNING_FILE = get_state_file("trade_learning", STATE_SUFFIX)
 ACTIVE_TRADES_FILE = get_state_file("active_trades", STATE_SUFFIX)
 TRADE_HISTORY_FILE = get_state_file("trade_history", STATE_SUFFIX)
+MAXDIFF_PLANS_FILE = get_state_file("maxdiff_plans", STATE_SUFFIX)
 
 MIN_STOCK_QTY = 1.0
 MIN_CRYPTO_QTY = 0.001
@@ -138,13 +139,37 @@ _trade_outcomes_store: Optional[FlatShelf] = None
 _trade_learning_store: Optional[FlatShelf] = None
 _active_trades_store: Optional[FlatShelf] = None
 _trade_history_store: Optional[FlatShelf] = None
+_maxdiff_plans_store: Optional[FlatShelf] = None
 
 _TRUTHY = TRUTHY_ENV_VALUES
 
 SIMPLIFIED_MODE = os.getenv("MARKETSIM_SIMPLE_MODE", "0").strip().lower() in _TRUTHY
 
+
+def _coerce_positive_int(raw_value: Optional[str], default: int) -> int:
+    if raw_value is None:
+        return default
+    try:
+        parsed = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+ENABLE_PROBE_TRADES = (
+    os.getenv("MARKETSIM_ENABLE_PROBE_TRADES", "1").strip().lower() in _TRUTHY
+)
+MAX_MAXDIFFS = _coerce_positive_int(
+    os.getenv("MARKETSIM_MAX_MAXDIFFS"),
+    15,
+)
+
 DEFAULT_PROBE_SYMBOLS = {"AAPL", "MSFT", "NVDA"}
-PROBE_SYMBOLS = set() if SIMPLIFIED_MODE else set(DEFAULT_PROBE_SYMBOLS)
+PROBE_SYMBOLS = (
+    set()
+    if SIMPLIFIED_MODE or not ENABLE_PROBE_TRADES
+    else set(DEFAULT_PROBE_SYMBOLS)
+)
 
 _LATEST_FORECAST_CACHE: Dict[str, Dict[str, object]] = {}
 _LATEST_FORECAST_PATH: Optional[Path] = None
@@ -419,6 +444,70 @@ def _get_trade_history_store() -> Optional[FlatShelf]:
         return _trade_history_store
     _trade_history_store = _init_store("trade history", TRADE_HISTORY_FILE)
     return _trade_history_store
+
+
+def _get_maxdiff_plans_store() -> Optional[FlatShelf]:
+    global _maxdiff_plans_store
+    if _maxdiff_plans_store is not None:
+        return _maxdiff_plans_store
+    _maxdiff_plans_store = _init_store("maxdiff plans", MAXDIFF_PLANS_FILE)
+    return _maxdiff_plans_store
+
+
+def _save_maxdiff_plan(symbol: str, plan_data: Dict) -> None:
+    """Save a maxdiff trading plan for the day."""
+    store = _get_maxdiff_plans_store()
+    if store is None:
+        return
+    try:
+        store.load()
+        day_key = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        key = f"{day_key}:{symbol}"
+        store[key] = plan_data
+        store.commit()
+    except Exception as exc:
+        logger.warning("Failed to save maxdiff plan for %s: %s", symbol, exc)
+
+
+def _load_maxdiff_plans_for_today() -> Dict[str, Dict]:
+    """Load all maxdiff plans for today."""
+    store = _get_maxdiff_plans_store()
+    if store is None:
+        return {}
+    try:
+        store.load()
+        day_key = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        prefix = f"{day_key}:"
+        plans = {}
+        for key, value in store.items():
+            if key.startswith(prefix):
+                symbol = key[len(prefix):]
+                plans[symbol] = value
+        return plans
+    except Exception as exc:
+        logger.warning("Failed to load maxdiff plans: %s", exc)
+        return {}
+
+
+def _update_maxdiff_plan_status(symbol: str, status: str, **extra_fields) -> None:
+    """Update the status of a maxdiff plan."""
+    store = _get_maxdiff_plans_store()
+    if store is None:
+        return
+    try:
+        store.load()
+        day_key = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        key = f"{day_key}:{symbol}"
+        if key in store:
+            plan = dict(store[key])
+            plan["status"] = status
+            plan["updated_at"] = datetime.now(timezone.utc).isoformat()
+            for field_name, field_value in extra_fields.items():
+                plan[field_name] = field_value
+            store[key] = plan
+            store.commit()
+    except Exception as exc:
+        logger.warning("Failed to update maxdiff plan status for %s: %s", symbol, exc)
 
 
 LOSS_BLOCK_COOLDOWN = timedelta(days=3)
@@ -970,6 +1059,16 @@ def _evaluate_trade_block(symbol: str, side: str) -> Dict[str, Optional[object]]
     last_closed_at = _parse_timestamp(record.get("closed_at") if record else None)
     blocked = False
     block_reason = None
+    if not ENABLE_PROBE_TRADES:
+        pending_probe = False
+        probe_active = False
+        probe_transition_ready = False
+        probe_summary = {}
+        learning_state["pending_probe"] = False
+        learning_state["probe_active"] = False
+        learning_state["probe_transition_ready"] = False
+        learning_state["probe_expires_at"] = None
+        learning_state["probe_expired"] = False
     trade_mode = "probe" if (pending_probe or probe_active) else "normal"
 
     if last_pnl is not None and last_pnl < 0:
@@ -1064,6 +1163,10 @@ def _format_plan_line(symbol: str, data: Dict) -> str:
         f"conf={_pick_confidence(data):.3f}",
         f"last={last_pnl_str}",
     ]
+    if data.get("maxdiff_spread_rank"):
+        parts.append(f"maxdiff_rank={int(data['maxdiff_spread_rank'])}")
+        if data.get("maxdiff_spread_overflow"):
+            parts.append("maxdiff_overflow")
     notes = _pick_notes(data)
     if notes != "-":
         parts.append(f"notes={notes}")
@@ -1342,8 +1445,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 strategy_recent_sums[strat_name] = _recent_return_sum(primary_col, fallback_col)
 
             strategy_ineligible: Dict[str, str] = {}
-            candidate_scores: Dict[str, float] = {}
-            profit_candidates: List[Tuple[float, float, str]] = []
+            candidate_avg_returns: Dict[str, float] = {}
             allowed_side = _allowed_side_for(symbol)
             symbol_is_crypto = symbol in crypto_symbols
 
@@ -1372,21 +1474,16 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                         strategy_ineligible[name] = reason
                         continue
 
-                annual_metric = _metric(stats.get("annual_return"), default=0.0)
-                score = annual_metric
-                candidate_scores[name] = score
-                profit_metric = _metric(strategy_returns.get(name), default=0.0)
-                profit_candidates.append((profit_metric, score, name))
+                avg_metric = _metric(stats.get("avg_return"), default=0.0)
+                candidate_avg_returns[name] = avg_metric
 
+            # Sort strategies by avg_return (simplified)
             ordered_strategies: List[str] = []
-            if profit_candidates:
-                profit_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-                ordered_strategies = [name for _, _, name in profit_candidates]
-            elif candidate_scores:
+            if candidate_avg_returns:
                 ordered_strategies = [
-                    name for _, name in sorted(
-                        ((score, name) for name, score in candidate_scores.items()),
-                        key=lambda item: item[0],
+                    name for name, _ in sorted(
+                        candidate_avg_returns.items(),
+                        key=lambda item: item[1],
                         reverse=True,
                     )
                 ]
@@ -1403,27 +1500,32 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             selection_notes: List[str] = []
             selected_strategy: Optional[str] = None
             avg_return = 0.0
-            annual_return = 0.0
             predicted_movement = close_movement_raw
             position_side = "buy" if predicted_movement > 0 else "sell"
-            selected_strategy_score = None
 
             for candidate_name in ordered_strategies:
                 if candidate_name in strategy_ineligible:
                     selection_notes.append(f"{candidate_name}=ineligible({strategy_ineligible[candidate_name]})")
                     continue
 
-                candidate_avg_return = _metric(strategy_stats.get(candidate_name, {}).get("avg_return"), default=0.0)
-                candidate_annual_return = _metric(
-                    strategy_stats.get(candidate_name, {}).get("annual_return"),
-                    default=0.0,
-                )
-                candidate_score = candidate_scores.get(candidate_name)
+                candidate_avg_return = candidate_avg_returns.get(candidate_name, 0.0)
 
                 candidate_position_side: Optional[str] = None
                 candidate_predicted_movement = close_movement_raw
 
-                if candidate_name == "all_signals":
+                if candidate_name == "maxdiff":
+                    if maxdiff_primary_side in {"buy", "sell"}:
+                        candidate_position_side = maxdiff_primary_side
+                        target_price = maxdiff_high_price if candidate_position_side == "buy" else maxdiff_low_price
+                        if target_price is not None and math.isfinite(target_price):
+                            candidate_predicted_movement = target_price - close_price
+                    elif maxdiff_primary_side == "neutral" and maxdiff_trade_bias is not None:
+                        if maxdiff_trade_bias > 0:
+                            candidate_position_side = "buy"
+                        elif maxdiff_trade_bias < 0:
+                            candidate_position_side = "sell"
+
+                if candidate_position_side is None and candidate_name == "all_signals":
                     if all(x > 0 for x in [close_movement_raw, high_movement, low_movement]):
                         candidate_position_side = "buy"
                     elif all(x < 0 for x in [close_movement_raw, high_movement, low_movement]):
@@ -1434,7 +1536,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                             strategy_ineligible["all_signals"] = note
                         selection_notes.append(f"all_signals={note}")
                         continue
-                else:
+
+                if candidate_position_side is None:
                     candidate_position_side = "buy" if candidate_predicted_movement > 0 else "sell"
 
                 disallowed_reason: Optional[str] = None
@@ -1455,8 +1558,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
                 selected_strategy = candidate_name
                 avg_return = candidate_avg_return
-                annual_return = candidate_annual_return
-                selected_strategy_score = candidate_score
                 predicted_movement = candidate_predicted_movement
                 position_side = candidate_position_side
                 if candidate_name != ordered_strategies[0]:
@@ -1768,11 +1869,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "edge_strength": _metric(edge_strength, default=0.0),
                 "directional_edge": _metric(directional_edge, default=0.0),
                 "composite_score": _metric(composite_score, default=0.0),
-                "selected_strategy_score": _metric(selected_strategy_score, default=0.0)
-                if selected_strategy_score is not None
-                else None,
                 "strategy_entry_ineligible": strategy_ineligible,
-                "strategy_candidate_scores": candidate_scores,
+                "strategy_candidate_avg_returns": candidate_avg_returns,
                 "fallback_backtest": used_fallback_engine,
                 "highlow_entry_allowed": highlow_allowed_entry,
                 "takeprofit_entry_allowed": takeprofit_allowed_entry,
@@ -1836,6 +1934,23 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 result_row["maxdiffprofit_profit_values"] = last_prediction.get("maxdiffprofit_profit_values")
             results[symbol] = result_row
             _log_analysis_summary(symbol, result_row)
+
+            # Save maxdiff plan if this strategy is profitable and allowed
+            if maxdiff_allowed_entry and maxdiff_return > 0:
+                maxdiff_plan = {
+                    "symbol": symbol,
+                    "high_target": result_row.get("predicted_high", close_price),
+                    "low_target": result_row.get("predicted_low", close_price),
+                    "maxdiffprofit_high_price": result_row.get("maxdiffprofit_high_price"),
+                    "maxdiffprofit_low_price": result_row.get("maxdiffprofit_low_price"),
+                    "avg_return": maxdiff_return,
+                    "status": "identified",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "close_price": close_price,
+                    "bid_price": bid_price,
+                    "ask_price": ask_price,
+                }
+                _save_maxdiff_plan(symbol, maxdiff_plan)
 
         except Exception:
             logger.exception("Error analyzing %s", symbol)
@@ -1933,19 +2048,26 @@ def build_portfolio(
             picks[symbol] = data
 
     # Ensure probe-mode symbols are represented even if they fell outside the ranking filters.
-    probe_candidates = [(symbol, data) for symbol, data in all_results.items() if data.get("trade_mode") == "probe"]
-    for symbol, data in probe_candidates:
-        if symbol in picks:
-            continue
-        if max_expanded and len(picks) < max_expanded:
-            picks[symbol] = data
-        elif len(picks) < max_positions:
-            picks[symbol] = data
-        else:
-            # Replace the weakest pick to guarantee probe follow-up.
-            weakest_symbol, _ = min(picks.items(), key=lambda item: item[1].get("composite_score", float("-inf")))
-            picks.pop(weakest_symbol, None)
-            picks[symbol] = data
+    if ENABLE_PROBE_TRADES:
+        probe_candidates = [
+            (symbol, data)
+            for symbol, data in all_results.items()
+            if data.get("trade_mode") == "probe"
+        ]
+        for symbol, data in probe_candidates:
+            if symbol in picks:
+                continue
+            if max_expanded and len(picks) < max_expanded:
+                picks[symbol] = data
+            elif len(picks) < max_positions:
+                picks[symbol] = data
+            else:
+                # Replace the weakest pick to guarantee probe follow-up.
+                weakest_symbol, _ = min(
+                    picks.items(), key=lambda item: item[1].get("composite_score", float("-inf"))
+                )
+                picks.pop(weakest_symbol, None)
+                picks[symbol] = data
 
     return picks
 
@@ -1999,6 +2121,8 @@ def manage_positions(
         f"Portfolio snapshot recorded: value=${total_exposure_value:.2f}, "
         f"global risk threshold={snapshot.risk_threshold:.2f}x"
     )
+
+    risk_threshold = float(getattr(snapshot, "risk_threshold", 1.0) or 1.0)
 
     try:
         sim_state = get_state()
@@ -2113,8 +2237,24 @@ def manage_positions(
         equity = ensure_lower_bound(total_exposure_value, 1.0, default=1.0)
     max_total_exposure_value = (MAX_TOTAL_EXPOSURE_PCT / 100.0) * equity
 
+    maxdiff_entries_seen = 0
+
     for symbol, original_data in current_picks.items():
         data = dict(original_data)
+        current_picks[symbol] = data
+        is_maxdiff_strategy = (data.get("strategy") in {"maxdiff", "highlow"})
+        maxdiff_overflow = False
+        if is_maxdiff_strategy:
+            maxdiff_entries_seen += 1
+            data["maxdiff_spread_rank"] = maxdiff_entries_seen
+            if MAX_MAXDIFFS and maxdiff_entries_seen > MAX_MAXDIFFS:
+                maxdiff_overflow = True
+                data["maxdiff_spread_overflow"] = True
+            else:
+                data.pop("maxdiff_spread_overflow", None)
+        else:
+            data.pop("maxdiff_spread_rank", None)
+            data.pop("maxdiff_spread_overflow", None)
         simplified_mode = SIMPLIFIED_MODE
         if simplified_mode:
             data["trade_mode"] = "normal"
@@ -2124,20 +2264,28 @@ def manage_positions(
             probe_transition_ready = False
             probe_expired = False
         else:
-            if symbol.upper() in PROBE_SYMBOLS and data.get("trade_mode", "normal") != "probe":
-                data["trade_mode"] = "probe"
-            trade_mode = data.get("trade_mode", "normal")
-            is_probe_trade = trade_mode == "probe"
-            force_probe = _symbol_force_probe(symbol)
-            if force_probe and data.get("trade_mode") != "probe":
-                data = dict(data)
-                data["trade_mode"] = "probe"
-                current_picks[symbol] = data
-                logger.info(f"{symbol}: Forcing probe mode via MARKETSIM_SYMBOL_FORCE_PROBE_MAP.")
-                trade_mode = data["trade_mode"]
-                is_probe_trade = True
-            probe_transition_ready = data.get("probe_transition_ready", False)
-            probe_expired = data.get("probe_expired", False)
+            if ENABLE_PROBE_TRADES:
+                if symbol.upper() in PROBE_SYMBOLS and data.get("trade_mode", "normal") != "probe":
+                    data["trade_mode"] = "probe"
+                trade_mode = data.get("trade_mode", "normal")
+                is_probe_trade = trade_mode == "probe"
+                force_probe = _symbol_force_probe(symbol)
+                if force_probe and data.get("trade_mode") != "probe":
+                    data["trade_mode"] = "probe"
+                    current_picks[symbol] = data
+                    logger.info(f"{symbol}: Forcing probe mode via MARKETSIM_SYMBOL_FORCE_PROBE_MAP.")
+                    trade_mode = data["trade_mode"]
+                    is_probe_trade = True
+                probe_transition_ready = data.get("probe_transition_ready", False)
+                probe_expired = data.get("probe_expired", False)
+            else:
+                if data.get("trade_mode") != "normal":
+                    data["trade_mode"] = "normal"
+                trade_mode = "normal"
+                is_probe_trade = False
+                force_probe = False
+                probe_transition_ready = False
+                probe_expired = False
 
             if data.get("trade_blocked") and not is_probe_trade:
                 logger.info(f"Skipping {symbol} due to active block: {data.get('block_reason', 'recent loss')}")
@@ -2511,12 +2659,24 @@ def manage_positions(
                     logger.info(f"Probe trade target quantity for {symbol}: {target_qty} at price {entry_price}")
 
                 if not highlow_limit_executed:
-                    ramp_into_position(symbol, data["side"], target_qty=target_qty)
+                    ramp_into_position(
+                        symbol,
+                        data["side"],
+                        target_qty=target_qty,
+                        maxdiff_overflow=data.get("maxdiff_spread_overflow", False),
+                        risk_threshold=risk_threshold,
+                    )
                     entry_executed = True
             else:
                 logger.warning(f"Could not get bid/ask prices for {symbol}, using default sizing")
                 if not highlow_limit_executed:
-                    ramp_into_position(symbol, data["side"], target_qty=target_qty if effective_probe else None)
+                    ramp_into_position(
+                        symbol,
+                        data["side"],
+                        target_qty=target_qty if effective_probe else None,
+                        maxdiff_overflow=data.get("maxdiff_spread_overflow", False),
+                        risk_threshold=risk_threshold,
+                    )
                     entry_executed = True
 
             if transition_to_normal:
