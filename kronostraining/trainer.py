@@ -87,6 +87,8 @@ class KronosTrainer:
                 alpha=self.config.adapter_alpha,
                 dropout=self.config.adapter_dropout,
             )
+            # Newly injected LoRA weights are created on the default device; ensure they follow the model device.
+            self.model.to(self.device)
             self._adapter_targets = replacements
             if self.config.freeze_backbone:
                 trainable = [p for p in self.model.parameters() if p.requires_grad]

@@ -30,6 +30,7 @@ from data_curate_daily import get_bid, get_ask, download_exchange_latest_data
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from jsonshelve import FlatShelf
 from marketsimulator.state import get_state
+from src.cache_utils import ensure_huggingface_cache_dir
 from src.comparisons import is_buy_side, is_same_side, is_sell_side
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols
@@ -93,6 +94,8 @@ _EXPORTED_ENV_HELPERS = (reset_symbol_entry_counters, get_entry_counter_snapshot
 # Configure logging
 logger = setup_logging("trade_stock_e2e.log")
 
+ensure_huggingface_cache_dir(logger=logger)
+
 
 STATE_DIR = get_state_dir()
 STATE_SUFFIX = resolve_state_suffix()
@@ -126,7 +129,7 @@ ALLOW_HIGHLOW_ENTRY = os.getenv("ALLOW_HIGHLOW_ENTRY", "0").strip().lower() in {
 ALLOW_TAKEPROFIT_ENTRY = os.getenv("ALLOW_TAKEPROFIT_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
 _ALLOW_MAXDIFF_ENV = os.getenv("ALLOW_MAXDIFF_ENTRY")
 if _ALLOW_MAXDIFF_ENV is None:
-    ALLOW_MAXDIFF_ENTRY = ALLOW_HIGHLOW_ENTRY
+    ALLOW_MAXDIFF_ENTRY = True
 else:
     ALLOW_MAXDIFF_ENTRY = _ALLOW_MAXDIFF_ENV.strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -519,6 +522,13 @@ MIN_EDGE_STRENGTH = 1e-5
 COMPACT_LOGS = os.getenv("COMPACT_TRADING_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
 MARKET_CLOSE_SHIFT_MINUTES = int(os.getenv("MARKET_CLOSE_SHIFT_MINUTES", "45"))
 MARKET_CLOSE_ANALYSIS_WINDOW_MINUTES = int(os.getenv("MARKET_CLOSE_ANALYSIS_WINDOW_MINUTES", "15"))
+BACKOUT_START_OFFSET_MINUTES = int(os.getenv("BACKOUT_START_OFFSET_MINUTES", "30"))
+BACKOUT_SLEEP_SECONDS = int(os.getenv("BACKOUT_SLEEP_SECONDS", "45"))
+BACKOUT_MARKET_CLOSE_BUFFER_MINUTES = int(os.getenv("BACKOUT_MARKET_CLOSE_BUFFER_MINUTES", "30"))
+BACKOUT_MARKET_CLOSE_FORCE_MINUTES = int(os.getenv("BACKOUT_MARKET_CLOSE_FORCE_MINUTES", "3"))
+MAXDIFF_ENTRY_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_ENTRY_POLL_SECONDS", "12")))
+MAXDIFF_EXIT_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_EXIT_POLL_SECONDS", "12")))
+MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE = float(os.getenv("MAXDIFF_EXIT_PRICE_TOLERANCE", "0.001"))
 
 
 def _log_detail(message: str) -> None:
@@ -580,6 +590,7 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
             ("last_close", data.get("last_close"), 3),
         ]
     )
+    walk_forward_notes = data.get("walk_forward_notes")
     summary_parts = [
         " ".join(status_parts),
         f"returns[{returns_metrics or '-'}]",
@@ -588,6 +599,8 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
     ]
     if data.get("trade_blocked") and data.get("block_reason"):
         summary_parts.append(f"block_reason={data['block_reason']}")
+    if walk_forward_notes:
+        summary_parts.append("walk_forward_notes=" + "; ".join(str(note) for note in walk_forward_notes))
 
     probe_summary = None
     if data.get("trade_mode") == "probe":
@@ -642,7 +655,6 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
     if data.get("trade_blocked") and block_reason:
         detail_lines.append(f"  block_reason: {block_reason}")
 
-    walk_forward_notes = data.get("walk_forward_notes")
     if walk_forward_notes:
         detail_lines.append("  walk_forward_notes: " + "; ".join(str(note) for note in walk_forward_notes))
 
@@ -1358,7 +1370,10 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if "unprofit_shutdown_sharpe" in backtest_df.columns:
                 unprofit_sharpe = _metric(backtest_df["unprofit_shutdown_sharpe"], default=0.0)
 
-            last_prediction = backtest_df.iloc[0].apply(lambda value: coerce_numeric(value, default=0.0, prefer="mean"))
+            raw_last_prediction = backtest_df.iloc[0]
+            last_prediction = raw_last_prediction.apply(
+                lambda value: coerce_numeric(value, default=0.0, prefer="mean")
+            )
             walk_forward_oos_sharpe_raw = last_prediction.get("walk_forward_oos_sharpe")
             walk_forward_turnover_raw = last_prediction.get("walk_forward_turnover")
             walk_forward_highlow_raw = last_prediction.get("walk_forward_highlow_sharpe")
@@ -1394,6 +1409,40 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 last_prediction.get("predicted_low"),
                 default=predicted_close_price,
             )
+
+            def _optional_numeric(value: object) -> Optional[float]:
+                raw = coerce_numeric(value, default=float("nan")) if value is not None else float("nan")
+                return raw if math.isfinite(raw) else None
+
+            maxdiff_high_price = _optional_numeric(last_prediction.get("maxdiffprofit_high_price"))
+            maxdiff_low_price = _optional_numeric(last_prediction.get("maxdiffprofit_low_price"))
+            maxdiff_trade_bias = _optional_numeric(last_prediction.get("maxdiff_trade_bias"))
+            maxdiff_primary_side_raw = raw_last_prediction.get("maxdiff_primary_side")
+            maxdiff_primary_side = (
+                str(maxdiff_primary_side_raw).strip().lower()
+                if maxdiff_primary_side_raw is not None
+                else None
+            )
+            if maxdiff_primary_side == "":
+                maxdiff_primary_side = None
+
+            snapshot_parts = [
+                f"{symbol} prediction snapshot",
+                f"close={close_price:.4f}",
+                f"pred_close={predicted_close_price:.4f}",
+                f"pred_high={predicted_high_price:.4f}",
+                f"pred_low={predicted_low_price:.4f}",
+            ]
+            if maxdiff_high_price is not None:
+                snapshot_parts.append(f"maxdiff_high={maxdiff_high_price:.4f}")
+            if maxdiff_low_price is not None:
+                snapshot_parts.append(f"maxdiff_low={maxdiff_low_price:.4f}")
+            if maxdiff_primary_side:
+                bias_fragment = maxdiff_primary_side
+                if maxdiff_trade_bias is not None and math.isfinite(maxdiff_trade_bias):
+                    bias_fragment = f"{bias_fragment}({maxdiff_trade_bias:+.3f})"
+                snapshot_parts.append(f"maxdiff_side={bias_fragment}")
+            _log_detail(" ".join(snapshot_parts))
 
             strategy_stats: Dict[str, Dict[str, float]] = {
                 "simple": {
@@ -1500,6 +1549,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             selection_notes: List[str] = []
             selected_strategy: Optional[str] = None
             avg_return = 0.0
+            annual_return = 0.0
             predicted_movement = close_movement_raw
             position_side = "buy" if predicted_movement > 0 else "sell"
 
@@ -1558,6 +1608,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
                 selected_strategy = candidate_name
                 avg_return = candidate_avg_return
+                annual_return = _metric(strategy_stats.get(candidate_name, {}).get("annual_return"), default=0.0)
                 predicted_movement = candidate_predicted_movement
                 position_side = candidate_position_side
                 if candidate_name != ordered_strategies[0]:
@@ -1780,8 +1831,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             now_utc = datetime.now(timezone.utc)
             cooldown_ok = True if SIMPLIFIED_MODE else can_trade_now(symbol, now_utc)
 
-            gating_reasons: List[str] = []
-            if not DISABLE_TRADE_GATES:
+            walk_forward_notes: List[str] = []
+            sharpe_cutoff: Optional[float] = None
+            if not SIMPLIFIED_MODE:
                 default_cutoff = -0.25 if kronos_only_mode else 0.3
                 env_key = "MARKETSIM_KRONOS_SHARPE_CUTOFF" if kronos_only_mode else "MARKETSIM_SHARPE_CUTOFF"
                 sharpe_cutoff = _get_env_float(env_key)
@@ -1789,22 +1841,24 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     sharpe_cutoff = _get_env_float("MARKETSIM_SHARPE_CUTOFF")
                 if sharpe_cutoff is None:
                     sharpe_cutoff = default_cutoff
-                if (
-                    not SIMPLIFIED_MODE
-                    and walk_forward_oos_sharpe is not None
-                    and walk_forward_oos_sharpe < sharpe_cutoff
-                ):
-                    gating_reasons.append(f"Walk-forward Sharpe {walk_forward_oos_sharpe:.2f} < {sharpe_cutoff:.2f}")
-                if not SIMPLIFIED_MODE and not kronos_only_mode:
-                    if (
-                        walk_forward_turnover is not None
-                        and walk_forward_oos_sharpe is not None
-                        and walk_forward_turnover > 2.0
-                        and walk_forward_oos_sharpe < 0.5
-                    ):
-                        gating_reasons.append(
-                            f"Walk-forward turnover {walk_forward_turnover:.2f} with Sharpe {walk_forward_oos_sharpe:.2f}"
+                if walk_forward_oos_sharpe is not None and sharpe_cutoff is not None:
+                    if walk_forward_oos_sharpe < sharpe_cutoff:
+                        walk_forward_notes.append(
+                            f"Walk-forward Sharpe {walk_forward_oos_sharpe:.2f} below cutoff {sharpe_cutoff:.2f}"
                         )
+                if (
+                    not kronos_only_mode
+                    and walk_forward_turnover is not None
+                    and walk_forward_oos_sharpe is not None
+                    and walk_forward_turnover > 2.0
+                    and walk_forward_oos_sharpe < 0.5
+                ):
+                    walk_forward_notes.append(
+                        f"Walk-forward turnover {walk_forward_turnover:.2f} high with Sharpe {walk_forward_oos_sharpe:.2f}"
+                    )
+
+            gating_reasons: List[str] = []
+            if not DISABLE_TRADE_GATES:
                 if not tradeable:
                     gating_reasons.append(spread_reason)
                 if not edge_ok:
@@ -1910,6 +1964,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "walk_forward_highlow_sharpe": walk_forward_highlow_sharpe,
                 "walk_forward_takeprofit_sharpe": walk_forward_takeprofit_sharpe,
                 "walk_forward_maxdiff_sharpe": walk_forward_maxdiff_sharpe,
+                "walk_forward_sharpe_cutoff": sharpe_cutoff,
+                "walk_forward_notes": walk_forward_notes,
                 "backtest_samples": sample_size,
             }
             if selection_notes:
@@ -1919,6 +1975,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             snapshot_row = latest_snapshot.get(symbol)
             if snapshot_row:
                 result_row.update(snapshot_row)
+
+            if maxdiff_primary_side_raw is not None:
+                result_row["maxdiff_primary_side"] = str(maxdiff_primary_side_raw).strip().lower() or "neutral"
+            if maxdiff_trade_bias is not None:
+                result_row["maxdiff_trade_bias"] = _metric(maxdiff_trade_bias, default=0.0)
 
             maxdiff_numeric_keys = (
                 "maxdiffprofit_high_price",
@@ -1930,6 +1991,11 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             for key in maxdiff_numeric_keys:
                 if key in last_prediction:
                     result_row[key] = coerce_numeric(last_prediction.get(key), default=0.0)
+            for count_key in ("maxdiff_trades_positive", "maxdiff_trades_negative", "maxdiff_trades_total"):
+                if count_key in last_prediction:
+                    result_row[count_key] = int(
+                        round(coerce_numeric(last_prediction.get(count_key), default=0.0))
+                    )
             if "maxdiffprofit_profit_values" in last_prediction:
                 result_row["maxdiffprofit_profit_values"] = last_prediction.get("maxdiffprofit_profit_values")
             results[symbol] = result_row
@@ -2222,7 +2288,13 @@ def manage_positions(
 
         if should_close:
             _record_trade_outcome(position, close_reason or "unspecified")
-            backout_near_market(symbol)
+            backout_near_market(
+                symbol,
+                start_offset_minutes=BACKOUT_START_OFFSET_MINUTES,
+                sleep_seconds=BACKOUT_SLEEP_SECONDS,
+                market_close_buffer_minutes=BACKOUT_MARKET_CLOSE_BUFFER_MINUTES,
+                market_close_force_minutes=BACKOUT_MARKET_CLOSE_FORCE_MINUTES,
+            )
 
     # Enter new positions from current_picks
     if not current_picks:
@@ -2623,6 +2695,7 @@ def manage_positions(
                                     data["side"],
                                     float(limit_price),
                                     float(target_qty),
+                                    poll_seconds=MAXDIFF_ENTRY_WATCHER_POLL_SECONDS,
                                 )
                                 highlow_limit_executed = True
                                 entry_price = float(limit_price)
@@ -2754,6 +2827,8 @@ def manage_positions(
                             symbol,
                             data["side"],
                             float(takeprofit_price),
+                            poll_seconds=MAXDIFF_EXIT_WATCHER_POLL_SECONDS,
+                            price_tolerance=MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE,
                         )
                     except Exception as exc:
                         logger.warning("Failed to schedule highlow takeprofit for %s: %s", symbol, exc)
@@ -2892,7 +2967,13 @@ def manage_market_close(
 
         if should_close:
             _record_trade_outcome(position, close_reason or "market_close")
-            backout_near_market(symbol)
+            backout_near_market(
+                symbol,
+                start_offset_minutes=BACKOUT_START_OFFSET_MINUTES,
+                sleep_seconds=BACKOUT_SLEEP_SECONDS,
+                market_close_buffer_minutes=BACKOUT_MARKET_CLOSE_BUFFER_MINUTES,
+                market_close_force_minutes=BACKOUT_MARKET_CLOSE_FORCE_MINUTES,
+            )
 
     # Return top picks for next day
     return build_portfolio(

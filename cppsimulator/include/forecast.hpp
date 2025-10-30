@@ -15,7 +15,7 @@ public:
   [[nodiscard]] bool is_loaded() const noexcept { return loaded_; }
 
 private:
-  torch::jit::script::Module module_;
+  mutable torch::jit::script::Module module_;
   bool loaded_ = false;
 };
 
