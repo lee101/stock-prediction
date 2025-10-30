@@ -1097,12 +1097,19 @@ def test_manage_positions_highlow_strategy_uses_limit_orders(strategy_name):
     mocks["ramp"].assert_not_called()
     mocks["open_order"].assert_not_called()
     mocks["spawn_open_maxdiff"].assert_called_once()
-    args, _ = mocks["spawn_open_maxdiff"].call_args
+    args, kwargs = mocks["spawn_open_maxdiff"].call_args
     assert args[0] == "AAPL"
     assert args[1] == "buy"
     assert args[2] == pytest.approx(98.5)
     assert args[3] == pytest.approx(3.0)
-    mocks["spawn_close_maxdiff"].assert_called_once_with("AAPL", "buy", 132.0)
+    assert kwargs.get("poll_seconds") == trade_module.MAXDIFF_ENTRY_WATCHER_POLL_SECONDS
+    mocks["spawn_close_maxdiff"].assert_called_once()
+    close_args, close_kwargs = mocks["spawn_close_maxdiff"].call_args
+    assert close_args == ("AAPL", "buy", 132.0)
+    assert close_kwargs.get("poll_seconds") == trade_module.MAXDIFF_EXIT_WATCHER_POLL_SECONDS
+    assert close_kwargs.get("price_tolerance") == pytest.approx(
+        trade_module.MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE
+    )
     mocks["spawn_tp"].assert_not_called()
 
 
@@ -1128,12 +1135,19 @@ def test_manage_positions_highlow_short_uses_maxdiff_prices(strategy_name):
     mocks["ramp"].assert_not_called()
     mocks["open_order"].assert_not_called()
     mocks["spawn_open_maxdiff"].assert_called_once()
-    args, _ = mocks["spawn_open_maxdiff"].call_args
+    args, kwargs = mocks["spawn_open_maxdiff"].call_args
     assert args[0] == "UNIUSD"
     assert args[1] == "sell"
     assert args[2] == pytest.approx(6.9)
     assert args[3] == pytest.approx(2.0)
-    mocks["spawn_close_maxdiff"].assert_called_once_with("UNIUSD", "sell", 6.05)
+    assert kwargs.get("poll_seconds") == trade_module.MAXDIFF_ENTRY_WATCHER_POLL_SECONDS
+    mocks["spawn_close_maxdiff"].assert_called_once()
+    close_args, close_kwargs = mocks["spawn_close_maxdiff"].call_args
+    assert close_args == ("UNIUSD", "sell", 6.05)
+    assert close_kwargs.get("poll_seconds") == trade_module.MAXDIFF_EXIT_WATCHER_POLL_SECONDS
+    assert close_kwargs.get("price_tolerance") == pytest.approx(
+        trade_module.MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE
+    )
     mocks["spawn_tp"].assert_not_called()
 
 

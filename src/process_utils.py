@@ -1,4 +1,6 @@
 import json
+import os
+import signal
 import subprocess
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -16,15 +18,30 @@ STATE_SUFFIX = resolve_state_suffix()
 MAXDIFF_WATCHERS_DIR = get_state_dir() / f"maxdiff_watchers{STATE_SUFFIX or ''}"
 MAXDIFF_WATCHERS_DIR.mkdir(parents=True, exist_ok=True)
 
+_DEFAULT_ENTRY_DEBOUNCE = int(os.getenv("MAXDIFF_ENTRY_SPAWN_DEBOUNCE_SECONDS", "120"))
+_DEFAULT_EXIT_DEBOUNCE = int(os.getenv("MAXDIFF_EXIT_SPAWN_DEBOUNCE_SECONDS", "120"))
+_DEFAULT_TAKEPROFIT_DEBOUNCE = int(os.getenv("TAKEPROFIT_SPAWN_DEBOUNCE_SECONDS", "120"))
+
+MAXDIFF_ENTRY_SPAWN_DEBOUNCE_SECONDS = max(5, _DEFAULT_ENTRY_DEBOUNCE)
+MAXDIFF_EXIT_SPAWN_DEBOUNCE_SECONDS = max(5, _DEFAULT_EXIT_DEBOUNCE)
+TAKEPROFIT_SPAWN_DEBOUNCE_SECONDS = max(5, _DEFAULT_TAKEPROFIT_DEBOUNCE)
+
+MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_ENTRY_POLL_SECONDS", "12")))
+MAXDIFF_EXIT_DEFAULT_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_EXIT_POLL_SECONDS", "12")))
+MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE = float(os.getenv("MAXDIFF_EXIT_PRICE_TOLERANCE", "0.001"))
+
 
 def _sanitize(value: str) -> str:
     return value.replace("/", "_").replace(" ", "_")
 
 
-def _watcher_config_path(symbol: str, side: str, mode: str) -> Path:
+def _watcher_config_path(symbol: str, side: str, mode: str, *, suffix: Optional[str] = None) -> Path:
     safe_symbol = _sanitize(symbol)
     safe_side = _sanitize(side)
-    return MAXDIFF_WATCHERS_DIR / f"{safe_symbol}_{safe_side}_{mode}.json"
+    base_name = f"{safe_symbol}_{safe_side}_{mode}"
+    if suffix:
+        base_name = f"{base_name}_{_sanitize(suffix)}"
+    return MAXDIFF_WATCHERS_DIR / f"{base_name}.json"
 
 
 def _persist_watcher_metadata(path: Path, payload: dict) -> None:
@@ -36,6 +53,44 @@ def _persist_watcher_metadata(path: Path, payload: dict) -> None:
         temp_path.replace(path)
     except Exception as exc:  # pragma: no cover - best effort logging
         logger.warning("Failed to persist watcher metadata %s: %s", path, exc)
+
+
+def _load_watcher_metadata(path: Path) -> Optional[dict]:
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception as exc:  # pragma: no cover - best effort logging
+        logger.warning("Failed to read watcher metadata %s: %s", path, exc)
+        return None
+
+
+def _stop_existing_watcher(config_path: Path, *, reason: str) -> None:
+    metadata = _load_watcher_metadata(config_path)
+    if not metadata:
+        return
+
+    pid_raw = metadata.get("pid")
+    try:
+        pid = int(pid_raw)
+    except (TypeError, ValueError):
+        pid = None
+
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.info("Terminated prior maxdiff watcher at %s (pid=%s)", config_path.name, pid)
+        except ProcessLookupError:
+            logger.debug("Watcher pid %s already exited for %s", pid, config_path)
+        except Exception as exc:  # pragma: no cover - best effort logging
+            logger.warning("Failed to terminate watcher %s pid=%s: %s", config_path, pid, exc)
+
+    if metadata.get("active") or pid:
+        metadata["active"] = False
+        metadata["state"] = reason
+        metadata["terminated_at"] = datetime.now(timezone.utc).isoformat()
+        _persist_watcher_metadata(config_path, metadata)
 
 
 def _backout_key(symbol: str, **kwargs) -> str:
@@ -123,7 +178,7 @@ def ramp_into_position(symbol: str, side: str = "buy", target_qty: Optional[floa
     )
 
 
-@debounce(60 * 10, key_func=lambda symbol, takeprofit_price: f"{symbol}_{takeprofit_price}")  # only once in 10 minutes
+@debounce(TAKEPROFIT_SPAWN_DEBOUNCE_SECONDS, key_func=lambda symbol, takeprofit_price: f"{symbol}_{takeprofit_price}")
 def spawn_close_position_at_takeprofit(symbol: str, takeprofit_price: float):
     command = f"PYTHONPATH={cwd} python scripts/alpaca_cli.py close_position_at_takeprofit {symbol} --takeprofit_price={takeprofit_price}"
     logger.info(f"Running command {command}")
@@ -142,9 +197,9 @@ def _format_float(value: float, precision: int = 6) -> str:
 
 
 @debounce(
-    60 * 10,
-    key_func=lambda symbol, side, limit_price, target_qty, tolerance_pct=0.0066, expiry_minutes=1440: (
-        f"{symbol}_{side}_{limit_price}_{target_qty}_{tolerance_pct}_{expiry_minutes}"
+    MAXDIFF_ENTRY_SPAWN_DEBOUNCE_SECONDS,
+    key_func=lambda symbol, side, limit_price, target_qty, tolerance_pct=0.0066, expiry_minutes=1440, poll_seconds=MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS: (
+        f"{symbol}_{side}_{limit_price}_{target_qty}_{tolerance_pct}_{expiry_minutes}_{poll_seconds}"
     ),
 )
 def spawn_open_position_at_maxdiff_takeprofit(
@@ -154,6 +209,7 @@ def spawn_open_position_at_maxdiff_takeprofit(
     target_qty: float,
     tolerance_pct: float = 0.0066,
     expiry_minutes: int = 60 * 24,
+    poll_seconds: int = MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS,
 ):
     """
     Spawn a watchdog process that attempts to open a maxdiff position when price approaches the target.
@@ -164,10 +220,13 @@ def spawn_open_position_at_maxdiff_takeprofit(
         * keeps the qualifying limit order alive for up to ``expiry_minutes`` minutes
     """
     precision = 8 if symbol in crypto_symbols else 4
+    poll_seconds_int = max(1, int(poll_seconds))
+    price_suffix = _format_float(limit_price, precision)
+    config_path = _watcher_config_path(symbol, side, "entry", suffix=price_suffix)
     started_at = datetime.now(timezone.utc)
     expiry_minutes_int = int(max(1, expiry_minutes))
     expiry_at = started_at + timedelta(minutes=expiry_minutes_int)
-    config_path = _watcher_config_path(symbol, side, "entry")
+    _stop_existing_watcher(config_path, reason="replaced_entry_watcher")
     metadata = {
         "config_version": 1,
         "mode": "entry",
@@ -183,6 +242,7 @@ def spawn_open_position_at_maxdiff_takeprofit(
         "state": "pending_launch",
         "active": True,
         "config_path": str(config_path),
+        "poll_seconds": poll_seconds_int,
     }
     _persist_watcher_metadata(config_path, metadata)
     command = (
@@ -193,6 +253,7 @@ def spawn_open_position_at_maxdiff_takeprofit(
         f" --tolerance-pct={_format_float(tolerance_pct, 4)}"
         f" --expiry-minutes={expiry_minutes_int}"
         f" --config-path={quote(str(config_path))}"
+        f" --poll-seconds={poll_seconds_int}"
     )
     if symbol in crypto_symbols:
         command += " --asset-class=crypto"
@@ -220,9 +281,9 @@ def spawn_open_position_at_maxdiff_takeprofit(
 
 
 @debounce(
-    60 * 10,
-    key_func=lambda symbol, side, takeprofit_price, expiry_minutes=1440: (
-        f"{symbol}_{side}_{takeprofit_price}_{expiry_minutes}"
+    MAXDIFF_EXIT_SPAWN_DEBOUNCE_SECONDS,
+    key_func=lambda symbol, side, takeprofit_price, expiry_minutes=1440, poll_seconds=MAXDIFF_EXIT_DEFAULT_POLL_SECONDS, price_tolerance=MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE: (
+        f"{symbol}_{side}_{takeprofit_price}_{expiry_minutes}_{poll_seconds}_{price_tolerance}"
     ),
 )
 def spawn_close_position_at_maxdiff_takeprofit(
@@ -230,16 +291,22 @@ def spawn_close_position_at_maxdiff_takeprofit(
     side: str,
     takeprofit_price: float,
     expiry_minutes: int = 60 * 24,
+    poll_seconds: int = MAXDIFF_EXIT_DEFAULT_POLL_SECONDS,
+    price_tolerance: float = MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE,
 ):
     """
     Spawn a watchdog process that continually re-arms maxdiff take-profit exits over ``expiry_minutes``.
     """
     precision = 8 if symbol in crypto_symbols else 4
+    poll_seconds_int = max(1, int(poll_seconds))
+    price_tolerance_val = float(price_tolerance)
     started_at = datetime.now(timezone.utc)
     expiry_minutes_int = int(max(1, expiry_minutes))
     expiry_at = started_at + timedelta(minutes=expiry_minutes_int)
-    config_path = _watcher_config_path(symbol, side, "exit")
+    price_suffix = _format_float(takeprofit_price, precision)
+    config_path = _watcher_config_path(symbol, side, "exit", suffix=price_suffix)
     exit_side = "sell" if side.lower().startswith("b") else "buy"
+    _stop_existing_watcher(config_path, reason="replaced_exit_watcher")
     metadata = {
         "config_version": 1,
         "mode": "exit",
@@ -247,7 +314,7 @@ def spawn_close_position_at_maxdiff_takeprofit(
         "side": side,
         "exit_side": exit_side,
         "takeprofit_price": float(takeprofit_price),
-        "price_tolerance": 0.001,
+        "price_tolerance": price_tolerance_val,
         "precision": precision,
         "expiry_minutes": expiry_minutes_int,
         "expiry_at": expiry_at.isoformat(),
@@ -255,6 +322,7 @@ def spawn_close_position_at_maxdiff_takeprofit(
         "state": "pending_launch",
         "active": True,
         "config_path": str(config_path),
+        "poll_seconds": poll_seconds_int,
     }
     _persist_watcher_metadata(config_path, metadata)
     command = (
@@ -263,6 +331,8 @@ def spawn_close_position_at_maxdiff_takeprofit(
         f" --takeprofit-price={_format_float(takeprofit_price, precision)}"
         f" --expiry-minutes={expiry_minutes_int}"
         f" --config-path={quote(str(config_path))}"
+        f" --poll-seconds={poll_seconds_int}"
+        f" --price-tolerance={_format_float(price_tolerance_val, 6)}"
     )
     if symbol in crypto_symbols:
         command += " --asset-class=crypto"
