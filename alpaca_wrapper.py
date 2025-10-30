@@ -28,7 +28,7 @@ from alpaca_trade_api.rest import APIError
 from loguru import logger
 from retry import retry
 
-from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT
+from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT, PAPER
 from typing import Iterable, Dict, Any, List, Optional, Tuple
 from types import SimpleNamespace
 from src.comparisons import is_buy_side, is_sell_side
@@ -42,13 +42,18 @@ logger = setup_logging("alpaca_cli.log")
 
 _PLACEHOLDER_TOKEN = "placeholder"
 
+# Select credentials based on PAPER environment variable
+_TRADING_KEY_ID = ALP_KEY_ID if PAPER else ALP_KEY_ID_PROD
+_TRADING_SECRET_KEY = ALP_SECRET_KEY if PAPER else ALP_SECRET_KEY_PROD
+_IS_PAPER = PAPER
+
 
 def _missing_alpaca_credentials() -> bool:
     return (
-        not ALP_KEY_ID
-        or not ALP_SECRET_KEY
-        or _PLACEHOLDER_TOKEN in ALP_KEY_ID
-        or _PLACEHOLDER_TOKEN in ALP_SECRET_KEY
+        not _TRADING_KEY_ID
+        or not _TRADING_SECRET_KEY
+        or _PLACEHOLDER_TOKEN in _TRADING_KEY_ID
+        or _PLACEHOLDER_TOKEN in _TRADING_SECRET_KEY
     )
 
 
@@ -80,11 +85,11 @@ def _mock_clock() -> SimpleNamespace:
 
 
 alpaca_api = TradingClient(
-    ALP_KEY_ID,
-    ALP_SECRET_KEY,
-    # ALP_ENDPOINT,
-    paper=ALP_ENDPOINT != "https://api.alpaca.markets",
-)  # todo
+    _TRADING_KEY_ID,
+    _TRADING_SECRET_KEY,
+    paper=_IS_PAPER,
+)
+logger.info(f"Initialized Alpaca Trading Client: {'PAPER' if _IS_PAPER else 'LIVE'} account")
 
 data_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
 

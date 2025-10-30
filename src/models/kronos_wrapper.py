@@ -139,6 +139,9 @@ class KronosForecastingWrapper:
         cache_dir: Optional[str] = None,
         verbose: bool = False,
         prefer_fp32: bool = False,
+        compile: bool = False,
+        compile_mode: str = "max-autotune",
+        compile_backend: Optional[str] = "inductor",
     ) -> None:
         if torch is None or np is None or pd is None:
             raise RuntimeError(
@@ -165,6 +168,9 @@ class KronosForecastingWrapper:
         self.cache_dir = cache_dir
         self.verbose = verbose
         self._prefer_fp32 = bool(prefer_fp32)
+        self.compile = bool(compile)
+        self.compile_mode = compile_mode
+        self.compile_backend = compile_backend
 
         self._device = device
         self._predictor = None
@@ -634,6 +640,29 @@ class KronosForecastingWrapper:
                 logger.debug("Failed to set Kronos predictor dtype: %s", exc)
         predictor.model = predictor.model.eval()
 
+        # Apply torch.compile if requested
+        if self.compile and hasattr(torch, "compile"):
+            try:
+                logger.info(
+                    "Applying torch.compile to Kronos decode methods (mode=%s, backend=%s)",
+                    self.compile_mode,
+                    self.compile_backend or "default",
+                )
+                compile_kwargs = {"mode": self.compile_mode}
+                if self.compile_backend:
+                    compile_kwargs["backend"] = self.compile_backend
+
+                # Compile specific decode methods (like kronos_example.py does)
+                if hasattr(predictor.model, "decode_s1"):
+                    predictor.model.decode_s1 = torch.compile(predictor.model.decode_s1, **compile_kwargs)  # type: ignore[method-assign]
+                if hasattr(predictor.model, "decode_s2"):
+                    predictor.model.decode_s2 = torch.compile(predictor.model.decode_s2, **compile_kwargs)  # type: ignore[method-assign]
+
+                logger.info("Kronos torch.compile applied successfully")
+            except Exception as exc:
+                logger.warning("Failed to apply torch.compile to Kronos: %s; continuing in eager mode", exc)
+                self.compile = False
+
         metadata_requirements = {
             "model_id": self.model_name,
             "tokenizer_id": self.tokenizer_name,
@@ -641,6 +670,7 @@ class KronosForecastingWrapper:
             "device": self._device,
             "prefer_fp32": self._prefer_fp32,
             "torch_version": getattr(torch, "__version__", "unknown"),
+            "compile": self.compile,
         }
         metadata_payload = {
             **metadata_requirements,
@@ -650,6 +680,8 @@ class KronosForecastingWrapper:
             "top_p": float(self.top_p),
             "top_k": int(self.top_k),
             "sample_count": int(self.sample_count),
+            "compile_mode": self.compile_mode if self.compile else None,
+            "compile_backend": self.compile_backend if self.compile else None,
         }
 
         should_persist = True
