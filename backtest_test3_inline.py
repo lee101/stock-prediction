@@ -1568,6 +1568,12 @@ def load_toto_pipeline() -> TotoPipeline:
 def load_kronos_wrapper(params: Dict[str, float]) -> KronosForecastingWrapper:
     _maybe_enable_fast_torch_settings()
     _require_cuda("Kronos inference", allow_cpu_fallback=False)
+
+    # Read compilation settings from environment
+    compile_enabled = _read_env_flag(("KRONOS_COMPILE", "MARKETSIM_KRONOS_COMPILE"))
+    compile_mode = os.getenv("KRONOS_COMPILE_MODE", "max-autotune")
+    compile_backend = os.getenv("KRONOS_COMPILE_BACKEND", "inductor")
+
     key = (
         params["temperature"],
         params["top_p"],
@@ -1575,6 +1581,7 @@ def load_kronos_wrapper(params: Dict[str, float]) -> KronosForecastingWrapper:
         params["sample_count"],
         params["max_context"],
         params["clip"],
+        compile_enabled,  # Include in cache key
     )
     wrapper = kronos_wrapper_cache.get(key)
     if wrapper is None:
@@ -1589,6 +1596,9 @@ def load_kronos_wrapper(params: Dict[str, float]) -> KronosForecastingWrapper:
                 top_p=float(params["top_p"]),
                 top_k=int(params["top_k"]),
                 sample_count=int(params["sample_count"]),
+                compile=bool(compile_enabled),
+                compile_mode=compile_mode,
+                compile_backend=compile_backend,
             )
 
         try:

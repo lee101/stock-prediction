@@ -93,6 +93,16 @@ def _stop_existing_watcher(config_path: Path, *, reason: str) -> None:
         _persist_watcher_metadata(config_path, metadata)
 
 
+def _get_inherited_env():
+    """Get environment with PYTHONPATH set, preserving critical variables like PAPER."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(cwd)
+    # Log critical environment variables for debugging
+    paper_value = env.get("PAPER", "1")
+    logger.debug(f"Spawning subprocess with PAPER={paper_value}")
+    return env
+
+
 def _backout_key(symbol: str, **kwargs) -> str:
     extras = []
     for key in (
@@ -123,9 +133,7 @@ def backout_near_market(
     market_close_buffer_minutes: Optional[int] = None,
     market_close_force_minutes: Optional[int] = None,
 ):
-    command = (
-        f"PYTHONPATH={cwd} python scripts/alpaca_cli.py backout_near_market {symbol}"
-    )
+    command = f"python scripts/alpaca_cli.py backout_near_market {symbol}"
     option_map = {
         "start_offset_minutes": "--start-offset-minutes",
         "ramp_minutes": "--ramp-minutes",
@@ -155,6 +163,7 @@ def backout_near_market(
     subprocess.Popen(
         command,
         shell=True,
+        env=_get_inherited_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
@@ -178,7 +187,7 @@ def ramp_into_position(
         maxdiff_overflow: If True, this is a maxdiff overflow trade that should check leverage
         risk_threshold: Optional risk threshold to check against (will be fetched if not provided)
     """
-    command = f"PYTHONPATH={cwd} python scripts/alpaca_cli.py ramp_into_position {symbol} --side={side}"
+    command = f"python scripts/alpaca_cli.py ramp_into_position {symbol} --side={side}"
     if target_qty is not None:
         command += f" --target-qty={target_qty}"
     if maxdiff_overflow:
@@ -190,6 +199,7 @@ def ramp_into_position(
     subprocess.Popen(
         command,
         shell=True,
+        env=_get_inherited_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
@@ -198,12 +208,13 @@ def ramp_into_position(
 
 @debounce(TAKEPROFIT_SPAWN_DEBOUNCE_SECONDS, key_func=lambda symbol, takeprofit_price: f"{symbol}_{takeprofit_price}")
 def spawn_close_position_at_takeprofit(symbol: str, takeprofit_price: float):
-    command = f"PYTHONPATH={cwd} python scripts/alpaca_cli.py close_position_at_takeprofit {symbol} --takeprofit_price={takeprofit_price}"
+    command = f"python scripts/alpaca_cli.py close_position_at_takeprofit {symbol} --takeprofit_price={takeprofit_price}"
     logger.info(f"Running command {command}")
     # Run process in background without waiting
     subprocess.Popen(
         command,
         shell=True,
+        env=_get_inherited_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
@@ -264,7 +275,7 @@ def spawn_open_position_at_maxdiff_takeprofit(
     }
     _persist_watcher_metadata(config_path, metadata)
     command = (
-        f"PYTHONPATH={cwd} python scripts/maxdiff_cli.py open-position {symbol}"
+        f"python scripts/maxdiff_cli.py open-position {symbol}"
         f" --side={side}"
         f" --limit-price={_format_float(limit_price, precision)}"
         f" --target-qty={_format_float(target_qty, 8)}"
@@ -280,6 +291,7 @@ def spawn_open_position_at_maxdiff_takeprofit(
         process = subprocess.Popen(
             command,
             shell=True,
+            env=_get_inherited_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
@@ -344,7 +356,7 @@ def spawn_close_position_at_maxdiff_takeprofit(
     }
     _persist_watcher_metadata(config_path, metadata)
     command = (
-        f"PYTHONPATH={cwd} python scripts/maxdiff_cli.py close-position {symbol}"
+        f"python scripts/maxdiff_cli.py close-position {symbol}"
         f" --side={side}"
         f" --takeprofit-price={_format_float(takeprofit_price, precision)}"
         f" --expiry-minutes={expiry_minutes_int}"
@@ -359,6 +371,7 @@ def spawn_close_position_at_maxdiff_takeprofit(
         process = subprocess.Popen(
             command,
             shell=True,
+            env=_get_inherited_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
