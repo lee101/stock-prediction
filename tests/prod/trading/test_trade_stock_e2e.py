@@ -241,6 +241,131 @@ def test_analyze_symbols_falls_back_to_maxdiff_when_all_signals_conflict(
     assert any("mixed_directional_signals" in note for note in notes)
     sequence = results["UNIUSD"].get("strategy_sequence") or []
     assert sequence and sequence[0] == "all_signals"
+    assert "maxdiff" in sequence
+
+
+@patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)
+@patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
+@patch("trade_stock_e2e.backtest_forecasts")
+@patch("trade_stock_e2e._log_detail")
+def test_analyze_symbols_allows_maxdiff_when_highlow_disabled(
+    mock_log, mock_backtest, mock_snapshot, mock_trading_day_now
+):
+    row = {
+        "simple_strategy_return": 0.01,
+        "simple_strategy_avg_daily_return": 0.01,
+        "simple_strategy_annual_return": 0.01 * 365,
+        "simple_strategy_sharpe": 0.6,
+        "simple_strategy_turnover": 0.4,
+        "simple_strategy_max_drawdown": -0.03,
+        "all_signals_strategy_return": 0.02,
+        "all_signals_strategy_avg_daily_return": 0.02,
+        "all_signals_strategy_annual_return": 0.02 * 365,
+        "all_signals_strategy_sharpe": 1.0,
+        "all_signals_strategy_turnover": 0.7,
+        "all_signals_strategy_max_drawdown": -0.04,
+        "entry_takeprofit_return": 0.005,
+        "entry_takeprofit_avg_daily_return": 0.005,
+        "entry_takeprofit_annual_return": 0.005 * 365,
+        "entry_takeprofit_sharpe": 0.55,
+        "entry_takeprofit_turnover": 0.8,
+        "entry_takeprofit_max_drawdown": -0.05,
+        "highlow_return": 0.006,
+        "highlow_avg_daily_return": 0.006,
+        "highlow_annual_return": 0.006 * 365,
+        "highlow_sharpe": 0.65,
+        "highlow_turnover": 0.9,
+        "highlow_max_drawdown": -0.05,
+        "maxdiff_return": 0.03,
+        "maxdiff_avg_daily_return": 0.03,
+        "maxdiff_annual_return": 0.03 * 365,
+        "maxdiff_sharpe": 1.2,
+        "maxdiff_turnover": 0.9,
+        "maxdiff_max_drawdown": -0.05,
+        "close": 10.0,
+        "predicted_close": 10.8,
+        "predicted_high": 11.0,
+        "predicted_low": 9.6,
+    }
+    mock_backtest.return_value = pd.DataFrame([row] * 70)
+
+    with patch.object(trade_module, "ALLOW_HIGHLOW_ENTRY", False):
+        results = analyze_symbols(["UNIUSD"])
+
+    assert "UNIUSD" in results
+    assert results["UNIUSD"]["strategy"] == "maxdiff"
+    ineligible = results["UNIUSD"]["strategy_entry_ineligible"]
+    assert ineligible.get("highlow") == "disabled_by_config"
+    sequence = results["UNIUSD"].get("strategy_sequence") or []
+    assert sequence and sequence[0] == "maxdiff"
+    assert "all_signals" in sequence
+
+
+@patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)
+@patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
+@patch("trade_stock_e2e.backtest_forecasts")
+@patch("trade_stock_e2e._log_detail")
+def test_analyze_symbols_prefers_maxdiff_for_crypto_when_primary_side_buy(
+    mock_log, mock_backtest, mock_snapshot, mock_trading_day_now
+):
+    row = {
+        "simple_strategy_return": 0.01,
+        "simple_strategy_avg_daily_return": 0.01,
+        "simple_strategy_annual_return": 0.01 * 365,
+        "simple_strategy_sharpe": 0.6,
+        "simple_strategy_turnover": 0.5,
+        "simple_strategy_max_drawdown": -0.04,
+        "all_signals_strategy_return": -0.005,
+        "all_signals_strategy_avg_daily_return": -0.005,
+        "all_signals_strategy_annual_return": -0.005 * 365,
+        "all_signals_strategy_sharpe": 0.2,
+        "all_signals_strategy_turnover": 0.4,
+        "all_signals_strategy_max_drawdown": -0.06,
+        "entry_takeprofit_return": 0.0,
+        "entry_takeprofit_avg_daily_return": 0.0,
+        "entry_takeprofit_annual_return": 0.0,
+        "entry_takeprofit_sharpe": 0.0,
+        "entry_takeprofit_turnover": 0.5,
+        "entry_takeprofit_max_drawdown": -0.05,
+        "highlow_return": 0.015,
+        "highlow_avg_daily_return": 0.015,
+        "highlow_annual_return": 0.015 * 365,
+        "highlow_sharpe": 0.7,
+        "highlow_turnover": 0.7,
+        "highlow_max_drawdown": -0.05,
+        "maxdiff_return": 0.04,
+        "maxdiff_avg_daily_return": 0.04,
+        "maxdiff_annual_return": 0.04 * 365,
+        "maxdiff_sharpe": 1.4,
+        "maxdiff_turnover": 0.9,
+        "maxdiff_max_drawdown": -0.03,
+        "maxdiffprofit_high_price": 103.0,
+        "maxdiffprofit_low_price": 96.5,
+        "maxdiffprofit_profit": 0.04,
+        "maxdiffprofit_profit_high_multiplier": 0.02,
+        "maxdiffprofit_profit_low_multiplier": -0.01,
+        "maxdiff_primary_side": "buy",
+        "maxdiff_trade_bias": 0.6,
+        "maxdiff_trades_positive": 5,
+        "maxdiff_trades_negative": 0,
+        "maxdiff_trades_total": 5,
+        "close": 100.0,
+        "predicted_close": 98.5,
+        "predicted_high": 103.5,
+        "predicted_low": 96.0,
+    }
+    mock_backtest.return_value = pd.DataFrame([row] * 70)
+
+    with patch.object(trade_module, "ALLOW_MAXDIFF_ENTRY", True), patch.object(
+        trade_module, "crypto_symbols", ["BTCUSD"]
+    ):
+        results = analyze_symbols(["BTCUSD"])
+
+    assert "BTCUSD" in results
+    outcome = results["BTCUSD"]
+    assert outcome["strategy"] == "maxdiff"
+    assert outcome["side"] == "buy"
+    assert outcome["maxdiff_entry_allowed"] is True
 
 
 @patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)
@@ -540,7 +665,11 @@ def test_manage_market_close_closes_on_negative_strategy(monkeypatch):
 
     close_calls = []
     outcome_calls = []
-    monkeypatch.setattr(trade_module, "backout_near_market", lambda symbol: close_calls.append(symbol))
+
+    def record_backout(symbol, **kwargs):
+        close_calls.append((symbol, kwargs))
+
+    monkeypatch.setattr(trade_module, "backout_near_market", record_backout)
     monkeypatch.setattr(
         trade_module,
         "_record_trade_outcome",
@@ -572,7 +701,15 @@ def test_manage_market_close_closes_on_negative_strategy(monkeypatch):
 
     manage_market_close(["AAPL"], previous_picks, all_results)
 
-    assert close_calls == ["AAPL"]
+    assert close_calls, "Expected backout_near_market to be invoked"
+    symbol, kwargs = close_calls[0]
+    assert symbol == "AAPL"
+    assert kwargs == {
+        "start_offset_minutes": trade_module.BACKOUT_START_OFFSET_MINUTES,
+        "sleep_seconds": trade_module.BACKOUT_SLEEP_SECONDS,
+        "market_close_buffer_minutes": trade_module.BACKOUT_MARKET_CLOSE_BUFFER_MINUTES,
+        "market_close_force_minutes": trade_module.BACKOUT_MARKET_CLOSE_FORCE_MINUTES,
+    }
     assert outcome_calls == [("AAPL", "simple_strategy_loss")]
 
 
@@ -657,7 +794,13 @@ def test_manage_positions_only_closes_on_opposite_forecast():
     ) as mock_backout:
         manage_positions(current_picks, {}, all_analyzed_results)
 
-    mock_backout.assert_called_once_with("GOOG")
+    mock_backout.assert_called_once_with(
+        "GOOG",
+        start_offset_minutes=trade_module.BACKOUT_START_OFFSET_MINUTES,
+        sleep_seconds=trade_module.BACKOUT_SLEEP_SECONDS,
+        market_close_buffer_minutes=trade_module.BACKOUT_MARKET_CLOSE_BUFFER_MINUTES,
+        market_close_force_minutes=trade_module.BACKOUT_MARKET_CLOSE_FORCE_MINUTES,
+    )
     assert mocks["ramp"].call_count >= 1  # new entries can still be scheduled
 
 
@@ -954,12 +1097,19 @@ def test_manage_positions_highlow_strategy_uses_limit_orders(strategy_name):
     mocks["ramp"].assert_not_called()
     mocks["open_order"].assert_not_called()
     mocks["spawn_open_maxdiff"].assert_called_once()
-    args, _ = mocks["spawn_open_maxdiff"].call_args
+    args, kwargs = mocks["spawn_open_maxdiff"].call_args
     assert args[0] == "AAPL"
     assert args[1] == "buy"
     assert args[2] == pytest.approx(98.5)
     assert args[3] == pytest.approx(3.0)
-    mocks["spawn_close_maxdiff"].assert_called_once_with("AAPL", "buy", 132.0)
+    assert kwargs.get("poll_seconds") == trade_module.MAXDIFF_ENTRY_WATCHER_POLL_SECONDS
+    mocks["spawn_close_maxdiff"].assert_called_once()
+    close_args, close_kwargs = mocks["spawn_close_maxdiff"].call_args
+    assert close_args == ("AAPL", "buy", 132.0)
+    assert close_kwargs.get("poll_seconds") == trade_module.MAXDIFF_EXIT_WATCHER_POLL_SECONDS
+    assert close_kwargs.get("price_tolerance") == pytest.approx(
+        trade_module.MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE
+    )
     mocks["spawn_tp"].assert_not_called()
 
 
@@ -985,12 +1135,19 @@ def test_manage_positions_highlow_short_uses_maxdiff_prices(strategy_name):
     mocks["ramp"].assert_not_called()
     mocks["open_order"].assert_not_called()
     mocks["spawn_open_maxdiff"].assert_called_once()
-    args, _ = mocks["spawn_open_maxdiff"].call_args
+    args, kwargs = mocks["spawn_open_maxdiff"].call_args
     assert args[0] == "UNIUSD"
     assert args[1] == "sell"
     assert args[2] == pytest.approx(6.9)
     assert args[3] == pytest.approx(2.0)
-    mocks["spawn_close_maxdiff"].assert_called_once_with("UNIUSD", "sell", 6.05)
+    assert kwargs.get("poll_seconds") == trade_module.MAXDIFF_ENTRY_WATCHER_POLL_SECONDS
+    mocks["spawn_close_maxdiff"].assert_called_once()
+    close_args, close_kwargs = mocks["spawn_close_maxdiff"].call_args
+    assert close_args == ("UNIUSD", "sell", 6.05)
+    assert close_kwargs.get("poll_seconds") == trade_module.MAXDIFF_EXIT_WATCHER_POLL_SECONDS
+    assert close_kwargs.get("price_tolerance") == pytest.approx(
+        trade_module.MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE
+    )
     mocks["spawn_tp"].assert_not_called()
 
 

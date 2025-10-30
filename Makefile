@@ -90,3 +90,14 @@ LATENCY_SNAPSHOT ?= marketsimulator/run_logs/provider_latency_rolling.json
 .PHONY: latency-status
 latency-status:
 	python scripts/provider_latency_status.py --snapshot $(LATENCY_SNAPSHOT)
+.PHONY: fast-env-benchmark
+fast-env-benchmark:
+	. .venv/bin/activate && \
+	python analysis/fast_env_benchmark.py \
+		--symbol AAPL \
+		--data-root trainingdata \
+		--context-len 128 \
+		--steps 2048 \
+		--trials 3 \
+		--output-json results/bench_fast_vs_python.json \
+		--output-csv results/bench_fast_vs_python.csv

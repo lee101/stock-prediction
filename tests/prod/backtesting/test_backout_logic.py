@@ -191,6 +191,7 @@ def test_backout_near_market_switches_to_market(monkeypatch):
 
     monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'filter_to_realistic_positions', lambda pos: pos)
     monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'get_open_orders', lambda: [])
+    monkeypatch.setattr(alpaca_cli, '_minutes_until_market_close', lambda *a, **k: 120.0)
 
     called = {}
 
@@ -210,7 +211,7 @@ def test_backout_near_market_switches_to_market(monkeypatch):
 
     monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'get_all_positions', get_positions)
 
-    alpaca_cli.backout_near_market('META', start_time=start, ramp_minutes=10, market_after=15)
+    alpaca_cli.backout_near_market('META', start_time=start, ramp_minutes=10, market_after=15, sleep_interval=0)
 
     assert called.get('called')
 
@@ -221,10 +222,11 @@ def test_backout_near_market_ramp_progress(monkeypatch):
 
     monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'filter_to_realistic_positions', lambda pos: pos)
     monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'get_open_orders', lambda: [])
+    monkeypatch.setattr(alpaca_cli, '_minutes_until_market_close', lambda *a, **k: 120.0)
 
     captured = {}
 
-    def fake_close(pos, pct_above_market):
+    def fake_close(pos, *, pct_above_market):
         captured['pct'] = pct_above_market
         return True
 
@@ -239,7 +241,14 @@ def test_backout_near_market_ramp_progress(monkeypatch):
     monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'get_all_positions', get_positions)
 
     ramp_minutes = 30
-    alpaca_cli.backout_near_market('META', start_time=start, ramp_minutes=ramp_minutes, market_after=50)
+    alpaca_cli.backout_near_market(
+        'META',
+        start_time=start,
+        ramp_minutes=ramp_minutes,
+        market_after=50,
+        market_close_buffer_minutes=0,
+        sleep_interval=0,
+    )
 
     minutes_since_start = 14
     pct_offset = -0.003
