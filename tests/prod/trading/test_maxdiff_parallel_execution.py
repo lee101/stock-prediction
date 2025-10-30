@@ -121,8 +121,14 @@ class TestMaxdiffPlanPersistence:
         assert plans["NVDA"]["fill_price"] == 145.50
         assert plans["NVDA"]["fill_qty"] == 50
 
-    def test_load_empty_maxdiff_plans(self, trade_module):
+    def test_load_empty_maxdiff_plans(self, trade_module, temp_state_dir):
         """Test loading when no plans exist."""
+        # Clear any existing plans first by creating a new empty state for this test
+        import os
+        plans_file = trade_module.MAXDIFF_PLANS_FILE
+        if os.path.exists(plans_file):
+            os.remove(plans_file)
+
         plans = trade_module._load_maxdiff_plans_for_today()
         assert isinstance(plans, dict)
         assert len(plans) == 0
