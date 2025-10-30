@@ -354,6 +354,16 @@ python -m traininglib.benchmark_cli --optimizers adamw shampoo muon lion --runs 
 ```bash
 PYTHONPATH=$(pwd) python backtest_test3_inline.py
 ```
+### Offline Backtest
+
+The offline simulator now uses a small ``FakeAlpaca`` shim to track cash and
+positions in memory.  It patches the trading routines and steps through
+``WIKI-AAPL.csv`` day by day to mimic a two week trading session.  Run it with:
+
+```bash
+PYTHONPATH=$(pwd) python offline_backtest.py
+```
+
 
 ## HFTraining Quick Run (2025-10-17)
 
