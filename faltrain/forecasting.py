@@ -31,13 +31,17 @@ def _coerce_int(value: Any, default: int) -> int:
 def _default_kronos_device(explicit: Optional[str] = None) -> str:
     if explicit:
         return explicit
-    return "cuda:0" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        return "cuda:0"
+    raise RuntimeError("CUDA is required for Kronos forecasting; no CUDA-capable device detected.")
 
 
 def _default_toto_device(explicit: Optional[str] = None) -> str:
     if explicit:
         return explicit
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    raise RuntimeError("CUDA is required for Toto forecasting; no CUDA-capable device detected.")
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,14 @@ def create_kronos_wrapper(
 
     kronos_kwargs.update(overrides)
 
+    device_value = str(kronos_kwargs.get("device", ""))
+    if not device_value.startswith("cuda"):
+        raise RuntimeError(
+            f"Kronos forecasting requires a CUDA device; received {device_value!r}."
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is unavailable. Kronos forecasting requires a CUDA-capable environment.")
+
     ctor = wrapper_ctor or KronosForecastingWrapper
     wrapper = ctor(**kronos_kwargs)
 
@@ -146,6 +158,14 @@ def create_toto_pipeline(
     payload_kwargs.setdefault("torch_compile", True)
     payload_kwargs.setdefault("compile_mode", "max-autotune")
     payload_kwargs.setdefault("cache_policy", "prefer")
+
+    device_value = str(payload_kwargs.get("device_map", ""))
+    if not device_value.startswith("cuda"):
+        raise RuntimeError(
+            f"Toto forecasting requires a CUDA device; received {device_value!r}."
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is unavailable. Toto forecasting requires a CUDA-capable environment.")
 
     pipeline = factory(**payload_kwargs)
 
