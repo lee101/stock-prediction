@@ -22,6 +22,9 @@ from src.trading_obj_utils import filter_to_realistic_positions
 # Import position sizing utilities
 from src.sizing_utils import get_qty
 
+# Import portfolio risk utilities
+from src.portfolio_risk import get_global_risk_threshold
+
 alpaca_api = tradeapi.REST(
     ALP_KEY_ID,
     ALP_SECRET_KEY,
@@ -64,7 +67,26 @@ def get_strategy_for_symbol(symbol: str) -> str:
     return positions_shelf.get(shelf_key, None)
 
 
-def main(command: str, pair: Optional[str], side: Optional[str] = "buy", target_qty: Optional[float] = None):
+def _calculate_total_exposure_value(positions) -> float:
+    """Calculate total exposure value across all positions."""
+    total_value = 0.0
+    for position in positions:
+        try:
+            market_value = float(getattr(position, "market_value", 0.0) or 0.0)
+        except Exception:
+            market_value = 0.0
+        total_value += abs(market_value)
+    return total_value
+
+
+def main(
+    command: str,
+    pair: Optional[str],
+    side: Optional[str] = "buy",
+    target_qty: Optional[float] = None,
+    maxdiff_overflow: bool = False,
+    risk_threshold: Optional[float] = None,
+):
     """
     cancel_all_orders - cancel all orders
 
@@ -99,7 +121,14 @@ def main(command: str, pair: Optional[str], side: Optional[str] = "buy", target_
         backout_near_market(pair, start_time=now)
     elif command == "ramp_into_position":
         now = datetime.now()
-        ramp_into_position(pair, side, start_time=now, target_qty=target_qty)
+        ramp_into_position(
+            pair,
+            side,
+            start_time=now,
+            target_qty=target_qty,
+            maxdiff_overflow=maxdiff_overflow,
+            risk_threshold=risk_threshold,
+        )
     elif command == "close_position_at_takeprofit":
         close_position_at_takeprofit(pair, float(side))  # Use side param as target price
     elif command == 'show_account':
@@ -337,12 +366,27 @@ def violently_close_all_positions():
         alpaca_wrapper.close_position_violently(position)
 
 
-def ramp_into_position(pair, side, start_time=None, target_qty=None):
+def ramp_into_position(
+    pair,
+    side,
+    start_time=None,
+    target_qty=None,
+    maxdiff_overflow=False,
+    risk_threshold=None,
+):
     """
     Ramp into a position with different strategies for crypto vs stocks:
     - Crypto: Start slightly worse than market price, ramp to opposite side over 1 hour
     - Stocks: More aggressive pricing starting at market, ramp over 1 hour
     - If target_qty is provided, will add to existing position to reach that target
+
+    Args:
+        pair: Trading symbol
+        side: 'buy' or 'sell'
+        start_time: Start time for the ramp
+        target_qty: Optional target quantity
+        maxdiff_overflow: If True, check leverage before placing orders
+        risk_threshold: Risk threshold to check against (will be fetched if not provided)
     """
     if pair in crypto_symbols and side.lower() == "sell":
         logger.error(f"Cannot short crypto {pair}")
@@ -544,6 +588,86 @@ def ramp_into_position(pair, side, start_time=None, target_qty=None):
                 except Exception as e:
                     logger.error(f"Error checking account status: {e}")
 
+                # Check leverage constraint for maxdiff overflow trades
+                if maxdiff_overflow:
+                    try:
+                        # Get current risk threshold
+                        effective_risk_threshold = risk_threshold
+                        if effective_risk_threshold is None:
+                            effective_risk_threshold = get_global_risk_threshold()
+
+                        # Calculate current total exposure
+                        all_positions = alpaca_wrapper.get_all_positions()
+                        current_positions = filter_to_realistic_positions(all_positions)
+                        current_exposure = _calculate_total_exposure_value(current_positions)
+
+                        # Calculate max allowed exposure and available room
+                        equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
+                        if equity <= 0:
+                            logger.warning(f"Invalid equity ${equity:.2f} for {pair}, skipping leverage check")
+                        else:
+                            max_allowed_exposure = equity * effective_risk_threshold
+                            available_room = max_allowed_exposure - current_exposure
+
+                            # Calculate projected exposure including this order
+                            order_value = abs(qty * order_price)
+                            projected_exposure = current_exposure + order_value
+                            projected_leverage = projected_exposure / equity
+
+                            # Check if leverage would exceed threshold
+                            if projected_leverage > effective_risk_threshold:
+                                # Try to shrink the order to fit within leverage budget
+                                if available_room > 0:
+                                    # Calculate adjusted quantity to fit
+                                    adjusted_order_value = available_room * 0.99  # Use 99% to leave buffer
+                                    adjusted_qty = adjusted_order_value / abs(order_price)
+
+                                    # Check minimum order size
+                                    min_order_size = 0.01 if pair in crypto_symbols else 1.0
+
+                                    if adjusted_qty >= min_order_size:
+                                        logger.info(
+                                            f"{pair} maxdiff overflow: shrinking order from {qty:.4f} to {adjusted_qty:.4f} "
+                                            f"to fit within leverage threshold {effective_risk_threshold:.2f}x. "
+                                            f"Available room: ${available_room:.2f}, Current exposure: ${current_exposure:.2f}, "
+                                            f"Equity: ${equity:.2f}"
+                                        )
+                                        qty = adjusted_qty
+                                        qty_to_add = adjusted_qty  # Keep qty_to_add in sync
+                                        # Recalculate order value with adjusted qty
+                                        order_value = abs(qty * order_price)
+                                    else:
+                                        logger.info(
+                                            f"Skipping {pair} maxdiff overflow order: adjusted qty {adjusted_qty:.4f} "
+                                            f"below minimum {min_order_size}. Available room: ${available_room:.2f}. "
+                                            f"Will retry in next iteration."
+                                        )
+                                        # Reset retries since this is not an error
+                                        retries = 0
+                                        sleep_time = 5 * 60 if pair in crypto_symbols else 2 * 60
+                                        sleep(sleep_time)
+                                        continue
+                                else:
+                                    logger.info(
+                                        f"Skipping {pair} maxdiff overflow order: no available leverage room. "
+                                        f"Projected leverage {projected_leverage:.2f}x exceeds threshold {effective_risk_threshold:.2f}x. "
+                                        f"Current exposure: ${current_exposure:.2f}, Max allowed: ${max_allowed_exposure:.2f}, "
+                                        f"Equity: ${equity:.2f}. Will retry in next iteration."
+                                    )
+                                    # Reset retries since this is not an error
+                                    retries = 0
+                                    sleep_time = 5 * 60 if pair in crypto_symbols else 2 * 60
+                                    sleep(sleep_time)
+                                    continue
+                            else:
+                                logger.info(
+                                    f"{pair} maxdiff overflow leverage check passed: projected leverage "
+                                    f"{projected_leverage:.2f}x <= risk threshold {effective_risk_threshold:.2f}x. "
+                                    f"Proceeding with order qty={qty:.4f}."
+                                )
+                    except Exception as e:
+                        logger.warning(f"Error during leverage check for {pair}: {e}. Proceeding with order anyway.")
+
                 # Place the order with error handling using new function that allows adding to positions
                 try:
                     succeeded = alpaca_wrapper.open_order_at_price_allow_add_to_position(pair, qty, side, order_price)
@@ -658,6 +782,59 @@ def show_account():
             if hasattr(order, 'symbol') and hasattr(order, 'qty'):
                 price_str = f"@ ${float(order.limit_price):,.2f}" if hasattr(order, 'limit_price') else "(market)"
                 logger.info(f"{order.symbol}: {order.side.upper()} {order.qty} {price_str}")
+
+    # Display maxdiff plans for today
+    try:
+        from trade_stock_e2e import _load_maxdiff_plans_for_today, _calculate_total_exposure_value
+        from src.portfolio_risk import get_global_risk_threshold
+        from src.trading_obj_utils import filter_to_realistic_positions
+
+        maxdiff_plans = _load_maxdiff_plans_for_today()
+        if maxdiff_plans:
+            logger.info("\n=== Maxdiff Plans (Parallel Trading Layer) ===")
+
+            # Calculate leverage info
+            all_positions = alpaca_wrapper.get_all_positions()
+            realistic_positions = filter_to_realistic_positions(all_positions)
+            current_exposure = _calculate_total_exposure_value(realistic_positions)
+            equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
+
+            if equity > 0:
+                current_leverage = current_exposure / equity
+                risk_threshold = get_global_risk_threshold()
+                max_allowed_exposure = equity * risk_threshold
+                available_room = max(0, max_allowed_exposure - current_exposure)
+
+                logger.info(f"Current Leverage: {current_leverage:.2f}x (${current_exposure:,.2f} / ${equity:,.2f})")
+                logger.info(f"Global Risk Threshold: {risk_threshold:.2f}x")
+                logger.info(f"Available for Maxdiff: ${available_room:,.2f}")
+
+            # Sort plans by avg_return
+            sorted_plans = sorted(
+                maxdiff_plans.items(),
+                key=lambda x: x[1].get("avg_return", 0.0),
+                reverse=True
+            )
+
+            active_plans = [(sym, plan) for sym, plan in sorted_plans if plan.get("status") in {"identified", "listening", "spawned"}]
+            filled_plans = [(sym, plan) for sym, plan in sorted_plans if plan.get("status") == "filled"]
+
+            if active_plans:
+                logger.info(f"\nActive Maxdiff Opportunities ({len(active_plans)}):")
+                for symbol, plan in active_plans:
+                    avg_ret = plan.get("avg_return", 0.0)
+                    high = plan.get("maxdiffprofit_high_price") or plan.get("high_target", 0.0)
+                    low = plan.get("maxdiffprofit_low_price") or plan.get("low_target", 0.0)
+                    status = plan.get("status", "unknown")
+                    logger.info(f"  {symbol}: high=${high:.2f} low=${low:.2f} avg_return={avg_ret:.4f} [{status}]")
+
+            if filled_plans:
+                logger.info(f"\nFilled Maxdiff Today ({len(filled_plans)}):")
+                for symbol, plan in filled_plans:
+                    avg_ret = plan.get("avg_return", 0.0)
+                    logger.info(f"  {symbol}: avg_return={avg_ret:.4f} [filled]")
+    except Exception as e:
+        logger.warning(f"Failed to load maxdiff plans: {e}")
 
 
 def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=None):
