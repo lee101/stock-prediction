@@ -25,7 +25,10 @@ class DataConfig:
 class EnvironmentConfig:
     """Differentiable market environment hyper-parameters."""
 
-    transaction_cost: float = 1e-3
+    transaction_cost: float = 0.0
+    equity_transaction_cost: float | None = None
+    crypto_transaction_cost: float | None = None
+    cash_transaction_cost: float = 0.0
     risk_aversion: float = 0.1
     variance_penalty_mode: Literal["pnl", "weights"] = "pnl"
     smooth_abs_eps: float = 1e-6

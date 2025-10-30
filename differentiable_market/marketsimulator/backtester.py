@@ -62,6 +62,9 @@ class DifferentiableMarketBacktester:
         self.eval_features = features
         self.eval_returns = returns
         self.asset_names = list(self.symbols) + (["CASH"] if data_cfg.include_cash else [])
+        if self.asset_names:
+            self.env.set_asset_universe(self.asset_names)
+            self.env.reset()
 
     def run(self, checkpoint_path: Path) -> Dict[str, float]:
         payload = torch.load(checkpoint_path, map_location="cpu")
@@ -83,6 +86,9 @@ class DifferentiableMarketBacktester:
             feature_cfg=ckpt_train_cfg,
         )
         self.asset_names = list(self.symbols) + (["CASH"] if include_cash else [])
+        if self.asset_names:
+            self.env.set_asset_universe(self.asset_names)
+            self.env.reset()
 
         asset_count = self.eval_features.shape[1]
         feature_dim = self.eval_features.shape[-1]

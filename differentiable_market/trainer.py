@@ -80,6 +80,12 @@ class DifferentiableMarketTrainer:
         self.feature_dim = self.train_features.shape[2]
 
         self.env = DifferentiableMarketEnv(env_cfg)
+        self.asset_names: List[str] = list(self.symbols)
+        if add_cash and (not self.asset_names or self.asset_names[-1] != "CASH"):
+            self.asset_names = self.asset_names + ["CASH"]
+        if self.asset_names:
+            self.env.set_asset_universe(self.asset_names)
+        self.env.reset()
 
         if self.train_cfg.risk_budget_target:
             if len(self.train_cfg.risk_budget_target) != self.asset_count:

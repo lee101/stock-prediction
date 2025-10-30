@@ -188,3 +188,5 @@ githubagent/actions-runner/externals/
 githubagent/actions-runner/externals/bin
 githubagent/actions-runner/bin
 cppsimulator/build_py/market_sim_ext.so
+nanochat
+external
