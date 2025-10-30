@@ -57,11 +57,29 @@ def backout_near_market(symbol):
 
 
 @debounce(60 * 10, key_func=lambda symbol, side, target_qty=None: f"{symbol}_{side}_{target_qty}")
-def ramp_into_position(symbol: str, side: str = "buy", target_qty: Optional[float] = None):
-    """Ramp into a position over time using the alpaca CLI."""
+def ramp_into_position(
+    symbol: str,
+    side: str = "buy",
+    target_qty: Optional[float] = None,
+    maxdiff_overflow: bool = False,
+    risk_threshold: Optional[float] = None,
+):
+    """Ramp into a position over time using the alpaca CLI.
+
+    Args:
+        symbol: The trading symbol
+        side: 'buy' or 'sell'
+        target_qty: Optional target quantity
+        maxdiff_overflow: If True, this is a maxdiff overflow trade that should check leverage
+        risk_threshold: Optional risk threshold to check against (will be fetched if not provided)
+    """
     command = f"PYTHONPATH={cwd} python scripts/alpaca_cli.py ramp_into_position {symbol} --side={side}"
     if target_qty is not None:
         command += f" --target-qty={target_qty}"
+    if maxdiff_overflow:
+        command += " --maxdiff-overflow"
+    if risk_threshold is not None:
+        command += f" --risk-threshold={risk_threshold}"
     logger.info(f"Running command {command}")
     # Run process in background without waiting
     subprocess.Popen(
