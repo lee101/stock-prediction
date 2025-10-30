@@ -13,11 +13,14 @@ from torch.utils.tensorboard import SummaryWriter
 from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 from dataclasses import dataclass
 
+from src.cache_utils import ensure_huggingface_cache_dir
 from src.comparisons import is_buy_side
 from src.logging_utils import setup_logging
 from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
 
 logger = setup_logging("backtest_test3_inline.log")
+
+ensure_huggingface_cache_dir(logger=logger)
 
 _BOOL_FALSE = {"0", "false", "no", "off"}
 _FAST_TORCH_SETTINGS_CONFIGURED = False

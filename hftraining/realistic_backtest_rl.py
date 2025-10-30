@@ -26,6 +26,7 @@ sys.path.insert(0, current_dir)
 sys.path.append(os.path.dirname(current_dir))
 
 from data_utils import StockDataProcessor, split_data
+from src.leverage_settings import DEFAULT_ANNUAL_LEVERAGE_COST, DEFAULT_TRADING_DAYS
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -49,10 +50,13 @@ class RealisticTradingConfig:
     
     # Risk constraints
     max_position_pct: float = 0.15  # Max 15% in one position (more conservative)
-    max_leverage: float = 1.0  # No leverage for retail
+    max_leverage: float = 1.5  # Allow modest leverage
     margin_requirement: float = 0.25  # 25% margin requirement
     max_drawdown_limit: float = 0.30  # 30% max drawdown before stopping (allow more room)
-    
+    leverage_cost_rate: float = DEFAULT_ANNUAL_LEVERAGE_COST  # Annual financing cost
+    trading_days_per_year: int = DEFAULT_TRADING_DAYS
+    bars_per_day: int = 390
+
     # Execution delays
     order_delay_bars: int = 1  # Execute orders at next bar (realistic)
     
@@ -92,6 +96,7 @@ class BacktestMetrics:
     avg_holding_period: float = 0.0
     total_commission: float = 0.0
     total_slippage: float = 0.0
+    total_financing_cost: float = 0.0
     
     def to_dict(self):
         return {k: float(v) if not isinstance(v, int) else v 
@@ -204,6 +209,12 @@ class RealisticTradingEnvironment:
         self.data = data
         self.config = config
         self.market_sim = RealisticMarketSimulator(data, config)
+        self.max_leverage = max(1.0, float(getattr(config, "max_leverage", 1.0)))
+        self.bars_per_day = max(1, int(getattr(config, "bars_per_day", 1)))
+        trading_days = max(1, int(getattr(config, "trading_days_per_year", DEFAULT_TRADING_DAYS)))
+        leverage_cost_rate = max(0.0, float(getattr(config, "leverage_cost_rate", DEFAULT_ANNUAL_LEVERAGE_COST)))
+        self._daily_leverage_rate = leverage_cost_rate / trading_days
+        self._step_leverage_rate = self._daily_leverage_rate / self.bars_per_day
         self.reset()
         
     def reset(self):
@@ -231,6 +242,7 @@ class RealisticTradingEnvironment:
         self.position_bars = 0
         self.total_commission = 0
         self.total_slippage = 0
+        self.total_financing_cost = 0.0
         
         return self._get_state()
     
@@ -259,6 +271,19 @@ class RealisticTradingEnvironment:
         ])
         
         return market_data, portfolio_state
+
+    def _apply_financing_cost(self):
+        """Apply financing cost for leveraged exposure."""
+        if self._step_leverage_rate <= 0:
+            return
+        borrow = max(0.0, -self.capital)
+        if borrow <= 0:
+            return
+        cost = borrow * self._step_leverage_rate
+        if cost <= 0:
+            return
+        self.capital -= cost
+        self.total_financing_cost += cost
     
     def step(self, action: Dict) -> Tuple:
         """
@@ -267,6 +292,9 @@ class RealisticTradingEnvironment:
         Returns:
             (next_state, reward, done, metrics)
         """
+        # Apply financing cost for leveraged exposure held over the previous bar
+        self._apply_financing_cost()
+
         # Execute pending order from previous step
         if self.pending_order is not None:
             self._execute_pending_order()
@@ -276,9 +304,16 @@ class RealisticTradingEnvironment:
         position_size = action['position_size']  # 0-1 normalized
         stop_loss = action.get('stop_loss', 0.02)  # Default 2% stop
         take_profit = action.get('take_profit', 0.05)  # Default 5% profit
+
+        price_index = max(0, min(self.current_bar - 1, len(self.market_sim.closes) - 1))
+        current_price = self.market_sim.closes[price_index]
+        position_value = self.position * current_price
+        equity = self.capital + position_value
+        max_exposure = self.max_leverage * max(equity, 1e-8)
+        available_notional = max(0.0, max_exposure - position_value)
         
         # Check daily trade limit
-        current_day = self.current_bar // 390  # Assuming 390 bars per day
+        current_day = self.current_bar // self.bars_per_day
         if current_day != self.last_trade_day:
             self.daily_trades = 0
             self.last_trade_day = current_day
@@ -286,15 +321,12 @@ class RealisticTradingEnvironment:
         # Process new order
         if trade_action == 1 and self.position == 0 and self.daily_trades < self.config.max_daily_trades:
             # Buy signal - create pending order
-            order_size = min(
-                self.capital * position_size * self.config.max_position_pct,
-                self.capital - self.config.min_trade_size  # Reserve for min trade
-            )
-            
-            if order_size >= self.config.min_trade_size:
+            target_notional = equity * position_size * self.config.max_position_pct
+            order_notional = min(target_notional, available_notional)
+            if order_notional >= self.config.min_trade_size:
                 self.pending_order = {
                     'type': 'buy',
-                    'size': order_size,
+                    'target_notional': order_notional,
                     'stop_loss': stop_loss,
                     'take_profit': take_profit,
                     'bar': self.current_bar
@@ -304,7 +336,7 @@ class RealisticTradingEnvironment:
             # Sell signal - create pending order
             self.pending_order = {
                 'type': 'sell',
-                'size': self.position,
+                'position_qty': self.position,
                 'bar': self.current_bar
             }
         
@@ -329,7 +361,8 @@ class RealisticTradingEnvironment:
         reward = self._calculate_reward()
         
         # Update equity curve
-        position_value = self.position * self.market_sim.closes[self.current_bar]
+        equity_index = max(0, min(self.current_bar, len(self.market_sim.closes) - 1))
+        position_value = self.position * self.market_sim.closes[equity_index]
         current_equity = self.capital + position_value
         self.equity_curve.append(current_equity)
         
@@ -366,42 +399,76 @@ class RealisticTradingEnvironment:
         self.pending_order = None
         
         if order['type'] == 'buy':
-            # Get execution price with slippage
+            target_notional = float(order.get('target_notional', 0.0))
+            if target_notional <= 0:
+                return
+
+            price_index = max(0, min(order['bar'] - 1, len(self.market_sim.closes) - 1))
+            current_price = self.market_sim.closes[price_index]
+            current_position_value = self.position * current_price
+            equity = self.capital + current_position_value
+            max_exposure = self.max_leverage * max(equity, 1e-8)
+            available_notional = max(0.0, max_exposure - current_position_value)
+            order_notional = min(target_notional, available_notional)
+            if order_notional < self.config.min_trade_size:
+                return
+
             exec_price, slippage = self.market_sim.get_execution_price(
-                order['bar'], True, order['size']
+                order['bar'], True, order_notional
             )
-            
-            # Calculate shares
-            shares = order['size'] / exec_price
-            
-            # Execute trade
-            commission = order['size'] * self.config.commission_rate
-            total_cost = shares * exec_price + commission
-            
-            if total_cost <= self.capital:
-                self.position = shares
-                self.entry_price = exec_price
-                self.entry_bar = order['bar']
-                self.stop_loss = order['stop_loss']
-                self.take_profit = order['take_profit']
-                self.capital -= total_cost
-                self.daily_trades += 1
-                self.position_bars = 0
-                
-                # Track costs
-                self.total_commission += commission
-                self.total_slippage += slippage * shares
-                
-                # Record trade
-                self.trade_history.append({
-                    'bar': order['bar'],
-                    'type': 'buy',
-                    'price': exec_price,
-                    'shares': shares,
-                    'commission': commission,
-                    'slippage': slippage
-                })
-                
+            exec_price = max(exec_price, 1e-8)
+
+            shares = order_notional / exec_price
+            actual_notional = shares * exec_price
+            commission = actual_notional * self.config.commission_rate
+            total_cost = actual_notional + commission
+
+            projected_capital = self.capital - total_cost
+            projected_position = self.position + shares
+            projected_position_value = projected_position * exec_price
+            projected_equity = projected_capital + projected_position_value
+            max_exposure_after = self.max_leverage * max(projected_equity, 1e-8)
+
+            if projected_position_value > max_exposure_after:
+                allowed_notional = max(0.0, max_exposure_after - (self.position * exec_price))
+                if allowed_notional < self.config.min_trade_size:
+                    return
+                shares = allowed_notional / exec_price
+                actual_notional = shares * exec_price
+                commission = actual_notional * self.config.commission_rate
+                total_cost = actual_notional + commission
+                projected_capital = self.capital - total_cost
+                projected_position = self.position + shares
+                projected_position_value = projected_position * exec_price
+                projected_equity = projected_capital + projected_position_value
+
+            if shares <= 0:
+                return
+
+            self.position = projected_position
+            self.entry_price = exec_price
+            self.entry_bar = order['bar']
+            self.stop_loss = order['stop_loss']
+            self.take_profit = order['take_profit']
+            self.capital = projected_capital
+            self.daily_trades += 1
+            self.position_bars = 0
+
+            # Track costs
+            self.total_commission += commission
+            self.total_slippage += slippage * shares
+
+            # Record trade
+            self.trade_history.append({
+                'bar': order['bar'],
+                'type': 'buy',
+                'price': exec_price,
+                'shares': shares,
+                'notional': actual_notional,
+                'commission': commission,
+                'slippage': slippage
+            })
+
         elif order['type'] == 'sell' and self.position > 0:
             self._close_position(None, 'signal')
     
@@ -473,12 +540,14 @@ class RealisticTradingEnvironment:
         """
         Calculate reward incorporating realistic backtesting metrics
         """
-        # Get current equity
-        position_value = self.position * self.market_sim.closes[self.current_bar]
+        price_index = max(0, min(self.current_bar, len(self.market_sim.closes) - 1))
+        current_price = self.market_sim.closes[price_index]
+        position_value = self.position * current_price
         current_equity = self.capital + position_value
+        previous_equity = self.equity_curve[-1]
         
         # Base reward: equity change
-        equity_change = (current_equity - self.equity_curve[-1]) / self.config.initial_capital
+        equity_change = (current_equity - previous_equity) / max(self.config.initial_capital, 1e-8)
         
         # Risk-adjusted component (Sharpe-like)
         if len(self.equity_curve) > 20:
@@ -495,7 +564,8 @@ class RealisticTradingEnvironment:
         drawdown_penalty = -current_drawdown * 0.5
         
         # Cost penalty (encourage efficient trading)
-        cost_ratio = (self.total_commission + self.total_slippage) / self.config.initial_capital
+        total_costs = self.total_commission + self.total_slippage + self.total_financing_cost
+        cost_ratio = total_costs / max(self.config.initial_capital, 1e-8)
         cost_penalty = -cost_ratio * 10
         
         # Win rate bonus
@@ -553,6 +623,7 @@ class RealisticTradingEnvironment:
         # Update costs
         self.metrics.total_commission = self.total_commission
         self.metrics.total_slippage = self.total_slippage
+        self.metrics.total_financing_cost = self.total_financing_cost
 
 
 class RealisticRLModel(nn.Module):
