@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  runner:
+    image: ghcr.io/actions/actions-runner:latest
+    env_file:
+      - ci-runner.env
+    environment:
+      RUNNER_NAME: ${GITHUB_RUNNER_NAME}
+      RUNNER_LABELS: ${GITHUB_RUNNER_LABELS}
+      RUNNER_WORKDIR: /home/runner/_work
+      REPO_URL: ${GITHUB_RUNNER_URL}
+      RUNNER_TOKEN: ${GITHUB_RUNNER_TOKEN}
+    volumes:
+      - ./_work:/home/runner/_work
+    restart: always
+

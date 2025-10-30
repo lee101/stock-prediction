@@ -1,0 +1,31 @@
+{
+  "symbol": "SPY",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_temp0.16_p0.80_s192_k16_clip2_ctx256",
+    "temperature": 0.16,
+    "top_p": 0.8,
+    "top_k": 16,
+    "sample_count": 192,
+    "max_context": 256,
+    "clip": 2.0
+  },
+  "validation": {
+    "price_mae": 1.585228515624999,
+    "pct_return_mae": 0.004197527203163619,
+    "latency_s": 5.481342050996318
+  },
+  "test": {
+    "price_mae": 1.735722412109368,
+    "pct_return_mae": 0.005965907516054371,
+    "latency_s": 5.470272334983747
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparamtraining"
+  }
+}
