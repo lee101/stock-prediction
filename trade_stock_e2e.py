@@ -723,33 +723,36 @@ def _update_learning_state(symbol: str, side: str, strategy: Optional[str] = Non
     )
 
 
-def _mark_probe_pending(symbol: str, side: str) -> Dict:
+def _mark_probe_pending(symbol: str, side: str, strategy: Optional[str] = None) -> Dict:
     return state_utils.mark_probe_pending(
         _get_trade_learning_store,
         symbol,
         side,
+        strategy=strategy,
         logger=logger,
         now=datetime.now(timezone.utc),
     )
 
 
-def _mark_probe_active(symbol: str, side: str, qty: float) -> Dict:
+def _mark_probe_active(symbol: str, side: str, qty: float, strategy: Optional[str] = None) -> Dict:
     return state_utils.mark_probe_active(
         _get_trade_learning_store,
         symbol,
         side,
         qty,
+        strategy=strategy,
         logger=logger,
         now=datetime.now(timezone.utc),
     )
 
 
-def _mark_probe_completed(symbol: str, side: str, successful: bool) -> Dict:
+def _mark_probe_completed(symbol: str, side: str, successful: bool, strategy: Optional[str] = None) -> Dict:
     return state_utils.mark_probe_completed(
         _get_trade_learning_store,
         symbol,
         side,
         successful,
+        strategy=strategy,
         logger=logger,
         now=datetime.now(timezone.utc),
     )
@@ -763,12 +766,13 @@ def _describe_probe_state(learning_state: Dict, now: Optional[datetime] = None) 
     )
 
 
-def _mark_probe_transitioned(symbol: str, side: str, qty: float) -> Dict:
+def _mark_probe_transitioned(symbol: str, side: str, qty: float, strategy: Optional[str] = None) -> Dict:
     return state_utils.mark_probe_transitioned(
         _get_trade_learning_store,
         symbol,
         side,
         qty,
+        strategy=strategy,
         logger=logger,
         now=datetime.now(timezone.utc),
     )
@@ -896,7 +900,10 @@ def _ensure_probe_state_consistency(
     if notional_value <= PROBE_NOTIONAL_LIMIT:
         return probe_meta or {}
 
-    state_probe_meta = _evaluate_trade_block(position.symbol, normalized_side)
+    active_trade = _get_active_trade(position.symbol, normalized_side)
+    entry_strategy = active_trade.get("entry_strategy") if active_trade else None
+
+    state_probe_meta = _evaluate_trade_block(position.symbol, normalized_side, strategy=entry_strategy)
     trade_mode = str(state_probe_meta.get("trade_mode", "")).lower()
     is_probe_state = (
         bool(state_probe_meta.get("pending_probe"))
@@ -920,11 +927,9 @@ def _ensure_probe_state_consistency(
         notional_value,
         PROBE_NOTIONAL_LIMIT,
     )
-    _mark_probe_transitioned(position.symbol, normalized_side, abs(qty_value))
 
-    active_trade = _get_active_trade(position.symbol, normalized_side)
     stored_qty = coerce_numeric(active_trade.get("qty"), default=0.0) if active_trade else 0.0
-    entry_strategy = active_trade.get("entry_strategy") if active_trade else None
+    _mark_probe_transitioned(position.symbol, normalized_side, abs(qty_value), strategy=entry_strategy)
     updated_qty = abs(qty_value) if abs(qty_value) > 0 else abs(stored_qty)
     _update_active_trade(
         position.symbol,
@@ -935,7 +940,7 @@ def _ensure_probe_state_consistency(
     )
     _normalize_active_trade_patch(_update_active_trade)
 
-    refreshed_state = _evaluate_trade_block(position.symbol, normalized_side)
+    refreshed_state = _evaluate_trade_block(position.symbol, normalized_side, strategy=entry_strategy)
 
     merged_meta: Dict[str, object] = dict(probe_meta or {})
     for key in (
@@ -1029,11 +1034,9 @@ def _record_trade_outcome(position, reason: str) -> None:
     )
 
     if trade_mode == "probe":
-        # TODO: Update mark_probe_* functions to accept strategy once probe system supports per-strategy probes
-        _mark_probe_completed(position.symbol, normalized_side, successful=pnl_value > 0)
+        _mark_probe_completed(position.symbol, normalized_side, successful=pnl_value > 0, strategy=entry_strategy)
     elif pnl_value < 0:
-        # TODO: Update mark_probe_* functions to accept strategy once probe system supports per-strategy probes
-        _mark_probe_pending(position.symbol, normalized_side)
+        _mark_probe_pending(position.symbol, normalized_side, strategy=entry_strategy)
     else:
         _update_learning_state(
             position.symbol,
@@ -1684,22 +1687,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 _log_detail(f"Skipping {symbol} - calibrated move collapsed to zero.")
                 continue
 
-            # MaxDiff strategy uses its own target prices, don't apply sign flip checks
-            if selected_strategy != "maxdiff":
-                if predicted_movement > 0 and position_side == "sell":
-                    if _is_kronos_only_mode():
-                        position_side = "buy"
-                    else:
-                        _log_detail(
-                            f"Skipping {symbol} - calibrated move flipped sign negative to positive for sell setup."
-                        )
-                        continue
-                if predicted_movement < 0 and position_side == "buy":
-                    if _is_kronos_only_mode():
-                        position_side = "sell"
-                    else:
-                        _log_detail(f"Skipping {symbol} - calibrated move flipped sign positive to negative for buy setup.")
-                        continue
+            # Strategy already determined position_side based on its own logic.
+            # Don't second-guess with calibrated close prediction - strategies may use
+            # mean reversion, high/low targets, or other logic that differs from close prediction.
 
             if allowed_side and allowed_side != "both":
                 if allowed_side == "buy" and position_side == "sell":
@@ -2281,7 +2271,9 @@ def manage_positions(
 
         probe_meta = all_analyzed_results.get(symbol, {})
         if not probe_meta:
-            probe_meta = _evaluate_trade_block(symbol, normalized_side)
+            active_trade = _get_active_trade(symbol, normalized_side)
+            entry_strategy = active_trade.get("entry_strategy") if active_trade else None
+            probe_meta = _evaluate_trade_block(symbol, normalized_side, strategy=entry_strategy)
         probe_meta = _ensure_probe_state_consistency(position, normalized_side, probe_meta)
         if probe_meta.get("probe_expired") and not should_close:
             logger.info(
@@ -2612,13 +2604,13 @@ def manage_positions(
                     entry_price = ask_price if data["side"] == "buy" else bid_price
                 target_qty = ensure_lower_bound(min_trade_qty, 0.0, default=min_trade_qty)
 
-        if effective_probe and target_qty <= 0:
-            logger.warning(f"{symbol}: Unable to determine positive probe quantity; deferring trade.")
-            _mark_probe_pending(symbol, data["side"])
-            continue
-
         entry_strategy = data.get("strategy")
         stored_entry_strategy = "maxdiff" if entry_strategy in {"highlow", "maxdiff"} else entry_strategy
+
+        if effective_probe and target_qty <= 0:
+            logger.warning(f"{symbol}: Unable to determine positive probe quantity; deferring trade.")
+            _mark_probe_pending(symbol, data["side"], strategy=stored_entry_strategy)
+            continue
 
         if should_enter or not correct_side:
             max_entries_per_run, limit_key = _symbol_max_entries_per_run(symbol, stored_entry_strategy)
@@ -2643,7 +2635,7 @@ def manage_positions(
                     f"({current_count}/{max_entries_per_run})."
                 )
                 if effective_probe:
-                    _mark_probe_pending(symbol, data["side"])
+                    _mark_probe_pending(symbol, data["side"], strategy=stored_entry_strategy)
                 continue
 
             if (
@@ -2783,7 +2775,7 @@ def manage_positions(
                     entry_executed = True
 
             if transition_to_normal:
-                _mark_probe_transitioned(symbol, data["side"], target_qty)
+                _mark_probe_transitioned(symbol, data["side"], target_qty, strategy=stored_entry_strategy)
                 _update_active_trade(
                     symbol,
                     data["side"],
@@ -2794,7 +2786,7 @@ def manage_positions(
                 _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
                 _normalize_active_trade_patch(_update_active_trade)
             elif effective_probe:
-                _mark_probe_active(symbol, data["side"], target_qty)
+                _mark_probe_active(symbol, data["side"], target_qty, strategy=stored_entry_strategy)
                 _update_active_trade(
                     symbol,
                     data["side"],
@@ -2904,9 +2896,9 @@ def manage_positions(
             logger.info(
                 f"{symbol}: Probe already at target sizing; marking transition complete without additional orders."
             )
-            _mark_probe_transitioned(symbol, data["side"], current_position_size)
             entry_strategy = data.get("strategy")
             stored_entry_strategy = "maxdiff" if entry_strategy in {"highlow", "maxdiff"} else entry_strategy
+            _mark_probe_transitioned(symbol, data["side"], current_position_size, strategy=stored_entry_strategy)
             _update_active_trade(
                 symbol,
                 data["side"],
@@ -2987,7 +2979,7 @@ def manage_market_close(
                 should_close = True
                 close_reason = f"{entry_strategy}_strategy_loss"
 
-        probe_meta = next_forecast or _evaluate_trade_block(symbol, normalized_side)
+        probe_meta = next_forecast or _evaluate_trade_block(symbol, normalized_side, strategy=entry_strategy)
         if probe_meta.get("probe_expired") and not should_close:
             logger.info(
                 f"Closing {symbol} ahead of next session; probe duration exceeded {PROBE_MAX_DURATION}, issuing backout."

@@ -1,0 +1,17 @@
+{
+  "symbol": "BTCUSD",
+  "model_type": "kronos_standard",
+  "config": {
+    "temperature": 0.23838230200633626,
+    "top_p": 0.8540772873306959,
+    "top_k": 16,
+    "sample_count": 160,
+    "max_context": 192,
+    "clip": 1.3129755717597829
+  },
+  "validation": {
+    "price_mae": 691.7174812500001,
+    "pct_return_mae": 0.010241585826549687,
+    "latency_s": 4.788292582030408
+  }
+}

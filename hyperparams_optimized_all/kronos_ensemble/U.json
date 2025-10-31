@@ -1,0 +1,22 @@
+{
+  "symbol": "U",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.1402984555716892,
+    "temperature_range": [
+      0.1,
+      0.3367122369383543
+    ],
+    "top_p": 0.8852615969498787,
+    "top_k": 16,
+    "num_samples": 12,
+    "max_context": 192,
+    "clip": 1.4871084762323525,
+    "aggregate": "trimmed_mean_10"
+  },
+  "validation": {
+    "price_mae": 4.317367458343506,
+    "pct_return_mae": 0.11195994482119838,
+    "latency_s": 11.840242522972403
+  }
+}

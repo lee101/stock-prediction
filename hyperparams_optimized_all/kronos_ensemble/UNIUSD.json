@@ -1,0 +1,22 @@
+{
+  "symbol": "UNIUSD",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.2434287748583323,
+    "temperature_range": [
+      0.1,
+      0.2543368627857512
+    ],
+    "top_p": 0.8987671553533311,
+    "top_k": 32,
+    "num_samples": 5,
+    "max_context": 224,
+    "clip": 1.8968478190179707,
+    "aggregate": "trimmed_mean_20"
+  },
+  "validation": {
+    "price_mae": 2.3678784297326587e-06,
+    "pct_return_mae": 0.02676529382177769,
+    "latency_s": 5.718032121978467
+  }
+}

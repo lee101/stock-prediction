@@ -1,0 +1,17 @@
+{
+  "symbol": "SPY",
+  "model_type": "kronos_standard",
+  "config": {
+    "temperature": 0.23601255227629186,
+    "top_p": 0.8601722994512975,
+    "top_k": 28,
+    "sample_count": 256,
+    "max_context": 256,
+    "clip": 2.472113526197464
+  },
+  "validation": {
+    "price_mae": 1.678987304687496,
+    "pct_return_mae": 0.003608045988995486,
+    "latency_s": 6.648633757024072
+  }
+}

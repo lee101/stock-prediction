@@ -1,0 +1,22 @@
+{
+  "symbol": "MSFT",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.1250597154974429,
+    "temperature_range": [
+      0.1,
+      0.22750900087033993
+    ],
+    "top_p": 0.8762500796837726,
+    "top_k": 24,
+    "num_samples": 10,
+    "max_context": 192,
+    "clip": 1.8943381974928415,
+    "aggregate": "trimmed_mean_15"
+  },
+  "validation": {
+    "price_mae": 1.1245274313647577,
+    "pct_return_mae": 0.01856261937825964,
+    "latency_s": 9.681649435078725
+  }
+}

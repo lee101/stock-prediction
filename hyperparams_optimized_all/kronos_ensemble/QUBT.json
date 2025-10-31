@@ -1,0 +1,22 @@
+{
+  "symbol": "QUBT",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.17581019450097166,
+    "temperature_range": [
+      0.1,
+      0.2847597374917476
+    ],
+    "top_p": 0.8902956260608308,
+    "top_k": 24,
+    "num_samples": 12,
+    "max_context": 192,
+    "clip": 1.8685424262356956,
+    "aggregate": "median"
+  },
+  "validation": {
+    "price_mae": 0.2824637174606324,
+    "pct_return_mae": 0.04381693615158354,
+    "latency_s": 11.938597429107176
+  }
+}

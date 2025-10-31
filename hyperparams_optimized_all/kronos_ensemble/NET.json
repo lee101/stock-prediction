@@ -1,0 +1,22 @@
+{
+  "symbol": "NET",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.1461965815360861,
+    "temperature_range": [
+      0.1,
+      0.25632725951950447
+    ],
+    "top_p": 0.8060685131038543,
+    "top_k": 0,
+    "num_samples": 12,
+    "max_context": 192,
+    "clip": 1.6941960793804645,
+    "aggregate": "median"
+  },
+  "validation": {
+    "price_mae": 3.685224914550781,
+    "pct_return_mae": 0.02474231612101508,
+    "latency_s": 10.607690579025075
+  }
+}

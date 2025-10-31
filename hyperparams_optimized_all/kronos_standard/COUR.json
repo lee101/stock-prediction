@@ -1,0 +1,17 @@
+{
+  "symbol": "COUR",
+  "model_type": "kronos_standard",
+  "config": {
+    "temperature": 0.24996945150684835,
+    "top_p": 0.7689220689850085,
+    "top_k": 32,
+    "sample_count": 128,
+    "max_context": 192,
+    "clip": 2.0537922147179866
+  },
+  "validation": {
+    "price_mae": 0.11487622261047373,
+    "pct_return_mae": 0.026227001242708402,
+    "latency_s": 2.8699994729831815
+  }
+}

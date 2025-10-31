@@ -1,0 +1,208 @@
+{
+  "results": [
+    {
+      "symbol": "ADBE",
+      "status": "failed",
+      "error": "n persist_model_state\n    self.write_metadata(model_id, dtype_token, metadata)\n  File \"/home/administrator/code/stock-prediction/src/models/model_cache.py\", line 136, in write_metadata\n    tmp_path.replace(path)\n  File \"/usr/lib/python3.12/pathlib.py\", line 1378, in replace\n    os.replace(self, target)\nFileNotFoundError: [Errno 2] No such file or directory: 'compiled_models/toto/Datadog-Toto-Open-Base-1.0/fp32/metadata.tmp' -> 'compiled_models/toto/Datadog-Toto-Open-Base-1.0/fp32/metadata.json'\n",
+      "elapsed_s": 36.32213377952576
+    },
+    {
+      "symbol": "ADSK",
+      "status": "success",
+      "best_model": "kronos_standard",
+      "best_mae": 0.012940185917070288,
+      "elapsed_s": 860.9716687202454
+    },
+    {
+      "symbol": "AAPL",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.015630713314246092,
+      "elapsed_s": 902.4126265048981
+    },
+    {
+      "symbol": "AMD",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.016072361287817954,
+      "elapsed_s": 995.3179225921631
+    },
+    {
+      "symbol": "BTCUSD",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.00970285422748652,
+      "elapsed_s": 780.769207239151
+    },
+    {
+      "symbol": "AMZN",
+      "status": "success",
+      "best_model": "kronos_standard",
+      "best_mae": 0.013771699165792819,
+      "elapsed_s": 869.7225506305695
+    },
+    {
+      "symbol": "COIN",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.01639700395610557,
+      "elapsed_s": 816.3476116657257
+    },
+    {
+      "symbol": "COUR",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.021684169558319383,
+      "elapsed_s": 801.3256595134735
+    },
+    {
+      "symbol": "CRWD",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.013197786033189145,
+      "elapsed_s": 861.4599890708923
+    },
+    {
+      "symbol": "ETHUSD",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.015299834347923386,
+      "elapsed_s": 824.4376647472382
+    },
+    {
+      "symbol": "GOOG",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.014506569805139233,
+      "elapsed_s": 822.1763088703156
+    },
+    {
+      "symbol": "INTC",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.017215164150427523,
+      "elapsed_s": 767.1333169937134
+    },
+    {
+      "symbol": "GOOGL",
+      "status": "success",
+      "best_model": "kronos_standard",
+      "best_mae": 0.014391136565923604,
+      "elapsed_s": 859.9779822826385
+    },
+    {
+      "symbol": "META",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.009852695781039944,
+      "elapsed_s": 813.6311588287354
+    },
+    {
+      "symbol": "LCID",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.032077924335877556,
+      "elapsed_s": 958.7044520378113
+    },
+    {
+      "symbol": "MSFT",
+      "status": "success",
+      "best_model": "kronos_standard",
+      "best_mae": 0.015512412083554611,
+      "elapsed_s": 857.2524755001068
+    },
+    {
+      "symbol": "NET",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.017890941659439462,
+      "elapsed_s": 780.2075634002686
+    },
+    {
+      "symbol": "NVDA",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.012341457229003741,
+      "elapsed_s": 918.6751136779785
+    },
+    {
+      "symbol": "QQQ",
+      "status": "success",
+      "best_model": "kronos_ensemble",
+      "best_mae": 0.004934643892947397,
+      "elapsed_s": 907.7414050102234
+    },
+    {
+      "symbol": "TSLA",
+      "status": "failed",
+      "error": "^^^^^^^^\n  File \"/home/administrator/code/stock-prediction/src/models/kronos_wrapper.py\", line 228, in predict_series\n    predictor = self._ensure_predictor()\n                ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/administrator/code/stock-prediction/src/models/kronos_wrapper.py\", line 632, in _ensure_predictor\n    raise RuntimeError(\nRuntimeError: Kronos predictor initialisation ran out of memory on device cuda:0. CPU fallback is disabled; reduce sampling requirements or provision a larger GPU.\n",
+      "elapsed_s": 524.0293202400208
+    },
+    {
+      "symbol": "QUBT",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.0352946739694982,
+      "elapsed_s": 833.9913294315338
+    },
+    {
+      "symbol": "SPY",
+      "status": "success",
+      "best_model": "kronos_standard",
+      "best_mae": 0.003608045988995486,
+      "elapsed_s": 918.9276204109192
+    },
+    {
+      "symbol": "data_summary",
+      "status": "failed",
+      "error": "True)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/administrator/code/stock-prediction/.venv/lib/python3.12/site-packages/pandas/core/frame.py\", line 7211, in sort_values\n    k = self._get_label_or_level_values(by[0], axis=axis)\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/administrator/code/stock-prediction/.venv/lib/python3.12/site-packages/pandas/core/generic.py\", line 1914, in _get_label_or_level_values\n    raise KeyError(key)\nKeyError: 'timestamp'\n",
+      "elapsed_s": 5.906376600265503
+    },
+    {
+      "symbol": "U",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.02838859614857746,
+      "elapsed_s": 777.878613948822
+    },
+    {
+      "symbol": "UNIUSD",
+      "status": "success",
+      "best_model": "kronos_ensemble",
+      "best_mae": 0.02676529382177769,
+      "elapsed_s": 766.4632198810577
+    }
+  ],
+  "total_time_s": 6633.885368824005,
+  "config": {
+    "symbols": [
+      "AAPL",
+      "ADBE",
+      "ADSK",
+      "AMD",
+      "AMZN",
+      "BTCUSD",
+      "COIN",
+      "COUR",
+      "CRWD",
+      "ETHUSD",
+      "GOOG",
+      "GOOGL",
+      "INTC",
+      "LCID",
+      "META",
+      "MSFT",
+      "NET",
+      "NVDA",
+      "QQQ",
+      "QUBT",
+      "SPY",
+      "TSLA",
+      "U",
+      "UNIUSD",
+      "data_summary"
+    ],
+    "trials": 30,
+    "workers": 3
+  }
+}
