@@ -1,29 +1,28 @@
 {
-  "symbol": "COIN",
   "model": "toto",
+  "symbol": "COIN",
   "config": {
-    "name": "toto_trimmed10_128",
-    "num_samples": 128,
-    "aggregate": "trimmed_mean_10",
-    "samples_per_batch": 16
+    "name": "toto_opt_trimmed_mean_5_1024_spb128",
+    "num_samples": 1024,
+    "aggregate": "trimmed_mean_5",
+    "samples_per_batch": 128
   },
   "validation": {
-    "price_mae": 5.071773631756116,
-    "pct_return_mae": 0.016448471119324667,
-    "latency_s": 15.863482637796551
+    "price_mae": 4.9600206553031,
+    "pct_return_mae": 0.01606904230061846,
+    "latency_s": 6.355672238016268
   },
   "test": {
-    "price_mae": 11.061856548602771,
-    "pct_return_mae": 0.03194930631155276,
-    "latency_s": 16.37960138777271
+    "price_mae": 10.79071021255858,
+    "pct_return_mae": 0.03121132103051715,
+    "latency_s": 6.335038820048794
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/toto/COIN.json",
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended"
   }
 }

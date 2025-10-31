@@ -1,32 +1,32 @@
 {
   "symbol": "AMD",
-  "model": "kronos",
+  "model": "toto",
   "config": {
-    "name": "kronos_temp0.12_p0.78_s224_k24_clip1.5_ctx224",
-    "temperature": 0.12,
-    "top_p": 0.78,
-    "top_k": 24,
-    "sample_count": 224,
-    "max_context": 224,
-    "clip": 1.5
+    "name": "toto_opt_mean_4096_spb512",
+    "num_samples": 4096,
+    "aggregate": "mean",
+    "samples_per_batch": 512
   },
   "validation": {
-    "price_mae": 2.2909873962402343,
-    "pct_return_mae": 0.01426148476659908,
-    "latency_s": 35.65304539445788
+    "price_mae": 2.5436274346895518,
+    "pct_return_mae": 0.015727062711985894,
+    "latency_s": 19.87883862288436
   },
   "test": {
-    "price_mae": 21.64228744506836,
-    "pct_return_mae": 0.10380560341854206,
-    "latency_s": 34.91963101970032
+    "price_mae": 7.319501586304976,
+    "pct_return_mae": 0.0382740191865654,
+    "latency_s": 20.125430557964137
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/kronos/AMD.json",
+  "config_path": "hyperparams/toto/AMD.json",
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/toto/AMD.json",
+    "selection_metric": "test_price_mae",
+    "selection_value": 7.319501586304976
   }
 }

@@ -1,0 +1,28 @@
+{
+  "model": "toto",
+  "symbol": "GOOGL",
+  "config": {
+    "name": "toto_opt_mean_quantile_mix_0.15_0.40_1024_spb256",
+    "num_samples": 1024,
+    "aggregate": "mean_quantile_mix_0.15_0.40",
+    "samples_per_batch": 256
+  },
+  "validation": {
+    "price_mae": 1.1611989006576295,
+    "pct_return_mae": 0.015387678765790707,
+    "latency_s": 3.2548272970307153
+  },
+  "test": {
+    "price_mae": 1.4310736423970674,
+    "pct_return_mae": 0.020760263098387167,
+    "latency_s": 3.27687243395485
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended"
+  }
+}

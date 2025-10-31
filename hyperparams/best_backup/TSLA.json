@@ -1,0 +1,32 @@
+{
+  "symbol": "TSLA",
+  "model": "toto",
+  "config": {
+    "name": "toto_opt_trimmed_mean_5_2048_spb256",
+    "num_samples": 2048,
+    "aggregate": "trimmed_mean_5",
+    "samples_per_batch": 256
+  },
+  "validation": {
+    "price_mae": 8.569032448956872,
+    "pct_return_mae": 0.02427516128009909,
+    "latency_s": 7.057901829917682
+  },
+  "test": {
+    "price_mae": 12.52333251804178,
+    "pct_return_mae": 0.028845181935132073,
+    "latency_s": 7.007185920025222
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/TSLA.json",
+  "metadata": {
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/toto/TSLA.json",
+    "selection_metric": "test_price_mae",
+    "selection_value": 12.52333251804178
+  }
+}

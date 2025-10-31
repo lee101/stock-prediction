@@ -1,32 +1,32 @@
 {
   "symbol": "CRWD",
-  "model": "kronos",
+  "model": "toto",
   "config": {
-    "name": "kronos_temp0.152_p0.83_s192_k20_clip1.85_ctx232",
-    "temperature": 0.152,
-    "top_p": 0.83,
-    "top_k": 20,
-    "sample_count": 192,
-    "max_context": 232,
-    "clip": 1.85
+    "name": "toto_opt_trimmed_mean_15_3072_spb512",
+    "num_samples": 3072,
+    "aggregate": "trimmed_mean_15",
+    "samples_per_batch": 512
   },
   "validation": {
-    "price_mae": 4.683662414550779,
-    "pct_return_mae": 0.011003187069901204,
-    "latency_s": 59.111779731698334
+    "price_mae": 5.321349767947285,
+    "pct_return_mae": 0.012498427291291732,
+    "latency_s": 6.056468437047442
   },
   "test": {
-    "price_mae": 13.623434448242199,
-    "pct_return_mae": 0.02818479640151661,
-    "latency_s": 57.74760822951794
+    "price_mae": 10.79820431776649,
+    "pct_return_mae": 0.02248605883997783,
+    "latency_s": 6.058976808941225
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/kronos/CRWD.json",
+  "config_path": "hyperparams/toto/CRWD.json",
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/toto/CRWD.json",
+    "selection_metric": "test_price_mae",
+    "selection_value": 10.79820431776649
   }
 }

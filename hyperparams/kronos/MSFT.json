@@ -1,0 +1,32 @@
+{
+  "symbol": "MSFT",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_opt_temp0.300_p0.78_s320_k24_clip2.50_ctx192",
+    "temperature": 0.3,
+    "top_p": 0.78,
+    "top_k": 24,
+    "sample_count": 320,
+    "max_context": 192,
+    "clip": 2.5
+  },
+  "validation": {
+    "price_mae": 0.7170826792446853,
+    "pct_return_mae": 0.01964137663083227,
+    "latency_s": 4.474362002016278
+  },
+  "test": {
+    "price_mae": 0.5095569634443926,
+    "pct_return_mae": 0.013084358859162534,
+    "latency_s": 4.476564563054126
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/kronos/MSFT.json"
+  }
+}
