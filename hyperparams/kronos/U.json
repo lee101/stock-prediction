@@ -2,23 +2,23 @@
   "symbol": "U",
   "model": "kronos",
   "config": {
-    "name": "kronos_temp0.16_p0.80_s192_k16_clip2_ctx256",
-    "temperature": 0.16,
-    "top_p": 0.8,
-    "top_k": 16,
-    "sample_count": 192,
-    "max_context": 256,
-    "clip": 2.0
+    "name": "kronos_opt_temp0.300_p0.78_s320_k0_clip2.50_ctx192",
+    "temperature": 0.3,
+    "top_p": 0.78,
+    "top_k": 0,
+    "sample_count": 320,
+    "max_context": 192,
+    "clip": 2.5
   },
   "validation": {
-    "price_mae": 6.8277629852294925,
-    "pct_return_mae": 0.16383924667553423,
-    "latency_s": 39.30480114975944
+    "price_mae": 4.0195302963256845,
+    "pct_return_mae": 0.10574179228286432,
+    "latency_s": 4.464929482055595
   },
   "test": {
-    "price_mae": 2.710951995849608,
-    "pct_return_mae": 0.06315121543695412,
-    "latency_s": 51.16914386441931
+    "price_mae": 3.45964937210083,
+    "pct_return_mae": 0.08012340643349138,
+    "latency_s": 4.518131063960027
   },
   "windows": {
     "val_window": 20,
@@ -26,6 +26,7 @@
     "forecast_horizon": 1
   },
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/kronos/U.json"
   }
 }

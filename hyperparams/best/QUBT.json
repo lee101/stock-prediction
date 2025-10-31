@@ -1,32 +1,32 @@
 {
   "symbol": "QUBT",
-  "model": "kronos",
+  "model": "toto",
   "config": {
-    "name": "kronos_temp0.15_p0.82_s208_k16_clip1.8_ctx224",
-    "temperature": 0.15,
-    "top_p": 0.82,
-    "top_k": 16,
-    "sample_count": 208,
-    "max_context": 224,
-    "clip": 1.8
+    "name": "toto_opt_mean_4096_spb512",
+    "num_samples": 4096,
+    "aggregate": "mean",
+    "samples_per_batch": 512
   },
   "validation": {
-    "price_mae": 0.45116190910339365,
-    "pct_return_mae": 0.02907232702070603,
-    "latency_s": 34.10041161905974
+    "price_mae": 0.5294959555700189,
+    "pct_return_mae": 0.03439606552136977,
+    "latency_s": 8.571308355953079
   },
   "test": {
-    "price_mae": 1.6703987121582031,
-    "pct_return_mae": 0.08252536179523497,
-    "latency_s": 34.413337404839694
+    "price_mae": 1.5141683571826434,
+    "pct_return_mae": 0.07352510404567818,
+    "latency_s": 8.449573884048732
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/kronos/QUBT.json",
+  "config_path": "hyperparams/toto/QUBT.json",
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/toto/QUBT.json",
+    "selection_metric": "test_price_mae",
+    "selection_value": 1.5141683571826434
   }
 }

@@ -2,23 +2,23 @@
   "symbol": "AMD",
   "model": "kronos",
   "config": {
-    "name": "kronos_temp0.12_p0.78_s224_k24_clip1.5_ctx224",
-    "temperature": 0.12,
-    "top_p": 0.78,
-    "top_k": 24,
-    "sample_count": 224,
+    "name": "kronos_opt_temp0.300_p0.85_s256_k16_clip1.60_ctx224",
+    "temperature": 0.3,
+    "top_p": 0.85,
+    "top_k": 16,
+    "sample_count": 256,
     "max_context": 224,
-    "clip": 1.5
+    "clip": 1.6
   },
   "validation": {
-    "price_mae": 2.2909873962402343,
-    "pct_return_mae": 0.01426148476659908,
-    "latency_s": 35.65304539445788
+    "price_mae": 1.4408302307128906,
+    "pct_return_mae": 0.02130915623741788,
+    "latency_s": 9.708430651022354
   },
   "test": {
-    "price_mae": 21.64228744506836,
-    "pct_return_mae": 0.10380560341854206,
-    "latency_s": 34.91963101970032
+    "price_mae": 19.493187713623048,
+    "pct_return_mae": 0.1138060353878074,
+    "latency_s": 9.708244611945702
   },
   "windows": {
     "val_window": 20,
@@ -26,6 +26,7 @@
     "forecast_horizon": 1
   },
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/kronos/AMD.json"
   }
 }

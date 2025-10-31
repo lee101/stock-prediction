@@ -1,29 +1,28 @@
 {
-  "symbol": "NVDA",
   "model": "toto",
+  "symbol": "NVDA",
   "config": {
-    "name": "toto_trimmed10_128",
-    "num_samples": 128,
-    "aggregate": "trimmed_mean_10",
-    "samples_per_batch": 16
+    "name": "toto_opt_mean_4096_spb256",
+    "num_samples": 4096,
+    "aggregate": "mean",
+    "samples_per_batch": 256
   },
   "validation": {
-    "price_mae": 2.245211725968582,
-    "pct_return_mae": 0.012855065820092623,
-    "latency_s": 16.20016447175294
+    "price_mae": 2.1867030375171455,
+    "pct_return_mae": 0.012510081333695012,
+    "latency_s": 13.810027781990357
   },
   "test": {
-    "price_mae": 3.344846769479608,
-    "pct_return_mae": 0.018262418760689236,
-    "latency_s": 17.155403656885028
+    "price_mae": 3.2608954945346356,
+    "pct_return_mae": 0.017806578958190163,
+    "latency_s": 13.90142611900228
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/toto/NVDA.json",
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended"
   }
 }

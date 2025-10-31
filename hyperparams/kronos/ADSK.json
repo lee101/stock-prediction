@@ -2,23 +2,23 @@
   "symbol": "ADSK",
   "model": "kronos",
   "config": {
-    "name": "kronos_temp0.152_p0.83_s192_k20_clip1.85_ctx232",
-    "temperature": 0.152,
-    "top_p": 0.83,
-    "top_k": 20,
-    "sample_count": 192,
-    "max_context": 232,
-    "clip": 1.85
+    "name": "kronos_opt_temp0.280_p0.78_s320_k16_clip2.00_ctx224",
+    "temperature": 0.28,
+    "top_p": 0.78,
+    "top_k": 16,
+    "sample_count": 320,
+    "max_context": 224,
+    "clip": 2.0
   },
   "validation": {
-    "price_mae": 4.092872619628909,
-    "pct_return_mae": 0.013574097664536527,
-    "latency_s": 32.516729143448174
+    "price_mae": 1.3299591064453153,
+    "pct_return_mae": 0.014045176827221215,
+    "latency_s": 12.010909826058196
   },
   "test": {
-    "price_mae": 3.074371337890625,
-    "pct_return_mae": 0.009648448552760716,
-    "latency_s": 58.29692062083632
+    "price_mae": 2.970269775390625,
+    "pct_return_mae": 0.012706785723135064,
+    "latency_s": 12.44711318903137
   },
   "windows": {
     "val_window": 20,
@@ -26,6 +26,7 @@
     "forecast_horizon": 1
   },
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/kronos/ADSK.json"
   }
 }

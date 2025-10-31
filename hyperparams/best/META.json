@@ -1,29 +1,28 @@
 {
-  "symbol": "META",
   "model": "toto",
+  "symbol": "META",
   "config": {
-    "name": "toto_trimmed10_128",
-    "num_samples": 128,
-    "aggregate": "trimmed_mean_10",
-    "samples_per_batch": 16
+    "name": "toto_opt_trimmed_mean_5_4096_spb512",
+    "num_samples": 4096,
+    "aggregate": "trimmed_mean_5",
+    "samples_per_batch": 512
   },
   "validation": {
-    "price_mae": 6.96478377122146,
-    "pct_return_mae": 0.00926109420977834,
-    "latency_s": 16.665196601767093
+    "price_mae": 6.8777052881402145,
+    "pct_return_mae": 0.009148595916082223,
+    "latency_s": 8.469854988041334
   },
   "test": {
-    "price_mae": 9.038971064640924,
-    "pct_return_mae": 0.012282427770972406,
-    "latency_s": 16.122780269477516
+    "price_mae": 9.127264515179633,
+    "pct_return_mae": 0.01238215301770218,
+    "latency_s": 8.441063445003238
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/toto/META.json",
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended"
   }
 }
