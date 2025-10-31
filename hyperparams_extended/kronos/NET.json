@@ -1,0 +1,31 @@
+{
+  "model": "kronos",
+  "symbol": "NET",
+  "config": {
+    "name": "kronos_opt_temp0.100_p0.78_s320_k28_clip2.20_ctx192",
+    "temperature": 0.1,
+    "top_p": 0.78,
+    "top_k": 28,
+    "sample_count": 320,
+    "max_context": 192,
+    "clip": 2.2
+  },
+  "validation": {
+    "price_mae": 3.584459686279297,
+    "pct_return_mae": 0.02305829764719137,
+    "latency_s": 6.588872078049462
+  },
+  "test": {
+    "price_mae": 4.392990875244138,
+    "pct_return_mae": 0.03269609007706244,
+    "latency_s": 4.469401569949696
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended"
+  }
+}

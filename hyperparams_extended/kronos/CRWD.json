@@ -1,0 +1,31 @@
+{
+  "model": "kronos",
+  "symbol": "CRWD",
+  "config": {
+    "name": "kronos_opt_temp0.240_p0.90_s320_k24_clip1.20_ctx256",
+    "temperature": 0.24,
+    "top_p": 0.9,
+    "top_k": 24,
+    "sample_count": 320,
+    "max_context": 256,
+    "clip": 1.2
+  },
+  "validation": {
+    "price_mae": 2.38885955810546,
+    "pct_return_mae": 0.015380960553558951,
+    "latency_s": 6.131246702076169
+  },
+  "test": {
+    "price_mae": 20.816136169433612,
+    "pct_return_mae": 0.04865015320338216,
+    "latency_s": 6.165138074022252
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended"
+  }
+}

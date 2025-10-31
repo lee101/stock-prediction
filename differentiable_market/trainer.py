@@ -249,6 +249,8 @@ class DifferentiableMarketTrainer:
         features = self.eval_features.unsqueeze(0).to(self.device, dtype=self.dtype)
         returns = self.eval_returns.to(self.device, dtype=torch.float32)
 
+        self.env.reset()
+
         with torch.no_grad():
             alpha = self.policy(features).float()
             weights_seq, overnight_seq = self.policy.decode_concentration(alpha)
@@ -627,6 +629,8 @@ class DifferentiableMarketTrainer:
         entropies = []
         reward_traces = []
         weight_traces = []
+
+        self.env.reset()
 
         for _ in range(K):
             dist = Dirichlet(alpha)

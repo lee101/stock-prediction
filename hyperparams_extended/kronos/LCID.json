@@ -1,0 +1,31 @@
+{
+  "model": "kronos",
+  "symbol": "LCID",
+  "config": {
+    "name": "kronos_opt_temp0.300_p0.78_s224_k0_clip2.00_ctx288",
+    "temperature": 0.3,
+    "top_p": 0.78,
+    "top_k": 0,
+    "sample_count": 224,
+    "max_context": 288,
+    "clip": 2.0
+  },
+  "validation": {
+    "price_mae": 0.2837441444396978,
+    "pct_return_mae": 0.037855135446700855,
+    "latency_s": 4.984515168034704
+  },
+  "test": {
+    "price_mae": 0.4971743583679201,
+    "pct_return_mae": 0.03402231882568109,
+    "latency_s": 5.021796210989123
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended"
+  }
+}

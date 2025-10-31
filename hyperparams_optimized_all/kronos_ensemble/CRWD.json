@@ -1,0 +1,22 @@
+{
+  "symbol": "CRWD",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.19080422911861375,
+    "temperature_range": [
+      0.1,
+      0.3491517594831238
+    ],
+    "top_p": 0.8531666288483922,
+    "top_k": 32,
+    "num_samples": 8,
+    "max_context": 192,
+    "clip": 2.052074317772539,
+    "aggregate": "trimmed_mean_10"
+  },
+  "validation": {
+    "price_mae": 4.219144058227537,
+    "pct_return_mae": 0.021114588689864995,
+    "latency_s": 8.392160365940072
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "symbol": "ADSK",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.22027683260736863,
+    "temperature_range": [
+      0.1,
+      0.2444303025576337
+    ],
+    "top_p": 0.8051919302232969,
+    "top_k": 32,
+    "num_samples": 10,
+    "max_context": 224,
+    "clip": 1.8845763547663135,
+    "aggregate": "trimmed_mean_20"
+  },
+  "validation": {
+    "price_mae": 1.8998863220214843,
+    "pct_return_mae": 0.01488086157626721,
+    "latency_s": 9.223101830022642
+  }
+}

@@ -177,6 +177,7 @@ class DifferentiableMarketBacktester:
         steps = intraday.shape[0]
         if overnight is None:
             overnight = intraday
+        self.env.reset()
         if getattr(self, "_shorting_enabled", False):
             w_prev = torch.zeros((intraday.shape[1],), device=intraday.device, dtype=torch.float32)
         else:

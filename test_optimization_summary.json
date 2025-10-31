@@ -1,0 +1,34 @@
+{
+  "results": [
+    {
+      "symbol": "NVDA",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.012255963460238188,
+      "elapsed_s": 551.6588087081909
+    },
+    {
+      "symbol": "AAPL",
+      "status": "success",
+      "best_model": "toto",
+      "best_mae": 0.014459706974059437,
+      "elapsed_s": 597.9894976615906
+    },
+    {
+      "symbol": "SPY",
+      "status": "failed",
+      "error": "ble(\n             ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/administrator/code/stock-prediction/src/models/kronos_ensemble.py\", line 114, in predict_ensemble\n    result = self.wrapper.predict_series(\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/administrator/code/stock-prediction/src/models/kronos_wrapper.py\", line 253, in predict_series\n    raise RuntimeError(\nRuntimeError: Kronos GPU inference ran out of memory on device cuda:0. Reduce sampling requirements or provision a larger GPU.\n",
+      "elapsed_s": 651.1860291957855
+    }
+  ],
+  "total_time_s": 1202.8664257526398,
+  "config": {
+    "symbols": [
+      "AAPL",
+      "NVDA",
+      "SPY"
+    ],
+    "trials": 20,
+    "workers": 2
+  }
+}

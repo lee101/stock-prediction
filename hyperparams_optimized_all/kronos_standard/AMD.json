@@ -1,0 +1,17 @@
+{
+  "symbol": "AMD",
+  "model_type": "kronos_standard",
+  "config": {
+    "temperature": 0.18468623328150352,
+    "top_p": 0.7712245297955761,
+    "top_k": 20,
+    "sample_count": 192,
+    "max_context": 192,
+    "clip": 1.9545825788254794
+  },
+  "validation": {
+    "price_mae": 1.8958229064941405,
+    "pct_return_mae": 0.018262935772904748,
+    "latency_s": 4.055830092023825
+  }
+}

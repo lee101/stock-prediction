@@ -1,0 +1,22 @@
+{
+  "symbol": "GOOG",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.1299016609071313,
+    "temperature_range": [
+      0.1,
+      0.22669923047099028
+    ],
+    "top_p": 0.8655375707929943,
+    "top_k": 32,
+    "num_samples": 8,
+    "max_context": 192,
+    "clip": 1.931761525347845,
+    "aggregate": "median"
+  },
+  "validation": {
+    "price_mae": 9.930876541137692,
+    "pct_return_mae": 0.05239954559144664,
+    "latency_s": 9.04282729505212
+  }
+}

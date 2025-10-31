@@ -1,0 +1,17 @@
+{
+  "symbol": "COIN",
+  "model_type": "kronos_standard",
+  "config": {
+    "temperature": 0.26172169094173015,
+    "top_p": 0.7829849761440908,
+    "top_k": 0,
+    "sample_count": 224,
+    "max_context": 192,
+    "clip": 1.5140862514998727
+  },
+  "validation": {
+    "price_mae": 2.0794708251953153,
+    "pct_return_mae": 0.021538315366167127,
+    "latency_s": 4.673656013037544
+  }
+}

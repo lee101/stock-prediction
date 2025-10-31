@@ -1,0 +1,17 @@
+{
+  "symbol": "ETHUSD",
+  "model_type": "kronos_standard",
+  "config": {
+    "temperature": 0.28627606524968324,
+    "top_p": 0.7312949172212097,
+    "top_k": 28,
+    "sample_count": 160,
+    "max_context": 192,
+    "clip": 1.6438421734939712
+  },
+  "validation": {
+    "price_mae": 136.6653564453125,
+    "pct_return_mae": 0.03332584777164027,
+    "latency_s": 3.4051981719676405
+  }
+}

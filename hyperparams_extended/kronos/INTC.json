@@ -1,0 +1,31 @@
+{
+  "model": "kronos",
+  "symbol": "INTC",
+  "config": {
+    "name": "kronos_opt_temp0.220_p0.90_s256_k16_clip1.60_ctx224",
+    "temperature": 0.22,
+    "top_p": 0.9,
+    "top_k": 16,
+    "sample_count": 256,
+    "max_context": 224,
+    "clip": 1.6
+  },
+  "validation": {
+    "price_mae": 0.22383708953857456,
+    "pct_return_mae": 0.02133820794406809,
+    "latency_s": 4.275382657971932
+  },
+  "test": {
+    "price_mae": 7.037819671630859,
+    "pct_return_mae": 0.22178688158200136,
+    "latency_s": 4.292698016943177
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended"
+  }
+}

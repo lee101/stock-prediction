@@ -1,0 +1,601 @@
+
+---
+events:
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineSystem.cmake:233 (message)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      The system is: Linux - 6.8.0-86-generic - x86_64
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCXXCompiler.cmake:126 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+      Compiler: /usr/bin/c++ 
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      0
+      
+      
+      Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "a.out"
+      
+      The CXX compiler identification is GNU, found in:
+        /home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCXX/a.out
+      
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCompilerABI.cmake:57 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    checks:
+      - "Detecting CXX compiler ABI info"
+    directories:
+      source: "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-OdWYbe"
+      binary: "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-OdWYbe"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "CMAKE_CXX_ABI_COMPILED"
+      cached: true
+      stdout: |
+        Change Dir: '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-OdWYbe'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_e7496/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_e7496.dir/build.make CMakeFiles/cmTC_e7496.dir/build
+        gmake[1]: Entering directory '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-OdWYbe'
+        Building CXX object CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o
+        /usr/bin/c++   -v -o CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake-3.28/Modules/CMakeCXXCompilerABI.cpp
+        Using built-in specs.
+        COLLECT_GCC=/usr/bin/c++
+        OFFLOAD_TARGET_NAMES=nvptx-none:amdgcn-amdhsa
+        OFFLOAD_TARGET_DEFAULT=1
+        Target: x86_64-linux-gnu
+        Configured with: ../src/configure -v --with-pkgversion='Ubuntu 13.3.0-6ubuntu2~24.04' --with-bugurl=file:///usr/share/doc/gcc-13/README.Bugs --enable-languages=c,ada,c++,go,d,fortran,objc,obj-c++,m2 --prefix=/usr --with-gcc-major-version-only --program-suffix=-13 --program-prefix=x86_64-linux-gnu- --enable-shared --enable-linker-build-id --libexecdir=/usr/libexec --without-included-gettext --enable-threads=posix --libdir=/usr/lib --enable-nls --enable-bootstrap --enable-clocale=gnu --enable-libstdcxx-debug --enable-libstdcxx-time=yes --with-default-libstdcxx-abi=new --enable-libstdcxx-backtrace --enable-gnu-unique-object --disable-vtable-verify --enable-plugin --enable-default-pie --with-system-zlib --enable-libphobos-checking=release --with-target-system-zlib=auto --enable-objc-gc=auto --enable-multiarch --disable-werror --enable-cet --with-arch-32=i686 --with-abi=m64 --with-multilib-list=m32,m64,mx32 --enable-multilib --with-tune=generic --enable-offload-targets=nvptx-none=/build/gcc-13-fG75Ri/gcc-13-13.3.0/debian/tmp-nvptx/usr,amdgcn-amdhsa=/build/gcc-13-fG75Ri/gcc-13-13.3.0/debian/tmp-gcn/usr --enable-offload-defaulted --without-cuda-driver --enable-checking=release --build=x86_64-linux-gnu --host=x86_64-linux-gnu --target=x86_64-linux-gnu --with-build-config=bootstrap-lto-lean --enable-link-serialization=2
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04) 
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_e7496.dir/'
+         /usr/libexec/gcc/x86_64-linux-gnu/13/cc1plus -quiet -v -imultiarch x86_64-linux-gnu -D_GNU_SOURCE /usr/share/cmake-3.28/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_e7496.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -version -fasynchronous-unwind-tables -fstack-protector-strong -Wformat -Wformat-security -fstack-clash-protection -fcf-protection -o /tmp/ccuZ0jBK.s
+        GNU C++17 (Ubuntu 13.3.0-6ubuntu2~24.04) version 13.3.0 (x86_64-linux-gnu)
+        	compiled by GNU C version 13.3.0, GMP version 6.3.0, MPFR version 4.2.1, MPC version 1.3.1, isl version isl-0.26-GMP
+        
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        ignoring duplicate directory "/usr/include/x86_64-linux-gnu/c++/13"
+        ignoring nonexistent directory "/usr/local/include/x86_64-linux-gnu"
+        ignoring nonexistent directory "/usr/lib/gcc/x86_64-linux-gnu/13/include-fixed/x86_64-linux-gnu"
+        ignoring nonexistent directory "/usr/lib/gcc/x86_64-linux-gnu/13/include-fixed"
+        ignoring nonexistent directory "/usr/lib/gcc/x86_64-linux-gnu/13/../../../../x86_64-linux-gnu/include"
+        #include "..." search starts here:
+        #include <...> search starts here:
+         /usr/include/c++/13
+         /usr/include/x86_64-linux-gnu/c++/13
+         /usr/include/c++/13/backward
+         /usr/lib/gcc/x86_64-linux-gnu/13/include
+         /usr/local/include
+         /usr/include/x86_64-linux-gnu
+         /usr/include
+        End of search list.
+        Compiler executable checksum: c81c05345ce537099dafd5580045814a
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_e7496.dir/'
+         as -v --64 -o CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccuZ0jBK.s
+        GNU assembler version 2.42 (x86_64-linux-gnu) using BFD version (GNU Binutils for Ubuntu) 2.42
+        COMPILER_PATH=/usr/libexec/gcc/x86_64-linux-gnu/13/:/usr/libexec/gcc/x86_64-linux-gnu/13/:/usr/libexec/gcc/x86_64-linux-gnu/:/usr/lib/gcc/x86_64-linux-gnu/13/:/usr/lib/gcc/x86_64-linux-gnu/
+        LIBRARY_PATH=/usr/lib/gcc/x86_64-linux-gnu/13/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../../lib/:/lib/x86_64-linux-gnu/:/lib/../lib/:/usr/lib/x86_64-linux-gnu/:/usr/lib/../lib/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.'
+        Linking CXX executable cmTC_e7496
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_e7496.dir/link.txt --verbose=1
+        /usr/bin/c++  -v CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_e7496 
+        Using built-in specs.
+        COLLECT_GCC=/usr/bin/c++
+        COLLECT_LTO_WRAPPER=/usr/libexec/gcc/x86_64-linux-gnu/13/lto-wrapper
+        OFFLOAD_TARGET_NAMES=nvptx-none:amdgcn-amdhsa
+        OFFLOAD_TARGET_DEFAULT=1
+        Target: x86_64-linux-gnu
+        Configured with: ../src/configure -v --with-pkgversion='Ubuntu 13.3.0-6ubuntu2~24.04' --with-bugurl=file:///usr/share/doc/gcc-13/README.Bugs --enable-languages=c,ada,c++,go,d,fortran,objc,obj-c++,m2 --prefix=/usr --with-gcc-major-version-only --program-suffix=-13 --program-prefix=x86_64-linux-gnu- --enable-shared --enable-linker-build-id --libexecdir=/usr/libexec --without-included-gettext --enable-threads=posix --libdir=/usr/lib --enable-nls --enable-bootstrap --enable-clocale=gnu --enable-libstdcxx-debug --enable-libstdcxx-time=yes --with-default-libstdcxx-abi=new --enable-libstdcxx-backtrace --enable-gnu-unique-object --disable-vtable-verify --enable-plugin --enable-default-pie --with-system-zlib --enable-libphobos-checking=release --with-target-system-zlib=auto --enable-objc-gc=auto --enable-multiarch --disable-werror --enable-cet --with-arch-32=i686 --with-abi=m64 --with-multilib-list=m32,m64,mx32 --enable-multilib --with-tune=generic --enable-offload-targets=nvptx-none=/build/gcc-13-fG75Ri/gcc-13-13.3.0/debian/tmp-nvptx/usr,amdgcn-amdhsa=/build/gcc-13-fG75Ri/gcc-13-13.3.0/debian/tmp-gcn/usr --enable-offload-defaulted --without-cuda-driver --enable-checking=release --build=x86_64-linux-gnu --host=x86_64-linux-gnu --target=x86_64-linux-gnu --with-build-config=bootstrap-lto-lean --enable-link-serialization=2
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04) 
+        COMPILER_PATH=/usr/libexec/gcc/x86_64-linux-gnu/13/:/usr/libexec/gcc/x86_64-linux-gnu/13/:/usr/libexec/gcc/x86_64-linux-gnu/:/usr/lib/gcc/x86_64-linux-gnu/13/:/usr/lib/gcc/x86_64-linux-gnu/
+        LIBRARY_PATH=/usr/lib/gcc/x86_64-linux-gnu/13/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../../lib/:/lib/x86_64-linux-gnu/:/lib/../lib/:/usr/lib/x86_64-linux-gnu/:/usr/lib/../lib/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_e7496' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_e7496.'
+         /usr/libexec/gcc/x86_64-linux-gnu/13/collect2 -plugin /usr/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-linux-gnu/13/lto-wrapper -plugin-opt=-fresolution=/tmp/ccDm1orQ.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --eh-frame-hdr -m elf_x86_64 --hash-style=gnu --as-needed -dynamic-linker /lib64/ld-linux-x86-64.so.2 -pie -z now -z relro -o cmTC_e7496 /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/Scrt1.o /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crti.o /usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o -L/usr/lib/gcc/x86_64-linux-gnu/13 -L/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu -L/usr/lib/gcc/x86_64-linux-gnu/13/../../../../lib -L/lib/x86_64-linux-gnu -L/lib/../lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/../lib -L/usr/lib/gcc/x86_64-linux-gnu/13/../../.. CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-linux-gnu/13/crtendS.o /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crtn.o
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_e7496' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_e7496.'
+        gmake[1]: Leaving directory '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-OdWYbe'
+        
+      exitCode: 0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCompilerABI.cmake:127 (message)"
+      - "/usr/share/cmake-3.28/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Parsed CXX implicit include dir info: rv=done
+        found start of include info
+        found start of implicit include info
+          add: [/usr/include/c++/13]
+          add: [/usr/include/x86_64-linux-gnu/c++/13]
+          add: [/usr/include/c++/13/backward]
+          add: [/usr/lib/gcc/x86_64-linux-gnu/13/include]
+          add: [/usr/local/include]
+          add: [/usr/include/x86_64-linux-gnu]
+          add: [/usr/include]
+        end of search list found
+        collapse include dir [/usr/include/c++/13] ==> [/usr/include/c++/13]
+        collapse include dir [/usr/include/x86_64-linux-gnu/c++/13] ==> [/usr/include/x86_64-linux-gnu/c++/13]
+        collapse include dir [/usr/include/c++/13/backward] ==> [/usr/include/c++/13/backward]
+        collapse include dir [/usr/lib/gcc/x86_64-linux-gnu/13/include] ==> [/usr/lib/gcc/x86_64-linux-gnu/13/include]
+        collapse include dir [/usr/local/include] ==> [/usr/local/include]
+        collapse include dir [/usr/include/x86_64-linux-gnu] ==> [/usr/include/x86_64-linux-gnu]
+        collapse include dir [/usr/include] ==> [/usr/include]
+        implicit include dirs: [/usr/include/c++/13;/usr/include/x86_64-linux-gnu/c++/13;/usr/include/c++/13/backward;/usr/lib/gcc/x86_64-linux-gnu/13/include;/usr/local/include;/usr/include/x86_64-linux-gnu;/usr/include]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCompilerABI.cmake:159 (message)"
+      - "/usr/share/cmake-3.28/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Parsed CXX implicit link information:
+        link line regex: [^( *|.*[/\\])(ld|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        ignore line: [Change Dir: '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-OdWYbe']
+        ignore line: []
+        ignore line: [Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_e7496/fast]
+        ignore line: [/usr/bin/gmake  -f CMakeFiles/cmTC_e7496.dir/build.make CMakeFiles/cmTC_e7496.dir/build]
+        ignore line: [gmake[1]: Entering directory '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-OdWYbe']
+        ignore line: [Building CXX object CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o]
+        ignore line: [/usr/bin/c++   -v -o CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake-3.28/Modules/CMakeCXXCompilerABI.cpp]
+        ignore line: [Using built-in specs.]
+        ignore line: [COLLECT_GCC=/usr/bin/c++]
+        ignore line: [OFFLOAD_TARGET_NAMES=nvptx-none:amdgcn-amdhsa]
+        ignore line: [OFFLOAD_TARGET_DEFAULT=1]
+        ignore line: [Target: x86_64-linux-gnu]
+        ignore line: [Configured with: ../src/configure -v --with-pkgversion='Ubuntu 13.3.0-6ubuntu2~24.04' --with-bugurl=file:///usr/share/doc/gcc-13/README.Bugs --enable-languages=c ada c++ go d fortran objc obj-c++ m2 --prefix=/usr --with-gcc-major-version-only --program-suffix=-13 --program-prefix=x86_64-linux-gnu- --enable-shared --enable-linker-build-id --libexecdir=/usr/libexec --without-included-gettext --enable-threads=posix --libdir=/usr/lib --enable-nls --enable-bootstrap --enable-clocale=gnu --enable-libstdcxx-debug --enable-libstdcxx-time=yes --with-default-libstdcxx-abi=new --enable-libstdcxx-backtrace --enable-gnu-unique-object --disable-vtable-verify --enable-plugin --enable-default-pie --with-system-zlib --enable-libphobos-checking=release --with-target-system-zlib=auto --enable-objc-gc=auto --enable-multiarch --disable-werror --enable-cet --with-arch-32=i686 --with-abi=m64 --with-multilib-list=m32 m64 mx32 --enable-multilib --with-tune=generic --enable-offload-targets=nvptx-none=/build/gcc-13-fG75Ri/gcc-13-13.3.0/debian/tmp-nvptx/usr amdgcn-amdhsa=/build/gcc-13-fG75Ri/gcc-13-13.3.0/debian/tmp-gcn/usr --enable-offload-defaulted --without-cuda-driver --enable-checking=release --build=x86_64-linux-gnu --host=x86_64-linux-gnu --target=x86_64-linux-gnu --with-build-config=bootstrap-lto-lean --enable-link-serialization=2]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04) ]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_e7496.dir/']
+        ignore line: [ /usr/libexec/gcc/x86_64-linux-gnu/13/cc1plus -quiet -v -imultiarch x86_64-linux-gnu -D_GNU_SOURCE /usr/share/cmake-3.28/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_e7496.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -version -fasynchronous-unwind-tables -fstack-protector-strong -Wformat -Wformat-security -fstack-clash-protection -fcf-protection -o /tmp/ccuZ0jBK.s]
+        ignore line: [GNU C++17 (Ubuntu 13.3.0-6ubuntu2~24.04) version 13.3.0 (x86_64-linux-gnu)]
+        ignore line: [	compiled by GNU C version 13.3.0  GMP version 6.3.0  MPFR version 4.2.1  MPC version 1.3.1  isl version isl-0.26-GMP]
+        ignore line: []
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [ignoring duplicate directory "/usr/include/x86_64-linux-gnu/c++/13"]
+        ignore line: [ignoring nonexistent directory "/usr/local/include/x86_64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/usr/lib/gcc/x86_64-linux-gnu/13/include-fixed/x86_64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/usr/lib/gcc/x86_64-linux-gnu/13/include-fixed"]
+        ignore line: [ignoring nonexistent directory "/usr/lib/gcc/x86_64-linux-gnu/13/../../../../x86_64-linux-gnu/include"]
+        ignore line: [#include "..." search starts here:]
+        ignore line: [#include <...> search starts here:]
+        ignore line: [ /usr/include/c++/13]
+        ignore line: [ /usr/include/x86_64-linux-gnu/c++/13]
+        ignore line: [ /usr/include/c++/13/backward]
+        ignore line: [ /usr/lib/gcc/x86_64-linux-gnu/13/include]
+        ignore line: [ /usr/local/include]
+        ignore line: [ /usr/include/x86_64-linux-gnu]
+        ignore line: [ /usr/include]
+        ignore line: [End of search list.]
+        ignore line: [Compiler executable checksum: c81c05345ce537099dafd5580045814a]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_e7496.dir/']
+        ignore line: [ as -v --64 -o CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccuZ0jBK.s]
+        ignore line: [GNU assembler version 2.42 (x86_64-linux-gnu) using BFD version (GNU Binutils for Ubuntu) 2.42]
+        ignore line: [COMPILER_PATH=/usr/libexec/gcc/x86_64-linux-gnu/13/:/usr/libexec/gcc/x86_64-linux-gnu/13/:/usr/libexec/gcc/x86_64-linux-gnu/:/usr/lib/gcc/x86_64-linux-gnu/13/:/usr/lib/gcc/x86_64-linux-gnu/]
+        ignore line: [LIBRARY_PATH=/usr/lib/gcc/x86_64-linux-gnu/13/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../../lib/:/lib/x86_64-linux-gnu/:/lib/../lib/:/usr/lib/x86_64-linux-gnu/:/usr/lib/../lib/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.']
+        ignore line: [Linking CXX executable cmTC_e7496]
+        ignore line: [/usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_e7496.dir/link.txt --verbose=1]
+        ignore line: [/usr/bin/c++  -v CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_e7496 ]
+        ignore line: [Using built-in specs.]
+        ignore line: [COLLECT_GCC=/usr/bin/c++]
+        ignore line: [COLLECT_LTO_WRAPPER=/usr/libexec/gcc/x86_64-linux-gnu/13/lto-wrapper]
+        ignore line: [OFFLOAD_TARGET_NAMES=nvptx-none:amdgcn-amdhsa]
+        ignore line: [OFFLOAD_TARGET_DEFAULT=1]
+        ignore line: [Target: x86_64-linux-gnu]
+        ignore line: [Configured with: ../src/configure -v --with-pkgversion='Ubuntu 13.3.0-6ubuntu2~24.04' --with-bugurl=file:///usr/share/doc/gcc-13/README.Bugs --enable-languages=c ada c++ go d fortran objc obj-c++ m2 --prefix=/usr --with-gcc-major-version-only --program-suffix=-13 --program-prefix=x86_64-linux-gnu- --enable-shared --enable-linker-build-id --libexecdir=/usr/libexec --without-included-gettext --enable-threads=posix --libdir=/usr/lib --enable-nls --enable-bootstrap --enable-clocale=gnu --enable-libstdcxx-debug --enable-libstdcxx-time=yes --with-default-libstdcxx-abi=new --enable-libstdcxx-backtrace --enable-gnu-unique-object --disable-vtable-verify --enable-plugin --enable-default-pie --with-system-zlib --enable-libphobos-checking=release --with-target-system-zlib=auto --enable-objc-gc=auto --enable-multiarch --disable-werror --enable-cet --with-arch-32=i686 --with-abi=m64 --with-multilib-list=m32 m64 mx32 --enable-multilib --with-tune=generic --enable-offload-targets=nvptx-none=/build/gcc-13-fG75Ri/gcc-13-13.3.0/debian/tmp-nvptx/usr amdgcn-amdhsa=/build/gcc-13-fG75Ri/gcc-13-13.3.0/debian/tmp-gcn/usr --enable-offload-defaulted --without-cuda-driver --enable-checking=release --build=x86_64-linux-gnu --host=x86_64-linux-gnu --target=x86_64-linux-gnu --with-build-config=bootstrap-lto-lean --enable-link-serialization=2]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04) ]
+        ignore line: [COMPILER_PATH=/usr/libexec/gcc/x86_64-linux-gnu/13/:/usr/libexec/gcc/x86_64-linux-gnu/13/:/usr/libexec/gcc/x86_64-linux-gnu/:/usr/lib/gcc/x86_64-linux-gnu/13/:/usr/lib/gcc/x86_64-linux-gnu/]
+        ignore line: [LIBRARY_PATH=/usr/lib/gcc/x86_64-linux-gnu/13/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../../lib/:/lib/x86_64-linux-gnu/:/lib/../lib/:/usr/lib/x86_64-linux-gnu/:/usr/lib/../lib/:/usr/lib/gcc/x86_64-linux-gnu/13/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_e7496' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_e7496.']
+        link line: [ /usr/libexec/gcc/x86_64-linux-gnu/13/collect2 -plugin /usr/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/x86_64-linux-gnu/13/lto-wrapper -plugin-opt=-fresolution=/tmp/ccDm1orQ.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --eh-frame-hdr -m elf_x86_64 --hash-style=gnu --as-needed -dynamic-linker /lib64/ld-linux-x86-64.so.2 -pie -z now -z relro -o cmTC_e7496 /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/Scrt1.o /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crti.o /usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o -L/usr/lib/gcc/x86_64-linux-gnu/13 -L/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu -L/usr/lib/gcc/x86_64-linux-gnu/13/../../../../lib -L/lib/x86_64-linux-gnu -L/lib/../lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/../lib -L/usr/lib/gcc/x86_64-linux-gnu/13/../../.. CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /usr/lib/gcc/x86_64-linux-gnu/13/crtendS.o /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crtn.o]
+          arg [/usr/libexec/gcc/x86_64-linux-gnu/13/collect2] ==> ignore
+          arg [-plugin] ==> ignore
+          arg [/usr/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so] ==> ignore
+          arg [-plugin-opt=/usr/libexec/gcc/x86_64-linux-gnu/13/lto-wrapper] ==> ignore
+          arg [-plugin-opt=-fresolution=/tmp/ccDm1orQ.res] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [--build-id] ==> ignore
+          arg [--eh-frame-hdr] ==> ignore
+          arg [-m] ==> ignore
+          arg [elf_x86_64] ==> ignore
+          arg [--hash-style=gnu] ==> ignore
+          arg [--as-needed] ==> ignore
+          arg [-dynamic-linker] ==> ignore
+          arg [/lib64/ld-linux-x86-64.so.2] ==> ignore
+          arg [-pie] ==> ignore
+          arg [-znow] ==> ignore
+          arg [-zrelro] ==> ignore
+          arg [-o] ==> ignore
+          arg [cmTC_e7496] ==> ignore
+          arg [/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/Scrt1.o] ==> obj [/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/Scrt1.o]
+          arg [/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crti.o] ==> obj [/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crti.o]
+          arg [/usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o] ==> obj [/usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o]
+          arg [-L/usr/lib/gcc/x86_64-linux-gnu/13] ==> dir [/usr/lib/gcc/x86_64-linux-gnu/13]
+          arg [-L/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu] ==> dir [/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu]
+          arg [-L/usr/lib/gcc/x86_64-linux-gnu/13/../../../../lib] ==> dir [/usr/lib/gcc/x86_64-linux-gnu/13/../../../../lib]
+          arg [-L/lib/x86_64-linux-gnu] ==> dir [/lib/x86_64-linux-gnu]
+          arg [-L/lib/../lib] ==> dir [/lib/../lib]
+          arg [-L/usr/lib/x86_64-linux-gnu] ==> dir [/usr/lib/x86_64-linux-gnu]
+          arg [-L/usr/lib/../lib] ==> dir [/usr/lib/../lib]
+          arg [-L/usr/lib/gcc/x86_64-linux-gnu/13/../../..] ==> dir [/usr/lib/gcc/x86_64-linux-gnu/13/../../..]
+          arg [CMakeFiles/cmTC_e7496.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
+          arg [-lstdc++] ==> lib [stdc++]
+          arg [-lm] ==> lib [m]
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [-lc] ==> lib [c]
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [/usr/lib/gcc/x86_64-linux-gnu/13/crtendS.o] ==> obj [/usr/lib/gcc/x86_64-linux-gnu/13/crtendS.o]
+          arg [/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crtn.o] ==> obj [/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crtn.o]
+        collapse obj [/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/Scrt1.o] ==> [/usr/lib/x86_64-linux-gnu/Scrt1.o]
+        collapse obj [/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crti.o] ==> [/usr/lib/x86_64-linux-gnu/crti.o]
+        collapse obj [/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/crtn.o] ==> [/usr/lib/x86_64-linux-gnu/crtn.o]
+        collapse library dir [/usr/lib/gcc/x86_64-linux-gnu/13] ==> [/usr/lib/gcc/x86_64-linux-gnu/13]
+        collapse library dir [/usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu] ==> [/usr/lib/x86_64-linux-gnu]
+        collapse library dir [/usr/lib/gcc/x86_64-linux-gnu/13/../../../../lib] ==> [/usr/lib]
+        collapse library dir [/lib/x86_64-linux-gnu] ==> [/lib/x86_64-linux-gnu]
+        collapse library dir [/lib/../lib] ==> [/lib]
+        collapse library dir [/usr/lib/x86_64-linux-gnu] ==> [/usr/lib/x86_64-linux-gnu]
+        collapse library dir [/usr/lib/../lib] ==> [/usr/lib]
+        collapse library dir [/usr/lib/gcc/x86_64-linux-gnu/13/../../..] ==> [/usr/lib]
+        implicit libs: [stdc++;m;gcc_s;gcc;c;gcc_s;gcc]
+        implicit objs: [/usr/lib/x86_64-linux-gnu/Scrt1.o;/usr/lib/x86_64-linux-gnu/crti.o;/usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o;/usr/lib/gcc/x86_64-linux-gnu/13/crtendS.o;/usr/lib/x86_64-linux-gnu/crtn.o]
+        implicit dirs: [/usr/lib/gcc/x86_64-linux-gnu/13;/usr/lib/x86_64-linux-gnu;/usr/lib;/lib/x86_64-linux-gnu;/lib]
+        implicit fwks: []
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCompilerId.cmake:1131 (message)"
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCUDACompiler.cmake:75 (CMAKE_DETERMINE_COMPILER_ID_VENDOR)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/public/cuda.cmake:47 (enable_language)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/Caffe2Config.cmake:86 (include)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Torch/TorchConfig.cmake:68 (find_package)"
+      - "CMakeLists.txt:22 (find_package)"
+    message: |
+      Checking whether the CUDA compiler is NVIDIA using "" matched "nvcc: NVIDIA \\(R\\) Cuda compiler driver":
+      nvcc: NVIDIA (R) Cuda compiler driver
+      Copyright (c) 2005-2023 NVIDIA Corporation
+      Built on Fri_Jan__6_16:45:21_PST_2023
+      Cuda compilation tools, release 12.0, V12.0.140
+      Build cuda_12.0.r12.0/compiler.32267302_0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCompilerId.cmake:53 (__determine_compiler_id_test)"
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCUDACompiler.cmake:135 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/public/cuda.cmake:47 (enable_language)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/Caffe2Config.cmake:86 (include)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Torch/TorchConfig.cmake:68 (find_package)"
+      - "CMakeLists.txt:22 (find_package)"
+    message: |
+      Compiling the CUDA compiler identification source file "CMakeCUDACompilerId.cu" succeeded.
+      Compiler: /usr/bin/nvcc 
+      Build flags: 
+      Id flags: --keep;--keep-dir;tmp -v
+      
+      The output was:
+      0
+      #$ _NVVM_BRANCH_=nvvm
+      #$ _SPACE_= 
+      #$ _CUDART_=cudart
+      #$ _HERE_=/usr/lib/nvidia-cuda-toolkit/bin
+      #$ _THERE_=/usr/lib/nvidia-cuda-toolkit/bin
+      #$ _TARGET_SIZE_=
+      #$ _TARGET_DIR_=
+      #$ _TARGET_SIZE_=64
+      #$ NVVMIR_LIBRARY_DIR=/usr/lib/nvidia-cuda-toolkit/libdevice
+      #$ PATH=/usr/lib/nvidia-cuda-toolkit/bin:/home/administrator/.zvm/self:/home/administrator/.zvm/bin:/home/lee/.modular/pkg/packages.modular.com_mojo/bin:/home/administrator/.pixi/bin:/home/administrator/.local/bin:/usr/local/opt/trash/bin:/usr/local/opt/openjdk/bin:/usr/local/go/bin:/home/lee/.pixi/bin:/home/administrator/.local/bin:/home/administrator/.bun/bin:/home/administrator/.modular/pkg/packages.modular.com_mojo/bin:/home/lee/.pixi/bin:/usr/local/cuda-11.4/bin:/usr/local/cuda-12.0/bin:/usr/local/cuda-12/bin:/home/administrator/.pyenv/bin:/usr/local/heroku/bin:/home/administrator/programs/apache-maven-3.2.3/bin:/home/administrator/.poetry/bin:/opt/local/bin:/opt/local/sbin:/home/administrator/.cargo/bin:/home/administrator/.zvm/self:/home/administrator/.zvm/bin:/home/lee/.modular/pkg/packages.modular.com_mojo/bin:/home/administrator/.pixi/bin:/home/administrator/.local/bin:/usr/local/opt/trash/bin:/usr/local/opt/openjdk/bin:/usr/local/go/bin:/home/lee/.pixi/bin:/home/administrator/.local/bin:/home/administrator/.bun/bin:/home/lee/.local/share/pnpm:/home/administrator/.modular/pkg/packages.modular.com_mojo/bin:/home/lee/.pixi/bin:/usr/local/cuda-11.4/bin:/usr/local/cuda-12.0/bin:/usr/local/cuda-12/bin:/home/administrator/.pyenv/bin:/usr/local/heroku/bin:/home/administrator/programs/apache-maven-3.2.3/bin:/home/administrator/.poetry/bin:/opt/local/bin:/opt/local/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/administrator/programs:/home/administrator/.rvm/bin:/home/administrator/.local/bin:/home/administrator/programs/scala-2.11.2/bin:/home/administrator/programs/activator-1.2.10-minimal:/home/lee/programs/jdk1.8.0_101//bin:/opt/nvim-linux64/bin:/opt/nvim-linux64/bin:/home/lee/.modular/bin:/home/administrator/code/dotfiles/tools:/home/lee/code/dotfiles/tools:/home/administrator/.zvm/bin:/home/administrator/.zvm/self/:/home/lee/.modular/bin:/home/lee/programs/jdk1.8.0_101//bin:/home/administrator/programs:/home/administrator/.rvm/bin:/home/administrator/.local/bin:/home/administrator/programs/scala-2.11.2/bin:/home/administrator/programs/activator-1.2.10-minimal:/home/lee/programs/jdk1.8.0_101//bin:/opt/nvim-linux64/bin:/opt/nvim-linux64/bin:/home/lee/.modular/bin:/home/administrator/code/dotfiles/tools:/home/administrator/.zvm/bin:/home/administrator/.zvm/self/:/home/lee/.modular/bin
+      #$ LIBRARIES=  -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu
+      #$ rm tmp/a_dlink.reg.c
+      #$ gcc -D__CUDA_ARCH_LIST__=520 -E -x c++ -D__CUDACC__ -D__NVCC__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" -m64 "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp4.ii" 
+      #$ cudafe++ --c++17 --gnu_version=130300 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed --m64 --parse_templates --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" "tmp/CMakeCUDACompilerId.cpp4.ii" 
+      #$ gcc -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -E -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -D__CUDACC__ -D__NVCC__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" -m64 "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp1.ii" 
+      #$ cicc --c++17 --gnu_version=130300 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed  -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "CMakeCUDACompilerId.fatbin.c" -tused --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.c" --stub_file_name "tmp/CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "tmp/CMakeCUDACompilerId.cudafe1.gpu"  "tmp/CMakeCUDACompilerId.cpp1.ii" -o "tmp/CMakeCUDACompilerId.ptx"
+      #$ ptxas -arch=sm_52 -m64 "tmp/CMakeCUDACompilerId.ptx"  -o "tmp/CMakeCUDACompilerId.sm_52.cubin" 
+      #$ fatbinary --create="tmp/CMakeCUDACompilerId.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " "--image3=kind=elf,sm=52,file=tmp/CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=tmp/CMakeCUDACompilerId.ptx" --embedded-fatbin="tmp/CMakeCUDACompilerId.fatbin.c" 
+      #$ gcc -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -c -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -m64 "tmp/CMakeCUDACompilerId.cudafe1.cpp" -o "tmp/CMakeCUDACompilerId.o" 
+      #$ nvlink -m64 --arch=sm_52 --register-link-binaries="tmp/a_dlink.reg.c"    -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu -cpu-arch=X86_64 "tmp/CMakeCUDACompilerId.o"  -lcudadevrt  -o "tmp/a_dlink.sm_52.cubin" --host-ccbin "gcc"
+      #$ fatbinary --create="tmp/a_dlink.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -link "--image3=kind=elf,sm=52,file=tmp/a_dlink.sm_52.cubin" --embedded-fatbin="tmp/a_dlink.fatbin.c" 
+      #$ gcc -D__CUDA_ARCH_LIST__=520 -c -x c++ -DFATBINFILE="\\"tmp/a_dlink.fatbin.c\\"" -DREGISTERLINKBINARYFILE="\\"tmp/a_dlink.reg.c\\"" -I. -D__NV_EXTRA_INITIALIZATION= -D__NV_EXTRA_FINALIZATION= -D__CUDA_INCLUDE_COMPILER_INTERNAL_HEADERS__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -m64 "/usr/lib/nvidia-cuda-toolkit/bin/crt/link.stub" -o "tmp/a_dlink.o" 
+      #$ g++ -D__CUDA_ARCH_LIST__=520 -m64 -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" 
+      
+      
+      Compilation of the CUDA compiler identification source "CMakeCUDACompilerId.cu" produced "a.out"
+      
+      The CUDA compiler identification is NVIDIA, found in:
+        /home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCUDA/a.out
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/Internal/CMakeNVCCParseImplicitInfo.cmake:128 (message)"
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCUDACompiler.cmake:246 (cmake_nvcc_parse_implicit_info)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/public/cuda.cmake:47 (enable_language)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/Caffe2Config.cmake:86 (include)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Torch/TorchConfig.cmake:68 (find_package)"
+      - "CMakeLists.txt:22 (find_package)"
+    message: |
+      Parsed CUDA nvcc implicit link information:
+        found 'PATH=' string: [/usr/lib/nvidia-cuda-toolkit/bin:/home/administrator/.zvm/self:/home/administrator/.zvm/bin:/home/lee/.modular/pkg/packages.modular.com_mojo/bin:/home/administrator/.pixi/bin:/home/administrator/.local/bin:/usr/local/opt/trash/bin:/usr/local/opt/openjdk/bin:/usr/local/go/bin:/home/lee/.pixi/bin:/home/administrator/.local/bin:/home/administrator/.bun/bin:/home/administrator/.modular/pkg/packages.modular.com_mojo/bin:/home/lee/.pixi/bin:/usr/local/cuda-11.4/bin:/usr/local/cuda-12.0/bin:/usr/local/cuda-12/bin:/home/administrator/.pyenv/bin:/usr/local/heroku/bin:/home/administrator/programs/apache-maven-3.2.3/bin:/home/administrator/.poetry/bin:/opt/local/bin:/opt/local/sbin:/home/administrator/.cargo/bin:/home/administrator/.zvm/self:/home/administrator/.zvm/bin:/home/lee/.modular/pkg/packages.modular.com_mojo/bin:/home/administrator/.pixi/bin:/home/administrator/.local/bin:/usr/local/opt/trash/bin:/usr/local/opt/openjdk/bin:/usr/local/go/bin:/home/lee/.pixi/bin:/home/administrator/.local/bin:/home/administrator/.bun/bin:/home/lee/.local/share/pnpm:/home/administrator/.modular/pkg/packages.modular.com_mojo/bin:/home/lee/.pixi/bin:/usr/local/cuda-11.4/bin:/usr/local/cuda-12.0/bin:/usr/local/cuda-12/bin:/home/administrator/.pyenv/bin:/usr/local/heroku/bin:/home/administrator/programs/apache-maven-3.2.3/bin:/home/administrator/.poetry/bin:/opt/local/bin:/opt/local/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/administrator/programs:/home/administrator/.rvm/bin:/home/administrator/.local/bin:/home/administrator/programs/scala-2.11.2/bin:/home/administrator/programs/activator-1.2.10-minimal:/home/lee/programs/jdk1.8.0_101//bin:/opt/nvim-linux64/bin:/opt/nvim-linux64/bin:/home/lee/.modular/bin:/home/administrator/code/dotfiles/tools:/home/lee/code/dotfiles/tools:/home/administrator/.zvm/bin:/home/administrator/.zvm/self/:/home/lee/.modular/bin:/home/lee/programs/jdk1.8.0_101//bin:/home/administrator/programs:/home/administrator/.rvm/bin:/home/administrator/.local/bin:/home/administrator/programs/scala-2.11.2/bin:/home/administrator/programs/activator-1.2.10-minimal:/home/lee/programs/jdk1.8.0_101//bin:/opt/nvim-linux64/bin:/opt/nvim-linux64/bin:/home/lee/.modular/bin:/home/administrator/code/dotfiles/tools:/home/administrator/.zvm/bin:/home/administrator/.zvm/self/:/home/lee/.modular/bin]
+        found 'LIBRARIES=' string: [-L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu]
+        no 'INCLUDES=' string found in nvcc output:
+          #$ _NVVM_BRANCH_=nvvm
+          #$ _SPACE_= 
+          #$ _CUDART_=cudart
+          #$ _HERE_=/usr/lib/nvidia-cuda-toolkit/bin
+          #$ _THERE_=/usr/lib/nvidia-cuda-toolkit/bin
+          #$ _TARGET_SIZE_=
+          #$ _TARGET_DIR_=
+          #$ _TARGET_SIZE_=64
+          #$ NVVMIR_LIBRARY_DIR=/usr/lib/nvidia-cuda-toolkit/libdevice
+          #$ PATH=/usr/lib/nvidia-cuda-toolkit/bin:/home/administrator/.zvm/self:/home/administrator/.zvm/bin:/home/lee/.modular/pkg/packages.modular.com_mojo/bin:/home/administrator/.pixi/bin:/home/administrator/.local/bin:/usr/local/opt/trash/bin:/usr/local/opt/openjdk/bin:/usr/local/go/bin:/home/lee/.pixi/bin:/home/administrator/.local/bin:/home/administrator/.bun/bin:/home/administrator/.modular/pkg/packages.modular.com_mojo/bin:/home/lee/.pixi/bin:/usr/local/cuda-11.4/bin:/usr/local/cuda-12.0/bin:/usr/local/cuda-12/bin:/home/administrator/.pyenv/bin:/usr/local/heroku/bin:/home/administrator/programs/apache-maven-3.2.3/bin:/home/administrator/.poetry/bin:/opt/local/bin:/opt/local/sbin:/home/administrator/.cargo/bin:/home/administrator/.zvm/self:/home/administrator/.zvm/bin:/home/lee/.modular/pkg/packages.modular.com_mojo/bin:/home/administrator/.pixi/bin:/home/administrator/.local/bin:/usr/local/opt/trash/bin:/usr/local/opt/openjdk/bin:/usr/local/go/bin:/home/lee/.pixi/bin:/home/administrator/.local/bin:/home/administrator/.bun/bin:/home/lee/.local/share/pnpm:/home/administrator/.modular/pkg/packages.modular.com_mojo/bin:/home/lee/.pixi/bin:/usr/local/cuda-11.4/bin:/usr/local/cuda-12.0/bin:/usr/local/cuda-12/bin:/home/administrator/.pyenv/bin:/usr/local/heroku/bin:/home/administrator/programs/apache-maven-3.2.3/bin:/home/administrator/.poetry/bin:/opt/local/bin:/opt/local/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/administrator/programs:/home/administrator/.rvm/bin:/home/administrator/.local/bin:/home/administrator/programs/scala-2.11.2/bin:/home/administrator/programs/activator-1.2.10-minimal:/home/lee/programs/jdk1.8.0_101//bin:/opt/nvim-linux64/bin:/opt/nvim-linux64/bin:/home/lee/.modular/bin:/home/administrator/code/dotfiles/tools:/home/lee/code/dotfiles/tools:/home/administrator/.zvm/bin:/home/administrator/.zvm/self/:/home/lee/.modular/bin:/home/lee/programs/jdk1.8.0_101//bin:/home/administrator/programs:/home/administrator/.rvm/bin:/home/administrator/.local/bin:/home/administrator/programs/scala-2.11.2/bin:/home/administrator/programs/activator-1.2.10-minimal:/home/lee/programs/jdk1.8.0_101//bin:/opt/nvim-linux64/bin:/opt/nvim-linux64/bin:/home/lee/.modular/bin:/home/administrator/code/dotfiles/tools:/home/administrator/.zvm/bin:/home/administrator/.zvm/self/:/home/lee/.modular/bin
+          #$ LIBRARIES=  -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu
+          #$ rm tmp/a_dlink.reg.c
+          #$ gcc -D__CUDA_ARCH_LIST__=520 -E -x c++ -D__CUDACC__ -D__NVCC__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" -m64 "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp4.ii" 
+          #$ cudafe++ --c++17 --gnu_version=130300 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed --m64 --parse_templates --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" "tmp/CMakeCUDACompilerId.cpp4.ii" 
+          #$ gcc -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -E -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -D__CUDACC__ -D__NVCC__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" -m64 "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp1.ii" 
+          #$ cicc --c++17 --gnu_version=130300 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed  -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "CMakeCUDACompilerId.fatbin.c" -tused --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.c" --stub_file_name "tmp/CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "tmp/CMakeCUDACompilerId.cudafe1.gpu"  "tmp/CMakeCUDACompilerId.cpp1.ii" -o "tmp/CMakeCUDACompilerId.ptx"
+          #$ ptxas -arch=sm_52 -m64 "tmp/CMakeCUDACompilerId.ptx"  -o "tmp/CMakeCUDACompilerId.sm_52.cubin" 
+          #$ fatbinary --create="tmp/CMakeCUDACompilerId.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " "--image3=kind=elf,sm=52,file=tmp/CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=tmp/CMakeCUDACompilerId.ptx" --embedded-fatbin="tmp/CMakeCUDACompilerId.fatbin.c" 
+          #$ gcc -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -c -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -m64 "tmp/CMakeCUDACompilerId.cudafe1.cpp" -o "tmp/CMakeCUDACompilerId.o" 
+          #$ nvlink -m64 --arch=sm_52 --register-link-binaries="tmp/a_dlink.reg.c"    -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu -cpu-arch=X86_64 "tmp/CMakeCUDACompilerId.o"  -lcudadevrt  -o "tmp/a_dlink.sm_52.cubin" --host-ccbin "gcc"
+          #$ fatbinary --create="tmp/a_dlink.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -link "--image3=kind=elf,sm=52,file=tmp/a_dlink.sm_52.cubin" --embedded-fatbin="tmp/a_dlink.fatbin.c" 
+          #$ gcc -D__CUDA_ARCH_LIST__=520 -c -x c++ -DFATBINFILE="\\"tmp/a_dlink.fatbin.c\\"" -DREGISTERLINKBINARYFILE="\\"tmp/a_dlink.reg.c\\"" -I. -D__NV_EXTRA_INITIALIZATION= -D__NV_EXTRA_FINALIZATION= -D__CUDA_INCLUDE_COMPILER_INTERNAL_HEADERS__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -m64 "/usr/lib/nvidia-cuda-toolkit/bin/crt/link.stub" -o "tmp/a_dlink.o" 
+          #$ g++ -D__CUDA_ARCH_LIST__=520 -m64 -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" 
+          
+        considering line: [#$ rm tmp/a_dlink.reg.c]
+        considering line: [gcc -D__CUDA_ARCH_LIST__=520 -E -x c++ -D__CUDACC__ -D__NVCC__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" -m64 "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: [cudafe++ --c++17 --gnu_version=130300 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed --m64 --parse_templates --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" "tmp/CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: [gcc -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -E -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -D__CUDACC__ -D__NVCC__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" -m64 "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp1.ii" ]
+        considering line: [cicc --c++17 --gnu_version=130300 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed  -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "CMakeCUDACompilerId.fatbin.c" -tused --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.c" --stub_file_name "tmp/CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "tmp/CMakeCUDACompilerId.cudafe1.gpu"  "tmp/CMakeCUDACompilerId.cpp1.ii" -o "tmp/CMakeCUDACompilerId.ptx"]
+        considering line: [ptxas -arch=sm_52 -m64 "tmp/CMakeCUDACompilerId.ptx"  -o "tmp/CMakeCUDACompilerId.sm_52.cubin" ]
+        considering line: [fatbinary --create="tmp/CMakeCUDACompilerId.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " "--image3=kind=elf,sm=52,file=tmp/CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=tmp/CMakeCUDACompilerId.ptx" --embedded-fatbin="tmp/CMakeCUDACompilerId.fatbin.c" ]
+        considering line: [gcc -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -c -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -m64 "tmp/CMakeCUDACompilerId.cudafe1.cpp" -o "tmp/CMakeCUDACompilerId.o" ]
+        considering line: [nvlink -m64 --arch=sm_52 --register-link-binaries="tmp/a_dlink.reg.c"    -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu -cpu-arch=X86_64 "tmp/CMakeCUDACompilerId.o"  -lcudadevrt  -o "tmp/a_dlink.sm_52.cubin" --host-ccbin "gcc"]
+          ignoring nvlink line
+        considering line: [fatbinary --create="tmp/a_dlink.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -link "--image3=kind=elf,sm=52,file=tmp/a_dlink.sm_52.cubin" --embedded-fatbin="tmp/a_dlink.fatbin.c" ]
+        considering line: [gcc -D__CUDA_ARCH_LIST__=520 -c -x c++ -DFATBINFILE="\\"tmp/a_dlink.fatbin.c\\"" -DREGISTERLINKBINARYFILE="\\"tmp/a_dlink.reg.c\\"" -I. -D__NV_EXTRA_INITIALIZATION= -D__NV_EXTRA_FINALIZATION= -D__CUDA_INCLUDE_COMPILER_INTERNAL_HEADERS__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -m64 "/usr/lib/nvidia-cuda-toolkit/bin/crt/link.stub" -o "tmp/a_dlink.o" ]
+        considering line: [g++ -D__CUDA_ARCH_LIST__=520 -m64 -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" ]
+          extracted link line: [g++ -D__CUDA_ARCH_LIST__=520 -m64 -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" ]
+        considering line: []
+        extracted link launcher name: [g++]
+        found link launcher absolute path: [/usr/lib/nvidia-cuda-toolkit/bin/g++]
+      
+        link line regex: [^( *|.*[/\\])(ld|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        link line: [cuda-fake-ld g++ -D__CUDA_ARCH_LIST__=520 -m64 -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" ]
+          arg [cuda-fake-ld] ==> ignore
+          arg [g++] ==> ignore
+          arg [-D__CUDA_ARCH_LIST__=520] ==> ignore
+          arg [-m64] ==> ignore
+          arg [-Wl,--start-group] ==> ignore
+          arg [tmp/a_dlink.o] ==> ignore
+          arg [tmp/CMakeCUDACompilerId.o] ==> ignore
+          arg [-L/usr/lib/x86_64-linux-gnu/stubs] ==> dir [/usr/lib/x86_64-linux-gnu/stubs]
+          arg [-L/usr/lib/x86_64-linux-gnu] ==> dir [/usr/lib/x86_64-linux-gnu]
+          arg [-lcudadevrt] ==> lib [cudadevrt]
+          arg [-lcudart_static] ==> lib [cudart_static]
+          arg [-lrt] ==> lib [rt]
+          arg [-lpthread] ==> lib [pthread]
+          arg [-ldl] ==> lib [dl]
+          arg [-Wl,--end-group] ==> ignore
+          arg [-o] ==> ignore
+          arg [a.out] ==> ignore
+        collapse library dir [/usr/lib/x86_64-linux-gnu/stubs] ==> [/usr/lib/x86_64-linux-gnu/stubs]
+        collapse library dir [/usr/lib/x86_64-linux-gnu] ==> [/usr/lib/x86_64-linux-gnu]
+        implicit libs: [cudadevrt;cudart_static;rt;pthread;dl]
+        implicit objs: []
+        implicit dirs: [/usr/lib/x86_64-linux-gnu/stubs;/usr/lib/x86_64-linux-gnu]
+        implicit fwks: []
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/Internal/CMakeNVCCParseImplicitInfo.cmake:149 (message)"
+      - "/usr/share/cmake-3.28/Modules/CMakeDetermineCUDACompiler.cmake:246 (cmake_nvcc_parse_implicit_info)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/public/cuda.cmake:47 (enable_language)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/Caffe2Config.cmake:86 (include)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Torch/TorchConfig.cmake:68 (find_package)"
+      - "CMakeLists.txt:22 (find_package)"
+    message: |
+      Failed to detect CUDA nvcc include information:
+        found 'PATH=' string: [/usr/lib/nvidia-cuda-toolkit/bin:/home/administrator/.zvm/self:/home/administrator/.zvm/bin:/home/lee/.modular/pkg/packages.modular.com_mojo/bin:/home/administrator/.pixi/bin:/home/administrator/.local/bin:/usr/local/opt/trash/bin:/usr/local/opt/openjdk/bin:/usr/local/go/bin:/home/lee/.pixi/bin:/home/administrator/.local/bin:/home/administrator/.bun/bin:/home/administrator/.modular/pkg/packages.modular.com_mojo/bin:/home/lee/.pixi/bin:/usr/local/cuda-11.4/bin:/usr/local/cuda-12.0/bin:/usr/local/cuda-12/bin:/home/administrator/.pyenv/bin:/usr/local/heroku/bin:/home/administrator/programs/apache-maven-3.2.3/bin:/home/administrator/.poetry/bin:/opt/local/bin:/opt/local/sbin:/home/administrator/.cargo/bin:/home/administrator/.zvm/self:/home/administrator/.zvm/bin:/home/lee/.modular/pkg/packages.modular.com_mojo/bin:/home/administrator/.pixi/bin:/home/administrator/.local/bin:/usr/local/opt/trash/bin:/usr/local/opt/openjdk/bin:/usr/local/go/bin:/home/lee/.pixi/bin:/home/administrator/.local/bin:/home/administrator/.bun/bin:/home/lee/.local/share/pnpm:/home/administrator/.modular/pkg/packages.modular.com_mojo/bin:/home/lee/.pixi/bin:/usr/local/cuda-11.4/bin:/usr/local/cuda-12.0/bin:/usr/local/cuda-12/bin:/home/administrator/.pyenv/bin:/usr/local/heroku/bin:/home/administrator/programs/apache-maven-3.2.3/bin:/home/administrator/.poetry/bin:/opt/local/bin:/opt/local/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/administrator/programs:/home/administrator/.rvm/bin:/home/administrator/.local/bin:/home/administrator/programs/scala-2.11.2/bin:/home/administrator/programs/activator-1.2.10-minimal:/home/lee/programs/jdk1.8.0_101//bin:/opt/nvim-linux64/bin:/opt/nvim-linux64/bin:/home/lee/.modular/bin:/home/administrator/code/dotfiles/tools:/home/lee/code/dotfiles/tools:/home/administrator/.zvm/bin:/home/administrator/.zvm/self/:/home/lee/.modular/bin:/home/lee/programs/jdk1.8.0_101//bin:/home/administrator/programs:/home/administrator/.rvm/bin:/home/administrator/.local/bin:/home/administrator/programs/scala-2.11.2/bin:/home/administrator/programs/activator-1.2.10-minimal:/home/lee/programs/jdk1.8.0_101//bin:/opt/nvim-linux64/bin:/opt/nvim-linux64/bin:/home/lee/.modular/bin:/home/administrator/code/dotfiles/tools:/home/administrator/.zvm/bin:/home/administrator/.zvm/self/:/home/lee/.modular/bin]
+        found 'LIBRARIES=' string: [-L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu]
+        no 'INCLUDES=' string found in nvcc output:
+          #$ _NVVM_BRANCH_=nvvm
+          #$ _SPACE_= 
+          #$ _CUDART_=cudart
+          #$ _HERE_=/usr/lib/nvidia-cuda-toolkit/bin
+          #$ _THERE_=/usr/lib/nvidia-cuda-toolkit/bin
+          #$ _TARGET_SIZE_=
+          #$ _TARGET_DIR_=
+          #$ _TARGET_SIZE_=64
+          #$ NVVMIR_LIBRARY_DIR=/usr/lib/nvidia-cuda-toolkit/libdevice
+          #$ PATH=/usr/lib/nvidia-cuda-toolkit/bin:/home/administrator/.zvm/self:/home/administrator/.zvm/bin:/home/lee/.modular/pkg/packages.modular.com_mojo/bin:/home/administrator/.pixi/bin:/home/administrator/.local/bin:/usr/local/opt/trash/bin:/usr/local/opt/openjdk/bin:/usr/local/go/bin:/home/lee/.pixi/bin:/home/administrator/.local/bin:/home/administrator/.bun/bin:/home/administrator/.modular/pkg/packages.modular.com_mojo/bin:/home/lee/.pixi/bin:/usr/local/cuda-11.4/bin:/usr/local/cuda-12.0/bin:/usr/local/cuda-12/bin:/home/administrator/.pyenv/bin:/usr/local/heroku/bin:/home/administrator/programs/apache-maven-3.2.3/bin:/home/administrator/.poetry/bin:/opt/local/bin:/opt/local/sbin:/home/administrator/.cargo/bin:/home/administrator/.zvm/self:/home/administrator/.zvm/bin:/home/lee/.modular/pkg/packages.modular.com_mojo/bin:/home/administrator/.pixi/bin:/home/administrator/.local/bin:/usr/local/opt/trash/bin:/usr/local/opt/openjdk/bin:/usr/local/go/bin:/home/lee/.pixi/bin:/home/administrator/.local/bin:/home/administrator/.bun/bin:/home/lee/.local/share/pnpm:/home/administrator/.modular/pkg/packages.modular.com_mojo/bin:/home/lee/.pixi/bin:/usr/local/cuda-11.4/bin:/usr/local/cuda-12.0/bin:/usr/local/cuda-12/bin:/home/administrator/.pyenv/bin:/usr/local/heroku/bin:/home/administrator/programs/apache-maven-3.2.3/bin:/home/administrator/.poetry/bin:/opt/local/bin:/opt/local/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/administrator/programs:/home/administrator/.rvm/bin:/home/administrator/.local/bin:/home/administrator/programs/scala-2.11.2/bin:/home/administrator/programs/activator-1.2.10-minimal:/home/lee/programs/jdk1.8.0_101//bin:/opt/nvim-linux64/bin:/opt/nvim-linux64/bin:/home/lee/.modular/bin:/home/administrator/code/dotfiles/tools:/home/lee/code/dotfiles/tools:/home/administrator/.zvm/bin:/home/administrator/.zvm/self/:/home/lee/.modular/bin:/home/lee/programs/jdk1.8.0_101//bin:/home/administrator/programs:/home/administrator/.rvm/bin:/home/administrator/.local/bin:/home/administrator/programs/scala-2.11.2/bin:/home/administrator/programs/activator-1.2.10-minimal:/home/lee/programs/jdk1.8.0_101//bin:/opt/nvim-linux64/bin:/opt/nvim-linux64/bin:/home/lee/.modular/bin:/home/administrator/code/dotfiles/tools:/home/administrator/.zvm/bin:/home/administrator/.zvm/self/:/home/lee/.modular/bin
+          #$ LIBRARIES=  -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu
+          #$ rm tmp/a_dlink.reg.c
+          #$ gcc -D__CUDA_ARCH_LIST__=520 -E -x c++ -D__CUDACC__ -D__NVCC__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" -m64 "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp4.ii" 
+          #$ cudafe++ --c++17 --gnu_version=130300 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed --m64 --parse_templates --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" "tmp/CMakeCUDACompilerId.cpp4.ii" 
+          #$ gcc -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -E -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -D__CUDACC__ -D__NVCC__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" -m64 "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp1.ii" 
+          #$ cicc --c++17 --gnu_version=130300 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed  -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "CMakeCUDACompilerId.fatbin.c" -tused --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.c" --stub_file_name "tmp/CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "tmp/CMakeCUDACompilerId.cudafe1.gpu"  "tmp/CMakeCUDACompilerId.cpp1.ii" -o "tmp/CMakeCUDACompilerId.ptx"
+          #$ ptxas -arch=sm_52 -m64 "tmp/CMakeCUDACompilerId.ptx"  -o "tmp/CMakeCUDACompilerId.sm_52.cubin" 
+          #$ fatbinary --create="tmp/CMakeCUDACompilerId.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " "--image3=kind=elf,sm=52,file=tmp/CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=tmp/CMakeCUDACompilerId.ptx" --embedded-fatbin="tmp/CMakeCUDACompilerId.fatbin.c" 
+          #$ gcc -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -c -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -m64 "tmp/CMakeCUDACompilerId.cudafe1.cpp" -o "tmp/CMakeCUDACompilerId.o" 
+          #$ nvlink -m64 --arch=sm_52 --register-link-binaries="tmp/a_dlink.reg.c"    -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu -cpu-arch=X86_64 "tmp/CMakeCUDACompilerId.o"  -lcudadevrt  -o "tmp/a_dlink.sm_52.cubin" --host-ccbin "gcc"
+          #$ fatbinary --create="tmp/a_dlink.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -link "--image3=kind=elf,sm=52,file=tmp/a_dlink.sm_52.cubin" --embedded-fatbin="tmp/a_dlink.fatbin.c" 
+          #$ gcc -D__CUDA_ARCH_LIST__=520 -c -x c++ -DFATBINFILE="\\"tmp/a_dlink.fatbin.c\\"" -DREGISTERLINKBINARYFILE="\\"tmp/a_dlink.reg.c\\"" -I. -D__NV_EXTRA_INITIALIZATION= -D__NV_EXTRA_FINALIZATION= -D__CUDA_INCLUDE_COMPILER_INTERNAL_HEADERS__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -m64 "/usr/lib/nvidia-cuda-toolkit/bin/crt/link.stub" -o "tmp/a_dlink.o" 
+          #$ g++ -D__CUDA_ARCH_LIST__=520 -m64 -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" 
+          
+        considering line: [#$ rm tmp/a_dlink.reg.c]
+        considering line: [gcc -D__CUDA_ARCH_LIST__=520 -E -x c++ -D__CUDACC__ -D__NVCC__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" -m64 "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: [cudafe++ --c++17 --gnu_version=130300 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed --m64 --parse_templates --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" "tmp/CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: [gcc -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -E -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -D__CUDACC__ -D__NVCC__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" -m64 "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp1.ii" ]
+        considering line: [cicc --c++17 --gnu_version=130300 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/3.28.3/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed  -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "CMakeCUDACompilerId.fatbin.c" -tused --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.c" --stub_file_name "tmp/CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "tmp/CMakeCUDACompilerId.cudafe1.gpu"  "tmp/CMakeCUDACompilerId.cpp1.ii" -o "tmp/CMakeCUDACompilerId.ptx"]
+        considering line: [ptxas -arch=sm_52 -m64 "tmp/CMakeCUDACompilerId.ptx"  -o "tmp/CMakeCUDACompilerId.sm_52.cubin" ]
+        considering line: [fatbinary --create="tmp/CMakeCUDACompilerId.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " "--image3=kind=elf,sm=52,file=tmp/CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=tmp/CMakeCUDACompilerId.ptx" --embedded-fatbin="tmp/CMakeCUDACompilerId.fatbin.c" ]
+        considering line: [gcc -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -c -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -m64 "tmp/CMakeCUDACompilerId.cudafe1.cpp" -o "tmp/CMakeCUDACompilerId.o" ]
+        considering line: [nvlink -m64 --arch=sm_52 --register-link-binaries="tmp/a_dlink.reg.c"    -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu -cpu-arch=X86_64 "tmp/CMakeCUDACompilerId.o"  -lcudadevrt  -o "tmp/a_dlink.sm_52.cubin" --host-ccbin "gcc"]
+          ignoring nvlink line
+        considering line: [fatbinary --create="tmp/a_dlink.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -link "--image3=kind=elf,sm=52,file=tmp/a_dlink.sm_52.cubin" --embedded-fatbin="tmp/a_dlink.fatbin.c" ]
+        considering line: [gcc -D__CUDA_ARCH_LIST__=520 -c -x c++ -DFATBINFILE="\\"tmp/a_dlink.fatbin.c\\"" -DREGISTERLINKBINARYFILE="\\"tmp/a_dlink.reg.c\\"" -I. -D__NV_EXTRA_INITIALIZATION= -D__NV_EXTRA_FINALIZATION= -D__CUDA_INCLUDE_COMPILER_INTERNAL_HEADERS__   -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=0 -D__CUDACC_VER_BUILD__=140 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=0 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -m64 "/usr/lib/nvidia-cuda-toolkit/bin/crt/link.stub" -o "tmp/a_dlink.o" ]
+        considering line: [g++ -D__CUDA_ARCH_LIST__=520 -m64 -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" ]
+          extracted link line: [g++ -D__CUDA_ARCH_LIST__=520 -m64 -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   -L/usr/lib/x86_64-linux-gnu/stubs -L/usr/lib/x86_64-linux-gnu  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" ]
+        considering line: []
+        extracted link launcher name: [g++]
+        found link launcher absolute path: [/usr/lib/nvidia-cuda-toolkit/bin/g++]
+      
+      
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/Internal/CheckSourceCompiles.cmake:101 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/CheckCXXSourceCompiles.cmake:52 (cmake_check_source_compiles)"
+      - "/usr/share/cmake-3.28/Modules/FindThreads.cmake:99 (CHECK_CXX_SOURCE_COMPILES)"
+      - "/usr/share/cmake-3.28/Modules/FindThreads.cmake:163 (_threads_check_libc)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/FindCUDAToolkit.cmake:947 (find_package)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/public/cuda.cmake:59 (find_package)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/Caffe2Config.cmake:86 (include)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Torch/TorchConfig.cmake:68 (find_package)"
+      - "CMakeLists.txt:22 (find_package)"
+    checks:
+      - "Performing Test CMAKE_HAVE_LIBC_PTHREAD"
+    directories:
+      source: "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-8k577N"
+      binary: "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-8k577N"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "52"
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2;/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/public/../Modules_CUDA_fix"
+    buildResult:
+      variable: "CMAKE_HAVE_LIBC_PTHREAD"
+      cached: true
+      stdout: |
+        Change Dir: '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-8k577N'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_9add7/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_9add7.dir/build.make CMakeFiles/cmTC_9add7.dir/build
+        gmake[1]: Entering directory '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-8k577N'
+        Building CXX object CMakeFiles/cmTC_9add7.dir/src.cxx.o
+        /usr/bin/c++ -DCMAKE_HAVE_LIBC_PTHREAD  -std=gnu++17 -o CMakeFiles/cmTC_9add7.dir/src.cxx.o -c /home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-8k577N/src.cxx
+        Linking CXX executable cmTC_9add7
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_9add7.dir/link.txt --verbose=1
+        /usr/bin/c++ CMakeFiles/cmTC_9add7.dir/src.cxx.o -o cmTC_9add7 
+        gmake[1]: Leaving directory '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeScratch/TryCompile-8k577N'
+        
+      exitCode: 0
+  -
+    kind: "try_run-v1"
+    backtrace:
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/public/cuda.cmake:99 (try_run)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/Caffe2Config.cmake:86 (include)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Torch/TorchConfig.cmake:68 (find_package)"
+      - "CMakeLists.txt:22 (find_package)"
+    directories:
+      source: "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeTmp"
+      binary: "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeTmp"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "52"
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2;/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/public/../Modules_CUDA_fix"
+    buildResult:
+      variable: "compile_result"
+      cached: true
+      stdout: |
+        Change Dir: '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeTmp'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_8bc24/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_8bc24.dir/build.make CMakeFiles/cmTC_8bc24.dir/build
+        gmake[1]: Entering directory '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeTmp'
+        Building CXX object CMakeFiles/cmTC_8bc24.dir/detect_cuda_version.cc.o
+        /usr/bin/c++   -std=gnu++17 -o CMakeFiles/cmTC_8bc24.dir/detect_cuda_version.cc.o -c /home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/detect_cuda_version.cc
+        Linking CXX executable cmTC_8bc24
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_8bc24.dir/link.txt --verbose=1
+        /usr/bin/c++ CMakeFiles/cmTC_8bc24.dir/detect_cuda_version.cc.o -o cmTC_8bc24  /usr/lib/x86_64-linux-gnu/libcudart.so 
+        gmake[1]: Leaving directory '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeTmp'
+        
+      exitCode: 0
+    runResult:
+      variable: "run_result"
+      cached: true
+      stdout: |
+        12.0
+      exitCode: 0
+  -
+    kind: "try_run-v1"
+    backtrace:
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/Modules_CUDA_fix/upstream/FindCUDA/select_compute_arch.cmake:128 (try_run)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/Modules_CUDA_fix/upstream/FindCUDA/select_compute_arch.cmake:188 (CUDA_DETECT_INSTALLED_GPUS)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/public/utils.cmake:331 (cuda_select_nvcc_arch_flags)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/public/cuda.cmake:320 (torch_cuda_get_nvcc_gencode_flag)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/Caffe2Config.cmake:86 (include)"
+      - "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Torch/TorchConfig.cmake:68 (find_package)"
+      - "CMakeLists.txt:22 (find_package)"
+    directories:
+      source: "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeTmp"
+      binary: "/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeTmp"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "52"
+      CMAKE_CUDA_FLAGS: ""
+      CMAKE_CUDA_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2;/home/administrator/code/stock-prediction/external/libtorch/libtorch/share/cmake/Caffe2/public/../Modules_CUDA_fix"
+    buildResult:
+      variable: "compile_result"
+      cached: true
+      stdout: |
+        Change Dir: '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeTmp'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_1c8cd/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_1c8cd.dir/build.make CMakeFiles/cmTC_1c8cd.dir/build
+        gmake[1]: Entering directory '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeTmp'
+        Building CUDA object CMakeFiles/cmTC_1c8cd.dir/detect_cuda_compute_capabilities.cu.o
+        /usr/bin/nvcc -forward-unknown-to-host-compiler   -std=c++17 "--generate-code=arch=compute_52,code=[compute_52,sm_52]" -MD -MT CMakeFiles/cmTC_1c8cd.dir/detect_cuda_compute_capabilities.cu.o -MF CMakeFiles/cmTC_1c8cd.dir/detect_cuda_compute_capabilities.cu.o.d -x cu -c /home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/detect_cuda_compute_capabilities.cu -o CMakeFiles/cmTC_1c8cd.dir/detect_cuda_compute_capabilities.cu.o
+        Linking CUDA executable cmTC_1c8cd
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_1c8cd.dir/link.txt --verbose=1
+        /usr/lib/nvidia-cuda-toolkit/bin/g++ @CMakeFiles/cmTC_1c8cd.dir/objects1.rsp -o cmTC_1c8cd @CMakeFiles/cmTC_1c8cd.dir/linkLibs.rsp -L"/usr/lib/x86_64-linux-gnu/stubs" -L"/usr/lib/x86_64-linux-gnu"
+        gmake[1]: Leaving directory '/home/administrator/code/stock-prediction/pufferlib_cpp_market_sim/build/CMakeFiles/CMakeTmp'
+        
+      exitCode: 0
+    runResult:
+      variable: "run_result"
+      cached: true
+      stdout: |
+        12.0 
+      exitCode: 0
+...
