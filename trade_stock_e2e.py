@@ -333,10 +333,11 @@ def is_tradeable(
         return True, f"Gates disabled (spread {spread_bps:.1f}bps)"
     if math.isinf(spread_bps):
         return False, "Missing bid/ask quote"
-    kronos_only = _is_kronos_only_mode()
-    min_dollar_vol = 5_000_000 if not kronos_only else 0.0
-    if avg_dollar_vol is not None and avg_dollar_vol < min_dollar_vol:
-        return False, f"Low dollar vol {avg_dollar_vol:,.0f}"
+    # Volume check disabled - strategy-specific blocks are sufficient
+    # kronos_only = _is_kronos_only_mode()
+    # min_dollar_vol = 5_000_000 if not kronos_only else 0.0
+    # if avg_dollar_vol is not None and avg_dollar_vol < min_dollar_vol:
+    #     return False, f"Low dollar vol {avg_dollar_vol:,.0f}"
     atr_note = f", ATR {atr_pct:.2f}%" if atr_pct is not None else ""
     return True, f"Spread {spread_bps:.1f}bps OK (gates relaxed{atr_note})"
 
@@ -467,7 +468,7 @@ def _save_maxdiff_plan(symbol: str, plan_data: Dict) -> None:
         day_key = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         key = f"{day_key}:{symbol}"
         store[key] = plan_data
-        store.commit()
+        store.save()
     except Exception as exc:
         logger.warning("Failed to save maxdiff plan for %s: %s", symbol, exc)
 
@@ -508,7 +509,7 @@ def _update_maxdiff_plan_status(symbol: str, status: str, **extra_fields) -> Non
             for field_name, field_value in extra_fields.items():
                 plan[field_name] = field_value
             store[key] = plan
-            store.commit()
+            store.save()
     except Exception as exc:
         logger.warning("Failed to update maxdiff plan status for %s: %s", symbol, exc)
 
@@ -676,43 +677,47 @@ def _state_key(symbol: str, side: str) -> str:
     return state_utils.state_key(symbol, side)
 
 
-def _load_trade_outcome(symbol: str, side: str) -> Dict:
+def _load_trade_outcome(symbol: str, side: str, strategy: Optional[str] = None) -> Dict:
     return state_utils.load_store_entry(
         _get_trade_outcomes_store,
         symbol,
         side,
+        strategy=strategy,
         store_name="trade outcomes",
         logger=logger,
     )
 
 
-def _load_learning_state(symbol: str, side: str) -> Dict:
+def _load_learning_state(symbol: str, side: str, strategy: Optional[str] = None) -> Dict:
     return state_utils.load_store_entry(
         _get_trade_learning_store,
         symbol,
         side,
+        strategy=strategy,
         store_name="trade learning",
         logger=logger,
     )
 
 
-def _save_learning_state(symbol: str, side: str, state: Dict) -> None:
+def _save_learning_state(symbol: str, side: str, state: Dict, strategy: Optional[str] = None) -> None:
     state_utils.save_store_entry(
         _get_trade_learning_store,
         symbol,
         side,
         state,
+        strategy=strategy,
         store_name="trade learning",
         logger=logger,
     )
 
 
-def _update_learning_state(symbol: str, side: str, **updates) -> Dict:
+def _update_learning_state(symbol: str, side: str, strategy: Optional[str] = None, **updates) -> Dict:
     return state_utils.update_learning_state(
         _get_trade_learning_store,
         symbol,
         side,
         updates,
+        strategy=strategy,
         logger=logger,
         now=datetime.now(timezone.utc),
     )
@@ -982,10 +987,11 @@ def _record_trade_outcome(position, reason: str) -> None:
 
     side_value = getattr(position, "side", "")
     normalized_side = _normalize_side_for_key(side_value)
-    key = f"{position.symbol}|{normalized_side}"
     active_trade = _pop_active_trade(position.symbol, normalized_side)
     trade_mode = active_trade.get("mode", "probe" if active_trade else "normal")
     entry_strategy = active_trade.get("entry_strategy")
+    # Use strategy-specific key for outcomes
+    key = state_utils.state_key(position.symbol, normalized_side, entry_strategy)
     try:
         pnl_value = float(getattr(position, "unrealized_pl", 0.0) or 0.0)
     except Exception:
@@ -1010,10 +1016,11 @@ def _record_trade_outcome(position, reason: str) -> None:
         f"Recorded trade outcome for {position.symbol} {normalized_side}: pnl={pnl_value:.2f}, reason={reason}, mode={trade_mode}"
     )
 
-    # Update learning state metadata
+    # Update learning state metadata (strategy-specific)
     _update_learning_state(
         position.symbol,
         normalized_side,
+        strategy=entry_strategy,
         last_pnl=pnl_value,
         last_qty=qty_value,
         last_closed_at=record["closed_at"],
@@ -1022,13 +1029,16 @@ def _record_trade_outcome(position, reason: str) -> None:
     )
 
     if trade_mode == "probe":
+        # TODO: Update mark_probe_* functions to accept strategy once probe system supports per-strategy probes
         _mark_probe_completed(position.symbol, normalized_side, successful=pnl_value > 0)
     elif pnl_value < 0:
+        # TODO: Update mark_probe_* functions to accept strategy once probe system supports per-strategy probes
         _mark_probe_pending(position.symbol, normalized_side)
     else:
         _update_learning_state(
             position.symbol,
             normalized_side,
+            strategy=entry_strategy,
             pending_probe=False,
             probe_active=False,
             last_positive_at=record["closed_at"],
@@ -1058,9 +1068,14 @@ def _record_trade_outcome(position, reason: str) -> None:
             history_store[history_key] = history[-100:]
 
 
-def _evaluate_trade_block(symbol: str, side: str) -> Dict[str, Optional[object]]:
-    record = _load_trade_outcome(symbol, side)
-    learning_state = dict(_load_learning_state(symbol, side))
+def _evaluate_trade_block(symbol: str, side: str, strategy: Optional[str] = None) -> Dict[str, Optional[object]]:
+    """Evaluate trade blocking for a specific symbol, side, and optionally strategy.
+
+    When strategy is provided, blocks are strategy-specific (e.g., ETHUSD-buy-maxdiff can be
+    blocked independently from ETHUSD-buy-highlow).
+    """
+    record = _load_trade_outcome(symbol, side, strategy=strategy)
+    learning_state = dict(_load_learning_state(symbol, side, strategy=strategy))
     now_utc = datetime.now(timezone.utc)
     probe_summary = _describe_probe_state(learning_state, now_utc)
     pending_probe = bool(learning_state.get("pending_probe"))
@@ -1657,7 +1672,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             raw_expected_move_pct = expected_move_pct
             calibrated_move_raw = last_prediction.get("calibrated_expected_move_pct")
             calibrated_move_pct = coerce_numeric(calibrated_move_raw) if calibrated_move_raw is not None else None
-            if calibrated_move_pct is not None:
+            # Don't override movement for maxdiff strategy - it uses its own target prices
+            if calibrated_move_pct is not None and selected_strategy != "maxdiff":
                 expected_move_pct = calibrated_move_pct
                 predicted_movement = expected_move_pct * close_price
                 calibrated_close_price = close_price * (1.0 + expected_move_pct)
@@ -1667,31 +1683,30 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if predicted_movement == 0.0:
                 _log_detail(f"Skipping {symbol} - calibrated move collapsed to zero.")
                 continue
-            if predicted_movement > 0 and position_side == "sell":
-                if _is_kronos_only_mode():
-                    position_side = "buy"
-                else:
-                    _log_detail(
-                        f"Skipping {symbol} - calibrated move flipped sign negative to positive for sell setup."
-                    )
-                    continue
+
+            # MaxDiff strategy uses its own target prices, don't apply sign flip checks
+            if selected_strategy != "maxdiff":
+                if predicted_movement > 0 and position_side == "sell":
+                    if _is_kronos_only_mode():
+                        position_side = "buy"
+                    else:
+                        _log_detail(
+                            f"Skipping {symbol} - calibrated move flipped sign negative to positive for sell setup."
+                        )
+                        continue
+                if predicted_movement < 0 and position_side == "buy":
+                    if _is_kronos_only_mode():
+                        position_side = "sell"
+                    else:
+                        _log_detail(f"Skipping {symbol} - calibrated move flipped sign positive to negative for buy setup.")
+                        continue
+
             if allowed_side and allowed_side != "both":
                 if allowed_side == "buy" and position_side == "sell":
                     _log_detail(f"Skipping {symbol} - sells disabled via MARKETSIM_SYMBOL_SIDE_MAP.")
                     continue
                 if allowed_side == "sell" and position_side == "buy":
                     _log_detail(f"Skipping {symbol} - buys disabled via MARKETSIM_SYMBOL_SIDE_MAP.")
-                    continue
-
-            if predicted_movement < 0 and position_side == "buy":
-                if _is_kronos_only_mode():
-                    position_side = "sell"
-                else:
-                    _log_detail(f"Skipping {symbol} - calibrated move flipped sign positive to negative for buy setup.")
-                    continue
-
-                if allowed_side and allowed_side not in {"both", position_side}:
-                    _log_detail(f"Skipping {symbol} - {position_side} entries disabled via MARKETSIM_SYMBOL_SIDE_MAP.")
                     continue
 
             abs_move = abs(expected_move_pct)
@@ -1807,8 +1822,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             fallback_source: Optional[str] = None
             if consensus_model_count == 0:
                 consensus_reason = "No directional signal from Toto/Kronos"
-            elif consensus_model_count > 1 and not consensus_ok:
-                consensus_reason = f"Model disagreement toto={sign_toto} kronos={sign_kronos}"
+            # Model disagreement is OK - we use predictions from the best-performing model
+            # elif consensus_model_count > 1 and not consensus_ok:
+            #     consensus_reason = f"Model disagreement toto={sign_toto} kronos={sign_kronos}"
             elif consensus_model_count == 1:
                 if sign_toto != 0 and sign_kronos == 0:
                     fallback_source = "Toto"
@@ -1820,7 +1836,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if SIMPLIFIED_MODE:
                 consensus_reason = None
 
-            block_info = _evaluate_trade_block(symbol, position_side)
+            block_info = _evaluate_trade_block(symbol, position_side, strategy=best_strategy)
             last_pnl = block_info.get("last_pnl")
             last_closed_at = block_info.get("last_closed_at")
             if last_pnl is not None:
@@ -1831,9 +1847,13 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             now_utc = datetime.now(timezone.utc)
             cooldown_ok = True if SIMPLIFIED_MODE else can_trade_now(symbol, now_utc)
 
+            # MaxDiff strategy bypasses most gates to match backtest behavior
+            is_maxdiff = (best_strategy == "maxdiff")
+
             walk_forward_notes: List[str] = []
             sharpe_cutoff: Optional[float] = None
-            if not SIMPLIFIED_MODE:
+            # MaxDiff backtest doesn't have walk-forward filters
+            if not SIMPLIFIED_MODE and not is_maxdiff:
                 default_cutoff = -0.25 if kronos_only_mode else 0.3
                 env_key = "MARKETSIM_KRONOS_SHARPE_CUTOFF" if kronos_only_mode else "MARKETSIM_SHARPE_CUTOFF"
                 sharpe_cutoff = _get_env_float(env_key)
@@ -1858,10 +1878,12 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     )
 
             gating_reasons: List[str] = []
+
             if not DISABLE_TRADE_GATES:
                 if not tradeable:
                     gating_reasons.append(spread_reason)
-                if not edge_ok:
+                # MaxDiff uses its own high/low predictions, skip edge gate
+                if not edge_ok and not is_maxdiff:
                     gating_reasons.append(edge_reason)
                 if kronos_only_mode and consensus_reason and "Model disagreement" in consensus_reason:
                     if sign_kronos in (-1, 1):
@@ -1869,14 +1891,17 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 if kronos_only_mode and consensus_reason and consensus_reason.startswith("No directional signal"):
                     if sign_kronos in (-1, 1):
                         consensus_reason = None
-                if consensus_reason:
+                # MaxDiff doesn't need Toto/Kronos consensus - it has its own predictions
+                if consensus_reason and not is_maxdiff:
                     gating_reasons.append(consensus_reason)
-                if not cooldown_ok and not kronos_only_mode:
+                if not cooldown_ok and not kronos_only_mode and not is_maxdiff:
                     gating_reasons.append("Cooldown active after recent loss")
-                if kelly_fraction <= 0:
+                # MaxDiff doesn't use Kelly sizing in backtest, skip this gate
+                if kelly_fraction <= 0 and not is_maxdiff:
                     gating_reasons.append("Kelly fraction <= 0")
                 recent_sum = strategy_recent_sums.get(best_strategy)
-                if recent_sum is not None and recent_sum <= 0:
+                # MaxDiff backtest doesn't have recent returns filter
+                if recent_sum is not None and recent_sum <= 0 and not is_maxdiff:
                     gating_reasons.append(
                         f"Recent {best_strategy} returns sum {recent_sum:.4f} <= 0"
                     )
@@ -2502,23 +2527,28 @@ def manage_positions(
                 needs_size_increase = False
             else:
                 base_qty = computed_qty
-                drawdown_scale = _kelly_drawdown_scale(data.get("strategy"), symbol)
-                base_kelly = ensure_lower_bound(
-                    coerce_numeric(data.get("kelly_fraction"), default=1.0),
-                    0.0,
-                    default=0.0,
-                )
-                kelly_value = base_kelly
-                if drawdown_scale < 1.0 and base_kelly > 0:
-                    scaled_kelly = ensure_lower_bound(base_kelly * drawdown_scale, 0.0, default=0.0)
-                    if scaled_kelly < base_kelly:
-                        logger.info(
-                            f"{symbol}: Kelly reduced from {base_kelly:.3f} to {scaled_kelly:.3f} via drawdown scaling"
-                        )
-                    kelly_value = scaled_kelly
-                if kelly_value <= 0:
-                    logger.info(f"{symbol}: Kelly fraction non-positive; skipping entry.")
-                    continue
+                # MaxDiff strategy uses full sizing like in backtest, not Kelly
+                if data.get("strategy") == "maxdiff":
+                    kelly_value = 1.0
+                    logger.info(f"{symbol}: MaxDiff using full position size (no Kelly scaling)")
+                else:
+                    drawdown_scale = _kelly_drawdown_scale(data.get("strategy"), symbol)
+                    base_kelly = ensure_lower_bound(
+                        coerce_numeric(data.get("kelly_fraction"), default=1.0),
+                        0.0,
+                        default=0.0,
+                    )
+                    kelly_value = base_kelly
+                    if drawdown_scale < 1.0 and base_kelly > 0:
+                        scaled_kelly = ensure_lower_bound(base_kelly * drawdown_scale, 0.0, default=0.0)
+                        if scaled_kelly < base_kelly:
+                            logger.info(
+                                f"{symbol}: Kelly reduced from {base_kelly:.3f} to {scaled_kelly:.3f} via drawdown scaling"
+                            )
+                        kelly_value = scaled_kelly
+                    if kelly_value <= 0:
+                        logger.info(f"{symbol}: Kelly fraction non-positive; skipping entry.")
+                        continue
                 kelly_fraction = kelly_value
                 data["kelly_fraction"] = kelly_fraction
                 target_qty = ensure_lower_bound(base_qty * kelly_value, 0.0, default=0.0)
