@@ -21,8 +21,16 @@ def normalize_side_for_key(side: str) -> str:
     return "buy"
 
 
-def state_key(symbol: str, side: str, *, separator: str = STATE_KEY_SEPARATOR) -> str:
-    return f"{symbol}{separator}{normalize_side_for_key(side)}"
+def state_key(symbol: str, side: str, strategy: Optional[str] = None, *, separator: str = STATE_KEY_SEPARATOR) -> str:
+    """Generate a state key for symbol, side, and optionally strategy.
+
+    If strategy is provided, key format is: symbol|side|strategy
+    Otherwise: symbol|side (for backwards compatibility)
+    """
+    base_key = f"{symbol}{separator}{normalize_side_for_key(side)}"
+    if strategy:
+        return f"{base_key}{separator}{strategy}"
+    return base_key
 
 
 def parse_timestamp(ts: Optional[str], *, logger: LoggerLike = None) -> Optional[datetime]:
@@ -47,6 +55,7 @@ def load_store_entry(
     symbol: str,
     side: str,
     *,
+    strategy: Optional[str] = None,
     store_name: str,
     logger: LoggerLike = None,
 ) -> Dict[str, Any]:
@@ -59,7 +68,7 @@ def load_store_entry(
         if logger is not None:
             logger.error("Failed loading %s store: %s", store_name, exc)
         return {}
-    return store.get(state_key(symbol, side), {})
+    return store.get(state_key(symbol, side, strategy), {})
 
 
 def save_store_entry(
@@ -68,6 +77,7 @@ def save_store_entry(
     side: str,
     state: Mapping[str, Any],
     *,
+    strategy: Optional[str] = None,
     store_name: str,
     logger: LoggerLike = None,
 ) -> None:
@@ -80,7 +90,7 @@ def save_store_entry(
         if logger is not None:
             logger.error("Failed refreshing %s store before save: %s", store_name, exc)
         return
-    store[state_key(symbol, side)] = dict(state)
+    store[state_key(symbol, side, strategy)] = dict(state)
 
 
 def update_learning_state(
@@ -89,6 +99,7 @@ def update_learning_state(
     side: str,
     updates: Mapping[str, Any],
     *,
+    strategy: Optional[str] = None,
     logger: LoggerLike = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
@@ -97,6 +108,7 @@ def update_learning_state(
             store_loader,
             symbol,
             side,
+            strategy=strategy,
             store_name="trade learning",
             logger=logger,
         )
@@ -114,6 +126,7 @@ def update_learning_state(
             symbol,
             side,
             current,
+            strategy=strategy,
             store_name="trade learning",
             logger=logger,
         )
@@ -342,6 +355,7 @@ def pop_active_trade_record(
     symbol: str,
     side: str,
     *,
+    strategy: Optional[str] = None,
     logger: LoggerLike = None,
 ) -> Dict[str, Any]:
     store = store_loader()
@@ -353,7 +367,7 @@ def pop_active_trade_record(
         if logger is not None:
             logger.error("Failed loading active trades store for pop: %s", exc)
         return {}
-    key = state_key(symbol, side)
+    key = state_key(symbol, side, strategy)
     record = store.data.pop(key, None) if hasattr(store, "data") else store.pop(key, None)
     if record is None:
         record = {}
