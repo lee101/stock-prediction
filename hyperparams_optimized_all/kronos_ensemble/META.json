@@ -1,0 +1,22 @@
+{
+  "symbol": "META",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.20635916838362928,
+    "temperature_range": [
+      0.1,
+      0.3195623917775293
+    ],
+    "top_p": 0.8730885829544218,
+    "top_k": 0,
+    "num_samples": 12,
+    "max_context": 192,
+    "clip": 2.179007954411867,
+    "aggregate": "trimmed_mean_20"
+  },
+  "validation": {
+    "price_mae": 6.400167083740234,
+    "pct_return_mae": 0.015158229464630779,
+    "latency_s": 10.713452378084185
+  }
+}

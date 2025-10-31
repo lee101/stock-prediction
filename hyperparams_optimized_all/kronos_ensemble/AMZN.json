@@ -1,0 +1,22 @@
+{
+  "symbol": "AMZN",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.12897011645480722,
+    "temperature_range": [
+      0.1,
+      0.3214492674557958
+    ],
+    "top_p": 0.8633332694095619,
+    "top_k": 16,
+    "num_samples": 10,
+    "max_context": 192,
+    "clip": 1.9136275425703162,
+    "aggregate": "trimmed_mean_10"
+  },
+  "validation": {
+    "price_mae": 1.0219816207885715,
+    "pct_return_mae": 0.014419286136955057,
+    "latency_s": 10.317861269955756
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "model": "kronos",
+  "symbol": "NVDA",
+  "config": {
+    "name": "kronos_opt_temp0.240_p0.88_s256_k0_clip1.80_ctx192",
+    "temperature": 0.24,
+    "top_p": 0.88,
+    "top_k": 0,
+    "sample_count": 256,
+    "max_context": 192,
+    "clip": 1.8
+  },
+  "validation": {
+    "price_mae": 1.6445831298828097,
+    "pct_return_mae": 0.01639881544158235,
+    "latency_s": 3.6653988620091695
+  },
+  "test": {
+    "price_mae": 2.569908142089848,
+    "pct_return_mae": 0.029859007160932222,
+    "latency_s": 3.670681051997235
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "symbol": "U",
+  "model_type": "kronos_standard",
+  "config": {
+    "temperature": 0.2747699440392437,
+    "top_p": 0.8725468570592875,
+    "top_k": 24,
+    "sample_count": 128,
+    "max_context": 192,
+    "clip": 2.3929442338170226
+  },
+  "validation": {
+    "price_mae": 3.7779186248779295,
+    "pct_return_mae": 0.10030345993906872,
+    "latency_s": 3.195155585941393
+  }
+}

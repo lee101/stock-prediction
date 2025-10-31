@@ -1,0 +1,22 @@
+{
+  "regressions": [],
+  "failures": [
+    {
+      "symbol": "ADBE",
+      "error": "n persist_model_state\n    self.write_metadata(model_id, dtype_token, metadata)\n  File \"/home/administrator/code/stock-prediction/src/models/model_cache.py\", line 136, in write_metadata\n    tmp_path.re"
+    },
+    {
+      "symbol": "TSLA",
+      "error": "^^^^^^^^\n  File \"/home/administrator/code/stock-prediction/src/models/kronos_wrapper.py\", line 228, in predict_series\n    predictor = self._ensure_predictor()\n                ^^^^^^^^^^^^^^^^^^^^^^^^\n"
+    },
+    {
+      "symbol": "data_summary",
+      "error": "True)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/administrator/code/stock-prediction/.venv/lib/python3.12/site-packages/pandas/core/frame.py\", line 7211, in sort_values\n    k = self."
+    }
+  ],
+  "summary": {
+    "total_regressions": 0,
+    "total_failures": 3,
+    "avg_regression_pct": 0
+  }
+}

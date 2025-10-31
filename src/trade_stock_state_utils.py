@@ -138,6 +138,7 @@ def mark_probe_pending(
     symbol: str,
     side: str,
     *,
+    strategy: Optional[str] = None,
     logger: LoggerLike = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
@@ -150,6 +151,7 @@ def mark_probe_pending(
             "probe_active": False,
             "last_probe_successful": False,
         },
+        strategy=strategy,
         logger=logger,
         now=now,
     )
@@ -161,6 +163,7 @@ def mark_probe_active(
     side: str,
     qty: float,
     *,
+    strategy: Optional[str] = None,
     logger: LoggerLike = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
@@ -175,6 +178,7 @@ def mark_probe_active(
             "last_probe_qty": qty,
             "probe_started_at": stamp,
         },
+        strategy=strategy,
         logger=logger,
         now=now,
     )
@@ -186,6 +190,7 @@ def mark_probe_completed(
     side: str,
     successful: bool,
     *,
+    strategy: Optional[str] = None,
     logger: LoggerLike = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
@@ -200,6 +205,7 @@ def mark_probe_completed(
             "last_probe_completed_at": stamp,
             "last_probe_successful": successful,
         },
+        strategy=strategy,
         logger=logger,
         now=now,
     )
@@ -211,6 +217,7 @@ def mark_probe_transitioned(
     side: str,
     qty: float,
     *,
+    strategy: Optional[str] = None,
     logger: LoggerLike = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
@@ -226,6 +233,7 @@ def mark_probe_transitioned(
             "probe_transitioned_at": stamp,
             "last_probe_transition_qty": qty,
         },
+        strategy=strategy,
         logger=logger,
         now=now,
     )

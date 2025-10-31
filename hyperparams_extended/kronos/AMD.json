@@ -1,0 +1,31 @@
+{
+  "model": "kronos",
+  "symbol": "AMD",
+  "config": {
+    "name": "kronos_opt_temp0.300_p0.85_s256_k16_clip1.60_ctx224",
+    "temperature": 0.3,
+    "top_p": 0.85,
+    "top_k": 16,
+    "sample_count": 256,
+    "max_context": 224,
+    "clip": 1.6
+  },
+  "validation": {
+    "price_mae": 1.4408302307128906,
+    "pct_return_mae": 0.02130915623741788,
+    "latency_s": 9.708430651022354
+  },
+  "test": {
+    "price_mae": 19.493187713623048,
+    "pct_return_mae": 0.1138060353878074,
+    "latency_s": 9.708244611945702
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended"
+  }
+}

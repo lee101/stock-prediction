@@ -1,0 +1,17 @@
+{
+  "symbol": "AAPL",
+  "model_type": "kronos_standard",
+  "config": {
+    "temperature": 0.21021318709455505,
+    "top_p": 0.8600052308524697,
+    "top_k": 0,
+    "sample_count": 224,
+    "max_context": 192,
+    "clip": 1.7719051656270097
+  },
+  "validation": {
+    "price_mae": 2.7966766980864906,
+    "pct_return_mae": 0.03132116359555421,
+    "latency_s": 8.773038964980515
+  }
+}

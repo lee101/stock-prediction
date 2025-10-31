@@ -1,0 +1,31 @@
+{
+  "model": "kronos",
+  "symbol": "ADSK",
+  "config": {
+    "name": "kronos_opt_temp0.280_p0.78_s320_k16_clip2.00_ctx224",
+    "temperature": 0.28,
+    "top_p": 0.78,
+    "top_k": 16,
+    "sample_count": 320,
+    "max_context": 224,
+    "clip": 2.0
+  },
+  "validation": {
+    "price_mae": 1.3299591064453153,
+    "pct_return_mae": 0.014045176827221215,
+    "latency_s": 12.010909826058196
+  },
+  "test": {
+    "price_mae": 2.970269775390625,
+    "pct_return_mae": 0.012706785723135064,
+    "latency_s": 12.44711318903137
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended"
+  }
+}

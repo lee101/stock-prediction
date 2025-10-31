@@ -1,0 +1,22 @@
+{
+  "symbol": "NVDA",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.20230432054795042,
+    "temperature_range": [
+      0.1,
+      0.23132326072910958
+    ],
+    "top_p": 0.8715477244648903,
+    "top_k": 32,
+    "num_samples": 10,
+    "max_context": 192,
+    "clip": 2.0605024057052628,
+    "aggregate": "trimmed_mean_20"
+  },
+  "validation": {
+    "price_mae": 2.083578364054361,
+    "pct_return_mae": 0.018569666791440974,
+    "latency_s": 9.473861411039252
+  }
+}

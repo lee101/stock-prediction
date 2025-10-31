@@ -1,0 +1,22 @@
+{
+  "symbol": "LCID",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.17432764237324538,
+    "temperature_range": [
+      0.1,
+      0.2512928369010199
+    ],
+    "top_p": 0.8126068463988495,
+    "top_k": 32,
+    "num_samples": 10,
+    "max_context": 256,
+    "clip": 1.834099189523363,
+    "aggregate": "trimmed_mean_20"
+  },
+  "validation": {
+    "price_mae": 0.31989488601684635,
+    "pct_return_mae": 0.037699078326046895,
+    "latency_s": 9.317023169103777
+  }
+}

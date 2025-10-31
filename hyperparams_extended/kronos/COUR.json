@@ -1,0 +1,31 @@
+{
+  "model": "kronos",
+  "symbol": "COUR",
+  "config": {
+    "name": "kronos_opt_temp0.160_p0.75_s320_k0_clip1.80_ctx224",
+    "temperature": 0.16,
+    "top_p": 0.75,
+    "top_k": 0,
+    "sample_count": 320,
+    "max_context": 224,
+    "clip": 1.8
+  },
+  "validation": {
+    "price_mae": 0.2590434074401856,
+    "pct_return_mae": 0.038994036103398126,
+    "latency_s": 5.306701739988057
+  },
+  "test": {
+    "price_mae": 0.19248785972595214,
+    "pct_return_mae": 0.03310470554056449,
+    "latency_s": 5.320170515042264
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended"
+  }
+}

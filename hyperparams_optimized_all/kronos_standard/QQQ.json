@@ -1,0 +1,17 @@
+{
+  "symbol": "QQQ",
+  "model_type": "kronos_standard",
+  "config": {
+    "temperature": 0.16321929420364173,
+    "top_p": 0.7153325399992894,
+    "top_k": 20,
+    "sample_count": 192,
+    "max_context": 224,
+    "clip": 2.0272857808429796
+  },
+  "validation": {
+    "price_mae": 2.3453699951171814,
+    "pct_return_mae": 0.005488711054022705,
+    "latency_s": 5.937534671043977
+  }
+}

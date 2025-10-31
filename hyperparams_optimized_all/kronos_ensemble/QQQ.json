@@ -1,0 +1,22 @@
+{
+  "symbol": "QQQ",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.1931004983591352,
+    "temperature_range": [
+      0.1,
+      0.30257308670509525
+    ],
+    "top_p": 0.8241029580845387,
+    "top_k": 32,
+    "num_samples": 10,
+    "max_context": 224,
+    "clip": 1.9409261609239485,
+    "aggregate": "trimmed_mean_5"
+  },
+  "validation": {
+    "price_mae": 1.9316824951171783,
+    "pct_return_mae": 0.004934643892947397,
+    "latency_s": 10.08363069902407
+  }
+}

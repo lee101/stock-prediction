@@ -1,0 +1,17 @@
+{
+  "symbol": "INTC",
+  "model_type": "kronos_standard",
+  "config": {
+    "temperature": 0.2388264851723043,
+    "top_p": 0.8533132059170824,
+    "top_k": 0,
+    "sample_count": 160,
+    "max_context": 192,
+    "clip": 2.2895820306888752
+  },
+  "validation": {
+    "price_mae": 0.23741788864135707,
+    "pct_return_mae": 0.01728990945155364,
+    "latency_s": 3.3272056339192204
+  }
+}

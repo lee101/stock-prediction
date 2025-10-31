@@ -1,0 +1,22 @@
+{
+  "symbol": "COIN",
+  "model_type": "kronos_ensemble",
+  "config": {
+    "temperature": 0.1942318888537869,
+    "temperature_range": [
+      0.1,
+      0.3497110144479916
+    ],
+    "top_p": 0.8399361470365571,
+    "top_k": 16,
+    "num_samples": 15,
+    "max_context": 224,
+    "clip": 1.7296409181398549,
+    "aggregate": "median"
+  },
+  "validation": {
+    "price_mae": 4.29989471435546,
+    "pct_return_mae": 0.022622137158479702,
+    "latency_s": 14.457744226994691
+  }
+}
