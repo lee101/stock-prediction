@@ -1,6 +1,6 @@
 {
   "model": "toto",
-  "symbol": "COUR",
+  "symbol": "ETHUSD",
   "config": {
     "name": "toto_opt_trimmed_mean_20_128_spb32",
     "num_samples": 128,
@@ -8,14 +8,14 @@
     "samples_per_batch": 32
   },
   "validation": {
-    "price_mae": 0.23696060241797054,
-    "pct_return_mae": 0.02070422790669536,
-    "latency_s": 3.1670905409555417
+    "price_mae": 62.02477150941513,
+    "pct_return_mae": 0.013847725324620433,
+    "latency_s": 3.2247907968994696
   },
   "test": {
-    "price_mae": 0.23165062635372813,
-    "pct_return_mae": 0.02075815466110071,
-    "latency_s": 3.1331797019811347
+    "price_mae": 157.50411455203326,
+    "pct_return_mae": 0.037483454478883606,
+    "latency_s": 3.2239193098794203
   },
   "windows": {
     "val_window": 20,

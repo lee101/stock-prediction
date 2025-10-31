@@ -25,8 +25,11 @@
     "test_window": 20,
     "forecast_horizon": 1
   },
+  "config_path": "hyperparams/kronos/COUR.json",
   "metadata": {
     "source": "hyperparams_extended",
-    "extended_path": "hyperparams_extended/kronos/COUR.json"
+    "extended_path": "hyperparams_extended/kronos/COUR.json",
+    "selection_metric": "test_price_mae",
+    "selection_value": 0.19248785972595214
   }
 }

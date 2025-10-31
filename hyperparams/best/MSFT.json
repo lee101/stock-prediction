@@ -1,0 +1,28 @@
+{
+  "model": "toto",
+  "symbol": "MSFT",
+  "config": {
+    "name": "toto_opt_median_512_spb32",
+    "num_samples": 512,
+    "aggregate": "median",
+    "samples_per_batch": 32
+  },
+  "validation": {
+    "price_mae": 1.8903733231149993,
+    "pct_return_mae": 0.019374266645414938,
+    "latency_s": 12.255187171977013
+  },
+  "test": {
+    "price_mae": 1.2780832719761925,
+    "pct_return_mae": 0.012995321067946328,
+    "latency_s": 12.31778372998815
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended"
+  }
+}

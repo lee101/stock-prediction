@@ -2,20 +2,20 @@
   "symbol": "ADSK",
   "model": "toto",
   "config": {
-    "name": "toto_trimmed10_128",
-    "num_samples": 128,
-    "aggregate": "trimmed_mean_10",
-    "samples_per_batch": 16
+    "name": "toto_opt_mean_4096_spb512",
+    "num_samples": 4096,
+    "aggregate": "mean",
+    "samples_per_batch": 512
   },
   "validation": {
-    "price_mae": 3.92768456385686,
-    "pct_return_mae": 0.01307816711230773,
-    "latency_s": 49.35965562192723
+    "price_mae": 3.8845165990293054,
+    "pct_return_mae": 0.012927387839967344,
+    "latency_s": 19.76202170396573
   },
   "test": {
-    "price_mae": 3.1697498028094997,
-    "pct_return_mae": 0.009991063005132514,
-    "latency_s": 54.11948650237173
+    "price_mae": 2.946526071988046,
+    "pct_return_mae": 0.00929976417009856,
+    "latency_s": 17.734886186983204
   },
   "windows": {
     "val_window": 20,
@@ -24,6 +24,9 @@
   },
   "config_path": "hyperparams/toto/ADSK.json",
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/toto/ADSK.json",
+    "selection_metric": "test_price_mae",
+    "selection_value": 2.946526071988046
   }
 }

@@ -1,5 +1,5 @@
 {
-  "symbol": "BTCUSD",
+  "symbol": "GOOG",
   "model": "toto",
   "config": {
     "name": "toto_opt_trimmed_mean_5_1024_spb128",
@@ -8,25 +8,25 @@
     "samples_per_batch": 128
   },
   "validation": {
-    "price_mae": 1046.7619896319143,
-    "pct_return_mae": 0.009202042710339631,
-    "latency_s": 6.547580127924448
+    "price_mae": 3.2070672554462947,
+    "pct_return_mae": 0.014546290494042796,
+    "latency_s": 6.505802530999063
   },
   "test": {
-    "price_mae": 2278.9443323651008,
-    "pct_return_mae": 0.01952701682139137,
-    "latency_s": 6.577518960053567
+    "price_mae": 3.0672919656087374,
+    "pct_return_mae": 0.012422907987358369,
+    "latency_s": 6.482925680000335
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/toto/BTCUSD.json",
+  "config_path": "hyperparams/toto/GOOG.json",
   "metadata": {
     "source": "hyperparams_extended",
-    "extended_path": "hyperparams_extended/toto/BTCUSD.json",
+    "extended_path": "hyperparams_extended/toto/GOOG.json",
     "selection_metric": "test_price_mae",
-    "selection_value": 2278.9443323651008
+    "selection_value": 3.0672919656087374
   }
 }

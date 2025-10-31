@@ -2,23 +2,23 @@
   "symbol": "QUBT",
   "model": "kronos",
   "config": {
-    "name": "kronos_temp0.15_p0.82_s208_k16_clip1.8_ctx224",
+    "name": "kronos_opt_temp0.150_p0.90_s320_k24_clip1.20_ctx192",
     "temperature": 0.15,
-    "top_p": 0.82,
-    "top_k": 16,
-    "sample_count": 208,
-    "max_context": 224,
-    "clip": 1.8
+    "top_p": 0.9,
+    "top_k": 24,
+    "sample_count": 320,
+    "max_context": 192,
+    "clip": 1.2
   },
   "validation": {
-    "price_mae": 0.45116190910339365,
-    "pct_return_mae": 0.02907232702070603,
-    "latency_s": 34.10041161905974
+    "price_mae": 0.20303468704223643,
+    "pct_return_mae": 0.03999017855498983,
+    "latency_s": 6.497619109955849
   },
   "test": {
-    "price_mae": 1.6703987121582031,
-    "pct_return_mae": 0.08252536179523497,
-    "latency_s": 34.413337404839694
+    "price_mae": 2.2138507843017576,
+    "pct_return_mae": 0.13465399718986576,
+    "latency_s": 4.461873093910981
   },
   "windows": {
     "val_window": 20,
@@ -26,6 +26,7 @@
     "forecast_horizon": 1
   },
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/kronos/QUBT.json"
   }
 }

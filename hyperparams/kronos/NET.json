@@ -2,23 +2,23 @@
   "symbol": "NET",
   "model": "kronos",
   "config": {
-    "name": "kronos_temp0.145_p0.82_s208_k16_clip1.75_ctx224",
-    "temperature": 0.145,
-    "top_p": 0.82,
-    "top_k": 16,
-    "sample_count": 208,
-    "max_context": 224,
-    "clip": 1.75
+    "name": "kronos_opt_temp0.100_p0.78_s320_k28_clip2.20_ctx192",
+    "temperature": 0.1,
+    "top_p": 0.78,
+    "top_k": 28,
+    "sample_count": 320,
+    "max_context": 192,
+    "clip": 2.2
   },
   "validation": {
-    "price_mae": 10.430046081542969,
-    "pct_return_mae": 0.04935587181501137,
-    "latency_s": 46.64538377476856
+    "price_mae": 3.584459686279297,
+    "pct_return_mae": 0.02305829764719137,
+    "latency_s": 6.588872078049462
   },
   "test": {
-    "price_mae": 11.172038269042966,
-    "pct_return_mae": 0.05098176899778821,
-    "latency_s": 46.19124685367569
+    "price_mae": 4.392990875244138,
+    "pct_return_mae": 0.03269609007706244,
+    "latency_s": 4.469401569949696
   },
   "windows": {
     "val_window": 20,
@@ -26,6 +26,7 @@
     "forecast_horizon": 1
   },
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/kronos/NET.json"
   }
 }

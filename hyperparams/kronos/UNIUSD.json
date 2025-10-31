@@ -2,23 +2,23 @@
   "symbol": "UNIUSD",
   "model": "kronos",
   "config": {
-    "name": "kronos_temp0.12_p0.78_s224_k24_clip1.5_ctx224",
-    "temperature": 0.12,
+    "name": "kronos_opt_temp0.300_p0.78_s320_k28_clip1.60_ctx288",
+    "temperature": 0.3,
     "top_p": 0.78,
-    "top_k": 24,
-    "sample_count": 224,
-    "max_context": 224,
-    "clip": 1.5
+    "top_k": 28,
+    "sample_count": 320,
+    "max_context": 288,
+    "clip": 1.6
   },
   "validation": {
-    "price_mae": 3.801054845110022e-06,
-    "pct_return_mae": 0.02259682892325673,
-    "latency_s": 19.302084020338953
+    "price_mae": 2.3345630325059605e-06,
+    "pct_return_mae": 0.03138491104358895,
+    "latency_s": 7.062475205981173
   },
   "test": {
-    "price_mae": 4.094845644447103e-06,
-    "pct_return_mae": 0.02514520386737761,
-    "latency_s": 20.381720325443894
+    "price_mae": 2.188822691126531e-06,
+    "pct_return_mae": 0.028489273519534904,
+    "latency_s": 7.1759364159661345
   },
   "windows": {
     "val_window": 20,
@@ -26,6 +26,7 @@
     "forecast_horizon": 1
   },
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/kronos/UNIUSD.json"
   }
 }

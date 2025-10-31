@@ -2,20 +2,20 @@
   "symbol": "INTC",
   "model": "toto",
   "config": {
-    "name": "toto_trimmed10_128",
-    "num_samples": 128,
-    "aggregate": "trimmed_mean_10",
-    "samples_per_batch": 16
+    "name": "toto_opt_trimmed_mean_20_3072_spb256",
+    "num_samples": 3072,
+    "aggregate": "trimmed_mean_20",
+    "samples_per_batch": 256
   },
   "validation": {
-    "price_mae": 0.4215145303652831,
-    "pct_return_mae": 0.017265343130560957,
-    "latency_s": 16.304540283046663
+    "price_mae": 0.4076070036650222,
+    "pct_return_mae": 0.01667231119701601,
+    "latency_s": 10.341093744034879
   },
   "test": {
-    "price_mae": 1.3857355035268335,
-    "pct_return_mae": 0.04406649746170388,
-    "latency_s": 16.080185896717012
+    "price_mae": 1.3465700533798612,
+    "pct_return_mae": 0.04298412088691151,
+    "latency_s": 10.368538092210656
   },
   "windows": {
     "val_window": 20,
@@ -24,6 +24,9 @@
   },
   "config_path": "hyperparams/toto/INTC.json",
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/toto/INTC.json",
+    "selection_metric": "test_price_mae",
+    "selection_value": 1.3465700533798612
   }
 }

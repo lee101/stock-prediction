@@ -2,20 +2,20 @@
   "symbol": "NET",
   "model": "toto",
   "config": {
-    "name": "toto_trimmed10_128",
-    "num_samples": 128,
-    "aggregate": "trimmed_mean_10",
-    "samples_per_batch": 16
+    "name": "toto_opt_mean_4096_spb512",
+    "num_samples": 4096,
+    "aggregate": "mean",
+    "samples_per_batch": 512
   },
   "validation": {
-    "price_mae": 3.585032690488373,
-    "pct_return_mae": 0.017036951805517946,
-    "latency_s": 35.89287640852854
+    "price_mae": 3.54737340179272,
+    "pct_return_mae": 0.016855251522423367,
+    "latency_s": 8.006490314030088
   },
   "test": {
-    "price_mae": 4.229625093019914,
-    "pct_return_mae": 0.019276865708217822,
-    "latency_s": 35.832040349021554
+    "price_mae": 4.053732064785427,
+    "pct_return_mae": 0.018473548864090673,
+    "latency_s": 7.945647906075465
   },
   "windows": {
     "val_window": 20,
@@ -24,6 +24,9 @@
   },
   "config_path": "hyperparams/toto/NET.json",
   "metadata": {
-    "source": "hyperparamtraining"
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/toto/NET.json",
+    "selection_metric": "test_price_mae",
+    "selection_value": 4.053732064785427
   }
 }
