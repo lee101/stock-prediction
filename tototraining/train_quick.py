@@ -21,7 +21,7 @@ def create_quick_config(
     loss: str = "huber",
     epochs: int = 10,
     batch_size: int = 4,
-    context_length: int = 4096,
+    context_length: int = 384,
     prediction_length: int = 64,
     use_lora: bool = True,
 ):
@@ -39,7 +39,7 @@ def create_quick_config(
         "weight_decay": 1e-2,
         "grad_clip": 1.0,
         "precision": "bf16",
-        "compile": True,
+        "compile": False,
     }
 
 
