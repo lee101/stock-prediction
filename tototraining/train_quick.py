@@ -21,7 +21,7 @@ def create_quick_config(
     loss: str = "huber",
     epochs: int = 10,
     batch_size: int = 4,
-    context_length: int = 384,
+    context_length: int = 176,
     prediction_length: int = 64,
     use_lora: bool = True,
 ):

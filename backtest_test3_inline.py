@@ -522,6 +522,189 @@ def evaluate_maxdiff_strategy(
     return evaluation, daily_returns_np, metadata
 
 
+def evaluate_maxdiff_always_on_strategy(
+    last_preds: Dict[str, torch.Tensor],
+    simulation_data: pd.DataFrame,
+    *,
+    trading_fee: float,
+    trading_days_per_year: int,
+    is_crypto: bool = False,
+) -> Tuple[StrategyEvaluation, np.ndarray, Dict[str, object]]:
+    close_actual = torch.as_tensor(
+        last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
+        dtype=torch.float32,
+    )
+    validation_len = int(close_actual.numel())
+
+    def _zero_metadata() -> Dict[str, object]:
+        high_price = float(last_preds.get("high_predicted_price_value", 0.0))
+        low_price = float(last_preds.get("low_predicted_price_value", 0.0))
+        return {
+            "maxdiffalwayson_profit": 0.0,
+            "maxdiffalwayson_profit_values": [],
+            "maxdiffalwayson_high_multiplier": 0.0,
+            "maxdiffalwayson_low_multiplier": 0.0,
+            "maxdiffalwayson_high_price": high_price,
+            "maxdiffalwayson_low_price": low_price,
+            "maxdiffalwayson_turnover": 0.0,
+            "maxdiffalwayson_buy_contribution": 0.0,
+            "maxdiffalwayson_sell_contribution": 0.0,
+            "maxdiffalwayson_filled_buy_trades": 0,
+            "maxdiffalwayson_filled_sell_trades": 0,
+            "maxdiffalwayson_trades_total": 0,
+            "maxdiffalwayson_trade_bias": 0.0,
+        }
+
+    if validation_len == 0 or len(simulation_data) < validation_len + 2:
+        eval_zero = StrategyEvaluation(
+            total_return=0.0,
+            avg_daily_return=0.0,
+            annualized_return=0.0,
+            sharpe_ratio=0.0,
+            returns=np.zeros(0, dtype=float),
+        )
+        return eval_zero, eval_zero.returns, _zero_metadata()
+
+    high_series = simulation_data["High"].iloc[-(validation_len + 2):-2]
+    low_series = simulation_data["Low"].iloc[-(validation_len + 2):-2]
+    close_series = simulation_data["Close"].iloc[-(validation_len + 2):-2]
+
+    if len(high_series) != validation_len:
+        high_series = simulation_data["High"].tail(validation_len)
+        low_series = simulation_data["Low"].tail(validation_len)
+        close_series = simulation_data["Close"].tail(validation_len)
+
+    close_vals = close_series.to_numpy(dtype=float)
+    high_vals = high_series.to_numpy(dtype=float)
+    low_vals = low_series.to_numpy(dtype=float)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        close_to_high_np = np.abs(
+            1.0 - np.divide(high_vals, close_vals, out=np.zeros_like(high_vals), where=close_vals != 0.0)
+        )
+        close_to_low_np = np.abs(
+            1.0 - np.divide(low_vals, close_vals, out=np.zeros_like(low_vals), where=close_vals != 0.0)
+        )
+    close_to_high_np = np.nan_to_num(close_to_high_np, nan=0.0, posinf=0.0, neginf=0.0)
+    close_to_low_np = np.nan_to_num(close_to_low_np, nan=0.0, posinf=0.0, neginf=0.0)
+
+    close_to_high = torch.tensor(close_to_high_np, dtype=torch.float32)
+    close_to_low = torch.tensor(close_to_low_np, dtype=torch.float32)
+
+    high_actual_values = last_preds.get("high_actual_movement_values")
+    low_actual_values = last_preds.get("low_actual_movement_values")
+    high_pred_values = last_preds.get("high_predictions")
+    low_pred_values = last_preds.get("low_predictions")
+
+    if (
+        high_actual_values is None
+        or low_actual_values is None
+        or high_pred_values is None
+        or low_pred_values is None
+    ):
+        eval_zero = StrategyEvaluation(
+            total_return=0.0,
+            avg_daily_return=0.0,
+            annualized_return=0.0,
+            sharpe_ratio=0.0,
+            returns=np.zeros(0, dtype=float),
+        )
+        return eval_zero, eval_zero.returns, _zero_metadata()
+
+    high_actual = torch.as_tensor(high_actual_values, dtype=torch.float32) + close_to_high
+    low_actual = torch.as_tensor(low_actual_values, dtype=torch.float32) - close_to_low
+    high_pred = torch.as_tensor(high_pred_values, dtype=torch.float32) + close_to_high
+    low_pred = torch.as_tensor(low_pred_values, dtype=torch.float32) - close_to_low
+
+    buy_indicator = torch.ones_like(close_actual)
+    sell_indicator = torch.zeros_like(close_actual) if is_crypto else -torch.ones_like(close_actual)
+
+    multiplier_candidates = np.linspace(-0.03, 0.03, 81)
+    best_state: Optional[Tuple[float, float, torch.Tensor, torch.Tensor]] = None
+    best_total_profit = float("-inf")
+
+    with torch.no_grad():
+        for high_multiplier in multiplier_candidates:
+            adjusted_high_pred = high_pred + float(high_multiplier)
+            for low_multiplier in multiplier_candidates:
+                adjusted_low_pred = low_pred + float(low_multiplier)
+                buy_returns_tensor = calculate_profit_torch_with_entry_buysell_profit_values(
+                    close_actual,
+                    high_actual,
+                    adjusted_high_pred,
+                    low_actual,
+                    adjusted_low_pred,
+                    buy_indicator,
+                )
+                if is_crypto:
+                    sell_returns_tensor = torch.zeros_like(buy_returns_tensor)
+                    total_profit = float(buy_returns_tensor.sum().item())
+                else:
+                    sell_returns_tensor = calculate_profit_torch_with_entry_buysell_profit_values(
+                        close_actual,
+                        high_actual,
+                        adjusted_high_pred,
+                        low_actual,
+                        adjusted_low_pred,
+                        sell_indicator,
+                    )
+                    total_profit = float(buy_returns_tensor.sum().item() + sell_returns_tensor.sum().item())
+                if total_profit > best_total_profit:
+                    best_total_profit = total_profit
+                    best_state = (
+                        float(high_multiplier),
+                        float(low_multiplier),
+                        buy_returns_tensor.detach().clone(),
+                        sell_returns_tensor.detach().clone(),
+                    )
+
+    if best_state is None:
+        eval_zero = StrategyEvaluation(
+            total_return=0.0,
+            avg_daily_return=0.0,
+            annualized_return=0.0,
+            sharpe_ratio=0.0,
+            returns=np.zeros(0, dtype=float),
+        )
+        return eval_zero, eval_zero.returns, _zero_metadata()
+
+    best_high_multiplier, best_low_multiplier, best_buy_returns_tensor, best_sell_returns_tensor = best_state
+    combined_returns_tensor = best_buy_returns_tensor + best_sell_returns_tensor
+    daily_returns_np = combined_returns_tensor.detach().cpu().numpy().astype(float, copy=False)
+    evaluation = _evaluate_daily_returns(daily_returns_np, trading_days_per_year)
+
+    buy_returns_np = best_buy_returns_tensor.detach().cpu().numpy().astype(float, copy=False)
+    sell_returns_np = best_sell_returns_tensor.detach().cpu().numpy().astype(float, copy=False)
+
+    buy_contribution = float(buy_returns_np.sum())
+    sell_contribution = float(sell_returns_np.sum())
+    turnover = float(np.mean(np.abs(daily_returns_np))) if daily_returns_np.size else 0.0
+    total_fills = int(np.count_nonzero(buy_returns_np) + np.count_nonzero(sell_returns_np))
+    buy_fills = int(np.count_nonzero(buy_returns_np))
+    sell_fills = int(np.count_nonzero(sell_returns_np))
+    abs_total = float(np.sum(np.abs(daily_returns_np)))
+    trade_bias = 0.0 if abs_total == 0.0 else float((buy_contribution - sell_contribution) / abs_total)
+
+    high_price_reference = float(last_preds.get("high_predicted_price_value", 0.0))
+    low_price_reference = float(last_preds.get("low_predicted_price_value", 0.0))
+    metadata = {
+        "maxdiffalwayson_profit": float(evaluation.total_return),
+        "maxdiffalwayson_profit_values": daily_returns_np.tolist(),
+        "maxdiffalwayson_high_multiplier": best_high_multiplier,
+        "maxdiffalwayson_low_multiplier": best_low_multiplier,
+        "maxdiffalwayson_high_price": high_price_reference * (1.0 + best_high_multiplier),
+        "maxdiffalwayson_low_price": low_price_reference * (1.0 + best_low_multiplier),
+        "maxdiffalwayson_turnover": turnover,
+        "maxdiffalwayson_buy_contribution": buy_contribution,
+        "maxdiffalwayson_sell_contribution": sell_contribution,
+        "maxdiffalwayson_filled_buy_trades": buy_fills,
+        "maxdiffalwayson_filled_sell_trades": sell_fills,
+        "maxdiffalwayson_trades_total": total_fills,
+        "maxdiffalwayson_trade_bias": trade_bias,
+    }
+    return evaluation, daily_returns_np, metadata
+
+
 def _log_strategy_summary(results_df: pd.DataFrame, symbol: str, num_simulations: int) -> None:
     strategy_specs = [
         ("Simple", "simple_strategy_return", "simple_strategy_sharpe", "simple_strategy_finalday"),
@@ -536,6 +719,7 @@ def _log_strategy_summary(results_df: pd.DataFrame, symbol: str, num_simulations
         ("Entry+Takeprofit", "entry_takeprofit_return", "entry_takeprofit_sharpe", "entry_takeprofit_finalday"),
         ("Highlow", "highlow_return", "highlow_sharpe", "highlow_finalday_return"),
         ("MaxDiff", "maxdiff_return", "maxdiff_sharpe", "maxdiff_finalday_return"),
+        ("MaxDiffAlwaysOn", "maxdiffalwayson_return", "maxdiffalwayson_sharpe", "maxdiffalwayson_finalday_return"),
         ("CI Guard", "ci_guard_return", "ci_guard_sharpe", None),
     ]
 
@@ -593,6 +777,8 @@ def compute_walk_forward_stats(results_df: pd.DataFrame) -> Dict[str, float]:
         stats["walk_forward_takeprofit_sharpe"] = float(results_df["entry_takeprofit_sharpe"].mean())
     if "maxdiff_sharpe" in results_df:
         stats["walk_forward_maxdiff_sharpe"] = float(results_df["maxdiff_sharpe"].mean())
+    if "maxdiffalwayson_sharpe" in results_df:
+        stats["walk_forward_maxdiffalwayson_sharpe"] = float(results_df["maxdiffalwayson_sharpe"].mean())
     return stats
 
 
@@ -2222,6 +2408,24 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     maxdiff_finalday_return = float(maxdiff_returns[-1]) if maxdiff_returns.size else 0.0
     maxdiff_turnover = float(maxdiff_metadata.get("maxdiff_turnover", 0.0))
 
+    maxdiff_always_eval, maxdiff_always_returns_np, maxdiff_always_metadata = evaluate_maxdiff_always_on_strategy(
+        last_preds,
+        simulation_data,
+        trading_fee=trading_fee,
+        trading_days_per_year=trading_days_per_year,
+        is_crypto=is_crypto,
+    )
+    last_preds.update(maxdiff_always_metadata)
+    maxdiff_always_return = maxdiff_always_eval.total_return
+    maxdiff_always_sharpe = maxdiff_always_eval.sharpe_ratio
+    maxdiff_always_avg_daily = maxdiff_always_eval.avg_daily_return
+    maxdiff_always_annual = maxdiff_always_eval.annualized_return
+    maxdiff_always_returns = maxdiff_always_returns_np
+    maxdiff_always_finalday_return = (
+        float(maxdiff_always_returns[-1]) if maxdiff_always_returns.size else 0.0
+    )
+    maxdiff_always_turnover = float(maxdiff_always_metadata.get("maxdiffalwayson_turnover", 0.0))
+
     # Simple buy/sell strategy
     simple_signals = simple_buy_sell_strategy(
         close_pred_tensor,
@@ -2385,6 +2589,9 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     tb_writer.add_scalar(f'{symbol}/strategies/maxdiff/total_return', maxdiff_return, sim_idx)
     tb_writer.add_scalar(f'{symbol}/strategies/maxdiff/sharpe', maxdiff_sharpe, sim_idx)
     tb_writer.add_scalar(f'{symbol}/strategies/maxdiff/finalday', maxdiff_finalday_return, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/maxdiffalwayson/total_return', maxdiff_always_return, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/maxdiffalwayson/sharpe', maxdiff_always_sharpe, sim_idx)
+    tb_writer.add_scalar(f'{symbol}/strategies/maxdiffalwayson/finalday', maxdiff_always_finalday_return, sim_idx)
 
     # Log returns over time
     for t, ret in enumerate(simple_returns):
@@ -2403,6 +2610,8 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         tb_writer.add_scalar(f'{symbol}/returns_over_time/ci_guard', ret, t)
     for t, ret in enumerate(maxdiff_returns):
         tb_writer.add_scalar(f'{symbol}/returns_over_time/maxdiff', ret, t)
+    for t, ret in enumerate(maxdiff_always_returns):
+        tb_writer.add_scalar(f'{symbol}/returns_over_time/maxdiffalwayson', ret, t)
 
     result = {
         'date': simulation_data.index[-1],
@@ -2457,6 +2666,24 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         'maxdiff_avg_daily_return': float(maxdiff_avg_daily),
         'maxdiff_annual_return': float(maxdiff_annual),
         'maxdiff_turnover': float(maxdiff_turnover),
+        'maxdiffalwayson_return': float(maxdiff_always_return),
+        'maxdiffalwayson_sharpe': float(maxdiff_always_sharpe),
+        'maxdiffalwayson_finalday_return': float(maxdiff_always_finalday_return),
+        'maxdiffalwayson_avg_daily_return': float(maxdiff_always_avg_daily),
+        'maxdiffalwayson_annual_return': float(maxdiff_always_annual),
+        'maxdiffalwayson_turnover': float(maxdiff_always_turnover),
+        'maxdiffalwayson_profit': float(maxdiff_always_metadata.get('maxdiffalwayson_profit', 0.0)),
+        'maxdiffalwayson_profit_values': maxdiff_always_metadata.get('maxdiffalwayson_profit_values', []),
+        'maxdiffalwayson_high_multiplier': float(maxdiff_always_metadata.get('maxdiffalwayson_high_multiplier', 0.0)),
+        'maxdiffalwayson_low_multiplier': float(maxdiff_always_metadata.get('maxdiffalwayson_low_multiplier', 0.0)),
+        'maxdiffalwayson_high_price': float(maxdiff_always_metadata.get('maxdiffalwayson_high_price', 0.0)),
+        'maxdiffalwayson_low_price': float(maxdiff_always_metadata.get('maxdiffalwayson_low_price', 0.0)),
+        'maxdiffalwayson_buy_contribution': float(maxdiff_always_metadata.get('maxdiffalwayson_buy_contribution', 0.0)),
+        'maxdiffalwayson_sell_contribution': float(maxdiff_always_metadata.get('maxdiffalwayson_sell_contribution', 0.0)),
+        'maxdiffalwayson_filled_buy_trades': int(maxdiff_always_metadata.get('maxdiffalwayson_filled_buy_trades', 0)),
+        'maxdiffalwayson_filled_sell_trades': int(maxdiff_always_metadata.get('maxdiffalwayson_filled_sell_trades', 0)),
+        'maxdiffalwayson_trades_total': int(maxdiff_always_metadata.get('maxdiffalwayson_trades_total', 0)),
+        'maxdiffalwayson_trade_bias': float(maxdiff_always_metadata.get('maxdiffalwayson_trade_bias', 0.0)),
         'maxdiffprofit_profit': float(maxdiff_metadata.get('maxdiffprofit_profit', 0.0)),
         'maxdiffprofit_profit_values': maxdiff_metadata.get('maxdiffprofit_profit_values', []),
         'maxdiffprofit_profit_high_multiplier': float(maxdiff_metadata.get('maxdiffprofit_profit_high_multiplier', 0.0)),
@@ -2765,6 +2992,14 @@ if __name__ == "__main__":
                 "annual_return": _mean("maxdiff_annual_return"),
                 "turnover": _mean("maxdiff_turnover"),
             },
+            "maxdiffalwayson": {
+                "return": _mean("maxdiffalwayson_return"),
+                "sharpe": _mean("maxdiffalwayson_sharpe"),
+                "final_day": _mean("maxdiffalwayson_finalday_return"),
+                "avg_daily_return": _mean("maxdiffalwayson_avg_daily_return"),
+                "annual_return": _mean("maxdiffalwayson_annual_return"),
+                "turnover": _mean("maxdiffalwayson_turnover"),
+            },
             "ci_guard": {
                 "return": _mean("ci_guard_return"),
                 "sharpe": _mean("ci_guard_sharpe"),
@@ -2785,6 +3020,8 @@ if __name__ == "__main__":
                 "low_val_loss": _mean("low_val_loss"),
                 "walk_forward_oos_sharpe": _mean("walk_forward_oos_sharpe"),
                 "walk_forward_turnover": _mean("walk_forward_turnover"),
+                "walk_forward_maxdiff_sharpe": _mean("walk_forward_maxdiff_sharpe"),
+                "walk_forward_maxdiffalwayson_sharpe": _mean("walk_forward_maxdiffalwayson_sharpe"),
             },
         }
         output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
