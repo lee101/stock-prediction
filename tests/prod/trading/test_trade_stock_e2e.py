@@ -423,6 +423,119 @@ def test_analyze_symbols_marks_crypto_sell_ineligible(
     assert "crypto_sell_disabled" in logged_messages
 
 
+@patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)
+@patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
+@patch("trade_stock_e2e.backtest_forecasts")
+def test_analyze_symbols_selects_maxdiffalwayson_when_maxdiff_blocked(
+    mock_backtest, mock_snapshot, mock_trading_day_now
+):
+    rows = []
+    for _ in range(70):
+        rows.append(
+            {
+                "simple_strategy_return": -0.001,
+                "simple_strategy_avg_daily_return": -0.001,
+                "simple_strategy_annual_return": -0.001 * 365,
+                "simple_strategy_sharpe": 0.2,
+                "simple_strategy_turnover": 0.4,
+                "simple_strategy_max_drawdown": -0.03,
+                "ci_guard_return": -0.0005,
+                "ci_guard_avg_daily_return": -0.0005,
+                "ci_guard_annual_return": -0.0005 * 365,
+                "ci_guard_sharpe": 0.1,
+                "ci_guard_turnover": 0.3,
+                "ci_guard_max_drawdown": -0.025,
+                "all_signals_strategy_return": -0.002,
+                "all_signals_strategy_avg_daily_return": -0.002,
+                "all_signals_strategy_annual_return": -0.002 * 365,
+                "all_signals_strategy_sharpe": -0.2,
+                "all_signals_strategy_turnover": 0.5,
+                "all_signals_strategy_max_drawdown": -0.04,
+                "entry_takeprofit_return": -0.0015,
+                "entry_takeprofit_avg_daily_return": -0.0015,
+                "entry_takeprofit_annual_return": -0.0015 * 365,
+                "entry_takeprofit_sharpe": -0.1,
+                "entry_takeprofit_turnover": 0.45,
+                "entry_takeprofit_max_drawdown": -0.035,
+                "highlow_return": -0.001,
+                "highlow_avg_daily_return": -0.001,
+                "highlow_annual_return": -0.001 * 365,
+                "highlow_sharpe": -0.05,
+                "highlow_turnover": 0.55,
+                "highlow_max_drawdown": -0.03,
+                "maxdiff_return": 0.002,
+                "maxdiff_avg_daily_return": 0.002,
+                "maxdiff_annual_return": 0.002 * 365,
+                "maxdiff_sharpe": 0.4,
+                "maxdiff_turnover": 0.02,
+                "maxdiffprofit_high_price": 4120.0,
+                "maxdiffprofit_low_price": 3520.0,
+                "maxdiffprofit_profit_high_multiplier": 0.01,
+                "maxdiffprofit_profit_low_multiplier": -0.015,
+                "maxdiffprofit_profit": 0.002,
+                "maxdiffprofit_profit_values": [0.002],
+                "maxdiff_primary_side": "sell",
+                "maxdiff_trade_bias": -0.25,
+                "maxdiff_trades_positive": 0,
+                "maxdiff_trades_negative": 6,
+                "maxdiff_trades_total": 6,
+                "maxdiffalwayson_return": 0.005,
+                "maxdiffalwayson_avg_daily_return": 0.005,
+                "maxdiffalwayson_annual_return": 0.005 * 365,
+                "maxdiffalwayson_sharpe": 1.3,
+                "maxdiffalwayson_turnover": 0.018,
+                "maxdiffalwayson_profit": 0.005,
+                "maxdiffalwayson_profit_values": [0.005],
+                "maxdiffalwayson_high_multiplier": 0.02,
+                "maxdiffalwayson_low_multiplier": -0.02,
+                "maxdiffalwayson_high_price": 4165.0,
+                "maxdiffalwayson_low_price": 3535.0,
+                "maxdiffalwayson_buy_contribution": 0.003,
+                "maxdiffalwayson_sell_contribution": 0.002,
+                "maxdiffalwayson_filled_buy_trades": 7,
+                "maxdiffalwayson_filled_sell_trades": 5,
+                "maxdiffalwayson_trades_total": 12,
+                "maxdiffalwayson_trade_bias": 0.2,
+                "buy_hold_return": 0.0,
+                "buy_hold_avg_daily_return": 0.0,
+                "buy_hold_annual_return": 0.0,
+                "buy_hold_sharpe": 0.0,
+                "buy_hold_finalday": 0.0,
+                "unprofit_shutdown_return": 0.0,
+                "unprofit_shutdown_avg_daily_return": 0.0,
+                "unprofit_shutdown_annual_return": 0.0,
+                "unprofit_shutdown_sharpe": 0.0,
+                "unprofit_shutdown_finalday": 0.0,
+                "predicted_close": 4100.0,
+                "predicted_high": 4200.0,
+                "predicted_low": 3600.0,
+                "close": 3800.0,
+                "toto_expected_move_pct": 0.003,
+                "kronos_expected_move_pct": -0.001,
+                "realized_volatility_pct": 1.2,
+                "dollar_vol_20d": 1.2e6,
+                "atr_pct_14": 0.015,
+                "walk_forward_oos_sharpe": 0.05,
+                "walk_forward_turnover": 0.8,
+                "walk_forward_highlow_sharpe": -0.05,
+                "walk_forward_takeprofit_sharpe": -0.04,
+                "walk_forward_maxdiff_sharpe": 0.35,
+                "walk_forward_maxdiffalwayson_sharpe": 0.9,
+            }
+        )
+
+    mock_backtest.return_value = pd.DataFrame(rows)
+
+    with patch.dict(os.environ, {"MARKETSIM_DISABLE_GATES": "1"}, clear=False):
+        results = analyze_symbols(["ETHUSD"])
+
+    assert "ETHUSD" in results
+    selected = results["ETHUSD"]
+    assert selected["strategy"] == "maxdiffalwayson"
+    assert selected["strategy_entry_ineligible"].get("maxdiff") is not None
+    assert selected["maxdiffalwayson_return"] == pytest.approx(0.005)
+    assert selected["maxdiffalwayson_high_price"] == pytest.approx(4165.0)
+
 @patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=False)
 @patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
 @patch("trade_stock_e2e.backtest_forecasts")
@@ -913,7 +1026,10 @@ def test_manage_positions_enters_new_simple_position_without_real_trades():
     with stub_trading_env(positions=[], qty=5, trading_day_now=True) as mocks:
         manage_positions(current_picks, {}, current_picks)
 
-    mocks["ramp"].assert_called_once_with("AAPL", "buy", target_qty=5)
+    mocks["ramp"].assert_called_once()
+    args, kwargs = mocks["ramp"].call_args
+    assert args == ("AAPL", "buy")
+    assert kwargs["target_qty"] == pytest.approx(5)
     mocks["get_qty"].assert_called()
     mocks["spawn_tp"].assert_not_called()
     mocks["open_order"].assert_not_called()
