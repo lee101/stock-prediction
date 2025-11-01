@@ -14,7 +14,7 @@ from pathlib import Path
 import tempfile
 import hashlib
 from unittest.mock import Mock, patch
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Union
 import warnings
 from dataclasses import dataclass, asdict
 
