@@ -232,6 +232,16 @@ def open_position_at_maxdiff_takeprofit(
         "--config-path",
         help="Path to persist watcher status updates.",
     ),
+    force_immediate: bool = typer.Option(
+        False,
+        "--force-immediate",
+        help="Submit the staged order without waiting for price tolerance triggers.",
+    ),
+    priority_rank: Optional[int] = typer.Option(
+        None,
+        "--priority-rank",
+        help="Optional priority ranking used for coordination across watchers.",
+    ),
 ) -> None:
     side = _normalize_side(side)
     if limit_price <= 0 or target_qty <= 0:
@@ -249,15 +259,31 @@ def open_position_at_maxdiff_takeprofit(
     now = _now()
     expiry = now + timedelta(minutes=expiry_minutes)
 
-    logger.info(
-        "Starting maxdiff entry watcher for %s side=%s limit=%.4f qty=%.4f tolerance=%.4f expiry=%s",
-        symbol,
-        side,
-        limit_price,
-        target_qty,
-        tolerance_pct,
-        expiry.isoformat(),
-    )
+    if priority_rank is not None:
+        logger.info(
+            "Starting maxdiff entry watcher for %s side=%s limit=%.4f qty=%.4f tolerance=%.4f "
+            "expiry=%s force_immediate=%s priority_rank=%s",
+            symbol,
+            side,
+            limit_price,
+            target_qty,
+            tolerance_pct,
+            expiry.isoformat(),
+            force_immediate,
+            priority_rank,
+        )
+    else:
+        logger.info(
+            "Starting maxdiff entry watcher for %s side=%s limit=%.4f qty=%.4f tolerance=%.4f expiry=%s "
+            "force_immediate=%s",
+            symbol,
+            side,
+            limit_price,
+            target_qty,
+            tolerance_pct,
+            expiry.isoformat(),
+            force_immediate,
+        )
 
     status = _prepare_status(
         config_path,
@@ -273,8 +299,14 @@ def open_position_at_maxdiff_takeprofit(
             "started_at": now.isoformat(),
             "asset_class": asset_class,
             "active": True,
+            "force_immediate": bool(force_immediate),
         },
     )
+    if priority_rank is not None:
+        try:
+            status["priority_rank"] = int(priority_rank)
+        except (TypeError, ValueError):
+            status["priority_rank"] = priority_rank
     status = _update_status(config_path, status, state="initializing")
 
     fallback_client = None
@@ -333,10 +365,13 @@ def open_position_at_maxdiff_takeprofit(
                 time.sleep(poll_seconds)
                 continue
 
-            if not _within_tolerance(reference_price, limit_price, tolerance_pct):
+            skip_tolerance = bool(status.get("force_immediate"))
+            if not skip_tolerance and not _within_tolerance(reference_price, limit_price, tolerance_pct):
                 status = _update_status(config_path, status, state="waiting_for_trigger")
                 time.sleep(poll_seconds)
                 continue
+            if skip_tolerance and status.get("state") != "trigger_override":
+                status = _update_status(config_path, status, state="trigger_override")
 
             if not _entry_requires_cash(side, limit_price, target_qty):
                 status = _update_status(config_path, status, state="blocked_no_cash")

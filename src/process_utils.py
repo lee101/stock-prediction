@@ -227,8 +227,8 @@ def _format_float(value: float, precision: int = 6) -> str:
 
 @debounce(
     MAXDIFF_ENTRY_SPAWN_DEBOUNCE_SECONDS,
-    key_func=lambda symbol, side, limit_price, target_qty, tolerance_pct=0.0066, expiry_minutes=1440, poll_seconds=MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS: (
-        f"{symbol}_{side}_{limit_price}_{target_qty}_{tolerance_pct}_{expiry_minutes}_{poll_seconds}"
+    key_func=lambda symbol, side, limit_price, target_qty, tolerance_pct=0.0066, expiry_minutes=1440, poll_seconds=MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS, force_immediate=False, priority_rank=None: (
+        f"{symbol}_{side}_{limit_price}_{target_qty}_{tolerance_pct}_{expiry_minutes}_{poll_seconds}_{int(bool(force_immediate))}_{priority_rank if priority_rank is not None else 'none'}"
     ),
 )
 def spawn_open_position_at_maxdiff_takeprofit(
@@ -239,6 +239,9 @@ def spawn_open_position_at_maxdiff_takeprofit(
     tolerance_pct: float = 0.0066,
     expiry_minutes: int = 60 * 24,
     poll_seconds: int = MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS,
+    *,
+    force_immediate: bool = False,
+    priority_rank: Optional[int] = None,
 ):
     """
     Spawn a watchdog process that attempts to open a maxdiff position when price approaches the target.
@@ -256,6 +259,15 @@ def spawn_open_position_at_maxdiff_takeprofit(
     expiry_minutes_int = int(max(1, expiry_minutes))
     expiry_at = started_at + timedelta(minutes=expiry_minutes_int)
     _stop_existing_watcher(config_path, reason="replaced_entry_watcher")
+    priority_value: Optional[int]
+    if priority_rank is None:
+        priority_value = None
+    else:
+        try:
+            priority_value = int(priority_rank)
+        except (TypeError, ValueError):
+            priority_value = None
+
     metadata = {
         "config_version": 1,
         "mode": "entry",
@@ -272,7 +284,10 @@ def spawn_open_position_at_maxdiff_takeprofit(
         "active": True,
         "config_path": str(config_path),
         "poll_seconds": poll_seconds_int,
+        "force_immediate": bool(force_immediate),
     }
+    if priority_value is not None:
+        metadata["priority_rank"] = priority_value
     _persist_watcher_metadata(config_path, metadata)
     command = (
         f"python scripts/maxdiff_cli.py open-position {symbol}"
@@ -284,6 +299,10 @@ def spawn_open_position_at_maxdiff_takeprofit(
         f" --config-path={quote(str(config_path))}"
         f" --poll-seconds={poll_seconds_int}"
     )
+    if force_immediate:
+        command += " --force-immediate"
+    if priority_value is not None:
+        command += f" --priority-rank={priority_value}"
     if symbol in crypto_symbols:
         command += " --asset-class=crypto"
     logger.info(f"Running command {command}")
