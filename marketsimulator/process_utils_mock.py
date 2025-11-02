@@ -58,21 +58,37 @@ def spawn_open_position_at_maxdiff_takeprofit(
     target_qty: float,
     tolerance_pct: float = 0.0066,
     expiry_minutes: int = 60 * 24,
+    poll_seconds: int = 45,
+    *,
+    force_immediate: bool = False,
+    priority_rank: Optional[int] = None,
 ):
     logger.info(
-        "[sim] Maxdiff staged entry for %s side=%s qty=%s limit=%.4f tol=%.4f expiry=%s",
+        "[sim] Maxdiff staged entry for %s side=%s qty=%s limit=%.4f tol=%.4f expiry=%s poll=%s force_immediate=%s priority=%s",
         symbol,
         side,
         target_qty,
         limit_price,
         tolerance_pct,
         expiry_minutes,
+        poll_seconds,
+        force_immediate,
+        priority_rank,
     )
     try:
         state = get_state()
     except RuntimeError:
         return
-    state.register_maxdiff_entry(symbol, side, limit_price, target_qty, tolerance_pct, expiry_minutes)
+    state.register_maxdiff_entry(
+        symbol,
+        side,
+        limit_price,
+        target_qty,
+        tolerance_pct,
+        expiry_minutes,
+        force_immediate=force_immediate,
+        priority_rank=priority_rank,
+    )
 
 
 def spawn_close_position_at_maxdiff_takeprofit(
