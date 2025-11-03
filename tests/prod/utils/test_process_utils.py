@@ -50,6 +50,41 @@ def test_spawn_open_replaces_existing_watcher(tmp_watchers_dir, monkeypatch):
     assert metadata["pid"] == dummy_process.pid
     assert metadata["state"] == "launched"
     assert metadata["poll_seconds"] == process_utils.MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS
+    assert metadata["force_immediate"] is False
+    assert "priority_rank" not in metadata
+
+
+def test_spawn_open_force_immediate_sets_metadata(tmp_watchers_dir, monkeypatch):
+    symbol = "MSFT"
+    side = "sell"
+    limit_price = 142.25
+    target_qty = 5.0
+
+    suffix = process_utils._format_float(limit_price, 4)
+    config_path = process_utils._watcher_config_path(symbol, side, "entry", suffix=suffix)
+
+    commands = []
+
+    def fake_popen(command, *args, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(pid=11111)
+
+    monkeypatch.setattr(process_utils.subprocess, "Popen", fake_popen)
+
+    process_utils.spawn_open_position_at_maxdiff_takeprofit(
+        symbol,
+        side,
+        limit_price,
+        target_qty,
+        force_immediate=True,
+        priority_rank=2,
+    )
+
+    metadata = json.loads(config_path.read_text())
+    assert metadata["force_immediate"] is True
+    assert metadata["priority_rank"] == 2
+    assert any("--force-immediate" in cmd for cmd in commands)
+    assert any("--priority-rank=2" in cmd for cmd in commands)
 
 
 def test_spawn_close_replaces_existing_watcher(tmp_watchers_dir, monkeypatch):

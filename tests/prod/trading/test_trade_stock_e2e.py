@@ -1219,6 +1219,8 @@ def test_manage_positions_highlow_strategy_uses_limit_orders(strategy_name):
     assert args[2] == pytest.approx(98.5)
     assert args[3] == pytest.approx(3.0)
     assert kwargs.get("poll_seconds") == trade_module.MAXDIFF_ENTRY_WATCHER_POLL_SECONDS
+    assert kwargs.get("force_immediate") is False
+    assert kwargs.get("priority_rank") is None
     mocks["spawn_close_maxdiff"].assert_called_once()
     close_args, close_kwargs = mocks["spawn_close_maxdiff"].call_args
     assert close_args == ("AAPL", "buy", 132.0)
@@ -1257,6 +1259,8 @@ def test_manage_positions_highlow_short_uses_maxdiff_prices(strategy_name):
     assert args[2] == pytest.approx(6.9)
     assert args[3] == pytest.approx(2.0)
     assert kwargs.get("poll_seconds") == trade_module.MAXDIFF_ENTRY_WATCHER_POLL_SECONDS
+    assert kwargs.get("force_immediate") is False
+    assert kwargs.get("priority_rank") is None
     mocks["spawn_close_maxdiff"].assert_called_once()
     close_args, close_kwargs = mocks["spawn_close_maxdiff"].call_args
     assert close_args == ("UNIUSD", "sell", 6.05)
@@ -1265,6 +1269,77 @@ def test_manage_positions_highlow_short_uses_maxdiff_prices(strategy_name):
         trade_module.MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE
     )
     mocks["spawn_tp"].assert_not_called()
+
+
+def test_manage_positions_prioritises_maxdiffalwayson_force_immediate():
+    current_picks = {
+        "AAPL": {
+            "side": "buy",
+            "avg_return": 0.05,
+            "predicted_movement": 0.04,
+            "strategy": "maxdiffalwayson",
+            "predicted_high": 210.0,
+            "predicted_low": 180.0,
+            "maxdiffalwayson_low_price": 182.0,
+            "maxdiffalwayson_high_price": 208.0,
+            "maxdiffprofit_low_price": 181.0,
+            "maxdiffprofit_high_price": 207.0,
+            "predictions": pd.DataFrame([
+                {"predicted_low": 180.0, "predicted_high": 210.0}
+            ]),
+        },
+        "MSFT": {
+            "side": "sell",
+            "avg_return": 0.04,
+            "predicted_movement": -0.03,
+            "strategy": "maxdiffalwayson",
+            "predicted_high": 350.0,
+            "predicted_low": 320.0,
+            "maxdiffalwayson_low_price": 322.0,
+            "maxdiffalwayson_high_price": 348.0,
+            "maxdiffprofit_low_price": 321.0,
+            "maxdiffprofit_high_price": 347.0,
+            "predictions": pd.DataFrame([
+                {"predicted_low": 320.0, "predicted_high": 350.0}
+            ]),
+        },
+        "GOOG": {
+            "side": "buy",
+            "avg_return": 0.02,
+            "predicted_movement": 0.02,
+            "strategy": "maxdiffalwayson",
+            "predicted_high": 150.0,
+            "predicted_low": 130.0,
+            "maxdiffalwayson_low_price": 132.0,
+            "maxdiffalwayson_high_price": 148.0,
+            "maxdiffprofit_low_price": 131.0,
+            "maxdiffprofit_high_price": 147.0,
+            "predictions": pd.DataFrame([
+                {"predicted_low": 130.0, "predicted_high": 150.0}
+            ]),
+        },
+    }
+
+    with patch.object(trade_module, "MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT", 2):
+        with stub_trading_env(positions=[], qty=4, trading_day_now=True) as mocks:
+            manage_positions(current_picks, {}, current_picks)
+
+    spawn_calls = mocks["spawn_open_maxdiff"].call_args_list
+    assert len(spawn_calls) >= 3
+
+    priority_map = {}
+    force_map = {}
+    for args, kwargs in spawn_calls:
+        symbol = args[0]
+        priority_map.setdefault(symbol, set()).add(kwargs.get("priority_rank"))
+        force_map.setdefault(symbol, set()).add(kwargs.get("force_immediate"))
+
+    assert priority_map["AAPL"] == {1}
+    assert force_map["AAPL"] == {True}
+    assert priority_map["MSFT"] == {2}
+    assert force_map["MSFT"] == {True}
+    assert priority_map["GOOG"] == {3}
+    assert force_map["GOOG"] == {False}
 
 
 def test_build_portfolio_core_prefers_profitable_strategies():
