@@ -154,6 +154,8 @@ class MaxDiffEntryWatcher:
     last_fill: Optional[datetime] = None
     fills: int = 0
     min_interval: timedelta = timedelta(hours=1)
+    force_immediate: bool = False
+    priority_rank: Optional[int] = None
 
 
 @dataclass
@@ -319,11 +321,20 @@ class SimulationState:
         target_qty: float,
         tolerance_pct: float,
         expiry_minutes: int,
+        force_immediate: bool = False,
+        priority_rank: Optional[int] = None,
     ) -> None:
         if limit_price <= 0 or target_qty <= 0:
             return
         now = self.clock.current
         expiry_minutes = max(1, int(expiry_minutes))
+        priority_value: Optional[int] = None
+        if priority_rank is not None:
+            try:
+                priority_value = int(priority_rank)
+            except (TypeError, ValueError):
+                priority_value = None
+
         watcher = MaxDiffEntryWatcher(
             symbol=symbol.upper(),
             side=_normalise_side(side),
@@ -333,6 +344,8 @@ class SimulationState:
             expiry=now + timedelta(minutes=expiry_minutes),
             created_at=now,
             last_checked=now,
+            force_immediate=bool(force_immediate),
+            priority_rank=priority_value,
         )
         self.maxdiff_entries.append(watcher)
 

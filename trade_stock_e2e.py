@@ -540,6 +540,9 @@ BACKOUT_MARKET_CLOSE_FORCE_MINUTES = int(os.getenv("BACKOUT_MARKET_CLOSE_FORCE_M
 MAXDIFF_ENTRY_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_ENTRY_POLL_SECONDS", "12")))
 MAXDIFF_EXIT_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_EXIT_POLL_SECONDS", "12")))
 MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE = float(os.getenv("MAXDIFF_EXIT_PRICE_TOLERANCE", "0.001"))
+MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT = max(
+    0, int(os.getenv("MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT", "2"))
+)
 
 
 def _log_detail(message: str) -> None:
@@ -2425,6 +2428,18 @@ def manage_positions(
 
     maxdiff_entries_seen = 0
 
+    always_on_candidates: List[Tuple[str, float]] = []
+    for symbol, pick_data in current_picks.items():
+        if pick_data.get("strategy") != "maxdiffalwayson":
+            continue
+        avg_return = coerce_numeric(pick_data.get("avg_return"), default=0.0)
+        always_on_candidates.append((symbol, avg_return))
+    always_on_candidates.sort(key=lambda item: item[1], reverse=True)
+    always_on_priority = {symbol: index + 1 for index, (symbol, _) in enumerate(always_on_candidates)}
+    always_on_forced_symbols = {
+        symbol for symbol, _ in always_on_candidates[:MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT]
+    }
+
     for symbol, original_data in current_picks.items():
         data = dict(original_data)
         current_picks[symbol] = data
@@ -2441,6 +2456,23 @@ def manage_positions(
         else:
             data.pop("maxdiff_spread_rank", None)
             data.pop("maxdiff_spread_overflow", None)
+
+        priority_rank = None
+        force_immediate_entry = False
+        if data.get("strategy") == "maxdiffalwayson":
+            priority_rank = always_on_priority.get(symbol)
+            force_immediate_entry = symbol in always_on_forced_symbols
+            if priority_rank is not None:
+                data["maxdiffalwayson_priority_rank"] = priority_rank
+            else:
+                data.pop("maxdiffalwayson_priority_rank", None)
+            if force_immediate_entry:
+                data["maxdiffalwayson_force_immediate"] = True
+            else:
+                data.pop("maxdiffalwayson_force_immediate", None)
+        else:
+            data.pop("maxdiffalwayson_priority_rank", None)
+            data.pop("maxdiffalwayson_force_immediate", None)
         simplified_mode = SIMPLIFIED_MODE
         if simplified_mode:
             data["trade_mode"] = "normal"
@@ -2865,6 +2897,8 @@ def manage_positions(
                                     float(target_qty),
                                     poll_seconds=MAXDIFF_ENTRY_WATCHER_POLL_SECONDS,
                                     entry_strategy=entry_strategy,
+                                    force_immediate=force_immediate_entry,
+                                    priority_rank=priority_rank,
                                 )
                                 if entry_strategy == "maxdiffalwayson":
                                     opposite_side = "sell" if is_buy_side(data["side"]) else "buy"
@@ -2915,6 +2949,8 @@ def manage_positions(
                                                     float(target_qty),
                                                     poll_seconds=MAXDIFF_ENTRY_WATCHER_POLL_SECONDS,
                                                     entry_strategy=entry_strategy,
+                                                    force_immediate=force_immediate_entry,
+                                                    priority_rank=priority_rank,
                                                 )
                                             except Exception as comp_exc:
                                                 logger.warning(
