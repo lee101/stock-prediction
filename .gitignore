@@ -190,3 +190,8 @@ githubagent/actions-runner/bin
 cppsimulator/build_py/market_sim_ext.so
 nanochat
 external
+tototraining/stock_models
+tototraining/priority_models/
+nohup.out
+strategytraining/datasets/
+quick_results_20251101_042457.csv

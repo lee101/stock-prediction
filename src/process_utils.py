@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from shlex import quote
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 
@@ -29,6 +30,127 @@ TAKEPROFIT_SPAWN_DEBOUNCE_SECONDS = max(5, _DEFAULT_TAKEPROFIT_DEBOUNCE)
 MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_ENTRY_POLL_SECONDS", "12")))
 MAXDIFF_EXIT_DEFAULT_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_EXIT_POLL_SECONDS", "12")))
 MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE = float(os.getenv("MAXDIFF_EXIT_PRICE_TOLERANCE", "0.001"))
+
+# Timezone constants
+UTC = ZoneInfo("UTC")
+NEW_YORK = ZoneInfo("America/New_York")
+
+# Strategy families that rely on staged entry watchers (MaxDiff variants).
+MAXDIFF_STRATEGY_NAMES = {"maxdiff", "maxdiffalwayson", "highlow"}
+
+
+def _calculate_next_crypto_bar_time(current_time: Optional[datetime] = None) -> datetime:
+    """Calculate the next crypto watcher expiry time.
+
+    Crypto watchers expire at the next analysis run (22:00 EST) to ensure 24/7 coverage.
+    This gives 24+ hour watcher lifetime, preventing gaps between analysis runs.
+    """
+    now = current_time or datetime.now(timezone.utc)
+    # Ensure timezone aware
+    now_utc = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    now_et = now_utc.astimezone(NEW_YORK)
+
+    # Next analysis run is at 22:00 EST (initial analysis window)
+    next_analysis = now_et.replace(hour=22, minute=0, second=0, microsecond=0)
+
+    # Always use tomorrow's 22:00 to ensure minimum 24h coverage for crypto watchers
+    # This prevents gaps when watchers are created during midnight refresh (19:00-19:30)
+    if next_analysis <= now_et + timedelta(hours=3):
+        # If next 22:00 is within 3 hours, skip to tomorrow for full day coverage
+        next_analysis += timedelta(days=1)
+
+    return next_analysis.astimezone(timezone.utc)
+
+
+def _calculate_next_nyse_close(current_time: Optional[datetime] = None) -> datetime:
+    """Calculate the next NYSE market close time (4:00 PM ET).
+
+    Returns the next market close at 16:00 ET, skipping weekends.
+    """
+    now = current_time or datetime.now(timezone.utc)
+    now_utc = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    now_et = now_utc.astimezone(NEW_YORK)
+
+    # Start with today's market close
+    market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+
+    # If we're past today's close or it's weekend, find next trading day close
+    while market_close <= now_et or market_close.weekday() >= 5:
+        market_close += timedelta(days=1)
+        market_close = market_close.replace(hour=16, minute=0, second=0, microsecond=0)
+
+    return market_close.astimezone(timezone.utc)
+
+
+def _calculate_market_aware_expiry(
+    symbol: str,
+    current_time: Optional[datetime] = None,
+    min_duration_minutes: int = 60,
+) -> datetime:
+    """Calculate market-aware expiry time for watchers.
+
+    For crypto: Expires at next analysis run (22:00 EST) for 24/7 coverage
+    For stocks: Expires at next NYSE market close
+
+    Args:
+        symbol: Trading symbol
+        current_time: Current time (defaults to now)
+        min_duration_minutes: Minimum watcher lifetime in minutes
+
+    Returns:
+        Expiry datetime aligned with market timing
+    """
+    now = current_time or datetime.now(timezone.utc)
+    now_utc = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+
+    # Calculate minimum expiry time
+    min_expiry = now_utc + timedelta(minutes=min_duration_minutes)
+
+    if symbol in crypto_symbols:
+        # Crypto: expire at next analysis run (22:00 EST) for 24+ hour coverage
+        market_expiry = _calculate_next_crypto_bar_time(now_utc)
+    else:
+        # Stocks: expire at next NYSE close
+        market_expiry = _calculate_next_nyse_close(now_utc)
+
+    # Use whichever is later to ensure minimum duration
+    return max(min_expiry, market_expiry)
+
+
+def _is_data_bar_fresh(symbol: str, current_time: Optional[datetime] = None) -> bool:
+    """Check if we're in a safe window after a new data bar should be available.
+
+    For crypto: Safe after 00:05 UTC (5 minutes after midnight)
+    For stocks: Safe after 09:35 ET (5 minutes after market open)
+
+    This prevents spawning watchers before new forecast data is ready.
+    """
+    now = current_time or datetime.now(timezone.utc)
+    now_utc = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+
+    if symbol in crypto_symbols:
+        # Crypto: check if we're at least 5 minutes past UTC midnight
+        current_hour = now_utc.hour
+        current_minute = now_utc.minute
+
+        # Safe window: 00:05 UTC to 23:59 UTC
+        if current_hour == 0 and current_minute < 5:
+            return False  # Too early after midnight
+        return True
+    else:
+        # Stocks: check if we're at least 5 minutes past NYSE market open
+        now_et = now_utc.astimezone(NEW_YORK)
+
+        # Skip weekends
+        if now_et.weekday() >= 5:
+            return False
+
+        market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+        safe_time = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
+        market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+
+        # Safe window: 09:35 ET to 16:00 ET on trading days
+        return safe_time <= now_et <= market_close
 
 
 def _sanitize(value: str) -> str:
@@ -66,6 +188,58 @@ def _load_watcher_metadata(path: Path) -> Optional[dict]:
         return None
 
 
+def _is_pid_alive(pid: Optional[int]) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    except OSError:
+        return False
+    return True
+
+
+def _watcher_matches_params(metadata: dict, **expected_params) -> bool:
+    """Check if existing watcher metadata matches expected parameters."""
+    if not metadata or not metadata.get("active"):
+        return False
+
+    # Check if process is still alive
+    if not _is_pid_alive(metadata.get("pid")):
+        return False
+
+    # Check if watcher has expired
+    expiry_at_str = metadata.get("expiry_at")
+    if expiry_at_str:
+        try:
+            expiry_at = datetime.fromisoformat(expiry_at_str.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) >= expiry_at:
+                return False
+        except (ValueError, TypeError):
+            pass
+
+    # Compare relevant parameters
+    for key, expected_value in expected_params.items():
+        # If expected param is not None but missing from metadata, it's a mismatch
+        if expected_value is not None and key not in metadata:
+            return False
+
+        if key not in metadata:
+            continue
+
+        actual_value = metadata[key]
+
+        # For numeric values, allow small tolerance
+        if isinstance(expected_value, (int, float)) and isinstance(actual_value, (int, float)):
+            if abs(float(expected_value) - float(actual_value)) > 1e-6:
+                return False
+        elif actual_value != expected_value:
+            return False
+
+    return True
+
+
 def _stop_existing_watcher(config_path: Path, *, reason: str) -> None:
     metadata = _load_watcher_metadata(config_path)
     if not metadata:
@@ -91,6 +265,63 @@ def _stop_existing_watcher(config_path: Path, *, reason: str) -> None:
         metadata["state"] = reason
         metadata["terminated_at"] = datetime.now(timezone.utc).isoformat()
         _persist_watcher_metadata(config_path, metadata)
+
+
+def _stop_conflicting_entry_watchers(
+    symbol: str,
+    side: str,
+    *,
+    entry_strategy: Optional[str],
+    new_limit_price: float,
+    skip_path: Path,
+) -> None:
+    """Terminate other entry watchers for the same strategy that use outdated limits."""
+    if not entry_strategy:
+        return
+
+    safe_symbol = _sanitize(symbol)
+    safe_side = _sanitize(side)
+    prefix = f"{safe_symbol}_{safe_side}_entry"
+
+    for path in MAXDIFF_WATCHERS_DIR.glob(f"{prefix}_*.json"):
+        if path == skip_path:
+            continue
+
+        metadata = _load_watcher_metadata(path)
+        if not metadata:
+            continue
+
+        if metadata.get("mode") != "entry":
+            continue
+
+        existing_strategy = metadata.get("entry_strategy")
+        if existing_strategy and existing_strategy != entry_strategy:
+            continue
+
+        if not existing_strategy and entry_strategy not in MAXDIFF_STRATEGY_NAMES:
+            continue
+
+        existing_limit = metadata.get("limit_price")
+        if existing_limit is None:
+            continue
+
+        try:
+            limit_delta = abs(float(existing_limit) - float(new_limit_price))
+        except (TypeError, ValueError):
+            limit_delta = float("inf")
+
+        if limit_delta <= 1e-6:
+            continue
+
+        logger.info(
+            "Terminating conflicting %s %s entry watcher at %s (limit %.8f) in favor of %.8f",
+            symbol,
+            side,
+            path.name,
+            float(existing_limit),
+            float(new_limit_price),
+        )
+        _stop_existing_watcher(path, reason="superseded_entry_watcher")
 
 
 def _get_inherited_env():
@@ -227,8 +458,8 @@ def _format_float(value: float, precision: int = 6) -> str:
 
 @debounce(
     MAXDIFF_ENTRY_SPAWN_DEBOUNCE_SECONDS,
-    key_func=lambda symbol, side, limit_price, target_qty, tolerance_pct=0.0066, expiry_minutes=1440, poll_seconds=MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS: (
-        f"{symbol}_{side}_{limit_price}_{target_qty}_{tolerance_pct}_{expiry_minutes}_{poll_seconds}"
+    key_func=lambda symbol, side, limit_price, target_qty, tolerance_pct=0.0066, expiry_minutes=1440, poll_seconds=MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS, entry_strategy=None: (
+        f"{symbol}_{side}_{limit_price}_{target_qty}_{tolerance_pct}_{expiry_minutes}_{poll_seconds}_{entry_strategy or ''}"
     ),
 )
 def spawn_open_position_at_maxdiff_takeprofit(
@@ -239,6 +470,7 @@ def spawn_open_position_at_maxdiff_takeprofit(
     tolerance_pct: float = 0.0066,
     expiry_minutes: int = 60 * 24,
     poll_seconds: int = MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS,
+    entry_strategy: Optional[str] = None,
 ):
     """
     Spawn a watchdog process that attempts to open a maxdiff position when price approaches the target.
@@ -253,8 +485,49 @@ def spawn_open_position_at_maxdiff_takeprofit(
     price_suffix = _format_float(limit_price, precision)
     config_path = _watcher_config_path(symbol, side, "entry", suffix=price_suffix)
     started_at = datetime.now(timezone.utc)
-    expiry_minutes_int = int(max(1, expiry_minutes))
-    expiry_at = started_at + timedelta(minutes=expiry_minutes_int)
+
+    # Use market-aware expiry if no explicit duration provided
+    if expiry_minutes == 60 * 24:  # Default value
+        expiry_at = _calculate_market_aware_expiry(symbol, started_at)
+        expiry_minutes_int = int((expiry_at - started_at).total_seconds() / 60)
+    else:
+        expiry_minutes_int = int(max(1, expiry_minutes))
+        expiry_at = started_at + timedelta(minutes=expiry_minutes_int)
+
+    # Warn if data bar might not be fresh, but proceed anyway
+    if not _is_data_bar_fresh(symbol, started_at):
+        logger.warning(
+            "Spawning %s %s entry watcher @ %.4f shortly after data bar refresh - forecast may be based on previous bar",
+            symbol,
+            side,
+            limit_price,
+        )
+
+    # Check if existing watcher matches desired parameters
+    _stop_conflicting_entry_watchers(
+        symbol,
+        side,
+        entry_strategy=entry_strategy,
+        new_limit_price=float(limit_price),
+        skip_path=config_path,
+    )
+
+    existing_metadata = _load_watcher_metadata(config_path)
+    if _watcher_matches_params(
+        existing_metadata,
+        limit_price=float(limit_price),
+        target_qty=float(target_qty),
+        tolerance_pct=float(tolerance_pct),
+        entry_strategy=entry_strategy,
+    ):
+        logger.debug(
+            "Skipping spawn for %s %s entry watcher @ %.4f - existing watcher matches parameters",
+            symbol,
+            side,
+            limit_price,
+        )
+        return
+
     _stop_existing_watcher(config_path, reason="replaced_entry_watcher")
     metadata = {
         "config_version": 1,
@@ -272,6 +545,7 @@ def spawn_open_position_at_maxdiff_takeprofit(
         "active": True,
         "config_path": str(config_path),
         "poll_seconds": poll_seconds_int,
+        "entry_strategy": entry_strategy,
     }
     _persist_watcher_metadata(config_path, metadata)
     command = (
@@ -312,8 +586,8 @@ def spawn_open_position_at_maxdiff_takeprofit(
 
 @debounce(
     MAXDIFF_EXIT_SPAWN_DEBOUNCE_SECONDS,
-    key_func=lambda symbol, side, takeprofit_price, expiry_minutes=1440, poll_seconds=MAXDIFF_EXIT_DEFAULT_POLL_SECONDS, price_tolerance=MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE: (
-        f"{symbol}_{side}_{takeprofit_price}_{expiry_minutes}_{poll_seconds}_{price_tolerance}"
+    key_func=lambda symbol, side, takeprofit_price, expiry_minutes=1440, poll_seconds=MAXDIFF_EXIT_DEFAULT_POLL_SECONDS, price_tolerance=MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE, entry_strategy=None: (
+        f"{symbol}_{side}_{takeprofit_price}_{expiry_minutes}_{poll_seconds}_{price_tolerance}_{entry_strategy or ''}"
     ),
 )
 def spawn_close_position_at_maxdiff_takeprofit(
@@ -323,6 +597,7 @@ def spawn_close_position_at_maxdiff_takeprofit(
     expiry_minutes: int = 60 * 24,
     poll_seconds: int = MAXDIFF_EXIT_DEFAULT_POLL_SECONDS,
     price_tolerance: float = MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE,
+    entry_strategy: Optional[str] = None,
 ):
     """
     Spawn a watchdog process that continually re-arms maxdiff take-profit exits over ``expiry_minutes``.
@@ -331,11 +606,44 @@ def spawn_close_position_at_maxdiff_takeprofit(
     poll_seconds_int = max(1, int(poll_seconds))
     price_tolerance_val = float(price_tolerance)
     started_at = datetime.now(timezone.utc)
-    expiry_minutes_int = int(max(1, expiry_minutes))
-    expiry_at = started_at + timedelta(minutes=expiry_minutes_int)
+
+    # Use market-aware expiry if no explicit duration provided
+    if expiry_minutes == 60 * 24:  # Default value
+        expiry_at = _calculate_market_aware_expiry(symbol, started_at)
+        expiry_minutes_int = int((expiry_at - started_at).total_seconds() / 60)
+    else:
+        expiry_minutes_int = int(max(1, expiry_minutes))
+        expiry_at = started_at + timedelta(minutes=expiry_minutes_int)
+
     price_suffix = _format_float(takeprofit_price, precision)
     config_path = _watcher_config_path(symbol, side, "exit", suffix=price_suffix)
     exit_side = "sell" if side.lower().startswith("b") else "buy"
+
+    # Warn if data bar might not be fresh, but proceed anyway
+    if not _is_data_bar_fresh(symbol, started_at):
+        logger.warning(
+            "Spawning %s %s exit watcher @ %.4f shortly after data bar refresh - forecast may be based on previous bar",
+            symbol,
+            side,
+            takeprofit_price,
+        )
+
+    # Check if existing watcher matches desired parameters
+    existing_metadata = _load_watcher_metadata(config_path)
+    if _watcher_matches_params(
+        existing_metadata,
+        takeprofit_price=float(takeprofit_price),
+        price_tolerance=price_tolerance_val,
+        entry_strategy=entry_strategy,
+    ):
+        logger.debug(
+            "Skipping spawn for %s %s exit watcher @ %.4f - existing watcher matches parameters",
+            symbol,
+            side,
+            takeprofit_price,
+        )
+        return
+
     _stop_existing_watcher(config_path, reason="replaced_exit_watcher")
     metadata = {
         "config_version": 1,
@@ -353,6 +661,7 @@ def spawn_close_position_at_maxdiff_takeprofit(
         "active": True,
         "config_path": str(config_path),
         "poll_seconds": poll_seconds_int,
+        "entry_strategy": entry_strategy,
     }
     _persist_watcher_metadata(config_path, metadata)
     command = (

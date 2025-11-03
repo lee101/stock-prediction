@@ -304,7 +304,11 @@ def _select_watchers(watchers: List[Dict], symbol: str, side: str, mode: str) ->
 def _format_watcher_summary(watcher: Dict) -> str:
     mode = watcher.get("mode", "watcher")
     side = watcher.get("side", "?")
-    parts = [f"{mode} watcher [{side}]"]
+    entry_strategy = watcher.get("entry_strategy")
+    if entry_strategy:
+        parts = [f"{mode} watcher [{side}] strategy={entry_strategy}"]
+    else:
+        parts = [f"{mode} watcher [{side}]"]
     state = watcher.get("state")
     if state:
         parts.append(f"state={state}")
