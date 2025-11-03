@@ -103,6 +103,8 @@ from alpaca_wrapper import (
     has_current_open_position,
     execute_portfolio_orders,
     open_order_at_price_or_all,
+    open_market_order_violently,
+    close_position_violently,
 )
 
 
@@ -158,3 +160,147 @@ def test_open_order_at_price_or_all_adjusts_on_insufficient_balance():
     second_qty = submit.call_args_list[1].kwargs["order_data"]["qty"]
     assert first_qty == 10
     assert second_qty == 4
+
+
+def test_market_order_blocked_when_market_closed():
+    """Market orders should be blocked when market is closed."""
+    # Create a mock clock that says market is closed
+    mock_clock = MagicMock()
+    mock_clock.is_open = False
+
+    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+         patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
+
+        result = open_market_order_violently("AAPL", 10, "buy")
+
+        # Should return None and not call submit_order
+        assert result is None
+        assert submit.call_count == 0
+
+
+def test_market_order_allowed_when_market_open():
+    """Market orders should work when market is open."""
+    # Create a mock clock that says market is open
+    mock_clock = MagicMock()
+    mock_clock.is_open = True
+
+    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+         patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
+
+        result = open_market_order_violently("AAPL", 10, "buy")
+
+        # Should succeed
+        assert result == "order_ok"
+        assert submit.call_count == 1
+
+
+def test_market_order_blocked_when_spread_too_high():
+    """Market orders should be blocked when spread > 1% and closing position."""
+    # Create a mock position
+    mock_position = MagicMock()
+    mock_position.symbol = "AAPL"
+    mock_position.side = "long"
+    mock_position.qty = 10
+
+    # Create a mock clock that says market is open
+    mock_clock = MagicMock()
+    mock_clock.is_open = True
+
+    # Mock quote with high spread (2%)
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 102.0
+    mock_quote.bid_price = 100.0  # 2% spread
+
+    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
+         patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
+
+        result = close_position_violently(mock_position)
+
+        # Should return None because spread is too high
+        assert result is None
+        assert submit.call_count == 0
+
+
+def test_market_order_allowed_when_spread_acceptable():
+    """Market orders should work when spread <= 1% and closing position."""
+    # Create a mock position
+    mock_position = MagicMock()
+    mock_position.symbol = "AAPL"
+    mock_position.side = "long"
+    mock_position.qty = 10
+
+    # Create a mock clock that says market is open
+    mock_clock = MagicMock()
+    mock_clock.is_open = True
+
+    # Mock quote with acceptable spread (0.5%)
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 100.5
+    mock_quote.bid_price = 100.0  # 0.5% spread
+
+    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
+         patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
+
+        result = close_position_violently(mock_position)
+
+        # Should succeed
+        assert result == "order_ok"
+        assert submit.call_count == 1
+
+
+def test_limit_order_allowed_when_market_closed():
+    """Limit orders should work even when market is closed (out-of-hours trading)."""
+    # Create a mock clock that says market is closed
+    mock_clock = MagicMock()
+    mock_clock.is_open = False
+
+    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+         patch("alpaca_wrapper.get_orders", return_value=[]), \
+         patch("alpaca_wrapper.has_current_open_position", return_value=False), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
+
+        result = open_order_at_price_or_all("AAPL", 10, "buy", 150.0)
+
+        # Should succeed - limit orders work out of hours
+        assert result == "order_ok"
+        assert submit.call_count == 1
+
+
+def test_force_open_clock_allows_out_of_hours_trading():
+    """When force_open_the_clock is set, we can trade out of hours with limit orders."""
+    import alpaca_wrapper
+
+    # Save original value
+    original_force = alpaca_wrapper.force_open_the_clock
+
+    try:
+        # Set force_open_the_clock
+        alpaca_wrapper.force_open_the_clock = True
+
+        # Create a mock clock that says market is closed
+        mock_clock = MagicMock()
+        mock_clock.is_open = False
+
+        with patch("alpaca_wrapper.get_clock_internal", return_value=mock_clock), \
+             patch("alpaca_wrapper.get_orders", return_value=[]), \
+             patch("alpaca_wrapper.has_current_open_position", return_value=False), \
+             patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+             patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
+
+            # get_clock should return market as open due to force flag
+            clock = alpaca_wrapper.get_clock()
+            assert clock.is_open is True
+
+            result = open_order_at_price_or_all("AAPL", 10, "buy", 150.0)
+
+            # Should succeed
+            assert result == "order_ok"
+            assert submit.call_count == 1
+    finally:
+        # Restore original value
+        alpaca_wrapper.force_open_the_clock = original_force

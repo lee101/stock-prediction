@@ -1,0 +1,56 @@
+[
+  {
+    "stock": "SPY",
+    "timestamp": "2025-11-01T04:18:49.181008",
+    "holdout_days": 7,
+    "prediction_length": 64,
+    "kronos": {
+      "stock": "SPY",
+      "model": "kronos",
+      "status": "failed",
+      "error": "KronosForecastingWrapper.__init__() got an unexpected keyword argument 'model_path'"
+    },
+    "toto": {
+      "stock": "SPY",
+      "model": "toto",
+      "status": "failed",
+      "error": "TotoBackbone.__init__() got an unexpected keyword argument 'device'"
+    }
+  },
+  {
+    "stock": "AAPL",
+    "timestamp": "2025-11-01T04:18:49.403715",
+    "holdout_days": 7,
+    "prediction_length": 64,
+    "kronos": {
+      "stock": "AAPL",
+      "model": "kronos",
+      "status": "failed",
+      "error": "KronosForecastingWrapper.__init__() got an unexpected keyword argument 'model_path'"
+    },
+    "toto": {
+      "stock": "AAPL",
+      "model": "toto",
+      "status": "failed",
+      "error": "TotoBackbone.__init__() got an unexpected keyword argument 'device'"
+    }
+  },
+  {
+    "stock": "NVDA",
+    "timestamp": "2025-11-01T04:18:49.539063",
+    "holdout_days": 7,
+    "prediction_length": 64,
+    "kronos": {
+      "stock": "NVDA",
+      "model": "kronos",
+      "status": "failed",
+      "error": "KronosForecastingWrapper.__init__() got an unexpected keyword argument 'model_path'"
+    },
+    "toto": {
+      "stock": "NVDA",
+      "model": "toto",
+      "status": "failed",
+      "error": "TotoBackbone.__init__() got an unexpected keyword argument 'device'"
+    }
+  }
+]

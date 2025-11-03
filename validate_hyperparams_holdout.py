@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 # Import model wrappers
 sys.path.insert(0, str(Path(__file__).parent))
-from src.models.kronos_wrapper import KronosWrapper
+from src.models.kronos_wrapper import KronosForecastingWrapper
 from src.models.toto_wrapper import TotoPipeline
 
 
@@ -97,7 +97,7 @@ class HyperparamValidator:
 
         try:
             # Initialize model
-            wrapper = KronosWrapper(
+            wrapper = KronosForecastingWrapper(
                 model_path=model_path,
                 device="cuda" if self._has_cuda() else "cpu"
             )

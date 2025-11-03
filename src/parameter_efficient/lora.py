@@ -42,8 +42,12 @@ class LoRALinear(nn.Module):
 
         in_features = self.base_layer.in_features
         out_features = self.base_layer.out_features
-        self.lora_A = nn.Parameter(torch.zeros(self.rank, in_features))
-        self.lora_B = nn.Parameter(torch.zeros(out_features, self.rank))
+
+        # Create LoRA parameters on the same device as the base layer
+        device = self.base_layer.weight.device
+        dtype = self.base_layer.weight.dtype
+        self.lora_A = nn.Parameter(torch.zeros(self.rank, in_features, device=device, dtype=dtype))
+        self.lora_B = nn.Parameter(torch.zeros(out_features, self.rank, device=device, dtype=dtype))
 
         # Flag these parameters so they can be easily filtered later.
         self.lora_A._is_lora_param = True  # type: ignore[attr-defined]

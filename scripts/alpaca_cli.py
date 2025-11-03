@@ -138,21 +138,36 @@ def main(
     ),
 ):
     """
+    Alpaca CLI - Trade stocks with safety restrictions for out-of-hours trading.
+
+    IMPORTANT: Market orders are NEVER used during pre-market or after-hours trading.
+    When the market is closed, only limit orders are allowed. Market orders are also
+    blocked when the spread exceeds 1% (configurable via MARKET_ORDER_MAX_SPREAD_PCT).
+
+    Commands:
+    ---------
     cancel_all_orders - cancel all orders
 
     close_all_positions - close all positions at near market price
 
-    close_position_violently - close position violently
+    close_position_violently - close position with market order (only during market hours)
 
-    backout_near_market BTCUSD backout of usd locking to market sell price
+    backout_near_market BTCUSD - gradually backout of position, uses market orders only
+                                  during market hours and when spread <= 1%
 
-    ramp_into_position BTCUSD buy - ramp into a position over time
+    ramp_into_position BTCUSD buy - ramp into a position over time (works out-of-hours)
 
     show_account - display account summary, positions, and orders
 
     show_forecasts - display forecast predictions for a symbol
 
     debug_raw_data SYMBOL - print raw JSON data from Alpaca for the symbol
+
+    Environment Variables:
+    ----------------------
+    MARKET_ORDER_MAX_SPREAD_PCT - Maximum spread (default: 0.01 = 1%) for market orders
+                                   when closing positions
+    BACKOUT_MARKET_MAX_SPREAD_PCT - Same as above, for backout operations
 
     :param pair: e.g. BTCUSD
     :param command:
@@ -511,9 +526,21 @@ def close_all_positions():
 
 
 def violently_close_all_positions():
+    """Close all positions using market orders.
+
+    WARNING: Market orders are only allowed during market hours and when
+    spread <= MARKET_ORDER_MAX_SPREAD_PCT (default 1%). If these conditions
+    are not met, positions will NOT be closed. Use close_all_positions() for
+    a safer alternative that uses limit orders.
+    """
     positions = alpaca_wrapper.get_all_positions()
     for position in positions:
-        alpaca_wrapper.close_position_violently(position)
+        result = alpaca_wrapper.close_position_violently(position)
+        if result is None:
+            logger.warning(
+                f"Failed to close position {position.symbol} with market order - "
+                f"may be due to market hours or high spread. Use close_all_positions() instead."
+            )
 
 
 def ramp_into_position(

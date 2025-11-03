@@ -33,7 +33,9 @@ from marketsimulator.state import get_state
 from src.cache_utils import ensure_huggingface_cache_dir
 from src.comparisons import is_buy_side, is_same_side, is_sell_side
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
-from src.fixtures import crypto_symbols
+from src.fixtures import crypto_symbols, all_crypto_symbols, active_crypto_symbols
+# Note: Use all_crypto_symbols for identification checks (fees, trading hours, etc.)
+# Use active_crypto_symbols for deciding what to actively trade
 from src.logging_utils import setup_logging
 from src.trading_obj_utils import filter_to_realistic_positions
 from src.process_utils import (
@@ -1259,7 +1261,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     latest_snapshot = _load_latest_forecast_snapshot()
 
     for symbol in symbols:
-        if symbol not in crypto_symbols and not equities_tradable_now:
+        if symbol not in all_crypto_symbols and not equities_tradable_now:
             if skip_closed_equity:
                 skipped_equity_symbols.append(symbol)
                 continue
@@ -1305,7 +1307,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 continue
 
             sample_size = len(backtest_df)
-            trading_days_per_year = 365 if symbol in crypto_symbols else 252
+            trading_days_per_year = 365 if symbol in all_crypto_symbols else 252
 
             _normalized_cache: Dict[str, Optional[pd.Series]] = {}
 
@@ -1538,7 +1540,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             strategy_ineligible: Dict[str, str] = {}
             candidate_avg_returns: Dict[str, float] = {}
             allowed_side = _allowed_side_for(symbol)
-            symbol_is_crypto = symbol in crypto_symbols
+            symbol_is_crypto = symbol in all_crypto_symbols
 
             for name, stats in strategy_stats.items():
                 if name not in strategy_returns:
@@ -2324,7 +2326,7 @@ def manage_positions(
 
         if symbol not in current_picks:
             # For crypto on weekends, only close if direction changed
-            if symbol in crypto_symbols and not is_nyse_trading_day_now():
+            if symbol in all_crypto_symbols and not is_nyse_trading_day_now():
                 if symbol in all_analyzed_results and not is_same_side(
                     all_analyzed_results[symbol]["side"], position.side
                 ):
@@ -2334,7 +2336,7 @@ def manage_positions(
                 else:
                     logger.info(f"Keeping crypto position for {symbol} on weekend - no direction change")
             # For stocks when market is closed, only close if direction changed
-            elif symbol not in crypto_symbols and not is_nyse_trading_day_now():
+            elif symbol not in all_crypto_symbols and not is_nyse_trading_day_now():
                 if symbol in all_analyzed_results and not is_same_side(
                     all_analyzed_results[symbol]["side"], position.side
                 ):
@@ -2590,7 +2592,7 @@ def manage_positions(
                     current_position_value = current_position_size * float(p.current_price)
                 break
 
-        min_trade_qty = MIN_CRYPTO_QTY if symbol in crypto_symbols else MIN_STOCK_QTY
+        min_trade_qty = MIN_CRYPTO_QTY if symbol in all_crypto_symbols else MIN_STOCK_QTY
         if effective_probe:
             logger.info(f"{symbol}: Probe mode enabled; minimum trade quantity set to {min_trade_qty}")
 
@@ -2669,30 +2671,56 @@ def manage_positions(
                 projected_pct = (new_total_value / equity) * 100.0 if equity > 0 else 0.0
                 if projected_pct > MAX_TOTAL_EXPOSURE_PCT:
                     allowed_value = max_total_exposure_value - (total_exposure_value - current_abs_value)
+
+                    # For crypto and non-leveraged strategies, shrink position instead of skipping
+                    is_crypto = symbol in all_crypto_symbols
+                    is_non_leveraged_strategy = data.get("strategy") in MAXDIFF_STRATEGIES
+
                     if allowed_value <= 0:
-                        logger.info(
-                            f"Skipping {symbol} entry to respect max exposure "
-                            f"({projected_pct:.1f}% > {MAX_TOTAL_EXPOSURE_PCT:.1f}%)"
+                        if is_crypto or is_non_leveraged_strategy:
+                            # Use minimum trade size to still participate
+                            logger.info(
+                                f"Shrinking {symbol} to minimum trade size due to max exposure "
+                                f"({projected_pct:.1f}% > {MAX_TOTAL_EXPOSURE_PCT:.1f}%). "
+                                f"Crypto/non-leveraged strategies can't leverage anyway."
+                            )
+                            adjusted_qty = min_trade_qty
+                            target_qty = adjusted_qty
+                            projected_value = abs(target_qty * entry_price)
+                            new_total_value = total_exposure_value - current_abs_value + projected_value
+                        else:
+                            logger.info(
+                                f"Skipping {symbol} entry to respect max exposure "
+                                f"({projected_pct:.1f}% > {MAX_TOTAL_EXPOSURE_PCT:.1f}%)"
+                            )
+                            continue
+                    elif allowed_value > 0:
+                        adjusted_qty = ensure_lower_bound(
+                            safe_divide(allowed_value, entry_price, default=0.0),
+                            0.0,
+                            default=0.0,
                         )
-                        continue
-                    adjusted_qty = ensure_lower_bound(
-                        safe_divide(allowed_value, entry_price, default=0.0),
-                        0.0,
-                        default=0.0,
-                    )
-                    if adjusted_qty <= 0:
-                        logger.info(f"Skipping {symbol} entry after exposure adjustment resulted in non-positive qty.")
-                        continue
-                    logger.info(
-                        f"Adjusting {symbol} target qty from {target_qty} to {adjusted_qty:.4f} "
-                        f"to maintain exposure at {MAX_TOTAL_EXPOSURE_PCT:.1f}% max."
-                    )
-                    target_qty = adjusted_qty
-                    projected_value = abs(target_qty * entry_price)
-                    new_total_value = total_exposure_value - current_abs_value + projected_value
+                        if adjusted_qty <= 0:
+                            if is_crypto or is_non_leveraged_strategy:
+                                # For crypto/non-leveraged, use minimum size even when calculation gives 0
+                                logger.info(
+                                    f"Exposure adjustment for {symbol} gave non-positive qty; "
+                                    f"using minimum trade size instead (crypto/non-leveraged)."
+                                )
+                                adjusted_qty = min_trade_qty
+                            else:
+                                logger.info(f"Skipping {symbol} entry after exposure adjustment resulted in non-positive qty.")
+                                continue
+                        logger.info(
+                            f"Adjusting {symbol} target qty from {target_qty} to {adjusted_qty:.4f} "
+                            f"to maintain exposure at {MAX_TOTAL_EXPOSURE_PCT:.1f}% max."
+                        )
+                        target_qty = adjusted_qty
+                        projected_value = abs(target_qty * entry_price)
+                        new_total_value = total_exposure_value - current_abs_value + projected_value
         else:
             # Fallback to old logic if we can't get prices
-            if symbol in crypto_symbols:
+            if symbol in all_crypto_symbols:
                 should_enter = (not position_exists and is_buy_side(data["side"])) or effective_probe
             else:
                 should_enter = not position_exists or effective_probe
@@ -2836,13 +2864,14 @@ def manage_positions(
                                     float(limit_price),
                                     float(target_qty),
                                     poll_seconds=MAXDIFF_ENTRY_WATCHER_POLL_SECONDS,
+                                    entry_strategy=entry_strategy,
                                 )
                                 if entry_strategy == "maxdiffalwayson":
                                     opposite_side = "sell" if is_buy_side(data["side"]) else "buy"
                                     allowed_side_raw = data.get("allowed_side")
                                     allowed_side_cfg = (str(allowed_side_raw).lower() if allowed_side_raw else "both")
                                     complement_allowed = allowed_side_cfg in {"both", opposite_side}
-                                    if complement_allowed and opposite_side == "sell" and symbol in crypto_symbols:
+                                    if complement_allowed and opposite_side == "sell" and symbol in all_crypto_symbols:
                                         complement_allowed = False
                                     if complement_allowed:
                                         if opposite_side == "sell":
@@ -2885,6 +2914,7 @@ def manage_positions(
                                                     float(opposite_price),
                                                     float(target_qty),
                                                     poll_seconds=MAXDIFF_ENTRY_WATCHER_POLL_SECONDS,
+                                                    entry_strategy=entry_strategy,
                                                 )
                                             except Exception as comp_exc:
                                                 logger.warning(
@@ -3037,6 +3067,7 @@ def manage_positions(
                             float(takeprofit_price),
                             poll_seconds=MAXDIFF_EXIT_WATCHER_POLL_SECONDS,
                             price_tolerance=MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE,
+                            entry_strategy=entry_strategy,
                         )
                     except Exception as exc:
                         logger.warning("Failed to schedule highlow takeprofit for %s: %s", symbol, exc)
@@ -3212,12 +3243,12 @@ def dry_run_manage_positions(current_picks: Dict[str, Dict], previous_picks: Dic
 
         if symbol not in current_picks:
             # For crypto on weekends, only close if direction changed
-            if symbol in crypto_symbols and not is_nyse_trading_day_now():
+            if symbol in all_crypto_symbols and not is_nyse_trading_day_now():
                 logger.info(
                     f"Would keep crypto position for {symbol} on weekend - no direction change check needed in dry run"
                 )
             # For stocks when market is closed, only close if direction changed
-            elif symbol not in crypto_symbols and not is_nyse_trading_day_now():
+            elif symbol not in all_crypto_symbols and not is_nyse_trading_day_now():
                 logger.info(
                     f"Would keep stock position for {symbol} when market closed - no direction change check needed in dry run"
                 )
@@ -3250,7 +3281,7 @@ def dry_run_manage_positions(current_picks: Dict[str, Dict], previous_picks: Dic
         if is_probe_trade and probe_transition_ready and position_exists and correct_side:
             logger.info(f"Would transition probe {data['side']} position for {symbol} toward normal sizing")
         elif is_probe_trade:
-            min_trade_qty = MIN_CRYPTO_QTY if symbol in crypto_symbols else MIN_STOCK_QTY
+            min_trade_qty = MIN_CRYPTO_QTY if symbol in all_crypto_symbols else MIN_STOCK_QTY
             logger.info(
                 f"Would enter probe {data['side']} position for {symbol} with approximately {min_trade_qty} units"
             )
@@ -3280,6 +3311,9 @@ def main():
         "BTCUSD",
         "ETHUSD",
         "UNIUSD",
+        "SOLUSD",
+        "AVAXUSD",
+        "LINKUSD",
     ]
     previous_picks = {}
 
@@ -3288,6 +3322,7 @@ def main():
     last_market_open_run = None
     last_market_open_hour2_run = None
     last_market_close_run = None
+    last_crypto_midnight_refresh = None
 
     while True:
         try:
@@ -3367,6 +3402,25 @@ def main():
                 all_analyzed_results = analyze_symbols(symbols)
                 previous_picks = manage_market_close(symbols, previous_picks, all_analyzed_results)
                 last_market_close_run = today
+
+            # Crypto midnight refresh (00:00-00:30 UTC = 19:00-19:30 EST / 20:00-20:30 EDT)
+            # Refreshes watchers for existing crypto positions when new daily bar arrives
+            elif (
+                (now.hour == 19 and 0 <= now.minute < 30)
+                and (last_crypto_midnight_refresh is None or last_crypto_midnight_refresh != today)
+            ):
+                logger.info("\nCRYPTO MIDNIGHT REFRESH STARTING...")
+                # Only analyze crypto symbols
+                crypto_only_symbols = [s for s in symbols if s in all_crypto_symbols]
+                if crypto_only_symbols:
+                    all_analyzed_results = analyze_symbols(crypto_only_symbols)
+                    # Only refresh watchers for existing crypto positions (don't change portfolio)
+                    if previous_picks:
+                        crypto_picks = {k: v for k, v in previous_picks.items() if k in all_crypto_symbols}
+                        if crypto_picks:
+                            logger.info(f"Refreshing watchers for {len(crypto_picks)} existing crypto positions")
+                            manage_positions(crypto_picks, crypto_picks, all_analyzed_results)
+                last_crypto_midnight_refresh = today
 
         except Exception as e:
             logger.exception(f"Error in main loop: {str(e)}")

@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -39,6 +40,18 @@ from src.stock_utils import pairs_equal, remap_symbols
 from src.trading_obj_utils import filter_to_realistic_positions
 
 logger = setup_logging("alpaca_cli.log")
+
+# Market order spread threshold - don't use market orders if spread exceeds this
+_MARKET_ORDER_SPREAD_CAP_RAW = os.getenv("MARKET_ORDER_MAX_SPREAD_PCT", "0.01")
+try:
+    MARKET_ORDER_MAX_SPREAD_PCT = max(float(_MARKET_ORDER_SPREAD_CAP_RAW), 0.0)
+except ValueError:
+    MARKET_ORDER_MAX_SPREAD_PCT = 0.01
+    logger.warning(
+        "Invalid MARKET_ORDER_MAX_SPREAD_PCT=%r; defaulting to %.2f%%",
+        _MARKET_ORDER_SPREAD_CAP_RAW,
+        MARKET_ORDER_MAX_SPREAD_PCT * 100,
+    )
 
 _PLACEHOLDER_TOKEN = "placeholder"
 
@@ -163,6 +176,65 @@ def get_clock_internal(retries=3):
         raise e
 
 
+def _calculate_spread_pct(symbol: str) -> Optional[float]:
+    """Calculate the current bid-ask spread percentage for a symbol.
+
+    Args:
+        symbol: The trading symbol
+
+    Returns:
+        Spread as a percentage (e.g., 0.01 for 1%) or None if data unavailable
+    """
+    try:
+        quote = latest_data(symbol)
+        ask_price = float(getattr(quote, "ask_price", 0) or 0)
+        bid_price = float(getattr(quote, "bid_price", 0) or 0)
+
+        if ask_price <= 0 or bid_price <= 0:
+            return None
+
+        mid_price = (ask_price + bid_price) / 2.0
+        if mid_price <= 0:
+            return None
+
+        spread_pct = (ask_price - bid_price) / mid_price
+        return spread_pct
+    except Exception as e:
+        logger.warning(f"Failed to calculate spread for {symbol}: {e}")
+        return None
+
+
+def _can_use_market_order(symbol: str, is_closing_position: bool = False) -> Tuple[bool, str]:
+    """Check if a market order can be used for this symbol.
+
+    Market orders are only allowed when:
+    1. Market is open (not during pre-market or after-hours)
+    2. If closing a position, spread must be <= MARKET_ORDER_MAX_SPREAD_PCT
+
+    Args:
+        symbol: The trading symbol
+        is_closing_position: Whether this is closing an existing position
+
+    Returns:
+        Tuple of (allowed, reason) where reason explains why if not allowed
+    """
+    # Check if market is open
+    clock = get_clock()
+    if not clock.is_open:
+        return False, "Market is closed - market orders not allowed during pre-market or after-hours"
+
+    # If closing a position, also check spread
+    if is_closing_position:
+        spread_pct = _calculate_spread_pct(symbol)
+        if spread_pct is not None and spread_pct > MARKET_ORDER_MAX_SPREAD_PCT:
+            return False, (
+                f"Spread {spread_pct*100:.2f}% exceeds maximum {MARKET_ORDER_MAX_SPREAD_PCT*100:.2f}% "
+                f"for market orders when closing positions"
+            )
+
+    return True, ""
+
+
 def get_all_positions(retries=3):
     try:
         return alpaca_api.get_all_positions()
@@ -198,6 +270,27 @@ def cancel_all_orders(retries=3):
 
 # alpaca_api.submit_order(short_stock, qty, side, "market", "gtc")
 def open_market_order_violently(symbol, qty, side, retries=3):
+    """Submit a market order.
+
+    Market orders are only allowed when the market is open. During pre-market
+    or after-hours, this function will return None and log an error.
+
+    Args:
+        symbol: Trading symbol
+        qty: Quantity to trade
+        side: 'buy' or 'sell'
+        retries: Number of retry attempts
+
+    Returns:
+        Order result or None if market order not allowed or failed
+    """
+    # Check if market orders are allowed
+    can_use, reason = _can_use_market_order(symbol, is_closing_position=False)
+    if not can_use:
+        logger.error(f"Market order blocked for {symbol}: {reason}")
+        logger.error(f"RETURNING None - Use limit orders instead for out-of-hours trading")
+        return None
+
     result = None
     try:
         result = alpaca_api.submit_order(
@@ -515,6 +608,27 @@ def execute_portfolio_orders(orders: Iterable[Dict[str, Any]]) -> Dict[str, Any]
 
 
 def close_position_violently(position):
+    """Close a position using a market order.
+
+    Market orders for closing positions are only allowed when:
+    1. Market is open (not during pre-market or after-hours)
+    2. Spread is <= MARKET_ORDER_MAX_SPREAD_PCT (default 1%)
+
+    If these conditions are not met, returns None and logs the reason.
+
+    Args:
+        position: Position object with symbol, side, and qty
+
+    Returns:
+        Order result or None if market order not allowed or failed
+    """
+    # Check if market orders are allowed (includes spread check for closing)
+    can_use, reason = _can_use_market_order(position.symbol, is_closing_position=True)
+    if not can_use:
+        logger.error(f"Market order blocked for closing {position.symbol}: {reason}")
+        logger.error(f"RETURNING None - Use limit orders instead")
+        return None
+
     result = None
     try:
         if position.side == "long":
