@@ -1,0 +1,13 @@
+{
+  "stocks_processed": [
+    "AAPL",
+    "NVDA"
+  ],
+  "kronos_successes": [],
+  "kronos_failures": [],
+  "toto_successes": [
+    "AAPL",
+    "NVDA"
+  ],
+  "toto_failures": []
+}

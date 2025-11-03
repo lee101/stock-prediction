@@ -1,0 +1,31 @@
+{
+  "model": "kronos",
+  "symbol": "AVAXUSD",
+  "config": {
+    "name": "kronos_temp0.22_p0.82_s240_k24_clip2.0_ctx256",
+    "temperature": 0.22,
+    "top_p": 0.82,
+    "top_k": 24,
+    "sample_count": 240,
+    "max_context": 256,
+    "clip": 2.0
+  },
+  "validation": {
+    "price_mae": 0.40817142852783184,
+    "pct_return_mae": 0.041233109072046234,
+    "latency_s": 6.959474435949232
+  },
+  "test": {
+    "price_mae": 0.5478328291320803,
+    "pct_return_mae": 0.04635356605665586,
+    "latency_s": 7.742292588023702
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_quick"
+  }
+}

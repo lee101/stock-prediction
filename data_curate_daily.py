@@ -19,7 +19,7 @@ from retry import retry
 from alpaca_wrapper import latest_data
 from data_utils import is_fp_close_to_zero
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
-from src.fixtures import crypto_symbols
+from src.fixtures import crypto_symbols, all_crypto_symbols, active_crypto_symbols
 from src.stock_utils import remap_symbols
 
 base_dir = Path(__file__).parent
@@ -143,8 +143,8 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
     if not alpaca_clock.is_open and not all_data_force:
         logger.info("Market is closed")
         if not symbols_provided:
-            # Only keep crypto symbols when using the default universe and the market is closed
-            symbols = [symbol for symbol in symbols if symbol in crypto_symbols]
+            # Only keep active crypto symbols when using the default universe and the market is closed
+            symbols = [symbol for symbol in symbols if symbol in active_crypto_symbols]
 
     # Use the (potentially filtered) symbols list for downloading
     remaining_symbols = symbols
@@ -187,7 +187,9 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
         found_symbols[symbol] = daily_df
 
     # Return the last processed dataframe or an empty one if none processed
-    return found_symbols[symbols[-1]] if symbols else DataFrame()
+    if symbols and symbols[-1] in found_symbols:
+        return found_symbols[symbols[-1]]
+    return DataFrame()
 
 
 # cache for 4 hours
@@ -268,8 +270,9 @@ def download_exchange_latest_data(api, symbol):
                 ask_price = None
                 bid_price = None
         if bid_price is not None and ask_price is not None and not is_fp_close_to_zero(bid_price) and not is_fp_close_to_zero(ask_price):
-            # only update the latest row
-            latest_data_dl.loc[latest_data_dl.index[-1], 'close'] = (bid_price + ask_price) / 2.
+            # only update the latest row if we have data
+            if not latest_data_dl.empty:
+                latest_data_dl.loc[latest_data_dl.index[-1], 'close'] = (bid_price + ask_price) / 2.
             spread = ask_price / bid_price
             logger.info(f"{symbol} spread {spread}")
             spreads[symbol] = spread
@@ -291,7 +294,10 @@ def download_exchange_latest_data(api, symbol):
         bids[symbol] = last_close
         asks[symbol] = last_close
 
-    logger.info(f"Data timestamp: {latest_data_dl.index[-1]}")
+    if not latest_data_dl.empty:
+        logger.info(f"Data timestamp: {latest_data_dl.index[-1]}")
+    else:
+        logger.warning(f"No data available for {symbol}")
     logger.info(f"Current time: {datetime.datetime.now(tz=pytz.utc)}")
     return latest_data_dl
 
@@ -328,7 +334,8 @@ def get_bid(symbol):
 
 
 def download_stock_data_between_times(api, end, start, symbol):
-    if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD', "PAXGUSD", "UNIUSD"]:
+    # Use all_crypto_symbols to identify which API to use (crypto vs stock)
+    if symbol in all_crypto_symbols:
         daily_df = crypto_get_bars(end, start, symbol)
         try:
             daily_df.drop(['exchange'], axis=1, inplace=True)
