@@ -1444,6 +1444,31 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 default=predicted_close_price,
             )
 
+            # Fix inverted base predictions - fallback to close price
+            if predicted_high_price < predicted_low_price:
+                logger.warning(
+                    f"{symbol}: Base model has inverted predictions (high={predicted_high_price:.4f} < low={predicted_low_price:.4f}), "
+                    f"using close={predicted_close_price:.4f} for both"
+                )
+                predicted_high_price = predicted_close_price
+                predicted_low_price = predicted_close_price
+
+            # Sanity check: ensure close is within [low, high] range
+            # Valid OHLC data requires: low <= close <= high
+            if predicted_close_price > predicted_high_price:
+                logger.warning(
+                    f"{symbol}: Close price ({predicted_close_price:.4f}) exceeds high ({predicted_high_price:.4f}), "
+                    f"adjusting high to match close"
+                )
+                predicted_high_price = predicted_close_price
+
+            if predicted_close_price < predicted_low_price:
+                logger.warning(
+                    f"{symbol}: Close price ({predicted_close_price:.4f}) is below low ({predicted_low_price:.4f}), "
+                    f"adjusting low to match close"
+                )
+                predicted_low_price = predicted_close_price
+
             def _optional_numeric(value: object) -> Optional[float]:
                 raw = coerce_numeric(value, default=float("nan")) if value is not None else float("nan")
                 return raw if math.isfinite(raw) else None
@@ -1453,6 +1478,57 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             maxdiff_trade_bias = _optional_numeric(last_prediction.get("maxdiff_trade_bias"))
             maxdiffalwayson_high_price = _optional_numeric(last_prediction.get("maxdiffalwayson_high_price"))
             maxdiffalwayson_low_price = _optional_numeric(last_prediction.get("maxdiffalwayson_low_price"))
+
+            # Fix inverted high/low pairs using fallback model predictions
+            # Prefer using other models' predictions over blindly flipping
+            def _fix_inverted_predictions(
+                high: Optional[float],
+                low: Optional[float],
+                fallback_high_candidates: list,
+                fallback_low_candidates: list,
+                label: str
+            ) -> tuple:
+                """Try fallback models before flipping inverted high/low predictions."""
+                if high is None or low is None or high >= low:
+                    return high, low
+
+                original_high, original_low = high, low
+                logger.warning(f"{symbol}: Detected inverted {label} predictions (high={high:.4f} < low={low:.4f})")
+
+                # Try fallback high predictions
+                for fallback_high in fallback_high_candidates:
+                    if fallback_high is not None and fallback_high >= low:
+                        logger.info(f"{symbol}: Using fallback high={fallback_high:.4f} for {label} (original={original_high:.4f})")
+                        return fallback_high, low
+
+                # Try fallback low predictions
+                for fallback_low in fallback_low_candidates:
+                    if fallback_low is not None and high >= fallback_low:
+                        logger.info(f"{symbol}: Using fallback low={fallback_low:.4f} for {label} (original={original_low:.4f})")
+                        return high, fallback_low
+
+                # Last resort: flip
+                logger.warning(f"{symbol}: No valid fallback for {label}, flipping as last resort")
+                return low, high
+
+            # Fix maxdiff first using only base model predictions as fallback
+            maxdiff_high_price, maxdiff_low_price = _fix_inverted_predictions(
+                maxdiff_high_price,
+                maxdiff_low_price,
+                fallback_high_candidates=[predicted_high_price],
+                fallback_low_candidates=[predicted_low_price],
+                label="maxdiff"
+            )
+
+            # Fix maxdiffalwayson using both corrected maxdiff and base predictions
+            maxdiffalwayson_high_price, maxdiffalwayson_low_price = _fix_inverted_predictions(
+                maxdiffalwayson_high_price,
+                maxdiffalwayson_low_price,
+                fallback_high_candidates=[maxdiff_high_price, predicted_high_price],
+                fallback_low_candidates=[maxdiff_low_price, predicted_low_price],
+                label="maxdiffalwayson"
+            )
+
             maxdiff_primary_side_raw = raw_last_prediction.get("maxdiff_primary_side")
             maxdiff_primary_side = (
                 str(maxdiff_primary_side_raw).strip().lower()
@@ -2044,6 +2120,16 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             snapshot_row = latest_snapshot.get(symbol)
             if snapshot_row:
                 result_row.update(snapshot_row)
+
+            # Apply corrected high/low values (after snapshot update to ensure they're not overwritten with inverted values)
+            if maxdiff_high_price is not None:
+                result_row["maxdiffprofit_high_price"] = maxdiff_high_price
+            if maxdiff_low_price is not None:
+                result_row["maxdiffprofit_low_price"] = maxdiff_low_price
+            if maxdiffalwayson_high_price is not None:
+                result_row["maxdiffalwayson_high_price"] = maxdiffalwayson_high_price
+            if maxdiffalwayson_low_price is not None:
+                result_row["maxdiffalwayson_low_price"] = maxdiffalwayson_low_price
 
             if maxdiff_primary_side_raw is not None:
                 result_row["maxdiff_primary_side"] = str(maxdiff_primary_side_raw).strip().lower() or "neutral"

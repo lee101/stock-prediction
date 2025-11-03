@@ -515,22 +515,31 @@ def spawn_open_position_at_maxdiff_takeprofit(
         skip_path=config_path,
     )
 
+    # Always restart watchers to ensure fresh code and parameters
+    # (even if parameters match, the watcher may be stale or running old code)
     existing_metadata = _load_watcher_metadata(config_path)
-    if _watcher_matches_params(
-        existing_metadata,
-        limit_price=float(limit_price),
-        target_qty=float(target_qty),
-        tolerance_pct=float(tolerance_pct),
-        entry_strategy=entry_strategy,
-    ):
+    # if _watcher_matches_params(
+    #     existing_metadata,
+    #     limit_price=float(limit_price),
+    #     target_qty=float(target_qty),
+    #     tolerance_pct=float(tolerance_pct),
+    #     entry_strategy=entry_strategy,
+    # ):
+    #     logger.debug(
+    #         "Skipping spawn for %s %s entry watcher @ %.4f - existing watcher matches parameters",
+    #         symbol,
+    #         side,
+    #         limit_price,
+    #     )
+    #     return
+
+    if existing_metadata:
         logger.debug(
-            "Skipping spawn for %s %s entry watcher @ %.4f - existing watcher matches parameters",
+            "Restarting %s %s entry watcher @ %.4f (fresh code/params)",
             symbol,
             side,
             limit_price,
         )
-        return
-
     _stop_existing_watcher(config_path, reason="replaced_entry_watcher")
     priority_value: Optional[int]
     if priority_rank is None:
@@ -647,22 +656,30 @@ def spawn_close_position_at_maxdiff_takeprofit(
             takeprofit_price,
         )
 
-    # Check if existing watcher matches desired parameters
+    # Always restart watchers to ensure fresh code and parameters
+    # (even if parameters match, the watcher may be stale or running old code)
     existing_metadata = _load_watcher_metadata(config_path)
-    if _watcher_matches_params(
-        existing_metadata,
-        takeprofit_price=float(takeprofit_price),
-        price_tolerance=price_tolerance_val,
-        entry_strategy=entry_strategy,
-    ):
+    # if _watcher_matches_params(
+    #     existing_metadata,
+    #     takeprofit_price=float(takeprofit_price),
+    #     price_tolerance=price_tolerance_val,
+    #     entry_strategy=entry_strategy,
+    # ):
+    #     logger.debug(
+    #         "Skipping spawn for %s %s exit watcher @ %.4f - existing watcher matches parameters",
+    #         symbol,
+    #         side,
+    #         takeprofit_price,
+    #     )
+    #     return
+
+    if existing_metadata:
         logger.debug(
-            "Skipping spawn for %s %s exit watcher @ %.4f - existing watcher matches parameters",
+            "Restarting %s %s exit watcher @ %.4f (fresh code/params)",
             symbol,
             side,
             takeprofit_price,
         )
-        return
-
     _stop_existing_watcher(config_path, reason="replaced_exit_watcher")
     metadata = {
         "config_version": 1,
