@@ -1,6 +1,6 @@
 {
-  "model": "toto",
   "symbol": "MSFT",
+  "model": "toto",
   "config": {
     "name": "toto_opt_median_512_spb32",
     "num_samples": 512,
@@ -22,7 +22,13 @@
     "test_window": 20,
     "forecast_horizon": 1
   },
+  "config_path": "hyperparams/toto/MSFT.json",
   "metadata": {
-    "source": "hyperparams_extended"
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.012995321067946328,
+    "kronos_pct_return_mae": 0.013084358859162534,
+    "toto_pct_return_mae": 0.012995321067946328,
+    "improvement_pct": 0.680490287484399
   }
 }
