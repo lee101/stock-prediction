@@ -24,9 +24,11 @@
   },
   "config_path": "hyperparams/toto/ADSK.json",
   "metadata": {
-    "source": "hyperparams_extended",
-    "extended_path": "hyperparams_extended/toto/ADSK.json",
-    "selection_metric": "test_price_mae",
-    "selection_value": 2.946526071988046
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.00929976417009856,
+    "kronos_pct_return_mae": 0.012706785723135064,
+    "toto_pct_return_mae": 0.00929976417009856,
+    "improvement_pct": 26.812615143366962
   }
 }
