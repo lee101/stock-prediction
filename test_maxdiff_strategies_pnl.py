@@ -560,6 +560,160 @@ def test_pnl_consistency_between_calls():
     print(f"  Total return: {results[0]['total_return']:.6f}")
 
 
+def test_invalid_forecast_detection():
+    """Test that invalid forecasts (where low >= high after adjustments) are detected."""
+    n_days = 5
+    close_actual_movement = torch.tensor([0.01, -0.005, 0.015, -0.01, 0.02], dtype=torch.float32)
+
+    # Create invalid forecasts by inverting high/low
+    # Valid: low < high (e.g., low=-0.02, high=0.03)
+    # Invalid: low >= high (e.g., low=0.03, high=-0.02)
+
+    # Completely inverted: high is negative, low is positive (clearly invalid)
+    high_predictions = torch.tensor([-0.03, 0.02, 0.03, 0.015, 0.02], dtype=torch.float32)  # Day 0: negative (invalid)
+    low_predictions = torch.tensor([0.02, -0.01, -0.02, -0.01, -0.015], dtype=torch.float32)  # Day 0: positive (invalid)
+
+    high_actual_movement = torch.tensor([0.02, 0.01, 0.03, 0.015, 0.02], dtype=torch.float32)
+    low_actual_movement = torch.tensor([-0.01, -0.01, -0.02, -0.01, -0.015], dtype=torch.float32)
+
+    # Create OHLC data
+    closes = []
+    highs = []
+    lows = []
+    current_price = 100.0
+
+    for i in range(n_days + 2):
+        if i < n_days:
+            high_movement = high_actual_movement[i].item()
+            low_movement = low_actual_movement[i].item()
+        else:
+            high_movement = 0.02
+            low_movement = -0.01
+
+        closes.append(current_price)
+        highs.append(current_price * (1 + high_movement))
+        lows.append(current_price * (1 + low_movement))
+
+        if i < n_days:
+            current_price = current_price * (1 + close_actual_movement[i].item())
+
+    simulation_data = pd.DataFrame({
+        'Close': closes,
+        'High': highs,
+        'Low': lows,
+    })
+
+    last_preds = {
+        'close_actual_movement_values': close_actual_movement,
+        'high_actual_movement_values': high_actual_movement,
+        'low_actual_movement_values': low_actual_movement,
+        'high_predictions': high_predictions,
+        'low_predictions': low_predictions,
+        'high_predicted_price_value': highs[-1],
+        'low_predicted_price_value': lows[-1],
+    }
+
+    evaluation, daily_returns, metadata = evaluate_maxdiff_strategy(
+        last_preds,
+        simulation_data,
+        trading_fee=0.0,
+        trading_days_per_year=252,
+        is_crypto=False,
+        skip_invalid_forecasts=True,
+    )
+
+    # Should detect invalid forecast on day 0 (high=-0.03, low=0.02, so low > high)
+    assert 'maxdiff_invalid_forecasts' in metadata
+    assert 'maxdiff_valid_forecasts' in metadata
+    assert metadata['maxdiff_invalid_forecasts'] > 0, "Should detect invalid forecasts"
+
+    print(f"✓ Invalid forecast detection test passed")
+    print(f"  Total forecasts: {n_days}")
+    print(f"  Invalid forecasts: {metadata['maxdiff_invalid_forecasts']}")
+    print(f"  Valid forecasts: {metadata['maxdiff_valid_forecasts']}")
+
+
+def test_skip_invalid_forecasts():
+    """Test that invalid forecasts are skipped when skip_invalid_forecasts=True."""
+    n_days = 5
+    close_actual_movement = torch.tensor([0.01, -0.005, 0.015, -0.01, 0.02], dtype=torch.float32)
+
+    # All invalid forecasts - completely inverted (high < low)
+    high_predictions = torch.tensor([-0.03, -0.02, -0.04, -0.025, -0.03], dtype=torch.float32)  # All negative
+    low_predictions = torch.tensor([0.02, 0.01, 0.03, 0.015, 0.02], dtype=torch.float32)  # All positive
+
+    high_actual_movement = torch.tensor([0.02, 0.01, 0.03, 0.015, 0.02], dtype=torch.float32)
+    low_actual_movement = torch.tensor([-0.01, -0.01, -0.02, -0.01, -0.015], dtype=torch.float32)
+
+    # Create OHLC data
+    closes = []
+    highs = []
+    lows = []
+    current_price = 100.0
+
+    for i in range(n_days + 2):
+        if i < n_days:
+            high_movement = high_actual_movement[i].item()
+            low_movement = low_actual_movement[i].item()
+        else:
+            high_movement = 0.02
+            low_movement = -0.01
+
+        closes.append(current_price)
+        highs.append(current_price * (1 + high_movement))
+        lows.append(current_price * (1 + low_movement))
+
+        if i < n_days:
+            current_price = current_price * (1 + close_actual_movement[i].item())
+
+    simulation_data = pd.DataFrame({
+        'Close': closes,
+        'High': highs,
+        'Low': lows,
+    })
+
+    last_preds = {
+        'close_actual_movement_values': close_actual_movement,
+        'high_actual_movement_values': high_actual_movement,
+        'low_actual_movement_values': low_actual_movement,
+        'high_predictions': high_predictions,
+        'low_predictions': low_predictions,
+        'high_predicted_price_value': highs[-1],
+        'low_predicted_price_value': lows[-1],
+    }
+
+    # Run with skip_invalid_forecasts=True
+    eval_skip, returns_skip, metadata_skip = evaluate_maxdiff_strategy(
+        last_preds,
+        simulation_data,
+        trading_fee=0.0,
+        trading_days_per_year=252,
+        is_crypto=False,
+        skip_invalid_forecasts=True,
+    )
+
+    # Run with skip_invalid_forecasts=False
+    eval_no_skip, returns_no_skip, metadata_no_skip = evaluate_maxdiff_strategy(
+        last_preds,
+        simulation_data,
+        trading_fee=0.0,
+        trading_days_per_year=252,
+        is_crypto=False,
+        skip_invalid_forecasts=False,
+    )
+
+    # When skipping, all forecasts are invalid, so should have different results
+    assert metadata_skip['maxdiff_invalid_forecasts'] == n_days, "All forecasts should be invalid"
+    assert metadata_skip['maxdiff_valid_forecasts'] == 0, "No valid forecasts"
+
+    print(f"✓ Skip invalid forecasts test passed")
+    print(f"  With skipping:")
+    print(f"    Invalid: {metadata_skip['maxdiff_invalid_forecasts']}, Valid: {metadata_skip['maxdiff_valid_forecasts']}")
+    print(f"    Total return: {eval_skip.total_return:.6f}")
+    print(f"  Without skipping:")
+    print(f"    Total return: {eval_no_skip.total_return:.6f}")
+
+
 def run_all_tests():
     """Run all tests and report results."""
     print("=" * 60)
@@ -579,6 +733,8 @@ def run_all_tests():
         ("Trade Bias Calculation", test_trade_bias_calculation),
         ("Trading Fees Included", test_trading_fees_included),
         ("PnL Consistency Between Calls", test_pnl_consistency_between_calls),
+        ("Invalid Forecast Detection", test_invalid_forecast_detection),
+        ("Skip Invalid Forecasts", test_skip_invalid_forecasts),
     ]
 
     passed = 0

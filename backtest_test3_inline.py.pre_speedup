@@ -1236,10 +1236,7 @@ def _compute_toto_forecast(
     """
     Generate Toto forecasts for a prepared price frame.
     Returns (predictions_tensor, band_tensor, predicted_absolute_last).
-
-    OPTIMIZATION: Async GPU transfers (non_blocking=True) for better utilization.
     """
-    global TOTO_DEVICE_OVERRIDE
     predictions_list: List[float] = []
     band_list: List[float] = []
     max_horizon = 7
@@ -1254,17 +1251,13 @@ def _compute_toto_forecast(
         current_context = price_frame[:-pred_idx]
         if current_context.empty:
             continue
-
-        # OPTIMIZATION: Async GPU transfer
         context = torch.tensor(current_context["y"].values, dtype=torch.float32)
-        if torch.cuda.is_available() and context.device.type == 'cpu':
-            context = context.to('cuda', non_blocking=True)
-
         requested_num_samples = int(toto_params["num_samples"])
         requested_batch = int(toto_params["samples_per_batch"])
 
         attempts = 0
         cpu_fallback_used = False
+        global TOTO_DEVICE_OVERRIDE
         while True:
             requested_num_samples, requested_batch = _normalise_sampling_params(
                 requested_num_samples,
@@ -1355,13 +1348,7 @@ def _compute_toto_forecast(
         band_list.append(band_width)
 
         aggregated = aggregate_with_spec(distribution, toto_params["aggregate"])
-        aggregated_1d = np.atleast_1d(aggregated)
-        if aggregated_1d.size > 0:
-            predictions_list.append(float(aggregated_1d[0]))
-        else:
-            # Fallback to 0.0 if aggregation produces empty result
-            logger.warning("Toto aggregation returned empty result for %s %s; using 0.0", symbol, target_key)
-            predictions_list.append(0.0)
+        predictions_list.append(float(np.atleast_1d(aggregated)[0]))
 
     if not predictions_list:
         predictions_list = [0.0]
@@ -2085,11 +2072,6 @@ def backtest_forecasts(symbol, num_simulations=7):
 
     # stock_data = download_daily_stock_data(current_time_formatted, symbols=symbols)
     # stock_data = pd.read_csv(f"./data/{current_time_formatted}/{symbol}-{current_day_formatted}.csv")
-
-    # Check if we got any data
-    if stock_data.empty:
-        logger.error(f"No data available for {symbol} - download_daily_stock_data returned empty DataFrame")
-        return pd.DataFrame()
 
     base_dir = Path(__file__).parent
     data_dir = base_dir / "data" / current_time_formatted

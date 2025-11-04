@@ -1,0 +1,7 @@
+symbol,avg_annualized_pnl_per_window,total_annualized_pnl,total_pnl_all_windows,avg_sharpe_ratio,avg_win_rate,avg_max_drawdown,total_trades,num_strategy_windows,is_crypto
+AAPL,2771.02,1609962.35,12777.48,-0.005,0.068,-0.002,858,581,False
+NVDA,2430.33,1412023.28,11206.53,0.065,0.071,-0.002,783,581,False
+ETHUSD,738.25,149864.93,28545.7,0.04,0.004,-0.0,7,203,True
+UNIUSD,-5.18,-1050.84,-202.05,-0.617,0.209,-0.001,1022,203,True
+MSFT,-2836.71,-1648126.75,-13080.37,-0.166,0.063,-0.002,875,581,False
+LTCUSD,-3251.59,-569028.01,-108389.1,-0.482,0.394,-0.018,1118,175,True
