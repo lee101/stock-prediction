@@ -1431,43 +1431,89 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             )
 
             close_price = coerce_numeric(last_prediction.get("close"), default=0.0)
-            predicted_close_price = coerce_numeric(
-                last_prediction.get("predicted_close"),
-                default=close_price,
-            )
-            predicted_high_price = coerce_numeric(
-                last_prediction.get("predicted_high"),
-                default=predicted_close_price,
-            )
-            predicted_low_price = coerce_numeric(
-                last_prediction.get("predicted_low"),
-                default=predicted_close_price,
-            )
 
-            # Fix inverted base predictions - fallback to close price
-            if predicted_high_price < predicted_low_price:
-                logger.warning(
-                    f"{symbol}: Base model has inverted predictions (high={predicted_high_price:.4f} < low={predicted_low_price:.4f}), "
-                    f"using close={predicted_close_price:.4f} for both"
-                )
-                predicted_high_price = predicted_close_price
-                predicted_low_price = predicted_close_price
+            # Retry logic: give the model a chance to fix invalid predictions
+            max_retries = 2
+            retry_count = 0
+            predictions_valid = False
 
-            # Sanity check: ensure close is within [low, high] range
-            # Valid OHLC data requires: low <= close <= high
-            if predicted_close_price > predicted_high_price:
-                logger.warning(
-                    f"{symbol}: Close price ({predicted_close_price:.4f}) exceeds high ({predicted_high_price:.4f}), "
-                    f"adjusting high to match close"
-                )
-                predicted_high_price = predicted_close_price
+            while retry_count <= max_retries and not predictions_valid:
+                if retry_count > 0:
+                    logger.info(f"{symbol}: Retrying predictions (attempt {retry_count + 1}/{max_retries + 1})")
+                    # Re-run predictions to see if model can fix itself
+                    try:
+                        retry_backtest_df = backtest_forecasts(symbol, num_simulations)
+                        if not retry_backtest_df.empty:
+                            retry_prediction = retry_backtest_df.iloc[0].apply(
+                                lambda value: coerce_numeric(value, default=0.0, prefer="mean")
+                            )
+                            last_prediction = retry_prediction
+                        else:
+                            logger.warning(f"{symbol}: Retry {retry_count} returned empty backtest, using previous predictions")
+                    except Exception as retry_exc:
+                        logger.warning(f"{symbol}: Retry {retry_count} failed: {retry_exc}, using previous predictions")
 
-            if predicted_close_price < predicted_low_price:
-                logger.warning(
-                    f"{symbol}: Close price ({predicted_close_price:.4f}) is below low ({predicted_low_price:.4f}), "
-                    f"adjusting low to match close"
+                predicted_close_price = coerce_numeric(
+                    last_prediction.get("predicted_close"),
+                    default=close_price,
                 )
-                predicted_low_price = predicted_close_price
+                predicted_high_price = coerce_numeric(
+                    last_prediction.get("predicted_high"),
+                    default=predicted_close_price,
+                )
+                predicted_low_price = coerce_numeric(
+                    last_prediction.get("predicted_low"),
+                    default=predicted_close_price,
+                )
+
+                # Check if predictions are valid
+                has_inverted_highlow = predicted_high_price < predicted_low_price
+                close_exceeds_high = predicted_close_price > predicted_high_price
+                close_below_low = predicted_close_price < predicted_low_price
+
+                if has_inverted_highlow or close_exceeds_high or close_below_low:
+                    if retry_count == 0:
+                        logger.warning(
+                            f"{symbol}: Invalid predictions detected - "
+                            f"high={predicted_high_price:.4f}, low={predicted_low_price:.4f}, close={predicted_close_price:.4f} "
+                            f"(inverted={has_inverted_highlow}, close>high={close_exceeds_high}, close<low={close_below_low})"
+                        )
+                    retry_count += 1
+                else:
+                    predictions_valid = True
+                    if retry_count > 0:
+                        logger.info(f"{symbol}: Predictions fixed after {retry_count} retries")
+
+            # If retries failed, apply fallback fixes
+            if not predictions_valid:
+                logger.warning(
+                    f"{symbol}: All {max_retries} retries failed to produce valid predictions, applying fallback fixes"
+                )
+
+                # Fix inverted base predictions - fallback to close price
+                if predicted_high_price < predicted_low_price:
+                    logger.warning(
+                        f"{symbol}: Base model has inverted predictions (high={predicted_high_price:.4f} < low={predicted_low_price:.4f}), "
+                        f"using close={predicted_close_price:.4f} for both"
+                    )
+                    predicted_high_price = predicted_close_price
+                    predicted_low_price = predicted_close_price
+
+                # Sanity check: ensure close is within [low, high] range
+                # Valid OHLC data requires: low <= close <= high
+                if predicted_close_price > predicted_high_price:
+                    logger.warning(
+                        f"{symbol}: Close price ({predicted_close_price:.4f}) exceeds high ({predicted_high_price:.4f}), "
+                        f"adjusting high to match close"
+                    )
+                    predicted_high_price = predicted_close_price
+
+                if predicted_close_price < predicted_low_price:
+                    logger.warning(
+                        f"{symbol}: Close price ({predicted_close_price:.4f}) is below low ({predicted_low_price:.4f}), "
+                        f"adjusting low to match close"
+                    )
+                    predicted_low_price = predicted_close_price
 
             def _optional_numeric(value: object) -> Optional[float]:
                 raw = coerce_numeric(value, default=float("nan")) if value is not None else float("nan")
