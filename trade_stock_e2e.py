@@ -12,7 +12,7 @@ from loguru import logger
 
 import alpaca_wrapper
 try:
-    from backtest_test3_inline import backtest_forecasts, release_model_resources
+    from backtest_test3_inline import backtest_forecasts, release_model_resources, resolve_close_policy
 except Exception as import_exc:  # pragma: no cover - exercised via tests with stubs
     logging.getLogger(__name__).warning(
         "Falling back to stubbed backtest resources due to import failure: %s", import_exc
@@ -54,7 +54,6 @@ from src.trade_stock_env_utils import (
     _drawdown_cap_for,
     _drawdown_resume_for,
     _get_env_float,
-    _load_trend_summary,
     _increment_symbol_entry,
     _kelly_drawdown_scale,
     _lookup_threshold,
@@ -70,6 +69,18 @@ from src.trade_stock_env_utils import (
     _symbol_trend_resume_threshold,
     get_entry_counter_snapshot,
     reset_symbol_entry_counters,
+)
+from src.trade_stock_forecast_snapshot import load_latest_forecast_snapshot as _load_forecast_snapshot
+from src.trade_stock_gate_utils import (
+    CONSENSUS_MIN_MOVE_PCT,
+    DISABLE_TRADE_GATES,
+    coerce_positive_int,
+    get_trend_stat,
+    is_kronos_only_mode,
+    is_tradeable,
+    pass_edge_threshold,
+    resolve_signal_sign,
+    should_skip_closed_equity,
 )
 from src.trade_stock_utils import (
     agree_direction,
@@ -140,7 +151,6 @@ if _ALLOW_MAXDIFF_ALWAYS_ENV is None:
 else:
     ALLOW_MAXDIFF_ALWAYS_ENTRY = _ALLOW_MAXDIFF_ALWAYS_ENV.strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip().lower() in {"1", "true", "yes", "on"}
-CONSENSUS_MIN_MOVE_PCT = float(os.getenv("CONSENSUS_MIN_MOVE_PCT", "0.001"))
 
 _quote_client: Optional[StockHistoricalDataClient] = None
 _COOLDOWN_STATE: Dict[str, Dict[str, datetime]] = {}
@@ -156,19 +166,13 @@ _TRUTHY = TRUTHY_ENV_VALUES
 SIMPLIFIED_MODE = os.getenv("MARKETSIM_SIMPLE_MODE", "0").strip().lower() in _TRUTHY
 
 
-def _coerce_positive_int(raw_value: Optional[str], default: int) -> int:
-    if raw_value is None:
-        return default
-    try:
-        parsed = int(str(raw_value).strip())
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed >= 0 else default
+_coerce_positive_int = coerce_positive_int
+_should_skip_closed_equity = should_skip_closed_equity
+_get_trend_stat = get_trend_stat
+_is_kronos_only_mode = is_kronos_only_mode
 
 
-ENABLE_PROBE_TRADES = (
-    os.getenv("MARKETSIM_ENABLE_PROBE_TRADES", "1").strip().lower() in _TRUTHY
-)
+ENABLE_PROBE_TRADES = os.getenv("MARKETSIM_ENABLE_PROBE_TRADES", "1").strip().lower() in _TRUTHY
 MAX_MAXDIFFS = _coerce_positive_int(
     os.getenv("MARKETSIM_MAX_MAXDIFFS"),
     15,
@@ -181,10 +185,6 @@ PROBE_SYMBOLS = (
     else set(DEFAULT_PROBE_SYMBOLS)
 )
 
-_LATEST_FORECAST_CACHE: Dict[str, Dict[str, object]] = {}
-_LATEST_FORECAST_PATH: Optional[Path] = None
-DISABLE_TRADE_GATES = os.getenv("MARKETSIM_DISABLE_GATES", "0").strip().lower() in _TRUTHY
-
 _coerce_optional_float = coerce_optional_float
 _parse_float_list = parse_float_list
 _edge_threshold_bps = edge_threshold_bps
@@ -192,28 +192,6 @@ _evaluate_strategy_entry_gate = evaluate_strategy_entry_gate
 
 MAXDIFF_STRATEGIES = {"maxdiff", "maxdiffalwayson"}
 MAXDIFF_LIMIT_STRATEGIES = MAXDIFF_STRATEGIES.union({"highlow"})
-
-
-def _should_skip_closed_equity() -> bool:
-    env_value = os.getenv("MARKETSIM_SKIP_CLOSED_EQUITY")
-    if env_value is not None:
-        return env_value.strip().lower() in _TRUTHY
-    return True
-
-
-def _get_trend_stat(symbol: str, key: str) -> Optional[float]:
-    """Look up a trend summary metric for the provided symbol."""
-    summary = _load_trend_summary()
-    if not summary:
-        return None
-    symbol_info = summary.get((symbol or "").upper())
-    if not symbol_info:
-        return None
-    value = symbol_info.get(key)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 _DRAW_SUSPENDED: Dict[Tuple[str, str], bool] = {}
@@ -227,84 +205,17 @@ def _results_dir() -> Path:
     return Path(__file__).resolve().parent / "results"
 
 
+def _load_latest_forecast_snapshot() -> Dict[str, Dict[str, object]]:
+    return _load_forecast_snapshot(
+        _results_dir(),
+        logger=logger,
+        parse_float_list=_parse_float_list,
+        coerce_optional_float=_coerce_optional_float,
+    )
+
+
 def _normalize_series(series: pd.Series) -> pd.Series:
     return series.apply(lambda value: coerce_numeric(value, default=0.0, prefer="mean"))
-
-
-def _find_latest_prediction_file() -> Optional[Path]:
-    results_path = _results_dir()
-    if not results_path.exists():
-        return None
-    candidates = list(results_path.glob("predictions-*.csv"))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
-
-
-def _load_latest_forecast_snapshot() -> Dict[str, Dict[str, object]]:
-    global _LATEST_FORECAST_CACHE, _LATEST_FORECAST_PATH
-
-    latest_file = _find_latest_prediction_file()
-    if latest_file is None:
-        return {}
-    if _LATEST_FORECAST_PATH == latest_file and _LATEST_FORECAST_CACHE:
-        return _LATEST_FORECAST_CACHE
-
-    desired_columns = {
-        "maxdiffprofit_profit",
-        "maxdiffprofit_high_price",
-        "maxdiffprofit_low_price",
-        "maxdiffprofit_profit_high_multiplier",
-        "maxdiffprofit_profit_low_multiplier",
-        "maxdiffprofit_profit_values",
-        "entry_takeprofit_profit",
-        "entry_takeprofit_high_price",
-        "entry_takeprofit_low_price",
-        "entry_takeprofit_profit_values",
-        "takeprofit_profit",
-        "takeprofit_high_price",
-        "takeprofit_low_price",
-    }
-
-    try:
-        df = pd.read_csv(
-            latest_file,
-            usecols=lambda column: column == "instrument" or column in desired_columns,
-        )
-    except Exception as exc:  # pragma: no cover - guarded against missing pandas/corrupt files
-        logger.warning("Failed to load latest prediction snapshot %s: %s", latest_file, exc)
-        _LATEST_FORECAST_CACHE = {}
-        _LATEST_FORECAST_PATH = latest_file
-        return _LATEST_FORECAST_CACHE
-
-    snapshot: Dict[str, Dict[str, object]] = {}
-
-    for row in df.to_dict("records"):
-        instrument = row.get("instrument")
-        if not instrument:
-            continue
-        entry: Dict[str, object] = {}
-        for key in desired_columns:
-            if key not in row:
-                continue
-            if key.endswith("_values"):
-                parsed_values = _parse_float_list(row.get(key))
-                if parsed_values is not None:
-                    entry[key] = parsed_values
-            else:
-                parsed_float = _coerce_optional_float(row.get(key))
-                if parsed_float is not None:
-                    entry[key] = parsed_float
-        if entry:
-            snapshot[str(instrument)] = entry
-
-    _LATEST_FORECAST_CACHE = snapshot
-    _LATEST_FORECAST_PATH = latest_file
-    return snapshot
-
-
-def _is_kronos_only_mode() -> bool:
-    return os.getenv("MARKETSIM_FORCE_KRONOS", "0").lower() in _TRUTHY
 
 
 def _get_quote_client() -> Optional[StockHistoricalDataClient]:
@@ -328,53 +239,6 @@ def fetch_bid_ask(symbol: str) -> Tuple[Optional[float], Optional[float]]:
     except Exception as exc:
         logger.warning("Unable to refresh quotes for %s: %s", symbol, exc)
     return get_bid(symbol), get_ask(symbol)
-
-
-def is_tradeable(
-    symbol: str,
-    bid: Optional[float],
-    ask: Optional[float],
-    *,
-    avg_dollar_vol: Optional[float] = None,
-    atr_pct: Optional[float] = None,
-) -> Tuple[bool, str]:
-    spread_bps = compute_spread_bps(bid, ask)
-    if DISABLE_TRADE_GATES:
-        return True, f"Gates disabled (spread {spread_bps:.1f}bps)"
-    if math.isinf(spread_bps):
-        return False, "Missing bid/ask quote"
-    # Volume check disabled - strategy-specific blocks are sufficient
-    # kronos_only = _is_kronos_only_mode()
-    # min_dollar_vol = 5_000_000 if not kronos_only else 0.0
-    # if avg_dollar_vol is not None and avg_dollar_vol < min_dollar_vol:
-    #     return False, f"Low dollar vol {avg_dollar_vol:,.0f}"
-    atr_note = f", ATR {atr_pct:.2f}%" if atr_pct is not None else ""
-    return True, f"Spread {spread_bps:.1f}bps OK (gates relaxed{atr_note})"
-
-
-def pass_edge_threshold(symbol: str, expected_move_pct: float) -> Tuple[bool, str]:
-    move_bps = abs(expected_move_pct) * 1e4
-    if DISABLE_TRADE_GATES:
-        return True, f"Edge gating disabled ({move_bps:.1f}bps)"
-    kronos_only = _is_kronos_only_mode()
-    base_min = 40.0 if symbol.endswith("USD") else 15.0
-    if kronos_only:
-        base_min *= 0.6
-    min_abs_move_bps = base_min
-    buffer = 10.0 if not kronos_only else 5.0
-    need = max(expected_cost_bps(symbol) + buffer, min_abs_move_bps)
-    if move_bps < need:
-        return False, f"Edge {move_bps:.1f}bps < need {need:.1f}bps"
-    return True, f"Edge {move_bps:.1f}bps ≥ need {need:.1f}bps"
-
-
-def resolve_signal_sign(move_pct: float) -> int:
-    threshold = CONSENSUS_MIN_MOVE_PCT
-    if _is_kronos_only_mode():
-        threshold *= 0.25
-    if abs(move_pct) < threshold:
-        return 0
-    return 1 if move_pct > 0 else -1
 
 
 def _record_loss_timestamp(symbol: str, closed_at: Optional[str]) -> None:
@@ -2297,9 +2161,15 @@ def build_portfolio(
         )
         simple_picks: Dict[str, Dict] = {}
         for symbol, data in ranked:
-            avg_val = _coerce_optional_float(data.get("avg_return"))
-            if avg_val is None or avg_val <= 0:
+            # Check if the SELECTED strategy has positive returns
+            strategy = data.get("strategy", "simple")
+            strategy_return_key = f"{strategy}_return"
+            strategy_return = _coerce_optional_float(data.get(strategy_return_key))
+
+            # Skip if selected strategy isn't profitable
+            if strategy_return is None or strategy_return <= 0:
                 continue
+
             pred_move = _coerce_optional_float(data.get("predicted_movement"))
             side = (data.get("side") or "").lower()
             if pred_move is not None:
@@ -2324,11 +2194,14 @@ def build_portfolio(
             break
         if data.get("trade_blocked"):
             continue
-        if (
-            data.get("avg_return", 0) > 0
-            and data.get("unprofit_shutdown_return", 0) > 0
-            and data.get("simple_return", 0) > 0
-        ):
+
+        # Check if the SELECTED strategy has positive returns
+        strategy = data.get("strategy", "simple")
+        strategy_return_key = f"{strategy}_return"
+        strategy_return = data.get(strategy_return_key, 0)
+
+        # Include if selected strategy is profitable
+        if data.get("avg_return", 0) > 0 and strategy_return > 0:
             picks[symbol] = data
 
     # Ensure we reach the minimum desired portfolio size using best remaining composites.
@@ -2338,7 +2211,14 @@ def build_portfolio(
                 break
             if symbol in picks or data.get("trade_blocked"):
                 continue
-            if data.get("simple_return", 0) > 0 or data.get("composite_score", 0) > 0:
+
+            # Check if the SELECTED strategy has positive returns
+            strategy = data.get("strategy", "simple")
+            strategy_return_key = f"{strategy}_return"
+            strategy_return = data.get(strategy_return_key, 0)
+
+            # Include if strategy is profitable or has positive composite score
+            if strategy_return > 0 or data.get("composite_score", 0) > 0:
                 picks[symbol] = data
 
     # Optionally expand with high-price-edge opportunities to keep broader exposure.
