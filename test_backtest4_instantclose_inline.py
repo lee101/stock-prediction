@@ -389,19 +389,58 @@ def compare_close_policies(symbol: str, num_simulations: int = 50) -> Optional[D
             if last_preds is None:
                 continue
 
-            # Evaluate both policies
-            instant_metrics = evaluate_strategy_with_close_policy(
+            # Evaluate both policies using the REAL MaxDiffAlwaysOn strategy with grid search
+            from backtest_test3_inline import evaluate_maxdiff_always_on_strategy
+
+            # instant_close: Run grid search WITH close_at_eod=True
+            instant_eval, instant_returns, instant_meta = evaluate_maxdiff_always_on_strategy(
                 last_preds, simulation_data,
-                close_at_eod=True,
+                trading_fee=trading_fee,
+                trading_days_per_year=trading_days_per_year,
                 is_crypto=is_crypto,
-                strategy_name="maxdiffalwayson"
+                close_at_eod=True
             )
 
-            keep_metrics = evaluate_strategy_with_close_policy(
+            # keep_open: Run grid search WITH close_at_eod=False
+            keep_eval, keep_returns, keep_meta = evaluate_maxdiff_always_on_strategy(
                 last_preds, simulation_data,
-                close_at_eod=False,
+                trading_fee=trading_fee,
+                trading_days_per_year=trading_days_per_year,
                 is_crypto=is_crypto,
-                strategy_name="maxdiffalwayson"
+                close_at_eod=False
+            )
+
+            # Convert to metrics format
+            instant_metrics = PositionCloseMetrics(
+                total_return=instant_eval.total_return * 100,
+                num_filled_trades=instant_meta.get("maxdiffalwayson_trades_total", 0),
+                num_unfilled_positions=0,
+                close_fees_paid=0.0,  # Already included in returns
+                opportunity_cost=0.0,
+                net_return_after_fees=instant_eval.total_return * 100,
+                avg_hold_duration_days=1.0 if True else 0.0,  # instant close = 1 day max
+                buy_return=instant_meta.get("maxdiffalwayson_buy_contribution", 0.0) * 100,
+                sell_return=instant_meta.get("maxdiffalwayson_sell_contribution", 0.0) * 100,
+                buy_filled=instant_meta.get("maxdiffalwayson_filled_buy_trades", 0),
+                sell_filled=instant_meta.get("maxdiffalwayson_filled_sell_trades", 0),
+                buy_unfilled=0,
+                sell_unfilled=0,
+            )
+
+            keep_metrics = PositionCloseMetrics(
+                total_return=keep_eval.total_return * 100,
+                num_filled_trades=keep_meta.get("maxdiffalwayson_trades_total", 0),
+                num_unfilled_positions=0,
+                close_fees_paid=0.0,  # Already included in returns
+                opportunity_cost=0.0,
+                net_return_after_fees=keep_eval.total_return * 100,
+                avg_hold_duration_days=0.0,  # keep open may hold longer
+                buy_return=keep_meta.get("maxdiffalwayson_buy_contribution", 0.0) * 100,
+                sell_return=keep_meta.get("maxdiffalwayson_sell_contribution", 0.0) * 100,
+                buy_filled=keep_meta.get("maxdiffalwayson_filled_buy_trades", 0),
+                sell_filled=keep_meta.get("maxdiffalwayson_filled_sell_trades", 0),
+                buy_unfilled=0,
+                sell_unfilled=0,
             )
 
             instant_close_metrics.append(instant_metrics)

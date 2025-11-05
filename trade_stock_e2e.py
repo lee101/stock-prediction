@@ -1,6 +1,8 @@
 import logging
 import math
 import os
+import signal
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import sleep
@@ -30,8 +32,10 @@ from data_curate_daily import get_bid, get_ask, download_exchange_latest_data
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from jsonshelve import FlatShelf
 from marketsimulator.state import get_state
+from src.backtest_data_utils import normalize_series
 from src.cache_utils import ensure_huggingface_cache_dir
 from src.comparisons import is_buy_side, is_same_side, is_sell_side
+from src.cooldown_utils import record_loss_timestamp, clear_cooldown, can_trade_now
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols, all_crypto_symbols, active_crypto_symbols
 # Note: Use all_crypto_symbols for identification checks (fees, trading hours, etc.)
@@ -44,6 +48,7 @@ from src.process_utils import (
     spawn_close_position_at_maxdiff_takeprofit,
     spawn_close_position_at_takeprofit,
     spawn_open_position_at_maxdiff_takeprofit,
+    MAXDIFF_WATCHERS_DIR,
 )
 from src.portfolio_risk import record_portfolio_snapshot
 from src.sizing_utils import get_qty
@@ -153,7 +158,7 @@ else:
 ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 _quote_client: Optional[StockHistoricalDataClient] = None
-_COOLDOWN_STATE: Dict[str, Dict[str, datetime]] = {}
+# Cooldown state now managed by src.cooldown_utils
 
 _trade_outcomes_store: Optional[FlatShelf] = None
 _trade_learning_store: Optional[FlatShelf] = None
@@ -165,15 +170,8 @@ _TRUTHY = TRUTHY_ENV_VALUES
 
 SIMPLIFIED_MODE = os.getenv("MARKETSIM_SIMPLE_MODE", "0").strip().lower() in _TRUTHY
 
-
-_coerce_positive_int = coerce_positive_int
-_should_skip_closed_equity = should_skip_closed_equity
-_get_trend_stat = get_trend_stat
-_is_kronos_only_mode = is_kronos_only_mode
-
-
 ENABLE_PROBE_TRADES = os.getenv("MARKETSIM_ENABLE_PROBE_TRADES", "1").strip().lower() in _TRUTHY
-MAX_MAXDIFFS = _coerce_positive_int(
+MAX_MAXDIFFS = coerce_positive_int(
     os.getenv("MARKETSIM_MAX_MAXDIFFS"),
     15,
 )
@@ -184,11 +182,6 @@ PROBE_SYMBOLS = (
     if SIMPLIFIED_MODE or not ENABLE_PROBE_TRADES
     else set(DEFAULT_PROBE_SYMBOLS)
 )
-
-_coerce_optional_float = coerce_optional_float
-_parse_float_list = parse_float_list
-_edge_threshold_bps = edge_threshold_bps
-_evaluate_strategy_entry_gate = evaluate_strategy_entry_gate
 
 MAXDIFF_STRATEGIES = {"maxdiff", "maxdiffalwayson"}
 MAXDIFF_LIMIT_STRATEGIES = MAXDIFF_STRATEGIES.union({"highlow"})
@@ -214,8 +207,9 @@ def _load_latest_forecast_snapshot() -> Dict[str, Dict[str, object]]:
     )
 
 
+# Wrapper for backwards compatibility
 def _normalize_series(series: pd.Series) -> pd.Series:
-    return series.apply(lambda value: coerce_numeric(value, default=0.0, prefer="mean"))
+    return normalize_series(series, coerce_numeric)
 
 
 def _get_quote_client() -> Optional[StockHistoricalDataClient]:
@@ -241,31 +235,19 @@ def fetch_bid_ask(symbol: str) -> Tuple[Optional[float], Optional[float]]:
     return get_bid(symbol), get_ask(symbol)
 
 
+# Wrapper for backwards compatibility
 def _record_loss_timestamp(symbol: str, closed_at: Optional[str]) -> None:
-    if not closed_at:
-        return
-    ts = _parse_timestamp(closed_at)
-    if ts:
-        _COOLDOWN_STATE[symbol] = {"last_stop_time": ts}
+    record_loss_timestamp(symbol, closed_at, logger=logger)
 
 
-def clear_cooldown(symbol: str) -> None:
-    _COOLDOWN_STATE.pop(symbol, None)
+# Direct use of imported function
+# clear_cooldown is imported directly from src.cooldown_utils
 
 
+# Wrapper to use imported cooldown function with local symbol-specific cooldown
 def can_trade_now(symbol: str, now: datetime, min_cooldown_minutes: int = PROBE_LOSS_COOLDOWN_MINUTES) -> bool:
-    override_minutes = _symbol_min_cooldown_minutes(symbol)
-    if override_minutes is not None and override_minutes >= 0:
-        min_cooldown_minutes = float(override_minutes)
-    state = _COOLDOWN_STATE.get(symbol)
-    if not state:
-        return True
-    last_stop = state.get("last_stop_time")
-    if isinstance(last_stop, datetime):
-        delta = now - last_stop
-        if delta.total_seconds() < min_cooldown_minutes * 60:
-            return False
-    return True
+    from src.cooldown_utils import can_trade_now as can_trade_now_base
+    return can_trade_now_base(symbol, now, min_cooldown_minutes, symbol_min_cooldown_fn=_symbol_min_cooldown_minutes)
 
 
 def _ensure_state_dir() -> bool:
@@ -446,6 +428,7 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
             ("takeprofit", strategy_returns.get("takeprofit"), 3),
             ("highlow", strategy_returns.get("highlow"), 3),
             ("maxdiff", strategy_returns.get("maxdiff"), 3),
+            ("maxdiffalwayson", strategy_returns.get("maxdiffalwayson"), 3),
             ("ci_guard", strategy_returns.get("ci_guard"), 3),
             ("unprofit", data.get("unprofit_shutdown_return"), 3),
             ("composite", data.get("composite_score"), 3),
@@ -843,16 +826,33 @@ def _ensure_probe_state_consistency(
 
 
 def _handle_live_drawdown(position) -> None:
+    """
+    Monitor live positions for drawdown and mark for probe trade if needed.
+
+    Recalculates on every call to handle PnL fluctuations:
+    - If unrealized_pl < LIVE_DRAWDOWN_TRIGGER: mark for probe
+    - If unrealized_pl >= LIVE_DRAWDOWN_TRIGGER: clear probe flag (position recovered)
+    """
     try:
         unrealized_pl = float(getattr(position, "unrealized_pl", 0.0) or 0.0)
     except Exception:
         unrealized_pl = 0.0
 
-    if unrealized_pl >= LIVE_DRAWDOWN_TRIGGER:
-        return
-
     symbol = position.symbol
     normalized_side = _normalize_side_for_key(getattr(position, "side", ""))
+
+    if unrealized_pl >= LIVE_DRAWDOWN_TRIGGER:
+        # Position recovered - clear probe flag if it was set
+        learning_state = _load_learning_state(symbol, normalized_side)
+        if learning_state.get("pending_probe") and not learning_state.get("probe_active"):
+            _update_learning_state(symbol, normalized_side, pending_probe=False)
+            logger.info(
+                f"{symbol} {normalized_side}: Position recovered (unrealized pnl {unrealized_pl:.2f}); "
+                "clearing probe flag."
+            )
+        return
+
+    # Position in drawdown - mark for probe
     learning_state = _update_learning_state(symbol, normalized_side, pending_probe=True)
     if not learning_state.get("probe_active"):
         logger.warning(
@@ -1104,7 +1104,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     """Run backtest analysis on symbols and return results sorted by average return."""
     results = {}
     equities_tradable_now = is_nyse_trading_day_now()
-    skip_closed_equity = _should_skip_closed_equity()
+    skip_closed_equity = should_skip_closed_equity()
     skipped_equity_symbols: List[str] = []
 
     env_simulations_raw = os.getenv("MARKETSIM_BACKTEST_SIMULATIONS")
@@ -1123,7 +1123,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     else:
         env_simulations = None
 
-    kronos_only_mode = _is_kronos_only_mode()
+    kronos_only_mode = is_kronos_only_mode()
 
     latest_snapshot = _load_latest_forecast_snapshot()
 
@@ -1548,7 +1548,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     if not allow_config:
                         strategy_ineligible[name] = "disabled_by_config"
                         continue
-                    eligible, reason = _evaluate_strategy_entry_gate(
+                    eligible, reason = evaluate_strategy_entry_gate(
                         symbol,
                         stats,
                         fallback_used=used_fallback_engine,
@@ -1683,7 +1683,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 ci_guard_sharpe = coerce_numeric(backtest_df["ci_guard_sharpe"].mean(), default=0.0)
             kronos_profit_raw = last_prediction.get("closemin_loss_trading_profit")
             kronos_profit = coerce_numeric(kronos_profit_raw) if kronos_profit_raw is not None else 0.0
-            if _is_kronos_only_mode():
+            if is_kronos_only_mode():
                 if kronos_profit > simple_return:
                     simple_return = kronos_profit
                 if kronos_profit > avg_return:
@@ -2166,6 +2166,12 @@ def build_portfolio(
             strategy_return_key = f"{strategy}_return"
             strategy_return = _coerce_optional_float(data.get(strategy_return_key))
 
+            # Debug logging for simplified mode
+            logger.debug(
+                f"Portfolio simplified {symbol}: strategy={strategy} {strategy_return_key}={strategy_return} "
+                f"passed={strategy_return is not None and strategy_return > 0}"
+            )
+
             # Skip if selected strategy isn't profitable
             if strategy_return is None or strategy_return <= 0:
                 continue
@@ -2199,9 +2205,16 @@ def build_portfolio(
         strategy = data.get("strategy", "simple")
         strategy_return_key = f"{strategy}_return"
         strategy_return = data.get(strategy_return_key, 0)
+        avg_return = data.get("avg_return", 0)
+
+        # Debug logging for strategy selection
+        logger.debug(
+            f"Portfolio eval {symbol}: strategy={strategy} {strategy_return_key}={strategy_return:.4f} "
+            f"avg_return={avg_return:.4f} passed={avg_return > 0 and strategy_return > 0}"
+        )
 
         # Include if selected strategy is profitable
-        if data.get("avg_return", 0) > 0 and strategy_return > 0:
+        if avg_return > 0 and strategy_return > 0:
             picks[symbol] = data
 
     # Ensure we reach the minimum desired portfolio size using best remaining composites.
@@ -2216,9 +2229,16 @@ def build_portfolio(
             strategy = data.get("strategy", "simple")
             strategy_return_key = f"{strategy}_return"
             strategy_return = data.get(strategy_return_key, 0)
+            composite = data.get("composite_score", 0)
+
+            # Debug logging for fallback selection
+            logger.debug(
+                f"Portfolio fallback {symbol}: strategy={strategy} {strategy_return_key}={strategy_return:.4f} "
+                f"composite={composite:.4f} passed={strategy_return > 0 or composite > 0}"
+            )
 
             # Include if strategy is profitable or has positive composite score
-            if strategy_return > 0 or data.get("composite_score", 0) > 0:
+            if strategy_return > 0 or composite > 0:
                 picks[symbol] = data
 
     # Optionally expand with high-price-edge opportunities to keep broader exposure.
@@ -3337,6 +3357,99 @@ def dry_run_manage_positions(current_picks: Dict[str, Dict], previous_picks: Dic
             logger.info(f"Would enter new {data['side']} position for {symbol}")
 
 
+def cleanup_spawned_processes():
+    """Clean up all spawned watcher processes on shutdown."""
+    logger.info("Cleaning up spawned watcher processes...")
+
+    if not MAXDIFF_WATCHERS_DIR.exists():
+        logger.debug("No watcher directory found, skipping cleanup")
+        return
+
+    killed_count = 0
+    failed_pids = []
+
+    # Find all watcher config files and kill their PIDs
+    for config_path in MAXDIFF_WATCHERS_DIR.glob("*.json"):
+        try:
+            import json
+            with open(config_path) as f:
+                metadata = json.load(f)
+
+            pid = metadata.get("pid")
+            if not pid or not isinstance(pid, int):
+                continue
+
+            # Check if process is still running
+            try:
+                os.kill(pid, 0)  # Signal 0 = check if process exists
+            except (ProcessLookupError, PermissionError, OSError):
+                # Process already dead
+                continue
+
+            # Try graceful shutdown first
+            try:
+                os.kill(pid, signal.SIGTERM)
+                killed_count += 1
+                logger.debug(f"Sent SIGTERM to watcher PID {pid} ({config_path.name})")
+            except ProcessLookupError:
+                pass  # Already exited
+            except Exception as e:
+                logger.warning(f"Failed to kill PID {pid}: {e}")
+                failed_pids.append(pid)
+
+        except Exception as e:
+            logger.debug(f"Error processing {config_path}: {e}")
+
+    # Give processes time to gracefully exit
+    if killed_count > 0:
+        sleep(2)
+
+    # Force kill any survivors
+    for config_path in MAXDIFF_WATCHERS_DIR.glob("*.json"):
+        try:
+            import json
+            with open(config_path) as f:
+                metadata = json.load(f)
+
+            pid = metadata.get("pid")
+            if not pid or not isinstance(pid, int):
+                continue
+
+            try:
+                os.kill(pid, 0)  # Check if still running
+                os.kill(pid, signal.SIGKILL)
+                logger.info(f"Force killed watcher PID {pid} ({config_path.name})")
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
+        except Exception:
+            pass
+
+    if killed_count > 0:
+        logger.info(f"Cleaned up {killed_count} spawned watcher processes")
+    else:
+        logger.debug("No active watcher processes found to clean up")
+
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    signal_name = signal.Signals(signum).name
+    logger.info(f"Received {signal_name}, shutting down gracefully...")
+
+    try:
+        cleanup_spawned_processes()
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
+
+    try:
+        release_model_resources()
+    except Exception as e:
+        logger.debug(f"Model release failed: {e}")
+
+    logger.info("Shutdown complete")
+    sys.exit(0)
+
+
 def main():
     symbols = [
         "COUR",
@@ -3363,6 +3476,12 @@ def main():
         "AVAXUSD",
         "LINKUSD",
     ]
+
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # kill command
+    logger.info("Signal handlers registered for graceful shutdown")
+
     previous_picks = {}
 
     # Track when each analysis was last run

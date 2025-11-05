@@ -26,19 +26,18 @@ Usage:
 """
 
 import argparse
+import logging
 import shutil
 import sys
 from pathlib import Path
 
-from loguru import logger
-
 # Setup logger
-logger.remove()
-logger.add(
-    sys.stderr,
-    format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
-    level="INFO",
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%H:%M:%S",
 )
+logger = logging.getLogger(__name__)
 
 
 def find_toto_install():
@@ -103,14 +102,17 @@ def apply_fix(model_dir: Path, dry_run: bool = False, create_backup: bool = True
         if util_optimized_py.exists():
             backup_file(util_optimized_py)
 
-    # Copy the fixed implementation
-    source_file = Path(__file__).parent / "toto" / "toto" / "model" / "util_compile_friendly.py"
-    if not source_file.exists():
-        logger.error(f"Could not find source file: {source_file}")
-        return False
+    # Copy the fixed implementation (only if it doesn't exist)
+    if not util_compile_friendly_py.exists():
+        source_file = Path(__file__).parent / "toto" / "toto" / "model" / "util_compile_friendly.py"
+        if not source_file.exists():
+            logger.error(f"Could not find source file: {source_file}")
+            return False
 
-    shutil.copy2(source_file, util_compile_friendly_py)
-    logger.info(f"Copied compile-friendly implementation to {util_compile_friendly_py}")
+        shutil.copy2(source_file, util_compile_friendly_py)
+        logger.info(f"Copied compile-friendly implementation to {util_compile_friendly_py}")
+    else:
+        logger.info(f"util_compile_friendly.py already exists at {util_compile_friendly_py}")
 
     # Patch util.py to import and use the fixed version
     logger.info(f"Patching {util_py}...")
@@ -147,7 +149,7 @@ def apply_fix(model_dir: Path, dry_run: bool = False, create_backup: bool = True
 
     # Write back
     util_py.write_text("\n".join(lines))
-    logger.success(f"Patched {util_py}")
+    logger.info(f"✓ Patched {util_py}")
 
     # Patch util_optimized.py if it exists
     if util_optimized_py.exists():
@@ -159,9 +161,9 @@ def apply_fix(model_dir: Path, dry_run: bool = False, create_backup: bool = True
         opt_lines.append(alias_statement)
 
         util_optimized_py.write_text("\n".join(opt_lines))
-        logger.success(f"Patched {util_optimized_py}")
+        logger.info(f"✓ Patched {util_optimized_py}")
 
-    logger.success("Fix applied successfully!")
+    logger.info("✓ Fix applied successfully!")
     return True
 
 
@@ -179,7 +181,7 @@ def verify_fix(model_dir: Path):
         logger.error("Fix not applied to util.py")
         return False
 
-    logger.success("Fix verification passed!")
+    logger.info("✓ Fix verification passed!")
     return True
 
 
@@ -263,7 +265,7 @@ def main():
             logger.error("Accuracy test failed")
             return 1
 
-    logger.success("\nFix applied successfully!")
+    logger.info("\n✓ Fix applied successfully!")
     logger.info("\nNext steps:")
     logger.info("  1. Run the test harness: python test_toto_compile_accuracy.py")
     logger.info("  2. Check for compilation warnings in your logs")

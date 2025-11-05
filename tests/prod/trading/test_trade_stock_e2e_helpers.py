@@ -26,7 +26,7 @@ def reset_forecast_cache(monkeypatch):
     ],
 )
 def test_coerce_optional_float_handles_common_inputs(raw, expected):
-    assert trade_module._coerce_optional_float(raw) == expected
+    assert trade_module.coerce_optional_float(raw) == expected
 
 
 @pytest.mark.parametrize(
@@ -39,7 +39,7 @@ def test_coerce_optional_float_handles_common_inputs(raw, expected):
     ],
 )
 def test_parse_float_list_filters_invalid_entries(raw, expected):
-    assert trade_module._parse_float_list(raw) == expected
+    assert trade_module.parse_float_list(raw) == expected
 
 
 def test_load_latest_forecast_snapshot_prefers_newer_file(tmp_path, monkeypatch, reset_forecast_cache):

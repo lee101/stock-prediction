@@ -178,6 +178,24 @@ def test_market_order_blocked_when_market_closed():
         assert submit.call_count == 0
 
 
+def test_crypto_market_order_always_blocked():
+    """Market orders should NEVER be allowed for crypto (Alpaca executes at bid/ask midpoint, not market price)."""
+    # Create a mock clock that says market is open
+    mock_clock = MagicMock()
+    mock_clock.is_open = True
+
+    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+         patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
+
+        # Even with market open, crypto market orders should be blocked
+        # because Alpaca will execute them at the bid/ask midpoint instead of market price
+        result = open_market_order_violently("BTCUSD", 0.01, "buy")
+
+        # Should return None and not call submit_order
+        assert result is None
+        assert submit.call_count == 0
+
+
 def test_market_order_allowed_when_market_open():
     """Market orders should work when market is open."""
     # Create a mock clock that says market is open
@@ -196,7 +214,7 @@ def test_market_order_allowed_when_market_open():
 
 
 def test_market_order_blocked_when_spread_too_high():
-    """Market orders should be blocked when spread > 1% and closing position."""
+    """Market orders should be blocked when spread > 1%, but fallback to limit order at midpoint."""
     # Create a mock position
     mock_position = MagicMock()
     mock_position.symbol = "AAPL"
@@ -214,13 +232,17 @@ def test_market_order_blocked_when_spread_too_high():
 
     with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
          patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
-         patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="limit_order_ok") as submit:
 
         result = close_position_violently(mock_position)
 
-        # Should return None because spread is too high
-        assert result is None
-        assert submit.call_count == 0
+        # Should fallback to limit order at midpoint (101.0)
+        assert result == "limit_order_ok"
+        assert submit.call_count == 1
+        # Verify it used a limit order, not market order
+        order_data = submit.call_args.kwargs["order_data"]
+        assert order_data["limit_price"] == "101.0"  # midpoint of 100 and 102
 
 
 def test_market_order_allowed_when_spread_acceptable():
@@ -269,6 +291,39 @@ def test_limit_order_allowed_when_market_closed():
         # Should succeed - limit orders work out of hours
         assert result == "order_ok"
         assert submit.call_count == 1
+
+
+def test_crypto_position_closes_with_limit_order():
+    """Crypto positions should always close with limit orders (no market orders)."""
+    # Create a mock crypto position
+    mock_position = MagicMock()
+    mock_position.symbol = "BTCUSD"
+    mock_position.side = "long"
+    mock_position.qty = 0.5
+
+    # Create a mock clock that says market is open (doesn't matter for crypto)
+    mock_clock = MagicMock()
+    mock_clock.is_open = True
+
+    # Mock quote with reasonable spread
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 50100.0
+    mock_quote.bid_price = 50000.0  # 0.2% spread (under 1%)
+
+    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="crypto_limit_ok") as submit:
+
+        result = close_position_violently(mock_position)
+
+        # Should use limit order at midpoint, NOT market order
+        assert result == "crypto_limit_ok"
+        assert submit.call_count == 1
+        # Verify it used a limit order
+        order_data = submit.call_args.kwargs["order_data"]
+        assert "limit_price" in order_data
+        assert order_data["limit_price"] == "50050.0"  # midpoint
 
 
 def test_force_open_clock_allows_out_of_hours_trading():

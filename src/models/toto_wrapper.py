@@ -15,6 +15,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, ContextManager, Dict, List, Optional, Union, cast
 
 from src.torch_backend import configure_tf32_backends
+from src.gpu_utils import should_offload_to_cpu as gpu_should_offload_to_cpu
 
 from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
 
@@ -765,13 +766,25 @@ class TotoPipeline:
 
         return forecasts
 
+    def _should_offload_to_cpu(self) -> bool:
+        """
+        Determine if model should be offloaded to CPU based on GPU capabilities.
+        Returns False for high-VRAM GPUs like RTX 5090 where we have enough memory.
+        """
+        return gpu_should_offload_to_cpu(self.device)
+
     def unload(self) -> None:
         """Release GPU resources held by the Toto pipeline."""
+        should_offload = self._should_offload_to_cpu()
+
         try:
             model = getattr(self, "model", None)
-            move_to_cpu = getattr(model, "to", None)
-            if callable(move_to_cpu):
-                move_to_cpu("cpu")
+            if should_offload:
+                move_to_cpu = getattr(model, "to", None)
+                if callable(move_to_cpu):
+                    move_to_cpu("cpu")
+            else:
+                logger.debug("Skipping CPU offload - sufficient GPU VRAM available")
         except Exception as exc:  # pragma: no cover - defensive cleanup
             logger.debug("Failed to move Toto model to CPU during unload: %s", exc)
         self.model = None

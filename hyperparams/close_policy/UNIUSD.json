@@ -1,15 +1,15 @@
 {
   "symbol": "UNIUSD",
-  "close_policy": "INSTANT_CLOSE",
+  "close_policy": "KEEP_OPEN",
   "comparison": {
     "symbol": "UNIUSD",
     "is_crypto": true,
     "num_simulations": 10,
-    "instant_close_net_return": -3.7922059087753297,
-    "keep_open_net_return": -10.64026648387517,
-    "best_policy": "INSTANT_CLOSE",
-    "advantage": 6.84806057509984,
-    "instant_close_fees": 0.003,
-    "keep_open_opportunity_cost": 0.00027397260273972606
+    "instant_close_net_return": 16.68570632871706,
+    "keep_open_net_return": 19.268924931966467,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 2.5832186032494064,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0
   }
 }

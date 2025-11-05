@@ -271,11 +271,7 @@ def _apply_orders(orders: Iterable[ReductionOrder]) -> None:
 def _log_state(equity: float, exposure: float, leverage: float, minutes_to_close: float | None) -> None:
     mtc_repr = "unknown" if minutes_to_close is None else f"{minutes_to_close:.1f}m"
     logger.info(
-        "Equity=$%.2f Exposure=$%.2f Leverage=%.3fx MinutesToClose=%s",
-        equity,
-        exposure,
-        leverage,
-        mtc_repr,
+        f"Equity=${equity:.2f} Exposure=${exposure:.2f} Leverage={leverage:.3f}x MinutesToClose={mtc_repr}"
     )
 
 

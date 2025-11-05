@@ -234,3 +234,88 @@ def cli_flag_was_provided(flag_name: str, argv: Optional[Iterable[str]] = None) 
         if item == flag_name or item.startswith(flag_prefix):
             return True
     return False
+
+
+def get_gpu_name(device: Optional[str] = None) -> Optional[str]:
+    """Return the GPU device name for the specified device.
+
+    Args:
+        device: Device specification (e.g., "cuda", "cuda:0"). If None, uses default device.
+
+    Returns:
+        GPU name string, or None if unavailable or not a CUDA device.
+    """
+    if torch is None or not torch.cuda.is_available():
+        return None
+
+    try:
+        if device is None or device == "cuda":
+            device_idx = 0
+        elif device.startswith("cuda:"):
+            device_idx = int(device.split(":")[1])
+        else:
+            return None
+
+        return torch.cuda.get_device_name(device_idx)
+    except Exception:
+        return None
+
+
+def is_high_vram_gpu(device: Optional[str] = None) -> bool:
+    """Check if the device is a high-VRAM GPU where CPU offloading is unnecessary.
+
+    High-VRAM GPUs include RTX 5090 (32GB), A100 (40/80GB), H100 (80GB), etc.
+    These GPUs have sufficient memory to keep models loaded without offloading to CPU.
+
+    Args:
+        device: Device specification (e.g., "cuda", "cuda:0"). If None, uses default device.
+
+    Returns:
+        True if the device is a high-VRAM GPU, False otherwise.
+    """
+    gpu_name = get_gpu_name(device)
+    if gpu_name is None:
+        return False
+
+    gpu_name_lower = gpu_name.lower()
+
+    # List of high-VRAM GPU identifiers
+    high_vram_identifiers = [
+        "5090",  # RTX 5090 (32GB)
+        "a100",  # A100 (40GB/80GB)
+        "h100",  # H100 (80GB)
+    ]
+
+    return any(identifier in gpu_name_lower for identifier in high_vram_identifiers)
+
+
+def should_offload_to_cpu(device: Optional[str] = None) -> bool:
+    """Determine if models should be offloaded to CPU based on GPU capabilities.
+
+    This function checks if the GPU has sufficient VRAM to keep models loaded.
+    For high-VRAM GPUs (RTX 5090, A100, H100), returns False to avoid unnecessary
+    CPU offloading overhead.
+
+    Args:
+        device: Device specification (e.g., "cuda", "cuda:0"). If None, uses default device.
+
+    Returns:
+        True if models should be offloaded to CPU, False if they should remain on GPU.
+    """
+    if device is not None and not device.startswith("cuda"):
+        return False  # Already on CPU, no offload needed
+
+    try:
+        if torch is None or not torch.cuda.is_available():
+            return False
+
+        # High-VRAM GPUs can keep models on GPU
+        if is_high_vram_gpu(device):
+            return False
+
+        # For other GPUs, offload to CPU to free VRAM
+        return True
+
+    except Exception:
+        # Default to offloading on error (safer approach)
+        return True

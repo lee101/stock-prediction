@@ -324,6 +324,63 @@ def _stop_conflicting_entry_watchers(
         _stop_existing_watcher(path, reason="superseded_entry_watcher")
 
 
+def _stop_conflicting_exit_watchers(
+    symbol: str,
+    side: str,
+    *,
+    entry_strategy: Optional[str],
+    new_takeprofit_price: float,
+    skip_path: Path,
+) -> None:
+    """Terminate other exit watchers for the same strategy that use outdated take-profit prices."""
+    if not entry_strategy:
+        return
+
+    safe_symbol = _sanitize(symbol)
+    safe_side = _sanitize(side)
+    prefix = f"{safe_symbol}_{safe_side}_exit"
+
+    for path in MAXDIFF_WATCHERS_DIR.glob(f"{prefix}_*.json"):
+        if path == skip_path:
+            continue
+
+        metadata = _load_watcher_metadata(path)
+        if not metadata:
+            continue
+
+        if metadata.get("mode") != "exit":
+            continue
+
+        existing_strategy = metadata.get("entry_strategy")
+        if existing_strategy and existing_strategy != entry_strategy:
+            continue
+
+        if not existing_strategy and entry_strategy not in MAXDIFF_STRATEGY_NAMES:
+            continue
+
+        existing_tp = metadata.get("takeprofit_price")
+        if existing_tp is None:
+            continue
+
+        try:
+            tp_delta = abs(float(existing_tp) - float(new_takeprofit_price))
+        except (TypeError, ValueError):
+            tp_delta = float("inf")
+
+        if tp_delta <= 1e-6:
+            continue
+
+        logger.info(
+            "Terminating conflicting %s %s exit watcher at %s (takeprofit %.8f) in favor of %.8f",
+            symbol,
+            side,
+            path.name,
+            float(existing_tp),
+            float(new_takeprofit_price),
+        )
+        _stop_existing_watcher(path, reason="superseded_exit_watcher")
+
+
 def _get_inherited_env():
     """Get environment with PYTHONPATH set, preserving critical variables like PAPER."""
     env = os.environ.copy()
@@ -655,6 +712,15 @@ def spawn_close_position_at_maxdiff_takeprofit(
             side,
             takeprofit_price,
         )
+
+    # Stop conflicting exit watchers with different take-profit prices
+    _stop_conflicting_exit_watchers(
+        symbol,
+        side,
+        entry_strategy=entry_strategy,
+        new_takeprofit_price=float(takeprofit_price),
+        skip_path=config_path,
+    )
 
     # Always restart watchers to ensure fresh code and parameters
     # (even if parameters match, the watcher may be stale or running old code)
