@@ -330,6 +330,9 @@ def evaluate_maxdiff_strategy(
             "maxdiffprofit_profit_low_multiplier": 0.0,
             "maxdiffprofit_high_price": high_price,
             "maxdiffprofit_low_price": low_price,
+            "maxdiffprofit_baseline_return": 0.0,
+            "maxdiffprofit_optimized_return": 0.0,
+            "maxdiffprofit_adjusted_return": 0.0,
             "maxdiff_turnover": 0.0,
             "maxdiff_primary_side": "neutral",
             "maxdiff_trade_bias": 0.0,
@@ -482,8 +485,31 @@ def evaluate_maxdiff_strategy(
             maxdiff_trades,
         )
 
+    baseline_returns_np = base_profit_values.detach().cpu().numpy().astype(float, copy=False)
+    baseline_eval = _evaluate_daily_returns(baseline_returns_np, trading_days_per_year)
+    baseline_return = baseline_eval.total_return
+
     daily_returns_np = final_profit_values.detach().cpu().numpy().astype(float, copy=False)
-    evaluation = _evaluate_daily_returns(daily_returns_np, trading_days_per_year)
+    optimized_eval = _evaluate_daily_returns(daily_returns_np, trading_days_per_year)
+    optimized_return = optimized_eval.total_return
+
+    adjusted_return = baseline_return + 0.3 * optimized_return
+    adjusted_sharpe = baseline_eval.sharpe_ratio + 0.3 * optimized_eval.sharpe_ratio
+    adjusted_avg_daily = baseline_eval.avg_daily_return + 0.3 * optimized_eval.avg_daily_return
+    adjusted_annual = baseline_eval.annualized_return + 0.3 * optimized_eval.annualized_return
+
+    evaluation = StrategyEvaluation(
+        total_return=adjusted_return,
+        avg_daily_return=adjusted_avg_daily,
+        annualized_return=adjusted_annual,
+        sharpe_ratio=adjusted_sharpe,
+        returns=daily_returns_np,
+    )
+
+    logger.info(
+        "MaxDiff: baseline=%.4f optimized=%.4f (mult_h=%.4f mult_l=%.4f) → adjusted=%.4f",
+        baseline_return, optimized_return, best_high_multiplier, best_low_multiplier, adjusted_return
+    )
 
     trades_tensor = maxdiff_trades.detach()
     positive_trades = int((trades_tensor > 0).sum().item())
@@ -511,6 +537,9 @@ def evaluate_maxdiff_strategy(
         "maxdiffprofit_profit_low_multiplier": best_low_multiplier,
         "maxdiffprofit_high_price": high_price_reference * (1.0 + best_high_multiplier),
         "maxdiffprofit_low_price": low_price_reference * (1.0 + best_low_multiplier),
+        "maxdiffprofit_baseline_return": baseline_return,
+        "maxdiffprofit_optimized_return": optimized_return,
+        "maxdiffprofit_adjusted_return": adjusted_return,
         "maxdiff_turnover": float(np.mean(np.abs(daily_returns_np))) if daily_returns_np.size else 0.0,
         "maxdiff_primary_side": primary_side,
         "maxdiff_trade_bias": float(trade_bias),
@@ -546,6 +575,9 @@ def evaluate_maxdiff_always_on_strategy(
             "maxdiffalwayson_low_multiplier": 0.0,
             "maxdiffalwayson_high_price": high_price,
             "maxdiffalwayson_low_price": low_price,
+            "maxdiffalwayson_baseline_return": 0.0,
+            "maxdiffalwayson_optimized_return": 0.0,
+            "maxdiffalwayson_adjusted_return": 0.0,
             "maxdiffalwayson_turnover": 0.0,
             "maxdiffalwayson_buy_contribution": 0.0,
             "maxdiffalwayson_sell_contribution": 0.0,
@@ -671,7 +703,38 @@ def evaluate_maxdiff_always_on_strategy(
     best_high_multiplier, best_low_multiplier, best_buy_returns_tensor, best_sell_returns_tensor = best_state
     combined_returns_tensor = best_buy_returns_tensor + best_sell_returns_tensor
     daily_returns_np = combined_returns_tensor.detach().cpu().numpy().astype(float, copy=False)
-    evaluation = _evaluate_daily_returns(daily_returns_np, trading_days_per_year)
+    optimized_eval = _evaluate_daily_returns(daily_returns_np, trading_days_per_year)
+
+    baseline_buy = calculate_profit_torch_with_entry_buysell_profit_values(
+        close_actual, high_actual, high_pred, low_actual, low_pred, buy_indicator
+    )
+    if is_crypto:
+        baseline_sell = torch.zeros_like(baseline_buy)
+    else:
+        baseline_sell = calculate_profit_torch_with_entry_buysell_profit_values(
+            close_actual, high_actual, high_pred, low_actual, low_pred, sell_indicator
+        )
+    baseline_combined = baseline_buy + baseline_sell
+    baseline_returns_np = baseline_combined.detach().cpu().numpy().astype(float, copy=False)
+    baseline_eval = _evaluate_daily_returns(baseline_returns_np, trading_days_per_year)
+
+    adjusted_return = baseline_eval.total_return + 0.3 * optimized_eval.total_return
+    adjusted_sharpe = baseline_eval.sharpe_ratio + 0.3 * optimized_eval.sharpe_ratio
+    adjusted_avg_daily = baseline_eval.avg_daily_return + 0.3 * optimized_eval.avg_daily_return
+    adjusted_annual = baseline_eval.annualized_return + 0.3 * optimized_eval.annualized_return
+
+    evaluation = StrategyEvaluation(
+        total_return=adjusted_return,
+        avg_daily_return=adjusted_avg_daily,
+        annualized_return=adjusted_annual,
+        sharpe_ratio=adjusted_sharpe,
+        returns=daily_returns_np,
+    )
+
+    logger.info(
+        "MaxDiffAlwaysOn: baseline=%.4f optimized=%.4f (mult_h=%.4f mult_l=%.4f) → adjusted=%.4f",
+        baseline_eval.total_return, optimized_eval.total_return, best_high_multiplier, best_low_multiplier, adjusted_return
+    )
 
     buy_returns_np = best_buy_returns_tensor.detach().cpu().numpy().astype(float, copy=False)
     sell_returns_np = best_sell_returns_tensor.detach().cpu().numpy().astype(float, copy=False)
@@ -694,6 +757,9 @@ def evaluate_maxdiff_always_on_strategy(
         "maxdiffalwayson_low_multiplier": best_low_multiplier,
         "maxdiffalwayson_high_price": high_price_reference * (1.0 + best_high_multiplier),
         "maxdiffalwayson_low_price": low_price_reference * (1.0 + best_low_multiplier),
+        "maxdiffalwayson_baseline_return": baseline_eval.total_return,
+        "maxdiffalwayson_optimized_return": optimized_eval.total_return,
+        "maxdiffalwayson_adjusted_return": adjusted_return,
         "maxdiffalwayson_turnover": turnover,
         "maxdiffalwayson_buy_contribution": buy_contribution,
         "maxdiffalwayson_sell_contribution": sell_contribution,
@@ -2991,6 +3057,9 @@ if __name__ == "__main__":
                 "avg_daily_return": _mean("maxdiff_avg_daily_return"),
                 "annual_return": _mean("maxdiff_annual_return"),
                 "turnover": _mean("maxdiff_turnover"),
+                "baseline_return": _mean("maxdiffprofit_baseline_return"),
+                "optimized_return": _mean("maxdiffprofit_optimized_return"),
+                "adjusted_return": _mean("maxdiffprofit_adjusted_return"),
             },
             "maxdiffalwayson": {
                 "return": _mean("maxdiffalwayson_return"),
@@ -2999,6 +3068,9 @@ if __name__ == "__main__":
                 "avg_daily_return": _mean("maxdiffalwayson_avg_daily_return"),
                 "annual_return": _mean("maxdiffalwayson_annual_return"),
                 "turnover": _mean("maxdiffalwayson_turnover"),
+                "baseline_return": _mean("maxdiffalwayson_baseline_return"),
+                "optimized_return": _mean("maxdiffalwayson_optimized_return"),
+                "adjusted_return": _mean("maxdiffalwayson_adjusted_return"),
             },
             "ci_guard": {
                 "return": _mean("ci_guard_return"),
