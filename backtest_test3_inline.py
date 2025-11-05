@@ -18,6 +18,7 @@ from src.cache_utils import ensure_huggingface_cache_dir
 from src.comparisons import is_buy_side
 from src.logging_utils import setup_logging
 from src.optimization_utils import (
+    optimize_always_on_multipliers,
     optimize_entry_exit_multipliers,
 )
 from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
