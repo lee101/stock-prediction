@@ -24,9 +24,11 @@
   },
   "config_path": "hyperparams/toto/QUBT.json",
   "metadata": {
-    "source": "hyperparams_extended",
-    "extended_path": "hyperparams_extended/toto/QUBT.json",
-    "selection_metric": "test_price_mae",
-    "selection_value": 1.5141683571826434
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.07352510404567818,
+    "kronos_pct_return_mae": 0.13465399718986576,
+    "toto_pct_return_mae": 0.07352510404567818,
+    "improvement_pct": 45.397013397228896
   }
 }

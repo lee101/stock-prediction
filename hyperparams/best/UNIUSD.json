@@ -27,9 +27,11 @@
   },
   "config_path": "hyperparams/kronos/UNIUSD.json",
   "metadata": {
-    "source": "hyperparams_extended",
-    "extended_path": "hyperparams_extended/kronos/UNIUSD.json",
-    "selection_metric": "test_price_mae",
-    "selection_value": 2.188822691126531e-06
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.028489273519534904,
+    "kronos_pct_return_mae": 0.028489273519534904,
+    "toto_pct_return_mae": 1.1848742601220001,
+    "improvement_pct": 97.59558676575507
   }
 }

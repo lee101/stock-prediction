@@ -24,9 +24,11 @@
   },
   "config_path": "hyperparams/toto/CRWD.json",
   "metadata": {
-    "source": "hyperparams_extended",
-    "extended_path": "hyperparams_extended/toto/CRWD.json",
-    "selection_metric": "test_price_mae",
-    "selection_value": 10.79820431776649
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.02248605883997783,
+    "kronos_pct_return_mae": 0.04865015320338216,
+    "toto_pct_return_mae": 0.02248605883997783,
+    "improvement_pct": 53.780086270284144
   }
 }

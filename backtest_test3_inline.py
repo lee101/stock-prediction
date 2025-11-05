@@ -13,6 +13,10 @@ from torch.utils.tensorboard import SummaryWriter
 from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 from dataclasses import dataclass
 
+from src.backtest_data_utils import mean_if_exists, to_numpy_array
+from src.backtest_env_utils import read_env_flag, coerce_keepalive_seconds, cpu_fallback_enabled, in_test_mode
+from src.backtest_formatting_utils import fmt_number, format_table, log_table
+from src.backtest_path_utils import canonicalize_path
 from src.cache_utils import ensure_huggingface_cache_dir
 from src.comparisons import is_buy_side
 from src.logging_utils import setup_logging
@@ -35,18 +39,10 @@ except ValueError:
 _GPU_METRICS_PEAK_TOLERANCE_BYTES = max(0.0, _GPU_METRICS_PEAK_TOLERANCE_MB) * 1e6
 
 
-def _read_env_flag(names: Iterable[str]) -> Optional[bool]:
-    for name in names:
-        value = os.getenv(name)
-        if value is None:
-            continue
-        lowered = value.strip().lower()
-        if lowered in _BOOL_TRUE:
-            return True
-        if lowered in _BOOL_FALSE:
-            return False
-    return None
 
+# Torch.compile optimization: Enable scalar output capture
+# This reduces graph breaks from Tensor.item() calls in KVCache
+os.environ.setdefault("TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS", "1")
 
 def _maybe_enable_fast_torch_settings() -> None:
     global _FAST_TORCH_SETTINGS_CONFIGURED
@@ -84,14 +80,6 @@ def _maybe_enable_fast_torch_settings() -> None:
     if torch.cuda.is_available() and not state.get("new_api"):
         maybe_set_float32_precision(torch, mode="high")
 
-
-def _canonicalize_path(path_like: Union[str, Path]) -> Path:
-    """Return an absolute path for cache directories regardless of environment input."""
-    path = Path(path_like).expanduser()
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    return path.resolve(strict=False)
-
 from data_curate_daily import download_daily_stock_data, fetch_spread
 from disk_cache import disk_cache
 from src.fixtures import crypto_symbols
@@ -99,7 +87,7 @@ from scripts.alpaca_cli import set_strategy_for_symbol
 from src.models.toto_wrapper import TotoPipeline
 from src.models.toto_aggregation import aggregate_with_spec
 from src.models.kronos_wrapper import KronosForecastingWrapper
-from hyperparamstore import load_best_config, load_model_selection
+from hyperparamstore import load_best_config, load_close_policy, load_model_selection, save_close_policy
 from loss_utils import (
     percent_movements_augment,
     calculate_profit_torch_with_entry_buysell_profit_values,
@@ -126,19 +114,9 @@ _toto_memory_observations: Dict[Tuple[int, int], Dict[str, object]] = {}
 _FORCE_RELEASE_ENV = "MARKETSIM_FORCE_RELEASE_MODELS"
 
 
+# Wrapper to pass logger
 def _coerce_keepalive_seconds(env_name: str, *, default: float) -> float:
-    value = os.getenv(env_name)
-    if value is None or not value.strip():
-        return float(default)
-    try:
-        seconds = float(value)
-    except ValueError:
-        logger.warning("Ignoring invalid %s=%r; expected number of seconds.", env_name, value)
-        return float(default)
-    if seconds < 0.0:
-        logger.warning("Ignoring negative %s=%r; defaulting to %.1f.", env_name, value, default)
-        return float(default)
-    return seconds
+    return coerce_keepalive_seconds(env_name, default=default, logger=logger)
 
 
 TOTO_KEEPALIVE_SECONDS = _coerce_keepalive_seconds("MARKETSIM_TOTO_KEEPALIVE_SECONDS", default=900.0)
@@ -153,22 +131,9 @@ _kronos_last_used_at: Dict[tuple, float] = {}
 ReturnSeries = Union[np.ndarray, pd.Series]
 
 
+# Wrapper for backwards compatibility
 def _cpu_fallback_enabled() -> bool:
-    value = os.getenv(_GPU_FALLBACK_ENV)
-    if value is None:
-        return False
-    return value.strip().lower() in _BOOL_TRUE
-
-
-def _in_test_mode() -> bool:
-    """Return True when unit-test machinery requests lightweight behavior."""
-    test_flag = os.getenv("TESTING")
-    if test_flag is not None and test_flag.strip().lower() in _BOOL_TRUE:
-        return True
-    mock_flag = os.getenv("MARKETSIM_ALLOW_MOCK_ANALYTICS")
-    if mock_flag is not None and mock_flag.strip().lower() in _BOOL_TRUE:
-        return True
-    return False
+    return cpu_fallback_enabled(_GPU_FALLBACK_ENV)
 
 
 def _require_cuda(feature: str, *, symbol: Optional[str] = None, allow_cpu_fallback: bool = True) -> None:
@@ -206,63 +171,14 @@ class StrategyEvaluation:
     returns: ReturnSeries
 
 
-def _mean_if_exists(df: pd.DataFrame, column: Optional[str]) -> Optional[float]:
-    if not column or column not in df.columns:
-        return None
-    series = df[column]
-    if series.empty:
-        return None
-    value = float(series.mean())
-    if np.isnan(value):
-        return None
-    return value
-
-
-def _fmt_number(value: Optional[float], precision: int = 4) -> str:
-    if value is None:
-        return "-"
-    return f"{value:.{precision}f}"
-
-
-def _format_table(headers: List[str], rows: List[List[str]], indent: str = "  ") -> str:
-    if not rows:
-        return ""
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for idx, cell in enumerate(row):
-            widths[idx] = max(widths[idx], len(cell))
-    header_line = indent + " ".join(
-        header.ljust(widths[idx]) for idx, header in enumerate(headers)
-    )
-    separator_line = indent + " ".join("-" * widths[idx] for idx in range(len(headers)))
-    row_lines = [
-        indent + " ".join(cell.ljust(widths[idx]) for idx, cell in enumerate(row))
-        for row in rows
-    ]
-    return "\n".join([header_line, separator_line, *row_lines])
-
-
 def _log_table(title: str, headers: List[str], rows: List[List[str]]) -> None:
-    body = _format_table(headers, rows)
-    if not body:
-        return
-    logger.info(f"\n{title}\n{body}")
-
-
-def _to_numpy_array(values: ReturnSeries) -> np.ndarray:
-    if isinstance(values, pd.Series):
-        array = values.to_numpy(dtype=float)
-    else:
-        array = np.asarray(values, dtype=float)
-    if array.ndim == 0:
-        return array.reshape(1)
-    return array
+    log_table(title, headers, rows, logger)
 
 
 def _compute_return_profile(daily_returns: ReturnSeries, trading_days_per_year: int) -> Tuple[float, float]:
     if trading_days_per_year <= 0:
         return 0.0, 0.0
-    returns_np = _to_numpy_array(daily_returns)
+    returns_np = to_numpy_array(daily_returns)
     if returns_np.size == 0:
         return 0.0, 0.0
     finite_mask = np.isfinite(returns_np)
@@ -277,7 +193,7 @@ def _compute_return_profile(daily_returns: ReturnSeries, trading_days_per_year: 
 
 
 def _evaluate_daily_returns(daily_returns: ReturnSeries, trading_days_per_year: int) -> StrategyEvaluation:
-    returns_np = _to_numpy_array(daily_returns)
+    returns_np = to_numpy_array(daily_returns)
     if returns_np.size == 0:
         return StrategyEvaluation(
             total_return=0.0,
@@ -304,6 +220,25 @@ def _evaluate_daily_returns(daily_returns: ReturnSeries, trading_days_per_year: 
     )
 
 
+def validate_forecast_order(high_pred: torch.Tensor, low_pred: torch.Tensor) -> torch.Tensor:
+    """
+    Validate that forecasted price movements maintain logical order.
+
+    For valid forecasts after close_to_high/low adjustments:
+    - low_pred < high_pred (low movement should be less than high movement)
+
+    This mirrors the validation in trade_stock_e2e.py and src/forecast_validation.py:
+    - low_price <= close_price <= high_price
+
+    For detailed validation and correction logic, see src/forecast_validation.py
+    which provides OHLCForecast dataclass, retry logic, and automatic corrections.
+
+    Returns a mask of valid forecasts (True where forecast is valid).
+    """
+    valid = low_pred < high_pred
+    return valid
+
+
 def evaluate_maxdiff_strategy(
     last_preds: Dict[str, torch.Tensor],
     simulation_data: pd.DataFrame,
@@ -311,6 +246,7 @@ def evaluate_maxdiff_strategy(
     trading_fee: float,
     trading_days_per_year: int,
     is_crypto: bool = False,
+    skip_invalid_forecasts: bool = True,
 ) -> Tuple[StrategyEvaluation, np.ndarray, Dict[str, object]]:
     close_actual = torch.as_tensor(
         last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
@@ -339,6 +275,8 @@ def evaluate_maxdiff_strategy(
             "maxdiff_trades_positive": 0,
             "maxdiff_trades_negative": 0,
             "maxdiff_trades_total": 0,
+            "maxdiff_invalid_forecasts": 0,
+            "maxdiff_valid_forecasts": 0,
         }
 
     if validation_len == 0:
@@ -422,6 +360,11 @@ def evaluate_maxdiff_strategy(
     low_pred = low_pred_base - close_to_low
 
     with torch.no_grad():
+        # Validate forecast order
+        valid_forecast_mask = validate_forecast_order(high_pred, low_pred)
+        num_invalid = int((~valid_forecast_mask).sum().item())
+        num_valid = int(valid_forecast_mask.sum().item())
+
         maxdiff_trades = torch.where(
             torch.abs(high_pred) > torch.abs(low_pred),
             torch.ones_like(high_pred),
@@ -429,6 +372,10 @@ def evaluate_maxdiff_strategy(
         )
         if is_crypto:
             maxdiff_trades = torch.where(maxdiff_trades < 0, torch.zeros_like(maxdiff_trades), maxdiff_trades)
+
+        # Skip invalid forecasts if requested
+        if skip_invalid_forecasts:
+            maxdiff_trades = torch.where(valid_forecast_mask, maxdiff_trades, torch.zeros_like(maxdiff_trades))
 
         base_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
             close_actual,
@@ -546,6 +493,8 @@ def evaluate_maxdiff_strategy(
         "maxdiff_trades_positive": positive_trades,
         "maxdiff_trades_negative": negative_trades,
         "maxdiff_trades_total": total_active_trades,
+        "maxdiff_invalid_forecasts": num_invalid,
+        "maxdiff_valid_forecasts": num_valid,
     }
 
     return evaluation, daily_returns_np, metadata
@@ -558,6 +507,7 @@ def evaluate_maxdiff_always_on_strategy(
     trading_fee: float,
     trading_days_per_year: int,
     is_crypto: bool = False,
+    close_at_eod: bool = False,
 ) -> Tuple[StrategyEvaluation, np.ndarray, Dict[str, object]]:
     close_actual = torch.as_tensor(
         last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
@@ -667,6 +617,7 @@ def evaluate_maxdiff_always_on_strategy(
                     low_actual,
                     adjusted_low_pred,
                     buy_indicator,
+                    close_at_eod=close_at_eod,
                 )
                 if is_crypto:
                     sell_returns_tensor = torch.zeros_like(buy_returns_tensor)
@@ -679,6 +630,7 @@ def evaluate_maxdiff_always_on_strategy(
                         low_actual,
                         adjusted_low_pred,
                         sell_indicator,
+                        close_at_eod=close_at_eod,
                     )
                     total_profit = float(buy_returns_tensor.sum().item() + sell_returns_tensor.sum().item())
                 if total_profit > best_total_profit:
@@ -773,41 +725,47 @@ def evaluate_maxdiff_always_on_strategy(
 
 def _log_strategy_summary(results_df: pd.DataFrame, symbol: str, num_simulations: int) -> None:
     strategy_specs = [
-        ("Simple", "simple_strategy_return", "simple_strategy_sharpe", "simple_strategy_finalday"),
-        ("All Signals", "all_signals_strategy_return", "all_signals_strategy_sharpe", "all_signals_strategy_finalday"),
-        ("Buy & Hold", "buy_hold_return", "buy_hold_sharpe", "buy_hold_finalday"),
+        ("Simple", "simple_strategy_return", "simple_strategy_sharpe", "simple_strategy_annual_return", "simple_forecasted_pnl", "simple_strategy_finalday"),
+        ("All Signals", "all_signals_strategy_return", "all_signals_strategy_sharpe", "all_signals_strategy_annual_return", "all_signals_forecasted_pnl", "all_signals_strategy_finalday"),
+        ("Buy & Hold", "buy_hold_return", "buy_hold_sharpe", "buy_hold_annual_return", "buy_hold_forecasted_pnl", "buy_hold_finalday"),
         (
             "Unprofit Shutdown",
             "unprofit_shutdown_return",
             "unprofit_shutdown_sharpe",
+            "unprofit_shutdown_annual_return",
+            "unprofit_shutdown_forecasted_pnl",
             "unprofit_shutdown_finalday",
         ),
-        ("Entry+Takeprofit", "entry_takeprofit_return", "entry_takeprofit_sharpe", "entry_takeprofit_finalday"),
-        ("Highlow", "highlow_return", "highlow_sharpe", "highlow_finalday_return"),
-        ("MaxDiff", "maxdiff_return", "maxdiff_sharpe", "maxdiff_finalday_return"),
-        ("MaxDiffAlwaysOn", "maxdiffalwayson_return", "maxdiffalwayson_sharpe", "maxdiffalwayson_finalday_return"),
-        ("CI Guard", "ci_guard_return", "ci_guard_sharpe", None),
+        ("Entry+Takeprofit", "entry_takeprofit_return", "entry_takeprofit_sharpe", "entry_takeprofit_annual_return", "entry_takeprofit_forecasted_pnl", "entry_takeprofit_finalday"),
+        ("Highlow", "highlow_return", "highlow_sharpe", "highlow_annual_return", "highlow_forecasted_pnl", "highlow_finalday_return"),
+        ("MaxDiff", "maxdiff_return", "maxdiff_sharpe", "maxdiff_annual_return", "maxdiff_forecasted_pnl", "maxdiff_finalday_return"),
+        ("MaxDiffAlwaysOn", "maxdiffalwayson_return", "maxdiffalwayson_sharpe", "maxdiffalwayson_annual_return", "maxdiffalwayson_forecasted_pnl", "maxdiffalwayson_finalday_return"),
+        ("CI Guard", "ci_guard_return", "ci_guard_sharpe", "ci_guard_annual_return", "ci_guard_forecasted_pnl", None),
     ]
 
     rows: List[List[str]] = []
-    for name, return_col, sharpe_col, final_col in strategy_specs:
-        return_val = _mean_if_exists(results_df, return_col)
-        sharpe_val = _mean_if_exists(results_df, sharpe_col)
-        final_val = _mean_if_exists(results_df, final_col) if final_col else None
-        if return_val is None and sharpe_val is None and (final_col is None or final_val is None):
+    for name, return_col, sharpe_col, annual_col, forecast_col, final_col in strategy_specs:
+        return_val = mean_if_exists(results_df, return_col)
+        sharpe_val = mean_if_exists(results_df, sharpe_col)
+        annual_val = mean_if_exists(results_df, annual_col)
+        forecast_val = mean_if_exists(results_df, forecast_col)
+        final_val = mean_if_exists(results_df, final_col) if final_col else None
+        if return_val is None and sharpe_val is None and annual_val is None and forecast_val is None and (final_col is None or final_val is None):
             continue
         row = [
             name,
-            _fmt_number(return_val),
-            _fmt_number(sharpe_val),
-            _fmt_number(final_val),
+            fmt_number(return_val),
+            fmt_number(sharpe_val),
+            fmt_number(annual_val),
+            fmt_number(forecast_val),
+            fmt_number(final_val),
         ]
         rows.append(row)
 
     if not rows:
         return
 
-    headers = ["Strategy", "Return", "Sharpe", "FinalDay"]
+    headers = ["Strategy", "Return", "Sharpe", "AnnualRet", "ForecastRet", "FinalDay"]
     title = f"Backtest summary for {symbol} ({num_simulations} simulations)"
     _log_table(title, headers, rows)
 
@@ -818,9 +776,20 @@ def _log_validation_losses(results_df: pd.DataFrame) -> None:
         ("High Val Loss", "high_val_loss"),
         ("Low Val Loss", "low_val_loss"),
     ]
+
+    # Add forecasted PnL metrics
+    forecast_specs = [
+        ("MaxDiff Forecast", "maxdiff_forecasted_pnl"),
+        ("MaxDiffAlwaysOn Forecast", "maxdiffalwayson_forecasted_pnl"),
+        ("Simple Forecast", "simple_forecasted_pnl"),
+        ("AllSignals Forecast", "all_signals_forecasted_pnl"),
+        ("Highlow Forecast", "highlow_forecasted_pnl"),
+    ]
+
+    all_specs = loss_specs + forecast_specs
     rows = [
-        [label, _fmt_number(_mean_if_exists(results_df, column))]
-        for label, column in loss_specs
+        [label, fmt_number(mean_if_exists(results_df, column))]
+        for label, column in all_specs
         if column in results_df.columns
     ]
     if not rows:
@@ -828,7 +797,65 @@ def _log_validation_losses(results_df: pd.DataFrame) -> None:
     # Skip logging if every value is missing, to avoid noise.
     if all(cell == "-" for _, cell in rows):
         return
-    _log_table("Average validation losses", ["Metric", "Value"], rows)
+    _log_table("Validation losses & forecasted PnL", ["Metric", "Value"], rows)
+
+
+def _forecast_pnl_with_toto(pnl_series: pd.Series, symbol: str, num_samples: int = 512, samples_per_batch: int = 64) -> float:
+    """
+    Use Toto to forecast the next day's PnL given a time series of historical daily returns.
+
+    Args:
+        pnl_series: Series of daily returns (PnL values)
+        symbol: Trading symbol (for logging)
+        num_samples: Number of samples for Toto prediction
+        samples_per_batch: Batch size for Toto
+
+    Returns:
+        Forecasted next day's PnL
+    """
+    # Need at least 4 days for any forecast
+    if len(pnl_series) < 4:
+        return float(pnl_series.mean() if len(pnl_series) > 0 else 0.0)
+
+    # Optimization: skip neural forecast if average return is negative
+    # (we won't choose losing strategies anyway, so save compute)
+    avg_return = float(pnl_series.mean())
+    if avg_return < 0:
+        logger.debug(f"Skipping neural forecast for {symbol} (avg return {avg_return:.6f} < 0)")
+        return avg_return
+
+    try:
+        # Prepare context: use available data
+        context = torch.tensor(pnl_series.values, dtype=torch.float32)
+        if torch.cuda.is_available() and context.device.type == 'cpu':
+            context = context.to('cuda', non_blocking=True)
+
+        # Adjust num_samples for shorter series (4-6 days) to be safer
+        adjusted_num_samples = num_samples if len(pnl_series) >= 7 else min(256, num_samples)
+
+        # Forecast next day's return
+        forecast = cached_predict(
+            context,
+            prediction_length=1,
+            num_samples=adjusted_num_samples,
+            samples_per_batch=samples_per_batch,
+            symbol=f"{symbol}_pnl_forecast",
+        )
+
+        # Extract median forecast
+        tensor = forecast[0]
+        if hasattr(tensor, 'cpu'):
+            tensor = tensor.cpu()
+        forecast_np = tensor.numpy() if hasattr(tensor, 'numpy') else np.array(tensor)
+
+        # Use median of samples as forecast
+        forecasted_pnl = float(np.median(forecast_np))
+        logger.debug(f"Forecasted PnL for {symbol}: {forecasted_pnl:.6f} (median of {len(forecast_np)} samples)")
+        return forecasted_pnl
+
+    except Exception as exc:
+        logger.warning(f"Failed to forecast PnL with Toto for {symbol}: {exc}. Falling back to mean.")
+        return float(pnl_series.mean())
 
 
 def compute_walk_forward_stats(results_df: pd.DataFrame) -> Dict[str, float]:
@@ -865,7 +892,7 @@ REAL_TESTING = os.getenv("REAL_TESTING", "0").strip().lower() in _BOOL_TRUE
 
 _maybe_enable_fast_torch_settings()
 
-COMPILED_MODELS_DIR = _canonicalize_path(os.getenv("COMPILED_MODELS_DIR", "compiled_models"))
+COMPILED_MODELS_DIR = canonicalize_path(os.getenv("COMPILED_MODELS_DIR", "compiled_models"))
 INDUCTOR_CACHE_DIR = COMPILED_MODELS_DIR / "torch_inductor"
 
 
@@ -876,7 +903,7 @@ def _ensure_compilation_artifacts() -> None:
         os.environ["COMPILED_MODELS_DIR"] = str(COMPILED_MODELS_DIR)
         cache_dir_env = os.getenv("TORCHINDUCTOR_CACHE_DIR")
         if cache_dir_env:
-            os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(_canonicalize_path(cache_dir_env))
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(canonicalize_path(cache_dir_env))
         else:
             os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(INDUCTOR_CACHE_DIR)
     except Exception as exc:  # pragma: no cover - filesystem best effort
@@ -1183,7 +1210,7 @@ def release_model_resources(*, force: bool = False) -> None:
     avoid repeated model compilation. Set MARKETSIM_FORCE_RELEASE_MODELS=1 or pass force=True to
     drop everything immediately.
     """
-    force_env = _read_env_flag((_FORCE_RELEASE_ENV,))
+    force_env = read_env_flag((_FORCE_RELEASE_ENV,))
     if force_env is True:
         force = True
     if force:
@@ -1266,7 +1293,10 @@ def _compute_toto_forecast(
     """
     Generate Toto forecasts for a prepared price frame.
     Returns (predictions_tensor, band_tensor, predicted_absolute_last).
+
+    OPTIMIZATION: Async GPU transfers (non_blocking=True) for better utilization.
     """
+    global TOTO_DEVICE_OVERRIDE
     predictions_list: List[float] = []
     band_list: List[float] = []
     max_horizon = 7
@@ -1281,13 +1311,17 @@ def _compute_toto_forecast(
         current_context = price_frame[:-pred_idx]
         if current_context.empty:
             continue
+
+        # OPTIMIZATION: Async GPU transfer
         context = torch.tensor(current_context["y"].values, dtype=torch.float32)
+        if torch.cuda.is_available() and context.device.type == 'cpu':
+            context = context.to('cuda', non_blocking=True)
+
         requested_num_samples = int(toto_params["num_samples"])
         requested_batch = int(toto_params["samples_per_batch"])
 
         attempts = 0
         cpu_fallback_used = False
-        global TOTO_DEVICE_OVERRIDE
         while True:
             requested_num_samples, requested_batch = _normalise_sampling_params(
                 requested_num_samples,
@@ -1378,7 +1412,13 @@ def _compute_toto_forecast(
         band_list.append(band_width)
 
         aggregated = aggregate_with_spec(distribution, toto_params["aggregate"])
-        predictions_list.append(float(np.atleast_1d(aggregated)[0]))
+        aggregated_1d = np.atleast_1d(aggregated)
+        if aggregated_1d.size > 0:
+            predictions_list.append(float(aggregated_1d[0]))
+        else:
+            # Fallback to 0.0 if aggregation produces empty result
+            logger.warning("Toto aggregation returned empty result for %s %s; using 0.0", symbol, target_key)
+            predictions_list.append(0.0)
 
     if not predictions_list:
         predictions_list = [0.0]
@@ -1682,6 +1722,36 @@ def resolve_best_model(symbol: str) -> str:
     return model
 
 
+def resolve_close_policy(symbol: str) -> str:
+    """
+    Resolve the best close policy for a symbol.
+
+    Returns:
+        Either 'INSTANT_CLOSE' or 'KEEP_OPEN'
+
+    Defaults:
+        - Crypto: INSTANT_CLOSE
+        - Stocks: KEEP_OPEN
+    """
+    from src.fixtures import crypto_symbols
+
+    # Check if we have a stored policy
+    stored_policy = load_close_policy(symbol)
+    if stored_policy is not None:
+        return stored_policy
+
+    # Use sensible defaults
+    is_crypto = symbol in crypto_symbols
+    default_policy = "INSTANT_CLOSE" if is_crypto else "KEEP_OPEN"
+
+    logger.info(
+        f"No close policy found for {symbol} — defaulting to {default_policy} "
+        f"({'crypto' if is_crypto else 'stock'})"
+    )
+
+    return default_policy
+
+
 def pre_process_data(x_train: pd.DataFrame, key_to_predict: str) -> pd.DataFrame:
     """Minimal reimplementation to avoid heavy dependency on training module."""
     newdata = x_train.copy(deep=True)
@@ -1742,7 +1812,7 @@ def load_toto_pipeline() -> TotoPipeline:
     compile_mode_env = (
         os.getenv("REAL_TOTO_COMPILE_MODE")
         or os.getenv("TOTO_COMPILE_MODE")
-        or "max-autotune"
+        or "reduce-overhead"  # Changed from max-autotune to avoid recompilations
     )
     compile_mode = (compile_mode_env or "").strip() or "max-autotune"
 
@@ -1773,8 +1843,8 @@ def load_toto_pipeline() -> TotoPipeline:
         else:
             torch_dtype = torch.float32
 
-    disable_compile_flag = _read_env_flag(("TOTO_DISABLE_COMPILE", "MARKETSIM_TOTO_DISABLE_COMPILE"))
-    enable_compile_flag = _read_env_flag(("TOTO_COMPILE", "MARKETSIM_TOTO_COMPILE"))
+    disable_compile_flag = read_env_flag(("TOTO_DISABLE_COMPILE", "MARKETSIM_TOTO_DISABLE_COMPILE"))
+    enable_compile_flag = read_env_flag(("TOTO_COMPILE", "MARKETSIM_TOTO_COMPILE"))
     torch_compile_enabled = device.startswith("cuda") and hasattr(torch, "compile")
     if disable_compile_flag is True:
         torch_compile_enabled = False
@@ -1822,7 +1892,7 @@ def load_kronos_wrapper(params: Dict[str, float]) -> KronosForecastingWrapper:
     _require_cuda("Kronos inference", allow_cpu_fallback=False)
 
     # Read compilation settings from environment
-    compile_enabled = _read_env_flag(("KRONOS_COMPILE", "MARKETSIM_KRONOS_COMPILE"))
+    compile_enabled = read_env_flag(("KRONOS_COMPILE", "MARKETSIM_KRONOS_COMPILE"))
     compile_mode = os.getenv("KRONOS_COMPILE_MODE", "max-autotune")
     compile_backend = os.getenv("KRONOS_COMPILE_BACKEND", "inductor")
 
@@ -2055,7 +2125,7 @@ def evaluate_strategy(
     )
 
 
-def backtest_forecasts(symbol, num_simulations=100):
+def backtest_forecasts(symbol, num_simulations=50):
     # Download the latest data
     current_time_formatted = datetime.now().strftime('%Y-%m-%d--%H-%M-%S')
     # use this for testing dataset
@@ -2067,12 +2137,16 @@ def backtest_forecasts(symbol, num_simulations=100):
     stock_data = download_daily_stock_data(current_time_formatted, symbols=[symbol])
     # hardcode repeatable time for testing
     # current_time_formatted = "2024-10-18--06-05-32"
-    trading_fee = 0.0025
 
     # 8% margin lending
 
     # stock_data = download_daily_stock_data(current_time_formatted, symbols=symbols)
     # stock_data = pd.read_csv(f"./data/{current_time_formatted}/{symbol}-{current_day_formatted}.csv")
+
+    # Check if we got any data
+    if stock_data.empty:
+        logger.error(f"No data available for {symbol} - download_daily_stock_data returned empty DataFrame")
+        return pd.DataFrame()
 
     base_dir = Path(__file__).parent
     data_dir = base_dir / "data" / current_time_formatted
@@ -2093,7 +2167,10 @@ def backtest_forecasts(symbol, num_simulations=100):
 
         results = []
 
+        # Use correct trading fee: 0.15% for crypto, 0.05% for stocks
+        from loss_utils import CRYPTO_TRADING_FEE, TRADING_FEE
         is_crypto = symbol in crypto_symbols
+        trading_fee = CRYPTO_TRADING_FEE if is_crypto else TRADING_FEE
 
         for sim_number in range(num_simulations):
             simulation_data = stock_data.iloc[:-(sim_number + 1)].copy(deep=True)
@@ -2115,6 +2192,30 @@ def backtest_forecasts(symbol, num_simulations=100):
         walk_forward_stats = compute_walk_forward_stats(results_df)
         for key, value in walk_forward_stats.items():
             results_df[key] = value
+
+        # Forecast next day's PnL for each strategy using Toto
+        strategy_pnl_columns = [
+            ('simple_strategy_avg_daily_return', 'simple_forecasted_pnl'),
+            ('all_signals_strategy_avg_daily_return', 'all_signals_forecasted_pnl'),
+            ('buy_hold_avg_daily_return', 'buy_hold_forecasted_pnl'),
+            ('unprofit_shutdown_avg_daily_return', 'unprofit_shutdown_forecasted_pnl'),
+            ('entry_takeprofit_avg_daily_return', 'entry_takeprofit_forecasted_pnl'),
+            ('highlow_avg_daily_return', 'highlow_forecasted_pnl'),
+            ('maxdiff_avg_daily_return', 'maxdiff_forecasted_pnl'),
+            ('maxdiffalwayson_avg_daily_return', 'maxdiffalwayson_forecasted_pnl'),
+        ]
+
+        for pnl_col, forecast_col in strategy_pnl_columns:
+            if pnl_col in results_df.columns:
+                pnl_series = results_df[pnl_col].dropna()
+                if len(pnl_series) > 0:
+                    forecasted = _forecast_pnl_with_toto(pnl_series, f"{symbol}_{pnl_col}")
+                    results_df[forecast_col] = forecasted
+                    logger.info(f"{symbol} {forecast_col}: {forecasted:.6f}")
+                else:
+                    results_df[forecast_col] = 0.0
+            else:
+                results_df[forecast_col] = 0.0
 
         # Log final average metrics
         tb_writer.add_scalar(
@@ -2230,6 +2331,9 @@ def backtest_forecasts(symbol, num_simulations=100):
 
         # Record which strategy is best for this symbol & day
         set_strategy_for_symbol(symbol, best_strategy)
+
+        # Evaluate and save the best close policy for maxdiff strategies
+        evaluate_and_save_close_policy(symbol, num_comparisons=10)
 
         return results_df
     finally:
@@ -2766,6 +2870,9 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         'low_val_loss': float(last_preds.get('low_val_loss', 0.0)),
     }
 
+    # Also include last_preds for additional analysis
+    result['last_preds'] = last_preds
+
     return result
 
 
@@ -2964,6 +3071,53 @@ def evaluate_highlow_strategy(
         sharpe_ratio=sharpe_ratio,
         returns=daily_returns
     )
+
+
+def evaluate_and_save_close_policy(symbol: str, num_comparisons: int = 10) -> None:
+    """
+    Run close policy comparison and save the best policy for the symbol.
+
+    This function integrates with test_backtest4_instantclose_inline.py to:
+    1. Run comparison simulations
+    2. Determine the best close policy
+    3. Save it to hyperparams/close_policy/{symbol}.json
+
+    Args:
+        symbol: Trading symbol to evaluate
+        num_comparisons: Number of simulations to run (default: 10)
+
+    NOTE: Close policy evaluation now runs full grid search optimization for EACH policy
+    (instant_close and keep_open) separately, which is computationally expensive but accurate.
+    See docs/CLOSE_POLICY_FIX.md for details.
+    """
+    try:
+        # Import the comparison function
+        from test_backtest4_instantclose_inline import compare_close_policies
+
+        logger.info(
+            f"Close policy evaluation for {symbol} will run 2x grid search (instant_close + keep_open). "
+            "See docs/CLOSE_POLICY_FIX.md for details."
+        )
+        logger.info(f"Evaluating close policy for {symbol} ({num_comparisons} simulations)...")
+
+        # Run the comparison
+        result = compare_close_policies(symbol, num_simulations=num_comparisons)
+
+        if result is None:
+            logger.warning(f"Close policy comparison failed for {symbol} - no valid simulations")
+            return
+
+        # Save the result
+        best_policy = result['best_policy']
+        save_close_policy(symbol, best_policy, comparison_results=result)
+
+        logger.info(
+            f"Saved close policy for {symbol}: {best_policy} "
+            f"(advantage: {result['advantage']:.4f}%)"
+        )
+
+    except Exception as exc:
+        logger.warning(f"Failed to evaluate close policy for {symbol}: {exc}")
 
 
 if __name__ == "__main__":

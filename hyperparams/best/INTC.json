@@ -24,9 +24,11 @@
   },
   "config_path": "hyperparams/toto/INTC.json",
   "metadata": {
-    "source": "hyperparams_extended",
-    "extended_path": "hyperparams_extended/toto/INTC.json",
-    "selection_metric": "test_price_mae",
-    "selection_value": 1.3465700533798612
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.04298412088691151,
+    "kronos_pct_return_mae": 0.22178688158200136,
+    "toto_pct_return_mae": 0.04298412088691151,
+    "improvement_pct": 80.61917793320028
   }
 }

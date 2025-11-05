@@ -8,7 +8,22 @@ from . import alpaca_wrapper_mock as alpaca_wrapper
 from .state import get_state
 
 
-def backout_near_market(symbol: str):
+def backout_near_market(
+    symbol: str,
+    start_offset_minutes: Optional[int] = None,
+    sleep_seconds: Optional[float] = None,
+    market_close_buffer_minutes: Optional[int] = None,
+    market_close_force_minutes: Optional[int] = None,
+):
+    """Close position immediately for simulation.
+
+    Args:
+        symbol: Trading symbol
+        start_offset_minutes: Ignored in simulation (compatibility parameter)
+        sleep_seconds: Ignored in simulation (compatibility parameter)
+        market_close_buffer_minutes: Ignored in simulation (compatibility parameter)
+        market_close_force_minutes: Ignored in simulation (compatibility parameter)
+    """
     positions = alpaca_wrapper.get_all_positions()
     for pos in positions:
         if pos.symbol == symbol:

@@ -34,7 +34,7 @@ from typing import Iterable, Dict, Any, List, Optional, Tuple
 from types import SimpleNamespace
 from src.comparisons import is_buy_side, is_sell_side
 from src.crypto_loop import crypto_alpaca_looper_api
-from src.fixtures import crypto_symbols
+from src.fixtures import crypto_symbols, all_crypto_symbols
 from src.logging_utils import setup_logging
 from src.stock_utils import pairs_equal, remap_symbols
 from src.trading_obj_utils import filter_to_realistic_positions
@@ -208,8 +208,9 @@ def _can_use_market_order(symbol: str, is_closing_position: bool = False) -> Tup
     """Check if a market order can be used for this symbol.
 
     Market orders are only allowed when:
-    1. Market is open (not during pre-market or after-hours)
-    2. If closing a position, spread must be <= MARKET_ORDER_MAX_SPREAD_PCT
+    1. NOT crypto (Alpaca executes crypto market orders at bid/ask midpoint, not market price)
+    2. Market is open (not during pre-market, after-hours, or overnight)
+    3. If closing a position, spread must be <= MARKET_ORDER_MAX_SPREAD_PCT
 
     Args:
         symbol: The trading symbol
@@ -218,10 +219,16 @@ def _can_use_market_order(symbol: str, is_closing_position: bool = False) -> Tup
     Returns:
         Tuple of (allowed, reason) where reason explains why if not allowed
     """
-    # Check if market is open
+    # NEVER use market orders for crypto - Alpaca executes them at the bid/ask midpoint
+    # instead of actual market price, making the execution price unpredictable
+    # Check against all_crypto_symbols for comprehensive coverage
+    if symbol in all_crypto_symbols:
+        return False, f"Crypto {symbol} - market orders execute at bid/ask midpoint, not market price (use limit orders for predictable fills)"
+
+    # Check if market is open (regular hours only, not pre-market/after-hours/overnight)
     clock = get_clock()
     if not clock.is_open:
-        return False, "Market is closed - market orders not allowed during pre-market or after-hours"
+        return False, "Market is closed - market orders not allowed during pre-market, after-hours, or overnight (use limit orders)"
 
     # If closing a position, also check spread
     if is_closing_position:
@@ -229,7 +236,7 @@ def _can_use_market_order(symbol: str, is_closing_position: bool = False) -> Tup
         if spread_pct is not None and spread_pct > MARKET_ORDER_MAX_SPREAD_PCT:
             return False, (
                 f"Spread {spread_pct*100:.2f}% exceeds maximum {MARKET_ORDER_MAX_SPREAD_PCT*100:.2f}% "
-                f"for market orders when closing positions"
+                f"for market orders when closing positions (use limit orders)"
             )
 
     return True, ""
@@ -608,27 +615,73 @@ def execute_portfolio_orders(orders: Iterable[Dict[str, Any]]) -> Dict[str, Any]
 
 
 def close_position_violently(position):
-    """Close a position using a market order.
+    """Close a position using a market order, with fallback to limit order at midpoint.
 
     Market orders for closing positions are only allowed when:
-    1. Market is open (not during pre-market or after-hours)
-    2. Spread is <= MARKET_ORDER_MAX_SPREAD_PCT (default 1%)
+    1. NOT crypto (Alpaca executes crypto market orders at bid/ask midpoint, not market price)
+    2. Market is open (not during pre-market, after-hours, or overnight)
+    3. Spread is <= MARKET_ORDER_MAX_SPREAD_PCT (default 1%)
 
-    If these conditions are not met, returns None and logs the reason.
+    If market orders are blocked, automatically falls back to a limit order at the
+    midpoint price, which works during overnight/extended hours and for crypto.
 
     Args:
         position: Position object with symbol, side, and qty
 
     Returns:
-        Order result or None if market order not allowed or failed
+        Order result or None if both market and limit order attempts failed
     """
     # Check if market orders are allowed (includes spread check for closing)
-    can_use, reason = _can_use_market_order(position.symbol, is_closing_position=True)
-    if not can_use:
-        logger.error(f"Market order blocked for closing {position.symbol}: {reason}")
-        logger.error(f"RETURNING None - Use limit orders instead")
-        return None
+    can_use_market, reason = _can_use_market_order(position.symbol, is_closing_position=True)
 
+    if not can_use_market:
+        logger.warning(f"Market order blocked for closing {position.symbol}: {reason}")
+        logger.info(f"Falling back to limit order at midpoint price for {position.symbol}")
+
+        # Fallback: Use limit order at midpoint price
+        try:
+            quote = latest_data(position.symbol)
+            ask_price = float(getattr(quote, "ask_price", 0) or 0)
+            bid_price = float(getattr(quote, "bid_price", 0) or 0)
+
+            if ask_price <= 0 or bid_price <= 0:
+                logger.error(f"Cannot get valid bid/ask for {position.symbol}")
+                return None
+
+            # Use midpoint price for the limit order
+            midpoint_price = (ask_price + bid_price) / 2.0
+
+            # For closing long, sell at midpoint (slightly favorable)
+            # For closing short, buy at midpoint (slightly favorable)
+            limit_price = round(midpoint_price, 2)
+
+            logger.info(f"Placing limit order to close {position.symbol} at ${limit_price} (midpoint)")
+
+            if position.side == "long":
+                side = OrderSide.SELL
+            else:
+                side = OrderSide.BUY
+
+            result = alpaca_api.submit_order(
+                order_data=LimitOrderRequest(
+                    symbol=remap_symbols(position.symbol),
+                    qty=abs(float(position.qty)),
+                    side=side,
+                    type=OrderType.LIMIT,
+                    time_in_force="gtc",
+                    limit_price=str(limit_price),
+                )
+            )
+            logger.info(f"Limit order placed successfully for {position.symbol}")
+            print(result)
+            return result
+
+        except Exception as e:
+            logger.error(f"Limit order fallback failed for {position.symbol}: {e}")
+            traceback.print_exc()
+            return None
+
+    # Market orders are allowed - proceed with market order
     result = None
     try:
         if position.side == "long":
