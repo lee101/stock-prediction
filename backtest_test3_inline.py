@@ -398,7 +398,7 @@ def evaluate_maxdiff_strategy(
             trading_fee=trading_fee,
             maxiter=50,
             popsize=10,
-            workers=-1,
+            workers=1,  # sequential to avoid file descriptor issues
         )
 
         final_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
@@ -579,7 +579,7 @@ def evaluate_maxdiff_always_on_strategy(
     buy_indicator = torch.ones_like(close_actual)
     sell_indicator = torch.zeros_like(close_actual) if is_crypto else -torch.ones_like(close_actual)
 
-    # Optimize both multipliers jointly using parallelizable optimizer
+    # Optimize both multipliers jointly using optimizer
     best_high_multiplier, best_low_multiplier, _ = optimize_always_on_multipliers(
         close_actual,
         buy_indicator,
@@ -593,7 +593,7 @@ def evaluate_maxdiff_always_on_strategy(
         is_crypto=is_crypto,
         maxiter=30,
         popsize=8,
-        workers=-1,  # parallel optimization enabled
+        workers=1,  # sequential to avoid file descriptor issues
     )
 
     # Compute final returns with best multipliers
