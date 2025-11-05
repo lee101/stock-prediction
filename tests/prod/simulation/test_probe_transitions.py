@@ -93,14 +93,14 @@ def test_manage_positions_promotes_probe(monkeypatch):
     monkeypatch.setattr(
         module,
         "ramp_into_position",
-        lambda sym, side, target_qty=None: ramp_calls.append((sym, side, target_qty)),
+        lambda sym, side, target_qty=None, **kwargs: ramp_calls.append((sym, side, target_qty)),
     )
 
     transition_calls = []
     monkeypatch.setattr(
         module,
         "_mark_probe_transitioned",
-        lambda sym, side, qty: (transition_calls.append((sym, side, qty)) or {}),
+        lambda sym, side, qty, strategy=None: (transition_calls.append((sym, side, qty)) or {}),
     )
 
     probe_active_calls = []
@@ -128,6 +128,11 @@ def test_manage_positions_promotes_probe(monkeypatch):
             portfolio_value=total_value,
             risk_threshold=1.0,
         ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_evaluate_trade_block",
+        lambda sym, side, strategy=None: {},
     )
 
     current_pick = {
@@ -185,7 +190,7 @@ def test_manage_positions_backouts_expired_probe(monkeypatch):
     )
 
     backout_calls = []
-    monkeypatch.setattr(module, "backout_near_market", lambda sym: backout_calls.append(sym))
+    monkeypatch.setattr(module, "backout_near_market", lambda sym, **kwargs: backout_calls.append(sym))
 
     monkeypatch.setattr(module, "ramp_into_position", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "spawn_close_position_at_takeprofit", lambda *args, **kwargs: None)
@@ -206,6 +211,11 @@ def test_manage_positions_backouts_expired_probe(monkeypatch):
             portfolio_value=total_value,
             risk_threshold=0.05,
         ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_evaluate_trade_block",
+        lambda sym, side, strategy=None: {},
     )
 
     current_pick = {
@@ -299,7 +309,7 @@ def test_manage_positions_promotes_large_notional_probe(monkeypatch):
 
     transition_calls = []
 
-    def fake_mark_probe_transitioned(sym, side, qty):
+    def fake_mark_probe_transitioned(sym, side, qty, strategy=None):
         transition_calls.append((sym, side, qty))
         probe_state.update(
             pending_probe=False,
@@ -318,7 +328,7 @@ def test_manage_positions_promotes_large_notional_probe(monkeypatch):
     monkeypatch.setattr(
         module,
         "_evaluate_trade_block",
-        lambda sym, side: dict(probe_state),
+        lambda sym, side, strategy=None: dict(probe_state),
     )
 
     current_pick = {
@@ -350,3 +360,124 @@ def test_manage_positions_promotes_large_notional_probe(monkeypatch):
     act_symbol, act_side, act_mode, act_qty, _ = active_trade_updates[-1]
     assert (act_symbol, act_side, act_mode) == (symbol, "buy", "probe_transition")
     assert act_qty == pytest.approx(12.0)
+
+
+def test_handle_live_drawdown_marks_position_in_drawdown(monkeypatch):
+    """Test that _handle_live_drawdown marks position for probe when PnL drops below threshold"""
+    module = trade_stock_e2e
+    symbol = "TEST"
+
+    # Create position with PnL below LIVE_DRAWDOWN_TRIGGER (-500)
+    position = make_position(symbol, qty=10.0, price=100.0, side="long", unrealized_pl=-600.0)
+
+    # Setup mocks
+    state_updates = []
+    def mock_update_learning_state(sym, side, **kwargs):
+        state_updates.append((sym, side, kwargs))
+        return {"pending_probe": kwargs.get("pending_probe", False), "probe_active": False}
+
+    monkeypatch.setattr(module, "_load_learning_state", lambda sym, side, strategy=None: {"pending_probe": False, "probe_active": False})
+    monkeypatch.setattr(module, "_update_learning_state", mock_update_learning_state)
+    monkeypatch.setattr(module, "_normalize_side_for_key", lambda side: "buy")
+
+    # Call _handle_live_drawdown
+    module._handle_live_drawdown(position)
+
+    # Verify probe was marked
+    assert len(state_updates) == 1
+    assert state_updates[0][0] == symbol
+    assert state_updates[0][2]["pending_probe"] is True
+
+
+def test_handle_live_drawdown_clears_probe_on_recovery(monkeypatch):
+    """Test that _handle_live_drawdown clears probe flag when position recovers"""
+    module = trade_stock_e2e
+    symbol = "TEST"
+
+    # Create position with PnL above LIVE_DRAWDOWN_TRIGGER (recovered)
+    position = make_position(symbol, qty=10.0, price=100.0, side="long", unrealized_pl=-400.0)
+
+    # Setup mocks - position was previously marked for probe
+    state_updates = []
+    def mock_update_learning_state(sym, side, **kwargs):
+        state_updates.append((sym, side, kwargs))
+        return {"pending_probe": kwargs.get("pending_probe", False), "probe_active": False}
+
+    monkeypatch.setattr(module, "_load_learning_state", lambda sym, side, strategy=None: {"pending_probe": True, "probe_active": False})
+    monkeypatch.setattr(module, "_update_learning_state", mock_update_learning_state)
+    monkeypatch.setattr(module, "_normalize_side_for_key", lambda side: "buy")
+
+    # Call _handle_live_drawdown
+    module._handle_live_drawdown(position)
+
+    # Verify probe flag was cleared
+    assert len(state_updates) == 1
+    assert state_updates[0][0] == symbol
+    assert state_updates[0][2]["pending_probe"] is False
+
+
+def test_handle_live_drawdown_handles_multiple_fluctuations(monkeypatch):
+    """Test that multiple PnL fluctuations are handled correctly"""
+    module = trade_stock_e2e
+    symbol = "TEST"
+
+    state = {"pending_probe": False, "probe_active": False}
+    state_updates = []
+
+    def mock_load_learning_state(sym, side, strategy=None):
+        return dict(state)
+
+    def mock_update_learning_state(sym, side, **kwargs):
+        state_updates.append((sym, side, dict(kwargs)))
+        state.update(kwargs)
+        return dict(state)
+
+    monkeypatch.setattr(module, "_load_learning_state", mock_load_learning_state)
+    monkeypatch.setattr(module, "_update_learning_state", mock_update_learning_state)
+    monkeypatch.setattr(module, "_normalize_side_for_key", lambda side: "buy")
+
+    # Fluctuation 1: Drop below threshold
+    position = make_position(symbol, qty=10.0, price=100.0, side="long", unrealized_pl=-600.0)
+    module._handle_live_drawdown(position)
+    assert state_updates[-1][2]["pending_probe"] is True
+    assert state["pending_probe"] is True
+
+    # Fluctuation 2: Recover above threshold
+    position = make_position(symbol, qty=10.0, price=100.0, side="long", unrealized_pl=-400.0)
+    module._handle_live_drawdown(position)
+    assert state_updates[-1][2]["pending_probe"] is False
+    assert state["pending_probe"] is False
+
+    # Fluctuation 3: Drop again
+    position = make_position(symbol, qty=10.0, price=100.0, side="long", unrealized_pl=-700.0)
+    module._handle_live_drawdown(position)
+    assert state_updates[-1][2]["pending_probe"] is True
+    assert state["pending_probe"] is True
+
+    # Verify we had 3 state updates
+    assert len(state_updates) == 3
+
+
+def test_handle_live_drawdown_does_not_clear_active_probe(monkeypatch):
+    """Test that recovery doesn't clear probe flag when probe is already active"""
+    module = trade_stock_e2e
+    symbol = "TEST"
+
+    # Create position with PnL above threshold (recovered)
+    position = make_position(symbol, qty=10.0, price=100.0, side="long", unrealized_pl=-400.0)
+
+    # Setup mocks - position has active probe (already executing)
+    state_updates = []
+    def mock_update_learning_state(sym, side, **kwargs):
+        state_updates.append((sym, side, kwargs))
+        return {"pending_probe": False, "probe_active": True}
+
+    monkeypatch.setattr(module, "_load_learning_state", lambda sym, side, strategy=None: {"pending_probe": True, "probe_active": True})
+    monkeypatch.setattr(module, "_update_learning_state", mock_update_learning_state)
+    monkeypatch.setattr(module, "_normalize_side_for_key", lambda side: "buy")
+
+    # Call _handle_live_drawdown
+    module._handle_live_drawdown(position)
+
+    # Verify no state updates (probe is active, don't interfere)
+    assert len(state_updates) == 0
