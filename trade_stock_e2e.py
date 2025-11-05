@@ -202,8 +202,8 @@ def _load_latest_forecast_snapshot() -> Dict[str, Dict[str, object]]:
     return _load_forecast_snapshot(
         _results_dir(),
         logger=logger,
-        parse_float_list=_parse_float_list,
-        coerce_optional_float=_coerce_optional_float,
+        parse_float_list=parse_float_list,
+        coerce_optional_float=coerce_optional_float,
     )
 
 
