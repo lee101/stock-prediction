@@ -17,7 +17,9 @@ from src.backtest_path_utils import canonicalize_path
 from src.cache_utils import ensure_huggingface_cache_dir
 from src.comparisons import is_buy_side
 from src.logging_utils import setup_logging
-from src.optimization_utils import optimize_entry_exit_multipliers, optimize_entry_exit_multipliers_with_callback
+from src.optimization_utils import (
+    optimize_entry_exit_multipliers,
+)
 from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
 from torch.utils.tensorboard import SummaryWriter
 
@@ -576,39 +578,21 @@ def evaluate_maxdiff_always_on_strategy(
     buy_indicator = torch.ones_like(close_actual)
     sell_indicator = torch.zeros_like(close_actual) if is_crypto else -torch.ones_like(close_actual)
 
-    # Optimize both multipliers jointly using differential_evolution
-    def profit_calculator_alwayson(high_mult, low_mult):
-        with torch.no_grad():
-            buy_returns = calculate_profit_torch_with_entry_buysell_profit_values(
-                close_actual,
-                high_actual,
-                high_pred + float(high_mult),
-                low_actual,
-                low_pred + float(low_mult),
-                buy_indicator,
-                close_at_eod=close_at_eod,
-                trading_fee=trading_fee,
-            )
-            if is_crypto:
-                return float(buy_returns.sum().item())
-            else:
-                sell_returns = calculate_profit_torch_with_entry_buysell_profit_values(
-                    close_actual,
-                    high_actual,
-                    high_pred + float(high_mult),
-                    low_actual,
-                    low_pred + float(low_mult),
-                    sell_indicator,
-                    close_at_eod=close_at_eod,
-                    trading_fee=trading_fee,
-                )
-                return float(buy_returns.sum().item() + sell_returns.sum().item())
-
-    best_high_multiplier, best_low_multiplier, _ = optimize_entry_exit_multipliers_with_callback(
-        profit_calculator_alwayson,
+    # Optimize both multipliers jointly using parallelizable optimizer
+    best_high_multiplier, best_low_multiplier, _ = optimize_always_on_multipliers(
+        close_actual,
+        buy_indicator,
+        sell_indicator,
+        high_actual,
+        high_pred,
+        low_actual,
+        low_pred,
+        close_at_eod=close_at_eod,
+        trading_fee=trading_fee,
+        is_crypto=is_crypto,
         maxiter=30,
         popsize=8,
-        workers=1,  # callback function not picklable, use sequential
+        workers=-1,  # parallel optimization enabled
     )
 
     # Compute final returns with best multipliers

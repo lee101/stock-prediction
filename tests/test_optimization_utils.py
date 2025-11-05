@@ -1,8 +1,11 @@
 import numpy as np
 import pytest
 import torch
-from loss_utils import calculate_trading_profit_torch_with_entry_buysell
+from loss_utils import (
+    calculate_trading_profit_torch_with_entry_buysell,
+)
 from src.optimization_utils import (
+    optimize_always_on_multipliers,
     optimize_entry_exit_multipliers,
     optimize_entry_exit_multipliers_with_callback,
     optimize_single_parameter,
@@ -231,6 +234,159 @@ def test_optimization_bounds_respected():
     # Should be at or very close to upper bounds
     assert h_mult > 0.025
     assert l_mult > 0.025
+
+
+def test_optimize_always_on_crypto():
+    """Test AlwaysOn optimizer for crypto (buy only)"""
+    np.random.seed(100)
+    torch.manual_seed(100)
+
+    n = 40
+    close_actual = torch.randn(n) * 0.02
+    high_actual = close_actual + torch.abs(torch.randn(n)) * 0.01
+    low_actual = close_actual - torch.abs(torch.randn(n)) * 0.01
+    high_pred = torch.randn(n) * 0.01
+    low_pred = torch.randn(n) * 0.01
+
+    buy_indicator = torch.ones(n)
+    sell_indicator = torch.zeros(n)
+
+    h_mult, l_mult, profit = optimize_always_on_multipliers(
+        close_actual,
+        buy_indicator,
+        sell_indicator,
+        high_actual,
+        high_pred,
+        low_actual,
+        low_pred,
+        is_crypto=True,
+        maxiter=20,
+        popsize=8,
+        workers=1,
+    )
+
+    assert -0.03 <= h_mult <= 0.03
+    assert -0.03 <= l_mult <= 0.03
+    assert np.isfinite(profit)
+
+
+def test_optimize_always_on_stocks():
+    """Test AlwaysOn optimizer for stocks (buy + sell)"""
+    np.random.seed(200)
+    torch.manual_seed(200)
+
+    n = 40
+    close_actual = torch.randn(n) * 0.02
+    high_actual = close_actual + torch.abs(torch.randn(n)) * 0.01
+    low_actual = close_actual - torch.abs(torch.randn(n)) * 0.01
+    high_pred = torch.randn(n) * 0.01
+    low_pred = torch.randn(n) * 0.01
+
+    buy_indicator = torch.ones(n)
+    sell_indicator = -torch.ones(n)
+
+    h_mult, l_mult, profit = optimize_always_on_multipliers(
+        close_actual,
+        buy_indicator,
+        sell_indicator,
+        high_actual,
+        high_pred,
+        low_actual,
+        low_pred,
+        is_crypto=False,
+        maxiter=20,
+        popsize=8,
+        workers=1,
+    )
+
+    assert -0.03 <= h_mult <= 0.03
+    assert -0.03 <= l_mult <= 0.03
+    assert np.isfinite(profit)
+
+
+def test_optimize_always_on_with_custom_fee():
+    """Test AlwaysOn with custom trading fee"""
+    np.random.seed(300)
+    torch.manual_seed(300)
+
+    n = 30
+    close_actual = torch.randn(n) * 0.02
+    high_actual = close_actual + 0.02
+    low_actual = close_actual - 0.01
+    high_pred = torch.zeros(n)
+    low_pred = torch.zeros(n)
+
+    buy_indicator = torch.ones(n)
+    sell_indicator = torch.zeros(n)
+
+    # Optimize with crypto fee (0.15%)
+    h1, l1, p1 = optimize_always_on_multipliers(
+        close_actual,
+        buy_indicator,
+        sell_indicator,
+        high_actual,
+        high_pred,
+        low_actual,
+        low_pred,
+        is_crypto=True,
+        trading_fee=0.0015,
+        maxiter=15,
+        popsize=6,
+        workers=1,
+    )
+
+    # Optimize with equity fee (0.05%)
+    h2, l2, p2 = optimize_always_on_multipliers(
+        close_actual,
+        buy_indicator,
+        sell_indicator,
+        high_actual,
+        high_pred,
+        low_actual,
+        low_pred,
+        is_crypto=True,
+        trading_fee=0.0005,
+        maxiter=15,
+        popsize=6,
+        workers=1,
+    )
+
+    # Lower fee should give higher profit
+    assert p2 > p1
+
+
+def test_optimize_always_on_parallel():
+    """Test AlwaysOn with parallel workers"""
+    np.random.seed(400)
+    torch.manual_seed(400)
+
+    n = 30
+    close_actual = torch.randn(n) * 0.02
+    high_actual = close_actual + torch.abs(torch.randn(n)) * 0.01
+    low_actual = close_actual - torch.abs(torch.randn(n)) * 0.01
+    high_pred = torch.randn(n) * 0.01
+    low_pred = torch.randn(n) * 0.01
+
+    buy_indicator = torch.ones(n)
+    sell_indicator = torch.zeros(n)
+
+    h_mult, l_mult, profit = optimize_always_on_multipliers(
+        close_actual,
+        buy_indicator,
+        sell_indicator,
+        high_actual,
+        high_pred,
+        low_actual,
+        low_pred,
+        is_crypto=True,
+        maxiter=10,
+        popsize=5,
+        workers=-1,  # parallel
+    )
+
+    assert -0.03 <= h_mult <= 0.03
+    assert -0.03 <= l_mult <= 0.03
+    assert np.isfinite(profit)
 
 
 if __name__ == "__main__":
