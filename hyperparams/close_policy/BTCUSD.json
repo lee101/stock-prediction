@@ -1,15 +1,15 @@
 {
   "symbol": "BTCUSD",
-  "close_policy": "INSTANT_CLOSE",
+  "close_policy": "KEEP_OPEN",
   "comparison": {
     "symbol": "BTCUSD",
     "is_crypto": true,
     "num_simulations": 10,
-    "instant_close_net_return": 5.785779525578022,
-    "keep_open_net_return": -10.333360111419468,
-    "best_policy": "INSTANT_CLOSE",
-    "advantage": 16.119139636997488,
-    "instant_close_fees": 0.006,
-    "keep_open_opportunity_cost": 0.000547945205479452
+    "instant_close_net_return": 7.883326117880642,
+    "keep_open_net_return": 9.524838631623425,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 1.6415125137427822,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0
   }
 }

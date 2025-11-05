@@ -1,0 +1,21 @@
+{
+  "symbol": "MSFT",
+  "close_policy": "INSTANT_CLOSE",
+  "comparison": {
+    "symbol": "MSFT",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -3.6290995284080503,
+    "keep_open_net_return": -7.136696473761781,
+    "best_policy": "INSTANT_CLOSE",
+    "advantage": 3.5075969453537303,
+    "instant_close_fees": 0.00335,
+    "keep_open_opportunity_cost": 0.0009178082191780823,
+    "buy_advantage": -7.721558558940886,
+    "sell_advantage": 4.211529475450516,
+    "instant_close_buy_return": -0.8963256716728211,
+    "instant_close_sell_return": -2.7294237434864046,
+    "keep_open_buy_return": -8.617884230613708,
+    "keep_open_sell_return": 1.4821057319641113
+  }
+}
