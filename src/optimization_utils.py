@@ -157,9 +157,10 @@ def optimize_entry_exit_multipliers(
                 maxfun=maxiter * popsize,  # Match total budget
             )
             return float(result.x[0]), float(result.x[1]), float(-result.fun)
-        except Exception:
+        except Exception as e:
             # Fallback to DE if direct fails
-            pass
+            import logging
+            logging.getLogger(__name__).debug(f"DIRECT optimizer failed for entry_exit, falling back to DE: {e}")
 
     # Fallback or explicit DE mode
     result = differential_evolution(
@@ -235,9 +236,10 @@ def optimize_always_on_multipliers(
                 maxfun=maxiter * popsize,  # Match total budget
             )
             return float(result.x[0]), float(result.x[1]), float(-result.fun)
-        except Exception:
+        except Exception as e:
             # Fallback to DE if direct fails
-            pass
+            import logging
+            logging.getLogger(__name__).debug(f"DIRECT optimizer failed for always_on, falling back to DE: {e}")
 
     # Fallback or explicit DE mode
     result = differential_evolution(
