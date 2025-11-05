@@ -2242,8 +2242,8 @@ def backtest_forecasts(symbol, num_simulations=50):
             ("unprofit_shutdown_avg_daily_return", "unprofit_shutdown_forecasted_pnl"),
             ("entry_takeprofit_avg_daily_return", "entry_takeprofit_forecasted_pnl"),
             ("highlow_avg_daily_return", "highlow_forecasted_pnl"),
-            ("maxdiffprofit_adjusted_return", "maxdiff_forecasted_pnl"),
-            ("maxdiffalwayson_adjusted_return", "maxdiffalwayson_forecasted_pnl"),
+            ("maxdiff_avg_daily_return", "maxdiff_forecasted_pnl"),
+            ("maxdiffalwayson_avg_daily_return", "maxdiffalwayson_forecasted_pnl"),
         ]
 
         for pnl_col, forecast_col in strategy_pnl_columns:
