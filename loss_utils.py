@@ -103,14 +103,18 @@ def torch_inverse_transform(scaler, values):
 #     return current_profi
 
 
-def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
+def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred, trading_fee=None):
     """
     Calculate trading profits
     :param last_values:
     :param y_test:
     :param y_test_pred:
+    :param trading_fee: Fee per trade (default: TRADING_FEE)
     :return:
     """
+    if trading_fee is None:
+        trading_fee = TRADING_FEE
+
     # percent_movements = ((y_test - last_values) / last_values) + 1
 
     # last_values_scaled = last_values # no scaling
@@ -133,7 +137,7 @@ def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
             # sold
             sold_profits
             # fee
-            - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+            - (torch.abs(detached_y_test_pred) * trading_fee)
         )
         / detached_y_test_pred.numel()
     )
@@ -141,14 +145,18 @@ def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
     return current_profit
 
 
-def calculate_trading_profit_torch_buy_only(scaler, last_values, y_test, y_test_pred):
+def calculate_trading_profit_torch_buy_only(scaler, last_values, y_test, y_test_pred, trading_fee=None):
     """
     Calculate trading profits
     :param last_values:
     :param y_test:
     :param y_test_pred:
+    :param trading_fee: Fee per trade (default: TRADING_FEE)
     :return:
     """
+    if trading_fee is None:
+        trading_fee = TRADING_FEE
+
     # percent_movements = ((y_test - last_values) / last_values) + 1
 
     # last_values_scaled = last_values # no scaling
@@ -171,7 +179,7 @@ def calculate_trading_profit_torch_buy_only(scaler, last_values, y_test, y_test_
             # # sold
             # sold_profits
             # fee
-            - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+            - (torch.abs(detached_y_test_pred) * trading_fee)
         )
         / detached_y_test_pred.numel()
     )
@@ -260,7 +268,15 @@ def calculate_trading_profit_torch_with_buysell_profit_values(
 
 
 def calculate_trading_profit_torch_with_entry_buysell(
-    scaler, last_values, y_test, y_test_pred, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred
+    scaler,
+    last_values,
+    y_test,
+    y_test_pred,
+    y_test_high,
+    y_test_high_pred,
+    y_test_low,
+    y_test_low_pred,
+    trading_fee=None,
 ):
     """
     Calculate trading profits
@@ -271,10 +287,11 @@ def calculate_trading_profit_torch_with_entry_buysell(
     :param last_values:
     :param y_test:
     :param y_test_pred:
+    :param trading_fee: Fee per trade (default: TRADING_FEE)
     :return:
     """
     calculated_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
-        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, trading_fee=trading_fee
     )
 
     current_profit = torch.sum(
@@ -290,7 +307,15 @@ def calculate_trading_profit_torch_with_entry_buysell(
 
 
 def calculate_profit_torch_with_entry_buysell_profit_values(
-    y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, *, close_at_eod: bool = False
+    y_test,
+    y_test_high,
+    y_test_high_pred,
+    y_test_low,
+    y_test_low_pred,
+    y_test_pred,
+    *,
+    close_at_eod: bool = False,
+    trading_fee=None,
 ):
     """
     Calculate trading profits with entry/exit logic.
@@ -299,7 +324,10 @@ def calculate_profit_torch_with_entry_buysell_profit_values(
         close_at_eod: If True, force positions to close at end-of-day close price
                      (no intraday high/low exits). If False, allow intraday exits
                      at high/low prices (default behavior).
+        trading_fee: Fee per trade (default: TRADING_FEE)
     """
+    if trading_fee is None:
+        trading_fee = TRADING_FEE
     # reshape all args to 1d
     y_test = y_test.view(-1)
     y_test_pred = y_test_pred.view(-1)
@@ -333,7 +361,7 @@ def calculate_profit_torch_with_entry_buysell_profit_values(
         # Trading fee applied when we hit entry levels
         hit_trading_points = torch.logical_or((y_test_low_pred > y_test_low), (y_test_high_pred < y_test_high))
         calculated_profit_values = (
-            bought_profits + sold_profits - ((torch.abs(detached_y_test_pred) * TRADING_FEE) * hit_trading_points)
+            bought_profits + sold_profits - ((torch.abs(detached_y_test_pred) * trading_fee) * hit_trading_points)
         )
     else:
         # Original logic - allow intraday exits at high/low
@@ -375,7 +403,7 @@ def calculate_profit_torch_with_entry_buysell_profit_values(
         calculated_profit_values = (
             bought_adjusted_profits
             + adjusted_profits
-            - ((torch.abs(detached_y_test_pred) * TRADING_FEE) * hit_trading_points)  # fee
+            - ((torch.abs(detached_y_test_pred) * trading_fee) * hit_trading_points)  # fee
         )
 
     return calculated_profit_values
