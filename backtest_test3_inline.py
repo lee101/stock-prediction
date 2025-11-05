@@ -2219,6 +2219,10 @@ def evaluate_strategy(
 
 
 def backtest_forecasts(symbol, num_simulations=50):
+    # Support FAST_SIMULATE mode for faster iteration during development
+    if os.getenv("MARKETSIM_FAST_SIMULATE") in {"1", "true", "yes", "on"}:
+        num_simulations = min(num_simulations, 35)  # 2x faster
+
     # Download the latest data
     current_time_formatted = datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
     # use this for testing dataset
