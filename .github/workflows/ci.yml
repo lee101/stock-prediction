@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for smart test detection
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -49,18 +51,9 @@ jobs:
         continue-on-error: true
         run: python -m pyright
 
-      - name: Run critical trading backtests
+      - name: Run smart test suite (change-aware, fail-fast)
         run: |
-          python -m pytest \
-            tests/prod/trading/test_trade_stock_e2e.py \
-            tests/prod/backtesting/test_backtest3.py
-
-      - name: Run unit tests
-        run: |
-          python -m pytest tests/prod \
-            --ignore=tests/prod/trading/test_trade_stock_e2e.py \
-            --ignore=tests/prod/backtesting/test_backtest3.py \
-            -m "not integration"
+          python scripts/smart_test_runner.py --verbose
 
       - name: Run integration tests
         run: |
