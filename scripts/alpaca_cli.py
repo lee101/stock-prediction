@@ -338,6 +338,9 @@ def backout_near_market(
     regular trading hours the limit offsets remain tight until within
     ``market_close_buffer_minutes`` of the close to minimise taker fees.
 
+    **NOTE**: For crypto (24/7 trading), market orders are NEVER used due to
+    wide spreads. Crypto positions are closed using limit orders only.
+
     Args:
         pair: The trading pair symbol, e.g. ``"META"``.
         start_time: ``datetime`` the ramp started. ``None`` means now.
@@ -348,11 +351,22 @@ def backout_near_market(
     if start_time is None:
         start_time = datetime.now()
 
+    # Detect if this is a crypto symbol (24/7 trading)
+    is_crypto = pair in crypto_symbols
+    if is_crypto:
+        logger.info(f"{pair} is crypto - will use limit orders only (no market order fallback)")
+        # Disable market order fallback for crypto by setting to very high value
+        effective_market_after = float('inf')
+    else:
+        effective_market_after = None  # Will be set below
+
     retries = 0
     max_retries = 5
     extra_minutes = max(int(start_offset_minutes), 0)
     effective_ramp_minutes = max(int(ramp_minutes) + extra_minutes, 1)
-    effective_market_after = max(int(market_after) + extra_minutes, effective_ramp_minutes)
+    # Only set effective_market_after for stocks; crypto already set to inf
+    if effective_market_after is None:
+        effective_market_after = max(int(market_after) + extra_minutes, effective_ramp_minutes)
     if sleep_interval is None:
         sleep_interval = BACKOUT_POLL_INTERVAL_SECONDS_DEFAULT
     sleep_interval = int(max(float(sleep_interval), 0.0))
@@ -390,18 +404,24 @@ def backout_near_market(
 
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
                     progress = min(minutes_since_start / effective_ramp_minutes, 1.0)
-                    minutes_to_close = _minutes_until_market_close()
+
+                    # Skip market close logic for crypto (24/7 trading)
+                    if is_crypto:
+                        minutes_to_close = None
+                        force_market_due_to_time = False
+                    else:
+                        minutes_to_close = _minutes_until_market_close()
+                        force_market_due_to_time = (
+                            minutes_to_close is not None
+                            and minutes_to_close <= market_close_force_minutes
+                        )
+
                     pct_offset, pct_final_offset = _resolve_offset_profile(
                         is_long,
                         minutes_to_close,
                         market_close_buffer_minutes,
                     )
                     pct_above_market = pct_offset + (pct_final_offset - pct_offset) * progress
-
-                    force_market_due_to_time = (
-                        minutes_to_close is not None
-                        and minutes_to_close <= market_close_force_minutes
-                    )
 
                     if minutes_since_start >= effective_market_after or force_market_due_to_time:
                         spread_pct = _current_spread_pct(pair)

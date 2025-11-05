@@ -1,6 +1,6 @@
 {
-  "model": "toto",
   "symbol": "AAPL",
+  "model": "toto",
   "config": {
     "name": "toto_opt_trimmed_mean_20_128_spb32",
     "num_samples": 128,
@@ -22,7 +22,13 @@
     "test_window": 20,
     "forecast_horizon": 1
   },
+  "config_path": "hyperparams/toto/AAPL.json",
   "metadata": {
-    "source": "hyperparams_extended"
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.019712646049054535,
+    "kronos_pct_return_mae": 0.026324090728479993,
+    "toto_pct_return_mae": 0.019712646049054535,
+    "improvement_pct": 25.115567134376064
   }
 }

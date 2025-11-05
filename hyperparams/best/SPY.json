@@ -1,35 +1,34 @@
 {
   "symbol": "SPY",
-  "model": "kronos",
+  "model": "toto",
   "config": {
-    "name": "kronos_opt_temp0.280_p0.85_s208_k16_clip2.00_ctx224",
-    "temperature": 0.28,
-    "top_p": 0.85,
-    "top_k": 16,
-    "sample_count": 208,
-    "max_context": 224,
-    "clip": 2.0
+    "name": "toto_opt_mean_4096_spb512",
+    "num_samples": 4096,
+    "aggregate": "mean",
+    "samples_per_batch": 512
   },
   "validation": {
-    "price_mae": 1.1290966796874955,
-    "pct_return_mae": 0.0041026191994296725,
-    "latency_s": 3.5523722259677015
+    "price_mae": 2.6627768475562448,
+    "pct_return_mae": 0.004241784143282562,
+    "latency_s": 7.188045082933968
   },
   "test": {
-    "price_mae": 1.7129733886718839,
-    "pct_return_mae": 0.005868420004726779,
-    "latency_s": 3.565155479940586
+    "price_mae": 3.0505178183317243,
+    "pct_return_mae": 0.004772129687741348,
+    "latency_s": 7.216180120914942
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/kronos/SPY.json",
+  "config_path": "hyperparams/toto/SPY.json",
   "metadata": {
-    "source": "hyperparams_extended",
-    "extended_path": "hyperparams_extended/kronos/SPY.json",
-    "selection_metric": "test_price_mae",
-    "selection_value": 1.7129733886718839
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.004772129687741348,
+    "kronos_pct_return_mae": 0.005868420004726779,
+    "toto_pct_return_mae": 0.004772129687741348,
+    "improvement_pct": 18.68118362527584
   }
 }

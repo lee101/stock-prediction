@@ -637,7 +637,7 @@ nvidia-cusparse-cu12==12.5.4.2
 nvidia-cusparselt-cu12==0.7.1
     # via torch
 nvidia-ml-py==13.580.82
-    # via pynvml
+    # via torch (replacement for deprecated pynvml)
 nvidia-nccl-cu12==2.27.5
     # via
     #   torch
@@ -845,8 +845,6 @@ pygments==2.19.2
     #   nbconvert
     #   pytest
     #   rich
-pynvml==13.0.1
-    # via pufferlib
 pyparsing==3.2.5
     # via matplotlib
 pyperclip==1.11.0

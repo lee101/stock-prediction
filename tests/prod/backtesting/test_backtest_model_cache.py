@@ -121,7 +121,7 @@ def test_resolve_best_model_cached(monkeypatch):
         return {"model": "toto"}
 
     monkeypatch.delenv("MARKETSIM_FORCE_KRONOS", raising=False)
-    monkeypatch.setattr(module, "_in_test_mode", lambda: False)
+    monkeypatch.setattr(module, "in_test_mode", lambda: False)
     monkeypatch.setattr(module, "load_model_selection", fake_load_model_selection)
 
     assert module.resolve_best_model("ETHUSD") == "toto"

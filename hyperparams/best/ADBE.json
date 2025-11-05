@@ -1,6 +1,6 @@
 {
-  "model": "toto",
   "symbol": "ADBE",
+  "model": "toto",
   "config": {
     "name": "toto_opt_trimmed_mean_5_2048_spb256",
     "num_samples": 2048,
@@ -22,7 +22,13 @@
     "test_window": 20,
     "forecast_horizon": 1
   },
+  "config_path": "hyperparams/toto/ADBE.json",
   "metadata": {
-    "source": "hyperparams_extended"
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.012888833803802357,
+    "kronos_pct_return_mae": 0.017954676940209136,
+    "toto_pct_return_mae": 0.012888833803802357,
+    "improvement_pct": 28.214615909139113
   }
 }

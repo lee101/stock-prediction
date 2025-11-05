@@ -1,6 +1,8 @@
 import logging
 import math
 import os
+import signal
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import sleep
@@ -12,7 +14,7 @@ from loguru import logger
 
 import alpaca_wrapper
 try:
-    from backtest_test3_inline import backtest_forecasts, release_model_resources
+    from backtest_test3_inline import backtest_forecasts, release_model_resources, resolve_close_policy
 except Exception as import_exc:  # pragma: no cover - exercised via tests with stubs
     logging.getLogger(__name__).warning(
         "Falling back to stubbed backtest resources due to import failure: %s", import_exc
@@ -30,8 +32,10 @@ from data_curate_daily import get_bid, get_ask, download_exchange_latest_data
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from jsonshelve import FlatShelf
 from marketsimulator.state import get_state
+from src.backtest_data_utils import normalize_series
 from src.cache_utils import ensure_huggingface_cache_dir
 from src.comparisons import is_buy_side, is_same_side, is_sell_side
+from src.cooldown_utils import record_loss_timestamp, clear_cooldown, can_trade_now
 from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
 from src.fixtures import crypto_symbols, all_crypto_symbols, active_crypto_symbols
 # Note: Use all_crypto_symbols for identification checks (fees, trading hours, etc.)
@@ -44,6 +48,7 @@ from src.process_utils import (
     spawn_close_position_at_maxdiff_takeprofit,
     spawn_close_position_at_takeprofit,
     spawn_open_position_at_maxdiff_takeprofit,
+    MAXDIFF_WATCHERS_DIR,
 )
 from src.portfolio_risk import record_portfolio_snapshot
 from src.sizing_utils import get_qty
@@ -54,7 +59,6 @@ from src.trade_stock_env_utils import (
     _drawdown_cap_for,
     _drawdown_resume_for,
     _get_env_float,
-    _load_trend_summary,
     _increment_symbol_entry,
     _kelly_drawdown_scale,
     _lookup_threshold,
@@ -70,6 +74,18 @@ from src.trade_stock_env_utils import (
     _symbol_trend_resume_threshold,
     get_entry_counter_snapshot,
     reset_symbol_entry_counters,
+)
+from src.trade_stock_forecast_snapshot import load_latest_forecast_snapshot as _load_forecast_snapshot
+from src.trade_stock_gate_utils import (
+    CONSENSUS_MIN_MOVE_PCT,
+    DISABLE_TRADE_GATES,
+    coerce_positive_int,
+    get_trend_stat,
+    is_kronos_only_mode,
+    is_tradeable,
+    pass_edge_threshold,
+    resolve_signal_sign,
+    should_skip_closed_equity,
 )
 from src.trade_stock_utils import (
     agree_direction,
@@ -140,10 +156,9 @@ if _ALLOW_MAXDIFF_ALWAYS_ENV is None:
 else:
     ALLOW_MAXDIFF_ALWAYS_ENTRY = _ALLOW_MAXDIFF_ALWAYS_ENV.strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip().lower() in {"1", "true", "yes", "on"}
-CONSENSUS_MIN_MOVE_PCT = float(os.getenv("CONSENSUS_MIN_MOVE_PCT", "0.001"))
 
 _quote_client: Optional[StockHistoricalDataClient] = None
-_COOLDOWN_STATE: Dict[str, Dict[str, datetime]] = {}
+# Cooldown state now managed by src.cooldown_utils
 
 _trade_outcomes_store: Optional[FlatShelf] = None
 _trade_learning_store: Optional[FlatShelf] = None
@@ -155,21 +170,8 @@ _TRUTHY = TRUTHY_ENV_VALUES
 
 SIMPLIFIED_MODE = os.getenv("MARKETSIM_SIMPLE_MODE", "0").strip().lower() in _TRUTHY
 
-
-def _coerce_positive_int(raw_value: Optional[str], default: int) -> int:
-    if raw_value is None:
-        return default
-    try:
-        parsed = int(str(raw_value).strip())
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed >= 0 else default
-
-
-ENABLE_PROBE_TRADES = (
-    os.getenv("MARKETSIM_ENABLE_PROBE_TRADES", "1").strip().lower() in _TRUTHY
-)
-MAX_MAXDIFFS = _coerce_positive_int(
+ENABLE_PROBE_TRADES = os.getenv("MARKETSIM_ENABLE_PROBE_TRADES", "1").strip().lower() in _TRUTHY
+MAX_MAXDIFFS = coerce_positive_int(
     os.getenv("MARKETSIM_MAX_MAXDIFFS"),
     15,
 )
@@ -181,39 +183,8 @@ PROBE_SYMBOLS = (
     else set(DEFAULT_PROBE_SYMBOLS)
 )
 
-_LATEST_FORECAST_CACHE: Dict[str, Dict[str, object]] = {}
-_LATEST_FORECAST_PATH: Optional[Path] = None
-DISABLE_TRADE_GATES = os.getenv("MARKETSIM_DISABLE_GATES", "0").strip().lower() in _TRUTHY
-
-_coerce_optional_float = coerce_optional_float
-_parse_float_list = parse_float_list
-_edge_threshold_bps = edge_threshold_bps
-_evaluate_strategy_entry_gate = evaluate_strategy_entry_gate
-
 MAXDIFF_STRATEGIES = {"maxdiff", "maxdiffalwayson"}
 MAXDIFF_LIMIT_STRATEGIES = MAXDIFF_STRATEGIES.union({"highlow"})
-
-
-def _should_skip_closed_equity() -> bool:
-    env_value = os.getenv("MARKETSIM_SKIP_CLOSED_EQUITY")
-    if env_value is not None:
-        return env_value.strip().lower() in _TRUTHY
-    return True
-
-
-def _get_trend_stat(symbol: str, key: str) -> Optional[float]:
-    """Look up a trend summary metric for the provided symbol."""
-    summary = _load_trend_summary()
-    if not summary:
-        return None
-    symbol_info = summary.get((symbol or "").upper())
-    if not symbol_info:
-        return None
-    value = symbol_info.get(key)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 _DRAW_SUSPENDED: Dict[Tuple[str, str], bool] = {}
@@ -227,84 +198,18 @@ def _results_dir() -> Path:
     return Path(__file__).resolve().parent / "results"
 
 
-def _normalize_series(series: pd.Series) -> pd.Series:
-    return series.apply(lambda value: coerce_numeric(value, default=0.0, prefer="mean"))
-
-
-def _find_latest_prediction_file() -> Optional[Path]:
-    results_path = _results_dir()
-    if not results_path.exists():
-        return None
-    candidates = list(results_path.glob("predictions-*.csv"))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
-
-
 def _load_latest_forecast_snapshot() -> Dict[str, Dict[str, object]]:
-    global _LATEST_FORECAST_CACHE, _LATEST_FORECAST_PATH
-
-    latest_file = _find_latest_prediction_file()
-    if latest_file is None:
-        return {}
-    if _LATEST_FORECAST_PATH == latest_file and _LATEST_FORECAST_CACHE:
-        return _LATEST_FORECAST_CACHE
-
-    desired_columns = {
-        "maxdiffprofit_profit",
-        "maxdiffprofit_high_price",
-        "maxdiffprofit_low_price",
-        "maxdiffprofit_profit_high_multiplier",
-        "maxdiffprofit_profit_low_multiplier",
-        "maxdiffprofit_profit_values",
-        "entry_takeprofit_profit",
-        "entry_takeprofit_high_price",
-        "entry_takeprofit_low_price",
-        "entry_takeprofit_profit_values",
-        "takeprofit_profit",
-        "takeprofit_high_price",
-        "takeprofit_low_price",
-    }
-
-    try:
-        df = pd.read_csv(
-            latest_file,
-            usecols=lambda column: column == "instrument" or column in desired_columns,
-        )
-    except Exception as exc:  # pragma: no cover - guarded against missing pandas/corrupt files
-        logger.warning("Failed to load latest prediction snapshot %s: %s", latest_file, exc)
-        _LATEST_FORECAST_CACHE = {}
-        _LATEST_FORECAST_PATH = latest_file
-        return _LATEST_FORECAST_CACHE
-
-    snapshot: Dict[str, Dict[str, object]] = {}
-
-    for row in df.to_dict("records"):
-        instrument = row.get("instrument")
-        if not instrument:
-            continue
-        entry: Dict[str, object] = {}
-        for key in desired_columns:
-            if key not in row:
-                continue
-            if key.endswith("_values"):
-                parsed_values = _parse_float_list(row.get(key))
-                if parsed_values is not None:
-                    entry[key] = parsed_values
-            else:
-                parsed_float = _coerce_optional_float(row.get(key))
-                if parsed_float is not None:
-                    entry[key] = parsed_float
-        if entry:
-            snapshot[str(instrument)] = entry
-
-    _LATEST_FORECAST_CACHE = snapshot
-    _LATEST_FORECAST_PATH = latest_file
-    return snapshot
+    return _load_forecast_snapshot(
+        _results_dir(),
+        logger=logger,
+        parse_float_list=_parse_float_list,
+        coerce_optional_float=_coerce_optional_float,
+    )
 
 
-def _is_kronos_only_mode() -> bool:
-    return os.getenv("MARKETSIM_FORCE_KRONOS", "0").lower() in _TRUTHY
+# Wrapper for backwards compatibility
+def _normalize_series(series: pd.Series) -> pd.Series:
+    return normalize_series(series, coerce_numeric)
 
 
 def _get_quote_client() -> Optional[StockHistoricalDataClient]:
@@ -330,78 +235,19 @@ def fetch_bid_ask(symbol: str) -> Tuple[Optional[float], Optional[float]]:
     return get_bid(symbol), get_ask(symbol)
 
 
-def is_tradeable(
-    symbol: str,
-    bid: Optional[float],
-    ask: Optional[float],
-    *,
-    avg_dollar_vol: Optional[float] = None,
-    atr_pct: Optional[float] = None,
-) -> Tuple[bool, str]:
-    spread_bps = compute_spread_bps(bid, ask)
-    if DISABLE_TRADE_GATES:
-        return True, f"Gates disabled (spread {spread_bps:.1f}bps)"
-    if math.isinf(spread_bps):
-        return False, "Missing bid/ask quote"
-    # Volume check disabled - strategy-specific blocks are sufficient
-    # kronos_only = _is_kronos_only_mode()
-    # min_dollar_vol = 5_000_000 if not kronos_only else 0.0
-    # if avg_dollar_vol is not None and avg_dollar_vol < min_dollar_vol:
-    #     return False, f"Low dollar vol {avg_dollar_vol:,.0f}"
-    atr_note = f", ATR {atr_pct:.2f}%" if atr_pct is not None else ""
-    return True, f"Spread {spread_bps:.1f}bps OK (gates relaxed{atr_note})"
-
-
-def pass_edge_threshold(symbol: str, expected_move_pct: float) -> Tuple[bool, str]:
-    move_bps = abs(expected_move_pct) * 1e4
-    if DISABLE_TRADE_GATES:
-        return True, f"Edge gating disabled ({move_bps:.1f}bps)"
-    kronos_only = _is_kronos_only_mode()
-    base_min = 40.0 if symbol.endswith("USD") else 15.0
-    if kronos_only:
-        base_min *= 0.6
-    min_abs_move_bps = base_min
-    buffer = 10.0 if not kronos_only else 5.0
-    need = max(expected_cost_bps(symbol) + buffer, min_abs_move_bps)
-    if move_bps < need:
-        return False, f"Edge {move_bps:.1f}bps < need {need:.1f}bps"
-    return True, f"Edge {move_bps:.1f}bps ≥ need {need:.1f}bps"
-
-
-def resolve_signal_sign(move_pct: float) -> int:
-    threshold = CONSENSUS_MIN_MOVE_PCT
-    if _is_kronos_only_mode():
-        threshold *= 0.25
-    if abs(move_pct) < threshold:
-        return 0
-    return 1 if move_pct > 0 else -1
-
-
+# Wrapper for backwards compatibility
 def _record_loss_timestamp(symbol: str, closed_at: Optional[str]) -> None:
-    if not closed_at:
-        return
-    ts = _parse_timestamp(closed_at)
-    if ts:
-        _COOLDOWN_STATE[symbol] = {"last_stop_time": ts}
+    record_loss_timestamp(symbol, closed_at, logger=logger)
 
 
-def clear_cooldown(symbol: str) -> None:
-    _COOLDOWN_STATE.pop(symbol, None)
+# Direct use of imported function
+# clear_cooldown is imported directly from src.cooldown_utils
 
 
+# Wrapper to use imported cooldown function with local symbol-specific cooldown
 def can_trade_now(symbol: str, now: datetime, min_cooldown_minutes: int = PROBE_LOSS_COOLDOWN_MINUTES) -> bool:
-    override_minutes = _symbol_min_cooldown_minutes(symbol)
-    if override_minutes is not None and override_minutes >= 0:
-        min_cooldown_minutes = float(override_minutes)
-    state = _COOLDOWN_STATE.get(symbol)
-    if not state:
-        return True
-    last_stop = state.get("last_stop_time")
-    if isinstance(last_stop, datetime):
-        delta = now - last_stop
-        if delta.total_seconds() < min_cooldown_minutes * 60:
-            return False
-    return True
+    from src.cooldown_utils import can_trade_now as can_trade_now_base
+    return can_trade_now_base(symbol, now, min_cooldown_minutes, symbol_min_cooldown_fn=_symbol_min_cooldown_minutes)
 
 
 def _ensure_state_dir() -> bool:
@@ -582,6 +428,7 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
             ("takeprofit", strategy_returns.get("takeprofit"), 3),
             ("highlow", strategy_returns.get("highlow"), 3),
             ("maxdiff", strategy_returns.get("maxdiff"), 3),
+            ("maxdiffalwayson", strategy_returns.get("maxdiffalwayson"), 3),
             ("ci_guard", strategy_returns.get("ci_guard"), 3),
             ("unprofit", data.get("unprofit_shutdown_return"), 3),
             ("composite", data.get("composite_score"), 3),
@@ -979,16 +826,33 @@ def _ensure_probe_state_consistency(
 
 
 def _handle_live_drawdown(position) -> None:
+    """
+    Monitor live positions for drawdown and mark for probe trade if needed.
+
+    Recalculates on every call to handle PnL fluctuations:
+    - If unrealized_pl < LIVE_DRAWDOWN_TRIGGER: mark for probe
+    - If unrealized_pl >= LIVE_DRAWDOWN_TRIGGER: clear probe flag (position recovered)
+    """
     try:
         unrealized_pl = float(getattr(position, "unrealized_pl", 0.0) or 0.0)
     except Exception:
         unrealized_pl = 0.0
 
-    if unrealized_pl >= LIVE_DRAWDOWN_TRIGGER:
-        return
-
     symbol = position.symbol
     normalized_side = _normalize_side_for_key(getattr(position, "side", ""))
+
+    if unrealized_pl >= LIVE_DRAWDOWN_TRIGGER:
+        # Position recovered - clear probe flag if it was set
+        learning_state = _load_learning_state(symbol, normalized_side)
+        if learning_state.get("pending_probe") and not learning_state.get("probe_active"):
+            _update_learning_state(symbol, normalized_side, pending_probe=False)
+            logger.info(
+                f"{symbol} {normalized_side}: Position recovered (unrealized pnl {unrealized_pl:.2f}); "
+                "clearing probe flag."
+            )
+        return
+
+    # Position in drawdown - mark for probe
     learning_state = _update_learning_state(symbol, normalized_side, pending_probe=True)
     if not learning_state.get("probe_active"):
         logger.warning(
@@ -1240,7 +1104,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     """Run backtest analysis on symbols and return results sorted by average return."""
     results = {}
     equities_tradable_now = is_nyse_trading_day_now()
-    skip_closed_equity = _should_skip_closed_equity()
+    skip_closed_equity = should_skip_closed_equity()
     skipped_equity_symbols: List[str] = []
 
     env_simulations_raw = os.getenv("MARKETSIM_BACKTEST_SIMULATIONS")
@@ -1259,7 +1123,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     else:
         env_simulations = None
 
-    kronos_only_mode = _is_kronos_only_mode()
+    kronos_only_mode = is_kronos_only_mode()
 
     latest_snapshot = _load_latest_forecast_snapshot()
 
@@ -1431,18 +1295,89 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             )
 
             close_price = coerce_numeric(last_prediction.get("close"), default=0.0)
-            predicted_close_price = coerce_numeric(
-                last_prediction.get("predicted_close"),
-                default=close_price,
-            )
-            predicted_high_price = coerce_numeric(
-                last_prediction.get("predicted_high"),
-                default=predicted_close_price,
-            )
-            predicted_low_price = coerce_numeric(
-                last_prediction.get("predicted_low"),
-                default=predicted_close_price,
-            )
+
+            # Retry logic: give the model a chance to fix invalid predictions
+            max_retries = 2
+            retry_count = 0
+            predictions_valid = False
+
+            while retry_count <= max_retries and not predictions_valid:
+                if retry_count > 0:
+                    logger.info(f"{symbol}: Retrying predictions (attempt {retry_count + 1}/{max_retries + 1})")
+                    # Re-run predictions to see if model can fix itself
+                    try:
+                        retry_backtest_df = backtest_forecasts(symbol, num_simulations)
+                        if not retry_backtest_df.empty:
+                            retry_prediction = retry_backtest_df.iloc[0].apply(
+                                lambda value: coerce_numeric(value, default=0.0, prefer="mean")
+                            )
+                            last_prediction = retry_prediction
+                        else:
+                            logger.warning(f"{symbol}: Retry {retry_count} returned empty backtest, using previous predictions")
+                    except Exception as retry_exc:
+                        logger.warning(f"{symbol}: Retry {retry_count} failed: {retry_exc}, using previous predictions")
+
+                predicted_close_price = coerce_numeric(
+                    last_prediction.get("predicted_close"),
+                    default=close_price,
+                )
+                predicted_high_price = coerce_numeric(
+                    last_prediction.get("predicted_high"),
+                    default=predicted_close_price,
+                )
+                predicted_low_price = coerce_numeric(
+                    last_prediction.get("predicted_low"),
+                    default=predicted_close_price,
+                )
+
+                # Check if predictions are valid
+                has_inverted_highlow = predicted_high_price < predicted_low_price
+                close_exceeds_high = predicted_close_price > predicted_high_price
+                close_below_low = predicted_close_price < predicted_low_price
+
+                if has_inverted_highlow or close_exceeds_high or close_below_low:
+                    if retry_count == 0:
+                        logger.warning(
+                            f"{symbol}: Invalid predictions detected - "
+                            f"high={predicted_high_price:.4f}, low={predicted_low_price:.4f}, close={predicted_close_price:.4f} "
+                            f"(inverted={has_inverted_highlow}, close>high={close_exceeds_high}, close<low={close_below_low})"
+                        )
+                    retry_count += 1
+                else:
+                    predictions_valid = True
+                    if retry_count > 0:
+                        logger.info(f"{symbol}: Predictions fixed after {retry_count} retries")
+
+            # If retries failed, apply fallback fixes
+            if not predictions_valid:
+                logger.warning(
+                    f"{symbol}: All {max_retries} retries failed to produce valid predictions, applying fallback fixes"
+                )
+
+                # Fix inverted base predictions - fallback to close price
+                if predicted_high_price < predicted_low_price:
+                    logger.warning(
+                        f"{symbol}: Base model has inverted predictions (high={predicted_high_price:.4f} < low={predicted_low_price:.4f}), "
+                        f"using close={predicted_close_price:.4f} for both"
+                    )
+                    predicted_high_price = predicted_close_price
+                    predicted_low_price = predicted_close_price
+
+                # Sanity check: ensure close is within [low, high] range
+                # Valid OHLC data requires: low <= close <= high
+                if predicted_close_price > predicted_high_price:
+                    logger.warning(
+                        f"{symbol}: Close price ({predicted_close_price:.4f}) exceeds high ({predicted_high_price:.4f}), "
+                        f"adjusting high to match close"
+                    )
+                    predicted_high_price = predicted_close_price
+
+                if predicted_close_price < predicted_low_price:
+                    logger.warning(
+                        f"{symbol}: Close price ({predicted_close_price:.4f}) is below low ({predicted_low_price:.4f}), "
+                        f"adjusting low to match close"
+                    )
+                    predicted_low_price = predicted_close_price
 
             def _optional_numeric(value: object) -> Optional[float]:
                 raw = coerce_numeric(value, default=float("nan")) if value is not None else float("nan")
@@ -1453,6 +1388,57 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             maxdiff_trade_bias = _optional_numeric(last_prediction.get("maxdiff_trade_bias"))
             maxdiffalwayson_high_price = _optional_numeric(last_prediction.get("maxdiffalwayson_high_price"))
             maxdiffalwayson_low_price = _optional_numeric(last_prediction.get("maxdiffalwayson_low_price"))
+
+            # Fix inverted high/low pairs using fallback model predictions
+            # Prefer using other models' predictions over blindly flipping
+            def _fix_inverted_predictions(
+                high: Optional[float],
+                low: Optional[float],
+                fallback_high_candidates: list,
+                fallback_low_candidates: list,
+                label: str
+            ) -> tuple:
+                """Try fallback models before flipping inverted high/low predictions."""
+                if high is None or low is None or high >= low:
+                    return high, low
+
+                original_high, original_low = high, low
+                logger.warning(f"{symbol}: Detected inverted {label} predictions (high={high:.4f} < low={low:.4f})")
+
+                # Try fallback high predictions
+                for fallback_high in fallback_high_candidates:
+                    if fallback_high is not None and fallback_high >= low:
+                        logger.info(f"{symbol}: Using fallback high={fallback_high:.4f} for {label} (original={original_high:.4f})")
+                        return fallback_high, low
+
+                # Try fallback low predictions
+                for fallback_low in fallback_low_candidates:
+                    if fallback_low is not None and high >= fallback_low:
+                        logger.info(f"{symbol}: Using fallback low={fallback_low:.4f} for {label} (original={original_low:.4f})")
+                        return high, fallback_low
+
+                # Last resort: flip
+                logger.warning(f"{symbol}: No valid fallback for {label}, flipping as last resort")
+                return low, high
+
+            # Fix maxdiff first using only base model predictions as fallback
+            maxdiff_high_price, maxdiff_low_price = _fix_inverted_predictions(
+                maxdiff_high_price,
+                maxdiff_low_price,
+                fallback_high_candidates=[predicted_high_price],
+                fallback_low_candidates=[predicted_low_price],
+                label="maxdiff"
+            )
+
+            # Fix maxdiffalwayson using both corrected maxdiff and base predictions
+            maxdiffalwayson_high_price, maxdiffalwayson_low_price = _fix_inverted_predictions(
+                maxdiffalwayson_high_price,
+                maxdiffalwayson_low_price,
+                fallback_high_candidates=[maxdiff_high_price, predicted_high_price],
+                fallback_low_candidates=[maxdiff_low_price, predicted_low_price],
+                label="maxdiffalwayson"
+            )
+
             maxdiff_primary_side_raw = raw_last_prediction.get("maxdiff_primary_side")
             maxdiff_primary_side = (
                 str(maxdiff_primary_side_raw).strip().lower()
@@ -1562,7 +1548,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     if not allow_config:
                         strategy_ineligible[name] = "disabled_by_config"
                         continue
-                    eligible, reason = _evaluate_strategy_entry_gate(
+                    eligible, reason = evaluate_strategy_entry_gate(
                         symbol,
                         stats,
                         fallback_used=used_fallback_engine,
@@ -1697,7 +1683,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 ci_guard_sharpe = coerce_numeric(backtest_df["ci_guard_sharpe"].mean(), default=0.0)
             kronos_profit_raw = last_prediction.get("closemin_loss_trading_profit")
             kronos_profit = coerce_numeric(kronos_profit_raw) if kronos_profit_raw is not None else 0.0
-            if _is_kronos_only_mode():
+            if is_kronos_only_mode():
                 if kronos_profit > simple_return:
                     simple_return = kronos_profit
                 if kronos_profit > avg_return:
@@ -2045,6 +2031,16 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if snapshot_row:
                 result_row.update(snapshot_row)
 
+            # Apply corrected high/low values (after snapshot update to ensure they're not overwritten with inverted values)
+            if maxdiff_high_price is not None:
+                result_row["maxdiffprofit_high_price"] = maxdiff_high_price
+            if maxdiff_low_price is not None:
+                result_row["maxdiffprofit_low_price"] = maxdiff_low_price
+            if maxdiffalwayson_high_price is not None:
+                result_row["maxdiffalwayson_high_price"] = maxdiffalwayson_high_price
+            if maxdiffalwayson_low_price is not None:
+                result_row["maxdiffalwayson_low_price"] = maxdiffalwayson_low_price
+
             if maxdiff_primary_side_raw is not None:
                 result_row["maxdiff_primary_side"] = str(maxdiff_primary_side_raw).strip().lower() or "neutral"
             if maxdiff_trade_bias is not None:
@@ -2165,9 +2161,21 @@ def build_portfolio(
         )
         simple_picks: Dict[str, Dict] = {}
         for symbol, data in ranked:
-            avg_val = _coerce_optional_float(data.get("avg_return"))
-            if avg_val is None or avg_val <= 0:
+            # Check if the SELECTED strategy has positive returns
+            strategy = data.get("strategy", "simple")
+            strategy_return_key = f"{strategy}_return"
+            strategy_return = _coerce_optional_float(data.get(strategy_return_key))
+
+            # Debug logging for simplified mode
+            logger.debug(
+                f"Portfolio simplified {symbol}: strategy={strategy} {strategy_return_key}={strategy_return} "
+                f"passed={strategy_return is not None and strategy_return > 0}"
+            )
+
+            # Skip if selected strategy isn't profitable
+            if strategy_return is None or strategy_return <= 0:
                 continue
+
             pred_move = _coerce_optional_float(data.get("predicted_movement"))
             side = (data.get("side") or "").lower()
             if pred_move is not None:
@@ -2192,11 +2200,21 @@ def build_portfolio(
             break
         if data.get("trade_blocked"):
             continue
-        if (
-            data.get("avg_return", 0) > 0
-            and data.get("unprofit_shutdown_return", 0) > 0
-            and data.get("simple_return", 0) > 0
-        ):
+
+        # Check if the SELECTED strategy has positive returns
+        strategy = data.get("strategy", "simple")
+        strategy_return_key = f"{strategy}_return"
+        strategy_return = data.get(strategy_return_key, 0)
+        avg_return = data.get("avg_return", 0)
+
+        # Debug logging for strategy selection
+        logger.debug(
+            f"Portfolio eval {symbol}: strategy={strategy} {strategy_return_key}={strategy_return:.4f} "
+            f"avg_return={avg_return:.4f} passed={avg_return > 0 and strategy_return > 0}"
+        )
+
+        # Include if selected strategy is profitable
+        if avg_return > 0 and strategy_return > 0:
             picks[symbol] = data
 
     # Ensure we reach the minimum desired portfolio size using best remaining composites.
@@ -2206,7 +2224,21 @@ def build_portfolio(
                 break
             if symbol in picks or data.get("trade_blocked"):
                 continue
-            if data.get("simple_return", 0) > 0 or data.get("composite_score", 0) > 0:
+
+            # Check if the SELECTED strategy has positive returns
+            strategy = data.get("strategy", "simple")
+            strategy_return_key = f"{strategy}_return"
+            strategy_return = data.get(strategy_return_key, 0)
+            composite = data.get("composite_score", 0)
+
+            # Debug logging for fallback selection
+            logger.debug(
+                f"Portfolio fallback {symbol}: strategy={strategy} {strategy_return_key}={strategy_return:.4f} "
+                f"composite={composite:.4f} passed={strategy_return > 0 or composite > 0}"
+            )
+
+            # Include if strategy is profitable or has positive composite score
+            if strategy_return > 0 or composite > 0:
                 picks[symbol] = data
 
     # Optionally expand with high-price-edge opportunities to keep broader exposure.
@@ -3325,6 +3357,99 @@ def dry_run_manage_positions(current_picks: Dict[str, Dict], previous_picks: Dic
             logger.info(f"Would enter new {data['side']} position for {symbol}")
 
 
+def cleanup_spawned_processes():
+    """Clean up all spawned watcher processes on shutdown."""
+    logger.info("Cleaning up spawned watcher processes...")
+
+    if not MAXDIFF_WATCHERS_DIR.exists():
+        logger.debug("No watcher directory found, skipping cleanup")
+        return
+
+    killed_count = 0
+    failed_pids = []
+
+    # Find all watcher config files and kill their PIDs
+    for config_path in MAXDIFF_WATCHERS_DIR.glob("*.json"):
+        try:
+            import json
+            with open(config_path) as f:
+                metadata = json.load(f)
+
+            pid = metadata.get("pid")
+            if not pid or not isinstance(pid, int):
+                continue
+
+            # Check if process is still running
+            try:
+                os.kill(pid, 0)  # Signal 0 = check if process exists
+            except (ProcessLookupError, PermissionError, OSError):
+                # Process already dead
+                continue
+
+            # Try graceful shutdown first
+            try:
+                os.kill(pid, signal.SIGTERM)
+                killed_count += 1
+                logger.debug(f"Sent SIGTERM to watcher PID {pid} ({config_path.name})")
+            except ProcessLookupError:
+                pass  # Already exited
+            except Exception as e:
+                logger.warning(f"Failed to kill PID {pid}: {e}")
+                failed_pids.append(pid)
+
+        except Exception as e:
+            logger.debug(f"Error processing {config_path}: {e}")
+
+    # Give processes time to gracefully exit
+    if killed_count > 0:
+        sleep(2)
+
+    # Force kill any survivors
+    for config_path in MAXDIFF_WATCHERS_DIR.glob("*.json"):
+        try:
+            import json
+            with open(config_path) as f:
+                metadata = json.load(f)
+
+            pid = metadata.get("pid")
+            if not pid or not isinstance(pid, int):
+                continue
+
+            try:
+                os.kill(pid, 0)  # Check if still running
+                os.kill(pid, signal.SIGKILL)
+                logger.info(f"Force killed watcher PID {pid} ({config_path.name})")
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
+        except Exception:
+            pass
+
+    if killed_count > 0:
+        logger.info(f"Cleaned up {killed_count} spawned watcher processes")
+    else:
+        logger.debug("No active watcher processes found to clean up")
+
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    signal_name = signal.Signals(signum).name
+    logger.info(f"Received {signal_name}, shutting down gracefully...")
+
+    try:
+        cleanup_spawned_processes()
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
+
+    try:
+        release_model_resources()
+    except Exception as e:
+        logger.debug(f"Model release failed: {e}")
+
+    logger.info("Shutdown complete")
+    sys.exit(0)
+
+
 def main():
     symbols = [
         "COUR",
@@ -3351,6 +3476,12 @@ def main():
         "AVAXUSD",
         "LINKUSD",
     ]
+
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # kill command
+    logger.info("Signal handlers registered for graceful shutdown")
+
     previous_picks = {}
 
     # Track when each analysis was last run

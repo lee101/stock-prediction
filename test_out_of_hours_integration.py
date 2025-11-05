@@ -82,7 +82,7 @@ def test_spread_check():
     logger.info("Test 3: Spread checking for closing positions")
     logger.info("=" * 60)
 
-    test_symbols = ["AAPL", "GOOGL", "TSLA"]
+    test_symbols = ["AAPL", "GOOGL", "TSLA", "BTCUSD"]
 
     for symbol in test_symbols:
         try:
@@ -104,10 +104,32 @@ def test_spread_check():
     return True
 
 
+def test_crypto_market_order_blocked():
+    """Test that crypto NEVER uses market orders (Alpaca executes at midpoint, not market price)."""
+    logger.info("=" * 60)
+    logger.info("Test 4: Crypto market order blocking")
+    logger.info("=" * 60)
+
+    test_crypto = ["BTCUSD", "ETHUSD"]
+
+    for symbol in test_crypto:
+        can_use, reason = alpaca_wrapper._can_use_market_order(symbol, is_closing_position=False)
+        logger.info(f"{symbol}: Can use market order: {can_use}")
+        if not can_use:
+            logger.info(f"  Reason: {reason}")
+
+        if can_use:
+            logger.error(f"FAIL: {symbol} should NEVER allow market orders!")
+            return False
+
+    logger.info("PASS: Crypto market orders correctly blocked (midpoint execution protection)")
+    return True
+
+
 def test_limit_order_availability():
     """Test that limit orders work regardless of market hours."""
     logger.info("=" * 60)
-    logger.info("Test 4: Limit orders during out-of-hours")
+    logger.info("Test 5: Limit orders during out-of-hours")
     logger.info("=" * 60)
 
     clock = alpaca_wrapper.get_clock()
@@ -125,7 +147,7 @@ def test_limit_order_availability():
 def test_force_open_clock():
     """Test the force_open_the_clock flag for out-of-hours trading."""
     logger.info("=" * 60)
-    logger.info("Test 5: force_open_the_clock flag")
+    logger.info("Test 6: force_open_the_clock flag")
     logger.info("=" * 60)
 
     # Save original value
@@ -185,6 +207,7 @@ def main():
     market_is_open = test_market_hours_check()
     results.append(test_market_order_during_hours(market_is_open))
     results.append(test_spread_check())
+    results.append(test_crypto_market_order_blocked())
     results.append(test_limit_order_availability())
     results.append(test_force_open_clock())
 
