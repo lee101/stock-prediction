@@ -18,13 +18,14 @@ from scipy.optimize import differential_evolution
 class _EntryExitObjective:
     """Picklable objective function for multiprocessing"""
 
-    def __init__(self, close_actual, positions, high_actual, high_pred, low_actual, low_pred, trading_fee):
+    def __init__(self, close_actual, positions, high_actual, high_pred, low_actual, low_pred, close_at_eod, trading_fee):
         self.close_actual = close_actual
         self.positions = positions
         self.high_actual = high_actual
         self.high_pred = high_pred
         self.low_actual = low_actual
         self.low_pred = low_pred
+        self.close_at_eod = close_at_eod
         self.trading_fee = trading_fee
 
     def __call__(self, multipliers):
@@ -38,6 +39,7 @@ class _EntryExitObjective:
             self.high_pred + float(high_mult),
             self.low_actual,
             self.low_pred + float(low_mult),
+            close_at_eod=self.close_at_eod,
             trading_fee=self.trading_fee,
         ).item()
         return -profit
@@ -106,6 +108,7 @@ def optimize_entry_exit_multipliers(
     low_actual: torch.Tensor,
     low_pred: torch.Tensor,
     *,
+    close_at_eod: bool = False,
     trading_fee: Optional[float] = None,
     bounds: Tuple[Tuple[float, float], Tuple[float, float]] = ((-0.03, 0.03), (-0.03, 0.03)),
     maxiter: int = 50,
@@ -124,6 +127,7 @@ def optimize_entry_exit_multipliers(
         high_pred: Predicted high exit targets
         low_actual: Actual low price movements
         low_pred: Predicted low entry targets
+        close_at_eod: If True, force positions to close at end-of-day close price
         bounds: Search bounds for (high_multiplier, low_multiplier)
         maxiter: Max iterations for differential evolution
         popsize: Population size per iteration
@@ -135,7 +139,7 @@ def optimize_entry_exit_multipliers(
         (best_high_multiplier, best_low_multiplier, best_profit)
     """
 
-    objective = _EntryExitObjective(close_actual, positions, high_actual, high_pred, low_actual, low_pred, trading_fee)
+    objective = _EntryExitObjective(close_actual, positions, high_actual, high_pred, low_actual, low_pred, close_at_eod, trading_fee)
 
     result = differential_evolution(
         objective,
