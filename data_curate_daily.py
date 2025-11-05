@@ -312,8 +312,8 @@ def get_spread(symbol):
 
 
 def fetch_spread(symbol):
-    client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
-    minute_df_last = download_exchange_latest_data(client, symbol)
+    # Return cached spread - download_daily_stock_data() already fetched it
+    # No need to call download_exchange_latest_data() again
     return spreads.get(symbol, 1.05)
 
 

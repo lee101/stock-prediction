@@ -156,3 +156,65 @@ def load_model_selection(
 ) -> Optional[Dict[str, Any]]:
     target_store = store or _DEFAULT_STORE
     return target_store.load_selection(symbol)
+
+
+def save_close_policy(
+    symbol: str,
+    close_policy: str,
+    comparison_results: Optional[Dict[str, Any]] = None,
+    store: Optional[HyperparamStore] = None,
+) -> Path:
+    """
+    Save the best close policy for a symbol.
+
+    Args:
+        symbol: The trading symbol
+        close_policy: Either 'INSTANT_CLOSE' or 'KEEP_OPEN'
+        comparison_results: Optional dict with comparison metrics
+        store: Optional HyperparamStore instance
+
+    Returns:
+        Path to the saved file
+    """
+    payload: Dict[str, Any] = {
+        "symbol": symbol,
+        "close_policy": close_policy,
+    }
+    if comparison_results:
+        payload["comparison"] = comparison_results
+
+    target_store = store or _DEFAULT_STORE
+    close_policy_dir = target_store.root / "close_policy"
+    close_policy_dir.mkdir(parents=True, exist_ok=True)
+
+    path = close_policy_dir / f"{symbol}.json"
+    with path.open("w") as fp:
+        json.dump(payload, fp, indent=2)
+    return path
+
+
+def load_close_policy(
+    symbol: str,
+    store: Optional[HyperparamStore] = None,
+) -> Optional[str]:
+    """
+    Load the best close policy for a symbol.
+
+    Args:
+        symbol: The trading symbol
+        store: Optional HyperparamStore instance
+
+    Returns:
+        Either 'INSTANT_CLOSE' or 'KEEP_OPEN', or None if not found
+    """
+    target_store = store or _DEFAULT_STORE
+    close_policy_dir = target_store.root / "close_policy"
+    path = close_policy_dir / f"{symbol}.json"
+
+    if not path.exists():
+        return None
+
+    with path.open("r") as fp:
+        payload = json.load(fp)
+
+    return payload.get("close_policy")

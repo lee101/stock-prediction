@@ -1,28 +1,37 @@
 {
-  "model": "toto",
   "symbol": "GOOGL",
+  "model": "kronos",
   "config": {
-    "name": "toto_opt_mean_quantile_mix_0.15_0.40_1024_spb256",
-    "num_samples": 1024,
-    "aggregate": "mean_quantile_mix_0.15_0.40",
-    "samples_per_batch": 256
+    "name": "kronos_opt_temp0.150_p0.75_s192_k28_clip2.50_ctx256",
+    "temperature": 0.15,
+    "top_p": 0.75,
+    "top_k": 28,
+    "sample_count": 192,
+    "max_context": 256,
+    "clip": 2.5
   },
   "validation": {
-    "price_mae": 1.1611989006576295,
-    "pct_return_mae": 0.015387678765790707,
-    "latency_s": 3.2548272970307153
+    "price_mae": 0.5366002583218183,
+    "pct_return_mae": 0.017621307004078653,
+    "latency_s": 3.8013240519794635
   },
   "test": {
-    "price_mae": 1.4310736423970674,
-    "pct_return_mae": 0.020760263098387167,
-    "latency_s": 3.27687243395485
+    "price_mae": 0.6563588155241404,
+    "pct_return_mae": 0.019782356367625806,
+    "latency_s": 3.807489452941809
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
+  "config_path": "hyperparams/kronos/GOOGL.json",
   "metadata": {
-    "source": "hyperparams_extended"
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.019782356367625806,
+    "kronos_pct_return_mae": 0.019782356367625806,
+    "toto_pct_return_mae": 0.020760263098387167,
+    "improvement_pct": 4.710473687770045
   }
 }

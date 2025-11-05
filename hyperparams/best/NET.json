@@ -24,9 +24,11 @@
   },
   "config_path": "hyperparams/toto/NET.json",
   "metadata": {
-    "source": "hyperparams_extended",
-    "extended_path": "hyperparams_extended/toto/NET.json",
-    "selection_metric": "test_price_mae",
-    "selection_value": 4.053732064785427
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.018473548864090673,
+    "kronos_pct_return_mae": 0.03269609007706244,
+    "toto_pct_return_mae": 0.018473548864090673,
+    "improvement_pct": 43.499211004894505
   }
 }

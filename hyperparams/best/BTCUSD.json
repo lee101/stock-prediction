@@ -24,9 +24,11 @@
   },
   "config_path": "hyperparams/toto/BTCUSD.json",
   "metadata": {
-    "source": "hyperparams_extended",
-    "extended_path": "hyperparams_extended/toto/BTCUSD.json",
-    "selection_metric": "test_price_mae",
-    "selection_value": 2278.9443323651008
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.01952701682139137,
+    "kronos_pct_return_mae": 0.04035513855752465,
+    "toto_pct_return_mae": 0.01952701682139137,
+    "improvement_pct": 51.6120684518122
   }
 }

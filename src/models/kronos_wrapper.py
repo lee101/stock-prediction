@@ -9,6 +9,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Dict, List, Optional, Sequence
 
+from src.gpu_utils import should_offload_to_cpu as gpu_should_offload_to_cpu
+
 from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -525,18 +527,32 @@ class KronosForecastingWrapper:
             )
         return results
 
+    def _should_offload_to_cpu(self) -> bool:
+        """
+        Determine if model should be offloaded to CPU based on GPU capabilities.
+        Returns False for high-VRAM GPUs like RTX 5090 where we have enough memory.
+        """
+        return gpu_should_offload_to_cpu(self._device)
+
     def unload(self) -> None:
         predictor = self._predictor
         if predictor is None:
             return
+
+        should_offload = self._should_offload_to_cpu()
+
         try:
-            if hasattr(predictor.model, "to"):
+            if should_offload and hasattr(predictor.model, "to"):
                 predictor.model.to("cpu")
+            elif not should_offload:
+                logger.debug("Skipping CPU offload for model - sufficient GPU VRAM available")
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Failed to move Kronos model to CPU during unload: %s", exc)
         try:
-            if hasattr(predictor.tokenizer, "to"):
+            if should_offload and hasattr(predictor.tokenizer, "to"):
                 predictor.tokenizer.to("cpu")
+            elif not should_offload:
+                logger.debug("Skipping CPU offload for tokenizer - sufficient GPU VRAM available")
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Failed to move Kronos tokenizer to CPU during unload: %s", exc)
         self._predictor = None
