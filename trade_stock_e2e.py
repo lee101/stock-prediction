@@ -3473,9 +3473,6 @@ def main():
         "BTCUSD",
         "ETHUSD",
         "UNIUSD",
-        "SOLUSD",
-        "AVAXUSD",
-        "LINKUSD",
     ]
 
     # Register signal handlers for graceful shutdown
