@@ -204,6 +204,60 @@ def test_detailed_short_breakdown():
     print(f"Sign error:   {'YES - BUG CONFIRMED' if (expected < 0 and actual.item() > 0) else 'No'}")
 
 
+def test_crypto_vs_equity_fees():
+    """Crypto fees (0.15%) should result in lower profit than equity fees (0.05%)"""
+    CRYPTO_FEE = 0.0015
+    EQUITY_FEE = 0.0005
+
+    y_test_pred = torch.tensor([1.0])
+    y_test = torch.tensor([0.02])  # 2% profit
+
+    equity_profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred, trading_fee=EQUITY_FEE)
+    crypto_profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred, trading_fee=CRYPTO_FEE)
+
+    expected_equity = 1.0 * 0.02 - EQUITY_FEE
+    expected_crypto = 1.0 * 0.02 - CRYPTO_FEE
+
+    assert torch.isclose(equity_profit, torch.tensor(expected_equity), atol=1e-6)
+    assert torch.isclose(crypto_profit, torch.tensor(expected_crypto), atol=1e-6)
+    assert crypto_profit < equity_profit, "Crypto fees should reduce profit more than equity fees"
+    print(f"✓ Equity profit: {equity_profit.item():.6f}, Crypto profit: {crypto_profit.item():.6f}")
+
+
+def test_entry_exit_custom_fee():
+    """Entry/exit logic with custom fee (0.2%)"""
+    CUSTOM_FEE = 0.002
+
+    y_test_pred = torch.tensor([1.0])
+    y_test = torch.tensor([0.02])
+    y_test_low_pred = torch.tensor([-0.01])
+    y_test_high_pred = torch.tensor([0.03])
+    y_test_low = torch.tensor([-0.015])
+    y_test_high = torch.tensor([0.04])
+
+    profit = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, trading_fee=CUSTOM_FEE
+    )
+
+    movement = 0.03 - (-0.01)  # 4% from entry to exit
+    expected = movement - CUSTOM_FEE
+
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-6)
+    print(f"✓ Custom fee profit: {profit.item():.6f} (expected: {expected:.6f})")
+
+
+def test_zero_fee_scenario():
+    """Zero fees for testing/simulation"""
+    y_test_pred = torch.tensor([1.0])
+    y_test = torch.tensor([0.02])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred, trading_fee=0.0)
+
+    expected = 1.0 * 0.02  # no fee deduction
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-6)
+    print(f"✓ Zero fee profit: {profit.item():.6f}")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Testing basic long/short logic")
@@ -235,3 +289,12 @@ if __name__ == "__main__":
     print("\n")
 
     test_detailed_short_breakdown()
+
+    print("\n" + "=" * 60)
+    print("Testing fee scenarios")
+    print("=" * 60)
+
+    test_crypto_vs_equity_fees()
+    test_entry_exit_custom_fee()
+    test_zero_fee_scenario()
+    print("\n✓ All fee tests passed")
