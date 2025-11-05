@@ -458,7 +458,7 @@ def backout_near_market(
     )
 
 
-@debounce(60 * 10, key_func=lambda symbol, side, target_qty=None: f"{symbol}_{side}_{target_qty}")
+@debounce(60 * 10, key_func=lambda symbol, side, target_qty=None, maxdiff_overflow=False, risk_threshold=None: f"{symbol}_{side}_{target_qty}_{maxdiff_overflow}")
 def ramp_into_position(
     symbol: str,
     side: str = "buy",
