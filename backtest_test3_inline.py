@@ -381,6 +381,7 @@ def evaluate_maxdiff_strategy(
             low_actual,
             low_pred,
             maxdiff_trades,
+            trading_fee=trading_fee,
         )
 
         # Optimize both multipliers jointly using differential_evolution
@@ -391,6 +392,7 @@ def evaluate_maxdiff_strategy(
             high_pred,
             low_actual,
             low_pred,
+            trading_fee=trading_fee,
             maxiter=50,
             popsize=10,
         )
@@ -402,6 +404,7 @@ def evaluate_maxdiff_strategy(
             low_actual,
             low_pred + best_low_multiplier,
             maxdiff_trades,
+            trading_fee=trading_fee,
         )
 
     baseline_returns_np = base_profit_values.detach().cpu().numpy().astype(float, copy=False)
@@ -583,6 +586,7 @@ def evaluate_maxdiff_always_on_strategy(
                 low_pred + float(low_mult),
                 buy_indicator,
                 close_at_eod=close_at_eod,
+                trading_fee=trading_fee,
             )
             if is_crypto:
                 return float(buy_returns.sum().item())
@@ -595,6 +599,7 @@ def evaluate_maxdiff_always_on_strategy(
                     low_pred + float(low_mult),
                     sell_indicator,
                     close_at_eod=close_at_eod,
+                    trading_fee=trading_fee,
                 )
                 return float(buy_returns.sum().item() + sell_returns.sum().item())
 
@@ -614,6 +619,7 @@ def evaluate_maxdiff_always_on_strategy(
             low_pred + best_low_multiplier,
             buy_indicator,
             close_at_eod=close_at_eod,
+            trading_fee=trading_fee,
         )
         if is_crypto:
             best_sell_returns_tensor = torch.zeros_like(best_buy_returns_tensor)
@@ -626,6 +632,7 @@ def evaluate_maxdiff_always_on_strategy(
                 low_pred + best_low_multiplier,
                 sell_indicator,
                 close_at_eod=close_at_eod,
+                trading_fee=trading_fee,
             )
 
     best_state = (
@@ -651,13 +658,13 @@ def evaluate_maxdiff_always_on_strategy(
     optimized_eval = _evaluate_daily_returns(daily_returns_np, trading_days_per_year)
 
     baseline_buy = calculate_profit_torch_with_entry_buysell_profit_values(
-        close_actual, high_actual, high_pred, low_actual, low_pred, buy_indicator
+        close_actual, high_actual, high_pred, low_actual, low_pred, buy_indicator, trading_fee=trading_fee
     )
     if is_crypto:
         baseline_sell = torch.zeros_like(baseline_buy)
     else:
         baseline_sell = calculate_profit_torch_with_entry_buysell_profit_values(
-            close_actual, high_actual, high_pred, low_actual, low_pred, sell_indicator
+            close_actual, high_actual, high_pred, low_actual, low_pred, sell_indicator, trading_fee=trading_fee
         )
     baseline_combined = baseline_buy + baseline_sell
     baseline_returns_np = baseline_combined.detach().cpu().numpy().astype(float, copy=False)

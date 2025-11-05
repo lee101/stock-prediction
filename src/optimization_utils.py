@@ -20,6 +20,7 @@ def optimize_entry_exit_multipliers(
     low_actual: torch.Tensor,
     low_pred: torch.Tensor,
     *,
+    trading_fee: Optional[float] = None,
     bounds: Tuple[Tuple[float, float], Tuple[float, float]] = ((-0.03, 0.03), (-0.03, 0.03)),
     maxiter: int = 50,
     popsize: int = 10,
@@ -57,6 +58,7 @@ def optimize_entry_exit_multipliers(
             high_pred + float(high_mult),
             low_actual,
             low_pred + float(low_mult),
+            trading_fee=trading_fee,
         ).item()
         return -profit  # minimize negative = maximize profit
 
