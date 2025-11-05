@@ -1471,9 +1471,20 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 snapshot_parts.append(f"maxdiff_side={bias_fragment}")
             _log_detail(" ".join(snapshot_parts))
 
+            # Helper to get forecasted PnL from last_prediction
+            def _get_forecasted_pnl(strategy_name: str) -> float:
+                """Get forecasted PnL for a strategy, falling back to avg_return if not available."""
+                forecast_key = f"{strategy_name}_forecasted_pnl"
+                forecasted = coerce_numeric(last_prediction.get(forecast_key), default=None)
+                if forecasted is not None:
+                    return forecasted
+                # Fallback to avg_return if forecasted PnL not available
+                return strategy_returns.get(strategy_name, 0.0)
+
             strategy_stats: Dict[str, Dict[str, float]] = {
                 "simple": {
                     "avg_return": strategy_returns.get("simple", 0.0),
+                    "forecasted_pnl": _get_forecasted_pnl("simple"),
                     "annual_return": strategy_returns_annual.get("simple", 0.0),
                     "sharpe": _mean_column("simple_strategy_sharpe"),
                     "turnover": _mean_column("simple_strategy_turnover"),
@@ -1481,6 +1492,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 },
                 "all_signals": {
                     "avg_return": strategy_returns.get("all_signals", 0.0),
+                    "forecasted_pnl": _get_forecasted_pnl("all_signals"),
                     "annual_return": strategy_returns_annual.get("all_signals", 0.0),
                     "sharpe": _mean_column("all_signals_strategy_sharpe"),
                     "turnover": _mean_column("all_signals_strategy_turnover"),
@@ -1488,6 +1500,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 },
                 "takeprofit": {
                     "avg_return": strategy_returns.get("takeprofit", 0.0),
+                    "forecasted_pnl": _get_forecasted_pnl("entry_takeprofit"),
                     "annual_return": strategy_returns_annual.get("takeprofit", 0.0),
                     "sharpe": _mean_column("entry_takeprofit_sharpe"),
                     "turnover": _mean_column("entry_takeprofit_turnover"),
@@ -1495,6 +1508,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 },
                 "highlow": {
                     "avg_return": strategy_returns.get("highlow", 0.0),
+                    "forecasted_pnl": _get_forecasted_pnl("highlow"),
                     "annual_return": strategy_returns_annual.get("highlow", 0.0),
                     "sharpe": _mean_column("highlow_sharpe"),
                     "turnover": _mean_column("highlow_turnover"),
@@ -1502,6 +1516,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 },
                 "maxdiff": {
                     "avg_return": strategy_returns.get("maxdiff", 0.0),
+                    "forecasted_pnl": _get_forecasted_pnl("maxdiff"),
                     "annual_return": strategy_returns_annual.get("maxdiff", 0.0),
                     "sharpe": _mean_column("maxdiff_sharpe"),
                     "turnover": _mean_column("maxdiff_turnover"),
@@ -1509,6 +1524,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 },
                 "maxdiffalwayson": {
                     "avg_return": strategy_returns.get("maxdiffalwayson", 0.0),
+                    "forecasted_pnl": _get_forecasted_pnl("maxdiffalwayson"),
                     "annual_return": strategy_returns_annual.get("maxdiffalwayson", 0.0),
                     "sharpe": _mean_column("maxdiffalwayson_sharpe"),
                     "turnover": _mean_column("maxdiffalwayson_turnover"),
@@ -1518,6 +1534,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if "ci_guard" in strategy_returns:
                 strategy_stats["ci_guard"] = {
                     "avg_return": strategy_returns.get("ci_guard", 0.0),
+                    "forecasted_pnl": _get_forecasted_pnl("ci_guard"),
                     "annual_return": strategy_returns_annual.get("ci_guard", 0.0),
                     "sharpe": _mean_column("ci_guard_sharpe"),
                     "turnover": _mean_column("ci_guard_turnover"),
@@ -1528,7 +1545,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 strategy_recent_sums[strat_name] = _recent_return_sum(primary_col, fallback_col)
 
             strategy_ineligible: Dict[str, str] = {}
-            candidate_avg_returns: Dict[str, float] = {}
+            candidate_forecasted_pnl: Dict[str, float] = {}
             allowed_side = _allowed_side_for(symbol)
             symbol_is_crypto = symbol in all_crypto_symbols
 
@@ -1559,19 +1576,43 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                         strategy_ineligible[name] = reason
                         continue
 
-                avg_metric = _metric(stats.get("avg_return"), default=0.0)
-                candidate_avg_returns[name] = avg_metric
+                # Use forecasted PnL instead of avg_return for strategy selection
+                forecasted_pnl = _metric(stats.get("forecasted_pnl"), default=0.0)
+                candidate_forecasted_pnl[name] = forecasted_pnl
 
-            # Sort strategies by avg_return (simplified)
+            # Sort strategies by forecasted_pnl (highest positive first)
+            # NOTE: We use forecasted PnL instead of avg_return because forecasted PnL is the
+            # forward-looking prediction of next day's returns, which is more relevant for
+            # strategy selection than the average of historical backtest simulations.
             ordered_strategies: List[str] = []
-            if candidate_avg_returns:
-                ordered_strategies = [
-                    name for name, _ in sorted(
-                        candidate_avg_returns.items(),
-                        key=lambda item: item[1],
-                        reverse=True,
+            if candidate_forecasted_pnl:
+                # Only consider strategies with positive forecasted PnL
+                positive_forecasts = {k: v for k, v in candidate_forecasted_pnl.items() if v > 0}
+                if positive_forecasts:
+                    ordered_strategies = [
+                        name for name, _ in sorted(
+                            positive_forecasts.items(),
+                            key=lambda item: item[1],
+                            reverse=True,
+                        )
+                    ]
+                    _log_detail(
+                        f"{symbol}: Strategy selection by forecasted PnL (positive only): "
+                        + ", ".join(f"{name}={candidate_forecasted_pnl[name]:.4f}" for name in ordered_strategies)
                     )
-                ]
+                else:
+                    # No positive forecasts - fall back to all strategies sorted by forecasted PnL
+                    ordered_strategies = [
+                        name for name, _ in sorted(
+                            candidate_forecasted_pnl.items(),
+                            key=lambda item: item[1],
+                            reverse=True,
+                        )
+                    ]
+                    _log_detail(
+                        f"{symbol}: No positive forecasted PnL - using all strategies: "
+                        + ", ".join(f"{name}={candidate_forecasted_pnl[name]:.4f}" for name in ordered_strategies)
+                    )
             else:
                 ordered_strategies = ["simple"]
 
@@ -1594,7 +1635,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     selection_notes.append(f"{candidate_name}=ineligible({strategy_ineligible[candidate_name]})")
                     continue
 
-                candidate_avg_return = candidate_avg_returns.get(candidate_name, 0.0)
+                # Get avg_return from strategy_stats for this candidate
+                candidate_stats = strategy_stats.get(candidate_name, {})
+                candidate_avg_return = candidate_stats.get("avg_return", 0.0)
 
                 candidate_position_side: Optional[str] = None
                 candidate_predicted_movement = close_movement_raw
@@ -1979,7 +2022,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "directional_edge": _metric(directional_edge, default=0.0),
                 "composite_score": _metric(composite_score, default=0.0),
                 "strategy_entry_ineligible": strategy_ineligible,
-                "strategy_candidate_avg_returns": candidate_avg_returns,
+                "strategy_candidate_forecasted_pnl": candidate_forecasted_pnl,
                 "fallback_backtest": used_fallback_engine,
                 "highlow_entry_allowed": highlow_allowed_entry,
                 "takeprofit_entry_allowed": takeprofit_allowed_entry,
@@ -3473,9 +3516,6 @@ def main():
         "BTCUSD",
         "ETHUSD",
         "UNIUSD",
-        "SOLUSD",
-        "AVAXUSD",
-        "LINKUSD",
     ]
 
     # Register signal handlers for graceful shutdown

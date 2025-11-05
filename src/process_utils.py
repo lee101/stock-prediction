@@ -44,6 +44,9 @@ def _calculate_next_crypto_bar_time(current_time: Optional[datetime] = None) -> 
 
     Crypto watchers expire at the next analysis run (22:00 EST) to ensure 24/7 coverage.
     This gives 24+ hour watcher lifetime, preventing gaps between analysis runs.
+
+    For crypto (24/7 trading), always ensures at least 24 hours of coverage by using
+    tomorrow's 22:00 EST if today's 22:00 EST is less than 24 hours away.
     """
     now = current_time or datetime.now(timezone.utc)
     # Ensure timezone aware
@@ -53,10 +56,13 @@ def _calculate_next_crypto_bar_time(current_time: Optional[datetime] = None) -> 
     # Next analysis run is at 22:00 EST (initial analysis window)
     next_analysis = now_et.replace(hour=22, minute=0, second=0, microsecond=0)
 
-    # Always use tomorrow's 22:00 to ensure minimum 24h coverage for crypto watchers
-    # This prevents gaps when watchers are created during midnight refresh (19:00-19:30)
-    if next_analysis <= now_et + timedelta(hours=3):
-        # If next 22:00 is within 3 hours, skip to tomorrow for full day coverage
+    # For crypto (24/7 trading), always ensure at least 24 hours of coverage
+    # If today's 22:00 is in the past or less than 24 hours away, use tomorrow's 22:00
+    if next_analysis <= now_et:
+        # If 22:00 already passed today, use tomorrow's 22:00
+        next_analysis += timedelta(days=1)
+    elif next_analysis <= now_et + timedelta(hours=24):
+        # If today's 22:00 is less than 24 hours away, use tomorrow's 22:00 for full day coverage
         next_analysis += timedelta(days=1)
 
     return next_analysis.astimezone(timezone.utc)
