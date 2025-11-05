@@ -1620,7 +1620,7 @@ def resolve_kronos_params(symbol: str) -> dict:
 
 
 def resolve_best_model(symbol: str) -> str:
-    if _in_test_mode():
+    if in_test_mode():
         cached = _model_selection_cache.get(symbol)
         if cached == "toto":
             return cached
