@@ -2,7 +2,7 @@ import numpy as np
 
 # TRADING_FEE = 0.0007 # fee actually changes for small trades - this is for 100k
 # TRADING_FEE = 0.003  # fee actually changes for small trades
-CRYPTO_TRADING_FEE = .0015  # maker fee taker is .0025
+CRYPTO_TRADING_FEE = 0.0015  # maker fee taker is .0025
 # from pytorch_forecasting import MultiHorizonMetric
 
 TRADING_FEE = 0.0005
@@ -11,6 +11,7 @@ TRADING_FEE = 0.0005
 # Try to import torch, but allow graceful fallback for testing
 try:
     import torch
+
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 except ImportError:
     torch = None
@@ -29,9 +30,7 @@ def calculate_trading_profit(scaler, x_test, y_test, y_test_pred):
     percent_movements = ((y_test - last_values) / last_values) + 1
     # those where not scaled properly, scale properly for logging purposes
     last_values_scaled = scaler.inverse_transform(last_values)
-    percent_movements_scaled = (
-                                       (scaler.inverse_transform(y_test) - last_values_scaled) / last_values_scaled
-                               ) + 1
+    percent_movements_scaled = ((scaler.inverse_transform(y_test) - last_values_scaled) / last_values_scaled) + 1
     detached_y_test_pred = y_test_pred
     bought_profits = np.clip(detached_y_test_pred, 0, 1) * percent_movements_scaled
     saved_money = 1 - np.abs(detached_y_test_pred)
@@ -123,18 +122,21 @@ def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred):
     # saved_money = torch.clamp(
     #             1 - torch.abs(y_test_pred), 0, 500
     #         )
-    current_profit = torch.sum(
-        # saved money
-        # saved_money
-        # +
-        # bought
-        bought_profits
-        +
-        # sold
-        sold_profits
-        # fee
-        - (torch.abs(detached_y_test_pred) * TRADING_FEE)
-    ) / detached_y_test_pred.numel()
+    current_profit = (
+        torch.sum(
+            # saved money
+            # saved_money
+            # +
+            # bought
+            bought_profits
+            +
+            # sold
+            sold_profits
+            # fee
+            - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+        )
+        / detached_y_test_pred.numel()
+    )
     # todo random deprecation?
     return current_profit
 
@@ -158,25 +160,28 @@ def calculate_trading_profit_torch_buy_only(scaler, last_values, y_test, y_test_
     # saved_money = torch.clamp(
     #             1 - torch.abs(y_test_pred), 0, 500
     #         )
-    current_profit = torch.sum(
-        # saved money
-        # saved_money
-        # +
-        # bought
-        bought_profits
-        # +
-        # # sold
-        # sold_profits
-        # fee
-        - (torch.abs(detached_y_test_pred) * TRADING_FEE)
-    ) / detached_y_test_pred.numel()
+    current_profit = (
+        torch.sum(
+            # saved money
+            # saved_money
+            # +
+            # bought
+            bought_profits
+            # +
+            # # sold
+            # sold_profits
+            # fee
+            - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+        )
+        / detached_y_test_pred.numel()
+    )
     # todo random deprecation?
     return current_profit
 
 
-def calculate_trading_profit_torch_with_buysell(scaler, last_values, y_test, y_test_pred,
-                                                y_test_high, y_test_high_pred,
-                                                y_test_low, y_test_low_pred):
+def calculate_trading_profit_torch_with_buysell(
+    scaler, last_values, y_test, y_test_pred, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred
+):
     """
     Calculate trading profits
     :param y_test_low_pred:
@@ -188,9 +193,9 @@ def calculate_trading_profit_torch_with_buysell(scaler, last_values, y_test, y_t
     :param y_test_pred:
     :return:
     """
-    calculated_profit_values = calculate_trading_profit_torch_with_buysell_profit_values(y_test, y_test_high,
-                                                                                         y_test_high_pred, y_test_low,
-                                                                                         y_test_low_pred, y_test_pred)
+    calculated_profit_values = calculate_trading_profit_torch_with_buysell_profit_values(
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred
+    )
     current_profit = torch.sum(
         # saved money
         # saved_money
@@ -203,8 +208,9 @@ def calculate_trading_profit_torch_with_buysell(scaler, last_values, y_test, y_t
     return current_profit
 
 
-def calculate_trading_profit_torch_with_buysell_profit_values(y_test, y_test_high, y_test_high_pred, y_test_low,
-                                                              y_test_low_pred, y_test_pred):
+def calculate_trading_profit_torch_with_buysell_profit_values(
+    y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred
+):
     # reshape all args to 1d
     y_test = y_test.view(-1)
     y_test_pred = y_test_pred.view(-1)
@@ -227,7 +233,8 @@ def calculate_trading_profit_torch_with_buysell_profit_values(y_test, y_test_hig
     # find points where y_test_high is greater than y_test_high_pred
     hit_high_points = y_test_high_pred * (y_test_high_pred <= y_test_high) * torch.clip(detached_y_test_pred, 0, 10)
     missed_high_points = bought_profits * (
-            y_test_high_pred > y_test_high)  # already calculated/betted on but not cutoff
+        y_test_high_pred > y_test_high
+    )  # already calculated/betted on but not cutoff
     # print("profit before hit_high_points: ", bought_profits)
     bought_adjusted_profits = hit_high_points + missed_high_points
     # print("profit hit_high_points: ", bought_adjusted_profits)
@@ -235,23 +242,26 @@ def calculate_trading_profit_torch_with_buysell_profit_values(y_test, y_test_hig
     # find points where y_test_low is less than y_test_low_pred
     hit_low_points = (y_test_low_pred * (y_test_low_pred >= y_test_low)) * torch.clip(y_test_pred, -10, 0)
     missed_points = sold_profits * (
-            y_test_low_pred < y_test_low)  # you are left with missed points/others already calculated
+        y_test_low_pred < y_test_low
+    )  # you are left with missed points/others already calculated
     # print("profit before hit_low_points: ", sold_profits)
     adjusted_profits = hit_low_points + missed_points
     # print("profit after hit_low_points: ", adjusted_profits)
     # sold_profits = torch.max(torch.abs(hit_low_points) * (sold_profits > 0).float(), sold_profits)
-    calculated_profit_values = (bought_adjusted_profits
-                                +
-                                # sold
-                                adjusted_profits
-                                # fee
-                                - (torch.abs(detached_y_test_pred) * TRADING_FEE))
+    calculated_profit_values = (
+        bought_adjusted_profits
+        +
+        # sold
+        adjusted_profits
+        # fee
+        - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+    )
     return calculated_profit_values
 
 
-def calculate_trading_profit_torch_with_entry_buysell(scaler, last_values, y_test, y_test_pred,
-                                                      y_test_high, y_test_high_pred,
-                                                      y_test_low, y_test_low_pred):
+def calculate_trading_profit_torch_with_entry_buysell(
+    scaler, last_values, y_test, y_test_pred, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred
+):
     """
     Calculate trading profits
     :param y_test_low_pred:
@@ -263,10 +273,9 @@ def calculate_trading_profit_torch_with_entry_buysell(scaler, last_values, y_tes
     :param y_test_pred:
     :return:
     """
-    calculated_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(y_test, y_test_high,
-                                                                                       y_test_high_pred,
-                                                                                       y_test_low, y_test_low_pred,
-                                                                                       y_test_pred)
+    calculated_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred
+    )
 
     current_profit = torch.sum(
         # saved money
@@ -281,9 +290,7 @@ def calculate_trading_profit_torch_with_entry_buysell(scaler, last_values, y_tes
 
 
 def calculate_profit_torch_with_entry_buysell_profit_values(
-    y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred,
-    *,
-    close_at_eod: bool = False
+    y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, *, close_at_eod: bool = False
 ):
     """
     Calculate trading profits with entry/exit logic.
@@ -304,63 +311,72 @@ def calculate_profit_torch_with_entry_buysell_profit_values(
     y_test_low_pred = torch.clamp(y_test_low_pred, -1, 0)
     y_test_high_pred = torch.clamp(y_test_high_pred, 0, 10)
     percent_movements_scaled = y_test  # not scientific
-    pred_low_to_close_percent_movements = torch.abs(y_test_low_pred - y_test)
-    pred_low_to_high_percent_movements = torch.abs(y_test_low_pred - y_test_high_pred)
-    pred_high_to_close_percent_movements = torch.abs(y_test_high_pred - y_test)
-    pred_high_to_low_percent_movements = torch.abs(y_test_high_pred - y_test_low_pred)
+    # Use SIGNED differences for P&L (exit - entry)
+    pred_low_to_close_movement = y_test - y_test_low_pred  # close - entry_low
+    pred_low_to_high_movement = y_test_high_pred - y_test_low_pred  # exit_high - entry_low
+    pred_high_to_close_movement = y_test - y_test_high_pred  # close - entry_high
+    pred_high_to_low_movement = y_test_low_pred - y_test_high_pred  # exit_low - entry_high
     detached_y_test_pred = y_test_pred
 
     if close_at_eod:
         # Force close at EOD - only use close price, no intraday exits
-        bought_profits = torch.clip(detached_y_test_pred, 0, 10) * pred_low_to_close_percent_movements * (
-            y_test_low_pred > y_test_low)  # miss out on buying if low is lower than low pred
-        # For shorts: negate to get positive profit when price goes down (same sign convention as intraday mode)
-        sold_profits = -1 * torch.clip(y_test_pred, -10, 0) * pred_high_to_close_percent_movements * (
-            y_test_high_pred < y_test_high)  # miss out on selling if high is higher than high pred
+        # Long: enter at low, exit at close. P&L = position * (close - entry)
+        bought_profits = (
+            torch.clip(detached_y_test_pred, 0, 10) * pred_low_to_close_movement * (y_test_low_pred > y_test_low)
+        )  # miss out on buying if low is lower than low pred
+        # Short: enter at high, exit at close. P&L = position * (close - entry)
+        # position is negative, so if price goes up (positive movement), we lose (negative P&L)
+        sold_profits = (
+            torch.clip(y_test_pred, -10, 0) * pred_high_to_close_movement * (y_test_high_pred < y_test_high)
+        )  # miss out on selling if high is higher than high pred
 
         # Trading fee applied when we hit entry levels
         hit_trading_points = torch.logical_or((y_test_low_pred > y_test_low), (y_test_high_pred < y_test_high))
         calculated_profit_values = (
-            bought_profits + sold_profits -
-            ((torch.abs(detached_y_test_pred) * TRADING_FEE) * hit_trading_points)
+            bought_profits + sold_profits - ((torch.abs(detached_y_test_pred) * TRADING_FEE) * hit_trading_points)
         )
     else:
         # Original logic - allow intraday exits at high/low
-        # bought profits are 0 if we don't hit the low or low to close
-        bought_profits = torch.clip(detached_y_test_pred, 0, 10) * pred_low_to_close_percent_movements * (
-                y_test_low_pred > y_test_low)  # miss out on buying if low is lower than low pred
-        sold_profits = torch.clip(y_test_pred, -10, 0) * pred_high_to_close_percent_movements * (
-                y_test_high_pred < y_test_high)  # miss out on selling if high is higher than high pred
-        # saved_money = torch.clamp(
-        #             1 - torch.abs(y_test_pred), 0, 500
-        #         )
-        # / detached_y_test_pred.numel()
-        # for the buys if we follow the y_test_high_pred to sell at, we can instead sell at the high only if its within that day
-        # find points where y_test_high is greater than y_test_high_pred
-        hit_high_points = pred_low_to_high_percent_movements * (y_test_high_pred <= y_test_high) * torch.clip(
-            detached_y_test_pred, 0, 10) * (
-                                  y_test_low_pred > y_test_low)  # miss out on buying if low is lower than low pred
+        # Long: enter at low, close at close price (if high target not hit)
+        bought_profits = (
+            torch.clip(detached_y_test_pred, 0, 10) * pred_low_to_close_movement * (y_test_low_pred > y_test_low)
+        )  # miss out on buying if low is lower than low pred
+        # Short: enter at high, close at close price (if low target not hit)
+        sold_profits = (
+            torch.clip(y_test_pred, -10, 0) * pred_high_to_close_movement * (y_test_high_pred < y_test_high)
+        )  # miss out on selling if high is higher than high pred
+
+        # Long: if we hit the high exit target, use that instead of close
+        hit_high_points = (
+            pred_low_to_high_movement
+            * (y_test_high_pred <= y_test_high)
+            * torch.clip(detached_y_test_pred, 0, 10)
+            * (y_test_low_pred > y_test_low)
+        )  # miss out on buying if low is lower than low pred
         missed_high_points = bought_profits * (
-                y_test_high_pred > y_test_high)  # already calculated/betted on but not cutoff
-        # print("profit before hit_high_points: ", bought_profits)
+            y_test_high_pred > y_test_high
+        )  # already calculated/betted on but not cutoff
         bought_adjusted_profits = hit_high_points + missed_high_points
-        # print("profit hit_high_points: ", bought_adjusted_profits)
-        # bought_adjusted_profits = torch.max(hit_high_points * (bought_adjusted_profits > 0).float(), bought_adjusted_profits)
-        # find points where y_test_low is less than y_test_low_pred
-        hit_low_points = -1 * pred_high_to_low_percent_movements * (y_test_low_pred >= y_test_low) * torch.clip(y_test_pred,
-                                                                                                                -10, 0) * (
-                                 y_test_high_pred < y_test_high)  # miss out on selling if high is higher than high pred
+
+        # Short: if we hit the low exit target, use that instead of close
+        hit_low_points = (
+            pred_high_to_low_movement
+            * (y_test_low_pred >= y_test_low)
+            * torch.clip(y_test_pred, -10, 0)
+            * (y_test_high_pred < y_test_high)
+        )  # miss out on selling if high is higher than high pred
         missed_points = sold_profits * (
-                y_test_low_pred < y_test_low)  # you are left with missed points/others already calculated
-        # print("profit before hit_low_points: ", sold_profits)
+            y_test_low_pred < y_test_low
+        )  # you are left with missed points/others already calculated
         adjusted_profits = hit_low_points + missed_points
         # print("profit after hit_low_points: ", adjusted_profits)
         # sold_profits = torch.max(torch.abs(hit_low_points) * (sold_profits > 0).float(), sold_profits)
         hit_trading_points = torch.logical_and((y_test_high_pred < y_test_high), (y_test_low_pred > y_test_low))
-        calculated_profit_values = (bought_adjusted_profits +
-                                    adjusted_profits -
-                                    ((torch.abs(detached_y_test_pred) * TRADING_FEE) * hit_trading_points)  # fee
-                                    )
+        calculated_profit_values = (
+            bought_adjusted_profits
+            + adjusted_profits
+            - ((torch.abs(detached_y_test_pred) * TRADING_FEE) * hit_trading_points)  # fee
+        )
 
     return calculated_profit_values
 
@@ -451,12 +467,12 @@ def get_trading_profits_list(scaler, last_values, y_test, y_test_pred):
         # saved_money
         # +
         # bought
-            bought_profits
-            +
-            # sold
-            sold_profits
-            # fee
-            - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+        bought_profits
+        +
+        # sold
+        sold_profits
+        # fee
+        - (torch.abs(detached_y_test_pred) * TRADING_FEE)
     )
 
     # todo random deprecation?
@@ -464,11 +480,11 @@ def get_trading_profits_list(scaler, last_values, y_test, y_test_pred):
 
 
 def percent_movements_augment(to_scale_tensor):
-    """ scales a tensor so that the first element is baseline 1 and subsequent elements represent percentage change from the previous value"""
+    """scales a tensor so that the first element is baseline 1 and subsequent elements represent percentage change from the previous value"""
     arr = np.asarray(to_scale_tensor, dtype=float).flatten()
     values = [1.0]
     if arr.size > 1:
-        from decimal import Decimal, ROUND_DOWN
+        from decimal import ROUND_DOWN, Decimal
 
         diffs = (arr[1:] - arr[:-1]) / arr[:-1]
         for val in diffs:
@@ -478,7 +494,7 @@ def percent_movements_augment(to_scale_tensor):
 
 
 def percent_movements_augment_to(to_scale_tensor, movement_to_tensor):
-    """ percent changes moving from to scale to movement to"""
+    """percent changes moving from to scale to movement to"""
     output = (movement_to_tensor - to_scale_tensor) / to_scale_tensor
     return output
     # return (to_scale_tensor - to_scale_tensor.shift(1)) / to_scale_tensor.shift(1)
@@ -535,9 +551,10 @@ def calculate_takeprofit_torch_sq(scaler, y_ndhalp_test, y_test, y_test_pred):
     where_over = (y_test_pred >= y_ndhalp_test).float()
     under_sold_prices = y_test_pred * where_under
     hodl_prices = where_over * y_test
-    all_profits_sq = (under_sold_prices + hodl_prices)
-    where_loosing = torch.sum(
-        (all_profits_sq < 0).float()) / y_test.numel()  # we want to minimize loosing money add this weighted rate in
+    all_profits_sq = under_sold_prices + hodl_prices
+    where_loosing = (
+        torch.sum((all_profits_sq < 0).float()) / y_test.numel()
+    )  # we want to minimize loosing money add this weighted rate in
     # current_profit = torch.sum(under_sold_prices)
     # current_end_profits = torch.sum(hodl_prices)  # we predicted to sell higher so we get the real end value
     return (torch.sum(all_profits_sq) / y_test.numel()) * where_loosing  # mul by loosing rate
