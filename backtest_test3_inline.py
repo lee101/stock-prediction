@@ -395,6 +395,7 @@ def evaluate_maxdiff_strategy(
             trading_fee=trading_fee,
             maxiter=50,
             popsize=10,
+            workers=-1,
         )
 
         final_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
@@ -607,6 +608,7 @@ def evaluate_maxdiff_always_on_strategy(
         profit_calculator_alwayson,
         maxiter=30,
         popsize=8,
+        workers=1,  # callback function not picklable, use sequential
     )
 
     # Compute final returns with best multipliers
