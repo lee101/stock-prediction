@@ -59,6 +59,7 @@ from src.trade_stock_env_utils import (
     _drawdown_cap_for,
     _drawdown_resume_for,
     _get_env_float,
+    _get_trend_stat,
     _increment_symbol_entry,
     _kelly_drawdown_scale,
     _lookup_threshold,

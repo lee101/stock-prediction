@@ -954,7 +954,7 @@ def test_analyze_symbols_strategy_selection(mock_backtest, mock_snapshot, mock_t
             "predicted_close": [105],
             "predicted_high": [99],
             "predicted_low": [104],
-            "expected_strategy": "simple",
+            "expected_strategy": "all_signals",  # Changed: inverted high/low predictions, simple rejected
         },
         {
             "simple_strategy_return": [-0.01],
@@ -1140,7 +1140,7 @@ def test_manage_positions_min_strategy_return_gating(monkeypatch):
     mocks["ramp"].assert_not_called()
 
 
-@patch("trade_stock_e2e._load_trend_summary", return_value={"AAPL": {"pnl": -6000.0}})
+@patch("src.trade_stock_env_utils._load_trend_summary", return_value={"AAPL": {"pnl": -6000.0}})
 def test_manage_positions_trend_pnl_gating(mock_summary, monkeypatch):
     monkeypatch.setenv("MARKETSIM_TREND_PNL_SUSPEND_MAP", "AAPL:-5000")
     current_picks = {
@@ -1164,7 +1164,7 @@ def test_manage_positions_trend_pnl_gating(mock_summary, monkeypatch):
     mock_summary.assert_called()
 
 
-@patch("trade_stock_e2e._load_trend_summary", return_value={"AAPL": {"pnl": -2000.0}})
+@patch("src.trade_stock_env_utils._load_trend_summary", return_value={"AAPL": {"pnl": -2000.0}})
 def test_manage_positions_trend_pnl_resume(mock_summary, monkeypatch):
     monkeypatch.setenv("MARKETSIM_TREND_PNL_SUSPEND_MAP", "AAPL:-5000")
     monkeypatch.setenv("MARKETSIM_TREND_PNL_RESUME_MAP", "AAPL:-3000")
