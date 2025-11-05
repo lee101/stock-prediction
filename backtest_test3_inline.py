@@ -248,6 +248,7 @@ def evaluate_maxdiff_strategy(
     trading_days_per_year: int,
     is_crypto: bool = False,
     skip_invalid_forecasts: bool = True,
+    close_at_eod: Optional[bool] = None,
 ) -> Tuple[StrategyEvaluation, np.ndarray, Dict[str, object]]:
     close_actual = torch.as_tensor(
         last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
@@ -278,6 +279,7 @@ def evaluate_maxdiff_strategy(
             "maxdiff_trades_total": 0,
             "maxdiff_invalid_forecasts": 0,
             "maxdiff_valid_forecasts": 0,
+            "maxdiff_close_at_eod": False,
         }
 
     if validation_len == 0:
@@ -377,39 +379,64 @@ def evaluate_maxdiff_strategy(
         if skip_invalid_forecasts:
             maxdiff_trades = torch.where(valid_forecast_mask, maxdiff_trades, torch.zeros_like(maxdiff_trades))
 
-        base_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
-            close_actual,
-            high_actual,
-            high_pred,
-            low_actual,
-            low_pred,
-            maxdiff_trades,
-            trading_fee=trading_fee,
-        )
+        # Optimize close_at_eod policy by trying both options (or use specified value)
+        best_total_profit = float("-inf")
+        best_close_at_eod = False
+        best_high_multiplier = 0.0
+        best_low_multiplier = 0.0
+        base_profit_values = None
+        final_profit_values = None
 
-        # Optimize both multipliers jointly using differential_evolution
-        best_high_multiplier, best_low_multiplier, best_profit = optimize_entry_exit_multipliers(
-            close_actual,
-            maxdiff_trades,
-            high_actual,
-            high_pred,
-            low_actual,
-            low_pred,
-            trading_fee=trading_fee,
-            maxiter=50,
-            popsize=10,
-            workers=1,  # sequential to avoid file descriptor issues
-        )
+        # If close_at_eod is specified, only try that value; otherwise optimize
+        close_at_eod_candidates = [close_at_eod] if close_at_eod is not None else [False, True]
 
-        final_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
-            close_actual,
-            high_actual,
-            high_pred + best_high_multiplier,
-            low_actual,
-            low_pred + best_low_multiplier,
-            maxdiff_trades,
-            trading_fee=trading_fee,
-        )
+        for close_at_eod_candidate in close_at_eod_candidates:
+            candidate_base_profit = calculate_profit_torch_with_entry_buysell_profit_values(
+                close_actual,
+                high_actual,
+                high_pred,
+                low_actual,
+                low_pred,
+                maxdiff_trades,
+                close_at_eod=close_at_eod_candidate,
+                trading_fee=trading_fee,
+            )
+
+            # Optimize multipliers for this close_at_eod policy
+            high_mult, low_mult, profit = optimize_entry_exit_multipliers(
+                close_actual,
+                maxdiff_trades,
+                high_actual,
+                high_pred,
+                low_actual,
+                low_pred,
+                close_at_eod=close_at_eod_candidate,
+                trading_fee=trading_fee,
+                maxiter=50,
+                popsize=10,
+                workers=1,  # sequential to avoid file descriptor issues
+            )
+
+            candidate_final_profit = calculate_profit_torch_with_entry_buysell_profit_values(
+                close_actual,
+                high_actual,
+                high_pred + high_mult,
+                low_actual,
+                low_pred + low_mult,
+                maxdiff_trades,
+                close_at_eod=close_at_eod_candidate,
+                trading_fee=trading_fee,
+            )
+
+            total_profit = float(candidate_final_profit.sum().item())
+
+            if total_profit > best_total_profit:
+                best_total_profit = total_profit
+                best_close_at_eod = close_at_eod_candidate
+                best_high_multiplier = high_mult
+                best_low_multiplier = low_mult
+                base_profit_values = candidate_base_profit.detach().clone()
+                final_profit_values = candidate_final_profit.detach().clone()
 
     baseline_returns_np = base_profit_values.detach().cpu().numpy().astype(float, copy=False)
     baseline_eval = _evaluate_daily_returns(baseline_returns_np, trading_days_per_year)
@@ -433,11 +460,12 @@ def evaluate_maxdiff_strategy(
     )
 
     logger.info(
-        "MaxDiff: baseline=%.4f optimized=%.4f (mult_h=%.4f mult_l=%.4f) → adjusted=%.4f",
+        "MaxDiff: baseline=%.4f optimized=%.4f (mult_h=%.4f mult_l=%.4f close_at_eod=%s) → adjusted=%.4f",
         baseline_return,
         optimized_return,
         best_high_multiplier,
         best_low_multiplier,
+        best_close_at_eod,
         adjusted_return,
     )
 
@@ -478,6 +506,7 @@ def evaluate_maxdiff_strategy(
         "maxdiff_trades_total": total_active_trades,
         "maxdiff_invalid_forecasts": num_invalid,
         "maxdiff_valid_forecasts": num_valid,
+        "maxdiff_close_at_eod": best_close_at_eod,
     }
 
     return evaluation, daily_returns_np, metadata
@@ -490,7 +519,7 @@ def evaluate_maxdiff_always_on_strategy(
     trading_fee: float,
     trading_days_per_year: int,
     is_crypto: bool = False,
-    close_at_eod: bool = False,
+    close_at_eod: Optional[bool] = None,
 ) -> Tuple[StrategyEvaluation, np.ndarray, Dict[str, object]]:
     close_actual = torch.as_tensor(
         last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
@@ -518,6 +547,7 @@ def evaluate_maxdiff_always_on_strategy(
             "maxdiffalwayson_filled_sell_trades": 0,
             "maxdiffalwayson_trades_total": 0,
             "maxdiffalwayson_trade_bias": 0.0,
+            "maxdiffalwayson_close_at_eod": False,
         }
 
     if validation_len == 0 or len(simulation_data) < validation_len + 2:
@@ -579,48 +609,70 @@ def evaluate_maxdiff_always_on_strategy(
     buy_indicator = torch.ones_like(close_actual)
     sell_indicator = torch.zeros_like(close_actual) if is_crypto else -torch.ones_like(close_actual)
 
-    # Optimize both multipliers jointly using optimizer
-    best_high_multiplier, best_low_multiplier, _ = optimize_always_on_multipliers(
-        close_actual,
-        buy_indicator,
-        sell_indicator,
-        high_actual,
-        high_pred,
-        low_actual,
-        low_pred,
-        close_at_eod=close_at_eod,
-        trading_fee=trading_fee,
-        is_crypto=is_crypto,
-        maxiter=30,
-        popsize=8,
-        workers=1,  # sequential to avoid file descriptor issues
-    )
+    # Optimize close_at_eod policy by trying both options (or use specified value)
+    best_total_profit = float("-inf")
+    best_close_at_eod = False
+    best_high_multiplier = 0.0
+    best_low_multiplier = 0.0
+    best_buy_returns_tensor = None
+    best_sell_returns_tensor = None
 
-    # Compute final returns with best multipliers
-    with torch.no_grad():
-        best_buy_returns_tensor = calculate_profit_torch_with_entry_buysell_profit_values(
+    # If close_at_eod is specified, only try that value; otherwise optimize
+    close_at_eod_candidates = [close_at_eod] if close_at_eod is not None else [False, True]
+
+    for close_at_eod_candidate in close_at_eod_candidates:
+        # Optimize multipliers for this close_at_eod policy
+        high_mult, low_mult, _ = optimize_always_on_multipliers(
             close_actual,
-            high_actual,
-            high_pred + best_high_multiplier,
-            low_actual,
-            low_pred + best_low_multiplier,
             buy_indicator,
-            close_at_eod=close_at_eod,
+            sell_indicator,
+            high_actual,
+            high_pred,
+            low_actual,
+            low_pred,
+            close_at_eod=close_at_eod_candidate,
             trading_fee=trading_fee,
+            is_crypto=is_crypto,
+            maxiter=30,
+            popsize=8,
+            workers=1,  # sequential to avoid file descriptor issues
         )
-        if is_crypto:
-            best_sell_returns_tensor = torch.zeros_like(best_buy_returns_tensor)
-        else:
-            best_sell_returns_tensor = calculate_profit_torch_with_entry_buysell_profit_values(
+
+        # Compute returns with these multipliers
+        with torch.no_grad():
+            buy_returns = calculate_profit_torch_with_entry_buysell_profit_values(
                 close_actual,
                 high_actual,
-                high_pred + best_high_multiplier,
+                high_pred + high_mult,
                 low_actual,
-                low_pred + best_low_multiplier,
-                sell_indicator,
-                close_at_eod=close_at_eod,
+                low_pred + low_mult,
+                buy_indicator,
+                close_at_eod=close_at_eod_candidate,
                 trading_fee=trading_fee,
             )
+            if is_crypto:
+                sell_returns = torch.zeros_like(buy_returns)
+            else:
+                sell_returns = calculate_profit_torch_with_entry_buysell_profit_values(
+                    close_actual,
+                    high_actual,
+                    high_pred + high_mult,
+                    low_actual,
+                    low_pred + low_mult,
+                    sell_indicator,
+                    close_at_eod=close_at_eod_candidate,
+                    trading_fee=trading_fee,
+                )
+
+            total_profit = float((buy_returns + sell_returns).sum().item())
+
+            if total_profit > best_total_profit:
+                best_total_profit = total_profit
+                best_close_at_eod = close_at_eod_candidate
+                best_high_multiplier = high_mult
+                best_low_multiplier = low_mult
+                best_buy_returns_tensor = buy_returns.detach().clone()
+                best_sell_returns_tensor = sell_returns.detach().clone()
 
     best_state = (
         best_high_multiplier,
@@ -671,11 +723,12 @@ def evaluate_maxdiff_always_on_strategy(
     )
 
     logger.info(
-        "MaxDiffAlwaysOn: baseline=%.4f optimized=%.4f (mult_h=%.4f mult_l=%.4f) → adjusted=%.4f",
+        "MaxDiffAlwaysOn: baseline=%.4f optimized=%.4f (mult_h=%.4f mult_l=%.4f close_at_eod=%s) → adjusted=%.4f",
         baseline_eval.total_return,
         optimized_eval.total_return,
         best_high_multiplier,
         best_low_multiplier,
+        best_close_at_eod,
         adjusted_return,
     )
 
@@ -710,6 +763,7 @@ def evaluate_maxdiff_always_on_strategy(
         "maxdiffalwayson_filled_sell_trades": sell_fills,
         "maxdiffalwayson_trades_total": total_fills,
         "maxdiffalwayson_trade_bias": trade_bias,
+        "maxdiffalwayson_close_at_eod": best_close_at_eod,
     }
     return evaluation, daily_returns_np, metadata
 

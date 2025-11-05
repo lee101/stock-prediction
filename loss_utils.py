@@ -276,6 +276,7 @@ def calculate_trading_profit_torch_with_entry_buysell(
     y_test_high_pred,
     y_test_low,
     y_test_low_pred,
+    close_at_eod=False,
     trading_fee=None,
 ):
     """
@@ -287,11 +288,12 @@ def calculate_trading_profit_torch_with_entry_buysell(
     :param last_values:
     :param y_test:
     :param y_test_pred:
+    :param close_at_eod: If True, force close at end-of-day close price
     :param trading_fee: Fee per trade (default: TRADING_FEE)
     :return:
     """
     calculated_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
-        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, trading_fee=trading_fee
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, close_at_eod=close_at_eod, trading_fee=trading_fee
     )
 
     current_profit = torch.sum(
