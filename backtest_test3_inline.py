@@ -84,7 +84,6 @@ from disk_cache import disk_cache
 from hyperparamstore import load_best_config, load_close_policy, load_model_selection, save_close_policy
 from loss_utils import (
     calculate_profit_torch_with_entry_buysell_profit_values,
-    calculate_trading_profit_torch_with_entry_buysell,
 )
 from scripts.alpaca_cli import set_strategy_for_symbol
 from src.fixtures import crypto_symbols
@@ -384,33 +383,16 @@ def evaluate_maxdiff_strategy(
         )
 
         # Optimize both multipliers jointly using differential_evolution
-        def objective(multipliers):
-            high_mult, low_mult = multipliers
-            profit = calculate_trading_profit_torch_with_entry_buysell(
-                None,
-                None,
-                close_actual,
-                maxdiff_trades,
-                high_actual,
-                high_pred + float(high_mult),
-                low_actual,
-                low_pred + float(low_mult),
-            ).item()
-            return -profit  # minimize negative profit = maximize profit
-
-        result = differential_evolution(
-            objective,
-            bounds=[(-0.03, 0.03), (-0.03, 0.03)],
+        best_high_multiplier, best_low_multiplier, best_profit = optimize_entry_exit_multipliers(
+            close_actual,
+            maxdiff_trades,
+            high_actual,
+            high_pred,
+            low_actual,
+            low_pred,
             maxiter=50,
             popsize=10,
-            atol=1e-5,
-            seed=42,
-            workers=1,
         )
-
-        best_high_multiplier = float(result.x[0])
-        best_low_multiplier = float(result.x[1])
-        best_profit = float(-result.fun)
 
         final_profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
             close_actual,
@@ -590,8 +572,7 @@ def evaluate_maxdiff_always_on_strategy(
     sell_indicator = torch.zeros_like(close_actual) if is_crypto else -torch.ones_like(close_actual)
 
     # Optimize both multipliers jointly using differential_evolution
-    def objective_alwayson(multipliers):
-        high_mult, low_mult = multipliers
+    def profit_calculator_alwayson(high_mult, low_mult):
         with torch.no_grad():
             buy_returns = calculate_profit_torch_with_entry_buysell_profit_values(
                 close_actual,
@@ -603,7 +584,7 @@ def evaluate_maxdiff_always_on_strategy(
                 close_at_eod=close_at_eod,
             )
             if is_crypto:
-                total_profit = float(buy_returns.sum().item())
+                return float(buy_returns.sum().item())
             else:
                 sell_returns = calculate_profit_torch_with_entry_buysell_profit_values(
                     close_actual,
@@ -614,21 +595,13 @@ def evaluate_maxdiff_always_on_strategy(
                     sell_indicator,
                     close_at_eod=close_at_eod,
                 )
-                total_profit = float(buy_returns.sum().item() + sell_returns.sum().item())
-        return -total_profit  # minimize negative = maximize
+                return float(buy_returns.sum().item() + sell_returns.sum().item())
 
-    result = differential_evolution(
-        objective_alwayson,
-        bounds=[(-0.03, 0.03), (-0.03, 0.03)],
+    best_high_multiplier, best_low_multiplier, _ = optimize_entry_exit_multipliers_with_callback(
+        profit_calculator_alwayson,
         maxiter=30,
         popsize=8,
-        atol=1e-5,
-        seed=42,
-        workers=1,
     )
-
-    best_high_multiplier = float(result.x[0])
-    best_low_multiplier = float(result.x[1])
 
     # Compute final returns with best multipliers
     with torch.no_grad():
