@@ -2311,9 +2311,18 @@ def backtest_forecasts(symbol, num_simulations=50):
                     results_df[forecast_col] = forecasted
                     logger.info(f"{symbol} {forecast_col}: {forecasted:.6f}")
                 else:
-                    results_df[forecast_col] = 0.0
+                    # Fallback to avg_return when no valid series data
+                    avg_return = results_df[pnl_col].mean() if pnl_col in results_df.columns else 0.0
+                    results_df[forecast_col] = avg_return
+                    logger.warning(
+                        f"{symbol} {forecast_col}: No valid PnL series data, using avg_return fallback={avg_return:.6f}"
+                    )
             else:
+                # Column doesn't exist - this should rarely happen
                 results_df[forecast_col] = 0.0
+                logger.warning(
+                    f"{symbol} {forecast_col}: Column {pnl_col} not found, defaulting to 0.0"
+                )
 
         # Log final average metrics
         tb_writer.add_scalar(
