@@ -171,7 +171,8 @@ _TRUTHY = TRUTHY_ENV_VALUES
 
 SIMPLIFIED_MODE = os.getenv("MARKETSIM_SIMPLE_MODE", "0").strip().lower() in _TRUTHY
 
-ENABLE_PROBE_TRADES = os.getenv("MARKETSIM_ENABLE_PROBE_TRADES", "1").strip().lower() in _TRUTHY
+ENABLE_KELLY_SIZING = os.getenv("MARKETSIM_ENABLE_KELLY_SIZING", "0").strip().lower() in _TRUTHY
+ENABLE_PROBE_TRADES = os.getenv("MARKETSIM_ENABLE_PROBE_TRADES", "0").strip().lower() in _TRUTHY
 MAX_MAXDIFFS = coerce_positive_int(
     os.getenv("MARKETSIM_MAX_MAXDIFFS"),
     15,
@@ -713,6 +714,45 @@ def _calculate_total_exposure_value(positions) -> float:
             market_value = 0.0
         total_value += abs(market_value)
     return total_value
+
+
+def _get_simple_qty(symbol: str, entry_price: float, positions) -> float:
+    """
+    Simple sizing that spreads global risk over 2 positions.
+
+    For stocks: (buying_power * global_risk_threshold / 2) / entry_price
+    For crypto: (equity / 2) / entry_price (no leverage)
+    """
+    from src.portfolio_risk import get_global_risk_threshold
+    from math import floor
+
+    if entry_price <= 0:
+        return 0.0
+
+    equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
+    buying_power = float(getattr(alpaca_wrapper, "total_buying_power", 0.0) or 0.0)
+    global_risk = get_global_risk_threshold()
+
+    if symbol in all_crypto_symbols:
+        # For crypto: just use half of equity (no leverage)
+        qty = (equity / 2.0) / entry_price
+        # Round down to 3 decimal places for crypto
+        qty = floor(qty * 1000) / 1000.0
+    else:
+        # For stocks: use half of (buying_power * global_risk_threshold)
+        qty = (buying_power * global_risk / 2.0) / entry_price
+        # Round down to whole number for stocks
+        qty = floor(qty)
+
+    if qty <= 0:
+        return 0.0
+
+    logger.debug(
+        "Simple sizing for %s: qty=%.4f (equity=%.2f, buying_power=%.2f, global_risk=%.3f)",
+        symbol, qty, equity, buying_power, global_risk
+    )
+
+    return qty
 
 
 def _calculate_total_exposure_pct(positions) -> float:
@@ -2697,15 +2737,29 @@ def manage_positions(
 
         if bid_price is not None and ask_price is not None:
             entry_price = ask_price if data["side"] == "buy" else bid_price
-            computed_qty = get_qty(symbol, entry_price, positions)
-            if computed_qty is None:
-                computed_qty = 0.0
+
             if effective_probe:
                 target_qty = ensure_lower_bound(min_trade_qty, 0.0, default=min_trade_qty)
                 logger.info(f"{symbol}: Probe sizing fixed at minimum tradable quantity {target_qty}")
                 should_enter = not position_exists or not correct_side
                 needs_size_increase = False
+            elif not ENABLE_KELLY_SIZING and data.get("strategy") not in MAXDIFF_STRATEGIES:
+                # Simple sizing: spread global risk over 2 positions
+                target_qty = _get_simple_qty(symbol, entry_price, positions)
+                if target_qty < min_trade_qty:
+                    target_qty = min_trade_qty
+                target_value = target_qty * entry_price
+                logger.info(
+                    f"{symbol}: Simple sizing - Current position: {current_position_size} qty (${current_position_value:.2f}), "
+                    f"Target: {target_qty} qty (${target_value:.2f})"
+                )
+                should_enter = not position_exists or not correct_side
+                needs_size_increase = False
             else:
+                # Kelly sizing or MaxDiff strategies
+                computed_qty = get_qty(symbol, entry_price, positions)
+                if computed_qty is None:
+                    computed_qty = 0.0
                 base_qty = computed_qty
                 # MaxDiff-family strategies use full sizing like in backtest, not Kelly
                 if data.get("strategy") in MAXDIFF_STRATEGIES:
