@@ -187,7 +187,6 @@ ENTRY_STRATEGY_PROFIT_LOOKUP = {
     "entry": "entry_takeprofit_profit",
     "entry_takeprofit": "entry_takeprofit_profit",
     "simple": "entry_takeprofit_profit",
-    "ci_guard": "entry_takeprofit_profit",
     "all_signals": "entry_takeprofit_profit",
     "takeprofit": "takeprofit_profit",
 }

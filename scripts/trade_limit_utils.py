@@ -8,7 +8,7 @@ EntryLimitKey = Tuple[Optional[str], Optional[str]]
 
 
 def parse_trade_limit_map(raw: Optional[str], *, verbose: bool = True) -> Dict[str, float]:
-    """Parse map strings like 'NVDA@ci_guard:10,AAPL:22' into symbol→limit."""
+    """Parse map strings like 'NVDA@maxdiff:10,AAPL:22' into symbol→limit."""
     overrides: Dict[str, float] = {}
     if not raw:
         return overrides
