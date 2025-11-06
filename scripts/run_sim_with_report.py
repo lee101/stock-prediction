@@ -95,7 +95,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Comma-separated overrides for per-symbol trade limits (e.g., 'NVDA:6,MSFT:20' "
-        "or entries with strategy tags like 'NVDA@ci_guard:6').",
+        "or entries with strategy tags like 'NVDA@maxdiff:6').",
     )
     parser.add_argument(
         "--fail-on-alert",

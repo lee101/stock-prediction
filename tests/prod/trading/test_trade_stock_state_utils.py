@@ -162,8 +162,8 @@ def test_active_trade_record_round_trip(dummy_store):
     fetched = state_utils.get_active_trade_record(loader, "NVDA", "buy")
     assert fetched == record
 
-    state_utils.tag_active_trade_strategy(loader, "NVDA", "buy", "ci_guard")
-    assert store.data[key]["entry_strategy"] == "ci_guard"
+    state_utils.tag_active_trade_strategy(loader, "NVDA", "buy", "highlow")
+    assert store.data[key]["entry_strategy"] == "highlow"
 
     removed = state_utils.pop_active_trade_record(loader, "NVDA", "buy")
     assert removed["mode"] == "probe"
