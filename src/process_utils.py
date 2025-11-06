@@ -180,7 +180,7 @@ def _persist_watcher_metadata(path: Path, payload: dict) -> None:
             json.dump(payload, handle, indent=2, sort_keys=True)
         temp_path.replace(path)
     except Exception as exc:  # pragma: no cover - best effort logging
-        logger.warning("Failed to persist watcher metadata %s: %s", path, exc)
+        logger.warning(f"Failed to persist watcher metadata {path}: {exc}")
 
 
 def _load_watcher_metadata(path: Path) -> Optional[dict]:
@@ -190,7 +190,7 @@ def _load_watcher_metadata(path: Path) -> Optional[dict]:
         with path.open("r", encoding="utf-8") as handle:
             return json.load(handle)
     except Exception as exc:  # pragma: no cover - best effort logging
-        logger.warning("Failed to read watcher metadata %s: %s", path, exc)
+        logger.warning(f"Failed to read watcher metadata {path}: {exc}")
         return None
 
 
@@ -260,11 +260,11 @@ def _stop_existing_watcher(config_path: Path, *, reason: str) -> None:
     if pid:
         try:
             os.kill(pid, signal.SIGTERM)
-            logger.info("Terminated prior maxdiff watcher at %s (pid=%s)", config_path.name, pid)
+            logger.info(f"Terminated prior maxdiff watcher at {config_path.name} (pid={pid})")
         except ProcessLookupError:
-            logger.debug("Watcher pid %s already exited for %s", pid, config_path)
+            logger.debug(f"Watcher pid {pid} already exited for {config_path}")
         except Exception as exc:  # pragma: no cover - best effort logging
-            logger.warning("Failed to terminate watcher %s pid=%s: %s", config_path, pid, exc)
+            logger.warning(f"Failed to terminate watcher {config_path} pid={pid}: {exc}")
 
     if metadata.get("active") or pid:
         metadata["active"] = False
@@ -377,12 +377,8 @@ def _stop_conflicting_exit_watchers(
             continue
 
         logger.info(
-            "Terminating conflicting %s %s exit watcher at %s (takeprofit %.8f) in favor of %.8f",
-            symbol,
-            side,
-            path.name,
-            float(existing_tp),
-            float(new_takeprofit_price),
+            f"Terminating conflicting {symbol} {side} exit watcher at {path.name} "
+            f"(takeprofit {float(existing_tp):.8f}) in favor of {float(new_takeprofit_price):.8f}"
         )
         _stop_existing_watcher(path, reason="superseded_exit_watcher")
 
