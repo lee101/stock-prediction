@@ -430,7 +430,6 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
             ("highlow", strategy_returns.get("highlow"), 3),
             ("maxdiff", strategy_returns.get("maxdiff"), 3),
             ("maxdiffalwayson", strategy_returns.get("maxdiffalwayson"), 3),
-            ("ci_guard", strategy_returns.get("ci_guard"), 3),
             ("unprofit", data.get("unprofit_shutdown_return"), 3),
             ("composite", data.get("composite_score"), 3),
         ]
@@ -1220,15 +1219,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "maxdiff": _mean_return("maxdiff_annual_return", "maxdiff_return"),
                 "maxdiffalwayson": _mean_return("maxdiffalwayson_annual_return", "maxdiffalwayson_return"),
             }
-            if "ci_guard_return" in backtest_df.columns:
-                strategy_returns_daily["ci_guard"] = _mean_return(
-                    "ci_guard_avg_daily_return",
-                    "ci_guard_return",
-                )
-                strategy_returns_annual["ci_guard"] = _mean_return(
-                    "ci_guard_annual_return",
-                    "ci_guard_return",
-                )
             strategy_returns = strategy_returns_daily
             strategy_recent_sums: Dict[str, Optional[float]] = {}
 
@@ -1251,8 +1241,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "maxdiff": ("maxdiff_avg_daily_return", "maxdiff_return"),
                 "maxdiffalwayson": ("maxdiffalwayson_avg_daily_return", "maxdiffalwayson_return"),
             }
-            if "ci_guard" in strategy_returns:
-                _strategy_series_map["ci_guard"] = ("ci_guard_avg_daily_return", "ci_guard_return")
 
             unprofit_return = 0.0
             unprofit_sharpe = 0.0
@@ -1473,12 +1461,21 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             # Helper to get forecasted PnL from last_prediction
             def _get_forecasted_pnl(strategy_name: str) -> float:
-                """Get forecasted PnL for a strategy, falling back to avg_return if not available."""
+                """Get forecasted PnL for a strategy, falling back to avg_return if not available.
+
+                The forecasted PnL is computed by Toto model on validation set and represents
+                forward-looking performance. If unavailable, we fall back to historical avg_return.
+                """
                 forecast_key = f"{strategy_name}_forecasted_pnl"
-                forecasted = coerce_numeric(last_prediction.get(forecast_key), default=None)
-                if forecasted is not None:
-                    return forecasted
-                # Fallback to avg_return if forecasted PnL not available
+                # Check if key exists in last_prediction (pandas Series)
+                if forecast_key in last_prediction.index:
+                    forecast_value = last_prediction.get(forecast_key)
+                    # Only use if it's a valid numeric value (not None, not NaN)
+                    if forecast_value is not None and not (isinstance(forecast_value, float) and math.isnan(forecast_value)):
+                        forecasted = coerce_numeric(forecast_value, default=0.0)
+                        return forecasted
+                # Fallback to avg_return if forecasted PnL not available or invalid
+                # This should rarely happen now that all strategies compute forecasted PnL
                 return strategy_returns.get(strategy_name, 0.0)
 
             strategy_stats: Dict[str, Dict[str, float]] = {
@@ -1531,15 +1528,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     "max_drawdown": _mean_column("maxdiffalwayson_max_drawdown"),
                 },
             }
-            if "ci_guard" in strategy_returns:
-                strategy_stats["ci_guard"] = {
-                    "avg_return": strategy_returns.get("ci_guard", 0.0),
-                    "forecasted_pnl": _get_forecasted_pnl("ci_guard"),
-                    "annual_return": strategy_returns_annual.get("ci_guard", 0.0),
-                    "sharpe": _mean_column("ci_guard_sharpe"),
-                    "turnover": _mean_column("ci_guard_turnover"),
-                    "max_drawdown": _mean_column("ci_guard_max_drawdown"),
-                }
 
             for strat_name, (primary_col, fallback_col) in _strategy_series_map.items():
                 strategy_recent_sums[strat_name] = _recent_return_sum(primary_col, fallback_col)
@@ -1714,7 +1702,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             expected_move_pct = safe_divide(predicted_movement, close_price, default=0.0)
             simple_return = strategy_returns.get("simple", 0.0)
-            ci_guard_return = strategy_returns.get("ci_guard", 0.0)
             takeprofit_return = strategy_returns.get("takeprofit", 0.0)
             highlow_return = strategy_returns.get("highlow", 0.0)
             maxdiff_return = strategy_returns.get("maxdiff", 0.0)
@@ -1722,9 +1709,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             simple_sharpe = 0.0
             if "simple_strategy_sharpe" in backtest_df.columns:
                 simple_sharpe = coerce_numeric(backtest_df["simple_strategy_sharpe"].mean(), default=0.0)
-            ci_guard_sharpe = 0.0
-            if "ci_guard_sharpe" in backtest_df.columns:
-                ci_guard_sharpe = coerce_numeric(backtest_df["ci_guard_sharpe"].mean(), default=0.0)
             kronos_profit_raw = last_prediction.get("closemin_loss_trading_profit")
             kronos_profit = coerce_numeric(kronos_profit_raw) if kronos_profit_raw is not None else 0.0
             if is_kronos_only_mode():
@@ -1735,8 +1719,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 kronos_annual = kronos_profit * trading_days_per_year
                 if kronos_annual > annual_return:
                     annual_return = kronos_annual
-            core_return = max(simple_return, ci_guard_return, 0.0)
-            core_sharpe = max(simple_sharpe, ci_guard_sharpe, 0.0)
+            core_return = max(simple_return, 0.0)
+            core_sharpe = max(simple_sharpe, 0.0)
             price_skill = core_return + 0.25 * core_sharpe + 0.15 * max(kronos_profit, 0.0)
             highlow_allowed_entry = ALLOW_HIGHLOW_ENTRY and ("highlow" not in strategy_ineligible)
             takeprofit_allowed_entry = ALLOW_TAKEPROFIT_ENTRY and ("takeprofit" not in strategy_ineligible)
@@ -1856,7 +1840,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 effective_highlow,
                 effective_maxdiff,
                 effective_maxdiffalwayson,
-                ci_guard_return,
                 kronos_contrib,
                 0.0,
             )
@@ -2009,8 +1992,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "strategy_recent_sums": strategy_recent_sums,
                 "recent_return_sum": strategy_recent_sums.get(best_strategy),
                 "simple_return": _metric(simple_return, default=0.0),
-                "ci_guard_return": _metric(ci_guard_return, default=0.0),
-                "ci_guard_sharpe": _metric(ci_guard_sharpe, default=0.0),
                 "maxdiff_return": _metric(maxdiff_return, default=0.0),
                 "maxdiffalwayson_return": _metric(maxdiffalwayson_return, default=0.0),
                 "unprofit_shutdown_return": _metric(unprofit_return, default=0.0),
@@ -2173,8 +2154,10 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 }
                 _save_maxdiff_plan(symbol, maxdiff_plan)
 
-        except Exception:
-            logger.exception("Error analyzing %s", symbol)
+        except Exception as e:
+            logger.exception("Error analyzing %s: %s", symbol, str(e))
+            import traceback
+            logger.error("Full traceback:\n%s", traceback.format_exc())
             continue
 
     if skipped_equity_symbols:
