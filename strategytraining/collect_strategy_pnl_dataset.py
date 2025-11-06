@@ -11,7 +11,6 @@ Strategies tracked:
 - entry_takeprofit: Profit potential from high prices
 - highlow: Range-based trading
 - maxdiff: Maximum directional edge
-- ci_guard: Conservative blended approach
 - buy_hold: Buy and hold baseline
 """
 
@@ -41,7 +40,6 @@ STRATEGIES = [
     'entry_takeprofit',
     'highlow',
     'maxdiff',
-    'ci_guard',
     'buy_hold',
 ]
 

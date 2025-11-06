@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
         "--max-trades-map",
         type=str,
         default=None,
-        help="Per-symbol overrides for maximum trades (e.g., 'NVDA@ci_guard:10,AAPL@ci_guard:22').",
+        help="Per-symbol overrides for maximum trades (e.g., 'NVDA@maxdiff:10,AAPL@maxdiff:22').",
     )
     parser.add_argument(
         "--entry-util-threshold",
