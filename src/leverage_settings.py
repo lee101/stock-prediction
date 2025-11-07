@@ -16,7 +16,7 @@ from typing import Optional
 
 DEFAULT_ANNUAL_LEVERAGE_COST = 0.0675  # 6.75% annualised financing rate
 DEFAULT_TRADING_DAYS = 252
-DEFAULT_MAX_GROSS_LEVERAGE = 1.50
+DEFAULT_MAX_GROSS_LEVERAGE = 2.0
 
 
 def _parse_float_env(key: str, default: float) -> float:

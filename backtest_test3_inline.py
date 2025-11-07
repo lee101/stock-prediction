@@ -834,7 +834,6 @@ def _log_strategy_summary(results_df: pd.DataFrame, symbol: str, num_simulations
             "maxdiffalwayson_forecasted_pnl",
             "maxdiffalwayson_finalday_return",
         ),
-        ("CI Guard", "ci_guard_return", "ci_guard_sharpe", "ci_guard_annual_return", "ci_guard_forecasted_pnl", None),
     ]
 
     rows: List[List[str]] = []
@@ -2312,9 +2311,18 @@ def backtest_forecasts(symbol, num_simulations=50):
                     results_df[forecast_col] = forecasted
                     logger.info(f"{symbol} {forecast_col}: {forecasted:.6f}")
                 else:
-                    results_df[forecast_col] = 0.0
+                    # Fallback to avg_return when no valid series data
+                    avg_return = results_df[pnl_col].mean() if pnl_col in results_df.columns else 0.0
+                    results_df[forecast_col] = avg_return
+                    logger.warning(
+                        f"{symbol} {forecast_col}: No valid PnL series data, using avg_return fallback={avg_return:.6f}"
+                    )
             else:
+                # Column doesn't exist - this should rarely happen
                 results_df[forecast_col] = 0.0
+                logger.warning(
+                    f"{symbol} {forecast_col}: Column {pnl_col} not found, defaulting to 0.0"
+                )
 
         # Log final average metrics
         tb_writer.add_scalar(
@@ -2391,17 +2399,6 @@ def backtest_forecasts(symbol, num_simulations=50):
             0,
         )
         tb_writer.add_scalar(f"{symbol}/final_metrics/highlow_avg_sharpe", results_df["highlow_sharpe"].mean(), 0)
-        tb_writer.add_scalar(
-            f"{symbol}/final_metrics/ci_guard_avg_return",
-            results_df["ci_guard_avg_daily_return"].mean(),
-            0,
-        )
-        tb_writer.add_scalar(
-            f"{symbol}/final_metrics/ci_guard_annual_return",
-            results_df["ci_guard_annual_return"].mean(),
-            0,
-        )
-        tb_writer.add_scalar(f"{symbol}/final_metrics/ci_guard_avg_sharpe", results_df["ci_guard_sharpe"].mean(), 0)
 
         _log_validation_losses(results_df)
         _log_strategy_summary(results_df, symbol, num_simulations)
@@ -2411,7 +2408,6 @@ def backtest_forecasts(symbol, num_simulations=50):
         avg_allsignals = results_df["all_signals_strategy_return"].mean()
         avg_takeprofit = results_df["entry_takeprofit_return"].mean()
         avg_highlow = results_df["highlow_return"].mean()
-        avg_ci_guard = results_df["ci_guard_return"].mean()
         if "maxdiff_return" in results_df:
             avg_maxdiff = float(results_df["maxdiff_return"].mean())
             if not np.isfinite(avg_maxdiff):
@@ -2419,10 +2415,8 @@ def backtest_forecasts(symbol, num_simulations=50):
         else:
             avg_maxdiff = float("-inf")
 
-        best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_ci_guard, avg_maxdiff)
-        if best_return == avg_ci_guard:
-            best_strategy = "ci_guard"
-        elif best_return == avg_highlow:
+        best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_maxdiff)
+        if best_return == avg_highlow:
             best_strategy = "highlow"
         elif best_return == avg_takeprofit:
             best_strategy = "takeprofit"
@@ -2794,31 +2788,6 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     highlow_annual = highlow_eval.annualized_return
     highlow_finalday_return = highlow_return / len(actual_returns) if len(actual_returns) > 0 else 0.0
 
-    ci_guard_return = 0.0
-    ci_guard_sharpe = 0.0
-    ci_guard_finalday_return = 0.0
-    ci_guard_returns = np.zeros(len(actual_returns), dtype=np.float32)
-    ci_signals = torch.zeros_like(last_preds["close_predictions"])
-    ci_guard_avg_daily = 0.0
-    ci_guard_annual = 0.0
-    if len(actual_returns) > 0:
-        ci_band = torch.as_tensor(last_preds["close_ci_band"][:-1], dtype=torch.float32)
-        if ci_band.numel() == len(last_preds["close_predictions"]):
-            ci_signals = confidence_guard_strategy(
-                last_preds["close_predictions"],
-                ci_band,
-                ci_multiplier=TOTO_CI_GUARD_MULTIPLIER,
-                is_crypto=is_crypto,
-            )
-            ci_eval = evaluate_strategy(ci_signals, actual_returns, trading_fee, trading_days_per_year)
-            ci_guard_return = ci_eval.total_return
-            ci_guard_sharpe = ci_eval.sharpe_ratio
-            ci_guard_returns = ci_eval.returns
-            ci_guard_avg_daily = ci_eval.avg_daily_return
-            ci_guard_annual = ci_eval.annualized_return
-            if ci_signals.numel() > 0:
-                ci_guard_finalday_return = ci_signals[-1].item() * actual_returns.iloc[-1] - (2 * trading_fee * SPREAD)
-
     # Log strategy metrics to tensorboard
     tb_writer.add_scalar(f"{symbol}/strategies/simple/total_return", simple_total_return, sim_idx)
     tb_writer.add_scalar(f"{symbol}/strategies/simple/sharpe", simple_sharpe, sim_idx)
@@ -2844,10 +2813,6 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     tb_writer.add_scalar(f"{symbol}/strategies/highlow/sharpe", highlow_sharpe, sim_idx)
     tb_writer.add_scalar(f"{symbol}/strategies/highlow/finalday", highlow_finalday_return, sim_idx)
 
-    tb_writer.add_scalar(f"{symbol}/strategies/ci_guard/total_return", ci_guard_return, sim_idx)
-    tb_writer.add_scalar(f"{symbol}/strategies/ci_guard/sharpe", ci_guard_sharpe, sim_idx)
-    tb_writer.add_scalar(f"{symbol}/strategies/ci_guard/finalday", ci_guard_finalday_return, sim_idx)
-
     tb_writer.add_scalar(f"{symbol}/strategies/maxdiff/total_return", maxdiff_return, sim_idx)
     tb_writer.add_scalar(f"{symbol}/strategies/maxdiff/sharpe", maxdiff_sharpe, sim_idx)
     tb_writer.add_scalar(f"{symbol}/strategies/maxdiff/finalday", maxdiff_finalday_return, sim_idx)
@@ -2868,8 +2833,6 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         tb_writer.add_scalar(f"{symbol}/returns_over_time/entry_takeprofit", ret, t)
     for t, ret in enumerate(highlow_returns):
         tb_writer.add_scalar(f"{symbol}/returns_over_time/highlow", ret, t)
-    for t, ret in enumerate(ci_guard_returns):
-        tb_writer.add_scalar(f"{symbol}/returns_over_time/ci_guard", ret, t)
     for t, ret in enumerate(maxdiff_returns):
         tb_writer.add_scalar(f"{symbol}/returns_over_time/maxdiff", ret, t)
     for t, ret in enumerate(maxdiff_always_returns):
@@ -2958,11 +2921,6 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         "maxdiffprofit_profit_low_multiplier": float(maxdiff_metadata.get("maxdiffprofit_profit_low_multiplier", 0.0)),
         "maxdiffprofit_high_price": float(maxdiff_metadata.get("maxdiffprofit_high_price", 0.0)),
         "maxdiffprofit_low_price": float(maxdiff_metadata.get("maxdiffprofit_low_price", 0.0)),
-        "ci_guard_return": float(ci_guard_return),
-        "ci_guard_sharpe": float(ci_guard_sharpe),
-        "ci_guard_finalday": float(ci_guard_finalday_return),
-        "ci_guard_avg_daily_return": float(ci_guard_avg_daily),
-        "ci_guard_annual_return": float(ci_guard_annual),
         "close_val_loss": float(last_preds.get("close_val_loss", 0.0)),
         "high_val_loss": float(last_preds.get("high_val_loss", 0.0)),
         "low_val_loss": float(last_preds.get("low_val_loss", 0.0)),
@@ -3320,13 +3278,6 @@ if __name__ == "__main__":
                 "baseline_return": _mean("maxdiffalwayson_baseline_return"),
                 "optimized_return": _mean("maxdiffalwayson_optimized_return"),
                 "adjusted_return": _mean("maxdiffalwayson_adjusted_return"),
-            },
-            "ci_guard": {
-                "return": _mean("ci_guard_return"),
-                "sharpe": _mean("ci_guard_sharpe"),
-                "final_day": _mean("ci_guard_finalday"),
-                "avg_daily_return": _mean("ci_guard_avg_daily_return"),
-                "annual_return": _mean("ci_guard_annual_return"),
             },
         }
 
