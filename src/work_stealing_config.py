@@ -29,7 +29,7 @@ WORK_STEALING_ENTRY_TOLERANCE_PCT = float(
     os.getenv("WORK_STEALING_TOLERANCE", "0.0066")  # 0.66% - match normal tolerance so watchers can steal
 )
 WORK_STEALING_PROTECTION_PCT = float(
-    os.getenv("WORK_STEALING_PROTECTION", "0.004")  # 0.4% - tighter than normal, protects near-execution
+    os.getenv("WORK_STEALING_PROTECTION", "0.001")  # 0.1% - very tight, only protect imminent fills
 )
 WORK_STEALING_COOLDOWN_SECONDS = int(
     os.getenv("WORK_STEALING_COOLDOWN", "120")  # 2 minutes - allow price movement recovery
