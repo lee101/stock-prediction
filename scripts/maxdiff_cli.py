@@ -14,6 +14,7 @@ from scripts.alpaca_cli import get_strategy_for_symbol, set_strategy_for_symbol
 from src.logging_utils import setup_logging
 from src.stock_utils import pairs_equal
 from src.trading_obj_utils import filter_to_realistic_positions
+from src.work_stealing_coordinator import get_coordinator
 
 logger = setup_logging("maxdiff_cli.log")
 
@@ -386,27 +387,10 @@ def open_position_at_maxdiff_takeprofit(
 
                 if not has_cash:
                     try:
-                        from src.work_stealing_coordinator import get_coordinator
-                        from trade_stock_e2e import _load_latest_forecast_snapshot
-
                         coordinator = get_coordinator()
-                        forecast_data = _load_latest_forecast_snapshot()
+                        forecast_data = load_latest_forecast_snapshot()
                         forecast = forecast_data.get(symbol, {})
-
-                        forecasted_pnl = 0.0
-                        for field in [
-                            "maxdiff_forecasted_pnl",
-                            "maxdiffalwayson_forecasted_pnl",
-                            "highlow_forecasted_pnl",
-                            "avg_return",
-                        ]:
-                            value = forecast.get(field)
-                            if value is not None:
-                                try:
-                                    forecasted_pnl = float(value)
-                                    break
-                                except (TypeError, ValueError):
-                                    continue
+                        forecasted_pnl = extract_forecasted_pnl(forecast, default=0.0)
 
                         stolen_symbol = coordinator.attempt_steal(
                             symbol=symbol,

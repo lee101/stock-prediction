@@ -63,8 +63,10 @@ class SimConfig:
     cooldown_seconds: int = 120
     fight_threshold: int = 5
     fight_cooldown_seconds: int = 600
-    max_leverage: float = 2.0
     capital: float = 10000.0
+    crypto_max_leverage: float = 1.0  # Crypto: no leverage
+    stock_max_leverage: float = 4.0  # Stocks: 4x intraday
+    leverage_fee_pct: float = 0.0675  # 6.75% daily on leveraged portion
 
 
 class WorkStealingSimulator:
@@ -75,8 +77,10 @@ class WorkStealingSimulator:
         self.load_hourly_data()
 
         self.active_orders: List[SimOrder] = []
-        self.capital_used = 0.0
+        self.crypto_capital_used = 0.0
+        self.stock_capital_used = 0.0
         self.total_pnl = 0.0
+        self.leverage_fees_paid = 0.0
         self.trades_executed = 0
         self.steals_performed = 0
         self.orders_blocked = 0
@@ -97,9 +101,14 @@ class WorkStealingSimulator:
             return self.config.crypto_ooh_tolerance_pct
         return self.config.crypto_normal_tolerance_pct
 
-    def check_capacity(self) -> bool:
-        max_capital = self.config.capital * self.config.max_leverage
-        return self.capital_used < max_capital
+    def check_capacity(self, symbol: str, notional: float) -> bool:
+        is_crypto = symbol.endswith("USD")
+        if is_crypto:
+            max_crypto_capital = self.config.capital * self.config.crypto_max_leverage
+            return self.crypto_capital_used + notional <= max_crypto_capital
+        else:
+            max_stock_capital = self.config.capital * self.config.stock_max_leverage
+            return self.stock_capital_used + notional <= max_stock_capital
 
     def is_protected(self, order: SimOrder, timestamp: datetime) -> bool:
         return order.distance_pct <= self.config.protection_pct
@@ -125,7 +134,11 @@ class WorkStealingSimulator:
                     continue
 
             self.active_orders.remove(candidate)
-            self.capital_used -= candidate.notional
+            is_crypto = candidate.symbol.endswith("USD")
+            if is_crypto:
+                self.crypto_capital_used -= candidate.notional
+            else:
+                self.stock_capital_used -= candidate.notional
             self.steals_performed += 1
 
             key = f"{new_order.symbol}->{candidate.symbol}"
@@ -143,15 +156,23 @@ class WorkStealingSimulator:
         if order.distance_pct > tolerance:
             return False
 
-        if self.check_capacity():
+        if self.check_capacity(order.symbol, order.notional):
             self.active_orders.append(order)
-            self.capital_used += order.notional
+            is_crypto = order.symbol.endswith("USD")
+            if is_crypto:
+                self.crypto_capital_used += order.notional
+            else:
+                self.stock_capital_used += order.notional
             return True
 
         stolen_from = self.attempt_steal(order, timestamp)
         if stolen_from:
             self.active_orders.append(order)
-            self.capital_used += order.notional
+            is_crypto = order.symbol.endswith("USD")
+            if is_crypto:
+                self.crypto_capital_used += order.notional
+            else:
+                self.stock_capital_used += order.notional
             return True
 
         self.orders_blocked += 1
@@ -164,10 +185,23 @@ class WorkStealingSimulator:
             pnl = (order.limit_price - exit_price) * order.qty
 
         self.active_orders.remove(order)
-        self.capital_used -= order.notional
+        is_crypto = order.symbol.endswith("USD")
+        if is_crypto:
+            self.crypto_capital_used -= order.notional
+        else:
+            self.stock_capital_used -= order.notional
+
         self.total_pnl += pnl
         self.trades_executed += 1
         return pnl
+
+    def apply_leverage_fees(self, timestamp: datetime):
+        """Apply daily leverage fees on stock positions exceeding 1x capital."""
+        if self.stock_capital_used > self.config.capital:
+            leveraged_amount = self.stock_capital_used - self.config.capital
+            fee = leveraged_amount * self.config.leverage_fee_pct
+            self.leverage_fees_paid += fee
+            self.total_pnl -= fee
 
 
 def run_simulation(config: SimConfig, hourly_data_dir: str, strategy_pnl_df: pd.DataFrame) -> Dict[str, float]:
@@ -181,9 +215,16 @@ def run_simulation(config: SimConfig, hourly_data_dir: str, strategy_pnl_df: pd.
 
     pnls = []
 
-    for i, ts in enumerate(all_timestamps[::168]):  # Every week to speed up
-        if i % 10 == 0:
-            print(f"Progress: {i}/{len(all_timestamps) // 168}", end="\r", flush=True)
+    last_fee_day = None
+
+    for i, ts in enumerate(all_timestamps[::24]):  # Every 24 hours
+        if i % 50 == 0:
+            print(f"Progress: {i}/{len(all_timestamps) // 24}", end="\r", flush=True)
+
+        # Apply leverage fees once per day
+        if last_fee_day is None or (ts - last_fee_day).days >= 1:
+            sim.apply_leverage_fees(ts)
+            last_fee_day = ts
 
         available_cryptos = []
         for symbol in crypto_symbols:
@@ -204,12 +245,12 @@ def run_simulation(config: SimConfig, hourly_data_dir: str, strategy_pnl_df: pd.
 
         available_cryptos.sort(key=lambda x: x[1], reverse=True)
 
-        for rank, (symbol, forecasted_pnl, current_price) in enumerate(available_cryptos[:5], 1):
+        for rank, (symbol, forecasted_pnl, current_price) in enumerate(available_cryptos, 1):
             df = sim.crypto_data[symbol]
             row = df[df["timestamp"] == ts].iloc[0]
 
             limit_price = row["low"] * 1.001  # Simulate maxdiff entry
-            qty = 1000 / limit_price  # Fixed $1000 position for more capacity pressure
+            qty = 3500 / limit_price  # $3500 position to stress capacity (3 orders = $10.5k > $10k)
 
             order = SimOrder(
                 symbol=symbol,
@@ -223,10 +264,8 @@ def run_simulation(config: SimConfig, hourly_data_dir: str, strategy_pnl_df: pd.
             )
 
             if sim.attempt_entry(order, ts):
-                exit_idx = min(i + 1, len(all_timestamps[::168]) - 1)
-                exit_ts = (
-                    all_timestamps[::168][exit_idx] if exit_idx < len(all_timestamps[::168]) else all_timestamps[-1]
-                )
+                exit_idx = min(i + 7, len(all_timestamps[::24]) - 1)  # Exit after 7 days
+                exit_ts = all_timestamps[::24][exit_idx] if exit_idx < len(all_timestamps[::24]) else all_timestamps[-1]
                 exit_row = df[df["timestamp"] >= exit_ts]
                 if not exit_row.empty:
                     exit_price = exit_row.iloc[0]["high"] * 0.999
@@ -247,6 +286,8 @@ def run_simulation(config: SimConfig, hourly_data_dir: str, strategy_pnl_df: pd.
         "trades": sim.trades_executed,
         "steals": sim.steals_performed,
         "blocks": sim.orders_blocked,
+        "leverage_fees": sim.leverage_fees_paid,
+        "net_pnl": total_pnl,  # Fees already subtracted
     }
 
 
