@@ -8,13 +8,13 @@ from pathlib import Path
 from time import sleep
 from typing import Dict, List, Optional, Tuple
 
+import alpaca_wrapper
 import pandas as pd
 import pytz
 from loguru import logger
 
-import alpaca_wrapper
 try:
-    from backtest_test3_inline import backtest_forecasts, release_model_resources, resolve_close_policy
+    from backtest_test3_inline import backtest_forecasts, release_model_resources
 except Exception as import_exc:  # pragma: no cover - exercised via tests with stubs
     logging.getLogger(__name__).warning(
         "Falling back to stubbed backtest resources due to import failure: %s", import_exc
@@ -28,29 +28,33 @@ except Exception as import_exc:  # pragma: no cover - exercised via tests with s
 
     def release_model_resources() -> None:
         return None
-from data_curate_daily import get_bid, get_ask, download_exchange_latest_data
+
+
+import src.trade_stock_state_utils as state_utils
+from alpaca.data import StockHistoricalDataClient
+from data_curate_daily import download_exchange_latest_data, get_ask, get_bid
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from jsonshelve import FlatShelf
 from marketsimulator.state import get_state
 from src.backtest_data_utils import normalize_series
 from src.cache_utils import ensure_huggingface_cache_dir
 from src.comparisons import is_buy_side, is_same_side, is_sell_side
-from src.cooldown_utils import record_loss_timestamp, clear_cooldown, can_trade_now
-from src.date_utils import is_nyse_trading_day_now, is_nyse_trading_day_ending
-from src.fixtures import crypto_symbols, all_crypto_symbols, active_crypto_symbols
+from src.cooldown_utils import can_trade_now, clear_cooldown, record_loss_timestamp
+from src.date_utils import is_nyse_trading_day_ending, is_nyse_trading_day_now
+from src.fixtures import all_crypto_symbols
+
 # Note: Use all_crypto_symbols for identification checks (fees, trading hours, etc.)
 # Use active_crypto_symbols for deciding what to actively trade
 from src.logging_utils import setup_logging
-from src.trading_obj_utils import filter_to_realistic_positions
+from src.portfolio_risk import record_portfolio_snapshot
 from src.process_utils import (
+    MAXDIFF_WATCHERS_DIR,
     backout_near_market,
     ramp_into_position,
     spawn_close_position_at_maxdiff_takeprofit,
     spawn_close_position_at_takeprofit,
     spawn_open_position_at_maxdiff_takeprofit,
-    MAXDIFF_WATCHERS_DIR,
 )
-from src.portfolio_risk import record_portfolio_snapshot
 from src.sizing_utils import get_qty
 from src.trade_stock_env_utils import (
     TRUTHY_ENV_VALUES,
@@ -78,10 +82,8 @@ from src.trade_stock_env_utils import (
 )
 from src.trade_stock_forecast_snapshot import load_latest_forecast_snapshot as _load_forecast_snapshot
 from src.trade_stock_gate_utils import (
-    CONSENSUS_MIN_MOVE_PCT,
     DISABLE_TRADE_GATES,
     coerce_positive_int,
-    get_trend_stat,
     is_kronos_only_mode,
     is_tradeable,
     pass_edge_threshold,
@@ -92,16 +94,12 @@ from src.trade_stock_utils import (
     agree_direction,
     coerce_optional_float,
     compute_spread_bps,
-    edge_threshold_bps,
     evaluate_strategy_entry_gate,
-    expected_cost_bps,
     kelly_lite,
     parse_float_list,
     resolve_spread_cap,
     should_rebalance,
 )
-from alpaca.data import StockHistoricalDataClient
-import src.trade_stock_state_utils as state_utils
 from src.trading_obj_utils import filter_to_realistic_positions
 from stock.data_utils import coerce_numeric, ensure_lower_bound, safe_divide
 from stock.state import ensure_state_dir as _shared_ensure_state_dir
@@ -178,11 +176,7 @@ MAX_MAXDIFFS = coerce_positive_int(
 )
 
 DEFAULT_PROBE_SYMBOLS = {"AAPL", "MSFT", "NVDA"}
-PROBE_SYMBOLS = (
-    set()
-    if SIMPLIFIED_MODE or not ENABLE_PROBE_TRADES
-    else set(DEFAULT_PROBE_SYMBOLS)
-)
+PROBE_SYMBOLS = set() if SIMPLIFIED_MODE or not ENABLE_PROBE_TRADES else set(DEFAULT_PROBE_SYMBOLS)
 
 MAXDIFF_STRATEGIES = {"maxdiff", "maxdiffalwayson"}
 MAXDIFF_LIMIT_STRATEGIES = MAXDIFF_STRATEGIES.union({"highlow"})
@@ -248,6 +242,7 @@ def _record_loss_timestamp(symbol: str, closed_at: Optional[str]) -> None:
 # Wrapper to use imported cooldown function with local symbol-specific cooldown
 def can_trade_now(symbol: str, now: datetime, min_cooldown_minutes: int = PROBE_LOSS_COOLDOWN_MINUTES) -> bool:
     from src.cooldown_utils import can_trade_now as can_trade_now_base
+
     return can_trade_now_base(symbol, now, min_cooldown_minutes, symbol_min_cooldown_fn=_symbol_min_cooldown_minutes)
 
 
@@ -322,7 +317,7 @@ def _save_maxdiff_plan(symbol: str, plan_data: Dict) -> None:
         return
     try:
         store.load()
-        day_key = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         key = f"{day_key}:{symbol}"
         store[key] = plan_data
         store.save()
@@ -337,12 +332,12 @@ def _load_maxdiff_plans_for_today() -> Dict[str, Dict]:
         return {}
     try:
         store.load()
-        day_key = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         prefix = f"{day_key}:"
         plans = {}
         for key, value in store.items():
             if key.startswith(prefix):
-                symbol = key[len(prefix):]
+                symbol = key[len(prefix) :]
                 plans[symbol] = value
         return plans
     except Exception as exc:
@@ -357,7 +352,7 @@ def _update_maxdiff_plan_status(symbol: str, status: str, **extra_fields) -> Non
         return
     try:
         store.load()
-        day_key = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         key = f"{day_key}:{symbol}"
         if key in store:
             plan = dict(store[key])
@@ -387,9 +382,7 @@ BACKOUT_MARKET_CLOSE_FORCE_MINUTES = int(os.getenv("BACKOUT_MARKET_CLOSE_FORCE_M
 MAXDIFF_ENTRY_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_ENTRY_POLL_SECONDS", "12")))
 MAXDIFF_EXIT_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_EXIT_POLL_SECONDS", "12")))
 MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE = float(os.getenv("MAXDIFF_EXIT_PRICE_TOLERANCE", "0.001"))
-MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT = max(
-    0, int(os.getenv("MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT", "2"))
-)
+MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT = max(0, int(os.getenv("MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT", "2")))
 
 
 def _log_detail(message: str) -> None:
@@ -1270,9 +1263,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 unprofit_sharpe = _metric(backtest_df["unprofit_shutdown_sharpe"], default=0.0)
 
             raw_last_prediction = backtest_df.iloc[0]
-            last_prediction = raw_last_prediction.apply(
-                lambda value: coerce_numeric(value, default=0.0, prefer="mean")
-            )
+            last_prediction = raw_last_prediction.apply(lambda value: coerce_numeric(value, default=0.0, prefer="mean"))
             walk_forward_oos_sharpe_raw = last_prediction.get("walk_forward_oos_sharpe")
             walk_forward_turnover_raw = last_prediction.get("walk_forward_turnover")
             walk_forward_highlow_raw = last_prediction.get("walk_forward_highlow_sharpe")
@@ -1314,7 +1305,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                             )
                             last_prediction = retry_prediction
                         else:
-                            logger.warning(f"{symbol}: Retry {retry_count} returned empty backtest, using previous predictions")
+                            logger.warning(
+                                f"{symbol}: Retry {retry_count} returned empty backtest, using previous predictions"
+                            )
                     except Exception as retry_exc:
                         logger.warning(f"{symbol}: Retry {retry_count} failed: {retry_exc}, using previous predictions")
 
@@ -1397,7 +1390,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 low: Optional[float],
                 fallback_high_candidates: list,
                 fallback_low_candidates: list,
-                label: str
+                label: str,
             ) -> tuple:
                 """Try fallback models before flipping inverted high/low predictions."""
                 if high is None or low is None or high >= low:
@@ -1409,13 +1402,17 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 # Try fallback high predictions
                 for fallback_high in fallback_high_candidates:
                     if fallback_high is not None and fallback_high >= low:
-                        logger.info(f"{symbol}: Using fallback high={fallback_high:.4f} for {label} (original={original_high:.4f})")
+                        logger.info(
+                            f"{symbol}: Using fallback high={fallback_high:.4f} for {label} (original={original_high:.4f})"
+                        )
                         return fallback_high, low
 
                 # Try fallback low predictions
                 for fallback_low in fallback_low_candidates:
                     if fallback_low is not None and high >= fallback_low:
-                        logger.info(f"{symbol}: Using fallback low={fallback_low:.4f} for {label} (original={original_low:.4f})")
+                        logger.info(
+                            f"{symbol}: Using fallback low={fallback_low:.4f} for {label} (original={original_low:.4f})"
+                        )
                         return high, fallback_low
 
                 # Last resort: flip
@@ -1428,7 +1425,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 maxdiff_low_price,
                 fallback_high_candidates=[predicted_high_price],
                 fallback_low_candidates=[predicted_low_price],
-                label="maxdiff"
+                label="maxdiff",
             )
 
             # Fix maxdiffalwayson using both corrected maxdiff and base predictions
@@ -1437,14 +1434,12 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 maxdiffalwayson_low_price,
                 fallback_high_candidates=[maxdiff_high_price, predicted_high_price],
                 fallback_low_candidates=[maxdiff_low_price, predicted_low_price],
-                label="maxdiffalwayson"
+                label="maxdiffalwayson",
             )
 
             maxdiff_primary_side_raw = raw_last_prediction.get("maxdiff_primary_side")
             maxdiff_primary_side = (
-                str(maxdiff_primary_side_raw).strip().lower()
-                if maxdiff_primary_side_raw is not None
-                else None
+                str(maxdiff_primary_side_raw).strip().lower() if maxdiff_primary_side_raw is not None else None
             )
             if maxdiff_primary_side == "":
                 maxdiff_primary_side = None
@@ -1590,7 +1585,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 positive_forecasts = {k: v for k, v in candidate_forecasted_pnl.items() if v > 0}
                 if positive_forecasts:
                     ordered_strategies = [
-                        name for name, _ in sorted(
+                        name
+                        for name, _ in sorted(
                             positive_forecasts.items(),
                             key=lambda item: item[1],
                             reverse=True,
@@ -1603,7 +1599,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 else:
                     # No positive forecasts - fall back to all strategies sorted by forecasted PnL
                     ordered_strategies = [
-                        name for name, _ in sorted(
+                        name
+                        for name, _ in sorted(
                             candidate_forecasted_pnl.items(),
                             key=lambda item: item[1],
                             reverse=True,
@@ -1741,7 +1738,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             highlow_allowed_entry = ALLOW_HIGHLOW_ENTRY and ("highlow" not in strategy_ineligible)
             takeprofit_allowed_entry = ALLOW_TAKEPROFIT_ENTRY and ("takeprofit" not in strategy_ineligible)
             maxdiff_allowed_entry = ALLOW_MAXDIFF_ENTRY and ("maxdiff" not in strategy_ineligible)
-            maxdiffalwayson_allowed_entry = ALLOW_MAXDIFF_ALWAYS_ENTRY and ("maxdiffalwayson" not in strategy_ineligible)
+            maxdiffalwayson_allowed_entry = ALLOW_MAXDIFF_ALWAYS_ENTRY and (
+                "maxdiffalwayson" not in strategy_ineligible
+            )
 
             raw_expected_move_pct = expected_move_pct
             calibrated_move_raw = last_prediction.get("calibrated_expected_move_pct")
@@ -1919,7 +1918,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             cooldown_ok = True if SIMPLIFIED_MODE else can_trade_now(symbol, now_utc)
 
             # MaxDiff strategy bypasses most gates to match backtest behavior
-            is_maxdiff = (best_strategy in MAXDIFF_STRATEGIES)
+            is_maxdiff = best_strategy in MAXDIFF_STRATEGIES
 
             walk_forward_notes: List[str] = []
             sharpe_cutoff: Optional[float] = None
@@ -1973,9 +1972,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 recent_sum = strategy_recent_sums.get(best_strategy)
                 # MaxDiff backtest doesn't have recent returns filter
                 if recent_sum is not None and recent_sum <= 0 and not is_maxdiff:
-                    gating_reasons.append(
-                        f"Recent {best_strategy} returns sum {recent_sum:.4f} <= 0"
-                    )
+                    gating_reasons.append(f"Recent {best_strategy} returns sum {recent_sum:.4f} <= 0")
 
             base_blocked = False if SIMPLIFIED_MODE else block_info.get("blocked", False)
             if kronos_only_mode and base_blocked:
@@ -2102,9 +2099,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     result_row[key] = coerce_numeric(last_prediction.get(key), default=0.0)
             for count_key in ("maxdiff_trades_positive", "maxdiff_trades_negative", "maxdiff_trades_total"):
                 if count_key in last_prediction:
-                    result_row[count_key] = int(
-                        round(coerce_numeric(last_prediction.get(count_key), default=0.0))
-                    )
+                    result_row[count_key] = int(round(coerce_numeric(last_prediction.get(count_key), default=0.0)))
             if "maxdiffprofit_profit_values" in last_prediction:
                 result_row["maxdiffprofit_profit_values"] = last_prediction.get("maxdiffprofit_profit_values")
 
@@ -2128,9 +2123,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "maxdiffalwayson_trades_total",
             ):
                 if count_key in last_prediction:
-                    result_row[count_key] = int(
-                        round(coerce_numeric(last_prediction.get(count_key), default=0.0))
-                    )
+                    result_row[count_key] = int(round(coerce_numeric(last_prediction.get(count_key), default=0.0)))
             if "maxdiffalwayson_profit_values" in last_prediction:
                 result_row["maxdiffalwayson_profit_values"] = last_prediction.get("maxdiffalwayson_profit_values")
             results[symbol] = result_row
@@ -2306,11 +2299,7 @@ def build_portfolio(
 
     # Ensure probe-mode symbols are represented even if they fell outside the ranking filters.
     if ENABLE_PROBE_TRADES:
-        probe_candidates = [
-            (symbol, data)
-            for symbol, data in all_results.items()
-            if data.get("trade_mode") == "probe"
-        ]
+        probe_candidates = [(symbol, data) for symbol, data in all_results.items() if data.get("trade_mode") == "probe"]
         for symbol, data in probe_candidates:
             if symbol in picks:
                 continue
@@ -2320,9 +2309,7 @@ def build_portfolio(
                 picks[symbol] = data
             else:
                 # Replace the weakest pick to guarantee probe follow-up.
-                weakest_symbol, _ = min(
-                    picks.items(), key=lambda item: item[1].get("composite_score", float("-inf"))
-                )
+                weakest_symbol, _ = min(picks.items(), key=lambda item: item[1].get("composite_score", float("-inf")))
                 picks.pop(weakest_symbol, None)
                 picks[symbol] = data
 
@@ -2512,14 +2499,22 @@ def manage_positions(
         always_on_candidates.append((symbol, avg_return))
     always_on_candidates.sort(key=lambda item: item[1], reverse=True)
     always_on_priority = {symbol: index + 1 for index, (symbol, _) in enumerate(always_on_candidates)}
-    always_on_forced_symbols = {
-        symbol for symbol, _ in always_on_candidates[:MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT]
-    }
+    always_on_forced_symbols = {symbol for symbol, _ in always_on_candidates[:MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT]}
+
+    # Calculate crypto ranks for out-of-hours tolerance
+    crypto_candidates: List[Tuple[str, float]] = []
+    for symbol, pick_data in current_picks.items():
+        if symbol not in all_crypto_symbols:
+            continue
+        forecasted_pnl = coerce_numeric(pick_data.get("avg_return"), default=0.0)
+        crypto_candidates.append((symbol, forecasted_pnl))
+    crypto_candidates.sort(key=lambda item: item[1], reverse=True)
+    crypto_ranks = {symbol: index + 1 for index, (symbol, _) in enumerate(crypto_candidates)}
 
     for symbol, original_data in current_picks.items():
         data = dict(original_data)
         current_picks[symbol] = data
-        is_maxdiff_strategy = (data.get("strategy") in MAXDIFF_LIMIT_STRATEGIES)
+        is_maxdiff_strategy = data.get("strategy") in MAXDIFF_LIMIT_STRATEGIES
         maxdiff_overflow = False
         if is_maxdiff_strategy:
             maxdiff_entries_seen += 1
@@ -2727,9 +2722,7 @@ def manage_positions(
                 # MaxDiff-family strategies use full sizing like in backtest, not Kelly
                 if data.get("strategy") in MAXDIFF_STRATEGIES:
                     kelly_value = 1.0
-                    logger.info(
-                        f"{symbol}: {data.get('strategy')} using full position size (no Kelly scaling)"
-                    )
+                    logger.info(f"{symbol}: {data.get('strategy')} using full position size (no Kelly scaling)")
                 else:
                     drawdown_scale = _kelly_drawdown_scale(data.get("strategy"), symbol)
                     base_kelly = ensure_lower_bound(
@@ -2817,7 +2810,9 @@ def manage_positions(
                                 )
                                 adjusted_qty = min_trade_qty
                             else:
-                                logger.info(f"Skipping {symbol} entry after exposure adjustment resulted in non-positive qty.")
+                                logger.info(
+                                    f"Skipping {symbol} entry after exposure adjustment resulted in non-positive qty."
+                                )
                                 continue
                         logger.info(
                             f"Adjusting {symbol} target qty from {target_qty} to {adjusted_qty:.4f} "
@@ -2959,12 +2954,14 @@ def manage_positions(
                             )
                         else:
                             try:
+                                crypto_rank = crypto_ranks.get(symbol)
                                 logger.info(
-                                    "Spawning highlow staged entry watcher for %s %s qty=%s @ %.4f",
+                                    "Spawning highlow staged entry watcher for %s %s qty=%s @ %.4f%s",
                                     symbol,
                                     data["side"],
                                     target_qty,
                                     limit_price,
+                                    f" crypto_rank={crypto_rank}" if crypto_rank else "",
                                 )
                                 spawn_open_position_at_maxdiff_takeprofit(
                                     symbol,
@@ -2975,11 +2972,12 @@ def manage_positions(
                                     entry_strategy=entry_strategy,
                                     force_immediate=force_immediate_entry,
                                     priority_rank=priority_rank,
+                                    crypto_rank=crypto_rank,
                                 )
                                 if entry_strategy == "maxdiffalwayson":
                                     opposite_side = "sell" if is_buy_side(data["side"]) else "buy"
                                     allowed_side_raw = data.get("allowed_side")
-                                    allowed_side_cfg = (str(allowed_side_raw).lower() if allowed_side_raw else "both")
+                                    allowed_side_cfg = str(allowed_side_raw).lower() if allowed_side_raw else "both"
                                     complement_allowed = allowed_side_cfg in {"both", opposite_side}
                                     if complement_allowed and opposite_side == "sell" and symbol in all_crypto_symbols:
                                         complement_allowed = False
@@ -3012,11 +3010,12 @@ def manage_positions(
                                         else:
                                             try:
                                                 logger.info(
-                                                    "Spawning complementary maxdiffalwayson entry watcher for %s %s qty=%s @ %.4f",
+                                                    "Spawning complementary maxdiffalwayson entry watcher for %s %s qty=%s @ %.4f%s",
                                                     symbol,
                                                     opposite_side,
                                                     target_qty,
                                                     opposite_price,
+                                                    f" crypto_rank={crypto_rank}" if crypto_rank else "",
                                                 )
                                                 spawn_open_position_at_maxdiff_takeprofit(
                                                     symbol,
@@ -3027,6 +3026,7 @@ def manage_positions(
                                                     entry_strategy=entry_strategy,
                                                     force_immediate=force_immediate_entry,
                                                     priority_rank=priority_rank,
+                                                    crypto_rank=crypto_rank,
                                                 )
                                             except Exception as comp_exc:
                                                 logger.warning(
@@ -3416,6 +3416,7 @@ def cleanup_spawned_processes():
     for config_path in MAXDIFF_WATCHERS_DIR.glob("*.json"):
         try:
             import json
+
             with open(config_path) as f:
                 metadata = json.load(f)
 
@@ -3452,6 +3453,7 @@ def cleanup_spawned_processes():
     for config_path in MAXDIFF_WATCHERS_DIR.glob("*.json"):
         try:
             import json
+
             with open(config_path) as f:
                 metadata = json.load(f)
 
@@ -3613,9 +3615,8 @@ def main():
 
             # Crypto midnight refresh (00:00-00:30 UTC = 19:00-19:30 EST / 20:00-20:30 EDT)
             # Refreshes watchers for existing crypto positions when new daily bar arrives
-            elif (
-                (now.hour == 19 and 0 <= now.minute < 30)
-                and (last_crypto_midnight_refresh is None or last_crypto_midnight_refresh != today)
+            elif (now.hour == 19 and 0 <= now.minute < 30) and (
+                last_crypto_midnight_refresh is None or last_crypto_midnight_refresh != today
             ):
                 logger.info("\nCRYPTO MIDNIGHT REFRESH STARTING...")
                 # Only analyze crypto symbols
