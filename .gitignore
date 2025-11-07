@@ -201,3 +201,7 @@ workstealingsimulator/full_strategy_dataset_20251101_211202_trades.parquet
 strategytraining/benchmark_results/
 diagnose_watcher
 backtest_results/
+optimization_test.prof
+optimization_test.svg
+optimization_analysis_prof.md
+optimization_analysis_svg.md
