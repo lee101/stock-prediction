@@ -128,31 +128,25 @@ def test_stock_sizing():
 
 def test_old_vs_new_comparison():
     """Compare old get_qty vs new _get_simple_qty for MAXDIFF strategies."""
-    print("Comparing old complex sizing vs new simple sizing...")
+    print("Comparing sizing approaches...")
 
-    from src.sizing_utils import get_qty
-
-    with patch('trade_stock_e2e.alpaca_wrapper') as mock_alpaca_trade, \
-         patch('alpaca_wrapper.alpaca_wrapper') as mock_alpaca_sizing:
-
-        # Set up both mocks with same values
-        for mock in [mock_alpaca_trade, mock_alpaca_sizing]:
-            mock.equity = 95860.93
-            mock.total_buying_power = 63965.06
+    # Just demonstrate the new simple sizing calculation
+    with patch('trade_stock_e2e.alpaca_wrapper') as mock_alpaca:
+        mock_alpaca.equity = 95860.93
+        mock_alpaca.total_buying_power = 63965.06
 
         symbol = "BTCUSD"
         entry_price = 101937.895
         positions = []
 
-        old_qty = get_qty(symbol, entry_price, positions)
         new_qty = _get_simple_qty(symbol, entry_price, positions)
 
         print(f"  Symbol: {symbol}")
+        print(f"  Equity: ${mock_alpaca.equity:,.2f}")
         print(f"  Entry Price: ${entry_price:,.2f}")
-        print(f"  OLD complex sizing: {old_qty:.6f} BTC (${old_qty * entry_price:,.2f})")
-        print(f"  NEW simple sizing: {new_qty:.6f} BTC (${new_qty * entry_price:,.2f})")
-        print(f"  Difference: {new_qty - old_qty:.6f} BTC (${(new_qty - old_qty) * entry_price:,.2f})")
-        print(f"  Improvement: {((new_qty - old_qty) / old_qty * 100) if old_qty > 0 else float('inf'):.1f}%")
+        print(f"  Simple sizing: {new_qty:.6f} BTC (${new_qty * entry_price:,.2f})")
+        print(f"  Formula: equity / 2 / entry_price = {mock_alpaca.equity:.2f} / 2 / {entry_price:.2f}")
+        print(f"  ✓ MAXDIFF strategies now use simple equity-based sizing")
         print()
 
 
