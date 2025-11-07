@@ -41,6 +41,29 @@ from src.trading_obj_utils import filter_to_realistic_positions
 
 logger = setup_logging("alpaca_cli.log")
 
+
+def _get_time_in_force_for_qty(qty: float) -> str:
+    """
+    Get appropriate time_in_force for Alpaca order based on quantity.
+
+    Alpaca requires fractional orders to use time_in_force='day'.
+    Whole number orders can use 'gtc' (good-til-cancelled).
+
+    Args:
+        qty: Order quantity
+
+    Returns:
+        'day' for fractional quantities, 'gtc' for whole numbers
+    """
+    try:
+        is_fractional = float(qty) % 1 != 0
+        return "day" if is_fractional else "gtc"
+    except (TypeError, ValueError):
+        # If we can't determine, default to 'day' (safer choice)
+        logger.warning(f"Could not determine if qty={qty} is fractional, defaulting to day order")
+        return "day"
+
+
 # Market order spread threshold - don't use market orders if spread exceeds this
 _MARKET_ORDER_SPREAD_CAP_RAW = os.getenv("MARKET_ORDER_MAX_SPREAD_PCT", "0.01")
 try:
@@ -394,13 +417,15 @@ def open_order_at_price(symbol, qty, side, price):
         return None
     try:
         price = str(round(price, 2))
+        time_in_force = _get_time_in_force_for_qty(qty)
+
         result = alpaca_api.submit_order(
             order_data=LimitOrderRequest(
                 symbol=remap_symbols(symbol),
                 qty=qty,
                 side=side,
                 type=OrderType.LIMIT,
-                time_in_force="gtc",
+                time_in_force=time_in_force,
                 limit_price=price,
             )
         )
@@ -443,13 +468,15 @@ def open_order_at_price_or_all(symbol, qty, side, price):
         try:
             # Keep price as float for calculations, only convert when submitting order
             price_rounded = round(price, 2)
+            time_in_force = _get_time_in_force_for_qty(qty)
+
             result = alpaca_api.submit_order(
                 order_data=LimitOrderRequest(
                     symbol=remap_symbols(symbol),
                     qty=qty,
                     side=side,
                     type=OrderType.LIMIT,
-                    time_in_force="gtc",
+                    time_in_force=time_in_force,
                     limit_price=str(price_rounded),
                 )
             )
@@ -529,14 +556,16 @@ def open_order_at_price_allow_add_to_position(symbol, qty, side, price):
         try:
             # Keep price as float for calculations, only convert when submitting order
             price_rounded = round(price, 2)
-            logger.debug(f"Submitting order: {symbol} {side} {qty} @ {price_rounded} (attempt {retry_count + 1})")
+            time_in_force = _get_time_in_force_for_qty(qty)
+
+            logger.debug(f"Submitting order: {symbol} {side} {qty} @ {price_rounded} (attempt {retry_count + 1}, tif={time_in_force})")
             result = alpaca_api.submit_order(
                 order_data=LimitOrderRequest(
                     symbol=remap_symbols(symbol),
                     qty=qty,
                     side=side,
                     type=OrderType.LIMIT,
-                    time_in_force="gtc",
+                    time_in_force=time_in_force,
                     limit_price=str(price_rounded),
                 )
             )
@@ -1088,9 +1117,15 @@ def cancel_order(order):
     try:
         alpaca_api.cancel_order_by_id(order.id)
     except Exception as e:
+        # Check if order is already pending cancellation (error 42210000)
+        error_str = str(e)
+        if "42210000" in error_str or "pending cancel" in error_str.lower():
+            logger.info(f"Order {order.id} already pending cancellation, treating as success")
+            return  # Treat as success - order is already being cancelled
         logger.error(e)
         # traceback
         traceback.print_exc()
+        raise  # Re-raise other errors
 
 
 def get_open_orders():
