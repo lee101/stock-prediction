@@ -2886,8 +2886,9 @@ def manage_positions(
                 logger.info(f"{symbol}: Probe sizing fixed at minimum tradable quantity {target_qty}")
                 should_enter = not position_exists or not correct_side
                 needs_size_increase = False
-            elif not ENABLE_KELLY_SIZING and data.get("strategy") not in MAXDIFF_STRATEGIES:
+            elif data.get("strategy") in MAXDIFF_STRATEGIES or not ENABLE_KELLY_SIZING:
                 # Simple sizing: spread global risk over 2 positions
+                # MAXDIFF strategies ALWAYS use simple sizing (equity/2 for crypto, buying_power*risk/2 for stocks)
                 target_qty = _get_simple_qty(symbol, entry_price, positions)
                 if target_qty < min_trade_qty:
                     target_qty = min_trade_qty
@@ -2899,33 +2900,29 @@ def manage_positions(
                 should_enter = not position_exists or not correct_side
                 needs_size_increase = False
             else:
-                # Kelly sizing or MaxDiff strategies
+                # Kelly sizing for non-MAXDIFF strategies when ENABLE_KELLY_SIZING is True
                 computed_qty = get_qty(symbol, entry_price, positions)
                 if computed_qty is None:
                     computed_qty = 0.0
                 base_qty = computed_qty
-                # MaxDiff-family strategies use full sizing like in backtest, not Kelly
-                if data.get("strategy") in MAXDIFF_STRATEGIES:
-                    kelly_value = 1.0
-                    logger.info(f"{symbol}: {data.get('strategy')} using full position size (no Kelly scaling)")
-                else:
-                    drawdown_scale = _kelly_drawdown_scale(data.get("strategy"), symbol)
-                    base_kelly = ensure_lower_bound(
-                        coerce_numeric(data.get("kelly_fraction"), default=1.0),
-                        0.0,
-                        default=0.0,
-                    )
-                    kelly_value = base_kelly
-                    if drawdown_scale < 1.0 and base_kelly > 0:
-                        scaled_kelly = ensure_lower_bound(base_kelly * drawdown_scale, 0.0, default=0.0)
-                        if scaled_kelly < base_kelly:
-                            logger.info(
-                                f"{symbol}: Kelly reduced from {base_kelly:.3f} to {scaled_kelly:.3f} via drawdown scaling"
-                            )
-                        kelly_value = scaled_kelly
-                    if kelly_value <= 0:
-                        logger.info(f"{symbol}: Kelly fraction non-positive; skipping entry.")
-                        continue
+                # Apply Kelly fraction scaling
+                drawdown_scale = _kelly_drawdown_scale(data.get("strategy"), symbol)
+                base_kelly = ensure_lower_bound(
+                    coerce_numeric(data.get("kelly_fraction"), default=1.0),
+                    0.0,
+                    default=0.0,
+                )
+                kelly_value = base_kelly
+                if drawdown_scale < 1.0 and base_kelly > 0:
+                    scaled_kelly = ensure_lower_bound(base_kelly * drawdown_scale, 0.0, default=0.0)
+                    if scaled_kelly < base_kelly:
+                        logger.info(
+                            f"{symbol}: Kelly reduced from {base_kelly:.3f} to {scaled_kelly:.3f} via drawdown scaling"
+                        )
+                    kelly_value = scaled_kelly
+                if kelly_value <= 0:
+                    logger.info(f"{symbol}: Kelly fraction non-positive; skipping entry.")
+                    continue
                 kelly_fraction = kelly_value
                 data["kelly_fraction"] = kelly_fraction
                 target_qty = ensure_lower_bound(base_qty * kelly_value, 0.0, default=0.0)
@@ -2958,29 +2955,13 @@ def manage_positions(
                 if projected_pct > MAX_TOTAL_EXPOSURE_PCT:
                     allowed_value = max_total_exposure_value - (total_exposure_value - current_abs_value)
 
-                    # For crypto and non-leveraged strategies, shrink position instead of skipping
-                    # This allows us to still learn even when exposure is maxed out
-                    is_crypto = symbol in all_crypto_symbols
-                    is_non_leveraged_strategy = data.get("strategy") in MAXDIFF_STRATEGIES
-
                     if allowed_value <= 0:
-                        if is_crypto or is_non_leveraged_strategy:
-                            # Use minimum trade size to still participate and learn
-                            logger.info(
-                                f"Shrinking {symbol} to minimum trade size due to max exposure "
-                                f"({projected_pct:.1f}% > {MAX_TOTAL_EXPOSURE_PCT:.1f}%). "
-                                f"Crypto/non-leveraged strategies: using tiny probe to learn."
-                            )
-                            adjusted_qty = min_trade_qty
-                            target_qty = adjusted_qty
-                            projected_value = abs(target_qty * entry_price)
-                            new_total_value = total_exposure_value - current_abs_value + projected_value
-                        else:
-                            logger.info(
-                                f"Skipping {symbol} entry to respect max exposure "
-                                f"({projected_pct:.1f}% > {MAX_TOTAL_EXPOSURE_PCT:.1f}%)"
-                            )
-                            continue
+                        # Skip trade when exposure is maxed - no tiny probe orders
+                        logger.info(
+                            f"Skipping {symbol} entry to respect max exposure "
+                            f"({projected_pct:.1f}% > {MAX_TOTAL_EXPOSURE_PCT:.1f}%)"
+                        )
+                        continue
                     elif allowed_value > 0:
                         adjusted_qty = ensure_lower_bound(
                             safe_divide(allowed_value, entry_price, default=0.0),
@@ -2988,18 +2969,11 @@ def manage_positions(
                             default=0.0,
                         )
                         if adjusted_qty <= 0:
-                            if is_crypto or is_non_leveraged_strategy:
-                                # For crypto/non-leveraged, use minimum size even when calculation gives 0
-                                logger.info(
-                                    f"Exposure adjustment for {symbol} gave non-positive qty; "
-                                    f"using minimum trade size instead (crypto/non-leveraged) to learn."
-                                )
-                                adjusted_qty = min_trade_qty
-                            else:
-                                logger.info(
-                                    f"Skipping {symbol} entry after exposure adjustment resulted in non-positive qty."
-                                )
-                                continue
+                            # Skip trade when adjustment gives non-positive qty
+                            logger.info(
+                                f"Skipping {symbol} entry after exposure adjustment resulted in non-positive qty."
+                            )
+                            continue
                         logger.info(
                             f"Adjusting {symbol} target qty from {target_qty} to {adjusted_qty:.4f} "
                             f"to maintain exposure at {MAX_TOTAL_EXPOSURE_PCT:.1f}% max."
