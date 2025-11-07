@@ -685,15 +685,23 @@ def ramp_into_position(
                     # Verify cancellations
                     sleep(3)  # Let cancellations propagate
                     orders = alpaca_wrapper.get_open_orders()
-                    remaining_orders = [order for order in orders if
-                                        hasattr(order, 'symbol') and pairs_equal(order.symbol, pair)]
+                    pair_orders_all = [order for order in orders if
+                                       hasattr(order, 'symbol') and pairs_equal(order.symbol, pair)]
+                    # Filter out orders that are already pending cancellation - they're "good enough"
+                    remaining_orders = [order for order in pair_orders_all
+                                        if getattr(order, 'status', None) not in ['pending_cancel', 'cancelled']]
+
+                    # Log order states for debugging
+                    if pair_orders_all and len(pair_orders_all) != len(remaining_orders):
+                        pending_count = len(pair_orders_all) - len(remaining_orders)
+                        logger.info(f"{pending_count} orders for {pair} are pending_cancel/cancelled, treating as success")
 
                     if not remaining_orders:
                         orders_cancelled = True
-                        logger.info(f"All orders for {pair} successfully cancelled")
+                        logger.info(f"All orders for {pair} successfully cancelled or pending cancellation")
                         break
                     else:
-                        logger.info(f"Found {len(remaining_orders)} remaining orders for {pair}, retrying cancellation")
+                        logger.info(f"Found {len(remaining_orders)} remaining orders for {pair} (excluding pending_cancel), retrying cancellation")
 
                     cancel_attempts += 1
                     if not orders_cancelled:
