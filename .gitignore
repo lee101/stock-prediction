@@ -196,3 +196,5 @@ nohup.out
 strategytraining/datasets/
 quick_results_20251101_042457.csv
 hyperparams/close_policy
+workstealingsimulator/full_strategy_dataset_20251101_211202_strategy_performance.parquet
+workstealingsimulator/full_strategy_dataset_20251101_211202_trades.parquet
