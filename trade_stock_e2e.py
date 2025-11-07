@@ -1580,6 +1580,12 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             for name, stats in strategy_stats.items():
                 if name not in strategy_returns:
                     continue
+
+                # Use forecasted PnL instead of avg_return for strategy selection
+                # Always record forecasted PnL, even if strategy fails entry gate
+                forecasted_pnl = _metric(stats.get("forecasted_pnl"), default=0.0)
+                candidate_forecasted_pnl[name] = forecasted_pnl
+
                 allow_config = True
                 if name == "takeprofit":
                     allow_config = ALLOW_TAKEPROFIT_ENTRY
@@ -1603,10 +1609,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     if not eligible:
                         strategy_ineligible[name] = reason
                         continue
-
-                # Use forecasted PnL instead of avg_return for strategy selection
-                forecasted_pnl = _metric(stats.get("forecasted_pnl"), default=0.0)
-                candidate_forecasted_pnl[name] = forecasted_pnl
 
             # Sort strategies by forecasted_pnl (highest positive first)
             # NOTE: We use forecasted PnL instead of avg_return because forecasted PnL is the
@@ -1660,8 +1662,19 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             for candidate_name in ordered_strategies:
                 if candidate_name in strategy_ineligible:
-                    selection_notes.append(f"{candidate_name}=ineligible({strategy_ineligible[candidate_name]})")
-                    continue
+                    ineligible_reason = strategy_ineligible[candidate_name]
+                    # Allow strategies with positive forecasted PnL to bypass soft entry gates
+                    # but not hard blocks like disabled_by_config
+                    candidate_forecasted = candidate_forecasted_pnl.get(candidate_name, 0.0)
+                    if ineligible_reason == "disabled_by_config" or candidate_forecasted <= 0:
+                        selection_notes.append(f"{candidate_name}=ineligible({ineligible_reason})")
+                        continue
+                    # Strategy has positive forecasted PnL - allow it to proceed despite entry gate failure
+                    _log_detail(
+                        f"{symbol}: Allowing {candidate_name} despite entry gate ({ineligible_reason}) "
+                        f"due to positive forecasted PnL: {candidate_forecasted:.4f}"
+                    )
+                    selection_notes.append(f"{candidate_name}=allowed_by_forecast({candidate_forecasted:.4f})")
 
                 # Get avg_return from strategy_stats for this candidate
                 candidate_stats = strategy_stats.get(candidate_name, {})
