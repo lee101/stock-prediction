@@ -387,9 +387,49 @@ def _get_inherited_env():
     """Get environment with PYTHONPATH set, preserving critical variables like PAPER."""
     env = os.environ.copy()
     env["PYTHONPATH"] = str(cwd)
-    # Log critical environment variables for debugging
-    paper_value = env.get("PAPER", "1")
-    logger.debug(f"Spawning subprocess with PAPER={paper_value}")
+
+    # Ensure Alpaca credentials are explicitly passed
+    # Import here to get current values loaded in parent process
+    from env_real import (
+        ALP_KEY_ID,
+        ALP_SECRET_KEY,
+        ALP_KEY_ID_PROD,
+        ALP_SECRET_KEY_PROD,
+        ALP_ENDPOINT,
+        PAPER,
+    )
+
+    # Explicitly set all credentials in child environment
+    # This ensures child processes use the same credentials as parent
+    env["ALP_KEY_ID"] = ALP_KEY_ID
+    env["ALP_SECRET_KEY"] = ALP_SECRET_KEY
+    env["ALP_KEY_ID_PROD"] = ALP_KEY_ID_PROD
+    env["ALP_SECRET_KEY_PROD"] = ALP_SECRET_KEY_PROD
+    env["ALP_ENDPOINT"] = ALP_ENDPOINT
+    env["PAPER"] = "1" if PAPER else "0"
+
+    # Verify credentials are set (not placeholders)
+    active_key = ALP_KEY_ID if PAPER else ALP_KEY_ID_PROD
+    active_secret = ALP_SECRET_KEY if PAPER else ALP_SECRET_KEY_PROD
+
+    has_valid_credentials = (
+        active_key and
+        active_secret and
+        "placeholder" not in active_key.lower() and
+        "placeholder" not in active_secret.lower()
+    )
+
+    if not has_valid_credentials:
+        logger.warning(
+            f"Spawning subprocess with PAPER={env['PAPER']} but credentials appear invalid! "
+            f"Child process may get 401 errors. Check that credentials are exported in environment."
+        )
+    else:
+        logger.debug(
+            f"Spawning subprocess with PAPER={env['PAPER']}, "
+            f"using {'paper' if PAPER else 'prod'} credentials (validated)"
+        )
+
     return env
 
 

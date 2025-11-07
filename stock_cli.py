@@ -300,6 +300,24 @@ def _select_watchers(watchers: List[Dict], symbol: str, side: str, mode: str) ->
     ]
 
 
+def _is_watcher_expired(watcher: Dict) -> bool:
+    """Check if a watcher has expired."""
+    expiry_at = watcher.get("expiry_at")
+    expiry_ts = _parse_iso_timestamp(expiry_at)
+    if not expiry_ts:
+        return False
+    remaining = expiry_ts - datetime.now(timezone.utc)
+    return remaining.total_seconds() <= 0
+
+
+def _is_watcher_inactive(watcher: Dict) -> bool:
+    """Check if a watcher is inactive (has pid but process not running)."""
+    pid = watcher.get("pid")
+    if not pid:
+        return False
+    return not watcher.get("process_alive", False)
+
+
 def _format_watcher_summary(watcher: Dict) -> str:
     mode = watcher.get("mode", "watcher")
     side = watcher.get("side", "?")
@@ -369,6 +387,7 @@ def _fetch_forecast_snapshot() -> tuple[Dict[str, Dict], Optional[str]]:
 def status(
     timezone_name: str = typer.Option("US/Eastern", "--tz", help="Timezone for timestamp display."),
     max_orders: int = typer.Option(20, help="Maximum number of open orders to display."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show all details including expired watchers."),
 ):
     """Show live account, position, and risk metadata."""
     typer.echo("== Portfolio Status ==")
@@ -467,6 +486,7 @@ def status(
     forecast_snapshot, forecast_error = _fetch_forecast_snapshot()
     watchers = _load_maxdiff_watchers()
     used_watcher_keys = set()
+    hidden_watcher_count = 0
 
     if forecast_error:
         typer.secho(f"  Forecast snapshot unavailable: {forecast_error}", fg=typer.colors.YELLOW)
@@ -504,6 +524,9 @@ def status(
             for watcher in entry_watchers + exit_watchers:
                 key = watcher.get("config_path") or f"{symbol}|{side}|{watcher.get('mode')}"
                 used_watcher_keys.add(key)
+                if not verbose and (_is_watcher_expired(watcher) or _is_watcher_inactive(watcher)):
+                    hidden_watcher_count += 1
+                    continue
                 typer.echo(f"    {_format_watcher_summary(watcher)}")
     else:
         typer.echo("  No recorded active trades.")
@@ -514,10 +537,21 @@ def status(
         if (watcher.get("config_path") or f"{watcher.get('symbol')}|{watcher.get('side')}|{watcher.get('mode')}") not in used_watcher_keys
     ]
     if remaining_watchers:
-        typer.echo("\n:: MaxDiff Watchers")
-        for watcher in remaining_watchers:
-            symbol = watcher.get("symbol", "UNKNOWN")
-            typer.echo(f"  - {symbol} {_format_watcher_summary(watcher)}")
+        # Filter expired and inactive watchers if not in verbose mode
+        if not verbose:
+            active_remaining = [w for w in remaining_watchers if not (_is_watcher_expired(w) or _is_watcher_inactive(w))]
+            hidden_watcher_count += len(remaining_watchers) - len(active_remaining)
+            remaining_watchers = active_remaining
+
+        if remaining_watchers:
+            typer.echo("\n:: MaxDiff Watchers")
+            for watcher in remaining_watchers:
+                symbol = watcher.get("symbol", "UNKNOWN")
+                typer.echo(f"  - {symbol} {_format_watcher_summary(watcher)}")
+
+    # Show hidden count if any were hidden
+    if not verbose and hidden_watcher_count > 0:
+        typer.echo(f"\n  ({hidden_watcher_count} inactive/expired watcher{'s' if hidden_watcher_count > 1 else ''} hidden, use --verbose to show)")
 
     # Settings overview
     typer.echo("\n:: Settings")

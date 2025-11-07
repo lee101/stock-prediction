@@ -2512,6 +2512,141 @@ def manage_positions(
                 market_close_force_minutes=BACKOUT_MARKET_CLOSE_FORCE_MINUTES,
             )
 
+    # Refresh watchers for existing maxdiff positions
+    for position in positions:
+        symbol = position.symbol
+        normalized_side = _normalize_side_for_key(getattr(position, "side", ""))
+
+        # Get strategy for this position
+        active_trade = _get_active_trade(symbol, normalized_side)
+        if not active_trade:
+            continue
+
+        entry_strategy = active_trade.get("entry_strategy")
+        if entry_strategy not in MAXDIFF_LIMIT_STRATEGIES:
+            continue
+
+        # For maxdiff strategies, respawn watchers if they're missing or expired
+        # This ensures 24/7 coverage for crypto and continuous coverage for stocks
+        pick_data = current_picks.get(symbol)
+        if not pick_data:
+            # Position exists but not in current picks - might have been removed
+            # Check if it's in the analyzed results to get forecast data
+            if symbol not in all_analyzed_results:
+                logger.debug(f"Skipping watcher refresh for {symbol} - not in current analysis")
+                continue
+            pick_data = all_analyzed_results[symbol]
+
+        # Only refresh if the side matches
+        if not is_same_side(pick_data.get("side"), position.side):
+            logger.debug(f"Skipping watcher refresh for {symbol} {normalized_side} - side mismatch with forecast")
+            continue
+
+        # Get current bid/ask for sizing
+        bid_price, ask_price = fetch_bid_ask(symbol)
+        if bid_price is None or ask_price is None:
+            logger.debug(f"Skipping watcher refresh for {symbol} - no bid/ask available")
+            continue
+
+        entry_price = ask_price if is_buy_side(position.side) else bid_price
+        target_qty = get_qty(symbol, entry_price, positions)
+        if target_qty is None or target_qty <= 0:
+            logger.debug(f"Skipping watcher refresh for {symbol} - invalid target qty")
+            continue
+
+        # Check existing entry watcher to decide if/how to refresh
+        is_buy = is_buy_side(position.side)
+        is_crypto = symbol in all_crypto_symbols
+        from pathlib import Path
+        watcher_dir = get_state_dir() / f"maxdiff_watchers{STATE_SUFFIX or ''}"
+
+        from src.watcher_refresh_utils import find_existing_watcher_price, should_spawn_watcher
+
+        # Check for existing entry watcher
+        existing_limit_price, entry_reason = find_existing_watcher_price(
+            watcher_dir,
+            symbol,
+            normalized_side,
+            "entry",
+            is_crypto,
+            max_age_hours=24.0,
+        )
+
+        # Determine new forecast prices
+        if entry_strategy == "maxdiffalwayson":
+            preferred_limit = pick_data.get("maxdiffalwayson_low_price" if is_buy else "maxdiffalwayson_high_price")
+            fallback = pick_data.get("maxdiffprofit_low_price" if is_buy else "maxdiffprofit_high_price")
+        else:
+            preferred_limit = pick_data.get("maxdiffprofit_low_price" if is_buy else "maxdiffprofit_high_price")
+            fallback = pick_data.get("predicted_low" if is_buy else "predicted_high")
+        new_limit_price = preferred_limit if preferred_limit is not None else fallback
+
+        # Decide whether to spawn and which price to use
+        should_spawn_entry, limit_price, spawn_reason = should_spawn_watcher(
+            existing_limit_price,
+            new_limit_price,
+            "entry",
+        )
+
+        if limit_price is None or limit_price <= 0:
+            logger.debug(f"Skipping watcher refresh for {symbol} - invalid limit price")
+            continue
+
+        # Spawn entry watcher only if needed
+        if should_spawn_entry:
+            try:
+                logger.info(
+                    f"Refreshing entry watcher for existing {symbol} {normalized_side} position @ {limit_price:.4f} ({spawn_reason})"
+                )
+                spawn_open_position_at_maxdiff_takeprofit(
+                    symbol,
+                    normalized_side,
+                    float(limit_price),
+                    float(target_qty),
+                    poll_seconds=MAXDIFF_ENTRY_WATCHER_POLL_SECONDS,
+                    entry_strategy=entry_strategy,
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to refresh entry watcher for {symbol} {normalized_side}: {exc}")
+        else:
+            logger.debug(f"{symbol} {normalized_side}: Skipping entry watcher refresh ({spawn_reason})")
+
+        # Check for existing exit watcher
+        existing_takeprofit_price, exit_reason = find_existing_watcher_price(
+            watcher_dir,
+            symbol,
+            normalized_side,
+            "exit",
+            is_crypto,
+            max_age_hours=24.0,
+        )
+
+        # Determine new forecast takeprofit price
+        new_takeprofit_price = pick_data.get("maxdiffprofit_high_price" if is_buy else "maxdiffprofit_low_price")
+
+        # Decide whether to spawn and which price to use
+        should_spawn_exit, takeprofit_price, exit_spawn_reason = should_spawn_watcher(
+            existing_takeprofit_price,
+            new_takeprofit_price,
+            "exit",
+        )
+
+        if takeprofit_price is not None and takeprofit_price > 0 and should_spawn_exit:
+            try:
+                logger.info(
+                    f"Refreshing exit watcher for existing {symbol} {normalized_side} position @ {takeprofit_price:.4f} ({exit_spawn_reason})"
+                )
+                spawn_close_position_at_maxdiff_takeprofit(
+                    symbol,
+                    normalized_side,
+                    float(takeprofit_price),
+                    entry_strategy=entry_strategy,
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to refresh exit watcher for {symbol} {normalized_side}: {exc}")
+        elif not should_spawn_exit:
+            logger.debug(f"{symbol} {normalized_side}: Skipping exit watcher refresh ({exit_spawn_reason})")
+
     # Enter new positions from current_picks
     if not current_picks:
         logger.warning("No current picks available - skipping new position entry")
@@ -2818,16 +2953,17 @@ def manage_positions(
                     allowed_value = max_total_exposure_value - (total_exposure_value - current_abs_value)
 
                     # For crypto and non-leveraged strategies, shrink position instead of skipping
+                    # This allows us to still learn even when exposure is maxed out
                     is_crypto = symbol in all_crypto_symbols
                     is_non_leveraged_strategy = data.get("strategy") in MAXDIFF_STRATEGIES
 
                     if allowed_value <= 0:
                         if is_crypto or is_non_leveraged_strategy:
-                            # Use minimum trade size to still participate
+                            # Use minimum trade size to still participate and learn
                             logger.info(
                                 f"Shrinking {symbol} to minimum trade size due to max exposure "
                                 f"({projected_pct:.1f}% > {MAX_TOTAL_EXPOSURE_PCT:.1f}%). "
-                                f"Crypto/non-leveraged strategies can't leverage anyway."
+                                f"Crypto/non-leveraged strategies: using tiny probe to learn."
                             )
                             adjusted_qty = min_trade_qty
                             target_qty = adjusted_qty
@@ -2850,7 +2986,7 @@ def manage_positions(
                                 # For crypto/non-leveraged, use minimum size even when calculation gives 0
                                 logger.info(
                                     f"Exposure adjustment for {symbol} gave non-positive qty; "
-                                    f"using minimum trade size instead (crypto/non-leveraged)."
+                                    f"using minimum trade size instead (crypto/non-leveraged) to learn."
                                 )
                                 adjusted_qty = min_trade_qty
                             else:
