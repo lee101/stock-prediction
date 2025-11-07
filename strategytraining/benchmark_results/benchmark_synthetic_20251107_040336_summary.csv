@@ -1,0 +1,7 @@
+optimizer_name,best_value_mean,best_value_std,best_value_min,best_value_max,time_seconds_mean,time_seconds_std,num_evaluations_mean,num_evaluations_std,converged_mean
+DIRECT,1.540037,0.0,1.540037,1.540037,0.008002,0.000877,501.0,0.0,0.0
+DualAnnealing,1.549474,0.0,1.549474,1.549474,0.207947,0.0187,500.0,0.0,0.0
+SHGO,1.552838,0.0,1.552838,1.552838,9.839356,0.363539,1614.0,0.0,1.0
+GridSearch,1.556894,0.0,1.556894,1.556894,0.000923,3.7e-05,100.0,0.0,1.0
+DifferentialEvolution,1.558866,0.0,1.558866,1.558866,0.043394,0.027721,97.0,0.0,1.0
+BasinHopping,1.581787,0.0,1.581787,1.581787,0.380915,0.032769,4066.0,0.0,1.0
