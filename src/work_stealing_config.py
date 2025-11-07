@@ -13,45 +13,37 @@ from src.fixtures import active_crypto_symbols
 EST = pytz.timezone("US/Eastern")
 
 # Crypto out-of-hours settings
-CRYPTO_OUT_OF_HOURS_FORCE_IMMEDIATE_COUNT = int(os.getenv("CRYPTO_OUT_OF_HOURS_FORCE_COUNT", "1"))
+CRYPTO_OUT_OF_HOURS_FORCE_IMMEDIATE_COUNT = int(
+    os.getenv("CRYPTO_OUT_OF_HOURS_FORCE_COUNT", "2")  # Top 2 cryptos (only have 3 total)
+)
 CRYPTO_OUT_OF_HOURS_TOLERANCE_PCT = float(
-    os.getenv("CRYPTO_OUT_OF_HOURS_TOLERANCE", "0.016")  # 1.6%
+    os.getenv("CRYPTO_OUT_OF_HOURS_TOLERANCE", "0.020")  # 2.0% - wider spreads out of hours
 )
 CRYPTO_NORMAL_TOLERANCE_PCT = float(
-    os.getenv("CRYPTO_NORMAL_TOLERANCE", "0.0066")  # 0.66%
+    os.getenv("CRYPTO_NORMAL_TOLERANCE", "0.0066")  # 0.66% - proven default
 )
 
 # Work stealing settings
 WORK_STEALING_ENABLED = os.getenv("WORK_STEALING_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 WORK_STEALING_ENTRY_TOLERANCE_PCT = float(
-    os.getenv("WORK_STEALING_TOLERANCE", "0.003")  # 0.3%
+    os.getenv("WORK_STEALING_TOLERANCE", "0.0066")  # 0.66% - match normal tolerance so watchers can steal
 )
 WORK_STEALING_PROTECTION_PCT = float(
-    os.getenv("WORK_STEALING_PROTECTION", "0.004")  # 0.4%
+    os.getenv("WORK_STEALING_PROTECTION", "0.004")  # 0.4% - tighter than normal, protects near-execution
 )
 WORK_STEALING_COOLDOWN_SECONDS = int(
-    os.getenv("WORK_STEALING_COOLDOWN", "300")  # 5 minutes
+    os.getenv("WORK_STEALING_COOLDOWN", "120")  # 2 minutes - allow price movement recovery
 )
 WORK_STEALING_FIGHT_THRESHOLD = int(
-    os.getenv("WORK_STEALING_FIGHT_THRESHOLD", "3")  # 3 steals = fight
+    os.getenv("WORK_STEALING_FIGHT_THRESHOLD", "5")  # 5 steals = fighting (relaxed since PnL resolves)
 )
 WORK_STEALING_FIGHT_WINDOW_SECONDS = int(
-    os.getenv("WORK_STEALING_FIGHT_WINDOW", "1800")  # 30 minutes
+    os.getenv("WORK_STEALING_FIGHT_WINDOW", "1800")  # 30 minutes - good detection window
 )
 WORK_STEALING_FIGHT_COOLDOWN_SECONDS = int(
-    os.getenv("WORK_STEALING_FIGHT_COOLDOWN", "1800")  # 30 minutes after fight
+    os.getenv("WORK_STEALING_FIGHT_COOLDOWN", "600")  # 10 minutes - less punitive than 30min
 )
 WORK_STEALING_DRY_RUN = os.getenv("WORK_STEALING_DRY_RUN", "0").strip().lower() in {"1", "true", "yes", "on"}
-
-# Best orders tolerance (top N orders by capacity)
-BEST_ORDERS_TIGHT_TOLERANCE_PCT = float(
-    os.getenv("BEST_ORDERS_TOLERANCE", "0.005")  # 0.5%
-)
-
-# PnL improvement required to justify steal
-WORK_STEALING_MIN_PNL_IMPROVEMENT = float(
-    os.getenv("WORK_STEALING_MIN_PNL_IMPROVEMENT", "1.1")  # 10% better
-)
 
 # Crypto symbols for out-of-hours logic
 CRYPTO_SYMBOLS = frozenset(active_crypto_symbols)

@@ -123,7 +123,7 @@ jobs:
             --max-std 1400 \
             --symbols AAPL,MSFT,NVDA,AMZN,GOOG,XLK,SOXX \
             --trades-glob "marketsimulator/run_logs/${CI_SIM_PREFIX}_trades_summary.json" \
-            --max-trades-map NVDA@ci_guard:2,MSFT@ci_guard:20,AAPL@ci_guard:20,AMZN@ci_guard:16,GOOG@ci_guard:12,XLK@ci_guard:12,SOXX@ci_guard:12
+            --max-trades-map NVDA@maxdiff:2,MSFT@maxdiff:20,AAPL@maxdiff:20,AMZN@maxdiff:16,GOOG@maxdiff:12,XLK@maxdiff:12,SOXX@maxdiff:12
 
       - name: Upload simulator artifacts
         if: always()

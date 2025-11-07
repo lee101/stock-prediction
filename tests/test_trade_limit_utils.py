@@ -8,17 +8,17 @@ from scripts.trade_limit_utils import (
 
 
 def test_parse_entry_limit_map_supports_symbol_and_strategy():
-    raw = "NVDA@ci_guard:2,AAPL:3,GENERIC@momentum:4"
+    raw = "NVDA@maxdiff:2,AAPL:3,GENERIC@momentum:4"
     parsed = parse_entry_limit_map(raw)
-    assert parsed[("nvda", "ci_guard")] == 2
+    assert parsed[("nvda", "maxdiff")] == 2
     assert parsed[("aapl", None)] == 3
     assert parsed[("generic", "momentum")] == 4
 
 
 def test_resolve_entry_limit_falls_back_to_symbol_only():
-    parsed = parse_entry_limit_map("AAPL:3,CI_GUARD:5")
-    assert resolve_entry_limit(parsed, "AAPL", "ci_guard") == 3
-    assert resolve_entry_limit(parsed, "CI_GUARD", "ci_guard") == 5
+    parsed = parse_entry_limit_map("AAPL:3,MAXDIFF:5")
+    assert resolve_entry_limit(parsed, "AAPL", "maxdiff") == 3
+    assert resolve_entry_limit(parsed, "MAXDIFF", "maxdiff") == 5
     assert resolve_entry_limit(parsed, "MSFT", "unknown") is None
 
 
