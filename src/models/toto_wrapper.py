@@ -172,7 +172,7 @@ def _maybe_empty_cuda_cache(device: str) -> None:
         try:
             cuda_mod.empty_cache()
         except Exception as cache_exc:  # pragma: no cover - best effort
-            logger.debug("Failed to empty CUDA cache after OOM: %s", cache_exc)
+            logger.debug(f"Failed to empty CUDA cache after OOM: {cache_exc}")
 
 
 def _inference_context() -> ContextManager[None]:
@@ -401,7 +401,7 @@ class TotoPipeline:
                     )
                 except Exception as exc:
                     self._torch_compile_enabled = False
-                    logger.warning("torch.compile failed for Toto model: %s", exc)
+                    logger.warning(f"torch.compile failed for Toto model: {exc}")
 
         if compile_model and not self._torch_compile_success:
             try:
@@ -421,9 +421,9 @@ class TotoPipeline:
                         self.model = torch.compile(self.model, **compile_kwargs)  # type: ignore[assignment]
                         self._compiled = True
                     except Exception as exc:
-                        logger.debug("torch.compile fallback failed for Toto model: %s", exc)
+                        logger.debug(f"torch.compile fallback failed for Toto model: {exc}")
             except Exception as exc:
-                logger.debug("Could not compile Toto model: %s", exc)
+                logger.debug(f"Could not compile Toto model: {exc}")
 
         model_core = cast(Any, self.model)
         forecaster_ctor = cast(Any, TotoForecaster)
@@ -455,7 +455,7 @@ class TotoPipeline:
         try:
             context = torch.zeros(sequence_length, dtype=self.model_dtype, device=self.device)
         except Exception as exc:  # pragma: no cover - defensive against device issues
-            logger.debug("Skipping Toto warmup due to tensor allocation failure: %s", exc)
+            logger.debug(f"Skipping Toto warmup due to tensor allocation failure: {exc}")
             return
 
         try:
@@ -786,11 +786,11 @@ class TotoPipeline:
             else:
                 logger.debug("Skipping CPU offload - sufficient GPU VRAM available")
         except Exception as exc:  # pragma: no cover - defensive cleanup
-            logger.debug("Failed to move Toto model to CPU during unload: %s", exc)
+            logger.debug(f"Failed to move Toto model to CPU during unload: {exc}")
         self.model = None
         self.forecaster = None
         if torch.cuda.is_available():
             try:
                 torch.cuda.empty_cache()
             except Exception as exc:  # pragma: no cover - best effort
-                logger.debug("Failed to empty CUDA cache after Toto unload: %s", exc)
+                logger.debug(f"Failed to empty CUDA cache after Toto unload: {exc}")

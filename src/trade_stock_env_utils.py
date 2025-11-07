@@ -39,7 +39,7 @@ def _get_env_float(name: str) -> Optional[float]:
     try:
         return float(raw)
     except ValueError:
-        logger.warning("Ignoring invalid %s=%r; expected float.", name, raw)
+        logger.warning(f"Ignoring invalid {name}={raw!r}; expected float.")
         return None
 
 
@@ -58,11 +58,11 @@ def _parse_threshold_map(env_name: str) -> Dict[EntryKey, float]:
                     key_part, value_part = entry.split(":", 1)
                     value = float(value_part)
                 except ValueError:
-                    logger.warning("Ignoring invalid %s entry: %s", env_name, entry)
+                    logger.warning(f"Ignoring invalid {env_name} entry: {entry}")
                     continue
                 key = key_part.strip()
                 if not key:
-                    logger.warning("Ignoring invalid %s entry with empty key.", env_name)
+                    logger.warning(f"Ignoring invalid {env_name} entry with empty key.")
                     continue
                 symbol_key: Optional[str] = None
                 strategy_key: Optional[str] = None
@@ -154,13 +154,13 @@ def _symbol_kelly_scale(symbol: Optional[str]) -> Optional[float]:
             for item in env_raw.split(","):
                 entry = item.strip()
                 if not entry or ":" not in entry:
-                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_KELLY_SCALE_MAP entry: %s", entry)
+                    logger.warning(f"Ignoring malformed MARKETSIM_SYMBOL_KELLY_SCALE_MAP entry: {entry}")
                     continue
                 symbol_key, value = entry.split(":", 1)
                 try:
                     parsed[symbol_key.strip().lower()] = float(value)
                 except ValueError:
-                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_KELLY_SCALE_MAP value: %s", entry)
+                    logger.warning(f"Ignoring invalid MARKETSIM_SYMBOL_KELLY_SCALE_MAP value: {entry}")
         _SYMBOL_KELLY_SCALE_CACHE = (cache_key, parsed)
     overrides = _SYMBOL_KELLY_SCALE_CACHE[1] if _SYMBOL_KELLY_SCALE_CACHE else {}
     return overrides.get(symbol.lower())
@@ -208,7 +208,7 @@ def _allowed_side_for(symbol: Optional[str]) -> Optional[str]:
                 if not entry:
                     continue
                 if ":" not in entry:
-                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_SIDE_MAP entry: %s", entry)
+                    logger.warning(f"Ignoring malformed MARKETSIM_SYMBOL_SIDE_MAP entry: {entry}")
                     continue
                 symbol_key, side = entry.split(":", 1)
                 norm_symbol = symbol_key.strip().lower()
@@ -216,7 +216,7 @@ def _allowed_side_for(symbol: Optional[str]) -> Optional[str]:
                 if norm_symbol and norm_side in {"buy", "sell", "both"}:
                     parsed[norm_symbol] = norm_side
                 else:
-                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_SIDE_MAP entry: %s", entry)
+                    logger.warning(f"Ignoring invalid MARKETSIM_SYMBOL_SIDE_MAP entry: {entry}")
         _SYMBOL_SIDE_CACHE = (cache_key, parsed)
     overrides = _SYMBOL_SIDE_CACHE[1] if _SYMBOL_SIDE_CACHE else {}
     return overrides.get(symbol.lower())
@@ -234,13 +234,13 @@ def _symbol_max_hold_seconds(symbol: Optional[str]) -> Optional[float]:
             for item in env_raw.split(","):
                 entry = item.strip()
                 if not entry or ":" not in entry:
-                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP entry: %s", entry)
+                    logger.warning(f"Ignoring malformed MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP entry: {entry}")
                     continue
                 symbol_key, seconds_raw = entry.split(":", 1)
                 try:
                     parsed[symbol_key.strip().lower()] = float(seconds_raw)
                 except ValueError:
-                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP value: %s", entry)
+                    logger.warning(f"Ignoring invalid MARKETSIM_SYMBOL_MAX_HOLD_SECONDS_MAP value: {entry}")
         _SYMBOL_MAX_HOLD_CACHE = (cache_key, parsed)
     overrides = _SYMBOL_MAX_HOLD_CACHE[1] if _SYMBOL_MAX_HOLD_CACHE else {}
     return overrides.get(symbol.lower())
@@ -258,13 +258,13 @@ def _symbol_min_cooldown_minutes(symbol: Optional[str]) -> Optional[float]:
             for item in env_raw.split(","):
                 entry = item.strip()
                 if not entry or ":" not in entry:
-                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MIN_COOLDOWN_MAP entry: %s", entry)
+                    logger.warning(f"Ignoring malformed MARKETSIM_SYMBOL_MIN_COOLDOWN_MAP entry: {entry}")
                     continue
                 symbol_key, value_raw = entry.split(":", 1)
                 try:
                     parsed[symbol_key.strip().lower()] = float(value_raw)
                 except ValueError:
-                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MIN_COOLDOWN_MAP value: %s", entry)
+                    logger.warning(f"Ignoring invalid MARKETSIM_SYMBOL_MIN_COOLDOWN_MAP value: {entry}")
         _SYMBOL_MIN_COOLDOWN_CACHE = (cache_key, parsed)
     overrides = _SYMBOL_MIN_COOLDOWN_CACHE[1] if _SYMBOL_MIN_COOLDOWN_CACHE else {}
     return overrides.get(symbol.lower())
@@ -282,7 +282,7 @@ def _symbol_max_entries_per_run(
             for item in env_raw.split(","):
                 entry = item.strip()
                 if not entry or ":" not in entry:
-                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MAX_ENTRIES_MAP entry: %s", entry)
+                    logger.warning(f"Ignoring malformed MARKETSIM_SYMBOL_MAX_ENTRIES_MAP entry: {entry}")
                     continue
                 key_raw, value_raw = entry.split(":", 1)
                 symbol_key: Optional[str] = None
@@ -297,7 +297,7 @@ def _symbol_max_entries_per_run(
                 try:
                     parsed[(symbol_key, strategy_key)] = int(float(value_raw))
                 except ValueError:
-                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MAX_ENTRIES_MAP value: %s", entry)
+                    logger.warning(f"Ignoring invalid MARKETSIM_SYMBOL_MAX_ENTRIES_MAP value: {entry}")
         _SYMBOL_MAX_ENTRIES_CACHE = (cache_key, parsed)
     overrides = _SYMBOL_MAX_ENTRIES_CACHE[1] if _SYMBOL_MAX_ENTRIES_CACHE else {}
     symbol_key = symbol.lower() if symbol else None
@@ -325,13 +325,13 @@ def _symbol_min_move(symbol: Optional[str]) -> Optional[float]:
             for item in env_raw.split(","):
                 entry = item.strip()
                 if not entry or ":" not in entry:
-                    logger.warning("Ignoring malformed MARKETSIM_SYMBOL_MIN_MOVE_MAP entry: %s", entry)
+                    logger.warning(f"Ignoring malformed MARKETSIM_SYMBOL_MIN_MOVE_MAP entry: {entry}")
                     continue
                 key_raw, value_raw = entry.split(":", 1)
                 try:
                     parsed[key_raw.strip().lower()] = float(value_raw)
                 except ValueError:
-                    logger.warning("Ignoring invalid MARKETSIM_SYMBOL_MIN_MOVE_MAP value: %s", entry)
+                    logger.warning(f"Ignoring invalid MARKETSIM_SYMBOL_MIN_MOVE_MAP value: {entry}")
         _SYMBOL_MIN_MOVE_CACHE = (cache_key, parsed)
     overrides = _SYMBOL_MIN_MOVE_CACHE[1] if _SYMBOL_MIN_MOVE_CACHE else {}
     return overrides.get(symbol.lower())
@@ -352,19 +352,13 @@ def _symbol_min_predicted_move(symbol: Optional[str]) -> Optional[float]:
             for item in env_raw.split(","):
                 entry = item.strip()
                 if not entry or ":" not in entry:
-                    logger.warning(
-                        "Ignoring malformed MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP entry: %s",
-                        entry,
-                    )
+                    logger.warning(f"Ignoring malformed MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP entry: {entry}")
                     continue
                 key_raw, value_raw = entry.split(":", 1)
                 try:
                     parsed[key_raw.strip().lower()] = abs(float(value_raw))
                 except ValueError:
-                    logger.warning(
-                        "Ignoring invalid MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP value: %s",
-                        entry,
-                    )
+                    logger.warning(f"Ignoring invalid MARKETSIM_SYMBOL_MIN_PREDICTED_MOVE_MAP value: {entry}")
         _SYMBOL_MIN_PREDICTED_MOVE_CACHE = (cache_key, parsed)
     overrides = (
         _SYMBOL_MIN_PREDICTED_MOVE_CACHE[1] if _SYMBOL_MIN_PREDICTED_MOVE_CACHE else {}
@@ -387,19 +381,13 @@ def _symbol_min_strategy_return(symbol: Optional[str]) -> Optional[float]:
             for item in env_raw.split(","):
                 entry = item.strip()
                 if not entry or ":" not in entry:
-                    logger.warning(
-                        "Ignoring malformed MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP entry: %s",
-                        entry,
-                    )
+                    logger.warning(f"Ignoring malformed MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP entry: {entry}")
                     continue
                 key_raw, value_raw = entry.split(":", 1)
                 try:
                     parsed[key_raw.strip().lower()] = float(value_raw)
                 except ValueError:
-                    logger.warning(
-                        "Ignoring invalid MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP value: %s",
-                        entry,
-                    )
+                    logger.warning(f"Ignoring invalid MARKETSIM_SYMBOL_MIN_STRATEGY_RETURN_MAP value: {entry}")
         _SYMBOL_MIN_STRATEGY_RETURN_CACHE = (cache_key, parsed)
     overrides = _SYMBOL_MIN_STRATEGY_RETURN_CACHE[1] if _SYMBOL_MIN_STRATEGY_RETURN_CACHE else {}
     return overrides.get(symbol.lower())
@@ -444,7 +432,7 @@ def _symbol_trend_pnl_threshold(symbol: Optional[str]) -> Optional[float]:
             try:
                 return float(value_raw)
             except ValueError:
-                logger.warning("Invalid MARKETSIM_TREND_PNL_SUSPEND_MAP value: %s", entry)
+                logger.warning(f"Invalid MARKETSIM_TREND_PNL_SUSPEND_MAP value: {entry}")
                 return None
     return None
 
@@ -461,13 +449,13 @@ def _symbol_trend_resume_threshold(symbol: Optional[str]) -> Optional[float]:
             for item in env_raw.split(","):
                 entry = item.strip()
                 if not entry or ":" not in entry:
-                    logger.warning("Ignoring malformed MARKETSIM_TREND_PNL_RESUME_MAP entry: %s", entry)
+                    logger.warning(f"Ignoring malformed MARKETSIM_TREND_PNL_RESUME_MAP entry: {entry}")
                     continue
                 key_raw, value_raw = entry.split(":", 1)
                 try:
                     parsed[key_raw.strip().lower()] = float(value_raw)
                 except ValueError:
-                    logger.warning("Ignoring invalid MARKETSIM_TREND_PNL_RESUME_MAP value: %s", entry)
+                    logger.warning(f"Ignoring invalid MARKETSIM_TREND_PNL_RESUME_MAP value: {entry}")
         _TREND_RESUME_CACHE = (cache_key, parsed)
     overrides = _TREND_RESUME_CACHE[1] if _TREND_RESUME_CACHE else {}
     return overrides.get(symbol.lower())
@@ -480,7 +468,7 @@ def _load_trend_summary() -> Dict[str, Dict[str, float]]:
         return {}
     path = Path(path_raw)
     if not path.exists():
-        logger.debug("Trend summary path %s not found; skipping suspend checks.", path)
+        logger.debug(f"Trend summary path {path} not found; skipping suspend checks.")
         return {}
     try:
         mtime = path.stat().st_mtime
@@ -493,7 +481,7 @@ def _load_trend_summary() -> Dict[str, Dict[str, float]]:
         with path.open("r", encoding="utf-8") as handle:
             summary = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("Failed to load trend summary %s: %s", path, exc)
+        logger.warning(f"Failed to load trend summary {path}: {exc}")
         return {}
     _TREND_SUMMARY_CACHE = (cache_key, summary)
     return summary

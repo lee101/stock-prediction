@@ -47,11 +47,11 @@ def coerce_keepalive_seconds(env_name: str, *, default: float, logger=None) -> f
         seconds = float(value)
     except ValueError:
         if logger:
-            logger.warning("Ignoring invalid %s=%r; expected number of seconds.", env_name, value)
+            logger.warning(f"Ignoring invalid {env_name}={value!r}; expected number of seconds.")
         return float(default)
     if seconds < 0.0:
         if logger:
-            logger.warning("Ignoring negative %s=%r; defaulting to %.1f.", env_name, value, default)
+            logger.warning(f"Ignoring negative {env_name}={value!r}; defaulting to {default:.1f}.")
         return float(default)
     return seconds
 

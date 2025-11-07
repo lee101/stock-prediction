@@ -2672,17 +2672,42 @@ def manage_positions(
     always_on_priority = {symbol: index + 1 for index, (symbol, _) in enumerate(always_on_candidates)}
     always_on_forced_symbols = {symbol for symbol, _ in always_on_candidates[:MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT]}
 
-    # Calculate crypto ranks for out-of-hours tolerance
+    # Extract forecasted PnL for all symbols to prioritize processing order
+    all_candidates: List[Tuple[str, float]] = []
     crypto_candidates: List[Tuple[str, float]] = []
+
     for symbol, pick_data in current_picks.items():
-        if symbol not in all_crypto_symbols:
-            continue
-        forecasted_pnl = coerce_numeric(pick_data.get("avg_return"), default=0.0)
-        crypto_candidates.append((symbol, forecasted_pnl))
+        # Get forecasted PnL for the selected strategy
+        selected_strategy = pick_data.get("strategy")
+        strategy_forecasts = pick_data.get("strategy_candidate_forecasted_pnl", {})
+        forecasted_pnl = coerce_numeric(
+            strategy_forecasts.get(selected_strategy, pick_data.get("avg_return", 0.0)),
+            default=0.0
+        )
+        all_candidates.append((symbol, forecasted_pnl))
+
+        # Track crypto separately for out-of-hours tolerance ranking
+        if symbol in all_crypto_symbols:
+            crypto_candidates.append((symbol, forecasted_pnl))
+
+    # Calculate crypto ranks (still needed for out-of-hours tolerance)
     crypto_candidates.sort(key=lambda item: item[1], reverse=True)
     crypto_ranks = {symbol: index + 1 for index, (symbol, _) in enumerate(crypto_candidates)}
 
-    for symbol, original_data in current_picks.items():
+    # Sort ALL symbols by forecasted PnL (highest first) to ensure best opportunities
+    # get first access to available equity/buying power, regardless of crypto vs stock
+    all_candidates.sort(key=lambda item: item[1], reverse=True)
+    sorted_picks = [(symbol, current_picks[symbol]) for symbol, _ in all_candidates]
+
+    # Log priority rankings for visibility
+    if all_candidates:
+        logger.info("Symbol priority rankings (by forecasted PnL, highest first):")
+        for rank, (symbol, forecasted_pnl) in enumerate(all_candidates, start=1):
+            symbol_type = "crypto" if symbol in all_crypto_symbols else "stock"
+            crypto_rank_str = f", crypto_rank={crypto_ranks[symbol]}" if symbol in crypto_ranks else ""
+            logger.info(f"  {rank}. {symbol} ({symbol_type}): forecasted_pnl={forecasted_pnl:.6f}{crypto_rank_str}")
+
+    for symbol, original_data in sorted_picks:
         data = dict(original_data)
         current_picks[symbol] = data
         is_maxdiff_strategy = data.get("strategy") in MAXDIFF_LIMIT_STRATEGIES
