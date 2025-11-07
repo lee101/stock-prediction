@@ -46,6 +46,7 @@ from src.fixtures import all_crypto_symbols
 # Note: Use all_crypto_symbols for identification checks (fees, trading hours, etc.)
 # Use active_crypto_symbols for deciding what to actively trade
 from src.logging_utils import setup_logging
+from src.work_stealing_config import is_crypto_out_of_hours
 from src.portfolio_risk import record_portfolio_snapshot
 from src.process_utils import (
     MAXDIFF_WATCHERS_DIR,
@@ -2361,12 +2362,65 @@ def log_trading_plan(picks: Dict[str, Dict], action: str):
     logger.info("TRADING PLAN (%s) count=%d | %s", action, len(picks), " ; ".join(compact_lines))
 
 
+def _cancel_non_crypto_orders_out_of_hours():
+    """Cancel non-crypto limit orders during out-of-hours to free buying power for crypto.
+
+    During out-of-hours (NYSE closed), stock orders can't execute but reserve buying power.
+    Canceling them frees up capital for crypto trading, which is available 24/7.
+    Stock orders will be re-placed when market hours return.
+    """
+    if not is_crypto_out_of_hours():
+        return  # Market is open, keep stock orders
+
+    try:
+        orders = alpaca_wrapper.get_orders()
+    except Exception as exc:
+        logger.warning(f"Failed to fetch orders for out-of-hours cleanup: {exc}")
+        return
+
+    cancelled_count = 0
+    freed_notional = 0.0
+
+    for order in orders:
+        symbol = getattr(order, "symbol", None)
+        if not symbol or symbol in all_crypto_symbols:
+            continue  # Keep crypto orders
+
+        # This is a non-crypto order during out-of-hours - cancel it
+        order_id = getattr(order, "id", None)
+        limit_price = getattr(order, "limit_price", None)
+        qty = getattr(order, "qty", 0)
+
+        if order_id:
+            try:
+                alpaca_wrapper.cancel_order(order_id)
+                cancelled_count += 1
+                if limit_price:
+                    notional = abs(float(qty) * float(limit_price))
+                    freed_notional += notional
+                logger.info(
+                    f"Cancelled non-crypto order during out-of-hours: {symbol} "
+                    f"(freed ${notional:.2f} buying power for crypto)"
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to cancel {symbol} order {order_id}: {exc}")
+
+    if cancelled_count > 0:
+        logger.info(
+            f"Out-of-hours cleanup: Cancelled {cancelled_count} non-crypto orders, "
+            f"freed ${freed_notional:.2f} for crypto trading"
+        )
+
+
 def manage_positions(
     current_picks: Dict[str, Dict],
     previous_picks: Dict[str, Dict],
     all_analyzed_results: Dict[str, Dict],
 ):
     """Execute actual position management."""
+    # Cancel non-crypto orders during out-of-hours to free buying power for crypto
+    _cancel_non_crypto_orders_out_of_hours()
+
     positions = alpaca_wrapper.get_all_positions()
     positions = filter_to_realistic_positions(positions)
     logger.info("EXECUTING POSITION CHANGES:")
