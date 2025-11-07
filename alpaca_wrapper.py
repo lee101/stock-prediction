@@ -42,26 +42,35 @@ from src.trading_obj_utils import filter_to_realistic_positions
 logger = setup_logging("alpaca_cli.log")
 
 
-def _get_time_in_force_for_qty(qty: float) -> str:
+def _get_time_in_force_for_qty(qty: float, symbol: str = None) -> str:
     """
-    Get appropriate time_in_force for Alpaca order based on quantity.
+    Get appropriate time_in_force for Alpaca order based on quantity and symbol.
 
-    Alpaca requires fractional orders to use time_in_force='day'.
-    Whole number orders can use 'gtc' (good-til-cancelled).
+    For stocks:
+    - Fractional orders require time_in_force='day'
+    - Whole number orders can use 'gtc' (good-til-cancelled)
+
+    For crypto:
+    - Always use 'gtc' (crypto markets are 24/7, 'day' is invalid)
 
     Args:
         qty: Order quantity
+        symbol: Trading symbol (used to detect crypto)
 
     Returns:
-        'day' for fractional quantities, 'gtc' for whole numbers
+        'gtc' for crypto or whole numbers, 'day' for fractional stocks
     """
+    # Crypto symbols always use 'gtc' (24/7 markets don't support 'day')
+    if symbol and ('USD' in symbol or 'BTC' in symbol or 'ETH' in symbol or 'USDT' in symbol):
+        return "gtc"
+
     try:
         is_fractional = float(qty) % 1 != 0
         return "day" if is_fractional else "gtc"
     except (TypeError, ValueError):
-        # If we can't determine, default to 'day' (safer choice)
-        logger.warning(f"Could not determine if qty={qty} is fractional, defaulting to day order")
-        return "day"
+        # If we can't determine, default to 'gtc' (works for both stocks and crypto)
+        logger.warning(f"Could not determine if qty={qty} is fractional, defaulting to gtc order")
+        return "gtc"
 
 
 # Market order spread threshold - don't use market orders if spread exceeds this
@@ -417,7 +426,7 @@ def open_order_at_price(symbol, qty, side, price):
         return None
     try:
         price = str(round(price, 2))
-        time_in_force = _get_time_in_force_for_qty(qty)
+        time_in_force = _get_time_in_force_for_qty(qty, symbol)
 
         result = alpaca_api.submit_order(
             order_data=LimitOrderRequest(
@@ -468,7 +477,7 @@ def open_order_at_price_or_all(symbol, qty, side, price):
         try:
             # Keep price as float for calculations, only convert when submitting order
             price_rounded = round(price, 2)
-            time_in_force = _get_time_in_force_for_qty(qty)
+            time_in_force = _get_time_in_force_for_qty(qty, symbol)
 
             result = alpaca_api.submit_order(
                 order_data=LimitOrderRequest(
@@ -556,7 +565,7 @@ def open_order_at_price_allow_add_to_position(symbol, qty, side, price):
         try:
             # Keep price as float for calculations, only convert when submitting order
             price_rounded = round(price, 2)
-            time_in_force = _get_time_in_force_for_qty(qty)
+            time_in_force = _get_time_in_force_for_qty(qty, symbol)
 
             logger.debug(f"Submitting order: {symbol} {side} {qty} @ {price_rounded} (attempt {retry_count + 1}, tif={time_in_force})")
             result = alpaca_api.submit_order(
