@@ -16,7 +16,7 @@ def _init_client() -> Client | None:
     try:
         return Client(BINANCE_API_KEY, BINANCE_SECRET)
     except Exception as exc:  # pragma: no cover - connectivity / credential issues
-        logger.error("Failed to initialise Binance client: %s", exc)
+        logger.error(f"Failed to initialise Binance client: {exc}")
         logger.info(
             "Maybe you are offline - no connection to Binance; live trading features will be disabled."
         )
@@ -70,8 +70,8 @@ def create_order(symbol: str, side: str, quantity: float, price: float | str | N
     try:
         order = client.create_order(**payload)
     except Exception as exc:
-        logger.error("Failed to create Binance order: %s", exc)
-        logger.error("Payload: %s", payload)
+        logger.error(f"Failed to create Binance order: {exc}")
+        logger.error(f"Payload: {payload}")
         raise
     return order
 
@@ -88,7 +88,7 @@ def create_all_in_order(symbol: str, side: str, price: float | str | None = None
         try:
             free_amount = float(free)
         except (TypeError, ValueError):
-            logger.warning("Ignoring balance with unparsable free amount: %s", balance)
+            logger.warning(f"Ignoring balance with unparsable free amount: {balance}")
             continue
         if asset == symbol[:3]:
             balance_sell = free_amount
@@ -114,7 +114,7 @@ def create_all_in_order(symbol: str, side: str, price: float | str | None = None
         raise RuntimeError(f"Calculated Binance order quantity {quantity} is not positive for symbol {symbol}.")
 
     order = create_order(symbol, side_upper, quantity, limit_price)
-    logger.info("Created order on Binance: %s", order)
+    logger.info(f"Created order on Binance: {order}")
     return order
 
 
@@ -175,14 +175,14 @@ def get_all_orders(symbol: str) -> List[Dict[str, Any]]:
         logger.error(e)
         return []
     if not isinstance(raw_orders, list):
-        logger.error("Unexpected orders payload from Binance: %s", raw_orders)
+        logger.error(f"Unexpected orders payload from Binance: {raw_orders}")
         return []
     orders: List[Dict[str, Any]] = []
     for entry in raw_orders:
         if isinstance(entry, dict):
             orders.append(entry)
         else:
-            logger.debug("Discarding non-dict order entry: %s", entry)
+            logger.debug(f"Discarding non-dict order entry: {entry}")
     return orders
 
 
@@ -196,7 +196,7 @@ def get_account_balances() -> List[Dict[str, Any]]:
         return []
 
     if balances_obj is None:
-        logger.error("Binance account payload missing 'balances' key: %s", account)
+        logger.error(f"Binance account payload missing 'balances' key: {account}")
         return []
 
     filtered: List[Dict[str, Any]] = []
@@ -204,5 +204,5 @@ def get_account_balances() -> List[Dict[str, Any]]:
         if isinstance(entry, dict):
             filtered.append(entry)
         else:
-            logger.debug("Discarding non-dict balance entry: %s", entry)
+            logger.debug(f"Discarding non-dict balance entry: {entry}")
     return filtered

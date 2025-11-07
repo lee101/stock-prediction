@@ -547,14 +547,14 @@ class KronosForecastingWrapper:
             elif not should_offload:
                 logger.debug("Skipping CPU offload for model - sufficient GPU VRAM available")
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Failed to move Kronos model to CPU during unload: %s", exc)
+            logger.debug(f"Failed to move Kronos model to CPU during unload: {exc}")
         try:
             if should_offload and hasattr(predictor.tokenizer, "to"):
                 predictor.tokenizer.to("cpu")
             elif not should_offload:
                 logger.debug("Skipping CPU offload for tokenizer - sufficient GPU VRAM available")
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Failed to move Kronos tokenizer to CPU during unload: %s", exc)
+            logger.debug(f"Failed to move Kronos tokenizer to CPU during unload: {exc}")
         self._predictor = None
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -630,7 +630,7 @@ class KronosForecastingWrapper:
             try:
                 model = model.to(dtype=self._preferred_dtype)  # type: ignore[attr-defined]
             except Exception as exc:  # pragma: no cover - dtype conversions may fail on older checkpoints
-                logger.debug("Unable to convert Kronos model to dtype %s: %s", self._preferred_dtype, exc)
+                logger.debug(f"Unable to convert Kronos model to dtype {self._preferred_dtype}: {exc}")
 
         def _build_predictor(target_device: str):
             return KronosPredictor(
@@ -653,7 +653,7 @@ class KronosForecastingWrapper:
             try:
                 predictor.model = predictor.model.to(dtype=self._preferred_dtype)  # type: ignore[attr-defined]
             except Exception as exc:  # pragma: no cover - predictor may not expose .model
-                logger.debug("Failed to set Kronos predictor dtype: %s", exc)
+                logger.debug(f"Failed to set Kronos predictor dtype: {exc}")
         predictor.model = predictor.model.eval()
 
         # Apply torch.compile if requested
@@ -676,7 +676,7 @@ class KronosForecastingWrapper:
 
                 logger.info("Kronos torch.compile applied successfully")
             except Exception as exc:
-                logger.warning("Failed to apply torch.compile to Kronos: %s; continuing in eager mode", exc)
+                logger.warning(f"Failed to apply torch.compile to Kronos: {exc}; continuing in eager mode")
                 self.compile = False
 
         metadata_requirements = {
@@ -729,7 +729,7 @@ class KronosForecastingWrapper:
                     exc,
                 )
             except Exception as exc:  # pragma: no cover - tokenizer persistence best effort
-                logger.debug("Failed to persist Kronos tokenizer cache: %s", exc)
+                logger.debug(f"Failed to persist Kronos tokenizer cache: {exc}")
 
         self._predictor = predictor
         return predictor
@@ -739,7 +739,7 @@ class KronosForecastingWrapper:
             try:
                 torch.cuda.empty_cache()
             except Exception as exc:  # pragma: no cover - defensive
-                logger.debug("Failed to clear CUDA cache after OOM: %s", exc)
+                logger.debug(f"Failed to clear CUDA cache after OOM: {exc}")
         self.unload()
 
     def _next_sample_count_after_oom(self, current_samples: int) -> Optional[int]:

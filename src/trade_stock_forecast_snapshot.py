@@ -79,7 +79,7 @@ def load_latest_forecast_snapshot(
         )
     except Exception as exc:  # pragma: no cover - exercised when CSV missing/corrupt
         if logger is not None:
-            logger.warning("Failed to load latest prediction snapshot %s: %s", latest_file, exc)
+            logger.warning(f"Failed to load latest prediction snapshot {latest_file}: {exc}")
         reset_forecast_cache()
         _LATEST_FORECAST_PATH = latest_file
         return _LATEST_FORECAST_CACHE

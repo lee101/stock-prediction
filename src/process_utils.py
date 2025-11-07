@@ -326,12 +326,8 @@ def _stop_conflicting_entry_watchers(
             continue
 
         logger.info(
-            "Terminating conflicting %s %s entry watcher at %s (limit %.8f) in favor of %.8f",
-            symbol,
-            side,
-            path.name,
-            float(existing_limit),
-            float(new_limit_price),
+            f"Terminating conflicting {symbol} {side} entry watcher at {path.name} "
+            f"(limit {float(existing_limit):.8f}) in favor of {float(new_limit_price):.8f}"
         )
         _stop_existing_watcher(path, reason="superseded_entry_watcher")
 

@@ -66,7 +66,7 @@ def load_store_entry(
         store.load()
     except Exception as exc:
         if logger is not None:
-            logger.error("Failed loading %s store: %s", store_name, exc)
+            logger.error(f"Failed loading {store_name} store: {exc}")
         return {}
     return store.get(state_key(symbol, side, strategy), {})
 
@@ -88,7 +88,7 @@ def save_store_entry(
         store.load()
     except Exception as exc:
         if logger is not None:
-            logger.error("Failed refreshing %s store before save: %s", store_name, exc)
+            logger.error(f"Failed refreshing {store_name} store before save: {exc}")
         return
     store[state_key(symbol, side, strategy)] = dict(state)
 
@@ -373,7 +373,7 @@ def pop_active_trade_record(
         store.load()
     except Exception as exc:
         if logger is not None:
-            logger.error("Failed loading active trades store for pop: %s", exc)
+            logger.error(f"Failed loading active trades store for pop: {exc}")
         return {}
     key = state_key(symbol, side, strategy)
     record = store.data.pop(key, None) if hasattr(store, "data") else store.pop(key, None)

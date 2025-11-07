@@ -132,59 +132,59 @@ class WorkStealingCoordinator:
             logger.debug(f"{symbol}: No steal candidates available")
             return None
 
-        # Get furthest candidate (already sorted by distance descending)
-        furthest_candidate = candidates[0]
+        # Get lowest PnL candidate (sorted by forecasted_pnl ascending, then distance descending)
+        worst_pnl_candidate = candidates[0]
 
-        # Steal from furthest order - it's least likely to execute
-        # We don't require better PnL because execution likelihood matters more
-        # An order 5% away might have great PnL but will likely never fill
+        # Steal from lowest PnL order - highest performing strategies get priority
+        # Orders close to execution are already protected (filtered by is_protected)
+        # This ensures capital is allocated to the best forecasted opportunities
         logger.debug(
-            f"{symbol}: Evaluating steal from {furthest_candidate.symbol} "
-            f"(distance={furthest_candidate.distance_pct:.4f}, PnL={furthest_candidate.forecasted_pnl:.4f}) "
+            f"{symbol}: Evaluating steal from {worst_pnl_candidate.symbol} "
+            f"(distance={worst_pnl_candidate.distance_pct:.4f}, PnL={worst_pnl_candidate.forecasted_pnl:.4f}) "
             f"vs mine (distance={distance_pct:.4f}, PnL={forecasted_pnl:.4f})"
         )
 
         # Check fighting - but allow PnL-based resolution
-        if self._would_cause_fight(symbol, furthest_candidate.symbol):
+        if self._would_cause_fight(symbol, worst_pnl_candidate.symbol):
             # If fighting, settle by PnL - better PnL wins
-            if forecasted_pnl > furthest_candidate.forecasted_pnl:
+            if forecasted_pnl > worst_pnl_candidate.forecasted_pnl:
                 logger.info(
-                    f"{symbol}: Fighting with {furthest_candidate.symbol} but PnL better "
-                    f"({forecasted_pnl:.4f} > {furthest_candidate.forecasted_pnl:.4f}), allowing steal"
+                    f"{symbol}: Fighting with {worst_pnl_candidate.symbol} but PnL better "
+                    f"({forecasted_pnl:.4f} > {worst_pnl_candidate.forecasted_pnl:.4f}), allowing steal"
                 )
             else:
                 logger.warning(
-                    f"{symbol}: Fighting with {furthest_candidate.symbol} and PnL not better, aborting steal"
+                    f"{symbol}: Fighting with {worst_pnl_candidate.symbol} and PnL not better, aborting steal"
                 )
                 return None
 
         # Execute steal
         logger.info(
             f"Work steal: {symbol} (dist={distance_pct:.4f}, PnL={forecasted_pnl:.4f}) stealing from "
-            f"{furthest_candidate.symbol} (dist={furthest_candidate.distance_pct:.4f}, PnL={furthest_candidate.forecasted_pnl:.4f})"
+            f"{worst_pnl_candidate.symbol} (dist={worst_pnl_candidate.distance_pct:.4f}, PnL={worst_pnl_candidate.forecasted_pnl:.4f})"
         )
 
         if WORK_STEALING_DRY_RUN:
-            logger.info(f"[DRY RUN] Would cancel order {furthest_candidate.order_id} for {furthest_candidate.symbol}")
-            return furthest_candidate.symbol
+            logger.info(f"[DRY RUN] Would cancel order {worst_pnl_candidate.order_id} for {worst_pnl_candidate.symbol}")
+            return worst_pnl_candidate.symbol
 
-        # Cancel the furthest order
+        # Cancel the lowest PnL order to make room for higher PnL
         try:
-            alpaca_wrapper.cancel_order(furthest_candidate.order_id)
+            alpaca_wrapper.cancel_order(worst_pnl_candidate.order_id)
         except Exception as exc:
-            logger.error(f"Failed to cancel order {furthest_candidate.order_id}: {exc}")
+            logger.error(f"Failed to cancel order {worst_pnl_candidate.order_id}: {exc}")
             return None
 
         # Record the steal
         self._record_steal(
-            from_symbol=furthest_candidate.symbol,
+            from_symbol=worst_pnl_candidate.symbol,
             to_symbol=symbol,
-            from_order_id=furthest_candidate.order_id,
+            from_order_id=worst_pnl_candidate.order_id,
             to_forecasted_pnl=forecasted_pnl,
-            from_forecasted_pnl=furthest_candidate.forecasted_pnl,
+            from_forecasted_pnl=worst_pnl_candidate.forecasted_pnl,
         )
 
-        return furthest_candidate.symbol
+        return worst_pnl_candidate.symbol
 
     def is_protected(
         self,
@@ -269,16 +269,17 @@ class WorkStealingCoordinator:
         return max(0.0, available)
 
     def _get_steal_candidates(self) -> List[OrderCandidate]:
-        """Get list of orders that can be stolen, sorted by distance from limit (furthest first).
+        """Get list of orders that can be stolen, sorted by forecasted PnL (lowest first).
 
-        The logic: Orders far from their limit are unlikely to execute, so we steal from
-        them first regardless of PnL. An order 5% from limit with great PnL is less
-        valuable than an order 0.5% from limit with mediocre PnL, because the close
-        one will actually execute.
+        The logic: For MAXDIFF strategies, we prioritize by forecasted PnL to ensure
+        the best performing trades get capital allocation. Orders close to execution
+        are already filtered out by is_protected(), so lower PnL orders that are very
+        close can still execute. This gives priority to high PnL while still allowing
+        lower PnL to execute if they get really close to limit price.
 
         Returns:
-            List of candidate orders sorted by distance_pct descending (furthest first),
-            with PnL as tiebreaker for similar distances
+            List of candidate orders sorted by forecasted_pnl ascending (worst first),
+            with distance_pct descending as tiebreaker for equal PnLs
         """
         candidates = []
 
@@ -350,10 +351,11 @@ class WorkStealingCoordinator:
                 )
             )
 
-        # Sort by distance from limit (furthest first = highest distance_pct)
-        # Use PnL as tiebreaker for orders at similar distances
-        # Furthest orders are least likely to execute, so steal from them first
-        candidates.sort(key=lambda c: (-c.distance_pct, c.forecasted_pnl))
+        # For MAXDIFF strategies: Prioritize by forecasted PnL (steal from lowest PnL first)
+        # This ensures highest performing strategies get priority for capital allocation
+        # Distance is a tiebreaker - if PnLs are equal, steal from furthest
+        # Note: Orders close to execution are already filtered out by is_protected()
+        candidates.sort(key=lambda c: (c.forecasted_pnl, -c.distance_pct))
 
         return candidates
 
