@@ -13,6 +13,12 @@ from stock.state import get_state_dir, resolve_state_suffix
 
 from src.fixtures import crypto_symbols
 from src.utils import debounce
+from src.work_stealing_config import (
+    CRYPTO_SYMBOLS,
+    get_entry_tolerance_for_symbol,
+    is_crypto_out_of_hours,
+    should_force_immediate_crypto,
+)
 
 cwd = Path.cwd()
 STATE_SUFFIX = resolve_state_suffix()
@@ -391,11 +397,11 @@ def _get_inherited_env():
     # Ensure Alpaca credentials are explicitly passed
     # Import here to get current values loaded in parent process
     from env_real import (
-        ALP_KEY_ID,
-        ALP_SECRET_KEY,
-        ALP_KEY_ID_PROD,
-        ALP_SECRET_KEY_PROD,
         ALP_ENDPOINT,
+        ALP_KEY_ID,
+        ALP_KEY_ID_PROD,
+        ALP_SECRET_KEY,
+        ALP_SECRET_KEY_PROD,
         PAPER,
     )
 
@@ -413,10 +419,10 @@ def _get_inherited_env():
     active_secret = ALP_SECRET_KEY if PAPER else ALP_SECRET_KEY_PROD
 
     has_valid_credentials = (
-        active_key and
-        active_secret and
-        "placeholder" not in active_key.lower() and
-        "placeholder" not in active_secret.lower()
+        active_key
+        and active_secret
+        and "placeholder" not in active_key.lower()
+        and "placeholder" not in active_secret.lower()
     )
 
     if not has_valid_credentials:
