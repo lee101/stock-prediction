@@ -59,7 +59,7 @@ class SimConfig:
     crypto_ooh_tolerance_pct: float = 0.020
     crypto_normal_tolerance_pct: float = 0.0066
     entry_tolerance_pct: float = 0.0066
-    protection_pct: float = 0.004
+    protection_pct: float = 0.001
     cooldown_seconds: int = 120
     fight_threshold: int = 5
     fight_cooldown_seconds: int = 600
@@ -323,7 +323,7 @@ def optimize_params(hourly_data_dir: str, strategy_pnl_path: str):
         (0.01, 0.05),  # crypto_ooh_tolerance_pct
         (0.003, 0.015),  # crypto_normal_tolerance_pct
         (0.003, 0.015),  # entry_tolerance_pct
-        (0.001, 0.01),  # protection_pct
+        (0.0005, 0.003),  # protection_pct - tighter range around 0.1%
         (60, 300),  # cooldown_seconds
         (3, 10),  # fight_threshold
         (300, 1800),  # fight_cooldown_seconds
