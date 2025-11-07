@@ -181,9 +181,9 @@ def run_simulation(config: SimConfig, hourly_data_dir: str, strategy_pnl_df: pd.
 
     pnls = []
 
-    for i, ts in enumerate(all_timestamps[::24]):  # Every 24 hours to speed up
-        if i % 100 == 0:
-            print(f"Progress: {i}/{len(all_timestamps) // 24}", end="\r")
+    for i, ts in enumerate(all_timestamps[::168]):  # Every week to speed up
+        if i % 10 == 0:
+            print(f"Progress: {i}/{len(all_timestamps) // 168}", end="\r", flush=True)
 
         available_cryptos = []
         for symbol in crypto_symbols:
@@ -209,7 +209,7 @@ def run_simulation(config: SimConfig, hourly_data_dir: str, strategy_pnl_df: pd.
             row = df[df["timestamp"] == ts].iloc[0]
 
             limit_price = row["low"] * 1.001  # Simulate maxdiff entry
-            qty = 100 / limit_price  # Fixed $100 position
+            qty = 1000 / limit_price  # Fixed $1000 position for more capacity pressure
 
             order = SimOrder(
                 symbol=symbol,
@@ -223,8 +223,10 @@ def run_simulation(config: SimConfig, hourly_data_dir: str, strategy_pnl_df: pd.
             )
 
             if sim.attempt_entry(order, ts):
-                exit_idx = min(i + 24, len(all_timestamps) - 1)
-                exit_ts = all_timestamps[exit_idx]
+                exit_idx = min(i + 1, len(all_timestamps[::168]) - 1)
+                exit_ts = (
+                    all_timestamps[::168][exit_idx] if exit_idx < len(all_timestamps[::168]) else all_timestamps[-1]
+                )
                 exit_row = df[df["timestamp"] >= exit_ts]
                 if not exit_row.empty:
                     exit_price = exit_row.iloc[0]["high"] * 0.999
@@ -265,11 +267,13 @@ def optimize_params(hourly_data_dir: str, strategy_pnl_path: str):
 
         results = run_simulation(config, hourly_data_dir, strategy_df)
 
-        score = results["total_pnl"] * 0.5 + results["sharpe"] * 1000 + results["win_rate"] * 2000
+        score = (
+            results["total_pnl"] * 0.5 + results["sharpe"] * 1000 + results["win_rate"] * 2000 - results["blocks"] * 10
+        )
 
-        print(f"\nConfig: {params}")
-        print(f"Results: {results}")
-        print(f"Score: {score}")
+        print(f"\nConfig: {params}", flush=True)
+        print(f"Results: {results}", flush=True)
+        print(f"Score: {score}", flush=True)
 
         return -score  # Minimize negative score
 
@@ -285,7 +289,7 @@ def optimize_params(hourly_data_dir: str, strategy_pnl_path: str):
     ]
 
     result = differential_evolution(
-        objective, bounds, maxiter=20, popsize=5, seed=42, workers=1, updating="deferred", polish=False
+        objective, bounds, maxiter=10, popsize=4, seed=42, workers=1, updating="deferred", polish=False
     )
 
     optimal = SimConfig(
