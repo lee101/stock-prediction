@@ -596,6 +596,11 @@ def ramp_into_position(
     max_retries = 5
     linear_ramp = 60  # 1 hour ramp for both crypto and stocks
 
+    # Calculate target_qty ONCE at the start and cache it
+    # This prevents recalculating on each iteration which causes multiple orders
+    initial_target_qty = target_qty
+    target_qty_cached = None
+
     while True:
         try:
             all_positions = alpaca_wrapper.get_all_positions()
@@ -611,36 +616,41 @@ def ramp_into_position(
                     logger.info(f"Existing position for {pair}: {current_qty} shares")
                     break
 
-            # If target_qty not provided, use the centralized get_qty function for consistent risk management
-            if target_qty is None:
-                # Get current market price to calculate target qty
-                data_client = _get_data_client()
-                if data_client is not None:
-                    download_exchange_latest_data(data_client, pair)
-                bid_price = get_bid(pair)
-                ask_price = get_ask(pair)
-                if bid_price is None or ask_price is None:
-                    logger.error(f"Failed to get bid/ask prices for {pair}")
-                    return False
-                entry_price = ask_price if side == "buy" else bid_price
-                
-                # Use the centralized get_qty function which includes exposure limits and risk management
-                target_qty = get_qty(pair, entry_price, positions)
-                
-                # If get_qty returns 0, we can't add more to this position
-                if target_qty == 0:
-                    logger.warning(f"Cannot add to position for {pair} - exposure limits reached or invalid quantity")
-                    return True  # Return success since this is a risk management decision
+            # Calculate target_qty only on first iteration
+            if target_qty_cached is None:
+                if initial_target_qty is not None:
+                    target_qty_cached = initial_target_qty
+                    logger.info(f"Using provided target_qty: {target_qty_cached}")
+                else:
+                    # Get current market price to calculate target qty
+                    data_client = _get_data_client()
+                    if data_client is not None:
+                        download_exchange_latest_data(data_client, pair)
+                    bid_price = get_bid(pair)
+                    ask_price = get_ask(pair)
+                    if bid_price is None or ask_price is None:
+                        logger.error(f"Failed to get bid/ask prices for {pair}")
+                        return False
+                    entry_price = ask_price if side == "buy" else bid_price
 
-            logger.info(f"Current position: {current_qty}, Target position: {target_qty}")
-            
+                    # Use the centralized get_qty function which includes exposure limits and risk management
+                    target_qty_cached = get_qty(pair, entry_price, positions)
+                    logger.info(f"Calculated target_qty from get_qty: {target_qty_cached}")
+
+                    # If get_qty returns 0, we can't add more to this position
+                    if target_qty_cached == 0:
+                        logger.warning(f"Cannot add to position for {pair} - exposure limits reached or invalid quantity")
+                        return True  # Return success since this is a risk management decision
+
+            logger.info(f"Current position: {current_qty}, Target position: {target_qty_cached} (cached)")
+
             # Check if we already have the target position or more
-            if current_qty >= target_qty:
-                logger.info(f"Position already at or above target for {pair} ({current_qty} >= {target_qty})")
+            if current_qty >= target_qty_cached:
+                logger.info(f"Position already at or above target for {pair} ({current_qty} >= {target_qty_cached})")
                 return True
-                
+
             # Calculate the quantity we need to add
-            qty_to_add = target_qty - current_qty
+            qty_to_add = target_qty_cached - current_qty
             logger.info(f"Need to add {qty_to_add} to reach target position")
             
             # Check for minimum order size to prevent tiny orders that fail
@@ -675,15 +685,23 @@ def ramp_into_position(
                     # Verify cancellations
                     sleep(3)  # Let cancellations propagate
                     orders = alpaca_wrapper.get_open_orders()
-                    remaining_orders = [order for order in orders if
-                                        hasattr(order, 'symbol') and pairs_equal(order.symbol, pair)]
+                    pair_orders_all = [order for order in orders if
+                                       hasattr(order, 'symbol') and pairs_equal(order.symbol, pair)]
+                    # Filter out orders that are already pending cancellation - they're "good enough"
+                    remaining_orders = [order for order in pair_orders_all
+                                        if getattr(order, 'status', None) not in ['pending_cancel', 'cancelled']]
+
+                    # Log order states for debugging
+                    if pair_orders_all and len(pair_orders_all) != len(remaining_orders):
+                        pending_count = len(pair_orders_all) - len(remaining_orders)
+                        logger.info(f"{pending_count} orders for {pair} are pending_cancel/cancelled, treating as success")
 
                     if not remaining_orders:
                         orders_cancelled = True
-                        logger.info(f"All orders for {pair} successfully cancelled")
+                        logger.info(f"All orders for {pair} successfully cancelled or pending cancellation")
                         break
                     else:
-                        logger.info(f"Found {len(remaining_orders)} remaining orders for {pair}, retrying cancellation")
+                        logger.info(f"Found {len(remaining_orders)} remaining orders for {pair} (excluding pending_cancel), retrying cancellation")
 
                     cancel_attempts += 1
                     if not orders_cancelled:

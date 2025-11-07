@@ -137,10 +137,6 @@ def test_analyze_symbols(mock_backtest, mock_snapshot, mock_trading_day_now, tes
             "simple_strategy_return": [0.02],
             "simple_strategy_avg_daily_return": [0.02],
             "simple_strategy_annual_return": [0.02 * 252],
-            "ci_guard_return": [0.018],
-            "ci_guard_avg_daily_return": [0.018],
-            "ci_guard_annual_return": [0.018 * 252],
-            "ci_guard_sharpe": [1.1],
             "all_signals_strategy_return": [0.01],
             "all_signals_strategy_avg_daily_return": [0.01],
             "all_signals_strategy_annual_return": [0.01 * 252],
@@ -167,8 +163,6 @@ def test_analyze_symbols(mock_backtest, mock_snapshot, mock_trading_day_now, tes
     assert "annual_return" in results[first_symbol]
     assert "side" in results[first_symbol]
     assert "predicted_movement" in results[first_symbol]
-    assert results[first_symbol]["ci_guard_return"] == pytest.approx(0.018)
-    assert results[first_symbol]["ci_guard_sharpe"] == pytest.approx(1.1)
     expected_penalty = trade_module.resolve_spread_cap(first_symbol) / 10000.0
     expected_primary = results[first_symbol]["avg_return"]
     assert results[first_symbol]["composite_score"] == pytest.approx(
@@ -192,12 +186,6 @@ def test_analyze_symbols_falls_back_to_maxdiff_when_all_signals_conflict(
                 "simple_strategy_sharpe": 0.3,
                 "simple_strategy_turnover": 0.5,
                 "simple_strategy_max_drawdown": -0.02,
-                "ci_guard_return": 0.0,
-                "ci_guard_avg_daily_return": 0.0,
-                "ci_guard_annual_return": 0.0,
-                "ci_guard_sharpe": 0.0,
-                "ci_guard_turnover": 0.5,
-                "ci_guard_max_drawdown": -0.02,
                 "all_signals_strategy_return": 0.05,
                 "all_signals_strategy_avg_daily_return": 0.05,
                 "all_signals_strategy_annual_return": 0.05 * 365,
@@ -439,12 +427,6 @@ def test_analyze_symbols_selects_maxdiffalwayson_when_maxdiff_blocked(
                 "simple_strategy_sharpe": 0.2,
                 "simple_strategy_turnover": 0.4,
                 "simple_strategy_max_drawdown": -0.03,
-                "ci_guard_return": -0.0005,
-                "ci_guard_avg_daily_return": -0.0005,
-                "ci_guard_annual_return": -0.0005 * 365,
-                "ci_guard_sharpe": 0.1,
-                "ci_guard_turnover": 0.3,
-                "ci_guard_max_drawdown": -0.025,
                 "all_signals_strategy_return": -0.002,
                 "all_signals_strategy_avg_daily_return": -0.002,
                 "all_signals_strategy_annual_return": -0.002 * 365,
@@ -601,10 +583,6 @@ def test_analyze_symbols_respects_skip_override(
             "highlow_return": [0.007],
             "highlow_avg_daily_return": [0.007],
             "highlow_annual_return": [0.007 * 252],
-            "ci_guard_return": [0.015],
-            "ci_guard_avg_daily_return": [0.015],
-            "ci_guard_annual_return": [0.015 * 252],
-            "ci_guard_sharpe": [0.8],
             "close": [100.0],
             "predicted_close": [101.5],
             "predicted_high": [102.0],
@@ -616,59 +594,6 @@ def test_analyze_symbols_respects_skip_override(
     results = analyze_symbols(["AAPL"])
 
     assert "AAPL" in results
-    assert results["AAPL"]["ci_guard_return"] == pytest.approx(0.015)
-
-
-@patch("trade_stock_e2e.fetch_bid_ask", return_value=(100.0, 101.0))
-@patch("trade_stock_e2e.is_tradeable", return_value=(True, "ok"))
-@patch("trade_stock_e2e.pass_edge_threshold", return_value=(True, "ok"))
-@patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)
-@patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
-@patch("trade_stock_e2e.backtest_forecasts")
-def test_analyze_symbols_ci_guard_shapes_price_skill(
-    mock_backtest,
-    mock_snapshot,
-    mock_trading_day_now,
-    mock_edge,
-    mock_tradeable,
-    mock_bid_ask,
-):
-    mock_df = pd.DataFrame(
-        {
-            "simple_strategy_return": [-0.01],
-            "simple_strategy_avg_daily_return": [-0.01],
-            "simple_strategy_annual_return": [-0.01 * 252],
-            "simple_strategy_sharpe": [-0.2],
-            "all_signals_strategy_return": [-0.02],
-            "all_signals_strategy_avg_daily_return": [-0.02],
-            "all_signals_strategy_annual_return": [-0.02 * 252],
-            "entry_takeprofit_return": [0.0],
-            "entry_takeprofit_avg_daily_return": [0.0],
-            "entry_takeprofit_annual_return": [0.0],
-            "highlow_return": [0.0],
-            "highlow_avg_daily_return": [0.0],
-            "highlow_annual_return": [0.0],
-            "ci_guard_return": [0.02],
-            "ci_guard_avg_daily_return": [0.02],
-            "ci_guard_annual_return": [0.02 * 252],
-            "ci_guard_sharpe": [1.4],
-            "maxdiff_return": [0.0],
-            "close": [100.0],
-            "predicted_close": [102.0],
-            "predicted_high": [103.0],
-            "predicted_low": [99.0],
-        }
-    )
-    mock_backtest.return_value = mock_df
-
-    results = analyze_symbols(["AAPL"])
-
-    assert "AAPL" in results
-    row = results["AAPL"]
-    # With Kronos contribution zero, price_skill should be driven by CI Guard stats.
-    expected_price_skill = 0.02 + 0.25 * 1.4
-    assert row["price_skill"] == pytest.approx(expected_price_skill)
-    assert row["strategy"] == "ci_guard"
 
 
 @patch("trade_stock_e2e.fetch_bid_ask", return_value=(100.0, 101.0))
@@ -693,9 +618,6 @@ def test_analyze_symbols_blocks_on_negative_recent_sum(
             "all_signals_strategy_return": [-0.03, -0.02, -0.01],
             "all_signals_strategy_avg_daily_return": [-0.03, -0.02, -0.01],
             "all_signals_strategy_annual_return": [-0.03 * 252, -0.02 * 252, -0.01 * 252],
-            "ci_guard_return": [-0.04, -0.03, -0.02],
-            "ci_guard_avg_daily_return": [-0.04, -0.03, -0.02],
-            "ci_guard_annual_return": [-0.04 * 252, -0.03 * 252, -0.02 * 252],
             "entry_takeprofit_return": [-0.045, -0.04, -0.03],
             "entry_takeprofit_avg_daily_return": [-0.045, -0.04, -0.03],
             "entry_takeprofit_annual_return": [-0.045 * 252, -0.04 * 252, -0.03 * 252],
@@ -1098,7 +1020,7 @@ def test_manage_positions_force_probe_override(mock_force_probe):
             "side": "sell",
             "avg_return": 0.07,
             "predicted_movement": -0.03,
-            "strategy": "ci_guard",
+            "strategy": "maxdiff",
             "predicted_high": 120.0,
             "predicted_low": 115.0,
             "predictions": pd.DataFrame(),
@@ -1125,8 +1047,8 @@ def test_manage_positions_min_strategy_return_gating(monkeypatch):
             "side": "sell",
             "avg_return": -0.01,
             "predicted_movement": -0.05,
-            "strategy": "ci_guard",
-            "strategy_returns": {"ci_guard": -0.01},
+            "strategy": "maxdiff",
+            "strategy_returns": {"maxdiff": -0.01},
             "predicted_high": 120.0,
             "predicted_low": 115.0,
             "predictions": pd.DataFrame(),
@@ -1148,8 +1070,8 @@ def test_manage_positions_trend_pnl_gating(mock_summary, monkeypatch):
             "side": "sell",
             "avg_return": -0.03,
             "predicted_movement": -0.09,
-            "strategy": "ci_guard",
-            "strategy_returns": {"ci_guard": -0.04},
+            "strategy": "maxdiff",
+            "strategy_returns": {"maxdiff": -0.04},
             "predicted_high": 120.0,
             "predicted_low": 110.0,
             "predictions": pd.DataFrame(),
@@ -1173,8 +1095,8 @@ def test_manage_positions_trend_pnl_resume(mock_summary, monkeypatch):
             "side": "sell",
             "avg_return": -0.03,
             "predicted_movement": -0.09,
-            "strategy": "ci_guard",
-            "strategy_returns": {"ci_guard": -0.04},
+            "strategy": "maxdiff",
+            "strategy_returns": {"maxdiff": -0.04},
             "predicted_high": 120.0,
             "predicted_low": 110.0,
             "predictions": pd.DataFrame(),

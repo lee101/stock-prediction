@@ -355,7 +355,6 @@ def _fallback_backtest(symbol: str, num_simulations: int | None = None) -> pd.Da
         (high_series - low_series) / close_series.replace(0.0, np.nan)
     ).rolling(window=5, min_periods=1).mean() * 10_000
 
-    ci_guard_series = 0.5 * (takeprofit + highlow)
     unprofit_series = -simple.abs()
 
     simple_sharpe_val = _sharpe(simple)
@@ -363,7 +362,6 @@ def _fallback_backtest(symbol: str, num_simulations: int | None = None) -> pd.Da
     takeprofit_sharpe_val = _sharpe(takeprofit)
     highlow_sharpe_val = _sharpe(highlow)
     maxdiff_sharpe_val = _sharpe(maxdiff)
-    ci_guard_sharpe_val = _sharpe(ci_guard_series)
     buy_hold_sharpe_val = _sharpe(returns)
     unprofit_sharpe_val = _sharpe(unprofit_series)
 
@@ -418,12 +416,6 @@ def _fallback_backtest(symbol: str, num_simulations: int | None = None) -> pd.Da
     result["maxdiff_sharpe"] = maxdiff_sharpe_val
     result["maxdiff_finalday_return"] = float(maxdiff.iloc[-1]) if not maxdiff.empty else 0.0
     result["maxdiff_turnover"] = float(maxdiff.abs().mean()) if not maxdiff.empty else 0.0
-
-    ci_guard_rev = _rev(ci_guard_series).fillna(0.0)
-    result["ci_guard_return"] = ci_guard_rev
-    result["ci_guard_sharpe"] = ci_guard_sharpe_val
-    result["ci_guard_finalday"] = float(ci_guard_series.iloc[-1]) if not ci_guard_series.empty else 0.0
-    result["ci_guard_turnover"] = float(ci_guard_series.abs().mean()) if not ci_guard_series.empty else 0.0
 
     close_safe = window["Close"].replace(0.0, np.nan)
     result["maxdiffprofit_high_price"] = predicted_high

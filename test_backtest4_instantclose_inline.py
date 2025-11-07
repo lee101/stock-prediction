@@ -508,16 +508,9 @@ def compare_close_policies(symbol: str, num_simulations: int = 50) -> Optional[D
         buy_advantage = keep_avg.buy_return - instant_avg.buy_return
         sell_advantage = keep_avg.sell_return - instant_avg.sell_return
 
-        print(f"\n📈 Side-Specific Analysis:")
+        print(f"\nSide-Specific Analysis:")
         print(f"   Buy side (long):  KEEP_OPEN {'+' if buy_advantage > 0 else ''}{buy_advantage:.4f}% vs INSTANT_CLOSE")
         print(f"   Sell side (short): KEEP_OPEN {'+' if sell_advantage > 0 else ''}{sell_advantage:.4f}% vs INSTANT_CLOSE")
-
-        if abs(buy_advantage) > abs(sell_advantage) * 2:
-            print(f"   💡 Buy side benefits {abs(buy_advantage / (sell_advantage or 1)):.1f}x more from KEEP_OPEN")
-        elif abs(sell_advantage) > abs(buy_advantage) * 2:
-            print(f"   💡 Sell side benefits {abs(sell_advantage / (buy_advantage or 1)):.1f}x more from KEEP_OPEN")
-        else:
-            print(f"   💡 Both sides benefit similarly from KEEP_OPEN")
 
     # Determine winner
     if instant_avg.net_return_after_fees > keep_avg.net_return_after_fees:
@@ -527,14 +520,8 @@ def compare_close_policies(symbol: str, num_simulations: int = 50) -> Optional[D
         winner = "KEEP_OPEN"
         advantage = keep_avg.net_return_after_fees - instant_avg.net_return_after_fees
 
-    print(f"\n📊 Overall Recommendation for {symbol}:")
+    print(f"\nOverall Recommendation for {symbol}:")
     print(f"   {winner} performs better (advantage: {advantage:.4f}%)")
-
-    if is_crypto:
-        fee_pct = CRYPTO_TRADING_FEE * 100
-        print(f"\n💡 Crypto Insight: Close fees ({fee_pct}%) vs opportunity cost ({keep_avg.opportunity_cost:.4f})")
-    else:
-        print(f"\n💡 Stock Insight: Opportunity cost is main factor ({keep_avg.opportunity_cost:.4f})")
 
     print(f"{'='*80}\n")
 

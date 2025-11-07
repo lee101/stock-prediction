@@ -169,7 +169,8 @@ _TRUTHY = TRUTHY_ENV_VALUES
 
 SIMPLIFIED_MODE = os.getenv("MARKETSIM_SIMPLE_MODE", "0").strip().lower() in _TRUTHY
 
-ENABLE_PROBE_TRADES = os.getenv("MARKETSIM_ENABLE_PROBE_TRADES", "1").strip().lower() in _TRUTHY
+ENABLE_KELLY_SIZING = os.getenv("MARKETSIM_ENABLE_KELLY_SIZING", "0").strip().lower() in _TRUTHY
+ENABLE_PROBE_TRADES = os.getenv("MARKETSIM_ENABLE_PROBE_TRADES", "0").strip().lower() in _TRUTHY
 MAX_MAXDIFFS = coerce_positive_int(
     os.getenv("MARKETSIM_MAX_MAXDIFFS"),
     15,
@@ -423,7 +424,6 @@ def _log_analysis_summary(symbol: str, data: Dict) -> None:
             ("highlow", strategy_returns.get("highlow"), 3),
             ("maxdiff", strategy_returns.get("maxdiff"), 3),
             ("maxdiffalwayson", strategy_returns.get("maxdiffalwayson"), 3),
-            ("ci_guard", strategy_returns.get("ci_guard"), 3),
             ("unprofit", data.get("unprofit_shutdown_return"), 3),
             ("composite", data.get("composite_score"), 3),
         ]
@@ -707,6 +707,45 @@ def _calculate_total_exposure_value(positions) -> float:
             market_value = 0.0
         total_value += abs(market_value)
     return total_value
+
+
+def _get_simple_qty(symbol: str, entry_price: float, positions) -> float:
+    """
+    Simple sizing that spreads global risk over 2 positions.
+
+    For stocks: (buying_power * global_risk_threshold / 2) / entry_price
+    For crypto: (equity / 2) / entry_price (no leverage)
+    """
+    from src.portfolio_risk import get_global_risk_threshold
+    from math import floor
+
+    if entry_price <= 0:
+        return 0.0
+
+    equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
+    buying_power = float(getattr(alpaca_wrapper, "total_buying_power", 0.0) or 0.0)
+    global_risk = get_global_risk_threshold()
+
+    if symbol in all_crypto_symbols:
+        # For crypto: just use half of equity (no leverage)
+        qty = (equity / 2.0) / entry_price
+        # Round down to 3 decimal places for crypto
+        qty = floor(qty * 1000) / 1000.0
+    else:
+        # For stocks: use half of (buying_power * global_risk_threshold)
+        qty = (buying_power * global_risk / 2.0) / entry_price
+        # Round down to whole number for stocks
+        qty = floor(qty)
+
+    if qty <= 0:
+        return 0.0
+
+    logger.debug(
+        "Simple sizing for %s: qty=%.4f (equity=%.2f, buying_power=%.2f, global_risk=%.3f)",
+        symbol, qty, equity, buying_power, global_risk
+    )
+
+    return qty
 
 
 def _calculate_total_exposure_pct(positions) -> float:
@@ -1213,15 +1252,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "maxdiff": _mean_return("maxdiff_annual_return", "maxdiff_return"),
                 "maxdiffalwayson": _mean_return("maxdiffalwayson_annual_return", "maxdiffalwayson_return"),
             }
-            if "ci_guard_return" in backtest_df.columns:
-                strategy_returns_daily["ci_guard"] = _mean_return(
-                    "ci_guard_avg_daily_return",
-                    "ci_guard_return",
-                )
-                strategy_returns_annual["ci_guard"] = _mean_return(
-                    "ci_guard_annual_return",
-                    "ci_guard_return",
-                )
             strategy_returns = strategy_returns_daily
             strategy_recent_sums: Dict[str, Optional[float]] = {}
 
@@ -1244,8 +1274,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "maxdiff": ("maxdiff_avg_daily_return", "maxdiff_return"),
                 "maxdiffalwayson": ("maxdiffalwayson_avg_daily_return", "maxdiffalwayson_return"),
             }
-            if "ci_guard" in strategy_returns:
-                _strategy_series_map["ci_guard"] = ("ci_guard_avg_daily_return", "ci_guard_return")
 
             unprofit_return = 0.0
             unprofit_sharpe = 0.0
@@ -1468,12 +1496,21 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             # Helper to get forecasted PnL from last_prediction
             def _get_forecasted_pnl(strategy_name: str) -> float:
-                """Get forecasted PnL for a strategy, falling back to avg_return if not available."""
+                """Get forecasted PnL for a strategy, falling back to avg_return if not available.
+
+                The forecasted PnL is computed by Toto model on validation set and represents
+                forward-looking performance. If unavailable, we fall back to historical avg_return.
+                """
                 forecast_key = f"{strategy_name}_forecasted_pnl"
-                forecasted = coerce_numeric(last_prediction.get(forecast_key), default=None)
-                if forecasted is not None:
-                    return forecasted
-                # Fallback to avg_return if forecasted PnL not available
+                # Check if key exists in last_prediction (pandas Series)
+                if forecast_key in last_prediction.index:
+                    forecast_value = last_prediction.get(forecast_key)
+                    # Only use if it's a valid numeric value (not None, not NaN)
+                    if forecast_value is not None and not (isinstance(forecast_value, float) and math.isnan(forecast_value)):
+                        forecasted = coerce_numeric(forecast_value, default=0.0)
+                        return forecasted
+                # Fallback to avg_return if forecasted PnL not available or invalid
+                # This should rarely happen now that all strategies compute forecasted PnL
                 return strategy_returns.get(strategy_name, 0.0)
 
             strategy_stats: Dict[str, Dict[str, float]] = {
@@ -1526,15 +1563,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     "max_drawdown": _mean_column("maxdiffalwayson_max_drawdown"),
                 },
             }
-            if "ci_guard" in strategy_returns:
-                strategy_stats["ci_guard"] = {
-                    "avg_return": strategy_returns.get("ci_guard", 0.0),
-                    "forecasted_pnl": _get_forecasted_pnl("ci_guard"),
-                    "annual_return": strategy_returns_annual.get("ci_guard", 0.0),
-                    "sharpe": _mean_column("ci_guard_sharpe"),
-                    "turnover": _mean_column("ci_guard_turnover"),
-                    "max_drawdown": _mean_column("ci_guard_max_drawdown"),
-                }
 
             for strat_name, (primary_col, fallback_col) in _strategy_series_map.items():
                 strategy_recent_sums[strat_name] = _recent_return_sum(primary_col, fallback_col)
@@ -1711,7 +1739,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
             expected_move_pct = safe_divide(predicted_movement, close_price, default=0.0)
             simple_return = strategy_returns.get("simple", 0.0)
-            ci_guard_return = strategy_returns.get("ci_guard", 0.0)
             takeprofit_return = strategy_returns.get("takeprofit", 0.0)
             highlow_return = strategy_returns.get("highlow", 0.0)
             maxdiff_return = strategy_returns.get("maxdiff", 0.0)
@@ -1719,9 +1746,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             simple_sharpe = 0.0
             if "simple_strategy_sharpe" in backtest_df.columns:
                 simple_sharpe = coerce_numeric(backtest_df["simple_strategy_sharpe"].mean(), default=0.0)
-            ci_guard_sharpe = 0.0
-            if "ci_guard_sharpe" in backtest_df.columns:
-                ci_guard_sharpe = coerce_numeric(backtest_df["ci_guard_sharpe"].mean(), default=0.0)
             kronos_profit_raw = last_prediction.get("closemin_loss_trading_profit")
             kronos_profit = coerce_numeric(kronos_profit_raw) if kronos_profit_raw is not None else 0.0
             if is_kronos_only_mode():
@@ -1732,8 +1756,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 kronos_annual = kronos_profit * trading_days_per_year
                 if kronos_annual > annual_return:
                     annual_return = kronos_annual
-            core_return = max(simple_return, ci_guard_return, 0.0)
-            core_sharpe = max(simple_sharpe, ci_guard_sharpe, 0.0)
+            core_return = max(simple_return, 0.0)
+            core_sharpe = max(simple_sharpe, 0.0)
             price_skill = core_return + 0.25 * core_sharpe + 0.15 * max(kronos_profit, 0.0)
             highlow_allowed_entry = ALLOW_HIGHLOW_ENTRY and ("highlow" not in strategy_ineligible)
             takeprofit_allowed_entry = ALLOW_TAKEPROFIT_ENTRY and ("takeprofit" not in strategy_ineligible)
@@ -1855,7 +1879,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 effective_highlow,
                 effective_maxdiff,
                 effective_maxdiffalwayson,
-                ci_guard_return,
                 kronos_contrib,
                 0.0,
             )
@@ -2006,8 +2029,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "strategy_recent_sums": strategy_recent_sums,
                 "recent_return_sum": strategy_recent_sums.get(best_strategy),
                 "simple_return": _metric(simple_return, default=0.0),
-                "ci_guard_return": _metric(ci_guard_return, default=0.0),
-                "ci_guard_sharpe": _metric(ci_guard_sharpe, default=0.0),
                 "maxdiff_return": _metric(maxdiff_return, default=0.0),
                 "maxdiffalwayson_return": _metric(maxdiffalwayson_return, default=0.0),
                 "unprofit_shutdown_return": _metric(unprofit_return, default=0.0),
@@ -2166,8 +2187,10 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 }
                 _save_maxdiff_plan(symbol, maxdiff_plan)
 
-        except Exception:
-            logger.exception("Error analyzing %s", symbol)
+        except Exception as e:
+            logger.exception("Error analyzing %s: %s", symbol, str(e))
+            import traceback
+            logger.error("Full traceback:\n%s", traceback.format_exc())
             continue
 
     if skipped_equity_symbols:
@@ -2476,6 +2499,141 @@ def manage_positions(
                 market_close_force_minutes=BACKOUT_MARKET_CLOSE_FORCE_MINUTES,
             )
 
+    # Refresh watchers for existing maxdiff positions
+    for position in positions:
+        symbol = position.symbol
+        normalized_side = _normalize_side_for_key(getattr(position, "side", ""))
+
+        # Get strategy for this position
+        active_trade = _get_active_trade(symbol, normalized_side)
+        if not active_trade:
+            continue
+
+        entry_strategy = active_trade.get("entry_strategy")
+        if entry_strategy not in MAXDIFF_LIMIT_STRATEGIES:
+            continue
+
+        # For maxdiff strategies, respawn watchers if they're missing or expired
+        # This ensures 24/7 coverage for crypto and continuous coverage for stocks
+        pick_data = current_picks.get(symbol)
+        if not pick_data:
+            # Position exists but not in current picks - might have been removed
+            # Check if it's in the analyzed results to get forecast data
+            if symbol not in all_analyzed_results:
+                logger.debug(f"Skipping watcher refresh for {symbol} - not in current analysis")
+                continue
+            pick_data = all_analyzed_results[symbol]
+
+        # Only refresh if the side matches
+        if not is_same_side(pick_data.get("side"), position.side):
+            logger.debug(f"Skipping watcher refresh for {symbol} {normalized_side} - side mismatch with forecast")
+            continue
+
+        # Get current bid/ask for sizing
+        bid_price, ask_price = fetch_bid_ask(symbol)
+        if bid_price is None or ask_price is None:
+            logger.debug(f"Skipping watcher refresh for {symbol} - no bid/ask available")
+            continue
+
+        entry_price = ask_price if is_buy_side(position.side) else bid_price
+        target_qty = get_qty(symbol, entry_price, positions)
+        if target_qty is None or target_qty <= 0:
+            logger.debug(f"Skipping watcher refresh for {symbol} - invalid target qty")
+            continue
+
+        # Check existing entry watcher to decide if/how to refresh
+        is_buy = is_buy_side(position.side)
+        is_crypto = symbol in all_crypto_symbols
+        from pathlib import Path
+        watcher_dir = get_state_dir() / f"maxdiff_watchers{STATE_SUFFIX or ''}"
+
+        from src.watcher_refresh_utils import find_existing_watcher_price, should_spawn_watcher
+
+        # Check for existing entry watcher
+        existing_limit_price, entry_reason = find_existing_watcher_price(
+            watcher_dir,
+            symbol,
+            normalized_side,
+            "entry",
+            is_crypto,
+            max_age_hours=24.0,
+        )
+
+        # Determine new forecast prices
+        if entry_strategy == "maxdiffalwayson":
+            preferred_limit = pick_data.get("maxdiffalwayson_low_price" if is_buy else "maxdiffalwayson_high_price")
+            fallback = pick_data.get("maxdiffprofit_low_price" if is_buy else "maxdiffprofit_high_price")
+        else:
+            preferred_limit = pick_data.get("maxdiffprofit_low_price" if is_buy else "maxdiffprofit_high_price")
+            fallback = pick_data.get("predicted_low" if is_buy else "predicted_high")
+        new_limit_price = preferred_limit if preferred_limit is not None else fallback
+
+        # Decide whether to spawn and which price to use
+        should_spawn_entry, limit_price, spawn_reason = should_spawn_watcher(
+            existing_limit_price,
+            new_limit_price,
+            "entry",
+        )
+
+        if limit_price is None or limit_price <= 0:
+            logger.debug(f"Skipping watcher refresh for {symbol} - invalid limit price")
+            continue
+
+        # Spawn entry watcher only if needed
+        if should_spawn_entry:
+            try:
+                logger.info(
+                    f"Refreshing entry watcher for existing {symbol} {normalized_side} position @ {limit_price:.4f} ({spawn_reason})"
+                )
+                spawn_open_position_at_maxdiff_takeprofit(
+                    symbol,
+                    normalized_side,
+                    float(limit_price),
+                    float(target_qty),
+                    poll_seconds=MAXDIFF_ENTRY_WATCHER_POLL_SECONDS,
+                    entry_strategy=entry_strategy,
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to refresh entry watcher for {symbol} {normalized_side}: {exc}")
+        else:
+            logger.debug(f"{symbol} {normalized_side}: Skipping entry watcher refresh ({spawn_reason})")
+
+        # Check for existing exit watcher
+        existing_takeprofit_price, exit_reason = find_existing_watcher_price(
+            watcher_dir,
+            symbol,
+            normalized_side,
+            "exit",
+            is_crypto,
+            max_age_hours=24.0,
+        )
+
+        # Determine new forecast takeprofit price
+        new_takeprofit_price = pick_data.get("maxdiffprofit_high_price" if is_buy else "maxdiffprofit_low_price")
+
+        # Decide whether to spawn and which price to use
+        should_spawn_exit, takeprofit_price, exit_spawn_reason = should_spawn_watcher(
+            existing_takeprofit_price,
+            new_takeprofit_price,
+            "exit",
+        )
+
+        if takeprofit_price is not None and takeprofit_price > 0 and should_spawn_exit:
+            try:
+                logger.info(
+                    f"Refreshing exit watcher for existing {symbol} {normalized_side} position @ {takeprofit_price:.4f} ({exit_spawn_reason})"
+                )
+                spawn_close_position_at_maxdiff_takeprofit(
+                    symbol,
+                    normalized_side,
+                    float(takeprofit_price),
+                    entry_strategy=entry_strategy,
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to refresh exit watcher for {symbol} {normalized_side}: {exc}")
+        elif not should_spawn_exit:
+            logger.debug(f"{symbol} {normalized_side}: Skipping exit watcher refresh ({exit_spawn_reason})")
+
     # Enter new positions from current_picks
     if not current_picks:
         logger.warning("No current picks available - skipping new position entry")
@@ -2709,15 +2867,29 @@ def manage_positions(
 
         if bid_price is not None and ask_price is not None:
             entry_price = ask_price if data["side"] == "buy" else bid_price
-            computed_qty = get_qty(symbol, entry_price, positions)
-            if computed_qty is None:
-                computed_qty = 0.0
+
             if effective_probe:
                 target_qty = ensure_lower_bound(min_trade_qty, 0.0, default=min_trade_qty)
                 logger.info(f"{symbol}: Probe sizing fixed at minimum tradable quantity {target_qty}")
                 should_enter = not position_exists or not correct_side
                 needs_size_increase = False
+            elif not ENABLE_KELLY_SIZING and data.get("strategy") not in MAXDIFF_STRATEGIES:
+                # Simple sizing: spread global risk over 2 positions
+                target_qty = _get_simple_qty(symbol, entry_price, positions)
+                if target_qty < min_trade_qty:
+                    target_qty = min_trade_qty
+                target_value = target_qty * entry_price
+                logger.info(
+                    f"{symbol}: Simple sizing - Current position: {current_position_size} qty (${current_position_value:.2f}), "
+                    f"Target: {target_qty} qty (${target_value:.2f})"
+                )
+                should_enter = not position_exists or not correct_side
+                needs_size_increase = False
             else:
+                # Kelly sizing or MaxDiff strategies
+                computed_qty = get_qty(symbol, entry_price, positions)
+                if computed_qty is None:
+                    computed_qty = 0.0
                 base_qty = computed_qty
                 # MaxDiff-family strategies use full sizing like in backtest, not Kelly
                 if data.get("strategy") in MAXDIFF_STRATEGIES:
@@ -2774,16 +2946,17 @@ def manage_positions(
                     allowed_value = max_total_exposure_value - (total_exposure_value - current_abs_value)
 
                     # For crypto and non-leveraged strategies, shrink position instead of skipping
+                    # This allows us to still learn even when exposure is maxed out
                     is_crypto = symbol in all_crypto_symbols
                     is_non_leveraged_strategy = data.get("strategy") in MAXDIFF_STRATEGIES
 
                     if allowed_value <= 0:
                         if is_crypto or is_non_leveraged_strategy:
-                            # Use minimum trade size to still participate
+                            # Use minimum trade size to still participate and learn
                             logger.info(
                                 f"Shrinking {symbol} to minimum trade size due to max exposure "
                                 f"({projected_pct:.1f}% > {MAX_TOTAL_EXPOSURE_PCT:.1f}%). "
-                                f"Crypto/non-leveraged strategies can't leverage anyway."
+                                f"Crypto/non-leveraged strategies: using tiny probe to learn."
                             )
                             adjusted_qty = min_trade_qty
                             target_qty = adjusted_qty
@@ -2806,7 +2979,7 @@ def manage_positions(
                                 # For crypto/non-leveraged, use minimum size even when calculation gives 0
                                 logger.info(
                                     f"Exposure adjustment for {symbol} gave non-positive qty; "
-                                    f"using minimum trade size instead (crypto/non-leveraged)."
+                                    f"using minimum trade size instead (crypto/non-leveraged) to learn."
                                 )
                                 adjusted_qty = min_trade_qty
                             else:

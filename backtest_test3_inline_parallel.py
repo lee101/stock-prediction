@@ -103,7 +103,6 @@ def backtest_forecasts_parallel(symbol, num_simulations=50, max_workers=4):
         avg_allsignals = results_df["all_signals_strategy_return"].mean()
         avg_takeprofit = results_df["entry_takeprofit_return"].mean()
         avg_highlow = results_df["highlow_return"].mean()
-        avg_ci_guard = results_df["ci_guard_return"].mean()
         if "maxdiff_return" in results_df:
             avg_maxdiff = float(results_df["maxdiff_return"].mean())
             if not np.isfinite(avg_maxdiff):
@@ -111,10 +110,8 @@ def backtest_forecasts_parallel(symbol, num_simulations=50, max_workers=4):
         else:
             avg_maxdiff = float("-inf")
 
-        best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_ci_guard, avg_maxdiff)
-        if best_return == avg_ci_guard:
-            best_strategy = "ci_guard"
-        elif best_return == avg_highlow:
+        best_return = max(avg_simple, avg_allsignals, avg_takeprofit, avg_highlow, avg_maxdiff)
+        if best_return == avg_highlow:
             best_strategy = "highlow"
         elif best_return == avg_takeprofit:
             best_strategy = "takeprofit"
