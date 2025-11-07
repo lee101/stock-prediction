@@ -6,10 +6,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
-import typer
-
 import alpaca_wrapper
-from data_curate_daily import download_exchange_latest_data, get_bid, get_ask
+import typer
+from data_curate_daily import download_exchange_latest_data, get_ask, get_bid
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from scripts.alpaca_cli import get_strategy_for_symbol, set_strategy_for_symbol
 from src.logging_utils import setup_logging
@@ -93,9 +92,7 @@ def _entry_requires_cash(side: str, price: float, qty: float) -> bool:
     cash = float(getattr(alpaca_wrapper, "cash", 0.0) or 0.0)
     if side == "buy":
         if notional > cash:
-            logger.info(
-                "Skipping order to avoid leverage: notional=%.2f, cash=%.2f", notional, cash
-            )
+            logger.info("Skipping order to avoid leverage: notional=%.2f, cash=%.2f", notional, cash)
             return False
         return True
     # For shorts, require enough cash buffer to avoid immediate leverage swings.
@@ -373,10 +370,60 @@ def open_position_at_maxdiff_takeprofit(
             if skip_tolerance and status.get("state") != "trigger_override":
                 status = _update_status(config_path, status, state="trigger_override")
 
-            if not _entry_requires_cash(side, limit_price, target_qty):
-                status = _update_status(config_path, status, state="blocked_no_cash")
-                time.sleep(poll_seconds)
-                continue
+            # Check cash/capacity
+            has_cash = _entry_requires_cash(side, limit_price, target_qty)
+
+            if not has_cash:
+                # Try work stealing if blocked by capacity
+                coordinator = get_coordinator()
+
+                # Load forecasted PnL for this trade
+                try:
+                    from trade_stock_e2e import _load_latest_forecast_snapshot
+
+                    forecast_data = _load_latest_forecast_snapshot()
+                    forecast = forecast_data.get(symbol, {})
+
+                    # Extract forecasted PnL
+                    forecasted_pnl = 0.0
+                    for field in [
+                        "maxdiff_forecasted_pnl",
+                        "maxdiffalwayson_forecasted_pnl",
+                        "highlow_forecasted_pnl",
+                        "avg_return",
+                    ]:
+                        value = forecast.get(field)
+                        if value is not None:
+                            try:
+                                forecasted_pnl = float(value)
+                                break
+                            except (TypeError, ValueError):
+                                continue
+                except Exception as exc:
+                    logger.warning(f"Failed to load forecast data for work stealing: {exc}")
+                    forecasted_pnl = 0.0
+
+                # Attempt work steal
+                stolen_symbol = coordinator.attempt_steal(
+                    symbol=symbol,
+                    side=side,
+                    limit_price=limit_price,
+                    qty=target_qty,
+                    current_price=reference_price,
+                    forecasted_pnl=forecasted_pnl,
+                    mode=status.get("mode", "normal"),
+                    entry_strategy=status.get("entry_strategy"),
+                )
+
+                if stolen_symbol:
+                    logger.info(f"{symbol}: Successfully stole capacity from {stolen_symbol}")
+                    status = _update_status(config_path, status, state="work_steal_success", stolen_from=stolen_symbol)
+                    # Continue to order submission
+                else:
+                    logger.debug(f"{symbol}: Work steal failed, still blocked by capacity")
+                    status = _update_status(config_path, status, state="blocked_no_cash")
+                    time.sleep(poll_seconds)
+                    continue
 
             status = _update_status(config_path, status, state="submitting_order")
             try:
@@ -426,9 +473,7 @@ def open_position_at_maxdiff_takeprofit(
 def close_position_at_maxdiff_takeprofit(
     symbol: str,
     side: str = typer.Option(..., "--side", help="Entry side originally used (buy/sell)."),
-    takeprofit_price: float = typer.Option(
-        ..., "--takeprofit-price", help="Target price to unwind the position."
-    ),
+    takeprofit_price: float = typer.Option(..., "--takeprofit-price", help="Target price to unwind the position."),
     expiry_minutes: int = typer.Option(
         24 * 60,
         "--expiry-minutes",
