@@ -2,17 +2,17 @@ import json
 import os
 import signal
 import subprocess
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from shlex import quote
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from loguru import logger
+from stock.state import get_state_dir, resolve_state_suffix
 
 from src.fixtures import crypto_symbols
 from src.utils import debounce
-from stock.state import get_state_dir, resolve_state_suffix
 
 cwd = Path.cwd()
 STATE_SUFFIX = resolve_state_suffix()
@@ -414,9 +414,7 @@ def _backout_key(symbol: str, **kwargs) -> str:
     return f"{symbol}|{suffix}" if suffix else symbol
 
 
-@debounce(
-    60 * 10, key_func=_backout_key
-)  # 10 minutes to not call too much for the same symbol
+@debounce(60 * 10, key_func=_backout_key)  # 10 minutes to not call too much for the same symbol
 def backout_near_market(
     symbol: str,
     *,
@@ -464,7 +462,14 @@ def backout_near_market(
     )
 
 
-@debounce(60 * 10, key_func=lambda symbol, side, target_qty=None, maxdiff_overflow=False, risk_threshold=None: f"{symbol}_{side}_{target_qty}_{maxdiff_overflow}")
+@debounce(
+    60 * 10,
+    key_func=lambda symbol,
+    side,
+    target_qty=None,
+    maxdiff_overflow=False,
+    risk_threshold=None: f"{symbol}_{side}_{target_qty}_{maxdiff_overflow}",
+)
 def ramp_into_position(
     symbol: str,
     side: str = "buy",
@@ -502,7 +507,9 @@ def ramp_into_position(
 
 @debounce(TAKEPROFIT_SPAWN_DEBOUNCE_SECONDS, key_func=lambda symbol, takeprofit_price: f"{symbol}_{takeprofit_price}")
 def spawn_close_position_at_takeprofit(symbol: str, takeprofit_price: float):
-    command = f"python scripts/alpaca_cli.py close_position_at_takeprofit {symbol} --takeprofit_price={takeprofit_price}"
+    command = (
+        f"python scripts/alpaca_cli.py close_position_at_takeprofit {symbol} --takeprofit_price={takeprofit_price}"
+    )
     logger.info(f"Running command {command}")
     # Run process in background without waiting
     subprocess.Popen(
@@ -521,8 +528,18 @@ def _format_float(value: float, precision: int = 6) -> str:
 
 @debounce(
     MAXDIFF_ENTRY_SPAWN_DEBOUNCE_SECONDS,
-    key_func=lambda symbol, side, limit_price, target_qty, tolerance_pct=0.0066, expiry_minutes=1440, poll_seconds=MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS, entry_strategy=None, force_immediate=False, priority_rank=None: (
-        f"{symbol}_{side}_{limit_price}_{target_qty}_{tolerance_pct}_{expiry_minutes}_{poll_seconds}_{entry_strategy or ''}_{int(bool(force_immediate))}_{priority_rank if priority_rank is not None else 'none'}"
+    key_func=lambda symbol,
+    side,
+    limit_price,
+    target_qty,
+    tolerance_pct=None,
+    expiry_minutes=1440,
+    poll_seconds=MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS,
+    entry_strategy=None,
+    force_immediate=False,
+    priority_rank=None,
+    crypto_rank=None: (
+        f"{symbol}_{side}_{limit_price}_{target_qty}_{tolerance_pct or 'auto'}_{expiry_minutes}_{poll_seconds}_{entry_strategy or ''}_{int(bool(force_immediate))}_{priority_rank if priority_rank is not None else 'none'}_{crypto_rank or 'none'}"
     ),
 )
 def spawn_open_position_at_maxdiff_takeprofit(
@@ -530,13 +547,14 @@ def spawn_open_position_at_maxdiff_takeprofit(
     side: str,
     limit_price: float,
     target_qty: float,
-    tolerance_pct: float = 0.0066,
+    tolerance_pct: Optional[float] = None,
     expiry_minutes: int = 60 * 24,
     poll_seconds: int = MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS,
     entry_strategy: Optional[str] = None,
     *,
     force_immediate: bool = False,
     priority_rank: Optional[int] = None,
+    crypto_rank: Optional[int] = None,
 ):
     """
     Spawn a watchdog process that attempts to open a maxdiff position when price approaches the target.
@@ -545,7 +563,34 @@ def spawn_open_position_at_maxdiff_takeprofit(
         * waits until the live price is within ``tolerance_pct`` of ``limit_price``
         * checks buying power to avoid using margin/leverage
         * keeps the qualifying limit order alive for up to ``expiry_minutes`` minutes
+
+    Args:
+        symbol: Trading symbol
+        side: 'buy' or 'sell'
+        limit_price: Target limit price
+        target_qty: Quantity to accumulate
+        tolerance_pct: Price tolerance (auto-calculated for crypto if None)
+        expiry_minutes: Watcher lifetime in minutes
+        poll_seconds: Polling interval
+        entry_strategy: Strategy name
+        force_immediate: Ignore tolerance, enter immediately
+        priority_rank: Priority for always-on strategies
+        crypto_rank: Crypto rank for out-of-hours tolerance (1=best)
     """
+    # Auto-calculate tolerance for crypto based on rank and market hours
+    if tolerance_pct is None:
+        is_top_crypto = crypto_rank == 1 if crypto_rank is not None else False
+        tolerance_pct = get_entry_tolerance_for_symbol(symbol, is_top_crypto)
+        logger.debug(
+            f"{symbol}: Auto-calculated tolerance={tolerance_pct:.4f} "
+            f"(crypto_rank={crypto_rank}, out_of_hours={is_crypto_out_of_hours()})"
+        )
+
+    # Override force_immediate for top crypto out-of-hours
+    if not force_immediate and symbol in CRYPTO_SYMBOLS and crypto_rank is not None:
+        if should_force_immediate_crypto(crypto_rank):
+            force_immediate = True
+            logger.info(f"{symbol}: Auto-enabled force_immediate (crypto rank {crypto_rank} during out-of-hours)")
     precision = 8 if symbol in crypto_symbols else 4
     poll_seconds_int = max(1, int(poll_seconds))
     price_suffix = _format_float(limit_price, precision)
@@ -677,7 +722,13 @@ def spawn_open_position_at_maxdiff_takeprofit(
 
 @debounce(
     MAXDIFF_EXIT_SPAWN_DEBOUNCE_SECONDS,
-    key_func=lambda symbol, side, takeprofit_price, expiry_minutes=1440, poll_seconds=MAXDIFF_EXIT_DEFAULT_POLL_SECONDS, price_tolerance=MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE, entry_strategy=None: (
+    key_func=lambda symbol,
+    side,
+    takeprofit_price,
+    expiry_minutes=1440,
+    poll_seconds=MAXDIFF_EXIT_DEFAULT_POLL_SECONDS,
+    price_tolerance=MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE,
+    entry_strategy=None: (
         f"{symbol}_{side}_{takeprofit_price}_{expiry_minutes}_{poll_seconds}_{price_tolerance}_{entry_strategy or ''}"
     ),
 )
