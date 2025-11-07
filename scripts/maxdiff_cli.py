@@ -386,7 +386,7 @@ def open_position_at_maxdiff_takeprofit(
 
                 if not has_cash:
                     try:
-                        from src.work_steal_coordinator import get_coordinator
+                        from src.work_stealing_coordinator import get_coordinator
                         from trade_stock_e2e import _load_latest_forecast_snapshot
 
                         coordinator = get_coordinator()
@@ -421,7 +421,9 @@ def open_position_at_maxdiff_takeprofit(
 
                         if stolen_symbol:
                             logger.info(f"{symbol}: Successfully stole capacity from {stolen_symbol}")
-                            status = _update_status(config_path, status, state="work_steal_success", stolen_from=stolen_symbol)
+                            status = _update_status(
+                                config_path, status, state="work_steal_success", stolen_from=stolen_symbol
+                            )
                         else:
                             logger.debug(f"{symbol}: Work steal failed, still blocked by capacity")
                             status = _update_status(config_path, status, state="blocked_no_cash")
