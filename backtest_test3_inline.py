@@ -86,6 +86,19 @@ _GPU_METRICS_PEAK_TOLERANCE_BYTES = max(0.0, _GPU_METRICS_PEAK_TOLERANCE_MB) * 1
 # This reduces graph breaks from Tensor.item() calls in KVCache
 os.environ.setdefault("TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS", "1")
 
+# COMPILATION OPTIMIZATION: Increase recompile limits to prevent warnings
+# The KVCache uses dynamic indices which can trigger recompilations
+# See docs/compilation_test_results.md for details
+try:
+    import torch._dynamo
+    # Increase cache size limits to handle varying sequence lengths
+    torch._dynamo.config.cache_size_limit = 256
+    torch._dynamo.config.accumulated_cache_size_limit = 256
+    # Suppress excessive recompile warnings after limit is hit
+    torch._dynamo.config.suppress_errors = False  # Keep errors visible
+except (ImportError, AttributeError):
+    pass  # torch._dynamo not available or settings not supported
+
 
 def _maybe_enable_fast_torch_settings() -> None:
     global _FAST_TORCH_SETTINGS_CONFIGURED
