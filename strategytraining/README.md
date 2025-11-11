@@ -257,3 +257,208 @@ Planned improvements:
 - [ ] Market regime detection and labeling
 - [ ] Feature extraction pipeline
 - [ ] Direct ML model training integration
+
+---
+
+# Multi-Strategy Backtesting on Top Stocks
+
+## Overview
+
+This system tests **7 trading strategies** across the **top 200 stocks from Alpaca**, generating comprehensive performance reports showing which strategies work best for which stocks.
+
+### Available Strategies
+
+1. **`maxdiff`** - Maximum directional edge (often best performer)
+2. **`entry_takeprofit`** - Profit potential from predicted highs
+3. **`highlow`** - Range-based trading (high-low spread)
+4. **`simple_strategy`** - Close price change predictions
+5. **`all_signals_strategy`** - Average of close/high/low predictions
+6. **`ci_guard`** - Conservative blended approach
+7. **`buy_hold`** - Buy and hold baseline
+
+## Quick Start
+
+### 1. Test with a small subset (recommended)
+
+```bash
+# Test with 10 stocks to verify everything works
+python strategytraining/run_top_stocks_backtest.py --num-stocks 10
+```
+
+### 2. Run full backtest on top 200 stocks
+
+```bash
+# Fetch and test top 200 stocks from Alpaca
+python strategytraining/run_top_stocks_backtest.py --num-stocks 200
+```
+
+### 3. Use a custom stock list
+
+```bash
+# Create CSV with 'symbol' column, then:
+python strategytraining/run_top_stocks_backtest.py --symbols-file my_stocks.csv
+```
+
+## Command Line Options
+
+```bash
+python strategytraining/run_top_stocks_backtest.py \
+    --num-stocks 200 \              # Number of top stocks to test
+    --data-dir trainingdata/train \ # Where to store/find historical data
+    --output-dir strategytraining/reports \ # Where to save reports
+    --window-days 7 \               # Backtest window size (days)
+    --stride-days 7 \               # Stride between windows (days)
+    --skip-download                 # Skip data download (use existing)
+```
+
+## Generated Reports
+
+All reports saved to `strategytraining/reports/` (gitignored):
+
+### 1. Strategy Performance by Stock
+**File**: `strategy_performance_by_stock_TIMESTAMP.csv`
+
+Shows every stock-strategy combination, sorted by average PnL:
+- Average PnL per window
+- Total PnL
+- Annualized PnL
+- Sharpe ratio
+- Win rate
+- Total trades
+- Number of windows tested
+
+### 2. Best Strategy Per Stock
+**File**: `best_strategy_per_stock_TIMESTAMP.csv`
+
+The winning strategy for each stock. Use this to:
+- See which strategy works best for each symbol
+- Identify patterns (e.g., "maxdiff dominates tech stocks")
+- Build a symbol-specific strategy mapping
+
+### 3. Strategy Rankings
+**File**: `strategy_rankings_TIMESTAMP.csv`
+
+Overall strategy performance across all stocks:
+- Average PnL per window
+- Total PnL
+- Avg Sharpe ratio
+- Avg win rate
+- Total trades
+
+### 4. Top Stocks by PnL
+**File**: `top_stocks_by_pnl_TIMESTAMP.csv`
+
+Stocks ranked by profitability across all strategies:
+- Best/worst performing symbols
+- Most tradeable stocks
+- Risk-adjusted returns
+
+### 5. Window-Level Details
+**File**: `window_level_details_TIMESTAMP.csv`
+
+Detailed results for every window:
+- Per-window PnL, returns, metrics
+- Time-series view of strategy performance
+- Useful for analyzing performance over different market regimes
+
+### 6. All Trades
+**File**: `all_trades_TIMESTAMP.csv`
+
+Individual trade records:
+- Entry/exit timestamps and prices
+- Position size
+- PnL and PnL %
+- Duration
+- Strategy signals
+
+## Example Output
+
+```
+================================================================================
+BACKTEST SUMMARY
+================================================================================
+Total Symbols: 200
+Total Strategies: 7
+Total Strategy-Window Combinations: 72,800
+Total Trades: 145,600
+
+TOP 10 STOCK-STRATEGY COMBINATIONS (by avg PnL per window):
+--------------------------------------------------------------------------------
+AAPL     / maxdiff            :  $ 127.45 (Sharpe:   2.13, Win Rate:  68.5%)
+MSFT     / maxdiff            :  $ 115.32 (Sharpe:   1.98, Win Rate:  65.2%)
+NVDA     / entry_takeprofit   :  $ 210.87 (Sharpe:   2.45, Win Rate:  71.3%)
+...
+
+STRATEGY RANKINGS (by avg PnL across all stocks):
+--------------------------------------------------------------------------------
+maxdiff             :  $  45.23 avg ($ 3,287,142 total, Sharpe:   1.45)
+entry_takeprofit    :  $  38.67 avg ($ 2,813,446 total, Sharpe:   1.32)
+highlow             :  $  31.45 avg ($ 2,287,940 total, Sharpe:   1.18)
+...
+
+TOP 10 STOCKS (by avg PnL across all strategies):
+--------------------------------------------------------------------------------
+NVDA    :  $  89.23 avg (Sharpe:   2.01, Win Rate:  69.4%)
+AAPL    :  $  76.45 avg (Sharpe:   1.87, Win Rate:  66.8%)
+...
+```
+
+## Use Cases
+
+### 1. Strategy Selection
+Find the best strategy for each stock you trade:
+```bash
+# Run backtest
+python strategytraining/run_top_stocks_backtest.py --num-stocks 50
+
+# Check best_strategy_per_stock_*.csv
+# Use this mapping in your trading system
+```
+
+### 2. Stock Selection
+Identify the most profitable stocks:
+```bash
+# Look at top_stocks_by_pnl_*.csv
+# Focus trading on top performers
+# Avoid or short bottom performers
+```
+
+### 3. Strategy Development
+Analyze what makes strategies successful:
+```bash
+# Review strategy_rankings_*.csv
+# Study window_level_details_*.csv
+# Improve underperforming strategies
+```
+
+## Data Requirements
+
+- Historical OHLCV data (automatically downloaded from Alpaca)
+- Minimum 2000 data points per symbol
+- ~4 years of history recommended
+- Stocks use market hours (7 bars/day)
+- Crypto uses 24/7 data (24 bars/day)
+
+## Helper Scripts
+
+### Fetch Top Stocks Only
+
+```bash
+python strategytraining/fetch_top_stocks.py --limit 200 --output top_200.csv
+```
+
+### Collect Strategy PnL Dataset
+
+```bash
+python strategytraining/collect_strategy_pnl_dataset.py \
+    --symbols AAPL MSFT NVDA \
+    --dataset-name tech_stocks
+```
+
+## Notes
+
+- Reports directory (`strategytraining/reports/`) is gitignored
+- Data is cached in `trainingdata/` to avoid re-downloads
+- Window analysis captures different market regimes
+- All metrics are annualized for comparison
+- System uses existing marketsimulator infrastructure
