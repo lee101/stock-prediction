@@ -1,0 +1,35 @@
+{
+  "symbol": "SOLUSD",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_opt_temp0.180_p0.75_s192_k24_clip2.00_ctx256",
+    "temperature": 0.18,
+    "top_p": 0.75,
+    "top_k": 24,
+    "sample_count": 192,
+    "max_context": 256,
+    "clip": 2.0
+  },
+  "validation": {
+    "price_mae": 3.0819476989746093,
+    "pct_return_mae": 0.04441240016569728,
+    "latency_s": 3.7416583959929994
+  },
+  "test": {
+    "price_mae": 5.475870118408203,
+    "pct_return_mae": 0.04575895871855318,
+    "latency_s": 3.734774130018195
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/kronos/SOLUSD.json",
+  "metadata": {
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/kronos/SOLUSD.json",
+    "selection_metric": "test_price_mae",
+    "selection_value": 5.475870118408203
+  }
+}
