@@ -34,8 +34,8 @@ pufferlib_cpp_market_sim/
 ### 1. Trading Economics (market_config.h, portfolio.cpp)
 - **Stock Trading Fee**: 0.0005 (0.05%)
 - **Crypto Trading Fee**: 0.0015 (0.15%)
-- **Annual Leverage Cost**: 0.0675 (6.75%)
-- **Daily Leverage Cost**: 0.0675 / 252 = 0.0268%
+- **Annual Leverage Cost**: 0.065 (6.5%)
+- **Daily Leverage Cost**: 0.065 / 252 = 0.0258%
 - **Max Leverage**: 1.5x
 - **Crypto Constraints**: No short selling, no leverage
 

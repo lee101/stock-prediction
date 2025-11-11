@@ -94,7 +94,7 @@ def _make_env(prices: torch.Tensor, columns: Tuple[str, ...], base_cfg: Training
         "horizon": base_cfg.horizon,
         "intraday_leverage_max": 4.0,
         "overnight_leverage_max": 2.0,
-        "annual_leverage_rate": 0.0675,
+        "annual_leverage_rate": 0.065,
         "trading_fee": 0.0005,
         "crypto_trading_fee": 0.0015,
         "slip_bps": 1.5,

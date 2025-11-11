@@ -137,7 +137,7 @@ Contains:
 - Auto-enables torch.compile + bf16 for 4-6x total speedup
 
 ### Leverage Configuration
-- `LEVERAGE_COST_ANNUAL`: Annual leverage cost (default: 0.0675)
+- `LEVERAGE_COST_ANNUAL`: Annual leverage cost (default: 0.065)
 - `LEVERAGE_TRADING_DAYS`: Trading days per year (default: 252)
 - `GLOBAL_MAX_GROSS_LEVERAGE`: Max leverage multiplier (default: 2.0)
 

@@ -98,7 +98,7 @@ Mock analytics, `SIM_LOGURU_LEVEL=INFO`, unique `TRADE_STATE_SUFFIX`, `PORTFOLIO
 ## Leverage Sweep (GLOBAL_MAX_GROSS_LEVERAGE, `simple`, top-k 6)
 
 - Crypto legs remain capped at 1.0× due to the sizing change in `get_qty`.
-- Financing costs apply via `marketsimulator.state._accrue_financing_cost()` using the annual 6.75% default unless otherwise noted.
+- Financing costs apply via `marketsimulator.state._accrue_financing_cost()` using the annual 6.5% default unless otherwise noted.
 
 | Max gross leverage | Final equity | PnL | Annualised (252d / 365d) | Cash | Notable holdings | Notes |
 |-------------------:|-------------:|----------------------------:|------------------------:|-------------:|-----------------------------|-------|

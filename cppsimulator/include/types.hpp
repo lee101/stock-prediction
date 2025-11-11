@@ -10,7 +10,7 @@ struct FeeLeverageConfig {
   double stock_fee = 0.0005;       // equities trading fee
   double crypto_fee = 0.0015;      // crypto trading fee
   double slip_bps = 1.5;           // linear slippage, basis points
-  double annual_leverage = 0.0675; // 6.75% annual financing
+  double annual_leverage = 0.065; // 6.5% annual financing
   double intraday_max = 4.0;       // <= 4x intraday leverage
   double overnight_max = 2.0;      // auto clamp to 2x at close
 };

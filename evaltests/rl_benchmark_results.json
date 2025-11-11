@@ -497,7 +497,7 @@
             "base_gross_exposure": 0.5,
             "max_gross_leverage": 1.08,
             "daily_leverage_rate": 0.001,
-            "leverage_penalty_annual_rate": 0.0675,
+            "leverage_penalty_annual_rate": 0.065,
             "leverage_penalty_trading_days": 252,
             "enforce_end_of_day_cap": true,
             "regime_filters_enabled": true,

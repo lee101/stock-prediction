@@ -18,7 +18,7 @@ from typing import Tuple
 
 import numpy as np
 
-ANNUAL_MARGIN_RATE: float = 0.0675
+ANNUAL_MARGIN_RATE: float = 0.065
 TRADING_DAYS_PER_YEAR: int = 252
 BASE_GROSS_EXPOSURE: float = 1.0
 MAX_GROSS_EXPOSURE: float = 2.0

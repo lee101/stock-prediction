@@ -49,7 +49,7 @@ With crypto volatility, most orders sit within the protected zone, can't be stol
 
 **Stocks:**
 - 4x intraday leverage
-- 6.75% daily fee on borrowed amount
+- 6.5% annual fee on borrowed amount
 - More breathing room (not tested yet - crypto only in simulation)
 
 ## Recommended Parameter Changes
