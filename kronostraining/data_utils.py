@@ -62,7 +62,7 @@ def load_symbol_dataframe(path: Path) -> pd.DataFrame:
     if "volume" not in df.columns:
         df["volume"] = 0.0
 
-    df["timestamps"] = pd.to_datetime(df["timestamps"], utc=False)
+    df["timestamps"] = pd.to_datetime(df["timestamps"], utc=True)
     df = df.sort_values("timestamps").reset_index(drop=True)
     df["amount"] = _ensure_amount_column(df)
 
