@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import time
@@ -101,12 +102,44 @@ KRONOS_TEMPERATURES: Sequence[float] = (
     0.30,
 )
 KRONOS_TOP_PS: Sequence[float] = (0.70, 0.75, 0.78, 0.80, 0.82, 0.85, 0.88, 0.90)
-KRONOS_SAMPLE_COUNTS: Sequence[int] = (128, 160, 192, 208, 224, 256, 288, 320)
+# Include lighter sampling modes to test whether lowering variance helps reduce
+# MAE % on volatile symbols. Keep the original values so historical configs
+# remain searchable.
+KRONOS_SAMPLE_COUNTS: Sequence[int] = (
+    96,
+    112,
+    128,
+    144,
+    160,
+    176,
+    192,
+    208,
+    224,
+    240,
+    256,
+    288,
+    320,
+)
 KRONOS_CONTEXTS: Sequence[int] = (192, 224, 256, 288)
 KRONOS_CLIPS: Sequence[float] = (1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.5)
 KRONOS_TOP_KS: Sequence[int] = (0, 16, 20, 24, 28, 32)
 
-TOTO_SAMPLE_COUNTS: Sequence[int] = (64, 128, 256, 512, 1024, 2048, 3072, 4096)
+TOTO_SAMPLE_COUNTS: Sequence[int] = (
+    48,
+    64,
+    96,
+    128,
+    192,
+    256,
+    384,
+    512,
+    768,
+    1024,
+    1536,
+    2048,
+    3072,
+    4096,
+)
 TOTO_AGGREGATIONS: Sequence[str] = (
     "mean",
     "median",
@@ -145,15 +178,38 @@ TOTO_SPB_INDEX_CHOICES: Sequence[int] = (0, 1, 2, 3)
 
 
 def _toto_samples_per_batch_options(num_samples: int) -> Sequence[int]:
-    if num_samples <= 128:
-        return (16, 32)
-    if num_samples <= 512:
-        return (32, 64, 128)
-    if num_samples <= 1024:
-        return (64, 128, 256)
-    if num_samples <= 2048:
-        return (128, 256)
-    return (256, 512)
+    """Return batch sizes that divide ``num_samples`` to avoid runtime asserts."""
+
+    candidate_pool: Tuple[int, ...] = (
+        16,
+        32,
+        48,
+        64,
+        80,
+        96,
+        112,
+        128,
+        160,
+        192,
+        224,
+        256,
+        320,
+        384,
+        448,
+        512,
+    )
+    valid = tuple(
+        size
+        for size in candidate_pool
+        if size <= num_samples and num_samples % size == 0
+    )
+    if valid:
+        return valid
+
+    gcd_value = math.gcd(num_samples, min(num_samples, 512))
+    if gcd_value == 0:
+        gcd_value = num_samples
+    return (gcd_value,)
 
 
 # --- Extended Kronos Hyperparameter Grid ---
@@ -544,7 +600,11 @@ def _optuna_optimize_toto(
     def objective(trial: "optuna.Trial") -> float:  # type: ignore[name-defined]
         config = _sample_toto_config_from_trial(trial)
         start = time.perf_counter()
-        result = _sequential_toto(df, val_indices, config)
+        try:
+            result = _sequential_toto(df, val_indices, config)
+        except AssertionError as exc:
+            trial.set_user_attr("invalid_config", config)
+            raise optuna.TrialPruned(f"Invalid Toto config: {exc}") from exc
         latency = time.perf_counter() - start
         trial.set_user_attr("config", config)
         trial.set_user_attr("validation_result", result)
