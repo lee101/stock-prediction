@@ -1,56 +1,2282 @@
 [
   {
-    "stock": "SPY",
-    "timestamp": "2025-11-01T04:18:49.181008",
-    "holdout_days": 7,
-    "prediction_length": 64,
+    "stock": "ABBV",
+    "timestamp": "2025-11-11T09:05:39.716452",
+    "holdout_days": 15,
+    "prediction_length": 15,
     "kronos": {
-      "stock": "SPY",
+      "stock": "ABBV",
       "model": "kronos",
-      "status": "failed",
-      "error": "KronosForecastingWrapper.__init__() got an unexpected keyword argument 'model_path'"
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 1.0,
+        "top_k": 20,
+        "top_p": 0.8,
+        "mae": 4.639518229166669,
+        "mae_pct": 2.2806534958517912
+      },
+      "best_mae": 4.639518229166669,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 10.847270711263024,
+          "mae_pct": 5.332205769247782
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 9.632937622070314,
+          "mae_pct": 4.735274607821286
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 8.195531209309898,
+          "mae_pct": 4.028687027323592
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 7.301205444335939,
+          "mae_pct": 3.589062246997092
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 8.900953165690106,
+          "mae_pct": 4.375452137708361
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 5.826301066080731,
+          "mae_pct": 2.8640417469873234
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 8.312260945638023,
+          "mae_pct": 4.086068002691461
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 6.89356384277344,
+          "mae_pct": 3.3886773799189593
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 4.639518229166669,
+          "mae_pct": 2.2806534958517912
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 10.457805379231774,
+          "mae_pct": 5.14075583260863
+        }
+      ]
     },
     "toto": {
-      "stock": "SPY",
+      "stock": "ABBV",
       "model": "toto",
-      "status": "failed",
-      "error": "TotoBackbone.__init__() got an unexpected keyword argument 'device'"
+      "status": "success",
+      "best_params": {
+        "temperature": 1.3,
+        "num_samples": 256,
+        "mae": 4.4325137734413165,
+        "mae_pct": 2.1788960692640487
+      },
+      "best_mae": 4.4325137734413165,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 6.45041832526525,
+          "mae_pct": 3.170839810638056
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 4.458168107271196,
+          "mae_pct": 2.191507000667453
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 4.6092488805453,
+          "mae_pct": 2.265773956136548
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 4.463066841165227,
+          "mae_pct": 2.1939150771160874
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 4.4325137734413165,
+          "mae_pct": 2.1788960692640487
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 4.702835359176002,
+          "mae_pct": 2.311778372783038
+        }
+      ]
     }
   },
   {
-    "stock": "AAPL",
-    "timestamp": "2025-11-01T04:18:49.403715",
-    "holdout_days": 7,
-    "prediction_length": 64,
+    "stock": "ABT",
+    "timestamp": "2025-11-11T09:05:52.221569",
+    "holdout_days": 15,
+    "prediction_length": 15,
     "kronos": {
-      "stock": "AAPL",
+      "stock": "ABT",
       "model": "kronos",
-      "status": "failed",
-      "error": "KronosForecastingWrapper.__init__() got an unexpected keyword argument 'model_path'"
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 0.5,
+        "top_k": 20,
+        "top_p": 0.8,
+        "mae": 0.9683990478515625,
+        "mae_pct": 0.736914544626677
+      },
+      "best_mae": 0.9683990478515625,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 0.9683990478515625,
+          "mae_pct": 0.736914544626677
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.0709370930989583,
+          "mae_pct": 0.8149420655004652
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 1.3936258951822917,
+          "mae_pct": 1.0604958712078587
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 2.860382588704427,
+          "mae_pct": 2.1766414759386397
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.692039998372396,
+          "mae_pct": 1.2875775618088405
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.4654103597005208,
+          "mae_pct": 1.1151210963142646
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 1.192559814453125,
+          "mae_pct": 0.9074922931383397
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 2.1748362223307294,
+          "mae_pct": 1.6549669766529047
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.6226786295572917,
+          "mae_pct": 1.2347962196250961
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 2.043778483072917,
+          "mae_pct": 1.5552370621520217
+        }
+      ]
     },
     "toto": {
-      "stock": "AAPL",
+      "stock": "ABT",
       "model": "toto",
-      "status": "failed",
-      "error": "TotoBackbone.__init__() got an unexpected keyword argument 'device'"
+      "status": "success",
+      "best_params": {
+        "temperature": 1.3,
+        "num_samples": 256,
+        "mae": 1.8780181527137756,
+        "mae_pct": 1.4290998064052591
+      },
+      "best_mae": 1.8780181527137756,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 2.0323537647724152,
+          "mae_pct": 1.5465432895769866
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 2.018101645509402,
+          "mae_pct": 1.5356979732789493
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 1.9778228422005972,
+          "mae_pct": 1.5050473483487963
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 1.9923215200503668,
+          "mae_pct": 1.516080286277696
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 1.8780181527137756,
+          "mae_pct": 1.4290998064052591
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 2.434947517514229,
+          "mae_pct": 1.8529016989842144
+        }
+      ]
     }
   },
   {
-    "stock": "NVDA",
-    "timestamp": "2025-11-01T04:18:49.539063",
-    "holdout_days": 7,
-    "prediction_length": 64,
+    "stock": "ADA-USD",
+    "timestamp": "2025-11-11T09:06:00.943584",
+    "holdout_days": 15,
+    "prediction_length": 15,
     "kronos": {
-      "stock": "NVDA",
+      "stock": "ADA-USD",
       "model": "kronos",
-      "status": "failed",
-      "error": "KronosForecastingWrapper.__init__() got an unexpected keyword argument 'model_path'"
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 1.0,
+        "top_k": 20,
+        "top_p": 0.8,
+        "mae": 0.06154095729192099,
+        "mae_pct": 6.873417472535824
+      },
+      "best_mae": 0.06154095729192099,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 0.06739108165105184,
+          "mae_pct": 7.526809112120154
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 0.07657464742660522,
+          "mae_pct": 8.552507837644486
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 0.0736450990041097,
+          "mae_pct": 8.225310956089576
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 0.08431209325790405,
+          "mae_pct": 9.416691589570465
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 0.07095378637313843,
+          "mae_pct": 7.924722273758454
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 0.08865619500478109,
+          "mae_pct": 9.901877816164601
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 0.08220828771591186,
+          "mae_pct": 9.181720695267444
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 0.10626683235168458,
+          "mae_pct": 11.868783561041422
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 0.06154095729192099,
+          "mae_pct": 6.873417472535824
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 0.08861624399820964,
+          "mae_pct": 9.89741574799574
+        }
+      ]
     },
     "toto": {
-      "stock": "NVDA",
+      "stock": "ADA-USD",
       "model": "toto",
-      "status": "failed",
-      "error": "TotoBackbone.__init__() got an unexpected keyword argument 'device'"
+      "status": "success",
+      "best_params": {
+        "temperature": 0.7,
+        "num_samples": 256,
+        "mae": 0.13753961241648843,
+        "mae_pct": 15.361593591482908
+      },
+      "best_mae": 0.13753961241648843,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 0.13753961241648843,
+          "mae_pct": 15.361593591482908
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 0.14047897171694784,
+          "mae_pct": 15.689886235323383
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 0.16757791314739734,
+          "mae_pct": 18.716526471544228
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 0.2217393512216707,
+          "mae_pct": 24.765736480278512
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 0.14044381598941982,
+          "mae_pct": 15.685959744698536
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 0.17832493366052707,
+          "mae_pct": 19.916845118234246
+        }
+      ]
+    }
+  },
+  {
+    "stock": "ALGO-USD",
+    "timestamp": "2025-11-11T09:06:09.628396",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "ALGO-USD",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 1.0,
+        "top_k": 20,
+        "top_p": 0.8,
+        "mae": 0.013423240184783934,
+        "mae_pct": 5.181311125626052
+      },
+      "best_mae": 0.013423240184783934,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 0.01771200497945148,
+          "mae_pct": 6.8367552985608135
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 0.023498990138371773,
+          "mae_pct": 9.070505881503928
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 0.023090842366218556,
+          "mae_pct": 8.912962653218843
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 0.01660628517468769,
+          "mae_pct": 6.4099523622070445
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 0.021291311581929515,
+          "mae_pct": 8.218351758592028
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 0.021296722690264374,
+          "mae_pct": 8.220440422389398
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 0.01890162726243336,
+          "mae_pct": 7.295944219064056
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 0.022139652570088694,
+          "mae_pct": 8.545807614239783
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 0.013423240184783934,
+          "mae_pct": 5.181311125626052
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 0.030035714308420804,
+          "mae_pct": 11.593652394654764
+        }
+      ]
+    },
+    "toto": {
+      "stock": "ALGO-USD",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 1.0,
+        "num_samples": 256,
+        "mae": 0.019474439887562756,
+        "mae_pct": 7.517047349651432
+      },
+      "best_mae": 0.019474439887562756,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 0.020157503449202814,
+          "mae_pct": 7.780706852328531
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 0.021651946631027374,
+          "mae_pct": 8.3575552866865
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 0.019474439887562756,
+          "mae_pct": 7.517047349651432
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 0.03682318080876332,
+          "mae_pct": 14.21358433425485
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 0.02112409856248025,
+          "mae_pct": 8.153808275342426
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 0.0206251837555707,
+          "mae_pct": 7.961229374555838
+        }
+      ]
+    }
+  },
+  {
+    "stock": "AMT",
+    "timestamp": "2025-11-11T09:06:18.358061",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "AMT",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 1.0,
+        "top_k": 20,
+        "top_p": 0.8,
+        "mae": 4.6078186035156135,
+        "mae_pct": 2.221056510284981
+      },
+      "best_mae": 4.6078186035156135,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 9.022843424479156,
+          "mae_pct": 4.349182737777787
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 7.120862833658843,
+          "mae_pct": 3.432391792393339
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 8.898361206054677,
+          "mae_pct": 4.289179932668346
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 6.7023406982421765,
+          "mae_pct": 3.2306561353394057
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 5.395412190755197,
+          "mae_pct": 2.6006916511003175
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 7.894764200846343,
+          "mae_pct": 3.8054270218181245
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 7.8125752766926935,
+          "mae_pct": 3.7658103917438632
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 8.3554962158203,
+          "mae_pct": 4.027508646423285
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 4.6078186035156135,
+          "mae_pct": 2.221056510284981
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 6.472632853190093,
+          "mae_pct": 3.1199325698919282
+        }
+      ]
+    },
+    "toto": {
+      "stock": "AMT",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 1.0,
+        "num_samples": 512,
+        "mae": 6.044176284472136,
+        "mae_pct": 2.913408326381274
+      },
+      "best_mae": 6.044176284472136,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 6.115370206038146,
+          "mae_pct": 2.9477251553610997
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 6.212535613775242,
+          "mae_pct": 2.994560736359084
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 6.236108646790175,
+          "mae_pct": 3.0059233881798457
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 6.044176284472136,
+          "mae_pct": 2.913408326381274
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 6.157006295522042,
+          "mae_pct": 2.9677945451457717
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 7.487706255912769,
+          "mae_pct": 3.6092173233790112
+        }
+      ]
+    }
+  },
+  {
+    "stock": "ARKG",
+    "timestamp": "2025-11-11T09:06:27.074999",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "ARKG",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 0.7,
+        "top_k": 50,
+        "top_p": 0.9,
+        "mae": 0.5591461181640628,
+        "mae_pct": 2.304268528194084
+      },
+      "best_mae": 0.5591461181640628,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.122632726033528,
+          "mae_pct": 4.626424426970207
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.9474253336588534,
+          "mae_pct": 8.025435144023094
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 1.4623577117919915,
+          "mae_pct": 6.026447725879561
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 1.453870773315429,
+          "mae_pct": 5.991472636905549
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.0529079437255857,
+          "mae_pct": 4.339085185422914
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 0.7637443542480471,
+          "mae_pct": 3.14742787602312
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 1.6682292938232415,
+          "mae_pct": 6.874854594699036
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 0.5591461181640628,
+          "mae_pct": 2.304268528194084
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.1511678059895827,
+          "mae_pct": 4.744018888518353
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 0.7993475596110028,
+          "mae_pct": 3.2941504284215215
+        }
+      ]
+    },
+    "toto": {
+      "stock": "ARKG",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 1.3,
+        "num_samples": 512,
+        "mae": 0.6977352969348433,
+        "mae_pct": 2.8754013190973584
+      },
+      "best_mae": 0.6977352969348433,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 0.7550114159782725,
+          "mae_pct": 3.111439009857373
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 0.7302121634284653,
+          "mae_pct": 3.009240075952782
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 0.7335972592234609,
+          "mae_pct": 3.0231902214548954
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 0.7211081979175407,
+          "mae_pct": 2.97172218836113
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 1.864568348725637,
+          "mae_pct": 7.683977452517415
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 0.6977352969348433,
+          "mae_pct": 2.8754013190973584
+        }
+      ]
+    }
+  },
+  {
+    "stock": "ARKK",
+    "timestamp": "2025-11-11T09:06:35.694056",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "ARKK",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 0.7,
+        "top_k": 20,
+        "top_p": 0.8,
+        "mae": 0.7085342407226562,
+        "mae_pct": 0.9401245024256256
+      },
+      "best_mae": 0.7085342407226562,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.034019978841146,
+          "mae_pct": 1.3719979391746902
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.3632614135742187,
+          "mae_pct": 1.8088546529598022
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 1.4147928873697917,
+          "mae_pct": 1.8772296140794096
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 0.9285954793294271,
+          "mae_pct": 1.2321145722878089
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 0.7085342407226562,
+          "mae_pct": 0.9401245024256256
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.0437967936197916,
+          "mae_pct": 1.3849703865185294
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 1.4863876342773437,
+          "mae_pct": 1.9722256946415873
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 1.1906280517578125,
+          "mae_pct": 1.5797946526778395
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.3153071085611978,
+          "mae_pct": 1.745226087749529
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.4075414021809896,
+          "mae_pct": 1.8676079211348087
+        }
+      ]
+    },
+    "toto": {
+      "stock": "ARKK",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 1.0,
+        "num_samples": 256,
+        "mae": 2.719413720568021,
+        "mae_pct": 3.6082765292061065
+      },
+      "best_mae": 2.719413720568021,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 2.820446463425954,
+          "mae_pct": 3.742332657546685
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 3.366605455180009,
+          "mae_pct": 4.467008221347767
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 2.719413720568021,
+          "mae_pct": 3.6082765292061065
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 3.331765970091025,
+          "mae_pct": 4.420781163145696
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 12.230128908157349,
+          "mae_pct": 16.227647435437525
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 2.8283264776070913,
+          "mae_pct": 3.752788319369877
+        }
+      ]
+    }
+  },
+  {
+    "stock": "ARKQ",
+    "timestamp": "2025-11-11T09:06:44.514326",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "ARKQ",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 0.5,
+        "top_k": 20,
+        "top_p": 0.8,
+        "mae": 1.2713027954101515,
+        "mae_pct": 1.2868652923675583
+      },
+      "best_mae": 1.2713027954101515,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.2713027954101515,
+          "mae_pct": 1.2868652923675583
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.9432713826497425,
+          "mae_pct": 1.9670597004990287
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 1.9029342651367216,
+          "mae_pct": 1.9262288011184359
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 1.7730631510416694,
+          "mae_pct": 1.7947678857382328
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.9136611938476533,
+          "mae_pct": 1.9370870422091002
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.5734273274739574,
+          "mae_pct": 1.5926882447667685
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 1.4417134602864574,
+          "mae_pct": 1.4593620184585663
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 2.1981343587239537,
+          "mae_pct": 2.225042550378308
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.7180786132812491,
+          "mae_pct": 1.7391102615150982
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.8213638305664053,
+          "mae_pct": 1.8436598320963762
+        }
+      ]
+    },
+    "toto": {
+      "stock": "ARKQ",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 1.3,
+        "num_samples": 256,
+        "mae": 2.1372865676879913,
+        "mae_pct": 2.1634498985851125
+      },
+      "best_mae": 2.1372865676879913,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 2.1537907739480366,
+          "mae_pct": 2.1801561390581194
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 2.6768036082387,
+          "mae_pct": 2.709571370694025
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 2.1821474969387085,
+          "mae_pct": 2.2088599873889208
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 2.209988138079646,
+          "mae_pct": 2.2370414363174387
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 2.1372865676879913,
+          "mae_pct": 2.1634498985851125
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 2.413121259709202,
+          "mae_pct": 2.4426611870952364
+        }
+      ]
+    }
+  },
+  {
+    "stock": "ARKW",
+    "timestamp": "2025-11-11T09:06:53.390073",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "ARKW",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 10,
+        "temperature": 0.5,
+        "top_k": 20,
+        "top_p": 0.8,
+        "mae": 1.9411580403645834,
+        "mae_pct": 1.2309780721991725
+      },
+      "best_mae": 1.9411580403645834,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 2.6222930908203126,
+          "mae_pct": 1.6629173032572484
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 3.3972768147786456,
+          "mae_pct": 2.154370317729367
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 2.5093098958333333,
+          "mae_pct": 1.5912694349930792
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 2.8708038330078125,
+          "mae_pct": 1.8205094559710473
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 4.97965087890625,
+          "mae_pct": 3.157826880489154
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 2.270546468098958,
+          "mae_pct": 1.4398585050881005
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 2.2736419677734374,
+          "mae_pct": 1.4418215045670444
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 3.3233683268229166,
+          "mae_pct": 2.107501528001246
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 2.285993448893229,
+          "mae_pct": 1.4496541498754039
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 3.0100616455078124,
+          "mae_pct": 1.9088192741338839
+        }
+      ]
+    },
+    "toto": {
+      "stock": "ARKW",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 0.7,
+        "num_samples": 256,
+        "mae": 3.955249180396398,
+        "mae_pct": 2.5082063953109484
+      },
+      "best_mae": 3.955249180396398,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 3.955249180396398,
+          "mae_pct": 2.5082063953109484
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 4.047418424487114,
+          "mae_pct": 2.566655174878394
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 3.9821599662303924,
+          "mae_pct": 2.525271768958255
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 5.204913368821144,
+          "mae_pct": 3.3006762414418254
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 5.557943870623906,
+          "mae_pct": 3.5245492067028357
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 4.665862194697062,
+          "mae_pct": 2.9588389662989245
+        }
+      ]
+    }
+  },
+  {
+    "stock": "ASML",
+    "timestamp": "2025-11-11T09:07:02.116978",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "ASML",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 0.5,
+        "top_k": 50,
+        "top_p": 0.8,
+        "mae": 8.738920084635417,
+        "mae_pct": 1.189781328126286
+      },
+      "best_mae": 8.738920084635417,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 12.417073567708334,
+          "mae_pct": 1.6905523952329593
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 37.33914794921875,
+          "mae_pct": 5.083628252446569
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 8.738920084635417,
+          "mae_pct": 1.189781328126286
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 30.205777994791667,
+          "mae_pct": 4.112438414778145
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 18.494580078125,
+          "mae_pct": 2.517989160603192
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 17.08807373046875,
+          "mae_pct": 2.3264969654434373
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 13.095442708333334,
+          "mae_pct": 1.7829105961635006
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 15.870426432291667,
+          "mae_pct": 2.1607174405612217
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 16.36168212890625,
+          "mae_pct": 2.227600630876159
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 16.834586588541665,
+          "mae_pct": 2.2919853478220333
+        }
+      ]
+    },
+    "toto": {
+      "stock": "ASML",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 1.3,
+        "num_samples": 256,
+        "mae": 40.65327614943187,
+        "mae_pct": 5.534838220433688
+      },
+      "best_mae": 40.65327614943187,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 47.886701091130575,
+          "mae_pct": 6.5196502853897815
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 44.17660612265269,
+          "mae_pct": 6.014530467801426
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 41.632796009381615,
+          "mae_pct": 5.668197311558242
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 42.23825143575668,
+          "mae_pct": 5.7506284992035335
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 40.65327614943187,
+          "mae_pct": 5.534838220433688
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 41.728576262791954,
+          "mae_pct": 5.681237544905973
+        }
+      ]
+    }
+  },
+  {
+    "stock": "AVGO",
+    "timestamp": "2025-11-11T09:07:10.812945",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "AVGO",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 10,
+        "temperature": 0.7,
+        "top_k": 50,
+        "top_p": 0.9,
+        "mae": 4.500313313802083,
+        "mae_pct": 1.4946605371093427
+      },
+      "best_mae": 4.500313313802083,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 8.362481689453125,
+          "mae_pct": 2.7773780405891846
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 8.857596842447917,
+          "mae_pct": 2.941817498223515
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 4.892417399088542,
+          "mae_pct": 1.6248875817285742
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 7.7432373046875,
+          "mae_pct": 2.57171232796044
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 7.342287190755209,
+          "mae_pct": 2.4385473079148055
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 6.532958984375,
+          "mae_pct": 2.1697502603990193
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 5.940315755208333,
+          "mae_pct": 1.9729194209763972
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 6.454508463541667,
+          "mae_pct": 2.1436949861483043
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 4.528155517578125,
+          "mae_pct": 1.5039075917805313
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 7.0984130859375,
+          "mae_pct": 2.3575509472001017
+        }
+      ]
+    },
+    "toto": {
+      "stock": "AVGO",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 1.3,
+        "num_samples": 512,
+        "mae": 7.668075237671534,
+        "mae_pct": 2.5467492270332692
+      },
+      "best_mae": 7.668075237671534,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 19.1699642320474,
+          "mae_pct": 6.366798717672338
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 13.554573286573092,
+          "mae_pct": 4.501794514320402
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 10.964044040441513,
+          "mae_pct": 3.6414184550479267
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 9.060163109501202,
+          "mae_pct": 3.0090945485981044
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 7.684206199645996,
+          "mae_pct": 2.552106701192878
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 7.668075237671534,
+          "mae_pct": 2.5467492270332692
+        }
+      ]
+    }
+  },
+  {
+    "stock": "AXP",
+    "timestamp": "2025-11-11T09:07:19.317541",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "AXP",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 0.7,
+        "top_k": 20,
+        "top_p": 0.9,
+        "mae": 3.433882649739583,
+        "mae_pct": 1.1274576158148004
+      },
+      "best_mae": 3.433882649739583,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 7.048872884114584,
+          "mae_pct": 2.3143788611145832
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 4.631374104817708,
+          "mae_pct": 1.5206337952638473
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 5.859698486328125,
+          "mae_pct": 1.9239334475481065
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 5.83944091796875,
+          "mae_pct": 1.9172822156761031
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 8.488441975911458,
+          "mae_pct": 2.7870371612347316
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 3.433882649739583,
+          "mae_pct": 1.1274576158148004
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 10.466097005208333,
+          "mae_pct": 3.436366929217426
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 10.090437825520834,
+          "mae_pct": 3.3130255555331707
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 9.892633056640625,
+          "mae_pct": 3.248079686420436
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 10.789316813151041,
+          "mae_pct": 3.5424907171327873
+        }
+      ]
+    },
+    "toto": {
+      "stock": "AXP",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 1.3,
+        "num_samples": 256,
+        "mae": 6.059113470713298,
+        "mae_pct": 1.989408003840734
+      },
+      "best_mae": 6.059113470713298,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 6.401099669933319,
+          "mae_pct": 2.101693420712336
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 6.518904109795888,
+          "mae_pct": 2.1403725272653578
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 6.7098737796147665,
+          "mae_pct": 2.203074206556367
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 7.064428583780924,
+          "mae_pct": 2.319486313478884
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 6.059113470713298,
+          "mae_pct": 1.989408003840734
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 6.251998307307561,
+          "mae_pct": 2.0527384959325032
+        }
+      ]
+    }
+  },
+  {
+    "stock": "BA",
+    "timestamp": "2025-11-11T09:07:27.751768",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "BA",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 0.5,
+        "top_k": 20,
+        "top_p": 0.8,
+        "mae": 4.149334716796883,
+        "mae_pct": 1.8139326830280387
+      },
+      "best_mae": 4.149334716796883,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 4.149334716796883,
+          "mae_pct": 1.8139326830280387
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 5.976519775390625,
+          "mae_pct": 2.6127090946553624
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 4.263353474934896,
+          "mae_pct": 1.863777384885321
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 7.443489583333333,
+          "mae_pct": 3.2540129810038745
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 9.68876342773437,
+          "mae_pct": 4.235562045296057
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 5.9086415608723994,
+          "mae_pct": 2.583035298689525
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 10.265541585286455,
+          "mae_pct": 4.487707707733257
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 7.220388793945316,
+          "mae_pct": 3.1564817281401183
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 4.306524658203125,
+          "mae_pct": 1.8826501983940096
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 4.707355753580733,
+          "mae_pct": 2.057878439522902
+        }
+      ]
+    },
+    "toto": {
+      "stock": "BA",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 1.3,
+        "num_samples": 512,
+        "mae": 10.386970593531931,
+        "mae_pct": 4.540791891526023
+      },
+      "best_mae": 10.386970593531931,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 10.667432538668319,
+          "mae_pct": 4.663399278818519
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 10.46177783608437,
+          "mae_pct": 4.573494797281919
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 11.823426798979446,
+          "mae_pct": 5.168756381412038
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 10.638491233189905,
+          "mae_pct": 4.650747231326597
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 10.64516229629517,
+          "mae_pct": 4.653663568576566
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 10.386970593531931,
+          "mae_pct": 4.540791891526023
+        }
+      ]
+    }
+  },
+  {
+    "stock": "BABA",
+    "timestamp": "2025-11-11T09:07:36.198290",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "BABA",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 0.7,
+        "top_k": 20,
+        "top_p": 0.8,
+        "mae": 2.6302408854166694,
+        "mae_pct": 2.171431824600904
+      },
+      "best_mae": 2.6302408854166694,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 4.356424967447916,
+          "mae_pct": 3.596507022703287
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 3.72883809407552,
+          "mae_pct": 3.078393979484161
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 4.341166687011718,
+          "mae_pct": 3.5839103377716723
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 3.941368611653645,
+          "mae_pct": 3.2538514944694987
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 2.6302408854166694,
+          "mae_pct": 2.171431824600904
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 4.941246541341145,
+          "mae_pct": 4.079314580104546
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 4.208351135253905,
+          "mae_pct": 3.4742626178659126
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 4.2692932128906245,
+          "mae_pct": 3.5245741948668563
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 4.955127970377603,
+          "mae_pct": 4.09077458627654
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 6.282530212402343,
+          "mae_pct": 5.1866299082587695
+        }
+      ]
+    },
+    "toto": {
+      "stock": "BABA",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 1.0,
+        "num_samples": 256,
+        "mae": 4.353261588017145,
+        "mae_pct": 3.5938954509619494
+      },
+      "best_mae": 4.353261588017145,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 8.856004943450293,
+          "mae_pct": 7.311197647201253
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 4.44495842407147,
+          "mae_pct": 3.6695970451115785
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 4.353261588017145,
+          "mae_pct": 3.5938954509619494
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 6.925022586186726,
+          "mae_pct": 5.717048393970119
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 4.527905321121215,
+          "mae_pct": 3.738075005820176
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 4.3610047330458945,
+          "mae_pct": 3.6002879116795783
+        }
+      ]
+    }
+  },
+  {
+    "stock": "BAC",
+    "timestamp": "2025-11-11T09:07:44.789337",
+    "holdout_days": 15,
+    "prediction_length": 15,
+    "kronos": {
+      "stock": "BAC",
+      "model": "kronos",
+      "status": "success",
+      "best_params": {
+        "num_samples": 5,
+        "temperature": 1.0,
+        "top_k": 50,
+        "top_p": 0.9,
+        "mae": 0.8792755126953116,
+        "mae_pct": 1.8601656989205189
+      },
+      "best_mae": 0.8792755126953116,
+      "all_results": [
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.6306594848632803,
+          "mae_pct": 3.449768356523289
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.6748405456542959,
+          "mae_pct": 3.543236322637168
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 1.2089790344238271,
+          "mae_pct": 2.55767537942177
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.5,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 2.014485422770181,
+          "mae_pct": 4.261777600203686
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 1.6498095194498688,
+          "mae_pct": 3.4902815255548223
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.1883720397949218,
+          "mae_pct": 2.5140799147317257
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.8,
+          "mae": 1.7307413736979158,
+          "mae_pct": 3.661498234138881
+        },
+        {
+          "num_samples": 5,
+          "temperature": 0.7,
+          "top_k": 50,
+          "top_p": 0.9,
+          "mae": 1.9257957458496084,
+          "mae_pct": 4.074148702919519
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.8,
+          "mae": 2.029283396402994,
+          "mae_pct": 4.293083695469446
+        },
+        {
+          "num_samples": 5,
+          "temperature": 1.0,
+          "top_k": 20,
+          "top_p": 0.9,
+          "mae": 1.6314165751139313,
+          "mae_pct": 3.4513700311917113
+        }
+      ]
+    },
+    "toto": {
+      "stock": "BAC",
+      "model": "toto",
+      "status": "success",
+      "best_params": {
+        "temperature": 1.3,
+        "num_samples": 512,
+        "mae": 1.2615878875056903,
+        "mae_pct": 2.668972899424857
+      },
+      "best_mae": 1.2615878875056903,
+      "all_results": [
+        {
+          "temperature": 0.7,
+          "num_samples": 256,
+          "mae": 1.4438650061686824,
+          "mae_pct": 3.0545922405066968
+        },
+        {
+          "temperature": 0.7,
+          "num_samples": 512,
+          "mae": 1.4110638936360667,
+          "mae_pct": 2.9851993101468284
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 256,
+          "mae": 1.3793129603068024,
+          "mae_pct": 2.9180281035852325
+        },
+        {
+          "temperature": 1.0,
+          "num_samples": 512,
+          "mae": 1.3828230073054621,
+          "mae_pct": 2.9254538409499533
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 256,
+          "mae": 1.5247019430001576,
+          "mae_pct": 3.2256081449969445
+        },
+        {
+          "temperature": 1.3,
+          "num_samples": 512,
+          "mae": 1.2615878875056903,
+          "mae_pct": 2.668972899424857
+        }
+      ]
     }
   }
 ]
