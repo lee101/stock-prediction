@@ -11,12 +11,36 @@ import typer
 from data_curate_daily import download_exchange_latest_data, get_ask, get_bid
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from scripts.alpaca_cli import get_strategy_for_symbol, set_strategy_for_symbol
+from src.forecast_utils import extract_forecasted_pnl, load_latest_forecast_snapshot
 from src.logging_utils import setup_logging
 from src.stock_utils import pairs_equal
 from src.trading_obj_utils import filter_to_realistic_positions
 from src.work_stealing_coordinator import get_coordinator
 
+# Global logger for general maxdiff_cli operations
 logger = setup_logging("maxdiff_cli.log")
+
+
+def _get_watcher_logger(symbol: str, side: str, mode: str):
+    """Get a symbol-specific logger for watcher operations.
+
+    Args:
+        symbol: Trading symbol (e.g., 'BTCUSD', 'AAPL')
+        side: 'buy' or 'sell'
+        mode: 'entry' or 'exit'
+
+    Returns:
+        Logger instance that writes to logs/{symbol}_{side}_{mode}_watcher.log
+    """
+    from pathlib import Path
+
+    # Create logs directory if it doesn't exist
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+
+    # Create symbol-specific log file
+    log_filename = f"logs/{symbol.lower()}_{side}_{mode}_watcher.log"
+    return setup_logging(log_filename)
 
 try:
     from alpaca.data import StockHistoricalDataClient
@@ -277,8 +301,12 @@ def open_position_at_maxdiff_takeprofit(
     ),
 ) -> None:
     side = _normalize_side(side)
+
+    # Use symbol-specific logger for this watcher
+    watcher_logger = _get_watcher_logger(symbol, side, "entry")
+
     if limit_price <= 0 or target_qty <= 0:
-        logger.error(
+        watcher_logger.error(
             "Invalid maxdiff open parameters for %s: limit_price=%.4f target_qty=%.4f",
             symbol,
             limit_price,
@@ -293,7 +321,7 @@ def open_position_at_maxdiff_takeprofit(
     expiry = now + timedelta(minutes=expiry_minutes)
 
     if priority_rank is not None:
-        logger.info(
+        watcher_logger.info(
             "Starting maxdiff entry watcher for %s side=%s limit=%.4f qty=%.4f tolerance=%.4f "
             "expiry=%s force_immediate=%s priority_rank=%s",
             symbol,
@@ -306,7 +334,7 @@ def open_position_at_maxdiff_takeprofit(
             priority_rank,
         )
     else:
-        logger.info(
+        watcher_logger.info(
             "Starting maxdiff entry watcher for %s side=%s limit=%.4f qty=%.4f tolerance=%.4f expiry=%s "
             "force_immediate=%s",
             symbol,
@@ -347,7 +375,7 @@ def open_position_at_maxdiff_takeprofit(
         try:
             fallback_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
         except Exception as exc:
-            logger.debug("StockHistoricalDataClient init failed: %s", exc)
+            watcher_logger.debug("StockHistoricalDataClient init failed: %s", exc)
 
     consecutive_errors = 0
     # Crypto watchers run 24/7 - retry indefinitely
@@ -361,7 +389,7 @@ def open_position_at_maxdiff_takeprofit(
             try:
                 now = _now()
                 if now >= expiry:
-                    logger.info("Entry watcher expired for %s; cancelling staged orders.", symbol)
+                    watcher_logger.info("Entry watcher expired for %s; cancelling staged orders.", symbol)
                     _cancel_orders(symbol, side=side)
                     if asset_class.lower() == "crypto":
                         _cancel_orders(symbol)
@@ -394,7 +422,7 @@ def open_position_at_maxdiff_takeprofit(
                     # Cancel orders older than 1 day (24 hours)
                     canceled_count = _cancel_old_orders(symbol, side=side, max_age_hours=24)
                     if canceled_count > 0:
-                        logger.info(
+                        watcher_logger.info(
                             "Canceled %d old order(s) for %s %s - will place fresh order on next iteration",
                             canceled_count,
                             symbol,
@@ -461,18 +489,18 @@ def open_position_at_maxdiff_takeprofit(
                         )
 
                         if stolen_symbol:
-                            logger.info(f"{symbol}: Successfully stole capacity from {stolen_symbol}")
+                            watcher_logger.info(f"{symbol}: Successfully stole capacity from {stolen_symbol}")
                             status = _update_status(
                                 config_path, status, state="work_steal_success", stolen_from=stolen_symbol
                             )
                         else:
-                            logger.debug(f"{symbol}: Work steal failed, still blocked by capacity")
+                            watcher_logger.debug(f"{symbol}: Work steal failed, still blocked by capacity")
                             status = _update_status(config_path, status, state="blocked_no_cash")
                             time.sleep(poll_seconds)
                             consecutive_errors = 0
                             continue
                     except Exception as exc:
-                        logger.warning(f"Failed work stealing for {symbol}: {exc}")
+                        watcher_logger.warning(f"Failed work stealing for {symbol}: {exc}")
                         status = _update_status(config_path, status, state="blocked_no_cash")
                         time.sleep(poll_seconds)
                         consecutive_errors = 0
@@ -482,7 +510,7 @@ def open_position_at_maxdiff_takeprofit(
                 try:
                     result = alpaca_wrapper.open_order_at_price_or_all(symbol, target_qty, side, limit_price)
                 except Exception as exc:
-                    logger.error("Failed to submit staged entry order for %s: %s", symbol, exc)
+                    watcher_logger.error("Failed to submit staged entry order for %s: %s", symbol, exc)
                     status = _update_status(
                         config_path,
                         status,
@@ -505,7 +533,7 @@ def open_position_at_maxdiff_takeprofit(
             except Exception as poll_exc:
                 consecutive_errors += 1
                 error_limit_str = "unlimited" if max_consecutive_errors is None else str(max_consecutive_errors)
-                logger.error(
+                watcher_logger.error(
                     "Error in entry watcher polling loop for %s (attempt %d/%s): %s",
                     symbol,
                     consecutive_errors,
@@ -522,7 +550,7 @@ def open_position_at_maxdiff_takeprofit(
                 )
                 # Only check error limit for non-crypto (crypto retries indefinitely)
                 if max_consecutive_errors is not None and consecutive_errors >= max_consecutive_errors:
-                    logger.error(
+                    watcher_logger.error(
                         "Entry watcher for %s exceeded max consecutive errors (%d), terminating.",
                         symbol,
                         max_consecutive_errors,
@@ -535,7 +563,7 @@ def open_position_at_maxdiff_takeprofit(
                     )
                     raise
                 # Sleep before retrying
-                logger.info(
+                watcher_logger.info(
                     "Entry watcher for %s sleeping %ds before retry (error %d/%s)",
                     symbol,
                     error_sleep_seconds,
@@ -600,8 +628,12 @@ def close_position_at_maxdiff_takeprofit(
 ) -> None:
     side = _normalize_side(side)
     exit_side = "sell" if side == "buy" else "buy"
+
+    # Use symbol-specific logger for this watcher
+    watcher_logger = _get_watcher_logger(symbol, exit_side, "exit")
+
     if takeprofit_price <= 0:
-        logger.error("Invalid takeprofit price %.4f for %s", takeprofit_price, symbol)
+        watcher_logger.error("Invalid takeprofit price %.4f for %s", takeprofit_price, symbol)
         return
 
     _ensure_strategy_tag(symbol)
@@ -610,7 +642,7 @@ def close_position_at_maxdiff_takeprofit(
     now = _now()
     expiry = now + timedelta(minutes=expiry_minutes)
 
-    logger.info(
+    watcher_logger.info(
         "Starting maxdiff takeprofit watcher for %s entry_side=%s takeprofit=%.4f expiry=%s",
         symbol,
         side,
@@ -648,7 +680,7 @@ def close_position_at_maxdiff_takeprofit(
             try:
                 now = _now()
                 if now >= expiry:
-                    logger.info("Takeprofit watcher expired for %s; cancelling exit orders.", symbol)
+                    watcher_logger.info("Takeprofit watcher expired for %s; cancelling exit orders.", symbol)
                     _cancel_orders(symbol, side=exit_side)
                     if asset_class.lower() == "crypto":
                         _cancel_orders(symbol)
@@ -681,7 +713,7 @@ def close_position_at_maxdiff_takeprofit(
                     # Even if we have a takeprofit order, cancel it if it's >1 day old
                     canceled_count = _cancel_old_orders(symbol, side=exit_side, max_age_hours=24)
                     if canceled_count > 0:
-                        logger.info(
+                        watcher_logger.info(
                             "Canceled %d old exit order(s) for %s %s - will place fresh order on next iteration",
                             canceled_count,
                             symbol,
@@ -702,7 +734,7 @@ def close_position_at_maxdiff_takeprofit(
                 try:
                     alpaca_wrapper.open_order_at_price(symbol, qty, exit_side, takeprofit_price)
                 except Exception as exc:
-                    logger.error("Failed to submit takeprofit order for %s: %s", symbol, exc)
+                    watcher_logger.error("Failed to submit takeprofit order for %s: %s", symbol, exc)
                     status = _update_status(
                         config_path,
                         status,
@@ -724,7 +756,7 @@ def close_position_at_maxdiff_takeprofit(
                 raise
             except Exception as poll_exc:
                 consecutive_errors += 1
-                logger.error(
+                watcher_logger.error(
                     "Error in exit watcher polling loop for %s (consecutive errors: %d): %s",
                     symbol,
                     consecutive_errors,
@@ -739,7 +771,7 @@ def close_position_at_maxdiff_takeprofit(
                     consecutive_errors=consecutive_errors,
                 )
                 # Sleep before retrying - unlimited retries to handle temporary API outages
-                logger.info(
+                watcher_logger.info(
                     "Exit watcher for %s sleeping %ds before retry (consecutive errors: %d)",
                     symbol,
                     error_sleep_seconds,
@@ -747,7 +779,7 @@ def close_position_at_maxdiff_takeprofit(
                 )
                 time.sleep(error_sleep_seconds)
     except KeyboardInterrupt:
-        logger.info("Takeprofit watcher interrupted for %s; marking as cancelled.", symbol)
+        watcher_logger.info("Takeprofit watcher interrupted for %s; marking as cancelled.", symbol)
         status = _update_status(
             config_path,
             status,
