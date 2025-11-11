@@ -63,7 +63,7 @@ Expected runtime: 10-30 minutes (depending on data availability)
 ### Constraints Enforced
 - Stocks: Max 2x leverage
 - Crypto: No leverage, no shorting
-- Leverage cost: 6.75% annual on leveraged portion
+- Leverage cost: 6.5% annual on leveraged portion
 - Realistic trade sizing
 
 ### Output Metrics

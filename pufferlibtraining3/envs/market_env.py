@@ -44,7 +44,7 @@ class MarketEnvConfig:
     slip_bps: float = 1.5
 
     # Leverage & financing (stocks only)
-    annual_leverage_rate: float = 0.0675
+    annual_leverage_rate: float = 0.065
     intraday_leverage_max: float = 4.0
     overnight_leverage_max: float = 2.0
 

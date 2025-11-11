@@ -10,7 +10,7 @@ struct MarketConfig {
     static constexpr float CRYPTO_TRADING_FEE = 0.0015f;     // 0.15% for crypto
 
     // Leverage settings
-    static constexpr float ANNUAL_LEVERAGE_COST = 0.0675f;   // 6.75% annual
+    static constexpr float ANNUAL_LEVERAGE_COST = 0.065f;   // 6.5% annual
     static constexpr int TRADING_DAYS_PER_YEAR = 252;
     static constexpr float DAILY_LEVERAGE_COST = ANNUAL_LEVERAGE_COST / TRADING_DAYS_PER_YEAR; // ~0.0268%
     static constexpr float MAX_LEVERAGE = 1.5f;              // Max 1.5x leverage for stocks

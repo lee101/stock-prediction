@@ -14,7 +14,7 @@ import os
 from typing import Optional
 
 
-DEFAULT_ANNUAL_LEVERAGE_COST = 0.0675  # 6.75% annualised financing rate
+DEFAULT_ANNUAL_LEVERAGE_COST = 0.065  # 6.5% annualised financing rate
 DEFAULT_TRADING_DAYS = 252
 DEFAULT_MAX_GROSS_LEVERAGE = 2.0
 

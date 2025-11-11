@@ -241,7 +241,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--reward-scale", type=float, default=1.0, help="Scalar multiplier applied to rewards")
     parser.add_argument("--intraday-leverage", type=float, default=4.0, help="Maximum intraday leverage multiple")
     parser.add_argument("--overnight-leverage", type=float, default=2.0, help="Maximum overnight leverage multiple")
-    parser.add_argument("--annual-leverage-rate", type=float, default=0.0675, help="Annual financing rate applied to positions above 1x")
+    parser.add_argument("--annual-leverage-rate", type=float, default=0.065, help="Annual financing rate applied to positions above 1x")
     parser.add_argument("--trading-fee", type=float, default=0.0005, help="Per-notional trading fee for equities")
     parser.add_argument("--crypto-fee", type=float, default=0.0015, help="Per-notional trading fee for crypto assets")
     parser.add_argument("--slip-bps", type=float, default=1.5, help="Linear slippage in basis points per |Δposition|")

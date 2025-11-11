@@ -5,7 +5,7 @@
 ### Stock Trading
 - **Max intraday leverage**: 4x
 - **Max end-of-day leverage**: 2x (must close positions to meet this)
-- **Leverage fee**: 6.75% on borrowed portion (amount > 1x capital)
+- **Leverage fee**: 6.5% annual on borrowed portion (amount > 1x capital)
   - Applied at market open
   - Only on leveraged portion (capital_used - base_capital)
 - **Work stealing applies**: Yes, stocks compete for 4x intraday capacity
@@ -44,7 +44,7 @@ With $10k capital:
 Simulator treats all assets equally with 2x leverage, which:
 - Overestimates crypto capacity (should be 1x)
 - Underestimates stock capacity (should be 4x intraday)
-- Ignores leverage fees (6.75% significant cost)
+- Ignores leverage fees (6.5% annual significant cost)
 - Doesn't model EOD deleveraging (2x constraint)
 
 ### Required Changes

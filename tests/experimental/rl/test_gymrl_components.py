@@ -162,7 +162,7 @@ def test_portfolio_leverage_closing_interest(tmp_path):
         include_cash=False,
         intraday_leverage_cap=4.0,
         closing_leverage_cap=2.0,
-        leverage_interest_rate=0.0675,
+        leverage_interest_rate=0.065,
         trading_days_per_year=252,
         weight_cap=None,
     )

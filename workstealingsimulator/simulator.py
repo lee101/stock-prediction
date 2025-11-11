@@ -66,7 +66,7 @@ class SimConfig:
     capital: float = 10000.0
     crypto_max_leverage: float = 1.0  # Crypto: no leverage
     stock_max_leverage: float = 4.0  # Stocks: 4x intraday
-    leverage_fee_pct: float = 0.0675  # 6.75% daily on leveraged portion
+    leverage_fee_pct: float = 0.065  # 6.5% annual on leveraged portion
 
 
 class WorkStealingSimulator:

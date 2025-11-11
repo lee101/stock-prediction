@@ -69,6 +69,19 @@ Watchers will spawn:
 - `trade_stock_e2e.log` - Position management, watcher spawning
 - `alpaca_cli.log` - Order submissions/fills
 
+## Unit Tests
+Permanent regression tests added in `tests/prod/trading/test_watcher_refresh.py`:
+- `TestWatcherPriceSelection` - Verifies correct price fields for each strategy
+- `TestActiveTradeSyncWithPositions` - Tests auto-creation of missing active_trade entries
+- `TestWatcherEntryPrices` - Tests entry watcher price selection
+- `TestSideMismatchHandling` - Tests side mismatch detection
+- `TestUNIUSDRegressionFix` - Specific regression tests for UNIUSD issue
+
+Run tests:
+```bash
+python -m pytest tests/prod/trading/test_watcher_refresh.py -v
+```
+
 ## Verification Commands
 ```bash
 # Check watchers running
