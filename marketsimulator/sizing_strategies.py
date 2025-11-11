@@ -4,7 +4,7 @@ Position sizing strategy implementations for testing different approaches.
 Each strategy returns a position size as a fraction of total equity (or leverage-adjusted).
 Strategies account for:
 - 2x max leverage (stocks/ETFs only)
-- 6.75% annual interest on leverage (daily calculation)
+- 6.5% annual interest on leverage (daily calculation)
 - Crypto: no leverage, no shorting
 """
 
@@ -254,12 +254,12 @@ class OptimalFStrategy(SizingStrategy):
     """Maximize expected log growth accounting for leverage costs."""
 
     def __init__(self,
-                 leverage_cost_annual: float = 0.0675,
+                 leverage_cost_annual: float = 0.065,
                  trading_days_per_year: int = 252,
                  max_position: float = 1.5):
         """
         Args:
-            leverage_cost_annual: Annual interest rate on leverage (e.g., 0.0675 = 6.75%)
+            leverage_cost_annual: Annual interest rate on leverage (e.g., 0.065 = 6.5%)
             trading_days_per_year: Trading days for daily rate calculation
             max_position: Max position size cap
         """

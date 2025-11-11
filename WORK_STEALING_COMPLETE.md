@@ -37,7 +37,7 @@ Reduced protection threshold from **0.4% → 0.1%**
 
 ### Simulation Framework
 - Realistic leverage constraints (crypto 1x, stocks 4x)
-- Leverage fee calculation (6.75% daily)
+- Leverage fee calculation (6.5% annual)
 - Scipy differential_evolution optimizer
 - Hourly crypto data (3+ years)
 - Strategy performance data from production

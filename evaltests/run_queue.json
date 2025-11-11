@@ -15,7 +15,7 @@
       "module": "pufferlibtraining",
       "priority": 2,
       "description": "Run Optuna sweep on portfolio pairs to lift AMZN_MSFT cumulative return and stabilize negative runs.",
-      "command": "source .venv312/bin/activate && python pufferlibtraining/train_ppo.py --base-stocks AAPL,AMZN,MSFT,NVDA,GOOGL --specialist-stocks AAPL,AMZN,MSFT --trainingdata-dir trainingdata --output-dir pufferlibtraining/models/optuna_20251022 --tensorboard-dir pufferlibtraining/logs/optuna_20251022 --rl-epochs 250 --rl-learning-rate 0.0003 --transaction-cost-bps 5 --risk-penalty 0.05 --leverage-limit 1.5 --borrowing-cost 0.0675 --verbose",
+      "command": "source .venv312/bin/activate && python pufferlibtraining/train_ppo.py --base-stocks AAPL,AMZN,MSFT,NVDA,GOOGL --specialist-stocks AAPL,AMZN,MSFT --trainingdata-dir trainingdata --output-dir pufferlibtraining/models/optuna_20251022 --tensorboard-dir pufferlibtraining/logs/optuna_20251022 --rl-epochs 250 --rl-learning-rate 0.0003 --transaction-cost-bps 5 --risk-penalty 0.05 --leverage-limit 1.5 --borrowing-cost 0.065 --verbose",
       "expected_duration_hours": 6,
       "status": "completed"
     },

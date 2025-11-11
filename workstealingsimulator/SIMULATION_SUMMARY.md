@@ -16,7 +16,7 @@ Created a realistic work stealing simulator with proper leverage constraints:
 **Stock Trading:**
 - Max intraday leverage: 4x
 - Max EOD leverage: 2x (not yet enforced in simulation)
-- Leverage fee: 6.75% daily on borrowed amount
+- Leverage fee: 6.5% annual on borrowed amount
 - Position size: Variable
 - More breathing room with 4x leverage
 

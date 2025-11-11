@@ -115,7 +115,7 @@ static PyObject* MarketEnv_new(PyTypeObject* type, PyObject* args, PyObject* kw)
     self->steps_per_day = 1;
     self->intraday_leverage_max = 4.0f;
     self->overnight_leverage_max = 2.0f;
-    self->finance_rate_daily = 0.0675f / 252.0f;
+    self->finance_rate_daily = 0.065f / 252.0f;
     self->trading_cost_bps = 0.0f;
     self->risk_aversion = 0.0f;
     self->return_sigma = 0.01f;
@@ -140,7 +140,7 @@ static int MarketEnv_init(MarketEnv* self, PyObject* args, PyObject* kw) {
     unsigned long long seed = 0ULL;
     float leverage_limit = 1.0f, trading_cost_bps = 0.0f, risk_aversion = 0.0f;
     int steps_per_day = 1;
-    float finance_rate_annual = 0.0675f;
+    float finance_rate_annual = 0.065f;
     int trading_days_per_year = 252;
     float intraday_leverage_max = 4.0f;
     float overnight_leverage_max = 2.0f;

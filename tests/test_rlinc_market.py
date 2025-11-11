@@ -88,6 +88,6 @@ def test_leverage_policy_and_financing():
 
     # Step 2 (open): financing applies on overnight leverage above 1x (we held 2x)
     # With sigma=0 and fees=0, reward should be exactly -daily_rate*(2-1)
-    rate_daily = 0.0675 / 252.0
+    rate_daily = 0.065 / 252.0
     obs, r, term, trunc, info = env.step(np.zeros((2,), dtype=np.float32))
     assert pytest.approx(r, rel=0, abs=1e-7) == -rate_daily

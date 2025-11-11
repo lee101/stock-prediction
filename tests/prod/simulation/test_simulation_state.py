@@ -20,7 +20,7 @@ from marketsimulator.state import (
 
 @pytest.fixture(autouse=True)
 def leverage_settings_override():
-    settings = LeverageSettings(annual_cost=0.0675, trading_days_per_year=252, max_gross_leverage=1.5)
+    settings = LeverageSettings(annual_cost=0.065, trading_days_per_year=252, max_gross_leverage=1.5)
     set_leverage_settings(settings)
     yield
     reset_leverage_settings()

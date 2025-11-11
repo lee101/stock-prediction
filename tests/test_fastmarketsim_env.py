@@ -45,7 +45,7 @@ def test_equity_leverage_and_financing_fees():
             "horizon": 1,
             "intraday_leverage_max": 4.0,
             "overnight_leverage_max": 2.0,
-            "annual_leverage_rate": 0.0675,
+            "annual_leverage_rate": 0.065,
             "is_crypto": False,
         },
     )
