@@ -22,6 +22,7 @@ from src.portfolio_risk import (
     record_portfolio_snapshot,
 )
 from src.leverage_settings import get_leverage_settings
+from src.symbol_utils import is_crypto_symbol
 from src.trading_obj_utils import filter_to_realistic_positions
 from stock.state import get_state_dir, get_state_file, resolve_state_suffix
 from stock.state_utils import StateLoadError, collect_probe_statuses, render_ascii_line
@@ -491,6 +492,12 @@ def status(
     if forecast_error:
         typer.secho(f"  Forecast snapshot unavailable: {forecast_error}", fg=typer.colors.YELLOW)
 
+    # Build set of symbols with open positions
+    position_symbols = set()
+    if positions:
+        for pos in positions:
+            position_symbols.add(getattr(pos, "symbol", ""))
+
     if trading_plan:
         for entry in trading_plan:
             symbol = entry.get("symbol", "UNKNOWN")
@@ -517,7 +524,14 @@ def status(
             profit_summary = _format_strategy_profit_summary(strategy, forecast)
             if profit_summary:
                 line += f" | {profit_summary}"
-            typer.echo(line)
+
+            # Color code: gold for crypto, green for symbols with positions
+            if is_crypto_symbol(symbol):
+                typer.secho(line, fg=typer.colors.YELLOW)
+            elif symbol in position_symbols:
+                typer.secho(line, fg=typer.colors.GREEN)
+            else:
+                typer.echo(line)
 
             entry_watchers = _select_watchers(watchers, symbol, side, "entry")
             exit_watchers = _select_watchers(watchers, symbol, side, "exit")

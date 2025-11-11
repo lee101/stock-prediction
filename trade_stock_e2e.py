@@ -2545,30 +2545,52 @@ def manage_positions(
         symbol = position.symbol
         normalized_side = _normalize_side_for_key(getattr(position, "side", ""))
 
-        # Get strategy for this position
-        active_trade = _get_active_trade(symbol, normalized_side)
-        if not active_trade:
-            continue
-
-        entry_strategy = active_trade.get("entry_strategy")
-        if entry_strategy not in MAXDIFF_LIMIT_STRATEGIES:
-            continue
-
-        # For maxdiff strategies, respawn watchers if they're missing or expired
-        # This ensures 24/7 coverage for crypto and continuous coverage for stocks
+        # Get pick_data first to determine if position should be tracked
         pick_data = current_picks.get(symbol)
         if not pick_data:
-            # Position exists but not in current picks - might have been removed
-            # Check if it's in the analyzed results to get forecast data
+            # Position exists but not in current picks - check analyzed results
             if symbol not in all_analyzed_results:
                 logger.debug(f"Skipping watcher refresh for {symbol} - not in current analysis")
                 continue
             pick_data = all_analyzed_results[symbol]
 
-        # Only refresh if the side matches
+        # Only process if the side matches
         if not is_same_side(pick_data.get("side"), position.side):
             logger.debug(f"Skipping watcher refresh for {symbol} {normalized_side} - side mismatch with forecast")
             continue
+
+        # Get strategy for this position
+        active_trade = _get_active_trade(symbol, normalized_side)
+        entry_strategy = pick_data.get("strategy")
+
+        # Create active_trade entry if missing but position exists with matching forecast
+        if not active_trade and entry_strategy in MAXDIFF_LIMIT_STRATEGIES:
+            position_qty = abs(float(getattr(position, "qty", 0.0)))
+            logger.info(
+                f"Creating missing active_trade entry for {symbol} {normalized_side} "
+                f"(qty={position_qty}, strategy={entry_strategy})"
+            )
+            _update_active_trade(
+                symbol,
+                normalized_side,
+                mode="normal",
+                qty=position_qty,
+                strategy=entry_strategy,
+            )
+            _normalize_active_trade_patch(_update_active_trade)
+            active_trade = _get_active_trade(symbol, normalized_side)
+
+        if not active_trade:
+            continue
+
+        # Verify strategy is maxdiff-based
+        stored_entry_strategy = active_trade.get("entry_strategy")
+        if stored_entry_strategy not in MAXDIFF_LIMIT_STRATEGIES:
+            continue
+
+        # For maxdiff strategies, respawn watchers if they're missing or expired
+        # This ensures 24/7 coverage for crypto and continuous coverage for stocks
+        entry_strategy = stored_entry_strategy
 
         # Get current bid/ask for sizing
         bid_price, ask_price = fetch_bid_ask(symbol)
@@ -2650,7 +2672,10 @@ def manage_positions(
         )
 
         # Determine new forecast takeprofit price
-        new_takeprofit_price = pick_data.get("maxdiffprofit_high_price" if is_buy else "maxdiffprofit_low_price")
+        if entry_strategy == "maxdiffalwayson":
+            new_takeprofit_price = pick_data.get("maxdiffalwayson_high_price" if is_buy else "maxdiffalwayson_low_price")
+        else:
+            new_takeprofit_price = pick_data.get("maxdiffprofit_high_price" if is_buy else "maxdiffprofit_low_price")
 
         # Decide whether to spawn and which price to use
         should_spawn_exit, takeprofit_price, exit_spawn_reason = should_spawn_watcher(
