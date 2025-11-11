@@ -21,6 +21,7 @@ from data_utils import is_fp_close_to_zero
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
 from src.fixtures import crypto_symbols, all_crypto_symbols, active_crypto_symbols
 from src.stock_utils import remap_symbols
+from src.symbol_utils import is_crypto_symbol
 
 base_dir = Path(__file__).parent
 
@@ -112,8 +113,7 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
     )
     if credential_placeholders_present:
         logger.warning(
-            "Alpaca credentials not configured — using cached datasets for %s.",
-            ", ".join(symbols),
+            f"Alpaca credentials not configured — using cached datasets for {', '.join(symbols)}."
         )
         return _load_cached_or_raise()
     # todo only do this in test mode
@@ -135,9 +135,7 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
         alpaca_clock = api.get_clock()
     except APIError as exc:
         logger.warning(
-            "Alpaca API unavailable (%s); falling back to cached datasets for %s.",
-            exc,
-            ", ".join(symbols),
+            f"Alpaca API unavailable ({exc}); falling back to cached datasets for {', '.join(symbols)}."
         )
         return _load_cached_or_raise()
     if not alpaca_clock.is_open and not all_data_force:
@@ -157,9 +155,7 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
             daily_df = download_exchange_historical_data(client, symbol)
         except APIError as exc:
             logger.warning(
-                "Failed to download historical data for %s (%s); using cached dataset.",
-                symbol,
-                exc,
+                f"Failed to download historical data for {symbol} ({exc}); using cached dataset."
             )
             daily_df = _load_cached_symbol(save_path, symbol)
             if daily_df.empty:
@@ -334,8 +330,9 @@ def get_bid(symbol):
 
 
 def download_stock_data_between_times(api, end, start, symbol):
-    # Use all_crypto_symbols to identify which API to use (crypto vs stock)
-    if symbol in all_crypto_symbols:
+    # Use is_crypto_symbol to identify which API to use (crypto vs stock)
+    # Handles both BTC/USD and BTCUSD formats
+    if is_crypto_symbol(symbol):
         daily_df = crypto_get_bars(end, start, symbol)
         try:
             daily_df.drop(['exchange'], axis=1, inplace=True)

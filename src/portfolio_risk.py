@@ -14,7 +14,7 @@ from sqlalchemy import DateTime, Float, Integer, create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
-DEFAULT_MIN_RISK_THRESHOLD = 0.01
+DEFAULT_MIN_RISK_THRESHOLD = 2.0
 
 def get_configured_max_risk_threshold() -> float:
     settings = get_leverage_settings()
@@ -151,12 +151,14 @@ def record_portfolio_snapshot(
                 if not math.isfinite(effective_day_pl):
                     effective_day_pl = None
 
-        if effective_day_pl is not None:
-            risk_threshold = configured_max if effective_day_pl >= 0 else DEFAULT_MIN_RISK_THRESHOLD
-        elif reference is None:
-            risk_threshold = DEFAULT_MIN_RISK_THRESHOLD
-        else:
-            risk_threshold = configured_max if portfolio_value >= reference.portfolio_value else DEFAULT_MIN_RISK_THRESHOLD
+        # Disabled dynamic risk adjustment - always use 2.0x
+        risk_threshold = 2.0
+        # if effective_day_pl is not None:
+        #     risk_threshold = configured_max if effective_day_pl >= 0 else DEFAULT_MIN_RISK_THRESHOLD
+        # elif reference is None:
+        #     risk_threshold = DEFAULT_MIN_RISK_THRESHOLD
+        # else:
+        #     risk_threshold = configured_max if portfolio_value >= reference.portfolio_value else DEFAULT_MIN_RISK_THRESHOLD
 
         risk_threshold = _clamp_threshold(risk_threshold)
 

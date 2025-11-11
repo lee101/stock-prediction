@@ -646,10 +646,7 @@ def spawn_open_position_at_maxdiff_takeprofit(
     # Warn if data bar might not be fresh, but proceed anyway
     if not _is_data_bar_fresh(symbol, started_at):
         logger.warning(
-            "Spawning %s %s entry watcher @ %.4f shortly after data bar refresh - forecast may be based on previous bar",
-            symbol,
-            side,
-            limit_price,
+            f"Spawning {symbol} {side} entry watcher @ {limit_price:.4f} shortly after data bar refresh - forecast may be based on previous bar"
         )
 
     # Check if existing watcher matches desired parameters
@@ -681,10 +678,7 @@ def spawn_open_position_at_maxdiff_takeprofit(
 
     if existing_metadata:
         logger.debug(
-            "Restarting %s %s entry watcher @ %.4f (fresh code/params)",
-            symbol,
-            side,
-            limit_price,
+            f"Restarting {symbol} {side} entry watcher @ {limit_price:.4f} (fresh code/params)"
         )
     _stop_existing_watcher(config_path, reason="replaced_entry_watcher")
     priority_value: Optional[int]
@@ -802,10 +796,7 @@ def spawn_close_position_at_maxdiff_takeprofit(
     # Warn if data bar might not be fresh, but proceed anyway
     if not _is_data_bar_fresh(symbol, started_at):
         logger.warning(
-            "Spawning %s %s exit watcher @ %.4f shortly after data bar refresh - forecast may be based on previous bar",
-            symbol,
-            side,
-            takeprofit_price,
+            f"Spawning {symbol} {side} exit watcher @ {takeprofit_price:.4f} shortly after data bar refresh - forecast may be based on previous bar"
         )
 
     # Stop conflicting exit watchers with different take-profit prices
@@ -836,10 +827,7 @@ def spawn_close_position_at_maxdiff_takeprofit(
 
     if existing_metadata:
         logger.debug(
-            "Restarting %s %s exit watcher @ %.4f (fresh code/params)",
-            symbol,
-            side,
-            takeprofit_price,
+            f"Restarting {symbol} {side} exit watcher @ {takeprofit_price:.4f} (fresh code/params)"
         )
     _stop_existing_watcher(config_path, reason="replaced_exit_watcher")
     metadata = {
