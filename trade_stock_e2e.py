@@ -13,21 +13,8 @@ import pandas as pd
 import pytz
 from loguru import logger
 
-try:
-    from backtest_test3_inline import backtest_forecasts, release_model_resources
-except Exception as import_exc:  # pragma: no cover - exercised via tests with stubs
-    logging.getLogger(__name__).warning(
-        "Falling back to stubbed backtest resources due to import failure: %s", import_exc
-    )
-    captured_import_error = import_exc
-
-    def backtest_forecasts(*args, **kwargs):
-        raise RuntimeError(
-            "backtest_forecasts is unavailable because backtest_test3_inline could not be imported."
-        ) from captured_import_error
-
-    def release_model_resources() -> None:
-        return None
+# Direct import - fail hard if backtest module unavailable (production mode)
+from backtest_test3_inline import backtest_forecasts, release_model_resources
 
 
 import src.trade_stock_state_utils as state_utils
@@ -57,6 +44,7 @@ from src.process_utils import (
     spawn_open_position_at_maxdiff_takeprofit,
 )
 from src.sizing_utils import get_qty
+from src.symbol_utils import is_crypto_symbol
 from src.trade_stock_env_utils import (
     TRUTHY_ENV_VALUES,
     _allowed_side_for,
@@ -727,7 +715,7 @@ def _get_simple_qty(symbol: str, entry_price: float, positions) -> float:
     buying_power = float(getattr(alpaca_wrapper, "total_buying_power", 0.0) or 0.0)
     global_risk = get_global_risk_threshold()
 
-    if symbol in all_crypto_symbols:
+    if is_crypto_symbol(symbol):
         # For crypto: just use half of equity (no leverage)
         qty = (equity / 2.0) / entry_price
         # Round down to 3 decimal places for crypto
@@ -742,8 +730,7 @@ def _get_simple_qty(symbol: str, entry_price: float, positions) -> float:
         return 0.0
 
     logger.debug(
-        "Simple sizing for %s: qty=%.4f (equity=%.2f, buying_power=%.2f, global_risk=%.3f)",
-        symbol, qty, equity, buying_power, global_risk
+        f"Simple sizing for {symbol}: qty={qty:.4f} (equity={equity:.2f}, buying_power={buying_power:.2f}, global_risk={global_risk:.3f})"
     )
 
     return qty
@@ -816,10 +803,7 @@ def _ensure_probe_state_consistency(
 
     qty_value = coerce_numeric(getattr(position, "qty", 0.0), default=0.0)
     logger.info(
-        "%s: Position notional $%.2f exceeds probe limit $%.2f; promoting to normal regime.",
-        position.symbol,
-        notional_value,
-        PROBE_NOTIONAL_LIMIT,
+        f"{position.symbol}: Position notional ${notional_value:.2f} exceeds probe limit ${PROBE_NOTIONAL_LIMIT:.2f}; promoting to normal regime."
     )
 
     stored_qty = coerce_numeric(active_trade.get("qty"), default=0.0) if active_trade else 0.0
@@ -1162,13 +1146,12 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     latest_snapshot = _load_latest_forecast_snapshot()
 
     for symbol in symbols:
-        if symbol not in all_crypto_symbols and not equities_tradable_now:
+        if not is_crypto_symbol(symbol) and not equities_tradable_now:
             if skip_closed_equity:
                 skipped_equity_symbols.append(symbol)
                 continue
             logger.debug(
-                "%s: market closed but analyzing due to MARKETSIM_SKIP_CLOSED_EQUITY override.",
-                symbol,
+                f"{symbol}: market closed but analyzing due to MARKETSIM_SKIP_CLOSED_EQUITY override."
             )
         try:
             kelly_fraction = None
@@ -1180,17 +1163,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             try:
                 backtest_df = backtest_forecasts(symbol, num_simulations)
             except Exception as exc:
-                logger.warning(
-                    f"Primary backtest_forecasts failed for {symbol}: {exc}. Attempting simulator fallback analytics."
-                )
-                try:
-                    from marketsimulator import backtest_test3_inline as sim_backtest  # type: ignore
-
-                    backtest_df = sim_backtest.backtest_forecasts(symbol, num_simulations)
-                except Exception as fallback_exc:
-                    logger.error(f"Fallback backtest also failed for {symbol}: {fallback_exc}. Skipping symbol.")
-                    continue
-                used_fallback_engine = True
+                logger.error(f"backtest_forecasts failed for {symbol}: {exc}. Skipping symbol.")
+                continue
 
             if backtest_df.empty:
                 logger.warning(f"Skipping {symbol} - backtest returned no simulations.")
@@ -1208,7 +1182,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 continue
 
             sample_size = len(backtest_df)
-            trading_days_per_year = 365 if symbol in all_crypto_symbols else 252
+            trading_days_per_year = 365 if is_crypto_symbol(symbol) else 252
 
             _normalized_cache: Dict[str, Optional[pd.Series]] = {}
 
@@ -2209,8 +2183,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
 
     if skipped_equity_symbols:
         logger.debug(
-            "Skipping equity backtests while market closed: %s",
-            ", ".join(sorted(skipped_equity_symbols)),
+            f"Skipping equity backtests while market closed: {', '.join(sorted(skipped_equity_symbols))}"
         )
 
     return dict(sorted(results.items(), key=lambda x: x[1]["composite_score"], reverse=True))
@@ -2383,7 +2356,7 @@ def _cancel_non_crypto_orders_out_of_hours():
 
     for order in orders:
         symbol = getattr(order, "symbol", None)
-        if not symbol or symbol in all_crypto_symbols:
+        if not symbol or is_crypto_symbol(symbol):
             continue  # Keep crypto orders
 
         # This is a non-crypto order during out-of-hours - cancel it
@@ -2393,8 +2366,9 @@ def _cancel_non_crypto_orders_out_of_hours():
 
         if order_id:
             try:
-                alpaca_wrapper.cancel_order(order_id)
+                alpaca_wrapper.cancel_order(order)
                 cancelled_count += 1
+                notional = 0.0
                 if limit_price:
                     notional = abs(float(qty) * float(limit_price))
                     freed_notional += notional
@@ -2905,8 +2879,7 @@ def manage_positions(
                 pnl_stat = _get_trend_stat(symbol, "pnl")
                 if pnl_stat is None:
                     logger.debug(
-                        "Trend PnL stat unavailable for %s; skipping trend-based suspension check.",
-                        symbol,
+                        f"Trend PnL stat unavailable for {symbol}; skipping trend-based suspension check."
                     )
                 else:
                     if trend_threshold is not None and pnl_stat <= trend_threshold:
@@ -3186,21 +3159,13 @@ def manage_positions(
                         limit_price = coerce_numeric(limit_reference, default=float("nan"))
                         if math.isnan(limit_price) or limit_price <= 0:
                             logger.warning(
-                                "%s highlow entry missing limit price (preferred=%s, fallback=%s); falling back to ramp",
-                                symbol,
-                                preferred_limit,
-                                fallback_limit,
+                                f"{symbol} highlow entry missing limit price (preferred={preferred_limit}, fallback={fallback_limit}); falling back to ramp"
                             )
                         else:
                             try:
                                 crypto_rank = crypto_ranks.get(symbol)
                                 logger.info(
-                                    "Spawning highlow staged entry watcher for %s %s qty=%s @ %.4f%s",
-                                    symbol,
-                                    data["side"],
-                                    target_qty,
-                                    limit_price,
-                                    f" crypto_rank={crypto_rank}" if crypto_rank else "",
+                                    f"Spawning highlow staged entry watcher for {symbol} {data['side']} qty={target_qty} @ {limit_price:.4f}{f' crypto_rank={crypto_rank}' if crypto_rank else ''}"
                                 )
                                 spawn_open_position_at_maxdiff_takeprofit(
                                     symbol,
@@ -3242,19 +3207,12 @@ def manage_positions(
                                         opposite_price = coerce_numeric(opposite_reference, default=float("nan"))
                                         if math.isnan(opposite_price) or opposite_price <= 0:
                                             logger.debug(
-                                                "%s complementary maxdiffalwayson entry skipped; invalid limit (%s)",
-                                                symbol,
-                                                opposite_reference,
+                                                f"{symbol} complementary maxdiffalwayson entry skipped; invalid limit ({opposite_reference})"
                                             )
                                         else:
                                             try:
                                                 logger.info(
-                                                    "Spawning complementary maxdiffalwayson entry watcher for %s %s qty=%s @ %.4f%s",
-                                                    symbol,
-                                                    opposite_side,
-                                                    target_qty,
-                                                    opposite_price,
-                                                    f" crypto_rank={crypto_rank}" if crypto_rank else "",
+                                                    f"Spawning complementary maxdiffalwayson entry watcher for {symbol} {opposite_side} qty={target_qty} @ {opposite_price:.4f}{f' crypto_rank={crypto_rank}' if crypto_rank else ''}"
                                                 )
                                                 spawn_open_position_at_maxdiff_takeprofit(
                                                     symbol,
@@ -3269,19 +3227,14 @@ def manage_positions(
                                                 )
                                             except Exception as comp_exc:
                                                 logger.warning(
-                                                    "Failed to spawn complementary maxdiffalwayson entry for %s %s: %s",
-                                                    symbol,
-                                                    opposite_side,
-                                                    comp_exc,
+                                                    f"Failed to spawn complementary maxdiffalwayson entry for {symbol} {opposite_side}: {comp_exc}"
                                                 )
                                 highlow_limit_executed = True
                                 entry_price = float(limit_price)
                                 entry_executed = True
                             except Exception as exc:
                                 logger.warning(
-                                    "Failed to spawn highlow staged entry for %s: %s; attempting direct limit order fallback.",
-                                    symbol,
-                                    exc,
+                                    f"Failed to spawn highlow staged entry for {symbol}: {exc}; attempting direct limit order fallback."
                                 )
                                 try:
                                     result = alpaca_wrapper.open_order_at_price_or_all(
@@ -3292,8 +3245,7 @@ def manage_positions(
                                     )
                                     if result is None:
                                         logger.warning(
-                                            "Highlow fallback limit order for %s returned None; will attempt ramp.",
-                                            symbol,
+                                            f"Highlow fallback limit order for {symbol} returned None; will attempt ramp."
                                         )
                                     else:
                                         highlow_limit_executed = True
@@ -3301,9 +3253,7 @@ def manage_positions(
                                         entry_executed = True
                                 except Exception as fallback_exc:
                                     logger.warning(
-                                        "Fallback highlow limit order failed for %s: %s; will ramp instead.",
-                                        symbol,
-                                        fallback_exc,
+                                        f"Fallback highlow limit order failed for {symbol}: {fallback_exc}; will ramp instead."
                                     )
                 else:
                     logger.info(f"Probe trade target quantity for {symbol}: {target_qty} at price {entry_price}")
@@ -3401,16 +3351,12 @@ def manage_positions(
                 takeprofit_price = coerce_numeric(highlow_tp_reference, default=float("nan"))
                 if math.isnan(takeprofit_price) or takeprofit_price <= 0:
                     logger.debug(
-                        "%s highlow takeprofit skipped due to invalid target (%s)",
-                        symbol,
-                        highlow_tp_reference,
+                        f"{symbol} highlow takeprofit skipped due to invalid target ({highlow_tp_reference})"
                     )
                 else:
                     try:
                         logger.info(
-                            "Scheduling highlow takeprofit for %s at %.4f",
-                            symbol,
-                            takeprofit_price,
+                            f"Scheduling highlow takeprofit for {symbol} at {takeprofit_price:.4f}"
                         )
                         spawn_close_position_at_maxdiff_takeprofit(
                             symbol,
@@ -3421,7 +3367,7 @@ def manage_positions(
                             entry_strategy=entry_strategy,
                         )
                     except Exception as exc:
-                        logger.warning("Failed to schedule highlow takeprofit for %s: %s", symbol, exc)
+                        logger.warning(f"Failed to schedule highlow takeprofit for {symbol}: {exc}")
             elif ENABLE_TAKEPROFIT_BRACKETS:
                 tp_price = None
                 entry_reference = entry_price
@@ -3444,21 +3390,14 @@ def manage_positions(
                 if schedule_takeprofit:
                     try:
                         logger.info(
-                            "Scheduling discretionary takeprofit for %s at %.4f (entry_ref=%.4f)",
-                            symbol,
-                            float(tp_price),
-                            entry_reference,
+                            f"Scheduling discretionary takeprofit for {symbol} at {float(tp_price):.4f} (entry_ref={entry_reference:.4f})"
                         )
                         spawn_close_position_at_takeprofit(symbol, float(tp_price))
                     except Exception as exc:
-                        logger.warning("Failed to schedule takeprofit for %s: %s", symbol, exc)
+                        logger.warning(f"Failed to schedule takeprofit for {symbol}: {exc}")
                 elif tp_price is not None:
                     logger.debug(
-                        "%s takeprofit %.4f skipped (entry_ref=%s, side=%s)",
-                        symbol,
-                        float(tp_price),
-                        entry_reference,
-                        data["side"],
+                        f"{symbol} takeprofit {float(tp_price):.4f} skipped (entry_ref={entry_reference}, side={data['side']})"
                     )
         elif transition_to_normal:
             logger.info(

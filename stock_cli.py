@@ -694,16 +694,15 @@ def probe_status(
 def set_risk(
     day_pl: Optional[float] = typer.Option(
         None,
-        help="Day P&L value. If >= 0, sets risk to max leverage; if < 0, sets to minimum (0.01).",
+        help="Day P&L value (currently ignored - risk always set to 2.0x).",
     ),
 ):
     """Manually record a portfolio snapshot and update the risk threshold.
 
-    This will set the global risk threshold based on current account equity and day P&L.
-    Use GLOBAL_MAX_GROSS_LEVERAGE environment variable to control the max threshold.
+    Risk threshold is currently hardcoded to 2.0x (dynamic adjustment disabled).
 
     Example:
-        PAPER=0 GLOBAL_MAX_GROSS_LEVERAGE=1.0 python stock_cli.py set-risk --day-pl 0
+        PAPER=0 python stock_cli.py set-risk
     """
     typer.echo("== Setting Risk Threshold ==")
 

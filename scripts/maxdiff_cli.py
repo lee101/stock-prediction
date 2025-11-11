@@ -142,6 +142,41 @@ def _cancel_orders(symbol: str, side: Optional[str] = None) -> None:
             logger.warning("Failed cancelling %s order for %s: %s", side or "any", symbol, exc)
 
 
+def _cancel_old_orders(symbol: str, side: Optional[str] = None, max_age_hours: int = 24) -> int:
+    """Cancel orders older than max_age_hours. Returns number of orders canceled."""
+    now = _now()
+    max_age_delta = timedelta(hours=max_age_hours)
+    canceled_count = 0
+
+    for order in list(_orders_for_symbol(symbol, side=side)):
+        submitted_at = getattr(order, "submitted_at", None)
+        if submitted_at is None:
+            continue
+
+        # Ensure submitted_at is timezone-aware
+        if submitted_at.tzinfo is None:
+            submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+
+        age = now - submitted_at
+        if age > max_age_delta:
+            try:
+                order_age_hours = age.total_seconds() / 3600
+                logger.info(
+                    "Canceling old %s order for %s (age: %.1f hours, submitted: %s)",
+                    side or "any",
+                    symbol,
+                    order_age_hours,
+                    submitted_at.isoformat(),
+                )
+                alpaca_wrapper.cancel_order(order)
+                canceled_count += 1
+                time.sleep(0.25)
+            except Exception as exc:
+                logger.warning("Failed canceling old %s order for %s: %s", side or "any", symbol, exc)
+
+    return canceled_count
+
+
 def _latest_reference_price(symbol: str, side: str, fallback_client=None) -> Optional[float]:
     try:
         quote = alpaca_wrapper.latest_data(symbol)
@@ -356,6 +391,28 @@ def open_position_at_maxdiff_takeprofit(
                     continue
 
                 if active_orders:
+                    # Cancel orders older than 1 day (24 hours)
+                    canceled_count = _cancel_old_orders(symbol, side=side, max_age_hours=24)
+                    if canceled_count > 0:
+                        logger.info(
+                            "Canceled %d old order(s) for %s %s - will place fresh order on next iteration",
+                            canceled_count,
+                            symbol,
+                            side,
+                        )
+                        # Refresh order list after canceling
+                        active_orders = list(_orders_for_symbol(symbol, side=side))
+                        status = _update_status(
+                            config_path,
+                            status,
+                            state="old_orders_canceled",
+                            open_order_count=len(active_orders),
+                        )
+                        time.sleep(poll_seconds)
+                        consecutive_errors = 0
+                        continue
+
+                    # If there are still active orders (not old), wait for them to fill
                     status = _update_status(config_path, status, state="awaiting_fill")
                     time.sleep(poll_seconds)
                     consecutive_errors = 0
@@ -621,6 +678,20 @@ def close_position_at_maxdiff_takeprofit(
                     continue
 
                 if _has_takeprofit_order(symbol, exit_side, takeprofit_price, tolerance=price_tolerance):
+                    # Even if we have a takeprofit order, cancel it if it's >1 day old
+                    canceled_count = _cancel_old_orders(symbol, side=exit_side, max_age_hours=24)
+                    if canceled_count > 0:
+                        logger.info(
+                            "Canceled %d old exit order(s) for %s %s - will place fresh order on next iteration",
+                            canceled_count,
+                            symbol,
+                            exit_side,
+                        )
+                        status = _update_status(config_path, status, state="old_exit_orders_canceled")
+                        time.sleep(poll_seconds)
+                        consecutive_errors = 0
+                        continue
+
                     status = _update_status(config_path, status, state="watching_orders")
                     time.sleep(poll_seconds)
                     consecutive_errors = 0  # Reset error counter on success

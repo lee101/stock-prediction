@@ -37,6 +37,7 @@ from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols, all_crypto_symbols
 from src.logging_utils import setup_logging
 from src.stock_utils import pairs_equal, remap_symbols
+from src.symbol_utils import is_crypto_symbol
 from src.trading_obj_utils import filter_to_realistic_positions
 
 logger = setup_logging("alpaca_cli.log")
@@ -253,8 +254,8 @@ def _can_use_market_order(symbol: str, is_closing_position: bool = False) -> Tup
     """
     # NEVER use market orders for crypto - Alpaca executes them at the bid/ask midpoint
     # instead of actual market price, making the execution price unpredictable
-    # Check against all_crypto_symbols for comprehensive coverage
-    if symbol in all_crypto_symbols:
+    # Use is_crypto_symbol for comprehensive coverage (handles both BTC/USD and BTCUSD formats)
+    if is_crypto_symbol(symbol):
         return False, f"Crypto {symbol} - market orders execute at bid/ask midpoint, not market price (use limit orders for predictable fills)"
 
     # Check if market is open (regular hours only, not pre-market/after-hours/overnight)
@@ -1124,12 +1125,19 @@ def open_take_profit_position(position, row, price, qty):
 
 def cancel_order(order):
     try:
-        alpaca_api.cancel_order_by_id(order.id)
+        # Handle both order objects and direct UUID/string IDs
+        if hasattr(order, 'id'):
+            order_id = order.id
+        else:
+            order_id = order
+        alpaca_api.cancel_order_by_id(order_id)
     except Exception as e:
         # Check if order is already pending cancellation (error 42210000)
         error_str = str(e)
+        # Get order_id for logging
+        order_id = order.id if hasattr(order, 'id') else order
         if "42210000" in error_str or "pending cancel" in error_str.lower():
-            logger.info(f"Order {order.id} already pending cancellation, treating as success")
+            logger.info(f"Order {order_id} already pending cancellation, treating as success")
             return  # Treat as success - order is already being cancelled
         logger.error(e)
         # traceback

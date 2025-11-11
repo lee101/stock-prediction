@@ -16,22 +16,40 @@ Potential speedup: ~3x total, ~58x on model inference alone.
 import hashlib
 from typing import Optional, Tuple, Any
 import os
+from pathlib import Path
+
+try:
+    from diskcache import Cache
+    _DISKCACHE_AVAILABLE = True
+except ImportError:
+    _DISKCACHE_AVAILABLE = False
 
 
 class PredictionCache:
     """
-    In-memory cache for model predictions during backtest.
+    Hybrid in-memory + disk cache for model predictions during backtest.
 
     Cache key: (data_hash, key_to_predict, day_index)
     Value: (predictions, band, abs_predictions)
     """
 
-    def __init__(self, enabled: bool = None):
+    def __init__(self, enabled: bool = None, use_disk: bool = None):
         if enabled is None:
             enabled = os.getenv("MARKETSIM_CACHE_PREDICTIONS", "1") in {"1", "true", "yes", "on"}
 
+        if use_disk is None:
+            use_disk = os.getenv("MARKETSIM_CACHE_DISK", "1") in {"1", "true", "yes", "on"}
+
         self.enabled = enabled
-        self._cache = {}
+        self.use_disk = use_disk and _DISKCACHE_AVAILABLE
+        self._memory_cache = {}
+        self._disk_cache = None
+
+        if self.use_disk:
+            cache_dir = Path(".cache/predictions")
+            cache_dir.mkdir(exist_ok=True, parents=True)
+            self._disk_cache = Cache(str(cache_dir))
+
         self._hits = 0
         self._misses = 0
 
@@ -40,12 +58,21 @@ class PredictionCache:
         return (data_hash, key_to_predict, day_index)
 
     def get(self, data_hash: str, key_to_predict: str, day_index: int) -> Optional[Any]:
-        """Get cached prediction if available"""
+        """Get cached prediction if available (checks memory first, then disk)"""
         if not self.enabled:
             return None
 
         key = self._make_key(data_hash, key_to_predict, day_index)
-        result = self._cache.get(key)
+
+        # Check memory cache first
+        result = self._memory_cache.get(key)
+
+        if result is None and self.use_disk and self._disk_cache is not None:
+            # Check disk cache
+            result = self._disk_cache.get(key)
+            if result is not None:
+                # Promote to memory cache for faster access
+                self._memory_cache[key] = result
 
         if result is not None:
             self._hits += 1
@@ -55,16 +82,24 @@ class PredictionCache:
         return result
 
     def put(self, data_hash: str, key_to_predict: str, day_index: int, value: Any):
-        """Store prediction in cache"""
+        """Store prediction in both memory and disk cache"""
         if not self.enabled:
             return
 
         key = self._make_key(data_hash, key_to_predict, day_index)
-        self._cache[key] = value
+
+        # Store in memory cache
+        self._memory_cache[key] = value
+
+        # Also store in disk cache if enabled
+        if self.use_disk and self._disk_cache is not None:
+            self._disk_cache[key] = value
 
     def clear(self):
-        """Clear cache and stats"""
-        self._cache.clear()
+        """Clear both memory and disk cache and stats"""
+        self._memory_cache.clear()
+        if self.use_disk and self._disk_cache is not None:
+            self._disk_cache.clear()
         self._hits = 0
         self._misses = 0
 
@@ -73,17 +108,23 @@ class PredictionCache:
         total = self._hits + self._misses
         hit_rate = (self._hits / total * 100) if total > 0 else 0
 
+        disk_size = 0
+        if self.use_disk and self._disk_cache is not None:
+            disk_size = len(self._disk_cache)
+
         return {
             'enabled': self.enabled,
+            'use_disk': self.use_disk,
             'hits': self._hits,
             'misses': self._misses,
             'total_requests': total,
             'hit_rate': hit_rate,
-            'cache_size': len(self._cache),
+            'memory_cache_size': len(self._memory_cache),
+            'disk_cache_size': disk_size,
         }
 
     def __len__(self):
-        return len(self._cache)
+        return len(self._memory_cache)
 
 
 # Global cache instance for backtest runs
