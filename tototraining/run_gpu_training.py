@@ -132,6 +132,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Resume from a specific checkpoint path.",
     )
     parser.add_argument(
+        "--train-data-path",
+        dest="train_data_path",
+        type=str,
+        help="Override the default training data directory (trainingdata/train).",
+    )
+    parser.add_argument(
+        "--test-data-path",
+        dest="test_data_path",
+        type=str,
+        help="Override the default test data directory (trainingdata/test).",
+    )
+    parser.add_argument(
         "--metrics-frequency",
         "--metrics_frequency",
         dest="metrics_log_frequency",
@@ -164,6 +176,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print the effective configuration and exit without training.",
     )
     parser.set_defaults(freeze_backbone=None)
+    parser.add_argument(
+        "--export-on-best",
+        dest="export_on_best",
+        action="store_true",
+        help="Export HuggingFace-format weights whenever validation improves.",
+    )
+    parser.add_argument(
+        "--no-export-on-best",
+        dest="export_on_best",
+        action="store_false",
+        help="Disable exporting best checkpoints (default).",
+    )
+    parser.set_defaults(export_on_best=None)
     return parser
 
 
@@ -471,6 +496,14 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
     loader_config.batch_size = trainer_config.batch_size
     loader_config.random_seed = trainer_config.random_seed
+
+    if args.train_data_path:
+        loader_config.train_data_path = args.train_data_path
+    if args.test_data_path:
+        loader_config.test_data_path = args.test_data_path
+
+    if args.export_on_best is not None:
+        trainer_config.export_on_best = args.export_on_best
 
     if args.summary_only:
         summary = {

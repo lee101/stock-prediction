@@ -87,7 +87,7 @@ class HyperparamValidator:
         best_params = {}
         results = []
 
-        # Use model from kronostraining if available
+        # Use model from kronostraining if available (future enhancement)
         if model_path is None:
             adapter_path = Path(
                 f"kronostraining/artifacts/stock_specific/{stock}/adapters/{stock}/adapter.pt"
@@ -95,11 +95,22 @@ class HyperparamValidator:
             if adapter_path.exists():
                 model_path = str(adapter_path)
 
+        if model_path is not None:
+            print(
+                "  Note: custom Kronos model paths are not yet supported by KronosForecastingWrapper; "
+                "falling back to base weights."
+            )
+
         try:
             # Initialize model
+            device = "cuda:0" if self._has_cuda() else "cpu"
+            if not device.startswith("cuda"):
+                raise RuntimeError("KronosForecastingWrapper currently requires a CUDA-capable device.")
+
             wrapper = KronosForecastingWrapper(
-                model_path=model_path,
-                device="cuda" if self._has_cuda() else "cpu"
+                model_name="NeoQuasar/Kronos-small",
+                tokenizer_name="NeoQuasar/Kronos-Tokenizer-base",
+                device=device,
             )
 
             # Test combinations (sample subset for speed)
@@ -116,27 +127,36 @@ class HyperparamValidator:
                 desc=f"{stock} Kronos"
             ):
                 try:
-                    # Get context from train data
+                    # Prepare contextual window
                     context_length = min(512, len(train_df))
-                    context_data = train_df.tail(context_length)["close"].values
+                    context_df = train_df.tail(context_length).copy()
+                    timestamp_col = "timestamp" if "timestamp" in context_df.columns else "timestamps"
+                    if timestamp_col not in context_df.columns:
+                        context_df[timestamp_col] = pd.date_range(
+                            end=pd.Timestamp.utcnow(), periods=len(context_df), freq="1D"
+                        )
 
-                    # Predict
-                    predictions = wrapper.predict_series(
-                        context_data,
-                        prediction_length=self.prediction_length,
-                        num_samples=num_samples,
+                    forecast = wrapper.predict_series(
+                        data=context_df,
+                        timestamp_col=timestamp_col,
+                        columns=["close"],
+                        pred_len=self.prediction_length,
+                        lookback=context_length,
                         temperature=temp,
-                        top_k=top_k,
-                        top_p=top_p
+                        top_k=top_k if top_k is not None else None,
+                        top_p=top_p if top_p is not None else None,
+                        sample_count=num_samples,
                     )
 
-                    # Calculate MAE on holdout
-                    holdout_actual = holdout_df["close"].values
-                    pred_length = min(len(predictions), len(holdout_actual))
-                    mae = np.mean(np.abs(
-                        predictions[:pred_length] - holdout_actual[:pred_length]
-                    ))
-                    mae_pct = (mae / np.mean(holdout_actual[:pred_length])) * 100
+                    kronos_close = forecast["close"].absolute
+                    holdout_actual = holdout_df["close"].to_numpy(dtype=np.float64)
+                    pred_length = min(len(kronos_close), len(holdout_actual))
+                    if pred_length == 0:
+                        raise ValueError("Kronos forecast returned no samples")
+
+                    mae = np.mean(np.abs(kronos_close[:pred_length] - holdout_actual[:pred_length]))
+                    denom = np.mean(np.abs(holdout_actual[:pred_length])) or 1.0
+                    mae_pct = (mae / denom) * 100
 
                     result = {
                         "num_samples": num_samples,
@@ -186,8 +206,8 @@ class HyperparamValidator:
 
         # Hyperparameter grid (Toto has different params)
         param_grid = {
-            "temperature": [0.5, 0.7, 1.0],
-            "use_past_values": [True, False],
+            "temperature": [0.7, 1.0, 1.3],
+            "num_samples": [256, 512],
         }
 
         best_mae = float("inf")
@@ -202,45 +222,56 @@ class HyperparamValidator:
 
         try:
             # Initialize model
+            device = "cuda" if self._has_cuda() else "cpu"
             pipeline = TotoPipeline.from_pretrained(
                 model_path or "Datadog/Toto-Open-Base-1.0",
-                device="cuda" if self._has_cuda() else "cpu"
+                device_map=device,
             )
 
             # Test combinations
             import itertools
             param_combinations = list(itertools.product(
                 param_grid["temperature"],
-                param_grid["use_past_values"]
+                param_grid["num_samples"],
             ))
 
-            for temp, use_past in tqdm(
+            for temp, sample_count in tqdm(
                 param_combinations,
                 desc=f"{stock} Toto"
             ):
                 try:
-                    # Get context from train data
                     context_length = min(1024, len(train_df))
-                    context_data = train_df.tail(context_length)["close"].values
-
-                    # Predict
-                    predictions = pipeline.predict(
-                        context_data,
+                    context_series = train_df.tail(context_length)["close"].to_numpy(dtype=np.float32)
+                    forecasts = pipeline.predict(
+                        context=context_series,
                         prediction_length=self.prediction_length,
+                        num_samples=sample_count,
                         temperature=temp,
                     )
+                    if not forecasts:
+                        raise RuntimeError("Toto pipeline returned no forecasts")
 
-                    # Calculate MAE on holdout
-                    holdout_actual = holdout_df["close"].values
-                    pred_length = min(len(predictions), len(holdout_actual))
-                    mae = np.mean(np.abs(
-                        predictions[:pred_length] - holdout_actual[:pred_length]
-                    ))
-                    mae_pct = (mae / np.mean(holdout_actual[:pred_length])) * 100
+                    samples = forecasts[0].numpy()
+                    sample_array = np.asarray(samples, dtype=np.float64)
+                    if sample_array.ndim == 1:
+                        preds = sample_array[: self.prediction_length]
+                    else:
+                        if sample_array.shape[-1] != self.prediction_length:
+                            sample_array = sample_array.reshape(sample_array.shape[0], -1)
+                        preds = sample_array.mean(axis=0)
+
+                    holdout_actual = holdout_df["close"].to_numpy(dtype=np.float64)
+                    pred_length = min(len(preds), len(holdout_actual))
+                    if pred_length == 0:
+                        raise ValueError("Toto forecast returned insufficient horizon length")
+
+                    mae = np.mean(np.abs(preds[:pred_length] - holdout_actual[:pred_length]))
+                    denom = np.mean(np.abs(holdout_actual[:pred_length])) or 1.0
+                    mae_pct = (mae / denom) * 100
 
                     result = {
                         "temperature": temp,
-                        "use_past_values": use_past,
+                        "num_samples": sample_count,
                         "mae": float(mae),
                         "mae_pct": float(mae_pct),
                     }
@@ -251,7 +282,7 @@ class HyperparamValidator:
                         best_params = result.copy()
 
                 except Exception as e:
-                    print(f"  Error with params {temp}/{use_past}: {e}")
+                    print(f"  Error with params temp={temp}, samples={sample_count}: {e}")
                     continue
 
         except Exception as e:
