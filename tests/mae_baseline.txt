@@ -1,0 +1,6 @@
+# MAE Baseline - CUDA Graphs Optimization
+# Generated: 2025-11-12 08:10:48.906802
+# PyTorch: 2.9.0+cu128
+
+BTCUSD: 15234.6254
+ETHUSD: 551.6851

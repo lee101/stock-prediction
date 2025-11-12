@@ -14,7 +14,7 @@ dependencies = [
     "pandas>=2.2",
     "gymnasium>=0.29",
     "stable-baselines3>=2.3",
-    "chronos-forecasting>=1.5.3",
+    "chronos-forecasting>=2.0.0",
     "torch==2.9.0",
     "einops>=0.8.1,<0.9",
     "jaxtyping>=0.2.29",

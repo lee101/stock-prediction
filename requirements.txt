@@ -121,7 +121,7 @@ charset-normalizer==3.4.4
     # via
     #   pdfminer-six
     #   requests
-chronos-forecasting==1.5.3
+chronos-forecasting==2.0.0
     # via -r requirements.in
 cint==1.0.0
     # via polyfile-weave

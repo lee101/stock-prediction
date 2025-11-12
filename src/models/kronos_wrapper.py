@@ -149,18 +149,27 @@ class KronosForecastingWrapper:
             raise RuntimeError(
                 "Torch, NumPy, and pandas must be configured via setup_kronos_wrapper_imports before instantiating KronosForecastingWrapper."
             )
-        if not device.startswith("cuda"):
+
+        device_display = str(device)
+        normalized_device = device_display.strip().lower()
+        is_cuda_request = normalized_device.startswith("cuda")
+        is_cpu_request = normalized_device == "cpu" or normalized_device.startswith("cpu:")
+        if not (is_cuda_request or is_cpu_request):
             raise RuntimeError(
-                f"KronosForecastingWrapper requires a CUDA device; received {device!r}. CPU execution is currently unsupported."
+                f"KronosForecastingWrapper requires a CUDA or CPU device; received {device_display!r}."
             )
-        cuda_mod = getattr(torch, "cuda", None)
-        is_available = bool(getattr(cuda_mod, "is_available", lambda: False)()) if cuda_mod is not None else False
-        if not is_available:
-            raise RuntimeError("CUDA is unavailable. KronosForecastingWrapper requires a CUDA-capable PyTorch installation.")
+        if is_cuda_request:
+            cuda_mod = getattr(torch, "cuda", None)
+            is_available = bool(getattr(cuda_mod, "is_available", lambda: False)()) if cuda_mod is not None else False
+            if not is_available:
+                raise RuntimeError(
+                    "CUDA is unavailable. KronosForecastingWrapper requires a CUDA-capable PyTorch installation when using a CUDA device."
+                )
 
         self.model_name = model_name
         self.tokenizer_name = tokenizer_name
-        self.requested_device = device
+        self.requested_device = normalized_device
+        self._requested_device_display = device_display
         self.max_context = max_context
         self.clip = clip
         self.temperature = temperature
@@ -174,9 +183,9 @@ class KronosForecastingWrapper:
         self.compile_mode = compile_mode
         self.compile_backend = compile_backend
 
-        self._device = device
+        self._device = normalized_device
         self._predictor = None
-        self._preferred_dtype = self._compute_preferred_dtype(device, prefer_fp32=self._prefer_fp32)
+        self._preferred_dtype = self._compute_preferred_dtype(normalized_device, prefer_fp32=self._prefer_fp32)
         self._adaptive_sample_count: Optional[int] = None
 
     # ------------------------------------------------------------------ #
@@ -575,9 +584,15 @@ class KronosForecastingWrapper:
         return None
 
     def _ensure_predictor(self, *, device_override: Optional[str] = None):
+        override_display: Optional[str] = None
+        normalized_override: Optional[str] = None
+        if device_override is not None:
+            override_display = str(device_override)
+            normalized_override = override_display.strip().lower()
+
         predictor = self._predictor
         if predictor is not None:
-            if device_override is None or self._device == device_override:
+            if normalized_override is None or self._device == normalized_override:
                 return predictor
             self.unload()
             predictor = None
@@ -611,14 +626,18 @@ class KronosForecastingWrapper:
                 if original_model_module is not None:
                     sys.modules["model"] = original_model_module
 
-        device = device_override or self.requested_device
-        if not device.startswith("cuda"):
+        device_display = override_display or self._requested_device_display
+        device = normalized_override or self.requested_device
+        normalized = device
+        is_cuda_request = normalized.startswith("cuda")
+        is_cpu_request = normalized == "cpu" or normalized.startswith("cpu:")
+        if not (is_cuda_request or is_cpu_request):
             raise RuntimeError(
-                f"KronosForecastingWrapper requires a CUDA device; received {device!r}. CPU execution is currently unsupported."
+                f"KronosForecastingWrapper requires a CUDA or CPU device; received {device_display!r}."
             )
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is unavailable. KronosForecastingWrapper requires a CUDA-capable environment.")
-        self._device = device
+        if is_cuda_request and not torch.cuda.is_available():
+            raise RuntimeError("CUDA is unavailable. KronosForecastingWrapper cannot honour the requested CUDA device.")
+        self._device = normalized
 
         cache_manager = ModelCacheManager("kronos")
         dtype_token = dtype_to_token(self._preferred_dtype or torch.float32)
@@ -642,11 +661,11 @@ class KronosForecastingWrapper:
             )
 
         try:
-            predictor = _build_predictor(device)
+            predictor = _build_predictor(normalized)
         except Exception as exc:
-            if device.startswith("cuda") and _is_cuda_oom_error(exc):
+            if normalized.startswith("cuda") and _is_cuda_oom_error(exc):
                 raise RuntimeError(
-                    f"Kronos predictor initialisation ran out of memory on device {device}. CPU fallback is disabled; reduce sampling requirements or provision a larger GPU."
+                    f"Kronos predictor initialisation ran out of memory on device {device_display}. CPU fallback is disabled; reduce sampling requirements or provision a larger GPU."
                 ) from exc
             raise
         if self._preferred_dtype is not None:
@@ -735,7 +754,7 @@ class KronosForecastingWrapper:
         return predictor
 
     def _handle_cuda_oom(self) -> None:
-        if torch is not None and torch.cuda.is_available():
+        if self._device.startswith("cuda") and torch is not None and torch.cuda.is_available():
             try:
                 torch.cuda.empty_cache()
             except Exception as exc:  # pragma: no cover - defensive

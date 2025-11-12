@@ -129,6 +129,47 @@ def test_resolve_best_model_cached(monkeypatch):
     assert call_count["value"] == 1
 
 
+def test_resolve_best_model_prefers_chronos(monkeypatch):
+    monkeypatch.setenv("FAST_TESTING", "0")
+    monkeypatch.delenv("MARKETSIM_FORCE_KRONOS", raising=False)
+    module = _fresh_module()
+    module._model_selection_cache.clear()
+
+    def fake_load_model_selection(symbol: str):
+        return {"model": "chronos2"}
+
+    monkeypatch.setattr(module, "in_test_mode", lambda: False)
+    monkeypatch.setattr(module, "load_model_selection", fake_load_model_selection)
+
+    assert module.resolve_best_model("ETHUSD") == "chronos2"
+    # Second call should hit cache without re-query
+    assert module.resolve_best_model("ETHUSD") == "chronos2"
+
+
+def test_resolve_best_model_force_toto_overrides_chronos(monkeypatch):
+    monkeypatch.setenv("FAST_TESTING", "0")
+    monkeypatch.setenv("ONLY_CHRONOS2", "1")
+    monkeypatch.setenv("MARKETSIM_FORCE_TOTO", "1")
+    module = _fresh_module()
+    module._model_selection_cache.clear()
+
+    call_count = {"value": 0}
+
+    def fake_load_model_selection(symbol: str):
+        call_count["value"] += 1
+        return {"model": "chronos2"}
+
+    monkeypatch.setattr(module, "in_test_mode", lambda: False)
+    monkeypatch.setattr(module, "load_model_selection", fake_load_model_selection)
+
+    assert module.resolve_best_model("ETHUSD") == "toto"
+    assert module.resolve_best_model("ETHUSD") == "toto"
+    assert call_count["value"] == 0
+
+    monkeypatch.delenv("MARKETSIM_FORCE_TOTO")
+    assert module.resolve_best_model("ETHUSD") == "chronos2"
+
+
 def test_load_kronos_keeps_toto_pipeline_when_sufficient_memory(monkeypatch):
     module = _fresh_module()
     monkeypatch.setattr(module.torch.cuda, "is_available", lambda: True)
