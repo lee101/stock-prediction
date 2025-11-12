@@ -87,15 +87,37 @@ class StrategyPnLCollector:
 
         try:
             df = pd.read_csv(csv_path)
+
+            rename_map = {}
+            for col in df.columns:
+                key = str(col).strip()
+                lower = key.lower()
+                if lower == 'timestamp':
+                    rename_map[col] = 'timestamp'
+                elif lower == 'open':
+                    rename_map[col] = 'Open'
+                elif lower == 'high':
+                    rename_map[col] = 'High'
+                elif lower == 'low':
+                    rename_map[col] = 'Low'
+                elif lower == 'close':
+                    rename_map[col] = 'Close'
+                elif lower == 'volume':
+                    rename_map[col] = 'Volume'
+            if rename_map:
+                df = df.rename(columns=rename_map)
             if 'timestamp' not in df.columns:
                 return None
 
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df = df.sort_values('timestamp').reset_index(drop=True)
 
-            required = ['Open', 'High', 'Low', 'Close', 'Volume']
+            required = ['Open', 'High', 'Low', 'Close']
             if not all(col in df.columns for col in required):
                 return None
+
+            if 'Volume' not in df.columns:
+                df['Volume'] = 0.0
 
             return df
         except Exception as e:
@@ -389,7 +411,10 @@ class StrategyPnLCollector:
         # Generate forecasts ONCE for entire symbol (optimization!)
         print(f"Generating forecasts for {symbol}...")
         try:
-            with activate_simulation():
+            data_root = self.data_dir
+            if data_root.name.lower() == "train":
+                data_root = data_root.parent
+            with activate_simulation(symbols=[symbol], data_root=data_root):
                 forecast_df = backtest_forecasts(symbol, num_simulations=len(df))
 
                 if forecast_df is None or len(forecast_df) == 0:
@@ -569,6 +594,8 @@ def main():
     parser.add_argument('--max-symbols', type=int, default=None)
     parser.add_argument('--symbols', nargs='+', default=None)
     parser.add_argument('--dataset-name', default='strategy_pnl_dataset')
+    parser.add_argument('--min-data-points', type=int, default=2000,
+                        help='Minimum number of bars required to process a symbol')
 
     args = parser.parse_args()
 
@@ -576,7 +603,8 @@ def main():
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         window_days=args.window_days,
-        stride_days=args.stride_days
+        stride_days=args.stride_days,
+        min_data_points=args.min_data_points
     )
 
     results = collector.collect_all_symbols(

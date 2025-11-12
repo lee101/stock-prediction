@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -152,7 +152,9 @@ from src.models.toto_wrapper import TotoPipeline
 SPREAD = 1.0008711461252937
 TOTO_CI_GUARD_MULTIPLIER = float(os.getenv("TOTO_CI_GUARD_MULTIPLIER", "1.0"))
 _FORCE_KRONOS_VALUES = {"1", "true", "yes", "on"}
-_forced_kronos_logged_symbols = set()
+_FORCE_TOTO_VALUES = {"1", "true", "yes", "on"}
+_forced_kronos_logged_symbols: Set[str] = set()
+_forced_toto_logged_symbols: Set[str] = set()
 _model_selection_log_state: Dict[str, Tuple[str, str]] = {}
 _toto_params_log_state: Dict[str, Tuple[str, str]] = {}
 _model_selection_cache: Dict[str, str] = {}
@@ -1089,6 +1091,10 @@ def _is_force_kronos_enabled() -> bool:
     return os.getenv("MARKETSIM_FORCE_KRONOS", "0").lower() in _FORCE_KRONOS_VALUES
 
 
+def _is_force_toto_enabled() -> bool:
+    return os.getenv("MARKETSIM_FORCE_TOTO", "0").lower() in _FORCE_TOTO_VALUES
+
+
 def _maybe_empty_cuda_cache() -> None:
     if not torch.cuda.is_available():
         return
@@ -1350,6 +1356,7 @@ def _reset_model_caches() -> None:
     _model_selection_log_state.clear()
     _toto_params_log_state.clear()
     _forced_kronos_logged_symbols.clear()
+    _forced_toto_logged_symbols.clear()
     _cpu_fallback_log_state.clear()
 
 
@@ -1846,6 +1853,16 @@ def resolve_best_model(symbol: str) -> str:
             logger.info("TESTING mode active — forcing Toto model for %s.", symbol)
             _model_selection_log_state[symbol] = state
         return "toto"
+    if _is_force_toto_enabled():
+        _model_selection_cache.pop(symbol, None)
+        if symbol not in _forced_toto_logged_symbols:
+            logger.info(f"MARKETSIM_FORCE_TOTO active — forcing Toto model for {symbol}.")
+            _forced_toto_logged_symbols.add(symbol)
+        return "toto"
+    if os.getenv("ONLY_CHRONOS2") in {"1", "true", "True", "yes", "on"}:
+        _model_selection_cache.pop(symbol, None)
+        logger.info(f"ONLY_CHRONOS2 active — forcing Chronos2 model for {symbol}.")
+        return "chronos2"
     if _is_force_kronos_enabled():
         _model_selection_cache.pop(symbol, None)
         if symbol not in _forced_kronos_logged_symbols:
@@ -1870,6 +1887,115 @@ def resolve_best_model(symbol: str) -> str:
             _model_selection_log_state[symbol] = state
     _model_selection_cache[symbol] = model
     return model
+
+
+_chronos2_params_cache: Dict[str, Dict[str, Any]] = {}
+_chronos2_wrapper_cache: Dict[str, Any] = {}
+
+
+def resolve_chronos2_params(symbol: str) -> Dict[str, Any]:
+    """
+    Resolve chronos2 hyperparameters for a symbol.
+
+    Returns a dictionary with chronos2 parameters:
+    - model_id: HuggingFace model identifier
+    - device_map: Device to load model on
+    - context_length: Max context window
+    - prediction_length: Forecast horizon
+    - quantile_levels: List of quantiles to predict
+    - batch_size: Batch size for predictions
+    """
+    cached = _chronos2_params_cache.get(symbol)
+    if cached is not None:
+        return cached.copy()
+
+    # Try to load from hyperparams store
+    record = load_best_config("chronos2", symbol)
+    config = record.config if record else {}
+
+    if record is not None:
+        params = {
+            "model_id": config.get("model_id", "amazon/chronos-2"),
+            "device_map": config.get("device_map", "cuda"),
+            "context_length": int(config.get("context_length", 512)),
+            "prediction_length": int(config.get("prediction_length", 1)),
+            "quantile_levels": config.get("quantile_levels", [0.1, 0.5, 0.9]),
+            "batch_size": int(config.get("batch_size", 128)),
+        }
+        logger.info(f"Loaded Chronos2 hyperparameters for {symbol} from hyperparamstore.")
+    else:
+        # Default parameters
+        params = {
+            "model_id": "amazon/chronos-2",
+            "device_map": "cuda",
+            "context_length": 512,
+            "prediction_length": 7,  # Match validation window size
+            "quantile_levels": [0.1, 0.5, 0.9],
+            "batch_size": 128,
+        }
+        logger.info(f"No stored Chronos2 hyperparameters for {symbol} — using defaults.")
+
+    _chronos2_params_cache[symbol] = params
+    return params.copy()
+
+
+def load_chronos2_wrapper(params: Dict[str, Any]) -> Any:
+    """Load Chronos2 wrapper with symbol-specific hyperparameters."""
+    from src.models.chronos2_wrapper import Chronos2OHLCWrapper
+
+    cache_key = params["model_id"]
+    cached = _chronos2_wrapper_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Disable torch.compile by default (can enable with TORCH_COMPILED=1)
+    # Compiled mode can cause SDPA backend issues
+    torch_compiled_flag = os.getenv("TORCH_COMPILED", "0")
+    compile_enabled = torch_compiled_flag in {"1", "true", "yes", "on"}
+
+    # Also check legacy CHRONOS_COMPILE flag for backwards compatibility
+    if not compile_enabled:
+        compile_enabled = os.getenv("CHRONOS_COMPILE") in {"1", "true", "yes", "on"}
+
+    compile_mode = os.getenv("CHRONOS_COMPILE_MODE", "reduce-overhead")
+    compile_backend = os.getenv("CHRONOS_COMPILE_BACKEND", "inductor")
+    dtype_env = os.getenv("CHRONOS_DTYPE", "float32")
+
+    # Force eager attention to completely avoid SDPA backends
+    # This is more reliable than just disabling specific backends
+    attn_implementation = "eager"
+
+    # Also disable SDPA backends at the torch level as backup
+    try:
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
+        torch.backends.cuda.enable_math_sdp(True)
+        logger.info("Forced eager attention and disabled Flash/MemEfficient SDPA backends")
+    except Exception as e:
+        logger.debug(f"Could not configure SDPA backends: {e}")
+
+    logger.info(
+        f"Loading Chronos2 wrapper: model_id={params['model_id']}, "
+        f"context_length={params['context_length']}, "
+        f"compile={compile_enabled}, "
+        f"attn_implementation={attn_implementation}"
+    )
+
+    wrapper = Chronos2OHLCWrapper.from_pretrained(
+        model_id=params["model_id"],
+        device_map=params["device_map"],
+        default_context_length=params["context_length"],
+        default_batch_size=params["batch_size"],
+        quantile_levels=params["quantile_levels"],
+        torch_compile=compile_enabled,
+        compile_mode=compile_mode,
+        compile_backend=compile_backend,
+        torch_dtype=dtype_env,
+        attn_implementation=attn_implementation,  # Force eager attention
+    )
+
+    _chronos2_wrapper_cache[cache_key] = wrapper
+    return wrapper
 
 
 def resolve_close_policy(symbol: str) -> str:
@@ -2515,8 +2641,11 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
 
     best_model = resolve_best_model(symbol)
     use_kronos = best_model == "kronos"
+    use_chronos2 = best_model == "chronos2"
     if use_kronos:
         _require_cuda("Kronos forecasting", symbol=symbol, allow_cpu_fallback=False)
+    elif use_chronos2:
+        _require_cuda("Chronos2 forecasting", symbol=symbol, allow_cpu_fallback=False)
     else:
         _require_cuda("Toto forecasting", symbol=symbol)
 
@@ -2549,6 +2678,34 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
             kronos_wrapper = None
             return False
 
+    chronos2_params: Optional[dict] = None
+    chronos2_wrapper: Optional[Any] = None
+    chronos2_df: Optional[pd.DataFrame] = None
+    chronos2_init_logged = False
+
+    def ensure_chronos2_ready() -> bool:
+        nonlocal chronos2_params, chronos2_wrapper, chronos2_df, chronos2_init_logged
+        if chronos2_wrapper is not None:
+            return True
+        try:
+            if chronos2_params is None:
+                chronos2_params = resolve_chronos2_params(symbol)
+            chronos2_wrapper = load_chronos2_wrapper(chronos2_params)
+            if chronos2_df is None:
+                # Prepare dataframe in OHLC format for chronos2 (lowercase column names required)
+                chronos2_df = simulation_data[["Open", "High", "Low", "Close"]].copy()
+                chronos2_df = chronos2_df.reset_index(drop=True)  # Remove any existing index
+                chronos2_df.columns = [col.lower() for col in chronos2_df.columns]
+                chronos2_df["timestamp"] = pd.date_range(start="1949-01-01", periods=len(chronos2_df), freq="D")
+                chronos2_df["symbol"] = symbol
+            return True
+        except Exception as exc:
+            if not chronos2_init_logged:
+                logger.warning("Failed to prepare Chronos2 wrapper for %s: %s", symbol, exc)
+                chronos2_init_logged = True
+            chronos2_wrapper = None
+            return False
+
     for key_to_predict in ["Close", "Low", "High", "Open"]:
         data = pre_process_data(simulation_data, key_to_predict)
         price = data[["Close", "High", "Low", "Open"]]
@@ -2575,7 +2732,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         toto_predictions = None
         toto_band = None
         toto_abs = None
-        run_toto = toto_params is not None and not use_kronos
+        run_toto = toto_params is not None and not use_kronos and not use_chronos2
         if run_toto:
             try:
                 toto_predictions, toto_band, toto_abs = _compute_toto_forecast(
@@ -2619,11 +2776,52 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
                 kronos_abs = None
                 kronos_wrapper = None
 
+        chronos2_predictions = None
+        chronos2_abs = None
+        if use_chronos2 and ensure_chronos2_ready():
+            try:
+                # Use chronos2 to predict OHLC (use a copy to avoid state issues)
+                chronos2_result = chronos2_wrapper.predict_ohlc(
+                    context_df=chronos2_df.copy(),
+                    symbol=symbol,
+                    prediction_length=7,
+                    context_length=chronos2_params.get("context_length", 512),
+                    batch_size=chronos2_params.get("batch_size", 128),
+                )
+                # Extract median predictions (quantile 0.5) for the specific target
+                median_frame = chronos2_result.quantile_frames.get(0.5)
+                if median_frame is not None and key_to_predict.lower() in median_frame.columns:
+                    pred_values = median_frame[key_to_predict.lower()].values
+                    if len(pred_values) > 0:
+                        # Convert absolute predictions to percentage returns
+                        chronos2_abs = float(pred_values[-1])
+                        pct_returns = []
+                        prev_price = current_last_price
+                        for pred_price in pred_values:
+                            pct_change = (pred_price - prev_price) / prev_price if prev_price != 0 else 0.0
+                            pct_returns.append(pct_change)
+                            prev_price = pred_price
+                        chronos2_predictions = torch.tensor(pct_returns, dtype=torch.float32)
+            except Exception as exc:
+                import traceback
+                if key_to_predict == "Close":
+                    logger.warning("Chronos2 forecast failed for %s %s: %s", symbol, key_to_predict, exc)
+                    logger.warning("Chronos2 traceback:\n%s", traceback.format_exc())
+                chronos2_predictions = None
+                chronos2_abs = None
+                # Don't set wrapper to None - it might work on next iteration
+                # chronos2_wrapper = None
+
         predictions = None
         predictions_source = None
         predicted_absolute_last = current_last_price
 
-        if use_kronos and kronos_predictions is not None:
+        if use_chronos2 and chronos2_predictions is not None:
+            predictions = chronos2_predictions
+            predictions_source = "chronos2"
+            if chronos2_abs is not None:
+                predicted_absolute_last = chronos2_abs
+        elif use_kronos and kronos_predictions is not None:
             predictions = kronos_predictions
             predictions_source = "kronos"
             if kronos_abs is not None:
@@ -2638,6 +2836,11 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
             predictions_source = "kronos"
             if kronos_abs is not None:
                 predicted_absolute_last = kronos_abs
+        elif chronos2_predictions is not None:
+            predictions = chronos2_predictions
+            predictions_source = "chronos2"
+            if chronos2_abs is not None:
+                predicted_absolute_last = chronos2_abs
         else:
             logger.warning("No predictions produced for %s %s; skipping.", symbol, key_to_predict)
             continue
@@ -2665,9 +2868,11 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
                     last_preds["close_ci_band"] = toto_band
             if kronos_predictions is not None and kronos_predictions.numel() > 0:
                 last_preds["kronos_close_pred_pct"] = float(kronos_predictions[-1].item())
+            if chronos2_predictions is not None and chronos2_predictions.numel() > 0:
+                last_preds["chronos2_close_pred_pct"] = float(chronos2_predictions[-1].item())
             if "close_ci_band" not in last_preds:
                 last_preds["close_ci_band"] = torch.zeros_like(predictions)
-            last_preds["close_prediction_source"] = predictions_source or ("kronos" if use_kronos else "toto")
+            last_preds["close_prediction_source"] = predictions_source or ("chronos2" if use_chronos2 else ("kronos" if use_kronos else "toto"))
             last_preds["close_raw_pred_pct"] = float(predictions[-1].item())
 
     if "close_ci_band" not in last_preds:
@@ -2675,7 +2880,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         pad_length = int(base_close_preds.shape[0] + 1)
         last_preds["close_ci_band"] = torch.zeros(pad_length, dtype=torch.float32)
     if "close_prediction_source" not in last_preds:
-        last_preds["close_prediction_source"] = "kronos" if use_kronos else "toto"
+        last_preds["close_prediction_source"] = "chronos2" if use_chronos2 else ("kronos" if use_kronos else "toto")
 
     # Calculate actual percentage returns over the validation horizon
     close_window = simulation_data["Close"].iloc[-7:]

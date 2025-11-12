@@ -34,7 +34,7 @@ torch==2.9.0+cu126
 pytorch-lightning>=2.4.0,<3.0
 torch-optimizer>=0.3
 pytorch-optimizer>=2.11
-chronos-forecasting>=1.5.3
+chronos-forecasting>=2.0.0
 neuralforecast>=3.1
 stable-baselines3>=2.3
 gymnasium>=0.29

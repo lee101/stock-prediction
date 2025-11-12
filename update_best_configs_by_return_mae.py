@@ -1,62 +1,81 @@
 #!/usr/bin/env python
 """
-Re-select best models based on pct_return_mae instead of price_mae.
+Re-select best models based on pct_return_mae, including Chronos2 candidates.
 
 This matters for trading because we care about return prediction accuracy,
 not absolute price prediction accuracy.
 """
 import json
+import os
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, Optional
+
+HYPERPARAM_ROOT = Path(os.getenv("HYPERPARAM_ROOT", "hyperparams"))
+MODEL_DIRS = {
+    "kronos": HYPERPARAM_ROOT / "kronos",
+    "toto": HYPERPARAM_ROOT / "toto",
+    "chronos2": HYPERPARAM_ROOT / "chronos2",
+}
 
 
-def update_model_selection(symbol: str) -> Dict[str, Any]:
-    """Select best model based on pct_return_mae."""
+def _load_model_payload(model: str, symbol: str) -> Optional[Dict[str, Any]]:
+    path = MODEL_DIRS[model] / f"{symbol}.json"
+    if not path.exists():
+        return None
+    with path.open() as fp:
+        payload = json.load(fp)
+    return payload
 
-    kronos_path = Path("hyperparams/kronos") / f"{symbol}.json"
-    toto_path = Path("hyperparams/toto") / f"{symbol}.json"
 
-    if not kronos_path.exists() or not toto_path.exists():
-        print(f"⚠️  {symbol}: Missing configs")
+def update_model_selection(symbol: str) -> Optional[Dict[str, Any]]:
+    """Select the best available model based on pct_return_mae."""
+
+    candidates: Dict[str, Dict[str, Any]] = {}
+    for model_name in MODEL_DIRS:
+        payload = _load_model_payload(model_name, symbol)
+        if payload is None:
+            continue
+        mae = payload["test"]["pct_return_mae"]
+        candidates[model_name] = {
+            "payload": payload,
+            "mae": mae,
+        }
+
+    if not candidates:
+        print(f"⚠️  {symbol}: No hyperparameter records found across {list(MODEL_DIRS)}")
         return None
 
-    with open(kronos_path) as f:
-        kronos = json.load(f)
-    with open(toto_path) as f:
-        toto = json.load(f)
+    best_model = min(candidates.items(), key=lambda item: item[1]["mae"])[0]
+    best_entry = candidates[best_model]
+    best_payload = best_entry["payload"]
+    best_mae = best_entry["mae"]
 
-    kronos_return_mae = kronos["test"]["pct_return_mae"]
-    toto_return_mae = toto["test"]["pct_return_mae"]
-
-    # Select model with lower pct_return_mae
-    if kronos_return_mae < toto_return_mae:
-        best_model = "kronos"
-        best_config = kronos
-        best_mae = kronos_return_mae
-        improvement = ((toto_return_mae - kronos_return_mae) / toto_return_mae * 100)
+    sorted_mae = sorted(entry["mae"] for entry in candidates.values())
+    if len(sorted_mae) > 1 and sorted_mae[1] > 0:
+        improvement = ((sorted_mae[1] - best_mae) / sorted_mae[1]) * 100
     else:
-        best_model = "toto"
-        best_config = toto
-        best_mae = toto_return_mae
-        improvement = ((kronos_return_mae - toto_return_mae) / kronos_return_mae * 100)
+        improvement = 0.0
 
-    # Create selection record
+    candidate_mae_map = {model: entry["mae"] for model, entry in candidates.items()}
+
     selection = {
         "symbol": symbol,
         "model": best_model,
-        "config": best_config["config"],
-        "validation": best_config["validation"],
-        "test": best_config["test"],
-        "windows": best_config["windows"],
+        "config": best_payload["config"],
+        "validation": best_payload["validation"],
+        "test": best_payload["test"],
+        "windows": best_payload["windows"],
         "config_path": f"hyperparams/{best_model}/{symbol}.json",
         "metadata": {
             "source": "update_best_configs_by_return_mae",
             "selection_metric": "test_pct_return_mae",
             "selection_value": best_mae,
-            "kronos_pct_return_mae": kronos_return_mae,
-            "toto_pct_return_mae": toto_return_mae,
+            "kronos_pct_return_mae": candidate_mae_map.get("kronos"),
+            "toto_pct_return_mae": candidate_mae_map.get("toto"),
+            "chronos2_pct_return_mae": candidate_mae_map.get("chronos2"),
+            "candidate_pct_return_mae": candidate_mae_map,
             "improvement_pct": improvement,
-        }
+        },
     }
 
     return selection
@@ -65,13 +84,14 @@ def update_model_selection(symbol: str) -> Dict[str, Any]:
 def main():
     """Update all model selections to use pct_return_mae."""
 
-    best_dir = Path("hyperparams/best")
+    best_dir = HYPERPARAM_ROOT / "best"
     best_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get all symbols that have both kronos and toto configs
-    kronos_symbols = {p.stem for p in Path("hyperparams/kronos").glob("*.json")}
-    toto_symbols = {p.stem for p in Path("hyperparams/toto").glob("*.json")}
-    symbols = sorted(kronos_symbols & toto_symbols)
+    symbol_sets = []
+    for model_dir in MODEL_DIRS.values():
+        if model_dir.exists():
+            symbol_sets.append({p.stem for p in model_dir.glob("*.json")})
+    symbols = sorted(set().union(*symbol_sets)) if symbol_sets else []
 
     print(f"Updating model selections for {len(symbols)} symbols...")
     print(f"Selection metric: test_pct_return_mae ⭐")

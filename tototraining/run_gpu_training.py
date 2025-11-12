@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,8 @@ except ImportError:  # pragma: no cover - fallback for script execution from rep
         if str_path not in sys.path:
             sys.path.insert(0, str_path)
     from toto_trainer import TrainerConfig, DataLoaderConfig, TotoTrainer
+
+from wandboard import WandBoardLogger
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -107,6 +110,12 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="report_path",
         type=Path,
         help="Optional path to write a Markdown training summary report.",
+    )
+    parser.add_argument(
+        "--wandb-project",
+        dest="wandb_project",
+        type=str,
+        help="Weights & Biases project for WandBoard logging.",
     )
     parser.add_argument(
         "--run-name",
@@ -443,7 +452,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         pin_memory=pin_memory_flag,
         log_level="INFO",
         log_file=str(save_dir / "training.log"),
-        wandb_project=None,
+        wandb_project=args.wandb_project,
         experiment_name=experiment_name,
         log_to_tensorboard=False,
         tensorboard_log_dir="tensorboard_logs",
@@ -517,13 +526,39 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
     _print_run_header(save_dir, trainer_config, loader_config)
 
-    trainer = TotoTrainer(trainer_config, loader_config)
-    trainer.prepare_data()
-    trainer.setup_model()
-    trainer.train()
+    logger_ctx = (
+        WandBoardLogger(
+            run_name=experiment_name,
+            project=trainer_config.wandb_project,
+            log_dir="tensorboard_logs",
+            tensorboard_subdir=f"toto/{experiment_name}",
+            enable_wandb=True,
+            log_metrics=True,
+            config={
+                "toto_trainer": asdict(trainer_config),
+                "toto_dataloader": asdict(loader_config),
+            },
+        )
+        if trainer_config.wandb_project
+        else nullcontext()
+    )
 
-    val_metrics = trainer.evaluate("val") or {}
-    test_metrics = trainer.evaluate("test") or {}
+    with logger_ctx as metrics_logger:
+        trainer = TotoTrainer(trainer_config, loader_config, metrics_logger=metrics_logger)
+        trainer.prepare_data()
+        trainer.setup_model()
+        trainer.train()
+
+        val_metrics = trainer.evaluate("val") or {}
+        test_metrics = trainer.evaluate("test") or {}
+        if metrics_logger is not None:
+            metrics_logger.log(
+                {
+                    **{f"val/{k}": v for k, v in val_metrics.items()},
+                    **{f"test/{k}": v for k, v in test_metrics.items()},
+                },
+                step=trainer.current_epoch + 1,
+            )
 
     summary_path = save_dir / "final_metrics.json"
     summary_path.write_text(

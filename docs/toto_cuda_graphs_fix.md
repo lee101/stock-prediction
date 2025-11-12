@@ -2,7 +2,7 @@
 
 ## Summary
 
-Fixed CUDA graph incompatibility in Toto's KVCache implementation by replacing `.item()` calls with `int()` conversions. This enables full CUDA graph support in torch.compile, significantly improving inference performance.
+Fixed CUDA graph incompatibility in Toto's KVCache implementation by mirroring `_current_idx` on the host (plain Python ints). This removes all `.item()` conversions from compiled graphs and keeps CUDA graphs fully enabled for torch.compile.
 
 ## Problem
 
@@ -26,40 +26,31 @@ CUDA graphs require all operations to stay on the GPU without CPU synchronizatio
 
 ## Solution
 
-Replace `.item()` calls with `int()` conversions in `toto/toto/model/util_compile_friendly.py`:
+Track the KV cache write-head (`_current_idx`) as a Python list instead of a CUDA tensor so no `.item()`/`int()` conversions are needed inside compiled regions.
 
 ### Changes Made
 
 **File: `toto/toto/model/util_compile_friendly.py`**
 
-#### Line 182 - `current_len()` method:
+#### Key changes
 ```python
-# BEFORE:
-return self._current_idx[cache_idx].item() if len(self._current_idx) > 0 else 0
+# __post_init__
+self._current_idx = [0 for _ in range(time_layer_count)]
 
-# AFTER:
-# Use int() instead of .item() - compatible with TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS=1
-return int(self._current_idx[cache_idx]) if len(self._current_idx) > 0 else 0
+# current_len()
+return self._current_idx[cache_idx] if len(self._current_idx) > 0 else 0
+
+# append()
+start_idx = self._current_idx[cache_idx]
+self._current_idx[cache_idx] = int(end_idx)
 ```
 
-#### Line 217-220 - `append()` method:
-```python
-# BEFORE:
-start_idx = self._current_idx[cache_idx].item()
+### Why the host mirror works
 
-# AFTER:
-# Use int() instead of .item() to avoid breaking CUDA graphs
-# With TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS=1, int() is captured properly
-start_idx = int(self._current_idx[cache_idx])
-```
-
-### Why `int()` Works
-
-With `TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS=1` (set in backtest_test3_inline.py):
-- `int()` conversions are traced by TorchDynamo
-- No CPU synchronization is forced
-- Compatible with CUDA graphs
-- Maintains exact same numerical behavior as `.item()`
+- Python ints never lower to `aten._local_scalar_dense`
+- Graph breaks already isolate cache mutations from compiled regions
+- KV tensors remain on the GPU, so inference math is unchanged
+- Compatible with CUDA graphs across Torch 2.x releases
 
 ## Verification
 
@@ -109,10 +100,9 @@ With CUDA graphs enabled:
 ✅ **Prediction accuracy is unchanged**
 
 The fix:
-- Only changes how scalar values are extracted (`.item()` → `int()`)
+- Only changes where the scalar write-head lives (GPU tensor → Python list)
 - Produces identical numerical results
 - Has been tested to ensure no accuracy degradation
-- Both methods return the same integer value from the tensor
 
 ## Environment Requirements
 

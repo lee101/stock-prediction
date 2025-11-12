@@ -28,7 +28,7 @@ Found from File "toto/toto/model/util_compile_friendly.py", line 217
     start_idx = self._current_idx[cache_idx].item()
 ```
 
-**Solution:** Changed `.item()` to `int()` in 2 locations → CUDA graphs now work!
+**Solution:** Mirror `_current_idx` on the host (plain Python ints) so no `.item()`/`int()` conversions reach the compiled graph.
 
 **Impact:**
 - 2-5x faster inference with torch.compile
@@ -58,31 +58,26 @@ CUDA error: unspecified launch failure
 
 ### Files Changed
 
-**`toto/toto/model/util_compile_friendly.py`** - 2 lines:
+**`toto/toto/model/util_compile_friendly.py`** - host-mirrored index tracker:
 
 ```python
-# Line 182 - current_len() method
-# BEFORE:
-return self._current_idx[cache_idx].item() if len(self._current_idx) > 0 else 0
+# __post_init__
+self._current_idx = [0 for _ in range(time_layer_count)]
 
-# AFTER:
-return int(self._current_idx[cache_idx]) if len(self._current_idx) > 0 else 0
+# current_len()
+return self._current_idx[cache_idx] if len(self._current_idx) > 0 else 0
 
-# Line 220 - append() method
-# BEFORE:
-start_idx = self._current_idx[cache_idx].item()
-
-# AFTER:
-start_idx = int(self._current_idx[cache_idx])
+# append()
+start_idx = self._current_idx[cache_idx]
+self._current_idx[cache_idx] = int(end_idx)
 ```
 
 ### Why This Works
 
-With `TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS=1` (set in backtest_test3_inline.py):
-- `int()` is traced by TorchDynamo
-- No CPU synchronization forced
-- Compatible with CUDA graphs
-- **Produces identical results to `.item()`**
+- Host-resident Python ints never lower to `aten._local_scalar_dense`
+- Graph breaks already isolate cache mutations from compiled regions
+- K/V tensors remain on the GPU, so numerical results are unchanged
+- **Maintains full CUDA graph compatibility with zero MAE impact**
 
 ### Verification
 

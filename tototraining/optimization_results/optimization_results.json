@@ -1,0 +1,142 @@
+[
+  {
+    "success": false,
+    "config": {
+      "learning_rate": 0.0001,
+      "loss": "huber",
+      "context_length": 4096,
+      "prediction_length": 64,
+      "batch_size": 4,
+      "epochs": 5,
+      "huber_delta": 0.05,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0
+    }
+  },
+  {
+    "success": false,
+    "config": {
+      "learning_rate": 0.0001,
+      "loss": "huber",
+      "context_length": 4096,
+      "prediction_length": 64,
+      "batch_size": 4,
+      "epochs": 5,
+      "huber_delta": 0.05,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0
+    }
+  },
+  {
+    "success": false,
+    "config": {
+      "learning_rate": 0.0005,
+      "loss": "heteroscedastic",
+      "context_length": 4096,
+      "prediction_length": 64,
+      "batch_size": 4,
+      "epochs": 5,
+      "huber_delta": 0.05,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0
+    }
+  },
+  {
+    "success": false,
+    "config": {
+      "learning_rate": 0.0001,
+      "loss": "heteroscedastic",
+      "context_length": 4096,
+      "prediction_length": 64,
+      "batch_size": 4,
+      "epochs": 5,
+      "huber_delta": 0.01,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0
+    }
+  },
+  {
+    "success": false,
+    "config": {
+      "learning_rate": 0.0001,
+      "loss": "heteroscedastic",
+      "context_length": 4096,
+      "prediction_length": 64,
+      "batch_size": 4,
+      "epochs": 5,
+      "huber_delta": 0.05,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0
+    }
+  },
+  {
+    "success": false,
+    "config": {
+      "learning_rate": 0.0001,
+      "loss": "heteroscedastic",
+      "context_length": 4096,
+      "prediction_length": 64,
+      "batch_size": 4,
+      "epochs": 5,
+      "huber_delta": 0.05,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0
+    }
+  },
+  {
+    "success": false,
+    "config": {
+      "learning_rate": 0.0005,
+      "loss": "huber",
+      "context_length": 4096,
+      "prediction_length": 64,
+      "batch_size": 4,
+      "epochs": 5,
+      "huber_delta": 0.01,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0
+    }
+  },
+  {
+    "success": false,
+    "config": {
+      "learning_rate": 0.0003,
+      "loss": "heteroscedastic",
+      "context_length": 4096,
+      "prediction_length": 64,
+      "batch_size": 4,
+      "epochs": 5,
+      "huber_delta": 0.05,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0
+    }
+  },
+  {
+    "success": false,
+    "config": {
+      "learning_rate": 0.0005,
+      "loss": "heteroscedastic",
+      "context_length": 4096,
+      "prediction_length": 64,
+      "batch_size": 4,
+      "epochs": 5,
+      "huber_delta": 0.05,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0
+    }
+  },
+  {
+    "success": false,
+    "config": {
+      "learning_rate": 0.0001,
+      "loss": "huber",
+      "context_length": 4096,
+      "prediction_length": 64,
+      "batch_size": 4,
+      "epochs": 5,
+      "huber_delta": 0.01,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0
+    }
+  }
+]

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import logging
 import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 
 from hyperparamstore.store import HyperparamRecord, HyperparamStore
 from src.models.toto_aggregation import aggregate_with_spec
+
+
+logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - exercised in integration environments
     from src.models.toto_wrapper import TotoPipeline
@@ -28,6 +32,15 @@ except Exception as exc:  # pragma: no cover - lazily surfaced when Kronos is ne
     _KRONOS_IMPORT_ERROR: Optional[Exception] = exc
 else:  # pragma: no cover - only hit when Kronos import succeeds
     _KRONOS_IMPORT_ERROR = None
+
+try:  # pragma: no cover - exercised in integration environments
+    from src.models.chronos2_wrapper import Chronos2OHLCWrapper, DEFAULT_QUANTILE_LEVELS
+except Exception as exc:  # pragma: no cover - lazily surfaced when Chronos2 is needed
+    Chronos2OHLCWrapper = None  # type: ignore
+    DEFAULT_QUANTILE_LEVELS = (0.1, 0.5, 0.9)  # type: ignore
+    _CHRONOS2_IMPORT_ERROR: Optional[Exception] = exc
+else:  # pragma: no cover
+    _CHRONOS2_IMPORT_ERROR = None
 
 if TYPE_CHECKING:  # pragma: no cover - import is optional at runtime
     import torch
@@ -88,6 +101,7 @@ class CombinedForecastGenerator:
         hyperparam_store: Optional[HyperparamStore] = None,
         toto_factory: Optional[Callable[[Mapping[str, Any]], Any]] = None,
         kronos_factory: Optional[Callable[[Mapping[str, Any]], Any]] = None,
+        chronos2_factory: Optional[Callable[[Mapping[str, Any]], Any]] = None,
     ) -> None:
         if "FAST_TESTING" not in os.environ:
             os.environ["FAST_TESTING"] = "1"
@@ -100,8 +114,10 @@ class CombinedForecastGenerator:
 
         self._toto_factory = toto_factory
         self._kronos_factory = kronos_factory
+        self._chronos2_factory = chronos2_factory
         self._toto_pipeline: Optional[Any] = None
         self._kronos_cache: MutableMapping[str, Any] = {}
+        self._chronos2_cache: MutableMapping[str, Chronos2OHLCWrapper] = {}
 
     # --------------------------------------------------------------------- #
     # Public orchestration
@@ -150,7 +166,7 @@ class CombinedForecastGenerator:
 
         model_forecasts: Dict[str, ModelForecast] = {}
 
-        for model_name in ("toto", "kronos"):
+        for model_name in ("toto", "kronos", "chronos2"):
             record = self.store.load(model_name, symbol)
             if record is None:
                 continue
@@ -159,6 +175,7 @@ class CombinedForecastGenerator:
                 record=record,
                 df=df,
                 prediction_length=prediction_length,
+                symbol=symbol,
             )
             model_forecasts[model_name] = self._build_model_forecast(
                 symbol=symbol,
@@ -211,11 +228,14 @@ class CombinedForecastGenerator:
         record: HyperparamRecord,
         df: pd.DataFrame,
         prediction_length: int,
+        symbol: str,
     ) -> Dict[str, float]:
         if model_name == "toto":
             return self._forecast_with_toto(record, df, prediction_length)
         if model_name == "kronos":
             return self._forecast_with_kronos(record, df, prediction_length)
+        if model_name == "chronos2":
+            return self._forecast_with_chronos2(record, df, prediction_length, symbol=symbol)
         raise ValueError(f"Unsupported model '{model_name}'.")
 
     def _forecast_with_toto(
@@ -246,7 +266,32 @@ class CombinedForecastGenerator:
             torch_mod = torch  # type: ignore
             inference_ctx = getattr(torch_mod, "inference_mode", None)
 
-        forecasts: Dict[str, float] = {}
+        def _invoke_predict(context_array: np.ndarray | Sequence[float]):
+            if inference_ctx is not None:
+                with inference_ctx():
+                    return pipeline.predict(
+                        context=context_array,
+                        prediction_length=prediction_length,
+                        num_samples=num_samples,
+                        samples_per_batch=samples_per_batch,
+                    )
+            if torch_mod is not None:
+                with torch_mod.no_grad():
+                    return pipeline.predict(
+                        context=context_array,
+                        prediction_length=prediction_length,
+                        num_samples=num_samples,
+                        samples_per_batch=samples_per_batch,
+                    )
+            return pipeline.predict(
+                context=context_array,
+                prediction_length=prediction_length,
+                num_samples=num_samples,
+                samples_per_batch=samples_per_batch,
+            )
+
+        contexts: List[np.ndarray] = []
+        column_order: List[str] = []
         for column in self.columns:
             series = pd.Series(df[column], dtype=np.float64)
             series = series.replace([np.inf, -np.inf], np.nan).ffill().dropna()
@@ -254,33 +299,44 @@ class CombinedForecastGenerator:
                 raise ValueError(
                     f"Not enough history ({len(series)} rows) to forecast '{column}' with Toto."
                 )
-            context = series.to_numpy(dtype=np.float32, copy=False)
-            if inference_ctx is not None:
-                with inference_ctx():
-                    outputs = pipeline.predict(
-                        context=context,
-                        prediction_length=prediction_length,
-                        num_samples=num_samples,
-                        samples_per_batch=samples_per_batch,
+            column_order.append(column)
+            contexts.append(series.to_numpy(dtype=np.float32, copy=False))
+
+        forecasts: Dict[str, float] = {}
+        batched_outputs: Optional[Sequence[Any]] = None
+        if contexts:
+            unique_lengths = {ctx.shape[0] for ctx in contexts}
+            if len(unique_lengths) == 1:
+                try:
+                    batched_context = np.stack(contexts, axis=0)
+                    batched_outputs = _invoke_predict(batched_context)
+                    if len(batched_outputs) != len(column_order):
+                        raise RuntimeError(
+                            f"Toto pipeline returned {len(batched_outputs)} forecasts for {len(column_order)} inputs."
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "Toto batched inference failed (%s); falling back to per-column predictions.",
+                        exc,
                     )
-            elif torch_mod is not None:
-                with torch_mod.no_grad():
-                    outputs = pipeline.predict(
-                        context=context,
-                        prediction_length=prediction_length,
-                        num_samples=num_samples,
-                        samples_per_batch=samples_per_batch,
-                    )
+                    batched_outputs = None
             else:
-                outputs = pipeline.predict(
-                    context=context,
-                    prediction_length=prediction_length,
-                    num_samples=num_samples,
-                    samples_per_batch=samples_per_batch,
+                logger.debug(
+                    "Skipping Toto batch inference because context lengths differ: %s",
+                    sorted(unique_lengths),
                 )
-            if not outputs:
-                raise RuntimeError("Toto pipeline returned no forecasts.")
-            aggregated = aggregate_with_spec(outputs[0].samples, aggregate_spec)
+
+        if batched_outputs is None:
+            for column, context in zip(column_order, contexts):
+                outputs = _invoke_predict(context)
+                if not outputs:
+                    raise RuntimeError("Toto pipeline returned no forecasts.")
+                aggregated = aggregate_with_spec(outputs[0].samples, aggregate_spec)
+                forecasts[column] = float(np.asarray(aggregated, dtype=np.float64).ravel()[0])
+            return forecasts
+
+        for column, forecast in zip(column_order, batched_outputs):
+            aggregated = aggregate_with_spec(forecast.samples, aggregate_spec)
             forecasts[column] = float(np.asarray(aggregated, dtype=np.float64).ravel()[0])
         return forecasts
 
@@ -315,6 +371,34 @@ class CombinedForecastGenerator:
                     f"values but prediction_length={prediction_length}."
                 )
             forecasts[column] = float(result.absolute[0])
+        return forecasts
+
+    def _forecast_with_chronos2(
+        self,
+        record: HyperparamRecord,
+        df: pd.DataFrame,
+        prediction_length: int,
+        *,
+        symbol: str,
+    ) -> Dict[str, float]:
+        wrapper = self._get_chronos2_wrapper(record.config)
+        quantiles = record.config.get("quantile_levels")
+        context_length = int(record.config.get("context_length", getattr(wrapper, "default_context_length", 1024)))
+        batch = wrapper.predict_ohlc(
+            df,
+            symbol=symbol,
+            prediction_length=prediction_length,
+            context_length=context_length,
+            quantile_levels=quantiles,
+        )
+        median = batch.median
+        if median.empty:
+            raise RuntimeError("Chronos2 wrapper returned no forecast rows.")
+        forecasts: Dict[str, float] = {}
+        for column in self.columns:
+            if column not in median.columns:
+                raise RuntimeError(f"Chronos2 forecast missing column '{column}'.")
+            forecasts[column] = float(median[column].iloc[0])
         return forecasts
 
     # --------------------------------------------------------------------- #
@@ -524,6 +608,36 @@ class CombinedForecastGenerator:
             sample_count=int(config.get("sample_count", 8)),
         )
         self._kronos_cache[name] = wrapper
+        return wrapper
+
+    def _get_chronos2_wrapper(self, config: Mapping[str, Any]) -> Chronos2OHLCWrapper:
+        name = str(config.get("name", "chronos2-default"))
+        cached = self._chronos2_cache.get(name)
+        if cached is not None:
+            return cached
+        if self._chronos2_factory is not None:
+            wrapper = self._chronos2_factory(config)
+            self._chronos2_cache[name] = wrapper
+            return wrapper
+        if Chronos2OHLCWrapper is None:  # pragma: no cover - surfaced when Chronos2 missing
+            assert _CHRONOS2_IMPORT_ERROR is not None
+            raise RuntimeError(
+                "Chronos2OHLCWrapper is unavailable. Install chronos-forecasting>=2.0 to enable it."
+            ) from _CHRONOS2_IMPORT_ERROR
+
+        device_map = config.get("device_map", "cuda" if self._cuda_available() else "cpu")
+        context_length = int(config.get("context_length", 1024))
+        quantile_levels = config.get("quantile_levels", DEFAULT_QUANTILE_LEVELS)
+        wrapper = Chronos2OHLCWrapper.from_pretrained(
+            model_id=config.get("model_id", "amazon/chronos-2"),
+            device_map=device_map,
+            id_column=self.id_column,
+            timestamp_column=self.timestamp_column,
+            target_columns=self.columns,
+            default_context_length=context_length,
+            quantile_levels=quantile_levels,
+        )
+        self._chronos2_cache[name] = wrapper
         return wrapper
 
     def _build_toto_kwargs(

@@ -1,0 +1,41 @@
+{
+  "symbol": "AAPL",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_opt_temp0.180_p0.88_s112_k20_clip1.60_ctx192",
+    "temperature": 0.18,
+    "top_p": 0.88,
+    "top_k": 20,
+    "sample_count": 112,
+    "max_context": 192,
+    "clip": 1.6
+  },
+  "config_source": "hyperparams_extended/kronos/AAPL.json",
+  "compile_settings": {
+    "kronos": {
+      "mode": "max-autotune",
+      "backend": "inductor"
+    },
+    "toto": {
+      "mode": "max-autotune",
+      "backend": "inductor"
+    }
+  },
+  "results": {
+    "uncompiled": {
+      "validation": {
+        "price_mae": 3.1875164216157046,
+        "pct_return_mae": 0.03364407280158589,
+        "latency_s": 6.3266496369997185
+      },
+      "test": {
+        "price_mae": 2.764912726009662,
+        "pct_return_mae": 0.03409996049554131,
+        "latency_s": 2.0923843090004084
+      }
+    },
+    "compiled": {
+      "error": "Error: accessing tensor output of CUDAGraphs that has been overwritten by a subsequent run. Stack trace: File \"/nvme0n1-disk/code/stock-prediction/external/kronos/model/kronos.py\", line 371, in decode_s1\n    x = self.norm(x)\n  File \"/nvme0n1-disk/code/stock-prediction/external/kronos/model/module.py\", line 265, in forward\n    return output * self.weight. To prevent overwriting, clone the tensor outside of torch.compile() or call torch.compiler.cudagraph_mark_step_begin() before each model invocation."
+    }
+  }
+}

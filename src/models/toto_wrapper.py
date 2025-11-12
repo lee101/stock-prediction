@@ -34,8 +34,9 @@ if _LEGACY_PATH.exists():
 for _path in reversed(_CANDIDATE_PATHS):
     if _path.exists():
         path_str = str(_path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
+        if path_str in sys.path:
+            sys.path.remove(path_str)
+        sys.path.insert(0, path_str)
 
 _IMPORT_ERROR: Optional[Exception] = None
 
