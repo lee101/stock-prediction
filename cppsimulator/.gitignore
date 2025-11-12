@@ -1,0 +1,11 @@
+# Build artifacts
+build/
+build_py/
+*.o
+*.so
+*.a
+.ninja_deps
+.ninja_log
+build.ninja
+*.pyc
+__pycache__/
