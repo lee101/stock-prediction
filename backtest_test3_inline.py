@@ -1891,6 +1891,7 @@ def resolve_best_model(symbol: str) -> str:
 
 _chronos2_params_cache: Dict[str, Dict[str, Any]] = {}
 _chronos2_wrapper_cache: Dict[str, Any] = {}
+DEFAULT_CHRONOS_PREDICTION_LENGTH = 7
 
 
 def resolve_chronos2_params(symbol: str) -> Dict[str, Any]:
@@ -1912,15 +1913,31 @@ def resolve_chronos2_params(symbol: str) -> Dict[str, Any]:
     # Try to load from hyperparams store
     record = load_best_config("chronos2", symbol)
     config = record.config if record else {}
+    symbol_key = symbol.upper()
+    hyperparam_root = Path(os.getenv("HYPERPARAM_ROOT", "hyperparams"))
+    config_path = hyperparam_root / "chronos2" / f"{symbol_key}.json"
+    quantile_levels = config.get("quantile_levels", [0.1, 0.5, 0.9])
+    try:
+        quantile_tuple = tuple(float(level) for level in quantile_levels)
+    except (TypeError, ValueError):
+        quantile_tuple = (0.1, 0.5, 0.9)
 
     if record is not None:
         params = {
             "model_id": config.get("model_id", "amazon/chronos-2"),
             "device_map": config.get("device_map", "cuda"),
             "context_length": int(config.get("context_length", 512)),
-            "prediction_length": int(config.get("prediction_length", 1)),
-            "quantile_levels": config.get("quantile_levels", [0.1, 0.5, 0.9]),
+            "prediction_length": max(
+                2, int(config.get("prediction_length", DEFAULT_CHRONOS_PREDICTION_LENGTH))
+            ),
+            "quantile_levels": quantile_tuple,
             "batch_size": int(config.get("batch_size", 128)),
+            "aggregation": str(config.get("aggregation", "median")),
+            "sample_count": int(config.get("sample_count", 0)),
+            "scaler": str(config.get("scaler", "none")),
+            "predict_kwargs": dict(config.get("predict_kwargs") or {}),
+            "_config_path": str(config_path) if config_path.exists() else None,
+            "_config_name": str(config.get("name") or ""),
         }
         logger.info(f"Loaded Chronos2 hyperparameters for {symbol} from hyperparamstore.")
     else:
@@ -1929,9 +1946,15 @@ def resolve_chronos2_params(symbol: str) -> Dict[str, Any]:
             "model_id": "amazon/chronos-2",
             "device_map": "cuda",
             "context_length": 512,
-            "prediction_length": 7,  # Match validation window size
-            "quantile_levels": [0.1, 0.5, 0.9],
+            "prediction_length": DEFAULT_CHRONOS_PREDICTION_LENGTH,
+            "quantile_levels": (0.1, 0.5, 0.9),
             "batch_size": 128,
+            "aggregation": "median",
+            "sample_count": 0,
+            "scaler": "none",
+            "predict_kwargs": {},
+            "_config_path": str(config_path) if config_path.exists() else None,
+            "_config_name": "",
         }
         logger.info(f"No stored Chronos2 hyperparameters for {symbol} — using defaults.")
 
@@ -2780,14 +2803,33 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         chronos2_abs = None
         if use_chronos2 and ensure_chronos2_ready():
             try:
-                # Use chronos2 to predict OHLC (use a copy to avoid state issues)
+                prediction_length = int(chronos2_params.get("prediction_length", DEFAULT_CHRONOS_PREDICTION_LENGTH))
+                quantile_levels = tuple(chronos2_params.get("quantile_levels", (0.1, 0.5, 0.9)))
+                predict_kwargs = dict(chronos2_params.get("predict_kwargs") or {})
                 chronos2_result = chronos2_wrapper.predict_ohlc(
                     context_df=chronos2_df.copy(),
                     symbol=symbol,
-                    prediction_length=7,
+                    prediction_length=prediction_length,
                     context_length=chronos2_params.get("context_length", 512),
                     batch_size=chronos2_params.get("batch_size", 128),
+                    quantile_levels=quantile_levels,
+                    predict_kwargs=predict_kwargs or None,
                 )
+                if chronos2_result.applied_augmentation:
+                    last_preds["chronos2_preaug_strategy"] = chronos2_result.applied_augmentation
+                if getattr(chronos2_result, "applied_choice", None) is not None:
+                    source_path = getattr(chronos2_result.applied_choice, "source_path", None)
+                    if source_path is not None:
+                        last_preds["chronos2_preaug_source"] = str(source_path)
+                last_preds["chronos2_quantile_levels"] = list(quantile_levels)
+                last_preds["chronos2_predict_kwargs"] = predict_kwargs
+                last_preds["chronos2_context_length"] = chronos2_params.get("context_length")
+                last_preds["chronos2_batch_size"] = chronos2_params.get("batch_size")
+                last_preds["chronos2_prediction_length"] = prediction_length
+                if chronos2_params.get("_config_path"):
+                    last_preds["chronos2_hparams_config_path"] = chronos2_params["_config_path"]
+                if chronos2_params.get("model_id"):
+                    last_preds["chronos2_model_id"] = chronos2_params["model_id"]
                 # Extract median predictions (quantile 0.5) for the specific target
                 median_frame = chronos2_result.quantile_frames.get(0.5)
                 if median_frame is not None and key_to_predict.lower() in median_frame.columns:
@@ -3120,6 +3162,15 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         ),
         "calibration_slope": float(last_preds.get("calibration_slope", 1.0)),
         "calibration_intercept": float(last_preds.get("calibration_intercept", 0.0)),
+        "chronos2_preaug_strategy": last_preds.get("chronos2_preaug_strategy"),
+        "chronos2_preaug_source": last_preds.get("chronos2_preaug_source"),
+        "chronos2_context_length": last_preds.get("chronos2_context_length"),
+        "chronos2_batch_size": last_preds.get("chronos2_batch_size"),
+        "chronos2_prediction_length": last_preds.get("chronos2_prediction_length"),
+        "chronos2_quantile_levels": last_preds.get("chronos2_quantile_levels"),
+        "chronos2_predict_kwargs": last_preds.get("chronos2_predict_kwargs"),
+        "chronos2_hparams_config_path": last_preds.get("chronos2_hparams_config_path"),
+        "chronos2_model_id": last_preds.get("chronos2_model_id"),
         "simple_strategy_return": float(simple_total_return),
         "simple_strategy_sharpe": float(simple_sharpe),
         "simple_strategy_finalday": float(simple_finalday_return),
