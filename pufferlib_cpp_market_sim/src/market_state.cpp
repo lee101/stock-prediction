@@ -73,7 +73,7 @@ torch::Tensor MarketState::get_observation(const torch::Tensor& current_indices)
     return obs;
 }
 
-torch::Tensor MarketState::get_current_prices(const torch::Tensor& current_indices) {
+torch::Tensor MarketState::get_current_prices(const torch::Tensor& current_indices) const {
     // Returns: [batch_size, 4] (open, high, low, close)
     int batch_size = current_indices.size(0);
 

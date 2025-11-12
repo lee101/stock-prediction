@@ -21,7 +21,7 @@ Portfolio::Portfolio(const MarketConfig& config, torch::Device device, int batch
     days_held_ = torch::zeros({batch_size}, opts);
 }
 
-torch::Tensor Portfolio::step(
+PortfolioStepResult Portfolio::step(
     const torch::Tensor& action,
     const torch::Tensor& prices,
     const MarketState& market_state,
@@ -57,6 +57,8 @@ torch::Tensor Portfolio::step(
     }
 
     // Target position in dollars
+    auto prev_positions = positions_.clone();
+    auto prev_entry_prices = entry_prices_.clone();
     auto equity = cash_ + positions_;  // Current portfolio value
     auto target_position = equity * clamped_action;
 
@@ -88,8 +90,28 @@ torch::Tensor Portfolio::step(
     trading_costs_ = trading_costs_ + fees;
     num_trades_ = torch::where(position_change_mask, num_trades_ + 1, num_trades_);
 
-    // Calculate unrealized PnL
-    auto unrealized_pnl = positions_ * (current_price - entry_prices_) / (entry_prices_ + 1e-8);
+    // Calculate realized PnL contributions for closed positions
+    auto closing_mask = (trade_amount * prev_positions) < 0;
+    auto close_fraction = torch::zeros_like(prev_positions);
+    close_fraction = torch::where(
+        torch::abs(prev_positions) > 1e-6,
+        torch::clamp(torch::abs(trade_amount) / (torch::abs(prev_positions) + 1e-8), 0.0f, 1.0f),
+        close_fraction
+    );
+    auto exec_price_move = (execution_price - prev_entry_prices) / (prev_entry_prices + 1e-8);
+    auto step_realized_pnl = torch::where(
+        closing_mask,
+        prev_positions * close_fraction * exec_price_move,
+        torch::zeros_like(prev_positions)
+    );
+    realized_pnl_ = realized_pnl_ + step_realized_pnl;
+
+    // Calculate unrealized PnL after updates
+    auto unrealized_pnl = torch::where(
+        torch::abs(positions_) > 1e-6,
+        positions_ * (current_price - entry_prices_) / (entry_prices_ + 1e-8),
+        torch::zeros_like(positions_)
+    );
 
     // Calculate leverage cost for positions > 1.0x
     auto lev_cost = calculate_leverage_cost(positions_);
@@ -116,7 +138,15 @@ torch::Tensor Portfolio::step(
 
     days_held_ = days_held_ + 1;
 
-    return reward;
+    PortfolioStepResult result;
+    result.rewards = reward;
+    result.fees_paid = fees;
+    result.leverage_costs = lev_cost;
+    result.realized_pnl = step_realized_pnl;
+    result.unrealized_pnl = unrealized_pnl;
+    result.equity = total_equity;
+    result.days_held = days_held_;
+    return result;
 }
 
 void Portfolio::reset(const torch::Tensor& mask) {
@@ -178,13 +208,14 @@ torch::Tensor Portfolio::calculate_leverage_cost(const torch::Tensor& positions)
     // Calculate interest cost for positions exceeding 1.0x leverage
 
     auto equity = cash_ + positions;
-    auto leverage_ratio = torch::abs(positions) / (equity + 1e-8);
+    auto equity_mag = torch::abs(equity) + 1e-8;
+    auto leverage_ratio = torch::abs(positions) / equity_mag;
 
     // Only charge interest on leverage above 1.0x
     auto excess_leverage = torch::clamp(leverage_ratio - 1.0f, 0.0f, 10.0f);
 
     // Daily leverage cost = borrowed_amount * daily_rate
-    auto borrowed_amount = excess_leverage * equity;
+    auto borrowed_amount = excess_leverage * equity_mag;
     auto daily_cost = borrowed_amount * config_.DAILY_LEVERAGE_COST;
 
     return daily_cost;

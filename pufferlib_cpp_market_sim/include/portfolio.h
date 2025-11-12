@@ -16,6 +16,16 @@ struct PortfolioMetrics {
     torch::Tensor sharpe_ratio;        // [batch_size] - rolling sharpe ratio
 };
 
+struct PortfolioStepResult {
+    torch::Tensor rewards;             // [batch_size]
+    torch::Tensor fees_paid;           // [batch_size]
+    torch::Tensor leverage_costs;      // [batch_size]
+    torch::Tensor realized_pnl;        // [batch_size]
+    torch::Tensor unrealized_pnl;      // [batch_size]
+    torch::Tensor equity;              // [batch_size]
+    torch::Tensor days_held;           // [batch_size]
+};
+
 class Portfolio {
 public:
     Portfolio(const MarketConfig& config, torch::Device device, int batch_size);
@@ -24,8 +34,8 @@ public:
     // action: [batch_size] - continuous action in range [-max_leverage, max_leverage]
     //         Positive = long position, Negative = short position
     //         Magnitude = leverage multiplier
-    // Returns: reward tensor [batch_size]
-    torch::Tensor step(
+    // Returns: per-step metrics
+    PortfolioStepResult step(
         const torch::Tensor& action,
         const torch::Tensor& prices,  // [batch_size, 4] - OHLC
         const MarketState& market_state,
