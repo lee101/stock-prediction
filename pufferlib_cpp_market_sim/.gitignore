@@ -1,0 +1,19 @@
+# Build and cache artifacts
+build/
+build_cuda.sh.log
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.o
+*.o.d
+*.so
+*.a
+*.pt
+*.bin
+*.rsp
+*.d
+*.log
+*.csv
+*.tmp
+*.swp
