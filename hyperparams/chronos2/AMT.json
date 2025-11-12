@@ -1,0 +1,40 @@
+{
+  "symbol": "AMT",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx1024_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 1024,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 1.9540580749511718,
+    "pct_return_mae": 0.008772272165928524,
+    "latency_s": 0.1591444108502401
+  },
+  "test": {
+    "price_mae": 2.7076263427734375,
+    "pct_return_mae": 0.012681172136956026,
+    "latency_s": 0.164620240750628
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T05:48:56.861263+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 1024,
+    "batch_size": 128
+  }
+}

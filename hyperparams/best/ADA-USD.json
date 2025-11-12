@@ -1,0 +1,45 @@
+{
+  "symbol": "ADA-USD",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx2048_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 2048,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 0.029691770672798157,
+    "pct_return_mae": 0.03695303846648835,
+    "latency_s": 0.14375612030034973
+  },
+  "test": {
+    "price_mae": 0.03696621060371399,
+    "pct_return_mae": 0.042804737253240056,
+    "latency_s": 0.14467470529980347
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/chronos2/ADA-USD.json",
+  "metadata": {
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.042804737253240056,
+    "kronos_pct_return_mae": null,
+    "toto_pct_return_mae": null,
+    "chronos2_pct_return_mae": 0.042804737253240056,
+    "candidate_pct_return_mae": {
+      "chronos2": 0.042804737253240056
+    },
+    "improvement_pct": 0.0
+  }
+}

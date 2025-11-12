@@ -1,0 +1,40 @@
+{
+  "symbol": "LINKUSD",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx2048_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 2048,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 0.7108366012573242,
+    "pct_return_mae": 0.029347379652952164,
+    "latency_s": 0.14342286075043376
+  },
+  "test": {
+    "price_mae": 0.6276848793029786,
+    "pct_return_mae": 0.027776100901084972,
+    "latency_s": 0.1426182423496357
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T06:06:10.552901+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 2048,
+    "batch_size": 128
+  }
+}

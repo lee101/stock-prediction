@@ -1,34 +1,47 @@
 {
   "symbol": "QQQ",
-  "model": "toto",
+  "model": "chronos2",
   "config": {
-    "name": "toto_opt_trimmed_mean_20_128_spb16",
-    "num_samples": 128,
-    "aggregate": "trimmed_mean_20",
-    "samples_per_batch": 16
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
   },
   "validation": {
-    "price_mae": 2.4335100207206493,
-    "pct_return_mae": 0.004342820627976188,
-    "latency_s": 6.219837853015633
+    "price_mae": 2.4297821044921877,
+    "pct_return_mae": 0.0043304055074285695,
+    "latency_s": 0.144365986500452
   },
   "test": {
-    "price_mae": 3.9435224108573608,
-    "pct_return_mae": 0.0069124730949179855,
-    "latency_s": 6.2010841351002455
+    "price_mae": 3.7444427490234373,
+    "pct_return_mae": 0.006584191198151951,
+    "latency_s": 0.1451262106495051
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/toto/QQQ.json",
+  "config_path": "hyperparams/chronos2/QQQ.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
     "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.0069124730949179855,
+    "selection_value": 0.006584191198151951,
     "kronos_pct_return_mae": 0.006991463688323057,
     "toto_pct_return_mae": 0.0069124730949179855,
-    "improvement_pct": 1.1298148274301927
+    "chronos2_pct_return_mae": 0.006584191198151951,
+    "candidate_pct_return_mae": {
+      "kronos": 0.006991463688323057,
+      "toto": 0.0069124730949179855,
+      "chronos2": 0.006584191198151951
+    },
+    "improvement_pct": 4.749123682049274
   }
 }

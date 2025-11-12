@@ -1,0 +1,40 @@
+{
+  "symbol": "ARKW",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 2.111408233642578,
+    "pct_return_mae": 0.013978199875314467,
+    "latency_s": 0.14553167350004514
+  },
+  "test": {
+    "price_mae": 2.378327178955078,
+    "pct_return_mae": 0.015216330217421054,
+    "latency_s": 0.14253125554987492
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T05:52:41.182127+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 512,
+    "batch_size": 128
+  }
+}

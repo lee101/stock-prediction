@@ -1,0 +1,40 @@
+{
+  "symbol": "MSFT",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 1.7906654357910157,
+    "pct_return_mae": 0.018369865026193616,
+    "latency_s": 0.13789088900011848
+  },
+  "test": {
+    "price_mae": 1.3916500091552735,
+    "pct_return_mae": 0.014148379442653635,
+    "latency_s": 0.13799318479977957
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T06:07:20.291912+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 512,
+    "batch_size": 128
+  }
+}

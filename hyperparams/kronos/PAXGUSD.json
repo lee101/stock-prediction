@@ -1,0 +1,32 @@
+{
+  "symbol": "PAXGUSD",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_opt_temp0.200_p0.82_s176_k16_clip2.00_ctx192",
+    "temperature": 0.2,
+    "top_p": 0.82,
+    "top_k": 16,
+    "sample_count": 176,
+    "max_context": 192,
+    "clip": 2.0
+  },
+  "validation": {
+    "price_mae": 6.134127898343752,
+    "pct_return_mae": 0.004859892367004055,
+    "latency_s": 4.12376101100017
+  },
+  "test": {
+    "price_mae": 13.806744335281257,
+    "pct_return_mae": 0.013907324516800445,
+    "latency_s": 5.930621715000598
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparams_extended",
+    "extended_path": "hyperparams_extended/kronos/PAXGUSD.json"
+  }
+}
