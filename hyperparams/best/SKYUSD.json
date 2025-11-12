@@ -1,0 +1,32 @@
+{
+  "symbol": "SKYUSD",
+  "model": "toto",
+  "config": {
+    "name": "toto_opt_trimmed_mean_10_64_spb64",
+    "num_samples": 64,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 64
+  },
+  "validation": {
+    "price_mae": 0.0,
+    "pct_return_mae": 0.0,
+    "latency_s": 0.0
+  },
+  "test": {
+    "price_mae": 0.0,
+    "pct_return_mae": 0.0,
+    "latency_s": 0.0
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/toto/SKYUSD.json",
+  "metadata": {
+    "source": "manual_initialization",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.0,
+    "note": "Initial configuration for SKYUSD - needs tuning"
+  }
+}

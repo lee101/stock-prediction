@@ -145,8 +145,8 @@ DEFAULT_TEST_DAYS = 30
 DEFAULT_SKIP_IF_RECENT_DAYS = 7
 
 EXTENDED_CRYPTO_SYMBOLS: List[str] = [
-    'ADAUSD', 'ALGOUSD', 'ATOMUSD', 'BNBUSD', 'BTCUSD', 'DOGEUSD', 'DOTUSD',
-    'ETHUSD', 'LTCUSD', 'MATICUSD', 'PAXGUSD', 'SHIBUSD', 'TRXUSD',
+    'AAVEUSD', 'ADAUSD', 'ALGOUSD', 'ATOMUSD', 'BNBUSD', 'BTCUSD', 'DOGEUSD', 'DOTUSD',
+    'ETHUSD', 'LINKUSD', 'LTCUSD', 'MATICUSD', 'SHIBUSD', 'SOLUSD', 'TRXUSD',
     'UNIUSD', 'VETUSD', 'XLMUSD', 'XRPUSD',
 ]
 
@@ -958,7 +958,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
     # notional_value = total_buying_power * 1.9 # trade with margin
     # notional_value = total_buying_power - 600 # trade with margin
     # non marginable
-    if currentBuySymbol in ["BTCUSD", "ETHUSD", "LTCUSD", "PAXGUSD", "UNIUSD"]:
+    if currentBuySymbol in ["BTCUSD", "ETHUSD", "LTCUSD", "UNIUSD"]:
 
         margin_multiplier = min(margin_multiplier, 1)
         notional_value = cash * margin_multiplier  # todo predict margin/price
@@ -991,7 +991,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
         elif amount_to_trade < 1:
             amount_to_trade = 1
 
-        if currentBuySymbol not in ["BTCUSD", "ETHUSD", "LTCUSD", "PAXGUSD", "UNIUSD"]:
+        if currentBuySymbol not in ["BTCUSD", "ETHUSD", "LTCUSD", "UNIUSD"]:
             # fractional orders are okay for crypto.
             amount_to_trade = int(amount_to_trade)
         else:
@@ -1165,7 +1165,9 @@ crypto_client = CryptoHistoricalDataClient()
 
 
 def latest_data(symbol):
-    if symbol in crypto_symbols:
+    # Check against all_crypto_symbols (not just active ones) to ensure proper routing
+    from src.fixtures import all_crypto_symbols
+    if symbol in all_crypto_symbols or symbol in crypto_symbols:
         symbol = remap_symbols(symbol)
         response = crypto_client.get_crypto_latest_quote(
             CryptoLatestQuoteRequest(symbol_or_symbols=[symbol])
@@ -1222,8 +1224,9 @@ def download_symbol_history(
     include_latest: bool = True,
     timeframe: Optional[TimeFrame] = None,
 ) -> pd.DataFrame:
+    from src.fixtures import all_crypto_symbols
     symbol = symbol.upper()
-    is_crypto = symbol in DEFAULT_CRYPTO_SYMBOLS or symbol.endswith("USD")
+    is_crypto = symbol in DEFAULT_CRYPTO_SYMBOLS or symbol in all_crypto_symbols or symbol.endswith("USD")
 
     end_dt = end or datetime.now(timezone.utc)
     start_dt = start or (end_dt - timedelta(days=DEFAULT_HISTORY_DAYS))

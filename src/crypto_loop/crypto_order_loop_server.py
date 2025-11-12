@@ -36,7 +36,6 @@ symbols = [
     "BTCUSD",
     "ETHUSD",
     "LTCUSD",
-    "PAXGUSD",
     "UNIUSD",
 ]
 

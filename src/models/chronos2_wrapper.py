@@ -333,8 +333,15 @@ class Chronos2OHLCWrapper:
 
         augmented_context = context_df.copy()
         for column in transformed.columns:
-            if column in augmented_context.columns:
-                augmented_context[column] = transformed[column]
+            if column not in augmented_context.columns:
+                continue
+            series = transformed[column]
+            target_dtype = augmented_context[column].dtype
+            if hasattr(series, "to_numpy"):
+                values = series.to_numpy(dtype=target_dtype, copy=False)
+            else:
+                values = np.asarray(series, dtype=target_dtype)
+            augmented_context[column] = values
 
         applied = AppliedAugmentation(
             choice=choice,
@@ -362,7 +369,10 @@ class Chronos2OHLCWrapper:
                 context=applied.context_reference,
                 columns=columns,
             )
-            panel.context_df.loc[:, columns] = restored_context
+            restored_df = pd.DataFrame(restored_context, index=panel.context_df.index, columns=columns)
+            for column in columns:
+                target_dtype = panel.context_df[column].dtype
+                panel.context_df.loc[:, column] = restored_df[column].astype(target_dtype, copy=False)
         except Exception as exc:
             logger.warning(
                 "Failed to inverse-transform context for %s/%s: %s",
@@ -399,7 +409,8 @@ class Chronos2OHLCWrapper:
 
             restored_df = pd.DataFrame(restored_preds, index=pivot.index, columns=columns)
             for column in columns:
-                pivot[column] = restored_df[column].values
+                target_dtype = pivot[column].dtype
+                pivot[column] = restored_df[column].astype(target_dtype, copy=False).values
             quantile_frames[level] = pivot
 
             melted = (

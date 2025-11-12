@@ -78,7 +78,7 @@ def download_minute_stock_data(path=None):
             'BTCUSD',
             'ETHUSD',
             'LTCUSD',
-            "PAXGUSD", "UNIUSD"
+            "UNIUSD"
         ]
     save_path = base_dir / 'data'
     if path:
@@ -93,7 +93,7 @@ def download_minute_stock_data(path=None):
         # start = pd.Timestamp('2020-08-28 9:30', tz=NY).isoformat()
         # end = pd.Timestamp('2020-08-28 16:00', tz=NY).isoformat()
         ## print(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
-        if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD', "PAXGUSD", "UNIUSD"]:
+        if symbol in ['BTCUSD', 'ETHUSD', 'LTCUSD', "UNIUSD"]:
             minute_df = api.get_crypto_bars(symbol, TimeFrame(15, TimeFrameUnit.Minute), start, end).df
         else:
             minute_df = api.get_bars(symbol, TimeFrame(15, TimeFrameUnit.Minute), start, end,

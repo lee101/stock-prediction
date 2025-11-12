@@ -2,30 +2,30 @@
   "symbol": "BTCUSD",
   "model": "chronos2",
   "config": {
-    "name": "ctx768_bs128_median_scale_meanstd_s128",
+    "name": "direct_ctx1280_bs128_mean_minus_std_0.5_s512_eval2",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
-    "context_length": 768,
+    "context_length": 1280,
     "batch_size": 128,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "median",
-    "sample_count": 128,
-    "scaler": "meanstd",
+    "aggregation": "mean_minus_std_0.5",
+    "sample_count": 512,
+    "scaler": "none",
     "predict_kwargs": {}
   },
   "validation": {
-    "price_mae": 1165.56136380088,
-    "pct_return_mae": 0.010222334323947648,
-    "latency_s": 0.42768244698891067
+    "price_mae": 1457.0876190077724,
+    "pct_return_mae": 0.012829849204967488,
+    "latency_s": 3.2408960690154345
   },
   "test": {
-    "price_mae": 2691.2116027245042,
-    "pct_return_mae": 0.023074169691285205,
-    "latency_s": 0.5875603570093517
+    "price_mae": 2664.59813325897,
+    "pct_return_mae": 0.0229444080493838,
+    "latency_s": 3.229416954003682
   },
   "windows": {
     "val_window": 20,
@@ -34,6 +34,6 @@
   },
   "metadata": {
     "source": "chronos2_benchmark",
-    "generated_at": "2025-11-12T08:44:52Z"
+    "generated_at": "2025-11-12T12:22:54Z"
   }
 }

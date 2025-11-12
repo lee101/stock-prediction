@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
@@ -11,6 +12,13 @@ import numpy as np
 import pandas as pd
 
 from hyperparamstore.store import HyperparamRecord, HyperparamStore
+from src.models.chronos2_postprocessing import (
+    Chronos2AggregationSpec,
+    ColumnScaler,
+    aggregate_quantile_forecasts,
+    chronos_rng,
+    resolve_quantile_levels,
+)
 from src.models.toto_aggregation import aggregate_with_spec
 
 
@@ -118,6 +126,7 @@ class CombinedForecastGenerator:
         self._toto_pipeline: Optional[Any] = None
         self._kronos_cache: MutableMapping[str, Any] = {}
         self._chronos2_cache: MutableMapping[str, Chronos2OHLCWrapper] = {}
+        self._chronos2_rngs: MutableMapping[str, np.random.Generator] = {}
 
     # --------------------------------------------------------------------- #
     # Public orchestration
@@ -382,23 +391,48 @@ class CombinedForecastGenerator:
         symbol: str,
     ) -> Dict[str, float]:
         wrapper = self._get_chronos2_wrapper(record.config)
-        quantiles = record.config.get("quantile_levels")
+        quantile_levels = tuple(record.config.get("quantile_levels", DEFAULT_QUANTILE_LEVELS))
+        sample_count = int(record.config.get("sample_count", 0))
+        spec = Chronos2AggregationSpec(
+            aggregation=str(record.config.get("aggregation", "median")),
+            sample_count=sample_count,
+            scaler=str(record.config.get("scaler", "none")),
+        )
+        quantiles = resolve_quantile_levels(quantile_levels, sample_count)
         context_length = int(record.config.get("context_length", getattr(wrapper, "default_context_length", 1024)))
+        batch_size = int(record.config.get("batch_size", getattr(wrapper, "default_batch_size", 128)))
+        predict_kwargs = dict(record.config.get("predict_kwargs", {}))
+
+        scaler = ColumnScaler(spec.scaler, df[list(self.columns)], self.columns)
+        transformed_df = scaler.transform(df)
+
         batch = wrapper.predict_ohlc(
-            df,
+            transformed_df,
             symbol=symbol,
             prediction_length=prediction_length,
             context_length=context_length,
             quantile_levels=quantiles,
+            batch_size=batch_size,
+            predict_kwargs=predict_kwargs,
         )
-        median = batch.median
-        if median.empty:
+
+        if not batch.quantile_frames:
             raise RuntimeError("Chronos2 wrapper returned no forecast rows.")
+
+        quantile_frames = {level: scaler.inverse(batch.quantile(level)) for level in quantiles}
+        aggregated = aggregate_quantile_forecasts(
+            quantile_frames,
+            columns=self.columns,
+            spec=spec,
+            rng=self._get_chronos_rng(symbol),
+        )
+
         forecasts: Dict[str, float] = {}
         for column in self.columns:
-            if column not in median.columns:
+            value = aggregated.get(column)
+            if value is None:
                 raise RuntimeError(f"Chronos2 forecast missing column '{column}'.")
-            forecasts[column] = float(median[column].iloc[0])
+            forecasts[column] = float(value)
         return forecasts
 
     # --------------------------------------------------------------------- #
@@ -627,7 +661,7 @@ class CombinedForecastGenerator:
 
         device_map = config.get("device_map", "cuda" if self._cuda_available() else "cpu")
         context_length = int(config.get("context_length", 1024))
-        quantile_levels = config.get("quantile_levels", DEFAULT_QUANTILE_LEVELS)
+        quantile_levels = tuple(config.get("quantile_levels", DEFAULT_QUANTILE_LEVELS))
         wrapper = Chronos2OHLCWrapper.from_pretrained(
             model_id=config.get("model_id", "amazon/chronos-2"),
             device_map=device_map,
@@ -635,10 +669,20 @@ class CombinedForecastGenerator:
             timestamp_column=self.timestamp_column,
             target_columns=self.columns,
             default_context_length=context_length,
+            default_batch_size=int(config.get("batch_size", 256)),
             quantile_levels=quantile_levels,
+            torch_dtype=config.get("torch_dtype"),
         )
         self._chronos2_cache[name] = wrapper
         return wrapper
+
+    def _get_chronos_rng(self, symbol: str) -> np.random.Generator:
+        rng = self._chronos2_rngs.get(symbol)
+        if rng is None:
+            seed = zlib.crc32(symbol.encode("utf-8")) & 0xFFFFFFFF
+            rng = chronos_rng(seed)
+            self._chronos2_rngs[symbol] = rng
+        return rng
 
     def _build_toto_kwargs(
         self,

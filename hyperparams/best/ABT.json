@@ -2,27 +2,32 @@
   "symbol": "ABT",
   "model": "chronos2",
   "config": {
-    "name": "chronos2_ctx512_bs128_val20_test20",
+    "name": "ctx512_bs64_median",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
     "context_length": 512,
-    "prediction_length": 1,
+    "batch_size": 64,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "batch_size": 128
+    "aggregation": "median",
+    "sample_count": 0,
+    "scaler": "none",
+    "predict_kwargs": {
+      "predict_batches_jointly": true
+    }
   },
   "validation": {
-    "price_mae": 1.4664085388183594,
-    "pct_return_mae": 0.01133216586768574,
-    "latency_s": 0.1474664915500398
+    "price_mae": 1.466628646850586,
+    "pct_return_mae": 0.011337571699238604,
+    "latency_s": 4.09871086498606
   },
   "test": {
-    "price_mae": 1.2676570892333985,
-    "pct_return_mae": 0.009763775443717582,
-    "latency_s": 0.14506317319974188
+    "price_mae": 1.2560127258300788,
+    "pct_return_mae": 0.009659921197119337,
+    "latency_s": 4.183332065993454
   },
   "windows": {
     "val_window": 20,
@@ -33,12 +38,12 @@
   "metadata": {
     "source": "update_best_configs_by_return_mae",
     "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.009763775443717582,
+    "selection_value": 0.009659921197119337,
     "kronos_pct_return_mae": null,
     "toto_pct_return_mae": null,
-    "chronos2_pct_return_mae": 0.009763775443717582,
+    "chronos2_pct_return_mae": 0.009659921197119337,
     "candidate_pct_return_mae": {
-      "chronos2": 0.009763775443717582
+      "chronos2": 0.009659921197119337
     },
     "improvement_pct": 0.0
   }

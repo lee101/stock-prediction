@@ -2,27 +2,32 @@
   "symbol": "ETHUSD",
   "model": "chronos2",
   "config": {
-    "name": "chronos2_ctx4096_bs128_val20_test20",
+    "name": "ctx1024_bs64_median",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
-    "context_length": 4096,
-    "prediction_length": 1,
+    "context_length": 1024,
+    "batch_size": 64,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "batch_size": 128
+    "aggregation": "median",
+    "sample_count": 0,
+    "scaler": "none",
+    "predict_kwargs": {
+      "predict_batches_jointly": true
+    }
   },
   "validation": {
-    "price_mae": 82.518017578125,
-    "pct_return_mae": 0.018507300432866785,
-    "latency_s": 0.14595672675022797
+    "price_mae": 63.22744140625,
+    "pct_return_mae": 0.014209620567022399,
+    "latency_s": 4.654269301005115
   },
   "test": {
-    "price_mae": 144.54111328125,
-    "pct_return_mae": 0.03436928032313743,
-    "latency_s": 0.14283940850000362
+    "price_mae": 142.40008544921875,
+    "pct_return_mae": 0.03383837060134516,
+    "latency_s": 4.556465837980795
   },
   "windows": {
     "val_window": 20,
@@ -33,15 +38,15 @@
   "metadata": {
     "source": "update_best_configs_by_return_mae",
     "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.03436928032313743,
+    "selection_value": 0.03383837060134516,
     "kronos_pct_return_mae": 0.05037643676348456,
     "toto_pct_return_mae": 0.037483454478883606,
-    "chronos2_pct_return_mae": 0.03436928032313743,
+    "chronos2_pct_return_mae": 0.03383837060134516,
     "candidate_pct_return_mae": {
       "kronos": 0.05037643676348456,
       "toto": 0.037483454478883606,
-      "chronos2": 0.03436928032313743
+      "chronos2": 0.03383837060134516
     },
-    "improvement_pct": 8.308130077766858
+    "improvement_pct": 9.724514264265348
   }
 }

@@ -2,27 +2,32 @@
   "symbol": "AVAXUSD",
   "model": "chronos2",
   "config": {
-    "name": "chronos2_ctx512_bs128_val20_test20",
+    "name": "ctx512_bs64_median",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
     "context_length": 512,
-    "prediction_length": 1,
+    "batch_size": 64,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "batch_size": 128
+    "aggregation": "median",
+    "sample_count": 0,
+    "scaler": "none",
+    "predict_kwargs": {
+      "predict_batches_jointly": true
+    }
   },
   "validation": {
-    "price_mae": 0.7989027976989747,
-    "pct_return_mae": 0.03175900851358293,
-    "latency_s": 0.1421623989004729
+    "price_mae": 0.7323780482482911,
+    "pct_return_mae": 0.02909300780652547,
+    "latency_s": 4.181371889979346
   },
   "test": {
-    "price_mae": 0.9830942153930664,
-    "pct_return_mae": 0.03126366903408385,
-    "latency_s": 0.13872190984984628
+    "price_mae": 0.9512041043090822,
+    "pct_return_mae": 0.03036247500296707,
+    "latency_s": 4.0724641229899134
   },
   "windows": {
     "val_window": 20,
@@ -33,12 +38,12 @@
   "metadata": {
     "source": "update_best_configs_by_return_mae",
     "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.03126366903408385,
+    "selection_value": 0.03036247500296707,
     "kronos_pct_return_mae": null,
     "toto_pct_return_mae": null,
-    "chronos2_pct_return_mae": 0.03126366903408385,
+    "chronos2_pct_return_mae": 0.03036247500296707,
     "candidate_pct_return_mae": {
-      "chronos2": 0.03126366903408385
+      "chronos2": 0.03036247500296707
     },
     "improvement_pct": 0.0
   }

@@ -3720,7 +3720,6 @@ def main():
         "QUBT",
         "BTCUSD",
         "ETHUSD",
-        "PAXGUSD",
         "UNIUSD",
     ]
 

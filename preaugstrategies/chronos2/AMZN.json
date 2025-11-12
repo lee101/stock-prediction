@@ -1,0 +1,61 @@
+{
+  "symbol": "AMZN",
+  "best_strategy": "percent_change",
+  "mae": 2.456297302246095,
+  "mae_percent": 1.1070585784109033,
+  "rmse": 3.655078736734577,
+  "pct_return_mae": 0.010962483068470088,
+  "config": {
+    "name": "percent_change",
+    "params": {}
+  },
+  "timestamp": "2025-11-12T11:13:13Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 1.1070585784109033,
+  "comparison": {
+    "baseline": {
+      "mae": 2.4880004882812488,
+      "mae_percent": 1.121347273851427,
+      "pct_return_mae": 0.011098442151314338
+    },
+    "percent_change": {
+      "mae": 2.456297302246095,
+      "mae_percent": 1.1070585784109033,
+      "pct_return_mae": 0.010962483068470088
+    },
+    "log_returns": {
+      "mae": 2.4690292358398453,
+      "mae_percent": 1.1127968887904454,
+      "pct_return_mae": 0.011033913221914519
+    },
+    "differencing": {
+      "mae": 86.43968620300294,
+      "mae_percent": 38.95855605047337,
+      "pct_return_mae": 0.3881245795901044
+    },
+    "detrending": {
+      "mae": 2.6733581542968765,
+      "mae_percent": 1.2048883802350812,
+      "pct_return_mae": 0.01193229574356033
+    },
+    "robust_scaling": {
+      "mae": 2.487900543212889,
+      "mae_percent": 1.1213022283900342,
+      "pct_return_mae": 0.011106180878353794
+    },
+    "minmax_standard": {
+      "mae": 2.4760253906249985,
+      "mae_percent": 1.1159500710879269,
+      "pct_return_mae": 0.011053879233869076
+    },
+    "rolling_norm": {
+      "mae": 2.734115600585933,
+      "mae_percent": 1.232271894459981,
+      "pct_return_mae": 0.012222265894432581
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2"
+  }
+}
