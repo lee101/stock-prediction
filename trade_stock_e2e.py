@@ -33,6 +33,7 @@ from src.fixtures import all_crypto_symbols
 # Note: Use all_crypto_symbols for identification checks (fees, trading hours, etc.)
 # Use active_crypto_symbols for deciding what to actively trade
 from src.logging_utils import setup_logging
+from src.trade_analysis_summary import build_analysis_summary_messages
 from src.work_stealing_config import is_crypto_out_of_hours
 from src.portfolio_risk import record_portfolio_snapshot
 from src.process_utils import (
@@ -382,130 +383,12 @@ def _log_detail(message: str) -> None:
         logger.info(message)
 
 
-def _format_metric_parts(parts):
-    formatted = []
-    for name, value, digits in parts:
-        if value is None:
-            continue
-        try:
-            formatted.append(f"{name}={value:.{digits}f}")
-        except (TypeError, ValueError):
-            continue
-    return " ".join(formatted)
-
-
 def _log_analysis_summary(symbol: str, data: Dict) -> None:
-    status_parts = [
-        f"{symbol} analysis",
-        f"strategy={data.get('strategy')}",
-        f"side={data.get('side')}",
-        f"mode={data.get('trade_mode', 'normal')}",
-        f"blocked={data.get('trade_blocked', False)}",
-    ]
-    strategy_returns = data.get("strategy_returns", {})
-    returns_metrics = _format_metric_parts(
-        [
-            ("avg", data.get("avg_return"), 3),
-            ("annual", data.get("annual_return"), 3),
-            ("simple", data.get("simple_return"), 3),
-            ("all", strategy_returns.get("all_signals"), 3),
-            ("takeprofit", strategy_returns.get("takeprofit"), 3),
-            ("highlow", strategy_returns.get("highlow"), 3),
-            ("maxdiff", strategy_returns.get("maxdiff"), 3),
-            ("maxdiffalwayson", strategy_returns.get("maxdiffalwayson"), 3),
-            ("unprofit", data.get("unprofit_shutdown_return"), 3),
-            ("composite", data.get("composite_score"), 3),
-        ]
-    )
-    edges_metrics = _format_metric_parts(
-        [
-            ("move", data.get("predicted_movement"), 3),
-            ("expected_pct", data.get("expected_move_pct"), 5),
-            ("price_skill", data.get("price_skill"), 5),
-            ("edge_strength", data.get("edge_strength"), 5),
-            ("directional", data.get("directional_edge"), 5),
-        ]
-    )
-    prices_metrics = _format_metric_parts(
-        [
-            ("pred_close", data.get("predicted_close"), 3),
-            ("pred_high", data.get("predicted_high"), 3),
-            ("pred_low", data.get("predicted_low"), 3),
-            ("last_close", data.get("last_close"), 3),
-        ]
-    )
-    walk_forward_notes = data.get("walk_forward_notes")
-    summary_parts = [
-        " ".join(status_parts),
-        f"returns[{returns_metrics or '-'}]",
-        f"edges[{edges_metrics or '-'}]",
-        f"prices[{prices_metrics or '-'}]",
-    ]
-    if data.get("trade_blocked") and data.get("block_reason"):
-        summary_parts.append(f"block_reason={data['block_reason']}")
-    if walk_forward_notes:
-        summary_parts.append("walk_forward_notes=" + "; ".join(str(note) for note in walk_forward_notes))
-
-    probe_summary = None
-    if data.get("trade_mode") == "probe":
-        probe_notes = []
-        if data.get("pending_probe"):
-            probe_notes.append("pending")
-        if data.get("probe_active"):
-            probe_notes.append("active")
-        if data.get("probe_transition_ready"):
-            probe_notes.append("transition-ready")
-        if data.get("probe_expired"):
-            probe_notes.append("expired")
-        if data.get("probe_age_seconds") is not None:
-            try:
-                probe_notes.append(f"age={int(data['probe_age_seconds'])}s")
-            except (TypeError, ValueError):
-                probe_notes.append(f"age={data['probe_age_seconds']}")
-        probe_time_info = []
-        if data.get("probe_started_at"):
-            probe_time_info.append(f"start={data['probe_started_at']}")
-        if data.get("probe_expires_at"):
-            probe_time_info.append(f"expires={data['probe_expires_at']}")
-        if probe_time_info:
-            probe_notes.extend(probe_time_info)
-        if probe_notes:
-            probe_summary = "probe=" + ",".join(str(note) for note in probe_notes)
-            summary_parts.append(probe_summary)
-
-    compact_message = " | ".join(summary_parts)
+    compact_message, detailed_message = build_analysis_summary_messages(symbol, data)
     if COMPACT_LOGS:
         _log_detail(compact_message)
-        return
-
-    detail_lines = [" ".join(status_parts)]
-    detail_lines.append(f"  returns: {returns_metrics or '-'}")
-    detail_lines.append(f"  edges: {edges_metrics or '-'}")
-    detail_lines.append(f"  prices: {prices_metrics or '-'}")
-
-    walk_forward_metrics = _format_metric_parts(
-        [
-            ("oos", data.get("walk_forward_oos_sharpe"), 2),
-            ("turnover", data.get("walk_forward_turnover"), 2),
-            ("highlow", data.get("walk_forward_highlow_sharpe"), 2),
-            ("takeprofit", data.get("walk_forward_takeprofit_sharpe"), 2),
-            ("maxdiff", data.get("walk_forward_maxdiff_sharpe"), 2),
-        ]
-    )
-    if walk_forward_metrics:
-        detail_lines.append(f"  walk_forward: {walk_forward_metrics}")
-
-    block_reason = data.get("block_reason")
-    if data.get("trade_blocked") and block_reason:
-        detail_lines.append(f"  block_reason: {block_reason}")
-
-    if walk_forward_notes:
-        detail_lines.append("  walk_forward_notes: " + "; ".join(str(note) for note in walk_forward_notes))
-
-    if probe_summary:
-        detail_lines.append("  " + probe_summary.replace("=", ": ", 1))
-
-    _log_detail("\n".join(detail_lines))
+    else:
+        _log_detail(detailed_message)
 
 
 def _normalize_side_for_key(side: str) -> str:
@@ -1169,6 +1052,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if backtest_df.empty:
                 logger.warning(f"Skipping {symbol} - backtest returned no simulations.")
                 continue
+            raw_last_prediction = backtest_df.iloc[0]
 
             required_columns = {
                 "simple_strategy_return",
@@ -1303,7 +1187,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     try:
                         retry_backtest_df = backtest_forecasts(symbol, num_simulations)
                         if not retry_backtest_df.empty:
-                            retry_prediction = retry_backtest_df.iloc[0].apply(
+                            raw_last_prediction = retry_backtest_df.iloc[0]
+                            retry_prediction = raw_last_prediction.apply(
                                 lambda value: coerce_numeric(value, default=0.0, prefer="mean")
                             )
                             last_prediction = retry_prediction
