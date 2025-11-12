@@ -15,6 +15,11 @@ struct EnvOutput {
     torch::Tensor rewards;         // [batch_size]
     torch::Tensor dones;           // [batch_size] - episode termination
     torch::Tensor truncated;       // [batch_size] - max steps reached
+    torch::Tensor prices;          // [batch_size, 4] - OHLC used for last step
+    torch::Tensor fees_paid;       // [batch_size]
+    torch::Tensor leverage_costs;  // [batch_size]
+    torch::Tensor realized_pnl;    // [batch_size]
+    torch::Tensor days_held;       // [batch_size]
 };
 
 class MarketEnvironment {
@@ -34,6 +39,9 @@ public:
     // Get observation/action space dimensions
     int get_observation_dim() const;
     int get_action_dim() const { return 1; }  // Single continuous action
+
+    // Peek at the next-step OHLC data without advancing the sim
+    torch::Tensor peek_next_prices() const;
 
     // Enable/disable training mode
     void set_training_mode(bool training) { is_training_ = training; }

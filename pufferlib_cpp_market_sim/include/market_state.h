@@ -33,7 +33,7 @@ public:
 
     // Get current prices for position valuation
     // Returns: [batch_size, 4] (open, high, low, close)
-    torch::Tensor get_current_prices(const torch::Tensor& current_indices);
+    torch::Tensor get_current_prices(const torch::Tensor& current_indices) const;
 
     // Check if asset is crypto
     bool is_crypto() const { return data_.asset_class == AssetClass::CRYPTO; }

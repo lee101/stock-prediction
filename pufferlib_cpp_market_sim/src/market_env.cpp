@@ -84,6 +84,12 @@ EnvOutput MarketEnvironment::reset(const torch::Tensor& env_indices) {
     output.rewards = torch::zeros({batch_size_}, torch::TensorOptions().dtype(torch::kFloat32).device(device_));
     output.dones = torch::zeros({batch_size_}, torch::TensorOptions().dtype(torch::kBool).device(device_));
     output.truncated = torch::zeros({batch_size_}, torch::TensorOptions().dtype(torch::kBool).device(device_));
+    output.prices = peek_next_prices();
+    auto zero_float = torch::zeros({batch_size_}, torch::TensorOptions().dtype(torch::kFloat32).device(device_));
+    output.fees_paid = zero_float.clone();
+    output.leverage_costs = zero_float.clone();
+    output.realized_pnl = zero_float.clone();
+    output.days_held = days_held_;
 
     return output;
 }
@@ -108,7 +114,8 @@ EnvOutput MarketEnvironment::step(const torch::Tensor& actions) {
 
     // Execute portfolio step (for now, use first market state's properties)
     // In a real implementation, you'd want to handle different assets separately
-    auto rewards = portfolio_->step(actions, all_prices, *market_states_[0], false);
+    auto step_result = portfolio_->step(actions, all_prices, *market_states_[0], false);
+    auto rewards = step_result.rewards;
 
     // Check termination conditions
     auto dones = check_termination();
@@ -187,8 +194,32 @@ EnvOutput MarketEnvironment::step(const torch::Tensor& actions) {
     output.rewards = rewards;
     output.dones = dones;
     output.truncated = torch::zeros_like(dones);
+    output.prices = all_prices;
+    output.fees_paid = step_result.fees_paid;
+    output.leverage_costs = step_result.leverage_costs;
+    output.realized_pnl = step_result.realized_pnl;
+    output.days_held = step_result.days_held;
 
     return output;
+}
+
+torch::Tensor MarketEnvironment::peek_next_prices() const {
+    auto price_opts = torch::TensorOptions().dtype(torch::kFloat32).device(device_);
+    auto idx_opts = torch::TensorOptions().dtype(torch::kInt64).device(device_);
+    auto prices = torch::zeros({batch_size_, 4}, price_opts);
+
+    for (int i = 0; i < batch_size_; i++) {
+        int symbol_idx = current_symbols_[i].item<int>();
+        int next_idx = current_indices_[i].item<int>() + 1;
+        int data_length = market_states_[symbol_idx]->get_data_length();
+        if (next_idx >= data_length) {
+            next_idx = data_length - 1;
+        }
+        auto idx_tensor = torch::tensor({next_idx}, idx_opts);
+        prices[i] = market_states_[symbol_idx]->get_current_prices(idx_tensor).squeeze(0);
+    }
+
+    return prices;
 }
 
 int MarketEnvironment::get_observation_dim() const {
