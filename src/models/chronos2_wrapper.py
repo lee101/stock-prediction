@@ -119,6 +119,7 @@ class Chronos2PredictionBatch:
     raw_dataframe: pd.DataFrame
     quantile_frames: QuantileFrameMap
     applied_augmentation: Optional[str] = None
+    applied_choice: Optional[PreAugmentationChoice] = None
 
     def quantile(self, level: float) -> pd.DataFrame:
         """Return the pivoted frame for the requested quantile level."""
@@ -649,6 +650,7 @@ class Chronos2OHLCWrapper:
             raw_dataframe=raw_predictions,
             quantile_frames=quantile_frames,
             applied_augmentation=applied_aug.choice.strategy if applied_aug else None,
+            applied_choice=applied_aug.choice if applied_aug else None,
         )
 
 
