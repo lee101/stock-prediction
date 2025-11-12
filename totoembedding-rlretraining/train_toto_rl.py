@@ -57,7 +57,7 @@ class TotoRLPipeline:
                 'symbols': [
                     'AAPL', 'ADBE', 'ADSK', 'BTCUSD', 'COIN', 'COUR',
                     'ETHUSD', 'GOOG', 'LTCUSD', 'MSFT', 'NFLX', 'NVDA',
-                    'PAXGUSD', 'PYPL', 'SAP', 'SONY', 'TSLA', 'U', 'UNIUSD'
+                    'PYPL', 'SAP', 'SONY', 'TSLA', 'U', 'UNIUSD'
                 ]
             },
             'embedding': {

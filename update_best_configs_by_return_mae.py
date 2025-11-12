@@ -35,7 +35,7 @@ def update_model_selection(symbol: str) -> Optional[Dict[str, Any]]:
         payload = _load_model_payload(model_name, symbol)
         if payload is None:
             continue
-        mae = payload["test"]["pct_return_mae"]
+        mae = payload["validation"]["pct_return_mae"]
         candidates[model_name] = {
             "payload": payload,
             "mae": mae,
@@ -68,7 +68,7 @@ def update_model_selection(symbol: str) -> Optional[Dict[str, Any]]:
         "config_path": f"hyperparams/{best_model}/{symbol}.json",
         "metadata": {
             "source": "update_best_configs_by_return_mae",
-            "selection_metric": "test_pct_return_mae",
+            "selection_metric": "validation_pct_return_mae",
             "selection_value": best_mae,
             "kronos_pct_return_mae": candidate_mae_map.get("kronos"),
             "toto_pct_return_mae": candidate_mae_map.get("toto"),
@@ -94,7 +94,7 @@ def main():
     symbols = sorted(set().union(*symbol_sets)) if symbol_sets else []
 
     print(f"Updating model selections for {len(symbols)} symbols...")
-    print(f"Selection metric: test_pct_return_mae ⭐")
+    print(f"Selection metric: validation_pct_return_mae ⭐")
     print()
 
     changes = []
@@ -104,10 +104,12 @@ def main():
         # Load old selection
         old_selection_path = best_dir / f"{symbol}.json"
         old_model = None
+        old_val_mae = None
         if old_selection_path.exists():
             with open(old_selection_path) as f:
                 old_selection = json.load(f)
-                old_model = old_selection.get("model")
+            old_model = old_selection.get("model")
+            old_val_mae = old_selection.get("validation", {}).get("pct_return_mae")
 
         # Create new selection
         new_selection = update_model_selection(symbol)
@@ -117,6 +119,13 @@ def main():
         new_model = new_selection["model"]
         return_mae = new_selection["metadata"]["selection_value"]
         improvement = new_selection["metadata"]["improvement_pct"]
+        new_val_mae = new_selection["validation"]["pct_return_mae"]
+
+        if old_val_mae is not None and new_val_mae >= old_val_mae:
+            no_changes.append(
+                f"{symbol:12s}: {new_model:8s} (SKIP, val_mae={new_val_mae:.4f} ≥ {old_val_mae:.4f})"
+            )
+            continue
 
         # Save new selection
         new_path = best_dir / f"{symbol}.json"
@@ -128,7 +137,7 @@ def main():
             changes.append(f"{symbol:12s}: {old_model:8s} → {new_model:8s} (return_mae={return_mae:.4f}, +{improvement:.1f}%)")
         else:
             status = "NEW" if not old_model else "SAME"
-            no_changes.append(f"{symbol:12s}: {new_model:8s} ({status}, return_mae={return_mae:.4f})")
+            no_changes.append(f"{symbol:12s}: {new_model:8s} ({status}, val_mae={return_mae:.4f})")
 
     print("\n=== CHANGES ===")
     if changes:

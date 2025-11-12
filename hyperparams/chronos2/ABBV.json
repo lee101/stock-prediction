@@ -2,27 +2,30 @@
   "symbol": "ABBV",
   "model": "chronos2",
   "config": {
-    "name": "chronos2_ctx2048_bs128_val20_test20",
+    "name": "direct_ctx768_bs96_trimmed_mean_10_s512_eval15",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
-    "context_length": 2048,
-    "prediction_length": 1,
+    "context_length": 768,
+    "batch_size": 96,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "batch_size": 128
+    "aggregation": "trimmed_mean_10",
+    "sample_count": 512,
+    "scaler": "none",
+    "predict_kwargs": {}
   },
   "validation": {
-    "price_mae": 2.4662452697753907,
-    "pct_return_mae": 0.013174748744232629,
-    "latency_s": 0.14287172085023486
+    "price_mae": 2.121611571570111,
+    "pct_return_mae": 0.011303250267493058,
+    "latency_s": 4.026345054982812
   },
   "test": {
-    "price_mae": 1.8168426513671876,
-    "pct_return_mae": 0.009243348208903397,
-    "latency_s": 0.14368420930077264
+    "price_mae": 1.8677791875057737,
+    "pct_return_mae": 0.009437895721922652,
+    "latency_s": 4.065927425035625
   },
   "windows": {
     "val_window": 20,
@@ -30,11 +33,7 @@
     "forecast_horizon": 1
   },
   "metadata": {
-    "source": "chronos2_hyperparam_eval",
-    "generated_at": "2025-11-12T05:43:35.391889+00:00",
-    "evaluated_windows": 40,
-    "repeats": 1,
-    "context_length": 2048,
-    "batch_size": 128
+    "source": "chronos2_benchmark",
+    "generated_at": "2025-11-12T12:22:54Z"
   }
 }

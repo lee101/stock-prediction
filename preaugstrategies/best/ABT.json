@@ -1,0 +1,61 @@
+{
+  "symbol": "ABT",
+  "best_strategy": "log_returns",
+  "mae": 1.2560127258300788,
+  "mae_percent": 0.9620342951624185,
+  "rmse": 1.4831911313404427,
+  "pct_return_mae": 0.009659921197119337,
+  "config": {
+    "name": "log_returns",
+    "params": {}
+  },
+  "timestamp": "2025-11-12T11:06:38Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 0.9620342951624185,
+  "comparison": {
+    "baseline": {
+      "mae": 1.2959995269775397,
+      "mae_percent": 0.9926619100476689,
+      "pct_return_mae": 0.00997060291763294
+    },
+    "percent_change": {
+      "mae": 1.2785026550292975,
+      "mae_percent": 0.9792603015081136,
+      "pct_return_mae": 0.009837802913973997
+    },
+    "log_returns": {
+      "mae": 1.2560127258300788,
+      "mae_percent": 0.9620342951624185,
+      "pct_return_mae": 0.009659921197119337
+    },
+    "differencing": {
+      "mae": 24.775194549560545,
+      "mae_percent": 18.97638959847829,
+      "pct_return_mae": 0.19017867851204148
+    },
+    "detrending": {
+      "mae": 1.3488395690917976,
+      "mae_percent": 1.0331343763104188,
+      "pct_return_mae": 0.010362212499352885
+    },
+    "robust_scaling": {
+      "mae": 1.2837680816650399,
+      "mae_percent": 0.9832933187682678,
+      "pct_return_mae": 0.009878634029921021
+    },
+    "minmax_standard": {
+      "mae": 1.297690963745118,
+      "mae_percent": 0.99395745438814,
+      "pct_return_mae": 0.009986727592438122
+    },
+    "rolling_norm": {
+      "mae": 1.3910278320312508,
+      "mae_percent": 1.0654481856902247,
+      "pct_return_mae": 0.01069600730085564
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2"
+  }
+}

@@ -1,5 +1,6 @@
 # All crypto symbols that could be identified as crypto (for checks/identification)
 all_crypto_symbols = [
+    'AAVEUSD',
     'ADAUSD',
     'ALGOUSD',
     'ATOMUSD',
@@ -8,10 +9,12 @@ all_crypto_symbols = [
     'DOGEUSD',
     'DOTUSD',
     'ETHUSD',
+    'LINKUSD',
     'LTCUSD',
     'MATICUSD',
-    'PAXGUSD',
     'SHIBUSD',
+    'SKYUSD',
+    'SOLUSD',
     'TRXUSD',
     'UNIUSD',
     'VETUSD',
@@ -24,7 +27,7 @@ active_crypto_symbols = [
     'BNBUSD',
     'BTCUSD',
     'ETHUSD',
-    'PAXGUSD',
+    'SKYUSD',
     'UNIUSD',
 ]
 
