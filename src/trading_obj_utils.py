@@ -17,8 +17,6 @@ def filter_to_realistic_positions(all_positions: Iterable[PositionLike]) -> List
             positions.append(position)
         elif position.symbol in ["UNIUSD"] and float(position.qty) >= 5:
             positions.append(position)
-        elif position.symbol in ['PAXGUSD']:
-            positions.append(position)  # todo workout reslution for these
         elif position.symbol not in crypto_symbols:
             positions.append(position)
     return positions

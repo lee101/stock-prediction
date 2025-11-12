@@ -2,27 +2,32 @@
   "symbol": "AVGO",
   "model": "chronos2",
   "config": {
-    "name": "chronos2_ctx512_bs128_val20_test20",
+    "name": "ctx512_bs64_median",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
     "context_length": 512,
-    "prediction_length": 1,
+    "batch_size": 64,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "batch_size": 128
+    "aggregation": "median",
+    "sample_count": 0,
+    "scaler": "none",
+    "predict_kwargs": {
+      "predict_batches_jointly": true
+    }
   },
   "validation": {
-    "price_mae": 4.639265441894532,
-    "pct_return_mae": 0.016805050782386328,
-    "latency_s": 0.146573122600239
+    "price_mae": 4.291410827636722,
+    "pct_return_mae": 0.0154215343301466,
+    "latency_s": 4.050576871006342
   },
   "test": {
-    "price_mae": 4.938470458984375,
-    "pct_return_mae": 0.01653890855555304,
-    "latency_s": 0.14532976295031402
+    "price_mae": 4.60438232421875,
+    "pct_return_mae": 0.015377319776552064,
+    "latency_s": 4.290299109008629
   },
   "windows": {
     "val_window": 20,
@@ -33,12 +38,12 @@
   "metadata": {
     "source": "update_best_configs_by_return_mae",
     "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.01653890855555304,
+    "selection_value": 0.015377319776552064,
     "kronos_pct_return_mae": null,
     "toto_pct_return_mae": null,
-    "chronos2_pct_return_mae": 0.01653890855555304,
+    "chronos2_pct_return_mae": 0.015377319776552064,
     "candidate_pct_return_mae": {
-      "chronos2": 0.01653890855555304
+      "chronos2": 0.015377319776552064
     },
     "improvement_pct": 0.0
   }

@@ -1,0 +1,61 @@
+{
+  "symbol": "QQQ",
+  "best_strategy": "robust_scaling",
+  "mae": 3.391597534179681,
+  "mae_percent": 0.5929887257018089,
+  "rmse": 4.115226857940981,
+  "pct_return_mae": 0.005941573455323724,
+  "config": {
+    "name": "robust_scaling",
+    "params": {}
+  },
+  "timestamp": "2025-11-12T11:34:18Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 0.5929887257018089,
+  "comparison": {
+    "baseline": {
+      "mae": 3.5447499999999934,
+      "mae_percent": 0.6197659846865907,
+      "pct_return_mae": 0.00621187190479165
+    },
+    "percent_change": {
+      "mae": 3.5063367919921857,
+      "mae_percent": 0.613049798866454,
+      "pct_return_mae": 0.006141762033159284
+    },
+    "log_returns": {
+      "mae": 3.6364681396484286,
+      "mae_percent": 0.6358020332465272,
+      "pct_return_mae": 0.006375009750575485
+    },
+    "differencing": {
+      "mae": 196.50823693847656,
+      "mae_percent": 34.357605180958046,
+      "pct_return_mae": 0.34362240821130124
+    },
+    "detrending": {
+      "mae": 3.9100385742187482,
+      "mae_percent": 0.6836332342515665,
+      "pct_return_mae": 0.006852465406291626
+    },
+    "robust_scaling": {
+      "mae": 3.391597534179681,
+      "mae_percent": 0.5929887257018089,
+      "pct_return_mae": 0.005941573455323724
+    },
+    "minmax_standard": {
+      "mae": 3.4675031738281232,
+      "mae_percent": 0.6062601083098863,
+      "pct_return_mae": 0.006074422090360537
+    },
+    "rolling_norm": {
+      "mae": 3.5308706054687433,
+      "mae_percent": 0.6173393039281413,
+      "pct_return_mae": 0.006192567531044186
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2"
+  }
+}

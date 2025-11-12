@@ -1,0 +1,61 @@
+{
+  "symbol": "UNIUSD",
+  "best_strategy": "rolling_norm",
+  "mae": 2.757485344770574e-06,
+  "mae_percent": 1.6839604957662502,
+  "rmse": 4.428790098079301e-06,
+  "pct_return_mae": 0.01689417060064343,
+  "config": {
+    "name": "rolling_norm",
+    "params": {}
+  },
+  "timestamp": "2025-11-12T11:38:44Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 1.6839604957662502,
+  "comparison": {
+    "baseline": {
+      "mae": 3.6053614167115645e-06,
+      "mae_percent": 2.2017474037408724,
+      "pct_return_mae": 0.02215856635145532
+    },
+    "percent_change": {
+      "mae": 3.5506236599917577e-06,
+      "mae_percent": 2.1683197664488647,
+      "pct_return_mae": 0.021840231527606134
+    },
+    "log_returns": {
+      "mae": 2.9740855097780543e-06,
+      "mae_percent": 1.8162354041137303,
+      "pct_return_mae": 0.018275853235790018
+    },
+    "differencing": {
+      "mae": 5.418940636450425e-05,
+      "mae_percent": 33.09276685002353,
+      "pct_return_mae": 0.3308245956328487
+    },
+    "detrending": {
+      "mae": 3.0316434276815735e-06,
+      "mae_percent": 1.8513852772225385,
+      "pct_return_mae": 0.018598379850799054
+    },
+    "robust_scaling": {
+      "mae": 3.5353405110231654e-06,
+      "mae_percent": 2.1589865458162225,
+      "pct_return_mae": 0.021745350202687256
+    },
+    "minmax_standard": {
+      "mae": 3.5363431379824e-06,
+      "mae_percent": 2.1595988370817207,
+      "pct_return_mae": 0.02174790192998801
+    },
+    "rolling_norm": {
+      "mae": 2.757485344770574e-06,
+      "mae_percent": 1.6839604957662502,
+      "pct_return_mae": 0.01689417060064343
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2"
+  }
+}

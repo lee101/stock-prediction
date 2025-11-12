@@ -1,11 +1,12 @@
-from src.fixtures import crypto_symbols
+from src.fixtures import crypto_symbols, all_crypto_symbols
 
 # keep the base tickers handy for downstream checks
 supported_cryptos = sorted({symbol[:-3] for symbol in crypto_symbols})
 
 
 def remap_symbols(symbol: str) -> str:
-    if symbol in crypto_symbols:
+    # Check both active and all crypto symbols to ensure proper remapping
+    if symbol in crypto_symbols or symbol in all_crypto_symbols:
         return f"{symbol[:-3]}/{symbol[-3:]}"
     return symbol
 

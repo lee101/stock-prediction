@@ -1,0 +1,61 @@
+{
+  "symbol": "AVAXUSD",
+  "best_strategy": "log_returns",
+  "mae": 0.9512041043090822,
+  "mae_percent": 3.043577020481765,
+  "rmse": 1.3038472305355944,
+  "pct_return_mae": 0.03036247500296707,
+  "config": {
+    "name": "log_returns",
+    "params": {}
+  },
+  "timestamp": "2025-11-12T11:19:55Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 3.043577020481765,
+  "comparison": {
+    "baseline": {
+      "mae": 0.9832550000000001,
+      "mae_percent": 3.146130583033508,
+      "pct_return_mae": 0.031253438094504385
+    },
+    "percent_change": {
+      "mae": 0.9830295513916016,
+      "mae_percent": 3.1454092129293287,
+      "pct_return_mae": 0.03127358643372542
+    },
+    "log_returns": {
+      "mae": 0.9512041043090822,
+      "mae_percent": 3.043577020481765,
+      "pct_return_mae": 0.03036247500296707
+    },
+    "differencing": {
+      "mae": 4.468663680114746,
+      "mae_percent": 14.298426623103941,
+      "pct_return_mae": 0.14836226004925598
+    },
+    "detrending": {
+      "mae": 0.9938540524291994,
+      "mae_percent": 3.180044474138745,
+      "pct_return_mae": 0.03163116634953337
+    },
+    "robust_scaling": {
+      "mae": 0.9818625401306154,
+      "mae_percent": 3.1416751156514775,
+      "pct_return_mae": 0.031230302919807627
+    },
+    "minmax_standard": {
+      "mae": 0.9807640980529786,
+      "mae_percent": 3.1381604198562423,
+      "pct_return_mae": 0.03119997577238484
+    },
+    "rolling_norm": {
+      "mae": 1.1295989985656738,
+      "mae_percent": 3.6143888980493255,
+      "pct_return_mae": 0.036292969682763944
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2"
+  }
+}

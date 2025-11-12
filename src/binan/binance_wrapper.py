@@ -49,7 +49,6 @@ crypto_symbols = [
     "BTCUSDT",
     "ETHUSDT",
     "LTCUSDT",
-    "PAXGUSDT",
     "UNIUSDT",
 ]
 
