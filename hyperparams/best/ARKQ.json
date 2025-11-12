@@ -1,0 +1,45 @@
+{
+  "symbol": "ARKQ",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 1.5815559387207032,
+    "pct_return_mae": 0.016969023595248267,
+    "latency_s": 0.1429917650999414
+  },
+  "test": {
+    "price_mae": 1.386489486694336,
+    "pct_return_mae": 0.014176299610803944,
+    "latency_s": 0.14262704950051558
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/chronos2/ARKQ.json",
+  "metadata": {
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.014176299610803944,
+    "kronos_pct_return_mae": null,
+    "toto_pct_return_mae": null,
+    "chronos2_pct_return_mae": 0.014176299610803944,
+    "candidate_pct_return_mae": {
+      "chronos2": 0.014176299610803944
+    },
+    "improvement_pct": 0.0
+  }
+}

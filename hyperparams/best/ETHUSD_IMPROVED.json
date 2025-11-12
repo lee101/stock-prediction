@@ -1,0 +1,26 @@
+{
+  "symbol": "ETHUSD",
+  "model": "toto",
+  "config": {
+    "name": "toto_opt_trimmed_mean_10_128_spb32",
+    "num_samples": 128,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 32
+  },
+  "test_results": {
+    "price_mae": 75.19,
+    "pct_return_mae": 0.0276,
+    "latency_s": 0.13,
+    "test_date": "2025-11-12",
+    "test_forecasts": 20
+  },
+  "comparison": {
+    "previous_config": {
+      "aggregate": "trimmed_mean_20",
+      "pct_return_mae": 0.0280
+    },
+    "improvement_pct": 1.4,
+    "improvement_description": "Changed aggregation from trimmed_mean_20 to trimmed_mean_10. Less aggressive trimming captures more information while still filtering outliers."
+  },
+  "notes": "Tested with comprehensive_crypto_test.py on 2025-11-04 data. Less aggressive trimming (10% vs 20%) performs better for ETHUSD. Maintains fast inference at 0.13s per forecast."
+}

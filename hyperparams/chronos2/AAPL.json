@@ -1,0 +1,40 @@
+{
+  "symbol": "AAPL",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 2.0009689331054688,
+    "pct_return_mae": 0.0162035568054864,
+    "latency_s": 0.17651688769965404
+  },
+  "test": {
+    "price_mae": 2.4046520233154296,
+    "pct_return_mae": 0.01845671729425814,
+    "latency_s": 0.1445680833503502
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T05:42:23.959897+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 512,
+    "batch_size": 128
+  }
+}

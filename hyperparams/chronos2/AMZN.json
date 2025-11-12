@@ -1,0 +1,40 @@
+{
+  "symbol": "AMZN",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 3.148882293701172,
+    "pct_return_mae": 0.013727183286787991,
+    "latency_s": 0.15915698435019293
+  },
+  "test": {
+    "price_mae": 2.508300018310547,
+    "pct_return_mae": 0.011176027260004185,
+    "latency_s": 0.16719244535051986
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T05:49:35.069458+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 512,
+    "batch_size": 128
+  }
+}

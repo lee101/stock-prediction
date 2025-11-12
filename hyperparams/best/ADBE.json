@@ -29,6 +29,12 @@
     "selection_value": 0.012888833803802357,
     "kronos_pct_return_mae": 0.017954676940209136,
     "toto_pct_return_mae": 0.012888833803802357,
-    "improvement_pct": 28.214615909139113
+    "chronos2_pct_return_mae": 0.014554522185797242,
+    "candidate_pct_return_mae": {
+      "kronos": 0.017954676940209136,
+      "toto": 0.012888833803802357,
+      "chronos2": 0.014554522185797242
+    },
+    "improvement_pct": 11.444473138529524
   }
 }

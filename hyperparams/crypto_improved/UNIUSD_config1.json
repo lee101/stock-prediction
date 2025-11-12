@@ -1,0 +1,11 @@
+{
+  "symbol": "UNIUSD",
+  "model": "toto",
+  "config": {
+    "name": "toto_improved_1024_trimmed_mean_5",
+    "num_samples": 1024,
+    "aggregate": "trimmed_mean_5",
+    "samples_per_batch": 128
+  },
+  "notes": "Switch to Toto model with proven BTCUSD config"
+}

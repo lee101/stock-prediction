@@ -1,0 +1,11 @@
+{
+  "symbol": "BTCUSD",
+  "model": "toto",
+  "config": {
+    "name": "toto_improved_1024_quantile_0.50",
+    "num_samples": 1024,
+    "aggregate": "quantile_0.50",
+    "samples_per_batch": 128
+  },
+  "notes": "Median aggregation for robustness"
+}

@@ -1,0 +1,40 @@
+{
+  "symbol": "AMD",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx1024_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 1024,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 2.9578506469726564,
+    "pct_return_mae": 0.018073740871609633,
+    "latency_s": 0.14794460460016126
+  },
+  "test": {
+    "price_mae": 6.216257476806641,
+    "pct_return_mae": 0.03342089108373114,
+    "latency_s": 0.14657313014995452
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T05:48:06.951263+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 1024,
+    "batch_size": 128
+  }
+}

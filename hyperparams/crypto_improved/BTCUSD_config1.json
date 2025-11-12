@@ -1,0 +1,11 @@
+{
+  "symbol": "BTCUSD",
+  "model": "toto",
+  "config": {
+    "name": "toto_improved_2048_trimmed_mean_5",
+    "num_samples": 2048,
+    "aggregate": "trimmed_mean_5",
+    "samples_per_batch": 128
+  },
+  "notes": "Double samples for potentially better accuracy"
+}

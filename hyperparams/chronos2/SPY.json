@@ -1,0 +1,40 @@
+{
+  "symbol": "SPY",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 2.3900390625,
+    "pct_return_mae": 0.0038047412705707606,
+    "latency_s": 0.14855082230005792
+  },
+  "test": {
+    "price_mae": 3.0190704345703123,
+    "pct_return_mae": 0.004748660929625092,
+    "latency_s": 0.14590496600048936
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T06:12:02.136389+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 512,
+    "batch_size": 128
+  }
+}

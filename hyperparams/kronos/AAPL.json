@@ -2,23 +2,23 @@
   "symbol": "AAPL",
   "model": "kronos",
   "config": {
-    "name": "kronos_opt_temp0.150_p0.82_s160_k0_clip1.80_ctx192",
-    "temperature": 0.15,
-    "top_p": 0.82,
-    "top_k": 0,
-    "sample_count": 160,
+    "name": "kronos_opt_temp0.180_p0.88_s112_k20_clip1.60_ctx192",
+    "temperature": 0.18,
+    "top_p": 0.88,
+    "top_k": 20,
+    "sample_count": 112,
     "max_context": 192,
-    "clip": 1.8
+    "clip": 1.6
   },
   "validation": {
-    "price_mae": 2.7058849508183997,
-    "pct_return_mae": 0.029970351658008553,
-    "latency_s": 4.877987576124724
+    "price_mae": 3.1904236669284343,
+    "pct_return_mae": 0.03370767637617554,
+    "latency_s": 2.1304767139972682
   },
   "test": {
-    "price_mae": 1.8732817374363222,
-    "pct_return_mae": 0.026324090728479993,
-    "latency_s": 4.82432476701797
+    "price_mae": 2.7425208345301697,
+    "pct_return_mae": 0.03402690832893461,
+    "latency_s": 2.3080768090003403
   },
   "windows": {
     "val_window": 20,

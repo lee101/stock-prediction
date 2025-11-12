@@ -1,0 +1,40 @@
+{
+  "symbol": "ADBE",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx4096_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 4096,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 4.845152282714844,
+    "pct_return_mae": 0.013660720487412115,
+    "latency_s": 0.14701882759982254
+  },
+  "test": {
+    "price_mae": 5.141471862792969,
+    "pct_return_mae": 0.014554522185797242,
+    "latency_s": 0.1478140966497449
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T05:46:07.784700+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 4096,
+    "batch_size": 128
+  }
+}

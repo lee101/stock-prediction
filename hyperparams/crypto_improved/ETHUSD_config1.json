@@ -1,0 +1,11 @@
+{
+  "symbol": "ETHUSD",
+  "model": "toto",
+  "config": {
+    "name": "toto_improved_512_trimmed_mean_10",
+    "num_samples": 512,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 64
+  },
+  "notes": "4x samples, less aggressive trimming"
+}

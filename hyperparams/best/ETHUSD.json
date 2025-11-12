@@ -1,34 +1,47 @@
 {
   "symbol": "ETHUSD",
-  "model": "toto",
+  "model": "chronos2",
   "config": {
-    "name": "toto_opt_trimmed_mean_20_128_spb32",
-    "num_samples": 128,
-    "aggregate": "trimmed_mean_20",
-    "samples_per_batch": 32
+    "name": "chronos2_ctx4096_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 4096,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
   },
   "validation": {
-    "price_mae": 62.02477150941513,
-    "pct_return_mae": 0.013847725324620433,
-    "latency_s": 3.2247907968994696
+    "price_mae": 82.518017578125,
+    "pct_return_mae": 0.018507300432866785,
+    "latency_s": 0.14595672675022797
   },
   "test": {
-    "price_mae": 157.50411455203326,
-    "pct_return_mae": 0.037483454478883606,
-    "latency_s": 3.2239193098794203
+    "price_mae": 144.54111328125,
+    "pct_return_mae": 0.03436928032313743,
+    "latency_s": 0.14283940850000362
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/toto/ETHUSD.json",
+  "config_path": "hyperparams/chronos2/ETHUSD.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
     "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.037483454478883606,
+    "selection_value": 0.03436928032313743,
     "kronos_pct_return_mae": 0.05037643676348456,
     "toto_pct_return_mae": 0.037483454478883606,
-    "improvement_pct": 25.59327954284065
+    "chronos2_pct_return_mae": 0.03436928032313743,
+    "candidate_pct_return_mae": {
+      "kronos": 0.05037643676348456,
+      "toto": 0.037483454478883606,
+      "chronos2": 0.03436928032313743
+    },
+    "improvement_pct": 8.308130077766858
   }
 }

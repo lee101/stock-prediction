@@ -1,0 +1,40 @@
+{
+  "symbol": "AXP",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 4.117118835449219,
+    "pct_return_mae": 0.013015704498294728,
+    "latency_s": 0.14260734279978352
+  },
+  "test": {
+    "price_mae": 3.0309524536132812,
+    "pct_return_mae": 0.010035515623021329,
+    "latency_s": 0.14323724630012294
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T05:55:46.852513+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 512,
+    "batch_size": 128
+  }
+}
