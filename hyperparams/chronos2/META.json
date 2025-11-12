@@ -1,0 +1,40 @@
+{
+  "symbol": "META",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx4096_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 4096,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 8.143890380859375,
+    "pct_return_mae": 0.010829672151341608,
+    "latency_s": 0.14548587414992653
+  },
+  "test": {
+    "price_mae": 7.674432373046875,
+    "pct_return_mae": 0.010383123633950225,
+    "latency_s": 0.14805566595023265
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T06:07:08.890157+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 4096,
+    "batch_size": 128
+  }
+}

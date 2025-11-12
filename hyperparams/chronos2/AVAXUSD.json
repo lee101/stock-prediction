@@ -1,0 +1,40 @@
+{
+  "symbol": "AVAXUSD",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 0.7989027976989747,
+    "pct_return_mae": 0.03175900851358293,
+    "latency_s": 0.1421623989004729
+  },
+  "test": {
+    "price_mae": 0.9830942153930664,
+    "pct_return_mae": 0.03126366903408385,
+    "latency_s": 0.13872190984984628
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-12T05:54:13.830175+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 512,
+    "batch_size": 128
+  }
+}

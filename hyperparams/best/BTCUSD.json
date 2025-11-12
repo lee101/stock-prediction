@@ -2,20 +2,20 @@
   "symbol": "BTCUSD",
   "model": "toto",
   "config": {
-    "name": "toto_opt_trimmed_mean_5_1024_spb128",
-    "num_samples": 1024,
-    "aggregate": "trimmed_mean_5",
-    "samples_per_batch": 128
+    "name": "toto_opt_trimmed_mean_10_64_spb64",
+    "num_samples": 64,
+    "aggregate": "trimmed_mean_10",
+    "samples_per_batch": 64
   },
   "validation": {
-    "price_mae": 1046.7619896319143,
-    "pct_return_mae": 0.009202042710339631,
-    "latency_s": 6.547580127924448
+    "price_mae": 1016.7232278245203,
+    "pct_return_mae": 0.008935684487156922,
+    "latency_s": 1.1999504910054384
   },
   "test": {
-    "price_mae": 2278.9443323651008,
-    "pct_return_mae": 0.01952701682139137,
-    "latency_s": 6.577518960053567
+    "price_mae": 2322.0997617788453,
+    "pct_return_mae": 0.019888631769540352,
+    "latency_s": 1.455688428999565
   },
   "windows": {
     "val_window": 20,
@@ -26,9 +26,15 @@
   "metadata": {
     "source": "update_best_configs_by_return_mae",
     "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.01952701682139137,
-    "kronos_pct_return_mae": 0.04035513855752465,
-    "toto_pct_return_mae": 0.01952701682139137,
-    "improvement_pct": 51.6120684518122
+    "selection_value": 0.019888631769540352,
+    "kronos_pct_return_mae": 0.0359897287063021,
+    "toto_pct_return_mae": 0.019888631769540352,
+    "chronos2_pct_return_mae": 0.021204543101021815,
+    "candidate_pct_return_mae": {
+      "kronos": 0.0359897287063021,
+      "toto": 0.019888631769540352,
+      "chronos2": 0.021204543101021815
+    },
+    "improvement_pct": 6.205799036613298
   }
 }

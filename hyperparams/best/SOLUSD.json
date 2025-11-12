@@ -1,35 +1,40 @@
 {
   "symbol": "SOLUSD",
-  "model": "kronos",
+  "model": "toto",
   "config": {
-    "name": "kronos_opt_temp0.180_p0.75_s192_k24_clip2.00_ctx256",
-    "temperature": 0.18,
-    "top_p": 0.75,
-    "top_k": 24,
-    "sample_count": 192,
-    "max_context": 256,
-    "clip": 2.0
+    "name": "toto_opt_mean_plus_std_0.3_128_spb32",
+    "num_samples": 128,
+    "aggregate": "mean_plus_std_0.3",
+    "samples_per_batch": 32
   },
   "validation": {
-    "price_mae": 3.0819476989746093,
-    "pct_return_mae": 0.04441240016569728,
-    "latency_s": 3.7416583959929994
+    "price_mae": 5.677909741700556,
+    "pct_return_mae": 0.02740297138716944,
+    "latency_s": 3.2676487160206307
   },
   "test": {
-    "price_mae": 5.475870118408203,
-    "pct_return_mae": 0.04575895871855318,
-    "latency_s": 3.734774130018195
+    "price_mae": 7.518031641291818,
+    "pct_return_mae": 0.033769604849137755,
+    "latency_s": 3.272155435013701
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/kronos/SOLUSD.json",
+  "config_path": "hyperparams/toto/SOLUSD.json",
   "metadata": {
-    "source": "hyperparams_extended",
-    "extended_path": "hyperparams_extended/kronos/SOLUSD.json",
-    "selection_metric": "test_price_mae",
-    "selection_value": 5.475870118408203
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "test_pct_return_mae",
+    "selection_value": 0.033769604849137755,
+    "kronos_pct_return_mae": 0.05081532799710906,
+    "toto_pct_return_mae": 0.033769604849137755,
+    "chronos2_pct_return_mae": 0.03382062663242029,
+    "candidate_pct_return_mae": {
+      "kronos": 0.05081532799710906,
+      "toto": 0.033769604849137755,
+      "chronos2": 0.03382062663242029
+    },
+    "improvement_pct": 0.15085995844212166
   }
 }

@@ -2,20 +2,20 @@
   "symbol": "NVDA",
   "model": "toto",
   "config": {
-    "name": "toto_opt_mean_4096_spb256",
-    "num_samples": 4096,
-    "aggregate": "mean",
-    "samples_per_batch": 256
+    "name": "toto_opt_trimmed_mean_15_48_spb48",
+    "num_samples": 48,
+    "aggregate": "trimmed_mean_15",
+    "samples_per_batch": 48
   },
   "validation": {
-    "price_mae": 2.1867030375171455,
-    "pct_return_mae": 0.012510081333695012,
-    "latency_s": 13.810027781990357
+    "price_mae": 2.075639477898092,
+    "pct_return_mae": 0.011880606787318646,
+    "latency_s": 1.2521840569970664
   },
   "test": {
-    "price_mae": 3.2608954945346356,
-    "pct_return_mae": 0.017806578958190163,
-    "latency_s": 13.90142611900228
+    "price_mae": 3.2064061781939346,
+    "pct_return_mae": 0.01748448642659336,
+    "latency_s": 1.614450539000245
   },
   "windows": {
     "val_window": 20,
@@ -26,9 +26,15 @@
   "metadata": {
     "source": "update_best_configs_by_return_mae",
     "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.017806578958190163,
-    "kronos_pct_return_mae": 0.029859007160932222,
-    "toto_pct_return_mae": 0.017806578958190163,
-    "improvement_pct": 40.36446402180297
+    "selection_value": 0.01748448642659336,
+    "kronos_pct_return_mae": 0.029617640229692273,
+    "toto_pct_return_mae": 0.01748448642659336,
+    "chronos2_pct_return_mae": 0.01905538532820105,
+    "candidate_pct_return_mae": {
+      "kronos": 0.029617640229692273,
+      "toto": 0.01748448642659336,
+      "chronos2": 0.01905538532820105
+    },
+    "improvement_pct": 8.24385796745258
   }
 }

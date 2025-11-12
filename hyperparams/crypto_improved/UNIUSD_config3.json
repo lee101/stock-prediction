@@ -1,0 +1,14 @@
+{
+  "symbol": "UNIUSD",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_improved_temp0.200_p0.85_s512_k32_clip1.80_ctx288",
+    "temperature": 0.2,
+    "top_p": 0.85,
+    "top_k": 32,
+    "sample_count": 512,
+    "max_context": 288,
+    "clip": 1.8
+  },
+  "notes": "Improved Kronos: higher samples, better sampling params"
+}

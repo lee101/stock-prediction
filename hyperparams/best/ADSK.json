@@ -1,34 +1,47 @@
 {
   "symbol": "ADSK",
-  "model": "toto",
+  "model": "chronos2",
   "config": {
-    "name": "toto_opt_mean_4096_spb512",
-    "num_samples": 4096,
-    "aggregate": "mean",
-    "samples_per_batch": 512
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
   },
   "validation": {
-    "price_mae": 3.8845165990293054,
-    "pct_return_mae": 0.012927387839967344,
-    "latency_s": 19.76202170396573
+    "price_mae": 4.615119934082031,
+    "pct_return_mae": 0.015294503708795777,
+    "latency_s": 0.14462151089992403
   },
   "test": {
-    "price_mae": 2.946526071988046,
-    "pct_return_mae": 0.00929976417009856,
-    "latency_s": 17.734886186983204
+    "price_mae": 2.6722457885742186,
+    "pct_return_mae": 0.00842258434119687,
+    "latency_s": 0.14305078840097848
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/toto/ADSK.json",
+  "config_path": "hyperparams/chronos2/ADSK.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
     "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.00929976417009856,
+    "selection_value": 0.00842258434119687,
     "kronos_pct_return_mae": 0.012706785723135064,
     "toto_pct_return_mae": 0.00929976417009856,
-    "improvement_pct": 26.812615143366962
+    "chronos2_pct_return_mae": 0.00842258434119687,
+    "candidate_pct_return_mae": {
+      "kronos": 0.012706785723135064,
+      "toto": 0.00929976417009856,
+      "chronos2": 0.00842258434119687
+    },
+    "improvement_pct": 9.432280355259744
   }
 }
