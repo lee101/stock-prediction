@@ -1,0 +1,41 @@
+{
+  "symbol": "BTCUSD",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_opt_temp0.300_p0.75_s112_k24_clip2.00_ctx192",
+    "temperature": 0.3,
+    "top_p": 0.75,
+    "top_k": 24,
+    "sample_count": 112,
+    "max_context": 192,
+    "clip": 2.0
+  },
+  "config_source": "hyperparams_extended/kronos/BTCUSD.json",
+  "compile_settings": {
+    "kronos": {
+      "mode": "max-autotune",
+      "backend": "inductor"
+    },
+    "toto": {
+      "mode": "max-autotune",
+      "backend": "inductor"
+    }
+  },
+  "results": {
+    "uncompiled": {
+      "validation": {
+        "price_mae": 492.4444875000001,
+        "pct_return_mae": 0.011622407521914058,
+        "latency_s": 4.255198022998229
+      },
+      "test": {
+        "price_mae": 2183.3410624999997,
+        "pct_return_mae": 0.03549132276721999,
+        "latency_s": 3.193457749006484
+      }
+    },
+    "compiled": {
+      "error": "AssertionError()"
+    }
+  }
+}

@@ -38,8 +38,8 @@ def verify_toto_fix():
         end = content.find("\n    def ", start + 1)
         method_content = content[start:end]
 
-        if "int(self._current_idx[cache_idx])" in method_content:
-            print("✅ Line ~182: Using int() in current_len() - GOOD")
+        if "return self._current_idx[cache_idx]" in method_content:
+            print("✅ Line ~182: Using host-mirrored ints in current_len() - GOOD")
         elif ".item()" in method_content and "_current_idx" in method_content:
             print("❌ Line ~182: Still using .item() in current_len() - BAD")
             issues.append("current_len() still uses .item()")
@@ -56,8 +56,8 @@ def verify_toto_fix():
         method_content = content[start:end]
 
         # Check for the critical line
-        if "start_idx = int(self._current_idx[cache_idx])" in method_content:
-            print("✅ Line ~220: Using int() in append() - GOOD")
+        if "start_idx = self._current_idx[cache_idx]" in method_content:
+            print("✅ Line ~220: Using host-mirrored ints in append() - GOOD")
         elif "start_idx = self._current_idx[cache_idx].item()" in method_content:
             print("❌ Line ~220: Still using .item() in append() - BAD")
             issues.append("append() still uses .item()")
@@ -66,6 +66,14 @@ def verify_toto_fix():
             issues.append("append() possibly uses .item()")
         else:
             print("✅ Line ~220: No .item() detected in append() - GOOD")
+
+    # Ensure _current_idx is initialized as a Python list (host mirror)
+    init_snippet = "self._current_idx = [0 for _ in range"
+    if init_snippet in content:
+        print("✅ Host index mirror detected during initialization")
+    else:
+        print("❌ Host index mirror missing in __post_init__")
+        issues.append("_current_idx not initialized as host list")
 
     # Check for any remaining .item() calls that could be problematic
     item_calls = content.count(".item()")
@@ -92,7 +100,7 @@ def verify_toto_fix():
         return False
     else:
         print("\n✅ SUCCESS: Toto CUDA graphs fix is correctly applied!")
-        print("\nThe critical .item() calls have been replaced with int().")
+        print("\nThe critical .item() calls have been eliminated by mirroring indices on the host.")
         print("CUDA graphs should now work properly with torch.compile.")
         return True
 

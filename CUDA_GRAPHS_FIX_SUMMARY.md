@@ -24,10 +24,10 @@ This meant CUDA graphs were disabled, losing significant performance benefits.
 
 ## Root Cause
 
-The `.item()` method in two places in `util_compile_friendly.py`:
-- Forces CPU synchronization
-- Gets lowered to `aten._local_scalar_dense.default` which is incompatible with CUDA graphs
-- Cannot be captured even with `TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS=1`
+The old `.item()`/`int()` scalar extractions in `util_compile_friendly.py`:
+- Forced CPU synchronization for every cache append/read
+- Lowered to `aten._local_scalar_dense.default`, which disables CUDA graphs
+- Still fired even after switching to `int()` because PyTorch implements `__int__` via `.item()`
 
 **Location:** `toto/toto/model/util_compile_friendly.py` lines 182 and 217
 
@@ -35,31 +35,17 @@ The `.item()` method in two places in `util_compile_friendly.py`:
 
 ## The Fix
 
-✅ **Changed `.item()` to `int()` in two locations:**
+✅ **Introduce a host-mirrored index tracker:**
 
-### 1. Line 182 - `current_len()` method
-```python
-# BEFORE:
-return self._current_idx[cache_idx].item() if len(self._current_idx) > 0 else 0
+### Key changes
+- `_current_idx` is now a simple Python `List[int]` instead of a CUDA tensor.
+- `__getitem__`, `current_len()`, and `append()` operate on those Python ints, so no `.item()`/`int()` conversions occur inside compiled graphs.
+- We still keep the cache tensors on the GPU, but all scalar head positions live on the host, eliminating the offending `aten._local_scalar_dense` op entirely.
 
-# AFTER:
-return int(self._current_idx[cache_idx]) if len(self._current_idx) > 0 else 0
-```
-
-### 2. Line 217-220 - `append()` method
-```python
-# BEFORE:
-start_idx = self._current_idx[cache_idx].item()
-
-# AFTER:
-start_idx = int(self._current_idx[cache_idx])
-```
-
-**Why `int()` works:**
-- With `TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS=1`, `int()` is traced by TorchDynamo
-- No CPU synchronization required
-- Fully compatible with CUDA graphs
-- **Produces IDENTICAL numerical results to `.item()`**
+**Why this works:**
+- Python ints never lower to `aten._local_scalar_dense`, so CUDA graphs stay intact.
+- Graph breaks already wrapped the cache mutations, so using host data does not introduce extra recompilations.
+- The cache semantics (and MAE) remain unchanged because we only altered how the indices are stored, not how data is written/read.
 
 ---
 
@@ -74,12 +60,12 @@ start_idx = int(self._current_idx[cache_idx])
 
 ### ✅ What You'll See in Your Backtest
 
-**BEFORE (with .item()):**
+**BEFORE (with tensor-tracked indices):**
 ```
 skipping cudagraphs due to incompatible op aten._local_scalar_dense.default
 ```
 
-**AFTER (with int()):**
+**AFTER (with host-mirrored indices):**
 ```
 No such warnings!
 (Some "mutated inputs" warnings are OK - those are from cache updates)
@@ -129,7 +115,7 @@ python backtest_test3_inline.py 2>&1 | grep -i cudagraph
 ## Files Changed
 
 ### Modified:
-- `toto/toto/model/util_compile_friendly.py` - The fix (2 lines changed)
+- `toto/toto/model/util_compile_friendly.py` - Host-mirrored index tracker
 
 ### Created:
 - `tests/test_kvcache_fix.py` - Unit test for CUDA graphs
@@ -146,11 +132,10 @@ python backtest_test3_inline.py 2>&1 | grep -i cudagraph
 ### ✅ Zero Impact on Predictions
 
 The fix:
-- Only changes HOW scalars are extracted (`.item()` → `int()`)
-- Both methods return the exact same integer value
-- No change to any calculation logic
-- No change to model weights or parameters
-- **Predictions are bit-for-bit identical**
+- Only changes WHERE the cache write-head is stored (GPU tensor → Python list)
+- Keeps all math on the same tensors for K/V writes and reads
+- Does not touch model weights or attention math
+- **Produces identical predictions + MAE**
 
 ### How We Verified This:
 

@@ -1,0 +1,41 @@
+{
+  "symbol": "NVDA",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_opt_temp0.240_p0.80_s240_k0_clip1.80_ctx192",
+    "temperature": 0.24,
+    "top_p": 0.8,
+    "top_k": 0,
+    "sample_count": 240,
+    "max_context": 192,
+    "clip": 1.8
+  },
+  "config_source": "hyperparams_extended/kronos/NVDA.json",
+  "compile_settings": {
+    "kronos": {
+      "mode": "max-autotune",
+      "backend": "inductor"
+    },
+    "toto": {
+      "mode": "max-autotune",
+      "backend": "inductor"
+    }
+  },
+  "results": {
+    "uncompiled": {
+      "validation": {
+        "price_mae": 1.646538543701169,
+        "pct_return_mae": 0.01646391522619095,
+        "latency_s": 8.289735960002872
+      },
+      "test": {
+        "price_mae": 2.5605667114257855,
+        "pct_return_mae": 0.029595150104958258,
+        "latency_s": 5.592228034996879
+      }
+    },
+    "compiled": {
+      "error": "AssertionError()"
+    }
+  }
+}

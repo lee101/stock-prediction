@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
+from datetime import datetime
 from pathlib import Path
+from typing import ContextManager, Optional
 
 from .config import KronosTrainingConfig
 from .trainer import KronosTrainer
+from wandboard import WandBoardLogger
 
 
 def parse_args() -> argparse.Namespace:
@@ -153,6 +157,18 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Allow base Kronos weights to train alongside adapters.",
     )
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default=None,
+        help="Weights & Biases project name for logging metrics (enables WandBoard).",
+    )
+    parser.add_argument(
+        "--wandb-run-name",
+        type=str,
+        default=None,
+        help="Optional WandB run name; defaults to kronos_<timestamp> when project is provided.",
+    )
     return parser.parse_args()
 
 
@@ -202,9 +218,31 @@ def build_config(args: argparse.Namespace) -> KronosTrainingConfig:
 def main() -> None:
     args = parse_args()
     config = build_config(args)
-    trainer = KronosTrainer(config)
-    summary = trainer.train()
-    metrics = trainer.evaluate_holdout()
+    logger_ctx: ContextManager[Optional[WandBoardLogger]]
+    if args.wandb_project:
+        run_name = args.wandb_run_name or f"kronos_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        logger_ctx = WandBoardLogger(
+            run_name=run_name,
+            project=args.wandb_project,
+            log_dir="tensorboard_logs",
+            tensorboard_subdir=f"kronos/{run_name}",
+            enable_wandb=True,
+            log_metrics=True,
+            config={"kronos": config.as_dict()},
+        )
+    else:
+        logger_ctx = nullcontext()
+
+    with logger_ctx as metrics_logger:
+        trainer = KronosTrainer(config, metrics_logger=metrics_logger)
+        summary = trainer.train()
+        metrics = trainer.evaluate_holdout()
+        if metrics_logger is not None:
+            payload = {f"summary/{key}": value for key, value in summary.items()}
+            payload.update(
+                {f"holdout/{key}": value for key, value in metrics.get("aggregate", {}).items()}
+            )
+            metrics_logger.log(payload, step=config.epochs + 3)
 
     print("\n[kronos] Training summary:")
     for key, value in summary.items():

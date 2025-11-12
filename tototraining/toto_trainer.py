@@ -22,7 +22,7 @@ import warnings
 import contextlib
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Union, Any, Sequence
+from typing import Dict, List, Tuple, Optional, Union, Any, Sequence, Mapping
 from dataclasses import dataclass, asdict
 from collections import defaultdict
 import random
@@ -49,6 +49,7 @@ from traininglib.prefetch import CudaPrefetcher
 from traininglib.ema import EMA
 from traininglib.losses import huber_loss, heteroscedastic_gaussian_nll, pinball_loss
 from hftraining.metrics import crps_from_quantiles, dm_test
+from wandboard import WandBoardLogger
 
 # Add the toto directory to sys.path
 toto_path = Path(__file__).parent.parent / "toto" / "toto"
@@ -554,12 +555,17 @@ class CheckpointManager:
 
 class TotoTrainer:
     """Comprehensive Toto model trainer with advanced features"""
-    
-    def __init__(self, 
-                 config: TrainerConfig,
-                 dataloader_config: DataLoaderConfig):
+
+    def __init__(
+        self,
+        config: TrainerConfig,
+        dataloader_config: DataLoaderConfig,
+        *,
+        metrics_logger: Optional[WandBoardLogger] = None,
+    ):
         self.config = config
         self.dataloader_config = dataloader_config
+        self.metrics_logger = metrics_logger
         
         # Set random seeds
         self._set_random_seeds()
@@ -607,6 +613,18 @@ class TotoTrainer:
         self.export_dir = Path(self.config.export_pretrained_dir)
         self.export_dir.mkdir(parents=True, exist_ok=True)
         self.export_metadata_path = self.export_dir / "metadata.json"
+        if self.metrics_logger is not None:
+            try:
+                self.metrics_logger.log_hparams(
+                    {
+                        "toto_trainer": asdict(self.config),
+                        "toto_dataloader": asdict(self.dataloader_config),
+                    },
+                    {},
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                self.logger.warning(f"WandBoard hparam logging failed: {exc}")
+                self.metrics_logger = None
         
         # Optional TensorBoard monitoring
         self.tensorboard_monitor = None
@@ -1704,6 +1722,14 @@ class TotoTrainer:
                 self.tensorboard_monitor.system_writer.add_scalar('Epoch/DurationSeconds', epoch_time, epoch)
             except Exception as e:
                 self.logger.warning(f"Failed to log TensorBoard metrics: {e}")
+        payload: Dict[str, float] = {
+            "epoch": float(epoch + 1),
+            "epoch_time_sec": float(epoch_time),
+            "learning_rate": float(learning_rate),
+        }
+        payload.update({f"train/{k}": float(v) for k, v in train_metrics.items() if isinstance(v, (int, float))})
+        payload.update({f"val/{k}": float(v) for k, v in val_metrics.items() if isinstance(v, (int, float))})
+        self._log_wand_metrics(payload, step=epoch + 1)
 
     def _export_pretrained(self,
                            epoch: int,
@@ -1762,6 +1788,7 @@ class TotoTrainer:
                 self.tensorboard_monitor.close()
             except Exception as e:
                 self.logger.warning(f"Failed to finalize TensorBoard monitor: {e}")
+        self._log_wand_metrics({"training/total_seconds": float(total_time)}, step=self.current_epoch + 1)
     
     def _log_metrics(self, epoch: int, train_metrics: Dict[str, float], val_metrics: Dict[str, float]):
         """Log training metrics"""
@@ -1783,6 +1810,15 @@ class TotoTrainer:
         
         for metric_name, value in val_metrics.items():
             self.logger.debug(f"Val {metric_name}: {value}")
+        # Additional WandBoard logging handled via _log_epoch
+
+    def _log_wand_metrics(self, metrics: Mapping[str, Any], *, step: Optional[int] = None) -> None:
+        if self.metrics_logger is None or not metrics:
+            return
+        try:
+            self.metrics_logger.log(metrics, step=step)
+        except Exception as exc:  # pragma: no cover
+            self.logger.warning(f"WandBoard logging failed: {exc}")
     
     def evaluate(self, dataloader_name: str = 'test') -> Dict[str, float]:
         """Evaluate model on test data"""

@@ -1,0 +1,41 @@
+{
+  "symbol": "TSLA",
+  "model": "kronos",
+  "config": {
+    "name": "kronos_opt_temp0.280_p0.70_s208_k16_clip1.40_ctx192",
+    "temperature": 0.28,
+    "top_p": 0.7,
+    "top_k": 16,
+    "sample_count": 208,
+    "max_context": 192,
+    "clip": 1.4
+  },
+  "config_source": "hyperparams_extended/kronos/TSLA.json",
+  "compile_settings": {
+    "kronos": {
+      "mode": "max-autotune",
+      "backend": "inductor"
+    },
+    "toto": {
+      "mode": "max-autotune",
+      "backend": "inductor"
+    }
+  },
+  "results": {
+    "uncompiled": {
+      "validation": {
+        "price_mae": 2.6315368652343722,
+        "pct_return_mae": 0.02378440065496907,
+        "latency_s": 7.682010979999177
+      },
+      "test": {
+        "price_mae": 20.722468566894538,
+        "pct_return_mae": 0.058695115906214804,
+        "latency_s": 5.417585384000631
+      }
+    },
+    "compiled": {
+      "error": "AssertionError()"
+    }
+  }
+}

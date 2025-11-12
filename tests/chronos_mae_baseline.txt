@@ -1,0 +1,7 @@
+# Chronos2 MAE Baseline
+# Generated: 2025-11-12 08:29:05.811225
+# PyTorch: 2.9.0+cu128
+
+Symbol,Uncompiled_MAE,Compiled_MAE,Uncompiled_ms,Compiled_ms
+BTCUSD,4070.627486,4070.628463,576.03,35021.59
+ETHUSD,364.012283,364.012405,58.11,42.87

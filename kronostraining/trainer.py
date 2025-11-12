@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - compatibility path
 
 from .config import KronosTrainingConfig
 from .data_utils import ALL_FEATURES, iter_symbol_dataframes
+from .metrics_utils import compute_mae_percent
 from .dataset import KronosMultiTickerDataset
 from src.parameter_efficient import (
     LoraMetadata,
@@ -33,6 +34,7 @@ from src.parameter_efficient import (
     save_lora_adapter,
 )
 from traininglib.dynamic_batcher import WindowBatcher
+from wandboard import WandBoardLogger
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXTERNAL_KRONOS = REPO_ROOT / "external" / "kronos"
@@ -51,10 +53,17 @@ def set_seed(seed: int) -> None:
 
 
 class KronosTrainer:
-    def __init__(self, config: KronosTrainingConfig) -> None:
+    def __init__(self, config: KronosTrainingConfig, *, metrics_logger: Optional[WandBoardLogger] = None) -> None:
         self.config = config
         self.config.ensure_output_dirs()
         self.device = torch.device(self.config.resolved_device())
+        self._metrics_logger = metrics_logger
+        if self._metrics_logger is not None:
+            try:
+                self._metrics_logger.log_hparams({"kronos": self.config.as_dict()}, {})
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"[kronos] Failed to log WandBoard hyperparameters: {exc}")
+                self._metrics_logger = None
         set_seed(self.config.seed)
 
         self._configure_cuda()
@@ -245,6 +254,15 @@ class KronosTrainer:
                 f"train_loss={epoch_loss:.4f} val_loss={val_loss:.4f}"
             )
             print(epoch_msg)
+            self._log_metrics(
+                {
+                    "epoch": epoch,
+                    "train/loss": float(epoch_loss),
+                    "val/loss": float(val_loss),
+                    "optim/steps": float(total_steps),
+                },
+                step=epoch,
+            )
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -257,6 +275,15 @@ class KronosTrainer:
 
         duration_min = (time.time() - start_time) / 60.0
         print(f"[kronos] Training finished in {duration_min:.2f} minutes. Best epoch: {best_epoch}")
+        self._log_metrics(
+            {
+                "training/best_epoch": float(best_epoch),
+                "training/best_val_loss": float(best_val_loss),
+                "training/duration_minutes": float(duration_min),
+                "training/steps": float(total_steps),
+            },
+            step=self.config.epochs + 1,
+        )
 
         # Reload best weights for downstream evaluation
         if self.config.best_model_path.exists():
@@ -437,6 +464,7 @@ class KronosTrainer:
             mae = float(np.mean(np.abs(error)))
             rmse = float(np.sqrt(np.mean(error ** 2)))
             mape = float(np.mean(np.abs(error) / (np.abs(actual_close) + 1e-5)) * 100.0)
+            mae_percent = compute_mae_percent(mae, actual_close)
 
             per_symbol.append(
                 {
@@ -444,6 +472,7 @@ class KronosTrainer:
                     "mae": mae,
                     "rmse": rmse,
                     "mape": mape,
+                    "mae_percent": mae_percent,
                 }
             )
 
@@ -455,6 +484,7 @@ class KronosTrainer:
             "mae": float(np.mean([m["mae"] for m in per_symbol])),
             "rmse": float(np.mean([m["rmse"] for m in per_symbol])),
             "mape": float(np.mean([m["mape"] for m in per_symbol])),
+            "mae_percent": float(np.mean([m["mae_percent"] for m in per_symbol])),
         }
 
         metrics = {"aggregate": aggregate, "per_symbol": per_symbol}
@@ -463,4 +493,16 @@ class KronosTrainer:
 
         print("[kronos] Validation metrics:")
         print(json.dumps(aggregate, indent=2))
+        self._log_metrics(
+            {f"holdout/{key}": value for key, value in aggregate.items()},
+            step=self.config.epochs + 2,
+        )
         return metrics
+
+    def _log_metrics(self, metrics: Dict[str, float], *, step: Optional[int] = None) -> None:
+        if self._metrics_logger is None or not metrics:
+            return
+        try:
+            self._metrics_logger.log(metrics, step=step)
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[kronos] WandBoard logging failed: {exc}")

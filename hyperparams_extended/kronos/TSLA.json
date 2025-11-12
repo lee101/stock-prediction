@@ -2,23 +2,23 @@
   "model": "kronos",
   "symbol": "TSLA",
   "config": {
-    "name": "kronos_opt_temp0.240_p0.80_s160_k0_clip1.40_ctx192",
-    "temperature": 0.24,
-    "top_p": 0.8,
-    "top_k": 0,
-    "sample_count": 160,
+    "name": "kronos_opt_temp0.280_p0.70_s208_k16_clip1.40_ctx192",
+    "temperature": 0.28,
+    "top_p": 0.7,
+    "top_k": 16,
+    "sample_count": 208,
     "max_context": 192,
     "clip": 1.4
   },
   "validation": {
-    "price_mae": 2.6546585083007783,
-    "pct_return_mae": 0.023423398516097867,
-    "latency_s": 2.366478026029654
+    "price_mae": 2.5493988037109347,
+    "pct_return_mae": 0.02368779367810309,
+    "latency_s": 4.973381089999748
   },
   "test": {
-    "price_mae": 20.913908386230474,
-    "pct_return_mae": 0.059076940982539974,
-    "latency_s": 2.364912716933759
+    "price_mae": 20.70686645507813,
+    "pct_return_mae": 0.05869174080175053,
+    "latency_s": 5.179750966999563
   },
   "windows": {
     "val_window": 20,

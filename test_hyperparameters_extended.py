@@ -59,6 +59,16 @@ OUTPUT_ROOT.mkdir(exist_ok=True)
 (OUTPUT_ROOT / "kronos").mkdir(exist_ok=True)
 (OUTPUT_ROOT / "toto").mkdir(exist_ok=True)
 
+# --- Compilation toggles (configured via CLI) ---
+ENABLE_KRONOS_COMPILE = False
+KRONOS_COMPILE_MODE = "max-autotune"
+KRONOS_COMPILE_BACKEND: Optional[str] = "inductor"
+
+ENABLE_TOTO_COMPILE = False
+ENABLE_TOTO_TORCH_COMPILE = False
+TOTO_COMPILE_MODE = "max-autotune"
+TOTO_COMPILE_BACKEND: Optional[str] = "inductor"
+
 
 @dataclass(frozen=True)
 class KronosRunConfig:
@@ -301,19 +311,27 @@ def generate_toto_grid() -> Tuple[TotoRunConfig, ...]:
 # --- Evaluation Functions ---
 KRONOS_WRAPPER_CACHE: Dict[str, KronosForecastingWrapper] = {}
 _TOTO_PIPELINE: Optional[TotoPipeline] = None
+_TOTO_PIPELINE_SETTINGS: Optional[Tuple[bool, bool, str, Optional[str], str]] = None
 
 
 def _get_kronos_wrapper(config: KronosRunConfig) -> KronosForecastingWrapper:
     """Get or create Kronos wrapper with caching."""
-    key = f"{config.max_context}_{config.clip}"
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    key = (
+        f"{config.max_context}_{config.clip}_{device}_"
+        f"{int(ENABLE_KRONOS_COMPILE)}_{KRONOS_COMPILE_MODE}_{KRONOS_COMPILE_BACKEND or 'none'}"
+    )
     wrapper = KRONOS_WRAPPER_CACHE.get(key)
     if wrapper is None:
         wrapper = KronosForecastingWrapper(
             model_name="NeoQuasar/Kronos-base",
             tokenizer_name="NeoQuasar/Kronos-Tokenizer-base",
-            device="cuda:0" if torch.cuda.is_available() else "cpu",
+            device=device,
             max_context=config.max_context,
             clip=config.clip,
+            compile=ENABLE_KRONOS_COMPILE,
+            compile_mode=KRONOS_COMPILE_MODE,
+            compile_backend=KRONOS_COMPILE_BACKEND,
         )
         KRONOS_WRAPPER_CACHE[key] = wrapper
     return wrapper
@@ -321,15 +339,25 @@ def _get_kronos_wrapper(config: KronosRunConfig) -> KronosForecastingWrapper:
 
 def _get_toto_pipeline() -> TotoPipeline:
     """Get or create Toto pipeline (singleton)."""
-    global _TOTO_PIPELINE
-    if _TOTO_PIPELINE is None:
-        device_map = "cuda" if torch.cuda.is_available() else "cpu"
+    global _TOTO_PIPELINE, _TOTO_PIPELINE_SETTINGS
+    device_map = "cuda" if torch.cuda.is_available() else "cpu"
+    requested = (
+        ENABLE_TOTO_COMPILE,
+        ENABLE_TOTO_TORCH_COMPILE,
+        TOTO_COMPILE_MODE,
+        TOTO_COMPILE_BACKEND,
+        device_map,
+    )
+    if _TOTO_PIPELINE is None or _TOTO_PIPELINE_SETTINGS != requested:
         _TOTO_PIPELINE = TotoPipeline.from_pretrained(
             model_id="Datadog/Toto-Open-Base-1.0",
             device_map=device_map,
-            compile_model=False,  # Disable compile for faster testing
-            torch_compile=False,
+            compile_model=ENABLE_TOTO_COMPILE,
+            compile_mode=TOTO_COMPILE_MODE if ENABLE_TOTO_COMPILE else None,
+            compile_backend=TOTO_COMPILE_BACKEND if ENABLE_TOTO_COMPILE else None,
+            torch_compile=ENABLE_TOTO_TORCH_COMPILE,
         )
+        _TOTO_PIPELINE_SETTINGS = requested
     return _TOTO_PIPELINE
 
 
@@ -564,7 +592,11 @@ def _optuna_optimize_kronos(
     def objective(trial: "optuna.Trial") -> float:  # type: ignore[name-defined]
         config = _sample_kronos_config_from_trial(trial)
         start = time.perf_counter()
-        result = _sequential_kronos(df, val_indices, config)
+        try:
+            result = _sequential_kronos(df, val_indices, config)
+        except RuntimeError as exc:
+            trial.set_user_attr("invalid_config", config)
+            raise optuna.TrialPruned(f"Kronos trial failed: {exc}") from exc
         latency = time.perf_counter() - start
         trial.set_user_attr("config", config)
         trial.set_user_attr("validation_result", result)
@@ -910,7 +942,56 @@ def main() -> None:
         default=150,
         help="Number of Optuna trials for Toto when using --search-method=optuna.",
     )
+    parser.add_argument(
+        "--kronos-compile",
+        action="store_true",
+        help="Enable torch.compile for Kronos decode passes.",
+    )
+    parser.add_argument(
+        "--kronos-compile-mode",
+        default="max-autotune",
+        help="torch.compile mode for Kronos (default: max-autotune).",
+    )
+    parser.add_argument(
+        "--kronos-compile-backend",
+        default="inductor",
+        help="torch.compile backend for Kronos (use 'none' to disable).",
+    )
+    parser.add_argument(
+        "--toto-compile",
+        action="store_true",
+        help="Enable Toto's model.compile shim (if available).",
+    )
+    parser.add_argument(
+        "--toto-torch-compile",
+        action="store_true",
+        help="Enable torch.compile on Toto (PyTorch 2.0+).",
+    )
+    parser.add_argument(
+        "--toto-compile-mode",
+        default="max-autotune",
+        help="torch.compile/mode argument for Toto (default: max-autotune).",
+    )
+    parser.add_argument(
+        "--toto-compile-backend",
+        default="inductor",
+        help="torch.compile backend for Toto (use 'none' to disable).",
+    )
     args = parser.parse_args()
+
+    global ENABLE_KRONOS_COMPILE, KRONOS_COMPILE_MODE, KRONOS_COMPILE_BACKEND
+    global ENABLE_TOTO_COMPILE, ENABLE_TOTO_TORCH_COMPILE, TOTO_COMPILE_MODE, TOTO_COMPILE_BACKEND
+    ENABLE_KRONOS_COMPILE = bool(args.kronos_compile)
+    KRONOS_COMPILE_MODE = args.kronos_compile_mode
+    KRONOS_COMPILE_BACKEND = (
+        None if args.kronos_compile_backend.lower() in {"", "none"} else args.kronos_compile_backend
+    )
+    ENABLE_TOTO_COMPILE = bool(args.toto_compile)
+    ENABLE_TOTO_TORCH_COMPILE = bool(args.toto_torch_compile)
+    TOTO_COMPILE_MODE = args.toto_compile_mode
+    TOTO_COMPILE_BACKEND = (
+        None if args.toto_compile_backend.lower() in {"", "none"} else args.toto_compile_backend
+    )
 
     if args.symbols:
         csv_files = []

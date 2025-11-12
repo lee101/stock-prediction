@@ -84,7 +84,7 @@ dev = [
 ]
 
 forecasting = [
-    "chronos-forecasting>=1.5.3",
+    "chronos-forecasting>=2.0.0",
     "neuralforecast>=3.1",
     "gluonts[torch]>=0.15.1",
 ]
@@ -103,7 +103,7 @@ hf = [
 rl = [
     "stable-baselines3>=2.3",
     "gymnasium>=0.29",
-    "pufferlib>=2.0.2",
+    "pufferlib>=2.0.2,<3",
 ]
 
 mlops = [
@@ -139,7 +139,7 @@ boosting = [
 ]
 
 all = [
-    "chronos-forecasting>=1.5.3",
+    "chronos-forecasting>=2.0.0",
     "neuralforecast>=3.1",
     "gluonts[torch]==0.16.2",
     "transformers>=4.50",
@@ -152,7 +152,7 @@ all = [
     "rotary-embedding-torch==0.8.6",
     "stable-baselines3>=2.3",
     "gymnasium>=0.29",
-    "pufferlib>=2.0.2",
+    "pufferlib>=2.0.2,<3",
     "mlflow>=3.4.1,<3.6",
     "wandb>=0.22.2",
     "weave>=0.52.10; python_version < \"3.14\"",

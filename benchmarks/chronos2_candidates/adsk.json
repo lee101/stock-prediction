@@ -1,0 +1,42 @@
+[
+  {
+    "name": "ctx512_bs128_median",
+    "context_length": 512,
+    "batch_size": 128,
+    "aggregation": "median",
+    "sample_count": 0,
+    "scaler": "none"
+  },
+  {
+    "name": "ctx1024_bs128_median",
+    "context_length": 1024,
+    "batch_size": 128,
+    "aggregation": "median",
+    "sample_count": 0,
+    "scaler": "none"
+  },
+  {
+    "name": "ctx1024_bs128_meanstd_s4096",
+    "context_length": 1024,
+    "batch_size": 128,
+    "aggregation": "mean_minus_std_0.3",
+    "sample_count": 4096,
+    "scaler": "none"
+  },
+  {
+    "name": "ctx1024_bs128_meanstd_s4096_scaled",
+    "context_length": 1024,
+    "batch_size": 128,
+    "aggregation": "mean_minus_std_0.3",
+    "sample_count": 4096,
+    "scaler": "meanstd"
+  },
+  {
+    "name": "ctx2048_bs128_meanstd_s4096",
+    "context_length": 2048,
+    "batch_size": 128,
+    "aggregation": "mean_minus_std_0.3",
+    "sample_count": 4096,
+    "scaler": "none"
+  }
+]
