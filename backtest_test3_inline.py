@@ -2204,7 +2204,16 @@ def resolve_best_model(symbol: str) -> str:
 _chronos2_wrapper_cache: Dict[str, Any] = {}
 
 def load_chronos2_wrapper(params: Dict[str, Any]) -> Any:
-    """Load Chronos2 wrapper with symbol-specific hyperparameters."""
+    """
+    Load Chronos2 wrapper with symbol-specific hyperparameters.
+
+    Compilation is DISABLED by default for maximum stability and to avoid
+    numerical issues. To enable compilation, set TORCH_COMPILED=1.
+
+    For more control over compile settings, see src/chronos_compile_config.py:
+        from src.chronos_compile_config import apply_production_compiled
+        apply_production_compiled()
+    """
     from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 
     cache_key = params["model_id"]
@@ -2212,7 +2221,9 @@ def load_chronos2_wrapper(params: Dict[str, Any]) -> Any:
     if cached is not None:
         return cached
 
-    # Disable torch.compile by default (can enable with TORCH_COMPILED=1)
+    # torch.compile is DISABLED by default (set TORCH_COMPILED=1 to enable)
+    # This ensures maximum stability and avoids potential numerical issues
+    # See tests/test_chronos2_compile_fuzzing.py for extensive testing
     torch_compiled_flag = os.getenv("TORCH_COMPILED", "0")
     compile_enabled = torch_compiled_flag in {"1", "true", "yes", "on"}
 
@@ -2220,9 +2231,11 @@ def load_chronos2_wrapper(params: Dict[str, Any]) -> Any:
     if not compile_enabled:
         compile_enabled = os.getenv("CHRONOS_COMPILE") in {"1", "true", "yes", "on"}
 
-    compile_mode = os.getenv("CHRONOS_COMPILE_MODE", "reduce-overhead")
-    compile_backend = os.getenv("CHRONOS_COMPILE_BACKEND", "inductor")
-    dtype_env = os.getenv("CHRONOS_DTYPE", "float32")
+    # Use safest compile settings when enabled (based on extensive testing)
+    # See src/chronos_compile_config.py for configuration details
+    compile_mode = os.getenv("CHRONOS_COMPILE_MODE", "reduce-overhead")  # Safest: reduce-overhead
+    compile_backend = os.getenv("CHRONOS_COMPILE_BACKEND", "inductor")  # Safest: inductor
+    dtype_env = os.getenv("CHRONOS_DTYPE", "float32")  # Safest: float32
 
     # Force eager attention to completely avoid SDPA backends
     # This is more reliable than just disabling specific backends

@@ -32,5 +32,4 @@ symbols = [
     'ETHUSD',   # $67,805 total PNL (but only 9 trades, 2.7% win rate - monitor closely)
     'LINKUSD',  # Solid performer
     'UNIUSD',   # Solid performer
-    'PAXGUSD',  # Solid performer
 ]

@@ -989,7 +989,7 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
         elif currentBuySymbol in ["LTCUSD"]:
             if amount_to_trade < 0.1:
                 amount_to_trade = 0.1
-                # too work out "PAXGUSD", "UNIUSD"
+                # too work out "UNIUSD"
         elif amount_to_trade < 1:
             amount_to_trade = 1
 

@@ -179,7 +179,7 @@ def _load_or_fetch_data(timestamp_str: str):
     logger.info(f"Fetching fresh data (bucket={bucket})")
     # Fetch all common symbols for better caching
     symbols = ['BTCUSD', 'ETHUSD', 'GOOG', 'META', 'TSLA', 'NVDA', 'AAPL', 'MSFT',
-               'UNIUSD', 'LINKUSD', 'PAXGUSD', 'ADBE', 'COUR', 'COIN']
+               'UNIUSD', 'LINKUSD', 'ADBE', 'COUR', 'COIN']
     data = download_daily_stock_data(timestamp_str, symbols=symbols)
 
     try:

@@ -119,7 +119,7 @@ CRYPTO_PAIRS = [
     'MATIC-USD', 'LINK-USD', 'LINKUSD', 'UNI-USD', 'UNIUSD',
     'DOT-USD', 'ATOM-USD', 'XRP-USD', 'ADA-USD',
     'ALGO-USD', 'XLM-USD', 'DOGE-USD', 'SHIB-USD',
-    'LTCUSD', 'PAXGUSD',
+    'LTCUSD',
 ]
 
 def main():
