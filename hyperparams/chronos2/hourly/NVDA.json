@@ -1,0 +1,42 @@
+{
+  "symbol": "NVDA",
+  "model": "chronos2",
+  "config": {
+    "name": "hourly_ctx8192_bs32_trimmed_mean_10_s512",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 8192,
+    "batch_size": 32,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "aggregation": "trimmed_mean_10",
+    "sample_count": 512,
+    "scaler": "none",
+    "predict_kwargs": {}
+  },
+  "validation": {
+    "price_mae": 2.7073670166927997,
+    "pct_return_mae": 0.01544431021405927,
+    "latency_s": 3.3046043959911913
+  },
+  "test": {
+    "price_mae": 3.3631632398327937,
+    "pct_return_mae": 0.018367188552889095,
+    "latency_s": 3.3151668709979276
+  },
+  "windows": {
+    "val_window": 168,
+    "test_window": 168,
+    "forecast_horizon": 1,
+    "bar_interval": "1h"
+  },
+  "metadata": {
+    "source": "chronos2_benchmark",
+    "generated_at": "2025-11-12T21:24:56Z",
+    "frequency": "hourly",
+    "notes": "Derived from daily chronos2 config; context extended for hourly bars."
+  }
+}

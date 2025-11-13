@@ -43,6 +43,7 @@ dependencies = [
     "pytorch-lightning>=2.4.0,<3.0",
     "torch-optimizer>=0.3",
     "pytorch-optimizer>=2.11",
+    "nevergrad>=1.0.2",
     "dill==0.3.8",
     "gymnasium>=0.29",
     "aioboto3==12.4.0",

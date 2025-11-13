@@ -11,7 +11,7 @@ from backtest_test3_inline import *
 _original_backtest_forecasts = backtest_forecasts
 
 
-def backtest_forecasts_parallel(symbol, num_simulations=50, max_workers=4):
+def backtest_forecasts_parallel(symbol, num_simulations=50, max_workers=4, *, model_override=None):
     """Parallel version using threads (shares GPU models)"""
     current_time_formatted = datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
     if __name__ == "__main__":
@@ -50,13 +50,35 @@ def backtest_forecasts_parallel(symbol, num_simulations=50, max_workers=4):
             if simulation_data.empty:
                 logger.warning(f"No data left for simulation {sim_number + 1}")
                 continue
-            sim_args.append((simulation_data, symbol, trading_fee, is_crypto, sim_number, spread))
+            sim_args.append(
+                (
+                    simulation_data,
+                    symbol,
+                    trading_fee,
+                    is_crypto,
+                    sim_number,
+                    spread,
+                    model_override,
+                )
+            )
 
         logger.info(f"Running {len(sim_args)} simulations in parallel with {max_workers} workers...")
 
         # Run simulations in parallel using threads
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = list(executor.map(lambda args: run_single_simulation(*args), sim_args))
+            def _run(args):
+                simulation_data, sym, fee, crypto_flag, idx, sim_spread, override = args
+                return run_single_simulation(
+                    simulation_data,
+                    sym,
+                    fee,
+                    crypto_flag,
+                    idx,
+                    sim_spread,
+                    model_override=override,
+                )
+
+            results = list(executor.map(_run, sim_args))
 
         results_df = pd.DataFrame(results)
         walk_forward_stats = compute_walk_forward_stats(results_df)

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from src.logging_utils import setup_logging
+from src.logging_utils import setup_logging, get_log_filename
 
-logger = setup_logging("watcher_refresh_utils.log")
+# Detect if we're in hourly mode based on TRADE_STATE_SUFFIX env var
+_is_hourly = os.getenv("TRADE_STATE_SUFFIX", "") == "hourly"
+logger = setup_logging(get_log_filename("watcher_refresh_utils.log", is_hourly=_is_hourly))
 
 
 def should_use_existing_watcher_prices(

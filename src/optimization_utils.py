@@ -24,9 +24,11 @@ Examples:
 
 from typing import Callable, Optional, Tuple
 import os
+from dataclasses import dataclass
 
 import torch
 from loss_utils import (
+    TRADING_FEE,
     calculate_profit_torch_with_entry_buysell_profit_values,
     calculate_trading_profit_torch_with_entry_buysell,
 )
@@ -42,34 +44,123 @@ _USE_DIRECT = os.getenv("MARKETSIM_USE_DIRECT_OPTIMIZER", "1") in {"1", "true", 
 _FAST_MODE = os.getenv("MARKETSIM_FAST_OPTIMIZE", "0") in {"1", "true", "yes", "on"}
 
 
+@dataclass(frozen=True)
+class _EntryExitOptimizationContext:
+    close_actual: torch.Tensor
+    high_actual: torch.Tensor
+    low_actual: torch.Tensor
+    long_multiplier: torch.Tensor
+    short_multiplier: torch.Tensor
+    abs_positions: torch.Tensor
+    raw_high_pred: torch.Tensor
+    raw_low_pred: torch.Tensor
+
+
+def _prepare_entry_exit_context(
+    close_actual: torch.Tensor,
+    positions: torch.Tensor,
+    high_actual: torch.Tensor,
+    high_pred: torch.Tensor,
+    low_actual: torch.Tensor,
+    low_pred: torch.Tensor,
+) -> _EntryExitOptimizationContext:
+    close_actual = close_actual.view(-1)
+    positions = positions.view(-1)
+    high_actual = high_actual.view(-1)
+    high_pred = high_pred.view(-1)
+    low_actual = low_actual.view(-1)
+    low_pred = low_pred.view(-1)
+
+    return _EntryExitOptimizationContext(
+        close_actual=close_actual,
+        high_actual=high_actual,
+        low_actual=low_actual,
+        long_multiplier=torch.clamp(positions, 0, 10),
+        short_multiplier=torch.clamp(positions, -10, 0),
+        abs_positions=torch.abs(positions),
+        raw_high_pred=high_pred,
+        raw_low_pred=low_pred,
+    )
+
+
+def _evaluate_entry_exit_profit(
+    ctx: _EntryExitOptimizationContext,
+    *,
+    high_mult: float,
+    low_mult: float,
+    close_at_eod: bool,
+    trading_fee: Optional[float],
+) -> torch.Tensor:
+    fee = float(trading_fee if trading_fee is not None else TRADING_FEE)
+
+    high_pred = torch.clamp(ctx.raw_high_pred + high_mult, 0.0, 10.0)
+    low_pred = torch.clamp(ctx.raw_low_pred + low_mult, -1.0, 0.0)
+
+    long_entry_mask_bool = low_pred > ctx.low_actual
+    short_entry_mask_bool = high_pred < ctx.high_actual
+    reached_high_mask_bool = high_pred <= ctx.high_actual
+    reached_low_mask_bool = low_pred >= ctx.low_actual
+
+    dtype = ctx.close_actual.dtype
+    long_entry = long_entry_mask_bool.to(dtype)
+    short_entry = short_entry_mask_bool.to(dtype)
+    reached_high = reached_high_mask_bool.to(dtype)
+    reached_low = reached_low_mask_bool.to(dtype)
+
+    low_to_close = ctx.close_actual - low_pred
+    high_to_close = ctx.close_actual - high_pred
+
+    if close_at_eod:
+        bought_profits = ctx.long_multiplier * low_to_close * long_entry
+        sold_profits = ctx.short_multiplier * high_to_close * short_entry
+        hit_trading_points = (long_entry_mask_bool | short_entry_mask_bool).to(dtype)
+        fee_cost = ctx.abs_positions * fee * hit_trading_points
+        return bought_profits + sold_profits - fee_cost
+
+    bought_profits = ctx.long_multiplier * low_to_close * long_entry
+    sold_profits = ctx.short_multiplier * high_to_close * short_entry
+
+    low_to_high = high_pred - low_pred
+    hit_high_points = low_to_high * reached_high * ctx.long_multiplier * long_entry
+    missed_high_points = bought_profits * (1.0 - reached_high)
+    bought_adjusted = hit_high_points + missed_high_points
+
+    high_to_low = low_pred - high_pred
+    hit_low_points = high_to_low * reached_low * ctx.short_multiplier * short_entry
+    missed_low_points = sold_profits * (1.0 - reached_low)
+    adjusted_profits = hit_low_points + missed_low_points
+
+    both_hit_mask = (long_entry_mask_bool & short_entry_mask_bool).to(dtype)
+    fee_cost = ctx.abs_positions * fee * both_hit_mask
+
+    return bought_adjusted + adjusted_profits - fee_cost
+
+
 class _EntryExitObjective:
     """Picklable objective function for multiprocessing"""
 
     def __init__(self, close_actual, positions, high_actual, high_pred, low_actual, low_pred, close_at_eod, trading_fee):
-        self.close_actual = close_actual
-        self.positions = positions
-        self.high_actual = high_actual
-        self.high_pred = high_pred
-        self.low_actual = low_actual
-        self.low_pred = low_pred
+        self.context = _prepare_entry_exit_context(
+            close_actual,
+            positions,
+            high_actual,
+            high_pred,
+            low_actual,
+            low_pred,
+        )
         self.close_at_eod = close_at_eod
         self.trading_fee = trading_fee
 
     def __call__(self, multipliers):
         high_mult, low_mult = multipliers
-        profit = calculate_trading_profit_torch_with_entry_buysell(
-            None,
-            None,
-            self.close_actual,
-            self.positions,
-            self.high_actual,
-            self.high_pred + float(high_mult),
-            self.low_actual,
-            self.low_pred + float(low_mult),
+        profit_tensor = _evaluate_entry_exit_profit(
+            self.context,
+            high_mult=float(high_mult),
+            low_mult=float(low_mult),
             close_at_eod=self.close_at_eod,
             trading_fee=self.trading_fee,
-        ).item()
-        return -profit
+        )
+        return -float(profit_tensor.sum().item())
 
 
 class _AlwaysOnObjective:

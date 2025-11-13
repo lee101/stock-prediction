@@ -35,12 +35,14 @@ from types import SimpleNamespace
 from src.comparisons import is_buy_side, is_sell_side
 from src.crypto_loop import crypto_alpaca_looper_api
 from src.fixtures import crypto_symbols, all_crypto_symbols
-from src.logging_utils import setup_logging
+from src.logging_utils import setup_logging, get_log_filename
 from src.stock_utils import pairs_equal, remap_symbols
 from src.symbol_utils import is_crypto_symbol
 from src.trading_obj_utils import filter_to_realistic_positions
 
-logger = setup_logging("alpaca_cli.log")
+# Detect if we're in hourly mode based on TRADE_STATE_SUFFIX env var
+_is_hourly = os.getenv("TRADE_STATE_SUFFIX", "") == "hourly"
+logger = setup_logging(get_log_filename("alpaca_cli.log", is_hourly=_is_hourly))
 
 
 def _get_time_in_force_for_qty(qty: float, symbol: str = None) -> str:

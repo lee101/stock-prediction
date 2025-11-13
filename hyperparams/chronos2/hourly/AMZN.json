@@ -1,0 +1,42 @@
+{
+  "symbol": "AMZN",
+  "model": "chronos2",
+  "config": {
+    "name": "direct_ctx2560_bs32_mean_minus_std_0.5_scale_meanstd_s256_eval38",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 2560,
+    "batch_size": 32,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "aggregation": "mean_minus_std_0.5",
+    "sample_count": 256,
+    "scaler": "meanstd",
+    "predict_kwargs": {}
+  },
+  "validation": {
+    "price_mae": 1.3395392285225682,
+    "pct_return_mae": 0.005436331693866677,
+    "latency_s": 4.422414497996215
+  },
+  "test": {
+    "price_mae": 1.1079625698207636,
+    "pct_return_mae": 0.004515472507719909,
+    "latency_s": 4.387606413016329
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_benchmark",
+    "generated_at": "2025-11-13T00:40:15Z",
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.005436331693866677,
+    "frequency": "hourly"
+  }
+}

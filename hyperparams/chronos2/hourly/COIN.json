@@ -1,0 +1,42 @@
+{
+  "symbol": "COIN",
+  "model": "chronos2",
+  "config": {
+    "name": "hourly_ctx8138_bs32_trimmed_mean_10_s512",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 8138,
+    "batch_size": 32,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "aggregation": "trimmed_mean_10",
+    "sample_count": 512,
+    "scaler": "none",
+    "predict_kwargs": {}
+  },
+  "validation": {
+    "price_mae": 5.113748461193504,
+    "pct_return_mae": 0.016519588810525603,
+    "latency_s": 3.276652391985408
+  },
+  "test": {
+    "price_mae": 11.825230429877049,
+    "pct_return_mae": 0.034181040415964814,
+    "latency_s": 3.161003791014082
+  },
+  "windows": {
+    "val_window": 168,
+    "test_window": 168,
+    "forecast_horizon": 1,
+    "bar_interval": "1h"
+  },
+  "metadata": {
+    "source": "chronos2_benchmark",
+    "generated_at": "2025-11-12T21:24:56Z",
+    "frequency": "hourly",
+    "notes": "Derived from daily chronos2 config; context extended for hourly bars."
+  }
+}

@@ -1,15 +1,18 @@
 """Position sizing utilities for trading operations."""
 
+import os
 from collections.abc import Sequence
 from math import floor
 from typing import Any, Optional
 
 from src.fixtures import crypto_symbols
-from src.logging_utils import setup_logging
+from src.logging_utils import setup_logging, get_log_filename
 from src.portfolio_risk import get_global_risk_threshold
 from src.trading_obj_utils import filter_to_realistic_positions
 
-logger = setup_logging("sizing_utils.log")
+# Detect if we're in hourly mode based on TRADE_STATE_SUFFIX env var
+_is_hourly = os.getenv("TRADE_STATE_SUFFIX", "") == "hourly"
+logger = setup_logging(get_log_filename("sizing_utils.log", is_hourly=_is_hourly))
 
 PositionLike = Any
 MAX_SYMBOL_EXPOSURE_PCT = 60.0

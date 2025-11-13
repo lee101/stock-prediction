@@ -1,30 +1,59 @@
 import argparse
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
 import torch
 from src.backtest_data_utils import mean_if_exists, to_numpy_array
-from src.backtest_env_utils import coerce_keepalive_seconds, cpu_fallback_enabled, in_test_mode, read_env_flag
+from src.backtest_env_utils import (
+    coerce_keepalive_seconds,
+    cpu_fallback_enabled,
+    in_test_mode,
+    read_env_flag,
+)
 from src.backtest_formatting_utils import fmt_number, log_table
 from src.backtest_path_utils import canonicalize_path
 from src.cache_utils import ensure_huggingface_cache_dir
+from src.chronos2_params import DEFAULT_CHRONOS_PREDICTION_LENGTH, resolve_chronos2_params
 from src.comparisons import is_buy_side
+from src.forecast_math import absolute_prices_to_pct_returns
 from src.logging_utils import setup_logging
-from src.optimization_utils import (
-    optimize_always_on_multipliers,
-    optimize_entry_exit_multipliers,
+from src.maxdiff_optimizer import (
+    ENTRY_EXIT_OPTIMIZER_BACKEND,
+    optimize_maxdiff_always_on,
+    optimize_maxdiff_entry_exit,
 )
+
+_ENTRY_EXIT_OPTIMIZER_BACKEND = ENTRY_EXIT_OPTIMIZER_BACKEND
 from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
 from torch.utils.tensorboard import SummaryWriter
 
 logger = setup_logging("backtest_test3_inline.log")
+logger.info("Entry/exit optimizer backend: %s", ENTRY_EXIT_OPTIMIZER_BACKEND)
+
+_LOG_STRATEGY_TIMINGS = read_env_flag("MAXDIFF_TIMING_DEBUG") or logger.isEnabledFor(logging.DEBUG)
+
+
+def _strategy_device() -> torch.device:
+    """Pick the compute device for strategy tensors."""
+
+    if not torch.cuda.is_available():
+        return torch.device("cpu")
+    if cpu_fallback_enabled() or read_env_flag("MAXDIFF_FORCE_CPU"):
+        return torch.device("cpu")
+    return torch.device("cuda")
+
+
+def _tensor(data: Union[np.ndarray, torch.Tensor, List[float]], *, device: torch.device) -> torch.Tensor:
+    return torch.as_tensor(data, dtype=torch.float32, device=device)
+
 
 ensure_huggingface_cache_dir(logger=logger)
 
@@ -306,9 +335,13 @@ def evaluate_maxdiff_strategy(
     skip_invalid_forecasts: bool = True,
     close_at_eod: Optional[bool] = None,
 ) -> Tuple[StrategyEvaluation, np.ndarray, Dict[str, object]]:
-    close_actual = torch.as_tensor(
+    timings: Dict[str, float] = {}
+    device = _strategy_device()
+    timer_start = time.perf_counter()
+
+    close_actual = _tensor(
         last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
-        dtype=torch.float32,
+        device=device,
     )
     if "close_actual_movement_values" not in last_preds:
         last_preds["close_actual_movement_values"] = close_actual
@@ -381,8 +414,8 @@ def evaluate_maxdiff_strategy(
     close_to_high_np = np.nan_to_num(close_to_high_np, nan=0.0, posinf=0.0, neginf=0.0)
     close_to_low_np = np.nan_to_num(close_to_low_np, nan=0.0, posinf=0.0, neginf=0.0)
 
-    close_to_high = torch.tensor(close_to_high_np, dtype=torch.float32)
-    close_to_low = torch.tensor(close_to_low_np, dtype=torch.float32)
+    close_to_high = _tensor(close_to_high_np, device=device)
+    close_to_low = _tensor(close_to_low_np, device=device)
 
     high_actual_values = last_preds.get("high_actual_movement_values")
     low_actual_values = last_preds.get("low_actual_movement_values")
@@ -407,15 +440,18 @@ def evaluate_maxdiff_strategy(
         )
         return eval_zero, eval_zero.returns, _zero_metadata()
 
-    high_actual_base = torch.as_tensor(high_actual_values, dtype=torch.float32)
-    low_actual_base = torch.as_tensor(low_actual_values, dtype=torch.float32)
-    high_pred_base = torch.as_tensor(high_pred_values, dtype=torch.float32)
-    low_pred_base = torch.as_tensor(low_pred_values, dtype=torch.float32)
+    high_actual_base = _tensor(high_actual_values, device=device)
+    low_actual_base = _tensor(low_actual_values, device=device)
+    high_pred_base = _tensor(high_pred_values, device=device)
+    low_pred_base = _tensor(low_pred_values, device=device)
 
     high_actual = high_actual_base + close_to_high
     low_actual = low_actual_base - close_to_low
     high_pred = high_pred_base + close_to_high
     low_pred = low_pred_base - close_to_low
+
+    if _LOG_STRATEGY_TIMINGS:
+        timings["prep"] = time.perf_counter() - timer_start
 
     with torch.no_grad():
         # Validate forecast order
@@ -435,65 +471,37 @@ def evaluate_maxdiff_strategy(
         if skip_invalid_forecasts:
             maxdiff_trades = torch.where(valid_forecast_mask, maxdiff_trades, torch.zeros_like(maxdiff_trades))
 
-        # Optimize close_at_eod policy by trying both options (or use specified value)
-        best_total_profit = float("-inf")
-        best_close_at_eod = False
-        best_high_multiplier = 0.0
-        best_low_multiplier = 0.0
-        base_profit_values = None
-        final_profit_values = None
-
-        # If close_at_eod is specified, only try that value; otherwise optimize
         close_at_eod_candidates = [close_at_eod] if close_at_eod is not None else [False, True]
-
-        for close_at_eod_candidate in close_at_eod_candidates:
-            candidate_base_profit = calculate_profit_torch_with_entry_buysell_profit_values(
-                close_actual,
-                high_actual,
-                high_pred,
-                low_actual,
-                low_pred,
-                maxdiff_trades,
-                close_at_eod=close_at_eod_candidate,
-                trading_fee=trading_fee,
+        opt_result = optimize_maxdiff_entry_exit(
+            close_actual,
+            maxdiff_trades,
+            high_actual,
+            high_pred,
+            low_actual,
+            low_pred,
+            close_at_eod_candidates=close_at_eod_candidates,
+            trading_fee=trading_fee,
+            optim_kwargs={"maxiter": 50, "popsize": 10, "workers": 1},
+            log_timings=_LOG_STRATEGY_TIMINGS,
+        )
+        base_profit_values = opt_result.base_profit
+        final_profit_values = opt_result.final_profit
+        if base_profit_values.numel() == 0 or final_profit_values.numel() == 0:
+            eval_zero = StrategyEvaluation(
+                total_return=0.0,
+                avg_daily_return=0.0,
+                annualized_return=0.0,
+                sharpe_ratio=0.0,
+                returns=np.zeros(0, dtype=float),
             )
+            return eval_zero, eval_zero.returns, _zero_metadata()
+        best_high_multiplier = opt_result.best_high_multiplier
+        best_low_multiplier = opt_result.best_low_multiplier
+        best_close_at_eod = opt_result.best_close_at_eod
+        if _LOG_STRATEGY_TIMINGS:
+            timings.update(opt_result.timings)
 
-            # Optimize multipliers for this close_at_eod policy
-            high_mult, low_mult, profit = optimize_entry_exit_multipliers(
-                close_actual,
-                maxdiff_trades,
-                high_actual,
-                high_pred,
-                low_actual,
-                low_pred,
-                close_at_eod=close_at_eod_candidate,
-                trading_fee=trading_fee,
-                maxiter=50,
-                popsize=10,
-                workers=1,  # sequential to avoid file descriptor issues
-            )
-
-            candidate_final_profit = calculate_profit_torch_with_entry_buysell_profit_values(
-                close_actual,
-                high_actual,
-                high_pred + high_mult,
-                low_actual,
-                low_pred + low_mult,
-                maxdiff_trades,
-                close_at_eod=close_at_eod_candidate,
-                trading_fee=trading_fee,
-            )
-
-            total_profit = float(candidate_final_profit.sum().item())
-
-            if total_profit > best_total_profit:
-                best_total_profit = total_profit
-                best_close_at_eod = close_at_eod_candidate
-                best_high_multiplier = high_mult
-                best_low_multiplier = low_mult
-                base_profit_values = candidate_base_profit.detach().clone()
-                final_profit_values = candidate_final_profit.detach().clone()
-
+    timing_post_opt = time.perf_counter()
     baseline_returns_np = base_profit_values.detach().cpu().numpy().astype(float, copy=False)
     baseline_eval = _evaluate_daily_returns(baseline_returns_np, trading_days_per_year)
     baseline_return = baseline_eval.total_return
@@ -514,6 +522,14 @@ def evaluate_maxdiff_strategy(
         sharpe_ratio=adjusted_sharpe,
         returns=daily_returns_np,
     )
+
+    if _LOG_STRATEGY_TIMINGS:
+        timings["post_opt"] = time.perf_counter() - timing_post_opt
+        logger.debug(
+            "MaxDiff timings (device=%s): %s",
+            device,
+            ", ".join(f"{k}={v:.3f}s" for k, v in timings.items()),
+        )
 
     logger.info(
         "MaxDiff: baseline=%.4f optimized=%.4f (mult_h=%.4f mult_l=%.4f close_at_eod=%s) → adjusted=%.4f",
@@ -577,9 +593,13 @@ def evaluate_maxdiff_always_on_strategy(
     is_crypto: bool = False,
     close_at_eod: Optional[bool] = None,
 ) -> Tuple[StrategyEvaluation, np.ndarray, Dict[str, object]]:
-    close_actual = torch.as_tensor(
+    timings: Dict[str, float] = {}
+    device = _strategy_device()
+    timer_start = time.perf_counter()
+
+    close_actual = _tensor(
         last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
-        dtype=torch.float32,
+        device=device,
     )
     validation_len = int(close_actual.numel())
 
@@ -639,8 +659,8 @@ def evaluate_maxdiff_always_on_strategy(
     close_to_high_np = np.nan_to_num(close_to_high_np, nan=0.0, posinf=0.0, neginf=0.0)
     close_to_low_np = np.nan_to_num(close_to_low_np, nan=0.0, posinf=0.0, neginf=0.0)
 
-    close_to_high = torch.tensor(close_to_high_np, dtype=torch.float32)
-    close_to_low = torch.tensor(close_to_low_np, dtype=torch.float32)
+    close_to_high = _tensor(close_to_high_np, device=device)
+    close_to_low = _tensor(close_to_low_np, device=device)
 
     high_actual_values = last_preds.get("high_actual_movement_values")
     low_actual_values = last_preds.get("low_actual_movement_values")
@@ -657,87 +677,34 @@ def evaluate_maxdiff_always_on_strategy(
         )
         return eval_zero, eval_zero.returns, _zero_metadata()
 
-    high_actual = torch.as_tensor(high_actual_values, dtype=torch.float32) + close_to_high
-    low_actual = torch.as_tensor(low_actual_values, dtype=torch.float32) - close_to_low
-    high_pred = torch.as_tensor(high_pred_values, dtype=torch.float32) + close_to_high
-    low_pred = torch.as_tensor(low_pred_values, dtype=torch.float32) - close_to_low
+    high_actual = _tensor(high_actual_values, device=device) + close_to_high
+    low_actual = _tensor(low_actual_values, device=device) - close_to_low
+    high_pred = _tensor(high_pred_values, device=device) + close_to_high
+    low_pred = _tensor(low_pred_values, device=device) - close_to_low
 
     buy_indicator = torch.ones_like(close_actual)
     sell_indicator = torch.zeros_like(close_actual) if is_crypto else -torch.ones_like(close_actual)
 
-    # Optimize close_at_eod policy by trying both options (or use specified value)
-    best_total_profit = float("-inf")
-    best_close_at_eod = False
-    best_high_multiplier = 0.0
-    best_low_multiplier = 0.0
-    best_buy_returns_tensor = None
-    best_sell_returns_tensor = None
+    if _LOG_STRATEGY_TIMINGS:
+        timings["prep"] = time.perf_counter() - timer_start
 
-    # If close_at_eod is specified, only try that value; otherwise optimize
     close_at_eod_candidates = [close_at_eod] if close_at_eod is not None else [False, True]
-
-    for close_at_eod_candidate in close_at_eod_candidates:
-        # Optimize multipliers for this close_at_eod policy
-        high_mult, low_mult, _ = optimize_always_on_multipliers(
-            close_actual,
-            buy_indicator,
-            sell_indicator,
-            high_actual,
-            high_pred,
-            low_actual,
-            low_pred,
-            close_at_eod=close_at_eod_candidate,
-            trading_fee=trading_fee,
-            is_crypto=is_crypto,
-            maxiter=30,
-            popsize=8,
-            workers=1,  # sequential to avoid file descriptor issues
-        )
-
-        # Compute returns with these multipliers
-        with torch.no_grad():
-            buy_returns = calculate_profit_torch_with_entry_buysell_profit_values(
-                close_actual,
-                high_actual,
-                high_pred + high_mult,
-                low_actual,
-                low_pred + low_mult,
-                buy_indicator,
-                close_at_eod=close_at_eod_candidate,
-                trading_fee=trading_fee,
-            )
-            if is_crypto:
-                sell_returns = torch.zeros_like(buy_returns)
-            else:
-                sell_returns = calculate_profit_torch_with_entry_buysell_profit_values(
-                    close_actual,
-                    high_actual,
-                    high_pred + high_mult,
-                    low_actual,
-                    low_pred + low_mult,
-                    sell_indicator,
-                    close_at_eod=close_at_eod_candidate,
-                    trading_fee=trading_fee,
-                )
-
-            total_profit = float((buy_returns + sell_returns).sum().item())
-
-            if total_profit > best_total_profit:
-                best_total_profit = total_profit
-                best_close_at_eod = close_at_eod_candidate
-                best_high_multiplier = high_mult
-                best_low_multiplier = low_mult
-                best_buy_returns_tensor = buy_returns.detach().clone()
-                best_sell_returns_tensor = sell_returns.detach().clone()
-
-    best_state = (
-        best_high_multiplier,
-        best_low_multiplier,
-        best_buy_returns_tensor,
-        best_sell_returns_tensor,
+    opt_result = optimize_maxdiff_always_on(
+        close_actual,
+        buy_indicator,
+        sell_indicator,
+        high_actual,
+        high_pred,
+        low_actual,
+        low_pred,
+        is_crypto=is_crypto,
+        close_at_eod_candidates=close_at_eod_candidates,
+        trading_fee=trading_fee,
+        optim_kwargs={"maxiter": 30, "popsize": 8, "workers": 1},
+        log_timings=_LOG_STRATEGY_TIMINGS,
     )
 
-    if best_state is None:
+    if opt_result.buy_returns.numel() == 0 and opt_result.sell_returns.numel() == 0:
         eval_zero = StrategyEvaluation(
             total_return=0.0,
             avg_daily_return=0.0,
@@ -747,7 +714,14 @@ def evaluate_maxdiff_always_on_strategy(
         )
         return eval_zero, eval_zero.returns, _zero_metadata()
 
-    best_high_multiplier, best_low_multiplier, best_buy_returns_tensor, best_sell_returns_tensor = best_state
+    best_high_multiplier = opt_result.best_high_multiplier
+    best_low_multiplier = opt_result.best_low_multiplier
+    best_close_at_eod = opt_result.best_close_at_eod
+    best_buy_returns_tensor = opt_result.buy_returns
+    best_sell_returns_tensor = opt_result.sell_returns
+    if _LOG_STRATEGY_TIMINGS:
+        timings.update(opt_result.timings)
+    post_opt_start = time.perf_counter()
     combined_returns_tensor = best_buy_returns_tensor + best_sell_returns_tensor
     daily_returns_np = combined_returns_tensor.detach().cpu().numpy().astype(float, copy=False)
     optimized_eval = _evaluate_daily_returns(daily_returns_np, trading_days_per_year)
@@ -777,6 +751,14 @@ def evaluate_maxdiff_always_on_strategy(
         sharpe_ratio=adjusted_sharpe,
         returns=daily_returns_np,
     )
+
+    if _LOG_STRATEGY_TIMINGS:
+        timings["post_opt"] = time.perf_counter() - post_opt_start
+        logger.debug(
+            "MaxDiffAlwaysOn timings (device=%s): %s",
+            device,
+            ", ".join(f"{k}={v:.3f}s" for k, v in timings.items()),
+        )
 
     logger.info(
         "MaxDiffAlwaysOn: baseline=%.4f optimized=%.4f (mult_h=%.4f mult_l=%.4f close_at_eod=%s) → adjusted=%.4f",
@@ -1889,78 +1871,7 @@ def resolve_best_model(symbol: str) -> str:
     return model
 
 
-_chronos2_params_cache: Dict[str, Dict[str, Any]] = {}
 _chronos2_wrapper_cache: Dict[str, Any] = {}
-DEFAULT_CHRONOS_PREDICTION_LENGTH = 7
-
-
-def resolve_chronos2_params(symbol: str) -> Dict[str, Any]:
-    """
-    Resolve chronos2 hyperparameters for a symbol.
-
-    Returns a dictionary with chronos2 parameters:
-    - model_id: HuggingFace model identifier
-    - device_map: Device to load model on
-    - context_length: Max context window
-    - prediction_length: Forecast horizon
-    - quantile_levels: List of quantiles to predict
-    - batch_size: Batch size for predictions
-    """
-    cached = _chronos2_params_cache.get(symbol)
-    if cached is not None:
-        return cached.copy()
-
-    # Try to load from hyperparams store
-    record = load_best_config("chronos2", symbol)
-    config = record.config if record else {}
-    symbol_key = symbol.upper()
-    hyperparam_root = Path(os.getenv("HYPERPARAM_ROOT", "hyperparams"))
-    config_path = hyperparam_root / "chronos2" / f"{symbol_key}.json"
-    quantile_levels = config.get("quantile_levels", [0.1, 0.5, 0.9])
-    try:
-        quantile_tuple = tuple(float(level) for level in quantile_levels)
-    except (TypeError, ValueError):
-        quantile_tuple = (0.1, 0.5, 0.9)
-
-    if record is not None:
-        params = {
-            "model_id": config.get("model_id", "amazon/chronos-2"),
-            "device_map": config.get("device_map", "cuda"),
-            "context_length": int(config.get("context_length", 512)),
-            "prediction_length": max(
-                2, int(config.get("prediction_length", DEFAULT_CHRONOS_PREDICTION_LENGTH))
-            ),
-            "quantile_levels": quantile_tuple,
-            "batch_size": int(config.get("batch_size", 128)),
-            "aggregation": str(config.get("aggregation", "median")),
-            "sample_count": int(config.get("sample_count", 0)),
-            "scaler": str(config.get("scaler", "none")),
-            "predict_kwargs": dict(config.get("predict_kwargs") or {}),
-            "_config_path": str(config_path) if config_path.exists() else None,
-            "_config_name": str(config.get("name") or ""),
-        }
-        logger.info(f"Loaded Chronos2 hyperparameters for {symbol} from hyperparamstore.")
-    else:
-        # Default parameters
-        params = {
-            "model_id": "amazon/chronos-2",
-            "device_map": "cuda",
-            "context_length": 512,
-            "prediction_length": DEFAULT_CHRONOS_PREDICTION_LENGTH,
-            "quantile_levels": (0.1, 0.5, 0.9),
-            "batch_size": 128,
-            "aggregation": "median",
-            "sample_count": 0,
-            "scaler": "none",
-            "predict_kwargs": {},
-            "_config_path": str(config_path) if config_path.exists() else None,
-            "_config_name": "",
-        }
-        logger.info(f"No stored Chronos2 hyperparameters for {symbol} — using defaults.")
-
-    _chronos2_params_cache[symbol] = params
-    return params.copy()
-
 
 def load_chronos2_wrapper(params: Dict[str, Any]) -> Any:
     """Load Chronos2 wrapper with symbol-specific hyperparameters."""
@@ -1971,9 +1882,8 @@ def load_chronos2_wrapper(params: Dict[str, Any]) -> Any:
     if cached is not None:
         return cached
 
-    # Disable torch.compile by default (can enable with TORCH_COMPILED=1)
-    # Compiled mode can cause SDPA backend issues
-    torch_compiled_flag = os.getenv("TORCH_COMPILED", "0")
+    # Enable torch.compile by default (can disable with TORCH_COMPILED=0)
+    torch_compiled_flag = os.getenv("TORCH_COMPILED", "1")
     compile_enabled = torch_compiled_flag in {"1", "true", "yes", "on"}
 
     # Also check legacy CHRONOS_COMPILE flag for backwards compatibility
@@ -2420,7 +2330,7 @@ def evaluate_strategy(
     )
 
 
-def backtest_forecasts(symbol, num_simulations=50):
+def backtest_forecasts(symbol, num_simulations=50, model_override: Optional[str] = None):
     # Apply FAST_SIMULATE optimizations (torch.compile + bf16 + reduced sims)
     _apply_fast_simulate_optimizations()
 
@@ -2490,6 +2400,7 @@ def backtest_forecasts(symbol, num_simulations=50):
                 is_crypto,
                 sim_number,
                 spread,
+                model_override=model_override,
             )
             results.append(result)
 
@@ -2645,7 +2556,16 @@ def backtest_forecasts(symbol, num_simulations=50):
         SPREAD = previous_spread
 
 
-def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_idx, spread):
+def run_single_simulation(
+    simulation_data,
+    symbol,
+    trading_fee,
+    is_crypto,
+    sim_idx,
+    spread,
+    *,
+    model_override: Optional[str] = None,
+):
     last_preds = {
         "instrument": symbol,
         "close_last_price": simulation_data["Close"].iloc[-1],
@@ -2662,15 +2582,26 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     if atr_pct is not None:
         last_preds["atr_pct_14"] = atr_pct
 
-    best_model = resolve_best_model(symbol)
-    use_kronos = best_model == "kronos"
-    use_chronos2 = best_model == "chronos2"
+    override_name = (model_override or "").strip().lower() if model_override else None
+    if override_name and override_name not in {"toto", "kronos", "chronos2"}:
+        logger.warning(
+            "Invalid model_override=%s for %s — falling back to automatic selection.",
+            model_override,
+            symbol,
+        )
+        override_name = None
+    selected_model = override_name or resolve_best_model(symbol)
+    use_kronos = selected_model == "kronos"
+    use_chronos2 = selected_model == "chronos2"
     if use_kronos:
         _require_cuda("Kronos forecasting", symbol=symbol, allow_cpu_fallback=False)
     elif use_chronos2:
         _require_cuda("Chronos2 forecasting", symbol=symbol, allow_cpu_fallback=False)
     else:
         _require_cuda("Toto forecasting", symbol=symbol)
+
+    if override_name:
+        logger.info("Applying model_override=%s for %s", selected_model, symbol)
 
     try:
         toto_params = resolve_toto_params(symbol)
@@ -2728,6 +2659,61 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
                 chronos2_init_logged = True
             chronos2_wrapper = None
             return False
+
+    chronos2_abs_forecasts: Optional[Dict[str, np.ndarray]] = None
+    chronos2_metadata_logged = False
+
+    def _ensure_chronos2_forecasts() -> Optional[Dict[str, np.ndarray]]:
+        nonlocal chronos2_abs_forecasts, chronos2_metadata_logged
+        if chronos2_abs_forecasts is not None:
+            return chronos2_abs_forecasts
+        if not use_chronos2 or not ensure_chronos2_ready():
+            return None
+        try:
+            prediction_length = int(chronos2_params.get("prediction_length", DEFAULT_CHRONOS_PREDICTION_LENGTH))
+            quantile_levels = tuple(chronos2_params.get("quantile_levels", (0.1, 0.5, 0.9)))
+            predict_kwargs = dict(chronos2_params.get("predict_kwargs") or {})
+            chronos2_result = chronos2_wrapper.predict_ohlc(
+                context_df=chronos2_df.copy(),
+                symbol=symbol,
+                prediction_length=prediction_length,
+                context_length=chronos2_params.get("context_length", 512),
+                batch_size=chronos2_params.get("batch_size", 128),
+                quantile_levels=quantile_levels,
+                predict_kwargs=predict_kwargs or None,
+            )
+            if chronos2_result.applied_augmentation:
+                last_preds["chronos2_preaug_strategy"] = chronos2_result.applied_augmentation
+            if getattr(chronos2_result, "applied_choice", None) is not None:
+                source_path = getattr(chronos2_result.applied_choice, "source_path", None)
+                if source_path is not None:
+                    last_preds["chronos2_preaug_source"] = str(source_path)
+            last_preds["chronos2_quantile_levels"] = list(quantile_levels)
+            last_preds["chronos2_predict_kwargs"] = predict_kwargs
+            last_preds["chronos2_context_length"] = chronos2_params.get("context_length")
+            last_preds["chronos2_batch_size"] = chronos2_params.get("batch_size")
+            last_preds["chronos2_prediction_length"] = prediction_length
+            if chronos2_params.get("_config_path"):
+                last_preds["chronos2_hparams_config_path"] = chronos2_params["_config_path"]
+            if chronos2_params.get("model_id"):
+                last_preds["chronos2_model_id"] = chronos2_params["model_id"]
+
+            median_frame = chronos2_result.quantile_frames.get(0.5)
+            if median_frame is None:
+                return None
+            forecast_map: Dict[str, np.ndarray] = {}
+            for column in median_frame.columns:
+                forecast_map[column] = median_frame[column].to_numpy(dtype=np.float32, copy=True)
+            chronos2_abs_forecasts = forecast_map
+            chronos2_metadata_logged = True
+            return chronos2_abs_forecasts
+        except Exception as exc:
+            if not chronos2_metadata_logged:
+                import traceback
+                logger.warning("Chronos2 forecast failed for %s: %s", symbol, exc)
+                logger.warning("Chronos2 traceback:\n%s", traceback.format_exc())
+                chronos2_metadata_logged = True
+            return None
 
     for key_to_predict in ["Close", "Low", "High", "Open"]:
         data = pre_process_data(simulation_data, key_to_predict)
@@ -2801,58 +2787,14 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
 
         chronos2_predictions = None
         chronos2_abs = None
-        if use_chronos2 and ensure_chronos2_ready():
-            try:
-                prediction_length = int(chronos2_params.get("prediction_length", DEFAULT_CHRONOS_PREDICTION_LENGTH))
-                quantile_levels = tuple(chronos2_params.get("quantile_levels", (0.1, 0.5, 0.9)))
-                predict_kwargs = dict(chronos2_params.get("predict_kwargs") or {})
-                chronos2_result = chronos2_wrapper.predict_ohlc(
-                    context_df=chronos2_df.copy(),
-                    symbol=symbol,
-                    prediction_length=prediction_length,
-                    context_length=chronos2_params.get("context_length", 512),
-                    batch_size=chronos2_params.get("batch_size", 128),
-                    quantile_levels=quantile_levels,
-                    predict_kwargs=predict_kwargs or None,
-                )
-                if chronos2_result.applied_augmentation:
-                    last_preds["chronos2_preaug_strategy"] = chronos2_result.applied_augmentation
-                if getattr(chronos2_result, "applied_choice", None) is not None:
-                    source_path = getattr(chronos2_result.applied_choice, "source_path", None)
-                    if source_path is not None:
-                        last_preds["chronos2_preaug_source"] = str(source_path)
-                last_preds["chronos2_quantile_levels"] = list(quantile_levels)
-                last_preds["chronos2_predict_kwargs"] = predict_kwargs
-                last_preds["chronos2_context_length"] = chronos2_params.get("context_length")
-                last_preds["chronos2_batch_size"] = chronos2_params.get("batch_size")
-                last_preds["chronos2_prediction_length"] = prediction_length
-                if chronos2_params.get("_config_path"):
-                    last_preds["chronos2_hparams_config_path"] = chronos2_params["_config_path"]
-                if chronos2_params.get("model_id"):
-                    last_preds["chronos2_model_id"] = chronos2_params["model_id"]
-                # Extract median predictions (quantile 0.5) for the specific target
-                median_frame = chronos2_result.quantile_frames.get(0.5)
-                if median_frame is not None and key_to_predict.lower() in median_frame.columns:
-                    pred_values = median_frame[key_to_predict.lower()].values
-                    if len(pred_values) > 0:
-                        # Convert absolute predictions to percentage returns
-                        chronos2_abs = float(pred_values[-1])
-                        pct_returns = []
-                        prev_price = current_last_price
-                        for pred_price in pred_values:
-                            pct_change = (pred_price - prev_price) / prev_price if prev_price != 0 else 0.0
-                            pct_returns.append(pct_change)
-                            prev_price = pred_price
-                        chronos2_predictions = torch.tensor(pct_returns, dtype=torch.float32)
-            except Exception as exc:
-                import traceback
-                if key_to_predict == "Close":
-                    logger.warning("Chronos2 forecast failed for %s %s: %s", symbol, key_to_predict, exc)
-                    logger.warning("Chronos2 traceback:\n%s", traceback.format_exc())
-                chronos2_predictions = None
-                chronos2_abs = None
-                # Don't set wrapper to None - it might work on next iteration
-                # chronos2_wrapper = None
+        if use_chronos2:
+            abs_map = _ensure_chronos2_forecasts()
+            if abs_map is not None:
+                target_key = key_to_predict.lower()
+                target_values = abs_map.get(target_key)
+                if target_values is not None and target_values.size > 0:
+                    chronos2_abs = float(target_values[-1])
+                    chronos2_predictions = absolute_prices_to_pct_returns(target_values, current_last_price)
 
         predictions = None
         predictions_source = None
@@ -2923,6 +2865,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         last_preds["close_ci_band"] = torch.zeros(pad_length, dtype=torch.float32)
     if "close_prediction_source" not in last_preds:
         last_preds["close_prediction_source"] = "chronos2" if use_chronos2 else ("kronos" if use_kronos else "toto")
+    last_preds["model_used"] = selected_model
 
     # Calculate actual percentage returns over the validation horizon
     close_window = simulation_data["Close"].iloc[-7:]
@@ -3146,6 +3089,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     result = {
         "date": simulation_data.index[-1],
         "close": float(last_preds["close_last_price"]),
+        "model_used": selected_model,
         "predicted_close": float(last_preds.get("close_predicted_price_value", 0.0)),
         "predicted_high": float(last_preds.get("high_predicted_price_value", 0.0)),
         "predicted_low": float(last_preds.get("low_predicted_price_value", 0.0)),
@@ -3155,7 +3099,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
         "dollar_vol_20d": float(last_preds.get("dollar_vol_20d", 0.0)),
         "atr_pct_14": float(last_preds.get("atr_pct_14", 0.0)),
         "spread_bps_estimate": float(last_preds.get("spread_bps_estimate", 0.0)),
-        "close_prediction_source": last_preds.get("close_prediction_source", best_model),
+        "close_prediction_source": last_preds.get("close_prediction_source", selected_model),
         "raw_expected_move_pct": float(last_preds.get("raw_expected_move_pct", 0.0)),
         "calibrated_expected_move_pct": float(
             last_preds.get("calibrated_expected_move_pct", last_preds.get("raw_expected_move_pct", 0.0))

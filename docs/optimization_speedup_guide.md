@@ -2,7 +2,7 @@
 
 ## ✅ IMPLEMENTED: Nevergrad Optimizer
 
-**Status:** Active in `backtest_test3_inline.py` (line 20-22)
+**Status:** Active in `backtest_test3_inline.py` (auto-detected at import time)
 
 ## Current Performance
 - 70 simulations × 2 optimizations = 140 optimization calls per backtest
@@ -27,21 +27,18 @@
 
 ### Nevergrad Integration (1.7x faster optimization)
 
-**Status:** ✅ Implemented and active
+**Status:** ✅ Implemented and auto-selected
 
-The following change has been made to `backtest_test3_inline.py`:
-```python
-# Line 20-22: Now using fast optimizer
-from src.optimization_utils_fast import (
-    optimize_always_on_multipliers,
-    optimize_entry_exit_multipliers,
-)
-```
+`backtest_test3_inline.py` now imports `src.optimization_utils_fast` first. At startup it logs
+`Entry/exit optimizer backend: nevergrad` when Nevergrad is installed, and logs `scipy-direct (fallback)`
+if it has to fall back to SciPy. No flags required—developer runs automatically get the faster backend.
 
-This automatically uses Nevergrad (if installed) with scipy as fallback:
-- ✅ Nevergrad installed
-- ✅ 1.7x faster optimization
-- ✅ Drop-in compatible with existing code
+### Chronos2 Multi-Target Reuse (~4x faster inference per sim)
+
+Chronos forecasting is now executed once per simulation and the absolute OHLC traces are cached. The code
+converts those absolute paths to pct returns on demand, so we no longer re-run Chronos for "close", "low",
+"high", and "open" separately. This keeps the compiled Chronos2 pipeline busy, improves CUDA utilisation,
+and frees several seconds per backtest runway.
 
 ## Further Speedup Options
 

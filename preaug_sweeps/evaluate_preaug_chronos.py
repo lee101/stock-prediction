@@ -30,6 +30,8 @@ from benchmark_chronos2 import (
     Chronos2Benchmark,
     Chronos2Candidate,
     CandidateReport,
+    VAL_WINDOW,
+    TEST_WINDOW,
     _prepare_series,
     _window_indices,
 )
@@ -93,6 +95,9 @@ def _build_benchmark(args: argparse.Namespace) -> Chronos2Benchmark:
         torch_compile=args.torch_compile,
         verbose=args.verbose,
         output_dir=str(args.benchmark_cache_dir),
+        val_window=args.val_window,
+        test_window=args.test_window,
+        auto_context_guard=args.val_window + args.test_window,
     )
     return Chronos2Benchmark(bench_args)
 
@@ -181,6 +186,8 @@ def _persist_best(
             "hyperparam_root": str(args.hyperparam_root),
         },
     }
+    if getattr(args, "frequency", None):
+        payload["metadata"]["frequency"] = args.frequency
     args.output_dir.mkdir(parents=True, exist_ok=True)
     target = args.output_dir / f"{symbol}.json"
     with target.open("w", encoding="utf-8") as fp:
@@ -212,6 +219,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device-map", default="cuda")
     parser.add_argument("--torch-dtype", default=None)
     parser.add_argument("--torch-compile", action="store_true", help="Enable torch.compile for Chronos2.")
+    parser.add_argument("--val-window", type=int, default=VAL_WINDOW)
+    parser.add_argument("--test-window", type=int, default=TEST_WINDOW)
     parser.add_argument("--predict-batches-jointly", action="store_true")
     parser.add_argument("--limit-prediction-length", action="store_true")
     parser.add_argument("--max-output-patches", type=int, default=None)
@@ -221,6 +230,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--benchmark-cache-dir", type=Path, default=Path("chronos2_benchmarks/preaug_cache"))
     parser.add_argument("--report-dir", type=Path, default=Path("preaug_sweeps/reports"))
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--frequency",
+        choices=("daily", "hourly"),
+        help="Optional frequency tag stored alongside saved strategies.",
+    )
     return parser.parse_args()
 
 
@@ -241,15 +255,16 @@ def main() -> int:
         if not config_path.exists():
             print(f"[WARN] Skipping {symbol}: missing {config_path}")
             continue
-        csv_path = args.data_dir / f"{symbol}.csv"
-        if not csv_path.exists():
-            print(f"[WARN] Skipping {symbol}: missing price data {csv_path}")
+        try:
+            csv_path = benchmark._resolve_symbol_path(symbol)
+        except FileNotFoundError as exc:
+            print(f"[WARN] Skipping {symbol}: {exc}")
             continue
 
         candidate = _load_candidate(config_path)
         df = _prepare_series(csv_path)
         try:
-            val_indices, test_indices = _window_indices(len(df))
+            val_indices, test_indices = _window_indices(len(df), args.val_window, args.test_window)
         except ValueError as exc:
             print(f"[WARN] Skipping {symbol}: {exc}")
             continue

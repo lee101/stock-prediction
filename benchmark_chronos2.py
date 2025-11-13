@@ -141,13 +141,13 @@ def _prepare_series(csv_path: Path) -> pd.DataFrame:
     return df
 
 
-def _window_indices(length: int) -> Tuple[range, range]:
-    if length < MIN_CONTEXT + VAL_WINDOW + TEST_WINDOW:
+def _window_indices(length: int, val_window: int = VAL_WINDOW, test_window: int = TEST_WINDOW) -> Tuple[range, range]:
+    if length < MIN_CONTEXT + val_window + test_window:
         raise ValueError(
-            f"dataset too short ({length} rows); need at least {MIN_CONTEXT + VAL_WINDOW + TEST_WINDOW}"
+            f"dataset too short ({length} rows); need at least {MIN_CONTEXT + val_window + test_window}"
         )
-    val_start = length - (TEST_WINDOW + VAL_WINDOW)
-    return range(val_start, length - TEST_WINDOW), range(length - TEST_WINDOW, length)
+    val_start = length - (test_window + val_window)
+    return range(val_start, length - test_window), range(length - test_window, length)
 
 _T = TypeVar("_T")
 
@@ -162,7 +162,11 @@ def _unique_sequence(values: Sequence[_T]) -> Tuple[_T, ...]:
 
 
 def _resolve_context_lengths(series_length: int, args: argparse.Namespace) -> Tuple[int, ...]:
-    guard = getattr(args, "auto_context_guard", VAL_WINDOW + TEST_WINDOW)
+    guard = getattr(args, "auto_context_guard", None)
+    if guard is None:
+        val_window = getattr(args, "val_window", VAL_WINDOW)
+        test_window = getattr(args, "test_window", TEST_WINDOW)
+        guard = val_window + test_window
     max_allowed = max(MIN_CONTEXT, series_length - guard)
     if getattr(args, "auto_context_lengths", False):
         start = max(MIN_CONTEXT, getattr(args, "auto_context_min", MIN_CONTEXT))
@@ -266,6 +270,8 @@ class Chronos2Benchmark:
         self.quantile_levels = tuple(sorted(set(args.quantile_levels)))
         self.predict_kwargs = self._build_predict_kwargs(args)
         self.torch_dtype = _parse_torch_dtype(args.torch_dtype)
+        self.val_window = int(getattr(args, "val_window", VAL_WINDOW))
+        self.test_window = int(getattr(args, "test_window", TEST_WINDOW))
         self.wrapper_cache: MutableMapping[Tuple[int, Tuple[float, ...]], Chronos2OHLCWrapper] = {}
         self.rng = np.random.default_rng(args.seed)
         self.output_root = Path(args.output_dir)
@@ -310,14 +316,26 @@ class Chronos2Benchmark:
                 continue
         self.wrapper_cache.clear()
 
+    def _resolve_symbol_path(self, symbol: str) -> Path:
+        direct = self.data_dir / f"{symbol}.csv"
+        if direct.exists():
+            return direct
+        candidates = [
+            self.data_dir / "stocks" / f"{symbol}.csv",
+            self.data_dir / "crypto" / f"{symbol}.csv",
+            self.data_dir / "hourly" / f"{symbol}.csv",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        raise FileNotFoundError(f"Missing data for {symbol}: {direct}")
+
     def run(self, candidates: Sequence[Chronos2Candidate]) -> List[CandidateReport]:
         reports: List[CandidateReport] = []
         for symbol in self.symbols:
-            csv_path = self.data_dir / f"{symbol}.csv"
-            if not csv_path.exists():
-                raise FileNotFoundError(f"Missing data for {symbol}: {csv_path}")
+            csv_path = self._resolve_symbol_path(symbol)
             df = _prepare_series(csv_path)
-            val_indices, test_indices = _window_indices(len(df))
+            val_indices, test_indices = _window_indices(len(df), self.val_window, self.test_window)
             for candidate in candidates:
                 report = self._evaluate_candidate(symbol, df, val_indices, test_indices, candidate)
                 reports.append(report)
@@ -334,11 +352,9 @@ class Chronos2Benchmark:
     def run_direct(self) -> List[CandidateReport]:
         reports: List[CandidateReport] = []
         for symbol in self.symbols:
-            csv_path = self.data_dir / f"{symbol}.csv"
-            if not csv_path.exists():
-                raise FileNotFoundError(f"Missing data for {symbol}: {csv_path}")
+            csv_path = self._resolve_symbol_path(symbol)
             df = _prepare_series(csv_path)
-            val_indices, test_indices = _window_indices(len(df))
+            val_indices, test_indices = _window_indices(len(df), self.val_window, self.test_window)
             search_space = _build_direct_search_space(len(df), self.args)
             symbol_reports = self._optimize_symbol_with_direct(symbol, df, val_indices, test_indices, search_space)
             reports.extend(symbol_reports)
@@ -460,7 +476,11 @@ class Chronos2Benchmark:
             candidate=candidate,
             validation=val_result,
             test=test_result,
-            windows={"val_window": VAL_WINDOW, "test_window": TEST_WINDOW, "forecast_horizon": FORECAST_HORIZON},
+            windows={
+                "val_window": self.val_window,
+                "test_window": self.test_window,
+                "forecast_horizon": FORECAST_HORIZON,
+            },
         )
 
     def _evaluate_indices(
@@ -638,7 +658,11 @@ def _maybe_update_hyperparams(reports: Sequence[CandidateReport], args: argparse
         by_symbol.setdefault(report.symbol, []).append(report)
     for symbol, symbol_reports in by_symbol.items():
         best_report = min(symbol_reports, key=lambda r: r.validation.pct_return_mae)
-        target_path = Path(args.hyperparam_root) / "chronos2" / f"{symbol}.json"
+        model_dir = Path(args.hyperparam_root) / "chronos2"
+        subdir = getattr(args, "chronos2_subdir", "") or ""
+        if subdir:
+            model_dir = model_dir / subdir
+        target_path = model_dir / f"{symbol}.json"
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         existing_val: Optional[float] = None
@@ -689,6 +713,8 @@ def _maybe_update_hyperparams(reports: Sequence[CandidateReport], args: argparse
                 "selection_value": best_val,
             },
         }
+        if subdir:
+            payload["metadata"]["frequency"] = subdir
         with target_path.open("w") as fp:
             json.dump(payload, fp, indent=2)
         print(
@@ -709,6 +735,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-id", default="amazon/chronos-2", help="Chronos2 model identifier")
     parser.add_argument("--device-map", default=DEFAULT_DEVICE_MAP, help="Device map (default: cuda)")
     parser.add_argument("--context-lengths", type=int, nargs="+", default=[512])
+    parser.add_argument("--val-window", type=int, default=VAL_WINDOW, help="Validation window length.")
+    parser.add_argument("--test-window", type=int, default=TEST_WINDOW, help="Test window length.")
     parser.add_argument("--auto-context-lengths", action="store_true", help="Derive context lengths per symbol")
     parser.add_argument("--auto-context-min", type=int, default=512)
     parser.add_argument("--auto-context-max", type=int, default=8192)
@@ -716,8 +744,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--auto-context-guard",
         type=int,
-        default=VAL_WINDOW + TEST_WINDOW,
-        help="Rows reserved for validation/test when deriving contexts",
+        default=None,
+        help="Rows reserved for validation/test when deriving contexts (defaults to val+test window).",
     )
     parser.add_argument("--batch-sizes", type=int, nargs="+", default=[128])
     parser.add_argument("--aggregations", nargs="+", default=["median"])
@@ -744,6 +772,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-candidates", type=int, help="Optional limit when using cross-product candidates")
     parser.add_argument("--output-dir", default="chronos2_benchmarks")
     parser.add_argument("--hyperparam-root", default="hyperparams")
+    parser.add_argument(
+        "--chronos2-subdir",
+        default="",
+        help="Optional subdirectory under hyperparams/chronos2/ for variant configs (e.g., 'hourly').",
+    )
     parser.add_argument("--update-hyperparams", action="store_true")
     parser.add_argument("--data-only", action="store_true", help="Skip hyperparam updates even if flag is set")
     parser.add_argument("--predict-kwargs", type=str, help="JSON dict merged into predict kwargs")
@@ -776,6 +809,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.set_defaults(direct_locally_biased=True)
     args = parser.parse_args()
+    if args.auto_context_guard is None:
+        args.auto_context_guard = args.val_window + args.test_window
     if args.deprecated_batch_size and args.deprecated_batch_size not in args.batch_sizes:
         args.batch_sizes.append(args.deprecated_batch_size)
     args.quantile_levels = sorted(set(args.quantile_levels))

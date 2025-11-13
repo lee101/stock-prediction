@@ -1,0 +1,62 @@
+{
+  "symbol": "SONY",
+  "best_strategy": "rolling_norm",
+  "mae": 0.1131546411060153,
+  "mae_percent": 0.39634676116611905,
+  "rmse": 0.19090969066127988,
+  "pct_return_mae": 0.003955785474034747,
+  "config": {
+    "name": "rolling_norm",
+    "params": {}
+  },
+  "timestamp": "2025-11-13T02:36:13Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 0.39634676116611905,
+  "comparison": {
+    "baseline": {
+      "mae": 0.1238095238095239,
+      "mae_percent": 0.4336676187894838,
+      "pct_return_mae": 0.004328395848735347
+    },
+    "percent_change": {
+      "mae": 0.18014951796758735,
+      "mae_percent": 0.6310097162094672,
+      "pct_return_mae": 0.006307246880564903
+    },
+    "log_returns": {
+      "mae": 0.14171572094871887,
+      "mae_percent": 0.49638765547160874,
+      "pct_return_mae": 0.00495245027220569
+    },
+    "differencing": {
+      "mae": 80.92682204473587,
+      "mae_percent": 283.4623794073687,
+      "pct_return_mae": 2.8362473650426803
+    },
+    "detrending": {
+      "mae": 0.16969646272205183,
+      "mae_percent": 0.5943957996227238,
+      "pct_return_mae": 0.005942129402716508
+    },
+    "robust_scaling": {
+      "mae": 0.16189409891764323,
+      "mae_percent": 0.5670664599412893,
+      "pct_return_mae": 0.0056610499405258235
+    },
+    "minmax_standard": {
+      "mae": 0.13510158311753062,
+      "mae_percent": 0.4732203149040958,
+      "pct_return_mae": 0.004722514587985506
+    },
+    "rolling_norm": {
+      "mae": 0.1131546411060153,
+      "mae_percent": 0.39634676116611905,
+      "pct_return_mae": 0.003955785474034747
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2/hourly",
+    "frequency": "hourly"
+  }
+}

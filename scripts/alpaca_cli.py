@@ -15,7 +15,7 @@ from data_curate_daily import download_exchange_latest_data, get_bid, get_ask
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from jsonshelve import FlatShelf
 from src.fixtures import crypto_symbols
-from src.logging_utils import setup_logging
+from src.logging_utils import setup_logging, get_log_filename
 from src.stock_utils import pairs_equal
 from src.trading_obj_utils import filter_to_realistic_positions
 
@@ -31,7 +31,9 @@ alpaca_api = tradeapi.REST(
     ALP_ENDPOINT,
     'v2')
 
-logger = setup_logging("alpaca_cli.log")
+# Detect if we're in hourly mode based on TRADE_STATE_SUFFIX env var
+_is_hourly = os.getenv("TRADE_STATE_SUFFIX", "") == "hourly"
+logger = setup_logging(get_log_filename("alpaca_cli.log", is_hourly=_is_hourly))
 
 # We'll store strategy usage in a persistent shelf
 positions_shelf = FlatShelf("positions_shelf.json")

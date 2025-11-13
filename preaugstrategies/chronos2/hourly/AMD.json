@@ -1,0 +1,62 @@
+{
+  "symbol": "AMD",
+  "best_strategy": "rolling_norm",
+  "mae": 2.2724509025263457,
+  "mae_percent": 0.9281272956456744,
+  "rmse": 3.320039868000869,
+  "pct_return_mae": 0.009349406689980829,
+  "config": {
+    "name": "rolling_norm",
+    "params": {}
+  },
+  "timestamp": "2025-11-13T01:11:35Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 0.9281272956456744,
+  "comparison": {
+    "baseline": {
+      "mae": 2.9664692753288344,
+      "mae_percent": 1.2115822185931757,
+      "pct_return_mae": 0.01223440511026586
+    },
+    "percent_change": {
+      "mae": 2.91790367838116,
+      "mae_percent": 1.1917467818379297,
+      "pct_return_mae": 0.01203577709432164
+    },
+    "log_returns": {
+      "mae": 3.0648637002640235,
+      "mae_percent": 1.2517690280948388,
+      "pct_return_mae": 0.012631170088291446
+    },
+    "differencing": {
+      "mae": 178.44974610135154,
+      "mae_percent": 72.88345815241853,
+      "pct_return_mae": 0.7284831041573836
+    },
+    "detrending": {
+      "mae": 2.956276471905263,
+      "mae_percent": 1.2074192159663422,
+      "pct_return_mae": 0.01219107613247175
+    },
+    "robust_scaling": {
+      "mae": 2.966598335982062,
+      "mae_percent": 1.2116349302776928,
+      "pct_return_mae": 0.012235611250079683
+    },
+    "minmax_standard": {
+      "mae": 2.9648178494522575,
+      "mae_percent": 1.2109077338634584,
+      "pct_return_mae": 0.012230225911891697
+    },
+    "rolling_norm": {
+      "mae": 2.2724509025263457,
+      "mae_percent": 0.9281272956456744,
+      "pct_return_mae": 0.009349406689980829
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2/hourly",
+    "frequency": "hourly"
+  }
+}
