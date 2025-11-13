@@ -1,0 +1,190 @@
+{
+  "timestamp": "2025-11-13T05:39:57.968473",
+  "dataset": "full_strategy_dataset_20251112_082320_trades.parquet",
+  "num_trades": 7874,
+  "symbols": [
+    "ETHUSD",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "SPY"
+  ],
+  "results": [
+    {
+      "strategy": "Naive_50pct_Baseline",
+      "total_pnl": 2681861.261762714,
+      "return_pct": 26.81861261762714,
+      "sharpe": 1.4240979864249603,
+      "max_dd_pct": 0.10862314427650728,
+      "volatility": 0.14701497190686105,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.5,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "Fixed_25pct",
+      "total_pnl": 1391570.2168905998,
+      "return_pct": 13.915702168905998,
+      "sharpe": 1.9331341044536559,
+      "max_dd_pct": 0.07599388801821658,
+      "volatility": 0.08604649446039875,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.25,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "Fixed_75pct",
+      "total_pnl": 3804118.3096722094,
+      "return_pct": 38.041183096722094,
+      "sharpe": 1.1701462525217223,
+      "max_dd_pct": 0.12676621428091783,
+      "volatility": 0.20173911055616817,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.75,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "Fixed_100pct",
+      "total_pnl": 4909016.7328962935,
+      "return_pct": 49.090167328962934,
+      "sharpe": 1.023251549698624,
+      "max_dd_pct": 0.1383176513528976,
+      "volatility": 0.25184823687206875,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 1.0,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "Kelly_25pct",
+      "total_pnl": 4912306.98267573,
+      "return_pct": 49.1230698267573,
+      "sharpe": 1.0234151456998901,
+      "max_dd_pct": 0.1383176513528976,
+      "volatility": 0.2518461979872434,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.9788744514882026,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "Kelly_50pct",
+      "total_pnl": 4908883.331663701,
+      "return_pct": 49.08883331663701,
+      "sharpe": 1.0232446350222228,
+      "max_dd_pct": 0.1383176513528976,
+      "volatility": 0.25184841054180346,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.9909583622714825,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "Kelly_75pct",
+      "total_pnl": 4908985.760686735,
+      "return_pct": 49.08985760686735,
+      "sharpe": 1.0232504837331942,
+      "max_dd_pct": 0.1383176513528976,
+      "volatility": 0.25184810138241215,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.9936661930131241,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "Kelly_100pct",
+      "total_pnl": 4908980.151863984,
+      "return_pct": 49.08980151863984,
+      "sharpe": 1.0232502159158783,
+      "max_dd_pct": 0.1383176513528976,
+      "volatility": 0.2518481012077705,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.9949889912741282,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "VolTarget_10pct",
+      "total_pnl": 4909016.7328962935,
+      "return_pct": 49.090167328962934,
+      "sharpe": 1.023251549698624,
+      "max_dd_pct": 0.1383176513528976,
+      "volatility": 0.25184823687206875,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 1.0,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "VolTarget_15pct",
+      "total_pnl": 4909016.7328962935,
+      "return_pct": 49.090167328962934,
+      "sharpe": 1.023251549698624,
+      "max_dd_pct": 0.1383176513528976,
+      "volatility": 0.25184823687206875,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 1.0,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "VolTarget_20pct",
+      "total_pnl": 4909016.7328962935,
+      "return_pct": 49.090167328962934,
+      "sharpe": 1.023251549698624,
+      "max_dd_pct": 0.1383176513528976,
+      "volatility": 0.25184823687206875,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 1.0,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "VolAdjusted_10pct",
+      "total_pnl": 2100307.6665588557,
+      "return_pct": 21.003076665588555,
+      "sharpe": 2.117301945593927,
+      "max_dd_pct": 0.1306852484199542,
+      "volatility": 0.0898910011989805,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.39880018506720577,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "VolAdjusted_15pct",
+      "total_pnl": 2976638.2032617466,
+      "return_pct": 29.766382032617464,
+      "sharpe": 2.015948084781921,
+      "max_dd_pct": 0.122516824748806,
+      "volatility": 0.10506805081860232,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.5689176810983788,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "CorrAware_Conservative",
+      "total_pnl": 457366.1674043044,
+      "return_pct": 4.573661674043044,
+      "sharpe": 1.3746384873109674,
+      "max_dd_pct": 0.04552969828260114,
+      "volatility": 0.07725653828232835,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.052498409690673146,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "CorrAware_Moderate",
+      "total_pnl": 1000891.9807816595,
+      "return_pct": 10.008919807816595,
+      "sharpe": 0.9593284550950297,
+      "max_dd_pct": 0.044425691523264,
+      "volatility": 0.1606597126257562,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.11700185582470796,
+      "num_trades": 7874
+    },
+    {
+      "strategy": "CorrAware_Aggressive",
+      "total_pnl": 1574235.1247497536,
+      "return_pct": 15.742351247497536,
+      "sharpe": 0.7635591571045308,
+      "max_dd_pct": 0.05570865809114429,
+      "volatility": 0.2480712943161119,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.18611498799180287,
+      "num_trades": 7874
+    }
+  ]
+}

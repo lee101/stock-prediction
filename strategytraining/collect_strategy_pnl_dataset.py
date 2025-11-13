@@ -11,6 +11,7 @@ Strategies tracked:
 - entry_takeprofit: Profit potential from high prices
 - highlow: Range-based trading
 - maxdiff: Maximum directional edge
+- maxdiffalwayson: Maximum directional edge (always trading, no direction filter)
 - buy_hold: Buy and hold baseline
 """
 
@@ -40,6 +41,7 @@ STRATEGIES = [
     'entry_takeprofit',
     'highlow',
     'maxdiff',
+    'maxdiffalwayson',
     'buy_hold',
 ]
 
@@ -67,6 +69,7 @@ class StrategyPnLCollector:
         self.strategy_performance = []  # (symbol, strategy, window, pnl, metrics)
         self.window_details = []  # Detailed window-level data
         self.strategy_trades = []  # Individual trade-level data per strategy
+        self.forecast_anomalies = []  # Records of forecast anomalies for monitoring
 
     @staticmethod
     def is_crypto(symbol: str) -> bool:
@@ -123,6 +126,98 @@ class StrategyPnLCollector:
         except Exception as e:
             print(f"Error loading {symbol}: {e}")
             return None
+
+    def detect_forecast_anomalies(
+        self,
+        symbol: str,
+        forecast_df: pd.DataFrame
+    ) -> List[Dict]:
+        """
+        Inspect forecast dataframe for obviously bad predictions (extreme or zero signals).
+
+        Returns a list of anomaly records so the caller can aggregate/report them.
+        """
+        anomalies: List[Dict] = []
+        if forecast_df is None or len(forecast_df) == 0:
+            return anomalies
+
+        def _record(kind: str, **info):
+            sanitized = {}
+            for key, value in info.items():
+                if isinstance(value, (np.floating, np.integer)):
+                    sanitized[key] = float(value)
+                elif isinstance(value, (pd.Timestamp, datetime)):
+                    sanitized[key] = value.isoformat()
+                elif isinstance(value, dict):
+                    sanitized[key] = {str(k): v for k, v in value.items()}
+                elif isinstance(value, set):
+                    sanitized[key] = sorted(str(v) for v in value)
+                elif isinstance(value, (list, tuple)):
+                    sanitized[key] = list(value)
+                else:
+                    sanitized[key] = value
+            record = {
+                'symbol': symbol,
+                'kind': kind,
+                'detected_at': datetime.utcnow().isoformat(),
+                **sanitized
+            }
+            anomalies.append(record)
+            info_str = ", ".join(f"{k}={v}" for k, v in sanitized.items())
+            print(f"⚠ Forecast anomaly [{kind}] for {symbol}: {info_str}")
+
+        # Ensure Chronos2 is being used everywhere
+        if 'model_used' in forecast_df.columns:
+            model_series = (
+                forecast_df['model_used']
+                .dropna()
+                .astype(str)
+                .str.lower()
+            )
+            unexpected = sorted(set(model_series) - {'chronos2'})
+            if unexpected:
+                counts = {
+                    str(label): int(count)
+                    for label, count in model_series.value_counts(dropna=False).items()
+                }
+                _record('model_mismatch', models=unexpected, counts=counts)
+
+        numeric_df = forecast_df.select_dtypes(include=[np.number]).replace([np.inf, -np.inf], np.nan)
+        return_cols = [col for col in numeric_df.columns if col.endswith('_return')]
+        zero_ratio_threshold = 0.95
+        zero_floor = 1e-9
+        default_threshold = 1.0
+        threshold_map = {
+            'simple_strategy_return': 0.5,
+            'all_signals_strategy_return': 0.5,
+            'entry_takeprofit_return': 0.6,
+            'highlow_return': 0.6,
+            'maxdiff_return': 1.0,
+            'maxdiffalwayson_return': 1.0,
+            'pctdiff_return': 1.0,
+            'buy_hold_return': 0.4,
+        }
+
+        for col in return_cols:
+            series = numeric_df[col].dropna()
+            if series.empty:
+                continue
+            max_abs = float(series.abs().max())
+            if np.isnan(max_abs):
+                continue
+            zero_ratio = float((series.abs() <= zero_floor).mean())
+            threshold = threshold_map.get(col, default_threshold)
+            if max_abs > threshold:
+                _record('extreme_return', column=col, max_abs=max_abs, threshold=threshold)
+            if zero_ratio >= zero_ratio_threshold:
+                _record('zero_return', column=col, zero_ratio=zero_ratio)
+
+        if {'predicted_high', 'predicted_low'}.issubset(forecast_df.columns):
+            invalid = int((forecast_df['predicted_high'] < forecast_df['predicted_low']).sum())
+            if invalid:
+                _record('invalid_price_range', count=invalid)
+
+        return anomalies
 
     def calculate_rolling_windows(
         self,
@@ -422,6 +517,9 @@ class StrategyPnLCollector:
                     return None
 
                 print(f"  Forecasts generated: {len(forecast_df)} rows")
+                anomalies = self.detect_forecast_anomalies(symbol, forecast_df)
+                if anomalies:
+                    self.forecast_anomalies.extend(anomalies)
         except Exception as e:
             print(f"  Error generating forecasts for {symbol}: {e}")
             import traceback
@@ -509,6 +607,7 @@ class StrategyPnLCollector:
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_base = self.output_dir / f"{dataset_name}_{timestamp}"
+        anomalies_path = None
 
         # Save strategy performance (main dataset)
         perf_df = pd.DataFrame(self.strategy_performance)
@@ -565,7 +664,8 @@ class StrategyPnLCollector:
             'num_strategies': int(unique_strategies),
             'num_strategy_windows': len(perf_df),
             'num_trades': len(trades_df),
-            'symbols': perf_df['symbol'].unique().tolist()
+            'symbols': perf_df['symbol'].unique().tolist(),
+            'forecast_anomaly_count': len(self.forecast_anomalies)
         }
 
         metadata_path = f"{output_base}_metadata.json"
@@ -573,11 +673,18 @@ class StrategyPnLCollector:
             json.dump(metadata, f, indent=2)
         print(f"\n✓ Saved metadata: {metadata_path}")
 
+        if self.forecast_anomalies:
+            anomalies_path = f"{output_base}_anomalies.json"
+            with open(anomalies_path, 'w') as f:
+                json.dump(self.forecast_anomalies, f, indent=2)
+            print(f"⚠ Saved {len(self.forecast_anomalies)} forecast anomaly records: {anomalies_path}")
+
         return {
             'performance_path': perf_path,
             'trades_path': trades_path,
             'metadata_path': metadata_path,
-            'base_path': str(output_base)
+            'base_path': str(output_base),
+            'anomalies_path': anomalies_path
         }
 
 
