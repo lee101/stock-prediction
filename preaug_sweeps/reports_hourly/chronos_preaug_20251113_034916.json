@@ -1,0 +1,122 @@
+{
+  "ETHUSD": {
+    "best_strategy": "baseline",
+    "selection_value": 0.5094077095520981,
+    "selection_metric": "mae_percent",
+    "comparison": {
+      "baseline": {
+        "validation": {
+          "mae": 22.031105306188255,
+          "mae_percent": 0.5963541244023234,
+          "rmse": 31.221006338294348,
+          "pct_return_mae": 0.006042676894505012,
+          "latency_s": 35.485583903078805
+        },
+        "test": {
+          "mae": 17.580348981743956,
+          "mae_percent": 0.5094077095520981,
+          "rmse": 23.625161511212404,
+          "pct_return_mae": 0.0050874926190820164,
+          "latency_s": 34.15488373603148
+        }
+      }
+    },
+    "output_path": "preaugstrategies/chronos2/hourly/ETHUSD.json"
+  },
+  "LINKUSD": {
+    "best_strategy": "baseline",
+    "selection_value": 0.6982091680242479,
+    "selection_metric": "mae_percent",
+    "comparison": {
+      "baseline": {
+        "validation": {
+          "mae": 0.13781500908633212,
+          "mae_percent": 0.8394024252809946,
+          "rmse": 0.1884627633031187,
+          "pct_return_mae": 0.008505558477763998,
+          "latency_s": 33.83815578087524
+        },
+        "test": {
+          "mae": 0.10861741716737908,
+          "mae_percent": 0.6982091680242479,
+          "rmse": 0.14437764433499756,
+          "pct_return_mae": 0.007000788399050624,
+          "latency_s": 34.08230418495077
+        }
+      }
+    },
+    "output_path": "preaugstrategies/chronos2/hourly/LINKUSD.json"
+  },
+  "PAXGUSD": {
+    "best_strategy": "baseline",
+    "selection_value": 0.7749882697439441,
+    "selection_metric": "mae_percent",
+    "comparison": {
+      "baseline": {
+        "validation": {
+          "mae": 5.477155613630952,
+          "mae_percent": 0.27889361604124013,
+          "rmse": 6.946724923948605,
+          "pct_return_mae": 0.0027876970924494786,
+          "latency_s": 34.46831748903787
+        },
+        "test": {
+          "mae": 14.922580148779756,
+          "mae_percent": 0.7749882697439441,
+          "rmse": 38.70481609890995,
+          "pct_return_mae": 0.00785930066376549,
+          "latency_s": 34.66092025200487
+        }
+      }
+    },
+    "output_path": "preaugstrategies/chronos2/hourly/PAXGUSD.json"
+  },
+  "SOLUSD": {
+    "best_strategy": "baseline",
+    "selection_value": 0.6115125750640996,
+    "selection_metric": "mae_percent",
+    "comparison": {
+      "baseline": {
+        "validation": {
+          "mae": 1.2512429806353669,
+          "mae_percent": 0.7064290309916164,
+          "rmse": 1.785853518396383,
+          "pct_return_mae": 0.007147081544088947,
+          "latency_s": 34.41950676003762
+        },
+        "test": {
+          "mae": 0.9801056180333768,
+          "mae_percent": 0.6115125750640996,
+          "rmse": 1.329032617593504,
+          "pct_return_mae": 0.006116681944682073,
+          "latency_s": 34.225806439091684
+        }
+      }
+    },
+    "output_path": "preaugstrategies/chronos2/hourly/SOLUSD.json"
+  },
+  "UNIUSD": {
+    "best_strategy": "baseline",
+    "selection_value": 1.5907334194613456,
+    "selection_metric": "mae_percent",
+    "comparison": {
+      "baseline": {
+        "validation": {
+          "mae": 0.05520572834191122,
+          "mae_percent": 0.9688916885401718,
+          "rmse": 0.07403522694547297,
+          "pct_return_mae": 0.009760464552455246,
+          "latency_s": 34.39258932109806
+        },
+        "test": {
+          "mae": 0.1029872312354836,
+          "mae_percent": 1.5907334194613456,
+          "rmse": 0.1877736641768762,
+          "pct_return_mae": 0.014617346603399655,
+          "latency_s": 34.46087204494688
+        }
+      }
+    },
+    "output_path": "preaugstrategies/chronos2/hourly/UNIUSD.json"
+  }
+}
