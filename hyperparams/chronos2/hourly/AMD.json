@@ -20,12 +20,12 @@
   "validation": {
     "price_mae": 2.399942590622674,
     "pct_return_mae": 0.012672830776905316,
-    "latency_s": 40.950614691042574
+    "latency_s": 44.037373845043476
   },
   "test": {
     "price_mae": 2.375099596296039,
     "pct_return_mae": 0.009780851050464442,
-    "latency_s": 41.96767850093602
+    "latency_s": 45.08588495320873
   },
   "windows": {
     "val_window": 168,
@@ -34,7 +34,7 @@
   },
   "metadata": {
     "source": "chronos2_benchmark",
-    "generated_at": "2025-11-13T07:44:56Z",
+    "generated_at": "2025-11-13T08:31:39Z",
     "selection_metric": "validation_pct_return_mae",
     "selection_value": 0.012672830776905316,
     "frequency": "hourly"
