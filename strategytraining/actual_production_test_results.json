@@ -1,0 +1,38 @@
+{
+  "timestamp": "2025-11-13T08:06:23.140882",
+  "dataset": "full_strategy_dataset_20251112_082320_trades.parquet",
+  "num_trades": 7874,
+  "symbols": [
+    "ETHUSD",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "SPY"
+  ],
+  "results": [
+    {
+      "config": "Production_Simple_Sizing",
+      "return_pct": 49.08290063327683,
+      "sharpe": 1.02436510315658,
+      "max_dd_pct": 0.13812207848202745,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.9999213756739234,
+      "num_simple_sized": 7874,
+      "num_kelly_sized": 0,
+      "avg_simple_size": 0.9999213756739234,
+      "avg_kelly_size": 0.0
+    },
+    {
+      "config": "Production_Kelly_Sizing",
+      "return_pct": 84.00014083733939,
+      "sharpe": 0.6243503947592973,
+      "max_dd_pct": 0.1687612097222442,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 2.849316728403192,
+      "num_simple_sized": 2960,
+      "num_kelly_sized": 4914,
+      "avg_simple_size": 0.9999581761229653,
+      "avg_kelly_size": 3.9632974599354416
+    }
+  ]
+}

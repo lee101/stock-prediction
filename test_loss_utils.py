@@ -1,10 +1,12 @@
 import torch
+import pytest
 from loss_utils import (
     CRYPTO_TRADING_FEE,
     TRADING_FEE,
     calculate_profit_torch_with_entry_buysell_profit_values,
     calculate_trading_profit_torch,
     calculate_trading_profit_torch_with_entry_buysell,
+    get_trading_profits_list,
 )
 
 
@@ -82,6 +84,46 @@ def test_multi_trade_portfolio_loss_mix():
     averaged = (expected_long + expected_short) / 2.0
     assert torch.isclose(profit, torch.tensor(averaged), atol=1e-7)
     assert profit < 0
+
+
+@pytest.mark.parametrize(
+    "positions,returns,trading_fee",
+    [
+        pytest.param([1.0], [0.012], TRADING_FEE, id="single_long_gain"),
+        pytest.param([1.0, -1.0], [0.02, 0.015], TRADING_FEE, id="two_day_long_gain_short_loss"),
+        pytest.param([0.6, -0.4, 1.2], [0.015, 0.02, -0.01], TRADING_FEE, id="three_day_mixed_fracs"),
+        pytest.param([0.8, -0.5, 0.3], [0.01, -0.025, 0.04], CRYPTO_TRADING_FEE, id="crypto_fee_sequence"),
+    ],
+)
+def test_trading_profit_multi_day_sequences(positions, returns, trading_fee):
+    """Validate averaged PnL across 1/2/3-day mixes of longs/shorts and fees."""
+    y_test_pred = torch.tensor(positions, dtype=torch.float32)
+    y_test = torch.tensor(returns, dtype=torch.float32)
+
+    profit = calculate_trading_profit_torch(
+        None,
+        None,
+        y_test,
+        y_test_pred,
+        trading_fee=trading_fee,
+    )
+
+    expected = sum(pos * ret - abs(pos) * trading_fee for pos, ret in zip(positions, returns)) / len(positions)
+    assert torch.isclose(profit, torch.tensor(expected, dtype=profit.dtype), atol=1e-7)
+
+
+def test_get_trading_profits_list_matches_per_trade_breakdown():
+    """Per-trade breakdown should match manual PnL (including fees) across days."""
+    y_test_pred = torch.tensor([1.0, -0.5, 0.8], dtype=torch.float32)
+    y_test = torch.tensor([0.02, 0.015, -0.01], dtype=torch.float32)
+
+    profits = get_trading_profits_list(None, None, y_test, y_test_pred)
+
+    expected = torch.tensor(
+        [pos * ret - abs(pos) * TRADING_FEE for pos, ret in zip(y_test_pred.tolist(), y_test.tolist())],
+        dtype=profits.dtype,
+    )
+    assert torch.allclose(profits, expected, atol=1e-7)
 
 
 def test_entry_exit_long_profit():
@@ -181,6 +223,36 @@ def test_entry_exit_two_trade_matrix_close_eod():
     expected_long = (0.01 - (-0.01)) - TRADING_FEE
     expected_short = (0.03 - (-0.02)) - TRADING_FEE
     assert torch.isclose(profit_vals.sum(), torch.tensor(expected_long + expected_short), atol=1e-7)
+
+
+def test_entry_exit_multi_day_sequence_hits_and_misses():
+    """Three-sample mix: hit long TP, hit short TP, skip fee when entry never triggers."""
+    y_test_pred = torch.tensor([1.0, -1.0, 1.0], dtype=torch.float32)
+    y_test = torch.tensor([0.02, -0.015, 0.005], dtype=torch.float32)
+    y_test_high_pred = torch.tensor([0.03, 0.02, 0.01], dtype=torch.float32)
+    y_test_high = torch.tensor([0.035, 0.025, 0.02], dtype=torch.float32)
+    y_test_low_pred = torch.tensor([-0.01, -0.015, -0.05], dtype=torch.float32)
+    y_test_low = torch.tensor([-0.02, -0.02, -0.04], dtype=torch.float32)
+
+    profits = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test,
+        y_test_high,
+        y_test_high_pred,
+        y_test_low,
+        y_test_low_pred,
+        y_test_pred,
+    )
+
+    expected = torch.tensor(
+        [
+            (0.03 - (-0.01)) - TRADING_FEE,
+            ((-0.015) - 0.02) * -1 - TRADING_FEE,
+            0.0,
+        ],
+        dtype=profits.dtype,
+    )
+
+    assert torch.allclose(profits, expected, atol=1e-7)
 
 
 def test_detailed_short_breakdown():

@@ -26,6 +26,11 @@ except Exception:  # pragma: no cover
 
 from chronos import Chronos2Pipeline as _Chronos2Pipeline
 from preaug_sweeps.augmentations import BaseAugmentation
+try:  # pragma: no cover - backward compatibility with pre-helper snapshots
+    from src.cache_utils import find_hf_snapshot_dir
+except ImportError:  # pragma: no cover
+    def find_hf_snapshot_dir(*_args, **_kwargs):
+        return None
 from src.gpu_utils import should_offload_to_cpu as gpu_should_offload_to_cpu
 from src.preaug import PreAugmentationChoice, PreAugmentationSelector
 
@@ -34,6 +39,59 @@ logger = logging.getLogger(__name__)
 DEFAULT_TARGET_COLUMNS: Tuple[str, ...] = ("open", "high", "low", "close")
 DEFAULT_QUANTILE_LEVELS: Tuple[float, ...] = (0.1, 0.5, 0.9)
 _BOOL_TRUE = {"1", "true", "yes", "on"}
+_DEFAULT_MODEL_ID = "amazon/chronos-2"
+
+
+def _path_contains_config(path: Path) -> bool:
+    try:
+        return path.is_dir() and (path / "config.json").exists()
+    except OSError:
+        return False
+
+
+def _normalize_aliases(raw_aliases: Optional[str]) -> set[str]:
+    if not raw_aliases:
+        return {"chronos2"}
+    aliases: set[str] = set()
+    for alias in raw_aliases.split(","):
+        normalized = alias.strip().lower()
+        if normalized:
+            aliases.add(normalized)
+    if not aliases:
+        aliases.add("chronos2")
+    return aliases
+
+
+def _resolve_model_source(model_id: Optional[str]) -> str:
+    requested = (os.getenv("CHRONOS2_MODEL_ID_OVERRIDE") or (model_id or _DEFAULT_MODEL_ID)).strip()
+    if not requested:
+        requested = _DEFAULT_MODEL_ID
+
+    candidate_path = Path(requested)
+    if _path_contains_config(candidate_path):
+        return str(candidate_path)
+
+    aliases = _normalize_aliases(os.getenv("CHRONOS2_MODEL_ALIASES"))
+    if requested.lower() in aliases:
+        local_override = os.getenv("CHRONOS2_LOCAL_MODEL_DIR")
+        if local_override:
+            local_path = Path(local_override).expanduser()
+            if _path_contains_config(local_path):
+                return str(local_path)
+
+        snapshot_dir = find_hf_snapshot_dir(_DEFAULT_MODEL_ID, logger=logger)
+        if snapshot_dir is not None:
+            return str(snapshot_dir)
+
+        logger.warning(
+            "Chronos2 alias '%s' requested but no cached snapshot of %s was found; "
+            "falling back to the canonical repo identifier.",
+            requested,
+            _DEFAULT_MODEL_ID,
+        )
+        return _DEFAULT_MODEL_ID
+
+    return requested
 
 
 def _normalize_frequency(value: Optional[str]) -> Optional[str]:
@@ -277,7 +335,10 @@ class Chronos2OHLCWrapper:
         """
 
         pipeline_cls = _require_chronos2_pipeline()
-        pipeline = pipeline_cls.from_pretrained(model_id, device_map=device_map, **kwargs)
+        resolved_model_id = _resolve_model_source(model_id)
+        if resolved_model_id != model_id:
+            logger.info("Resolved Chronos2 model_id '%s' to '%s'", model_id, resolved_model_id)
+        pipeline = pipeline_cls.from_pretrained(resolved_model_id, device_map=device_map, **kwargs)
         device_hint = device_map if isinstance(device_map, str) else "cuda"
         return cls(
             pipeline,

@@ -3235,11 +3235,6 @@ def run_single_simulation(
         last_preds["close_prediction_source"] = "chronos2" if use_chronos2 else ("kronos" if use_kronos else "toto")
     last_preds["model_used"] = selected_model
 
-    # Calculate actual percentage returns over the validation horizon
-    close_window = simulation_data["Close"].iloc[-7:]
-    actual_returns = close_window.pct_change().dropna().reset_index(drop=True)
-    realized_vol_pct = float(actual_returns.std() * 100.0) if not actual_returns.empty else 0.0
-    last_preds["realized_volatility_pct"] = realized_vol_pct
     close_pred_tensor = torch.as_tensor(last_preds.get("close_predictions", torch.zeros(1)), dtype=torch.float32)
     if "close_predictions" not in last_preds:
         last_preds["close_predictions"] = close_pred_tensor
@@ -3247,6 +3242,34 @@ def run_single_simulation(
         close_pred_np = close_pred_tensor.detach().cpu().numpy()
     except AttributeError:
         close_pred_np = np.asarray(close_pred_tensor, dtype=np.float32)
+    pred_length = int(close_pred_tensor.shape[0])
+
+    def _realized_return_window(horizon: int) -> pd.Series:
+        if horizon <= 0:
+            return pd.Series(dtype=float)
+        window = simulation_data["Close"].iloc[-min(len(simulation_data), horizon + 1) :]
+        returns = window.pct_change().dropna().reset_index(drop=True)
+        if returns.shape[0] > horizon:
+            returns = returns.iloc[-horizon:]
+        return returns
+
+    actual_returns = _realized_return_window(pred_length)
+    aligned_len = min(pred_length, len(actual_returns))
+    if aligned_len > 0:
+        actual_returns = actual_returns.iloc[-aligned_len:]
+    else:
+        actual_returns = actual_returns.iloc[0:0]
+    eval_length = len(actual_returns)
+
+    def _eval_slice(tensor: torch.Tensor) -> torch.Tensor:
+        if eval_length <= 0:
+            return tensor.new_zeros((0,), dtype=tensor.dtype)
+        if tensor.shape[0] <= eval_length:
+            return tensor
+        return tensor[-eval_length:]
+
+    realized_vol_pct = float(actual_returns.std() * 100.0) if eval_length > 0 else 0.0
+    last_preds["realized_volatility_pct"] = realized_vol_pct
     actual_return_np = actual_returns.to_numpy()
     slope, intercept = calibrate_signal(close_pred_np, actual_return_np)
     raw_expected_move_pct = float(last_preds.get("close_raw_pred_pct", 0.0))
@@ -3255,8 +3278,6 @@ def run_single_simulation(
     last_preds["calibration_intercept"] = float(intercept)
     last_preds["raw_expected_move_pct"] = raw_expected_move_pct
     last_preds["calibrated_expected_move_pct"] = calibrated_expected_move_pct
-
-    pred_length = int(close_pred_tensor.shape[0])
 
     def _ensure_tensor_key(key: str) -> torch.Tensor:
         value = last_preds.get(key)
@@ -3272,8 +3293,16 @@ def run_single_simulation(
 
     high_preds_tensor = _ensure_tensor_key("high_predictions")
     low_preds_tensor = _ensure_tensor_key("low_predictions")
-    _ensure_tensor_key("high_actual_movement_values")
-    _ensure_tensor_key("low_actual_movement_values")
+    high_actual_tensor = _ensure_tensor_key("high_actual_movement_values")
+    low_actual_tensor = _ensure_tensor_key("low_actual_movement_values")
+    close_actual_tensor = _ensure_tensor_key("close_actual_movement_values")
+
+    eval_close_preds = _eval_slice(close_pred_tensor)
+    eval_high_preds = _eval_slice(high_preds_tensor)
+    eval_low_preds = _eval_slice(low_preds_tensor)
+    eval_close_actual = _eval_slice(close_actual_tensor)
+    eval_high_actual = _eval_slice(high_actual_tensor)
+    eval_low_actual = _eval_slice(low_actual_tensor)
 
     # Skip expensive strategy evaluations if only predictions are needed
     if skip_strategy_eval:
@@ -3339,7 +3368,7 @@ def run_single_simulation(
     pctdiff_mid_annual = pctdiff_mid_eval.annualized_return
 
     # Simple buy/sell strategy
-    simple_signals = simple_buy_sell_strategy(close_pred_tensor, is_crypto=is_crypto)
+    simple_signals = simple_buy_sell_strategy(eval_close_preds, is_crypto=is_crypto)
     simple_eval = evaluate_strategy(simple_signals, actual_returns, trading_fee, trading_days_per_year)
     simple_total_return = simple_eval.total_return
     simple_sharpe = simple_eval.sharpe_ratio
@@ -3352,7 +3381,7 @@ def run_single_simulation(
         simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
     # All signals strategy
-    all_signals = all_signals_strategy(close_pred_tensor, high_preds_tensor, low_preds_tensor, is_crypto=is_crypto)
+    all_signals = all_signals_strategy(eval_close_preds, eval_high_preds, eval_low_preds, is_crypto=is_crypto)
     all_signals_eval = evaluate_strategy(all_signals, actual_returns, trading_fee, trading_days_per_year)
     all_signals_total_return = all_signals_eval.total_return
     all_signals_sharpe = all_signals_eval.sharpe_ratio
@@ -3365,7 +3394,7 @@ def run_single_simulation(
         all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
 
     # Buy and hold strategy
-    buy_hold_signals = buy_hold_strategy(last_preds["close_predictions"])
+    buy_hold_signals = buy_hold_strategy(eval_close_preds)
     buy_hold_eval = evaluate_strategy(buy_hold_signals, actual_returns, trading_fee, trading_days_per_year)
     buy_hold_sharpe = buy_hold_eval.sharpe_ratio
     buy_hold_returns = buy_hold_eval.returns
@@ -3380,9 +3409,7 @@ def run_single_simulation(
     buy_hold_return = buy_hold_return_expected
 
     # Unprofit shutdown buy and hold strategy
-    unprofit_shutdown_signals = unprofit_shutdown_buy_hold(
-        last_preds["close_predictions"], actual_returns, is_crypto=is_crypto
-    )
+    unprofit_shutdown_signals = unprofit_shutdown_buy_hold(eval_close_preds, actual_returns, is_crypto=is_crypto)
     unprofit_shutdown_eval = evaluate_strategy(
         unprofit_shutdown_signals, actual_returns, trading_fee, trading_days_per_year
     )
@@ -3400,12 +3427,12 @@ def run_single_simulation(
 
     # Entry + takeprofit strategy
     entry_takeprofit_eval = evaluate_entry_takeprofit_strategy(
-        last_preds["close_predictions"],
-        last_preds["high_predictions"],
-        last_preds["low_predictions"],
-        last_preds["close_actual_movement_values"],
-        last_preds["high_actual_movement_values"],
-        last_preds["low_actual_movement_values"],
+        eval_close_preds,
+        eval_high_preds,
+        eval_low_preds,
+        eval_close_actual,
+        eval_high_actual,
+        eval_low_actual,
         trading_fee,
         trading_days_per_year,
     )
@@ -3418,12 +3445,12 @@ def run_single_simulation(
 
     # Highlow strategy
     highlow_eval = evaluate_highlow_strategy(
-        last_preds["close_predictions"],
-        last_preds["high_predictions"],
-        last_preds["low_predictions"],
-        last_preds["close_actual_movement_values"],
-        last_preds["high_actual_movement_values"],
-        last_preds["low_actual_movement_values"],
+        eval_close_preds,
+        eval_high_preds,
+        eval_low_preds,
+        eval_close_actual,
+        eval_high_actual,
+        eval_low_actual,
         trading_fee,
         is_crypto=is_crypto,
         trading_days_per_year=trading_days_per_year,
