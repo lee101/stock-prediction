@@ -675,7 +675,7 @@ def _maybe_update_hyperparams(reports: Sequence[CandidateReport], args: argparse
                 existing_val = None
 
         best_val = best_report.validation.pct_return_mae
-        if existing_val is not None and existing_val <= best_val:
+        if not getattr(args, "force_update", False) and existing_val is not None and existing_val <= best_val:
             print(
                 f"[SKIP] {symbol}: validation pct MAE {best_val:.6f} is not better than existing {existing_val:.6f}; keeping current config"
             )
@@ -778,6 +778,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional subdirectory under hyperparams/chronos2/ for variant configs (e.g., 'hourly').",
     )
     parser.add_argument("--update-hyperparams", action="store_true")
+    parser.add_argument("--force-update", action="store_true", help="Overwrite configs even if validation metric regresses.")
     parser.add_argument("--data-only", action="store_true", help="Skip hyperparam updates even if flag is set")
     parser.add_argument("--predict-kwargs", type=str, help="JSON dict merged into predict kwargs")
     parser.add_argument("--batch-size", dest="deprecated_batch_size", type=int, help=argparse.SUPPRESS)

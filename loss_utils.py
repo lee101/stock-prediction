@@ -347,41 +347,48 @@ def calculate_profit_torch_with_entry_buysell_profit_values(
     pred_high_to_close_movement = y_test - y_test_high_pred  # close - entry_high
     pred_high_to_low_movement = y_test_low_pred - y_test_high_pred  # exit_low - entry_high
     detached_y_test_pred = y_test_pred
+    long_position = torch.clip(detached_y_test_pred, 0, 10)
+    short_position = torch.clip(detached_y_test_pred, -10, 0)
+    long_entry_trigger = y_test_low_pred > y_test_low
+    short_entry_trigger = y_test_high_pred < y_test_high
+    mask_dtype = detached_y_test_pred.dtype
+    long_entry_mask = long_entry_trigger.to(mask_dtype)
+    short_entry_mask = short_entry_trigger.to(mask_dtype)
+    fee_penalty = (
+        (long_position * long_entry_mask)
+        + (torch.abs(short_position) * short_entry_mask)
+    ) * trading_fee
 
     if close_at_eod:
         # Force close at EOD - only use close price, no intraday exits
         # Long: enter at low, exit at close. P&L = position * (close - entry)
         bought_profits = (
-            torch.clip(detached_y_test_pred, 0, 10) * pred_low_to_close_movement * (y_test_low_pred > y_test_low)
+            long_position * pred_low_to_close_movement * long_entry_trigger
         )  # miss out on buying if low is lower than low pred
         # Short: enter at high, exit at close. P&L = position * (close - entry)
         # position is negative, so if price goes up (positive movement), we lose (negative P&L)
         sold_profits = (
-            torch.clip(y_test_pred, -10, 0) * pred_high_to_close_movement * (y_test_high_pred < y_test_high)
+            short_position * pred_high_to_close_movement * short_entry_trigger
         )  # miss out on selling if high is higher than high pred
 
-        # Trading fee applied when we hit entry levels
-        hit_trading_points = torch.logical_or((y_test_low_pred > y_test_low), (y_test_high_pred < y_test_high))
-        calculated_profit_values = (
-            bought_profits + sold_profits - ((torch.abs(detached_y_test_pred) * trading_fee) * hit_trading_points)
-        )
+        calculated_profit_values = bought_profits + sold_profits - fee_penalty
     else:
         # Original logic - allow intraday exits at high/low
         # Long: enter at low, close at close price (if high target not hit)
         bought_profits = (
-            torch.clip(detached_y_test_pred, 0, 10) * pred_low_to_close_movement * (y_test_low_pred > y_test_low)
+            long_position * pred_low_to_close_movement * long_entry_trigger
         )  # miss out on buying if low is lower than low pred
         # Short: enter at high, close at close price (if low target not hit)
         sold_profits = (
-            torch.clip(y_test_pred, -10, 0) * pred_high_to_close_movement * (y_test_high_pred < y_test_high)
+            short_position * pred_high_to_close_movement * short_entry_trigger
         )  # miss out on selling if high is higher than high pred
 
         # Long: if we hit the high exit target, use that instead of close
         hit_high_points = (
             pred_low_to_high_movement
             * (y_test_high_pred <= y_test_high)
-            * torch.clip(detached_y_test_pred, 0, 10)
-            * (y_test_low_pred > y_test_low)
+            * long_position
+            * long_entry_trigger
         )  # miss out on buying if low is lower than low pred
         missed_high_points = bought_profits * (
             y_test_high_pred > y_test_high
@@ -392,8 +399,8 @@ def calculate_profit_torch_with_entry_buysell_profit_values(
         hit_low_points = (
             pred_high_to_low_movement
             * (y_test_low_pred >= y_test_low)
-            * torch.clip(y_test_pred, -10, 0)
-            * (y_test_high_pred < y_test_high)
+            * short_position
+            * short_entry_trigger
         )  # miss out on selling if high is higher than high pred
         missed_points = sold_profits * (
             y_test_low_pred < y_test_low
@@ -401,12 +408,7 @@ def calculate_profit_torch_with_entry_buysell_profit_values(
         adjusted_profits = hit_low_points + missed_points
         # print("profit after hit_low_points: ", adjusted_profits)
         # sold_profits = torch.max(torch.abs(hit_low_points) * (sold_profits > 0).float(), sold_profits)
-        hit_trading_points = torch.logical_and((y_test_high_pred < y_test_high), (y_test_low_pred > y_test_low))
-        calculated_profit_values = (
-            bought_adjusted_profits
-            + adjusted_profits
-            - ((torch.abs(detached_y_test_pred) * trading_fee) * hit_trading_points)  # fee
-        )
+        calculated_profit_values = bought_adjusted_profits + adjusted_profits - fee_penalty
 
     return calculated_profit_values
 

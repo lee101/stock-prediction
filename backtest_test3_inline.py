@@ -30,6 +30,12 @@ from src.maxdiff_optimizer import (
     optimize_maxdiff_always_on,
     optimize_maxdiff_entry_exit,
 )
+from src.optimization_utils import run_bounded_optimizer
+from src.pctdiff_helpers import (
+    clip_pctdiff_returns,
+    pctdiff_midpoint_stub_returns,
+    reset_pctdiff_clip_flag,
+)
 
 _ENTRY_EXIT_OPTIMIZER_BACKEND = ENTRY_EXIT_OPTIMIZER_BACKEND
 from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
@@ -806,6 +812,315 @@ def evaluate_maxdiff_always_on_strategy(
     return evaluation, daily_returns_np, metadata
 
 
+def evaluate_pctdiff_strategy(
+    last_preds: Dict[str, torch.Tensor],
+    simulation_data: pd.DataFrame,
+    *,
+    trading_fee: float,
+    trading_days_per_year: int,
+    is_crypto: bool = False,
+    pct_bounds: Tuple[float, float] = (0.003, 0.09),
+    multiplier_bounds: Tuple[float, float] = (-0.03, 0.03),
+) -> Tuple[StrategyEvaluation, np.ndarray, Dict[str, object]]:
+    reset_pctdiff_clip_flag()
+    device = _strategy_device()
+    close_actual = _tensor(
+        last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
+        device=device,
+    )
+    validation_len = int(close_actual.numel())
+
+    def _zero_metadata() -> Dict[str, object]:
+        return {
+            "pctdiff_profit": 0.0,
+            "pctdiff_profit_values": [],
+            "pctdiff_turnover": 0.0,
+            "pctdiff_entry_low_multiplier": 0.0,
+            "pctdiff_entry_high_multiplier": 0.0,
+            "pctdiff_long_pct": 0.0,
+            "pctdiff_short_pct": 0.0,
+            "pctdiff_entry_low_price": float(last_preds.get("low_predicted_price_value", 0.0) or 0.0),
+            "pctdiff_entry_high_price": float(last_preds.get("high_predicted_price_value", 0.0) or 0.0),
+            "pctdiff_takeprofit_high_price": 0.0,
+            "pctdiff_takeprofit_low_price": 0.0,
+            "pctdiff_primary_side": "neutral",
+            "pctdiff_trade_bias": 0.0,
+            "pctdiff_trades_positive": 0,
+            "pctdiff_trades_negative": 0,
+            "pctdiff_trades_total": 0,
+            "pctdiff_entry_hits": 0,
+            "pctdiff_takeprofit_hits": 0,
+        }
+
+    if validation_len == 0 or len(simulation_data) < validation_len + 2:
+        zero_eval = StrategyEvaluation(0.0, 0.0, 0.0, 0.0, np.zeros(0, dtype=float))
+        return zero_eval, zero_eval.returns, _zero_metadata()
+
+    high_series = simulation_data["High"].iloc[-(validation_len + 2) : -2]
+    low_series = simulation_data["Low"].iloc[-(validation_len + 2) : -2]
+    close_series = simulation_data["Close"].iloc[-(validation_len + 2) : -2]
+
+    if len(high_series) != validation_len:
+        high_series = simulation_data["High"].tail(validation_len)
+        low_series = simulation_data["Low"].tail(validation_len)
+        close_series = simulation_data["Close"].tail(validation_len)
+
+    close_vals = close_series.to_numpy(dtype=float)
+    high_vals = high_series.to_numpy(dtype=float)
+    low_vals = low_series.to_numpy(dtype=float)
+
+    high_actual_values = last_preds.get("high_actual_movement_values")
+    low_actual_values = last_preds.get("low_actual_movement_values")
+    high_pred_values = last_preds.get("high_predictions")
+    low_pred_values = last_preds.get("low_predictions")
+
+    if any(value is None for value in (high_actual_values, low_actual_values, high_pred_values, low_pred_values)):
+        zero_eval = StrategyEvaluation(0.0, 0.0, 0.0, 0.0, np.zeros(0, dtype=float))
+        return zero_eval, zero_eval.returns, _zero_metadata()
+
+    high_actual_tensor = _tensor(high_actual_values, device=device).view(-1)
+    low_actual_tensor = _tensor(low_actual_values, device=device).view(-1)
+    high_pred_tensor = _tensor(high_pred_values, device=device).view(-1)
+    low_pred_tensor = _tensor(low_pred_values, device=device).view(-1)
+
+    if (
+        high_actual_tensor.shape[0] < validation_len
+        or low_actual_tensor.shape[0] < validation_len
+        or high_pred_tensor.shape[0] < validation_len
+        or low_pred_tensor.shape[0] < validation_len
+    ):
+        zero_eval = StrategyEvaluation(0.0, 0.0, 0.0, 0.0, np.zeros(0, dtype=float))
+        return zero_eval, zero_eval.returns, _zero_metadata()
+
+    high_actual_tensor = high_actual_tensor[-validation_len:]
+    low_actual_tensor = low_actual_tensor[-validation_len:]
+    high_pred_tensor = high_pred_tensor[-validation_len:]
+    low_pred_tensor = low_pred_tensor[-validation_len:]
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        close_to_high_np = np.abs(
+            1.0 - np.divide(high_vals, close_vals, out=np.zeros_like(high_vals), where=close_vals != 0.0)
+        )
+        close_to_low_np = np.abs(
+            1.0 - np.divide(low_vals, close_vals, out=np.zeros_like(low_vals), where=close_vals != 0.0)
+        )
+    close_to_high = _tensor(np.nan_to_num(close_to_high_np, nan=0.0, posinf=0.0, neginf=0.0), device=device)
+    close_to_low = _tensor(np.nan_to_num(close_to_low_np, nan=0.0, posinf=0.0, neginf=0.0), device=device)
+
+    high_actual = high_actual_tensor + close_to_high
+    low_actual = low_actual_tensor - close_to_low
+    high_pred = high_pred_tensor + close_to_high
+    low_pred = low_pred_tensor - close_to_low
+
+    valid_forecast_mask = validate_forecast_order(high_pred, low_pred)
+    maxdiff_trades = torch.where(
+        torch.abs(high_pred) > torch.abs(low_pred),
+        torch.ones_like(high_pred),
+        -torch.ones_like(high_pred),
+    )
+    if is_crypto:
+        maxdiff_trades = torch.where(maxdiff_trades < 0, torch.zeros_like(maxdiff_trades), maxdiff_trades)
+    maxdiff_trades = torch.where(valid_forecast_mask, maxdiff_trades, torch.zeros_like(maxdiff_trades))
+
+    trades_np = maxdiff_trades.detach().cpu().numpy()
+    low_pred_raw_np = low_pred_tensor.detach().cpu().numpy()
+    high_pred_raw_np = high_pred_tensor.detach().cpu().numpy()
+
+    if close_vals.size == 0 or close_vals.size != trades_np.size:
+        zero_eval = StrategyEvaluation(0.0, 0.0, 0.0, 0.0, np.zeros(0, dtype=float))
+        return zero_eval, zero_eval.returns, _zero_metadata()
+
+    low_mult_values = np.linspace(multiplier_bounds[0], multiplier_bounds[1], 7)
+    high_mult_values = np.linspace(multiplier_bounds[0], multiplier_bounds[1], 7)
+    pct_values = np.linspace(pct_bounds[0], pct_bounds[1], 10)
+
+    best_result: Dict[str, float] = {}
+    best_returns = np.zeros_like(close_vals, dtype=float)
+
+    def _simulate_returns(low_mult: float, high_mult: float, pct_long: float, pct_short: float) -> Tuple[np.ndarray, int, int]:
+        pct_long = float(np.clip(pct_long, pct_bounds[0], pct_bounds[1]))
+        pct_short = float(np.clip(pct_short, pct_bounds[0], pct_bounds[1]))
+        returns = np.zeros_like(close_vals, dtype=float)
+        entry_hits = 0
+        takeprofit_hits = 0
+        for idx in range(close_vals.size):
+            trade_weight = float(trades_np[idx])
+            if trade_weight == 0:
+                continue
+            close_price = close_vals[idx]
+            actual_high = high_vals[idx]
+            actual_low = low_vals[idx]
+            if trade_weight > 0:
+                entry_price = close_price * (1.0 + low_pred_raw_np[idx])
+                entry_price *= 1.0 + low_mult
+                entry_price = max(entry_price, 1e-6)
+                if actual_low > entry_price:
+                    continue
+                entry_hits += 1
+                target_price = entry_price * (1.0 + pct_long)
+                hit_takeprofit = actual_high >= target_price
+                exit_price = target_price if hit_takeprofit else close_price
+                if hit_takeprofit:
+                    takeprofit_hits += 1
+                profit = (exit_price - entry_price) * abs(trade_weight)
+            else:
+                entry_price = close_price * (1.0 + high_pred_raw_np[idx])
+                entry_price *= 1.0 + high_mult
+                entry_price = max(entry_price, 1e-6)
+                if actual_high < entry_price:
+                    continue
+                entry_hits += 1
+                target_price = entry_price * (1.0 - pct_short)
+                hit_takeprofit = actual_low <= target_price
+                exit_price = target_price if hit_takeprofit else close_price
+                if hit_takeprofit:
+                    takeprofit_hits += 1
+                profit = (entry_price - exit_price) * abs(trade_weight)
+            notional = entry_price * abs(trade_weight)
+            if notional <= 0:
+                continue
+            fee = trading_fee * notional
+            returns[idx] = (profit - fee) / notional
+        clipped_returns = clip_pctdiff_returns(returns, max_abs_return=PCTDIFF_MAX_DAILY_RETURN)
+        return clipped_returns, entry_hits, takeprofit_hits
+
+    def _grid_search() -> Tuple[Dict[str, float], np.ndarray]:
+        best_return_local = float("-inf")
+        best_returns_local = np.zeros_like(close_vals, dtype=float)
+        best_result_local: Dict[str, float] = {}
+        for low_mult in low_mult_values:
+            for high_mult in high_mult_values:
+                for pct_long in pct_values:
+                    for pct_short in pct_values:
+                        returns, entry_hits, takeprofit_hits = _simulate_returns(low_mult, high_mult, pct_long, pct_short)
+                        total_return = float(returns.sum())
+                        if total_return > best_return_local:
+                            best_return_local = total_return
+                            best_returns_local = returns.copy()
+                            best_result_local = {
+                                "low_mult": float(low_mult),
+                                "high_mult": float(high_mult),
+                                "pct_long": float(np.clip(pct_long, pct_bounds[0], pct_bounds[1])),
+                                "pct_short": float(np.clip(pct_short, pct_bounds[0], pct_bounds[1])),
+                                "entry_hits": entry_hits,
+                                "takeprofit_hits": takeprofit_hits,
+                            }
+        return best_result_local, best_returns_local
+
+    def _objective(params: Sequence[float]) -> float:
+        low_mult, high_mult, pct_long, pct_short = params
+        returns, _, _ = _simulate_returns(float(low_mult), float(high_mult), float(pct_long), float(pct_short))
+        if returns.size == 0:
+            return 0.0
+        return -float(returns.sum())
+
+    try:
+        opt_params, _ = run_bounded_optimizer(
+            _objective,
+            bounds=(multiplier_bounds, multiplier_bounds, pct_bounds, pct_bounds),
+            maxiter=60,
+            popsize=12,
+            seed=42,
+            workers=1,
+        )
+        low_mult_opt, high_mult_opt, pct_long_opt, pct_short_opt = opt_params
+        best_returns, entry_hits, takeprofit_hits = _simulate_returns(
+            float(low_mult_opt),
+            float(high_mult_opt),
+            float(pct_long_opt),
+            float(pct_short_opt),
+        )
+        best_result = {
+            "low_mult": float(low_mult_opt),
+            "high_mult": float(high_mult_opt),
+            "pct_long": float(np.clip(pct_long_opt, pct_bounds[0], pct_bounds[1])),
+            "pct_short": float(np.clip(pct_short_opt, pct_bounds[0], pct_bounds[1])),
+            "entry_hits": entry_hits,
+            "takeprofit_hits": takeprofit_hits,
+        }
+    except Exception as opt_exc:
+        logger.warning(
+            "PctDiff optimizer failed (%s); falling back to coarse grid search",
+            opt_exc,
+        )
+        best_result, best_returns = _grid_search()
+
+    if not best_result:
+        zero_eval = StrategyEvaluation(0.0, 0.0, 0.0, 0.0, np.zeros(0, dtype=float))
+        return zero_eval, zero_eval.returns, _zero_metadata()
+
+    evaluation = _evaluate_daily_returns(best_returns, trading_days_per_year)
+
+    trades_tensor = maxdiff_trades.detach()
+    positive_trades = int((trades_tensor > 0).sum().item())
+    negative_trades = int((trades_tensor < 0).sum().item())
+    total_trades = int((trades_tensor != 0).sum().item())
+    net_direction = float(trades_tensor.sum().item())
+    if positive_trades and not negative_trades:
+        primary_side = "buy"
+    elif negative_trades and not positive_trades:
+        primary_side = "sell"
+    elif net_direction > 0:
+        primary_side = "buy"
+    elif net_direction < 0:
+        primary_side = "sell"
+    else:
+        primary_side = "neutral"
+    trade_bias = net_direction / float(total_trades) if total_trades else 0.0
+
+    low_price_reference = float(last_preds.get("low_predicted_price_value", 0.0) or 0.0)
+    high_price_reference = float(last_preds.get("high_predicted_price_value", 0.0) or 0.0)
+    low_entry_price = low_price_reference * (1.0 + best_result["low_mult"])
+    high_entry_price = high_price_reference * (1.0 + best_result["high_mult"])
+    long_takeprofit_price = low_entry_price * (1.0 + best_result["pct_long"])
+    short_takeprofit_price = high_entry_price * (1.0 - best_result["pct_short"])
+
+    metadata = {
+        "pctdiff_profit": evaluation.total_return,
+        "pctdiff_profit_values": best_returns.tolist(),
+        "pctdiff_turnover": float(np.mean(np.abs(best_returns))) if best_returns.size else 0.0,
+        "pctdiff_entry_low_multiplier": best_result["low_mult"],
+        "pctdiff_entry_high_multiplier": best_result["high_mult"],
+        "pctdiff_long_pct": best_result["pct_long"],
+        "pctdiff_short_pct": best_result["pct_short"],
+        "pctdiff_entry_low_price": low_entry_price,
+        "pctdiff_entry_high_price": high_entry_price,
+        "pctdiff_takeprofit_high_price": long_takeprofit_price,
+        "pctdiff_takeprofit_low_price": short_takeprofit_price,
+        "pctdiff_primary_side": primary_side,
+        "pctdiff_trade_bias": float(trade_bias),
+        "pctdiff_trades_positive": positive_trades,
+        "pctdiff_trades_negative": negative_trades,
+        "pctdiff_trades_total": total_trades,
+        "pctdiff_entry_hits": best_result.get("entry_hits", 0),
+        "pctdiff_takeprofit_hits": best_result.get("takeprofit_hits", 0),
+    }
+
+    return evaluation, best_returns, metadata
+
+
+def evaluate_pctdiff_midpoint_strategy(
+    last_preds: Dict[str, torch.Tensor],
+    simulation_data: pd.DataFrame,
+    *,
+    trading_fee: float,
+    trading_days_per_year: int,
+    is_crypto: bool = False,
+    config: Optional[Dict[str, float]] = None,
+) -> Tuple[StrategyEvaluation, np.ndarray, Dict[str, object]]:
+    """Placeholder for pctdiff-midpoint variant; currently returns zeros and metadata."""
+
+    _ = (last_preds, simulation_data, trading_fee, trading_days_per_year, is_crypto, config)
+    zero_eval = StrategyEvaluation(0.0, 0.0, 0.0, 0.0, np.zeros(0, dtype=float))
+    metadata = {
+        "pctdiff_midpoint_enabled": bool(config) or ENABLE_PCTDIFF_MIDPOINT,
+        "pctdiff_midpoint_reason": "not_implemented",
+        "pctdiff_midpoint_sharpe": 0.0,
+        "pctdiff_midpoint_avg_daily": 0.0,
+    }
+    return zero_eval, zero_eval.returns, metadata
+
+
 def _log_strategy_summary(results_df: pd.DataFrame, symbol: str, num_simulations: int) -> None:
     strategy_specs = [
         (
@@ -871,6 +1186,14 @@ def _log_strategy_summary(results_df: pd.DataFrame, symbol: str, num_simulations
             "maxdiffalwayson_annual_return",
             "maxdiffalwayson_forecasted_pnl",
             "maxdiffalwayson_finalday_return",
+        ),
+        (
+            "PctDiff",
+            "pctdiff_return",
+            "pctdiff_sharpe",
+            "pctdiff_annual_return",
+            "pctdiff_forecasted_pnl",
+            "pctdiff_finalday_return",
         ),
     ]
 
@@ -1013,6 +1336,8 @@ def compute_walk_forward_stats(results_df: pd.DataFrame) -> Dict[str, float]:
         stats["walk_forward_maxdiff_sharpe"] = float(results_df["maxdiff_sharpe"].mean())
     if "maxdiffalwayson_sharpe" in results_df:
         stats["walk_forward_maxdiffalwayson_sharpe"] = float(results_df["maxdiffalwayson_sharpe"].mean())
+    if "pctdiff_sharpe" in results_df:
+        stats["walk_forward_pctdiff_sharpe"] = float(results_df["pctdiff_sharpe"].mean())
     return stats
 
 
@@ -1068,6 +1393,9 @@ if FAST_TESTING:
 if REAL_TESTING:
     _ensure_compilation_artifacts()
 
+PCTDIFF_MAX_DAILY_RETURN = float(os.getenv("PCTDIFF_MAX_DAILY_RETURN", "0.10"))
+ENABLE_PCTDIFF_MIDPOINT = os.getenv("ENABLE_PCTDIFF_MIDPOINT", "0").strip().lower() in _BOOL_TRUE
+
 
 def _is_force_kronos_enabled() -> bool:
     return os.getenv("MARKETSIM_FORCE_KRONOS", "0").lower() in _FORCE_KRONOS_VALUES
@@ -1104,6 +1432,8 @@ def _should_emit_gpu_log(
     if count is not None and count <= 1:
         return True
     return False
+
+
 
 
 def _gpu_memory_snapshot(label: str, *, reset_max: bool = False) -> Optional[Dict[str, object]]:
@@ -1882,8 +2212,8 @@ def load_chronos2_wrapper(params: Dict[str, Any]) -> Any:
     if cached is not None:
         return cached
 
-    # Enable torch.compile by default (can disable with TORCH_COMPILED=0)
-    torch_compiled_flag = os.getenv("TORCH_COMPILED", "1")
+    # Disable torch.compile by default (can enable with TORCH_COMPILED=1)
+    torch_compiled_flag = os.getenv("TORCH_COMPILED", "0")
     compile_enabled = torch_compiled_flag in {"1", "true", "yes", "on"}
 
     # Also check legacy CHRONOS_COMPILE flag for backwards compatibility
@@ -1992,6 +2322,37 @@ print(f"current_date_formatted: {current_date_formatted}")
 tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 
 
+def _warmup_toto_pipeline(pipeline: TotoPipeline) -> None:
+    """
+    Warm up Toto pipeline with dummy inference to pre-compile torch kernels.
+
+    This eliminates the ~40 second first-inference penalty by triggering
+    kernel compilation upfront with dummy data.
+    """
+    import time
+    logger.info("🔥 Warming up Toto pipeline (pre-compiling torch kernels)...")
+    warmup_start = time.time()
+
+    try:
+        with torch.no_grad():
+            # Create dummy context tensor matching typical input shape
+            context_length = 512
+            device = next(pipeline.model.parameters()).device
+            dummy_context = torch.randn(1, context_length, device=device)
+
+            # Run minimal inference to trigger compilation
+            _ = pipeline(
+                context=dummy_context,
+                prediction_length=96,
+                num_samples=2,  # Minimal samples for warmup
+            )
+
+        elapsed = time.time() - warmup_start
+        logger.info(f"✓ Toto warmup complete: {elapsed:.1f}s (kernels pre-compiled)")
+    except Exception as e:
+        logger.warning(f"Toto warmup failed (non-fatal): {e}")
+
+
 def load_toto_pipeline() -> TotoPipeline:
     """Lazily load the Toto forecasting pipeline."""
     global pipeline, TOTO_DEVICE_OVERRIDE
@@ -2089,6 +2450,11 @@ def load_toto_pipeline() -> TotoPipeline:
         _gpu_memory_snapshot("toto_pipeline_loaded", reset_max=True)
     pipeline.memory_observations = dict(_toto_memory_observations)
     _touch_toto_pipeline()
+
+    # Optional: Warmup to pre-compile torch kernels
+    if os.getenv("MARKETSIM_WARMUP_MODELS", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        _warmup_toto_pipeline(pipeline)
+
     return pipeline
 
 
@@ -2419,6 +2785,7 @@ def backtest_forecasts(symbol, num_simulations=50, model_override: Optional[str]
             ("highlow_avg_daily_return", "highlow_forecasted_pnl"),
             ("maxdiff_avg_daily_return", "maxdiff_forecasted_pnl"),
             ("maxdiffalwayson_avg_daily_return", "maxdiffalwayson_forecasted_pnl"),
+            ("pctdiff_avg_daily_return", "pctdiff_forecasted_pnl"),
         ]
 
         for pnl_col, forecast_col in strategy_pnl_columns:
@@ -2939,6 +3306,33 @@ def run_single_simulation(
     maxdiff_always_finalday_return = float(maxdiff_always_returns[-1]) if maxdiff_always_returns.size else 0.0
     maxdiff_always_turnover = float(maxdiff_always_metadata.get("maxdiffalwayson_turnover", 0.0))
 
+    pctdiff_eval, pctdiff_returns_np, pctdiff_metadata = evaluate_pctdiff_strategy(
+        last_preds,
+        simulation_data,
+        trading_fee=trading_fee,
+        trading_days_per_year=trading_days_per_year,
+        is_crypto=is_crypto,
+    )
+    last_preds.update(pctdiff_metadata)
+    pctdiff_return = pctdiff_eval.total_return
+    pctdiff_sharpe = pctdiff_eval.sharpe_ratio
+    pctdiff_avg_daily = pctdiff_eval.avg_daily_return
+    pctdiff_annual = pctdiff_eval.annualized_return
+    pctdiff_returns = pctdiff_returns_np
+    pctdiff_finalday_return = float(pctdiff_returns[-1]) if pctdiff_returns.size else 0.0
+    pctdiff_turnover = float(pctdiff_metadata.get("pctdiff_turnover", 0.0))
+
+    pctdiff_mid_returns_np, pctdiff_mid_metadata = pctdiff_midpoint_stub_returns(
+        enabled=ENABLE_PCTDIFF_MIDPOINT,
+        reason="not_implemented",
+    )
+    pctdiff_mid_eval = _evaluate_daily_returns(pctdiff_mid_returns_np, trading_days_per_year)
+    last_preds.update(pctdiff_mid_metadata)
+    pctdiff_mid_return = pctdiff_mid_eval.total_return
+    pctdiff_mid_sharpe = pctdiff_mid_eval.sharpe_ratio
+    pctdiff_mid_avg_daily = pctdiff_mid_eval.avg_daily_return
+    pctdiff_mid_annual = pctdiff_mid_eval.annualized_return
+
     # Simple buy/sell strategy
     simple_signals = simple_buy_sell_strategy(close_pred_tensor, is_crypto=is_crypto)
     simple_eval = evaluate_strategy(simple_signals, actual_returns, trading_fee, trading_days_per_year)
@@ -3171,6 +3565,35 @@ def run_single_simulation(
         "maxdiffalwayson_filled_sell_trades": int(maxdiff_always_metadata.get("maxdiffalwayson_filled_sell_trades", 0)),
         "maxdiffalwayson_trades_total": int(maxdiff_always_metadata.get("maxdiffalwayson_trades_total", 0)),
         "maxdiffalwayson_trade_bias": float(maxdiff_always_metadata.get("maxdiffalwayson_trade_bias", 0.0)),
+        "pctdiff_return": float(pctdiff_return),
+        "pctdiff_sharpe": float(pctdiff_sharpe),
+        "pctdiff_finalday_return": float(pctdiff_finalday_return),
+        "pctdiff_avg_daily_return": float(pctdiff_avg_daily),
+        "pctdiff_annual_return": float(pctdiff_annual),
+        "pctdiff_turnover": float(pctdiff_turnover),
+        "pctdiff_profit": float(pctdiff_metadata.get("pctdiff_profit", 0.0)),
+        "pctdiff_profit_values": pctdiff_metadata.get("pctdiff_profit_values", []),
+        "pctdiff_entry_low_multiplier": float(pctdiff_metadata.get("pctdiff_entry_low_multiplier", 0.0)),
+        "pctdiff_entry_high_multiplier": float(pctdiff_metadata.get("pctdiff_entry_high_multiplier", 0.0)),
+        "pctdiff_long_pct": float(pctdiff_metadata.get("pctdiff_long_pct", 0.0)),
+        "pctdiff_short_pct": float(pctdiff_metadata.get("pctdiff_short_pct", 0.0)),
+        "pctdiff_entry_low_price": float(pctdiff_metadata.get("pctdiff_entry_low_price", 0.0)),
+        "pctdiff_entry_high_price": float(pctdiff_metadata.get("pctdiff_entry_high_price", 0.0)),
+        "pctdiff_takeprofit_high_price": float(pctdiff_metadata.get("pctdiff_takeprofit_high_price", 0.0)),
+        "pctdiff_takeprofit_low_price": float(pctdiff_metadata.get("pctdiff_takeprofit_low_price", 0.0)),
+        "pctdiff_primary_side": pctdiff_metadata.get("pctdiff_primary_side", "neutral"),
+        "pctdiff_trade_bias": float(pctdiff_metadata.get("pctdiff_trade_bias", 0.0)),
+        "pctdiff_trades_positive": int(pctdiff_metadata.get("pctdiff_trades_positive", 0)),
+        "pctdiff_trades_negative": int(pctdiff_metadata.get("pctdiff_trades_negative", 0)),
+        "pctdiff_trades_total": int(pctdiff_metadata.get("pctdiff_trades_total", 0)),
+        "pctdiff_entry_hits": int(pctdiff_metadata.get("pctdiff_entry_hits", 0)),
+        "pctdiff_takeprofit_hits": int(pctdiff_metadata.get("pctdiff_takeprofit_hits", 0)),
+        "pctdiff_midpoint_return": float(pctdiff_mid_return),
+        "pctdiff_midpoint_sharpe": float(pctdiff_mid_sharpe),
+        "pctdiff_midpoint_avg_daily_return": float(pctdiff_mid_avg_daily),
+        "pctdiff_midpoint_annual_return": float(pctdiff_mid_annual),
+        "pctdiff_midpoint_enabled": bool(pctdiff_mid_metadata.get("pctdiff_midpoint_enabled", False)),
+        "pctdiff_midpoint_reason": pctdiff_mid_metadata.get("pctdiff_midpoint_reason", "disabled"),
         "maxdiffprofit_profit": float(maxdiff_metadata.get("maxdiffprofit_profit", 0.0)),
         "maxdiffprofit_profit_values": maxdiff_metadata.get("maxdiffprofit_profit_values", []),
         "maxdiffprofit_profit_high_multiplier": float(

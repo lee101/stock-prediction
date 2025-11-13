@@ -1,8 +1,10 @@
 import torch
 from loss_utils import (
+    CRYPTO_TRADING_FEE,
     TRADING_FEE,
     calculate_profit_torch_with_entry_buysell_profit_values,
     calculate_trading_profit_torch,
+    calculate_trading_profit_torch_with_entry_buysell,
 )
 
 
@@ -55,6 +57,33 @@ def test_basic_short_loss():
     assert profit < 0, "Should lose money when short and price rises"
 
 
+def test_multi_trade_portfolio_profit_mix():
+    """Two trades (long win, short win) should sum expected PnL."""
+    y_test_pred = torch.tensor([1.0, -1.0])
+    y_test = torch.tensor([0.02, -0.03])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred)
+
+    expected_long = 0.02 - TRADING_FEE
+    expected_short = 0.03 - TRADING_FEE
+    averaged = (expected_long + expected_short) / 2.0
+    assert torch.isclose(profit, torch.tensor(averaged), atol=1e-7)
+
+
+def test_multi_trade_portfolio_loss_mix():
+    """Two trades (long loss, short loss) should sum expected negative PnL."""
+    y_test_pred = torch.tensor([1.0, -1.0])
+    y_test = torch.tensor([-0.01, 0.015])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred)
+
+    expected_long = -0.01 - TRADING_FEE
+    expected_short = -0.015 - TRADING_FEE
+    averaged = (expected_long + expected_short) / 2.0
+    assert torch.isclose(profit, torch.tensor(averaged), atol=1e-7)
+    assert profit < 0
+
+
 def test_entry_exit_long_profit():
     """
     Entry/exit logic:
@@ -73,14 +102,8 @@ def test_entry_exit_long_profit():
         y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred
     )
 
-    # Enter at -1%, exit at +3% = 4% gain
-    # But current implementation uses abs(), so let's see what we actually get
-    print(f"Entry/exit long profit: {profit_vals.item()}")
-
-    # Expected: 0.03 - (-0.01) = 0.04 (4% gain from entry to exit)
-    # With fee: 0.04 - TRADING_FEE
-    expected_movement = 0.03 - (-0.01)
-    print(f"Expected movement: {expected_movement}")
+    expected = (y_test_high_pred - y_test_low_pred).item() - TRADING_FEE
+    assert torch.isclose(profit_vals, torch.tensor(expected), atol=1e-7)
 
 
 def test_entry_exit_short_loss_case():
@@ -108,16 +131,9 @@ def test_entry_exit_short_loss_case():
         close_at_eod=True,  # force close at EOD to see the issue
     )
 
-    print(f"Short loss case profit: {profit_vals.item()}")
-
-    # We enter short at +2%, close at +4%
-    # We lose: -(+4% - (+2%)) = -2%
-    # With current abs() bug, this might show as positive!
-    expected_loss = -(0.04 - 0.02)  # should be -0.02
-    print(f"Expected loss: {expected_loss}")
-
-    # The bug: if abs() is used, profit_vals might be positive when it should be negative
-    # This test will reveal the sign issue
+    expected_loss = (-1.0) * (y_test.item() - y_test_high_pred.item()) - TRADING_FEE
+    assert torch.isclose(profit_vals, torch.tensor(expected_loss), atol=1e-7)
+    assert profit_vals < 0
 
 
 def test_entry_exit_short_profit_case():
@@ -135,93 +151,270 @@ def test_entry_exit_short_profit_case():
     y_test_low = torch.tensor([-0.03])  # actual low: -3%
 
     profit_vals = calculate_profit_torch_with_entry_buysell_profit_values(
-        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, close_at_eod=True
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, close_at_eod=False
     )
 
-    print(f"Short profit case: {profit_vals.item()}")
+    expected_profit = (y_test_low_pred - y_test_high_pred).item() * -1.0 - TRADING_FEE
+    assert torch.isclose(profit_vals, torch.tensor(expected_profit), atol=1e-7)
+    assert profit_vals > 0
 
-    # Enter at +2%, exit at -2%: profit = +2% - (-2%) = 4%
-    expected_profit = 0.02 - (-0.02)  # should be 0.04
-    print(f"Expected profit: {expected_profit}")
+
+def test_entry_exit_two_trade_matrix_close_eod():
+    """One long + one short with EOD exits should sum predictable PnL."""
+    y_test_pred = torch.tensor([1.0, -1.0])
+    y_test = torch.tensor([0.01, -0.02])
+    y_test_low_pred = torch.tensor([-0.01, -0.02])
+    y_test_low = torch.tensor([-0.015, -0.025])
+    y_test_high_pred = torch.tensor([0.02, 0.03])
+    y_test_high = torch.tensor([0.025, 0.035])
+
+    profit_vals = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test,
+        y_test_high,
+        y_test_high_pred,
+        y_test_low,
+        y_test_low_pred,
+        y_test_pred,
+        close_at_eod=True,
+    )
+
+    expected_long = (0.01 - (-0.01)) - TRADING_FEE
+    expected_short = (0.03 - (-0.02)) - TRADING_FEE
+    assert torch.isclose(profit_vals.sum(), torch.tensor(expected_long + expected_short), atol=1e-7)
 
 
 def test_detailed_short_breakdown():
     """
     Detailed breakdown showing EXACTLY what's wrong with the short calculation
     """
-    print("\n" + "=" * 60)
-    print("DETAILED SHORT CALCULATION BREAKDOWN")
-    print("=" * 60)
+    y_test_pred = torch.tensor([-1.0])
+    y_test = torch.tensor([0.04])
+    y_test_high_pred = torch.tensor([0.02])
+    y_test_low_pred = torch.tensor([-0.01])
+    y_test_high = torch.tensor([0.03])
+    y_test_low = torch.tensor([-0.02])
 
-    # Scenario: Short at +2%, price rises to +4% (we lose money)
-    y_test_pred = torch.tensor([-1.0])  # short 1x
-    y_test = torch.tensor([0.04])  # close at +4%
-    y_test_high_pred = torch.tensor([0.02])  # we enter short at +2%
-    y_test_low_pred = torch.tensor([-0.01])  # exit target (not hit)
-    y_test_high = torch.tensor([0.03])  # actual high +3% (we enter)
-    y_test_low = torch.tensor([-0.02])  # actual low -2%
-
-    print("\nScenario: Short entry at +2%, close at +4%")
-    print(f"Position size: {y_test_pred.item()}")
-    print(f"Entry (high_pred): {y_test_high_pred.item():.4f} (+2%)")
-    print(f"Close: {y_test.item():.4f} (+4%)")
-    print(f"Entry condition met: {y_test_high_pred.item()} < {y_test_high.item()}")
-
-    # What SHOULD happen:
-    print("\n--- CORRECT CALCULATION ---")
+    position = y_test_pred.item()
     entry_price = y_test_high_pred.item()
     exit_price = y_test.item()
-    position = y_test_pred.item()
-    print(f"Entry price (normalized): {entry_price}")
-    print(f"Exit price (normalized): {exit_price}")
-    print(f"Movement: {exit_price} - {entry_price} = {exit_price - entry_price}")
-    print(
-        f"P&L: position * movement = {position} * {exit_price - entry_price} = {position * (exit_price - entry_price)}"
-    )
-    print(f"With fee: {position * (exit_price - entry_price) - abs(position) * TRADING_FEE}")
     expected = position * (exit_price - entry_price) - abs(position) * TRADING_FEE
-
-    # What ACTUALLY happens:
-    print("\n--- BUGGY IMPLEMENTATION (with abs) ---")
-    pred_high_to_close = torch.abs(y_test_high_pred - y_test)
-    print(
-        f"pred_high_to_close_percent_movements = abs({y_test_high_pred.item()} - {y_test.item()}) = {pred_high_to_close.item()}"
-    )
-    buggy_sold = -1 * torch.clip(y_test_pred, -10, 0) * pred_high_to_close * (y_test_high_pred < y_test_high)
-    print(
-        f"sold_profits = -1 * ({torch.clip(y_test_pred, -10, 0).item()}) * {pred_high_to_close.item()} * {(y_test_high_pred < y_test_high).item()}"
-    )
-    print(f"sold_profits = {buggy_sold.item()}")
-    print(f"With fee: {buggy_sold.item() - abs(position) * TRADING_FEE}")
 
     actual = calculate_profit_torch_with_entry_buysell_profit_values(
         y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, close_at_eod=True
     )
 
-    print("\n--- RESULTS ---")
-    print(f"Expected P&L: {expected:.6f} (NEGATIVE = loss, which is correct)")
-    print(f"Actual P&L:   {actual.item():.6f} (POSITIVE = profit, which is WRONG)")
-    print(f"Sign error:   {'YES - BUG CONFIRMED' if (expected < 0 and actual.item() > 0) else 'No'}")
+    assert torch.isclose(actual, torch.tensor(expected), atol=1e-7)
+    assert actual < 0
+
+
+def test_no_fee_when_entry_not_triggered_for_predicted_direction():
+    """Fees should not be charged if the predicted direction never enters."""
+    y_test_pred = torch.tensor([-1.0])  # short intent
+    y_test = torch.tensor([0.0])  # flat close
+    y_test_high_pred = torch.tensor([0.02])  # short entry target
+    y_test_high = torch.tensor([0.015])  # never hit short entry (actual high < target)
+    y_test_low_pred = torch.tensor([-0.01])
+    y_test_low = torch.tensor([-0.02])  # long side would have entered, but we stayed short
+
+    profit = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test,
+        y_test_high,
+        y_test_high_pred,
+        y_test_low,
+        y_test_low_pred,
+        y_test_pred,
+        close_at_eod=True,
+    )
+
+    assert torch.isclose(profit, torch.tensor(0.0), atol=1e-7)
+
+
+def test_intraday_long_fee_applied_once_entry_hits():
+    """Intraday logic should charge a single fee when a long entry executes."""
+    y_test_pred = torch.tensor([1.0])  # go long
+    y_test = torch.tensor([0.01])  # +1% close
+    y_test_low_pred = torch.tensor([-0.01])  # enter at -1%
+    y_test_low = torch.tensor([-0.02])  # entry triggered
+    y_test_high_pred = torch.tensor([0.03])  # exit target +3%
+    y_test_high = torch.tensor([0.04])  # target hit intraday
+
+    profit = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test,
+        y_test_high,
+        y_test_high_pred,
+        y_test_low,
+        y_test_low_pred,
+        y_test_pred,
+        close_at_eod=False,
+    )
+
+    movement = (y_test_high_pred - y_test_low_pred).item()  # 0.04 between entry and exit
+    expected = movement - TRADING_FEE
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+
+
+def test_short_fee_applied_only_when_short_entry_hits():
+    """Fees for shorts apply only when the short entry condition is satisfied."""
+    y_test_pred = torch.tensor([-1.0])  # short
+    y_test = torch.tensor([0.02])  # close equals entry price
+    y_test_high_pred = torch.tensor([0.02])  # entry at +2%
+    y_test_high = torch.tensor([0.03])  # actual high crosses entry
+    y_test_low_pred = torch.tensor([-0.01])
+    y_test_low = torch.tensor([-0.02])
+
+    profit = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test,
+        y_test_high,
+        y_test_high_pred,
+        y_test_low,
+        y_test_low_pred,
+        y_test_pred,
+        close_at_eod=True,
+    )
+
+    expected = -TRADING_FEE  # no price move, only fee
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+
+
+def test_intraday_long_loss_when_close_below_entry():
+    y_test_pred = torch.tensor([1.0])
+    y_test = torch.tensor([-0.015])
+    y_test_low_pred = torch.tensor([-0.01])
+    y_test_low = torch.tensor([-0.02])
+    y_test_high_pred = torch.tensor([0.03])
+    y_test_high = torch.tensor([0.02])
+
+    profit = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, close_at_eod=False
+    )
+
+    expected = (y_test.item() - y_test_low_pred.item()) - TRADING_FEE
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+    assert profit < 0
+
+
+def test_intraday_short_profit_hits_low_target():
+    y_test_pred = torch.tensor([-1.0])
+    y_test = torch.tensor([-0.005])
+    y_test_high_pred = torch.tensor([0.02])
+    y_test_high = torch.tensor([0.03])
+    y_test_low_pred = torch.tensor([-0.02])
+    y_test_low = torch.tensor([-0.03])
+
+    profit = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, close_at_eod=False
+    )
+
+    expected = (y_test_low_pred - y_test_high_pred).item() * -1.0 - TRADING_FEE
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+    assert profit > 0
+
+
+def test_eod_long_loss_when_close_below_entry():
+    y_test_pred = torch.tensor([1.0])
+    y_test = torch.tensor([-0.02])
+    y_test_low_pred = torch.tensor([-0.01])
+    y_test_low = torch.tensor([-0.03])
+    y_test_high_pred = torch.tensor([0.02])
+    y_test_high = torch.tensor([0.025])
+
+    profit = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, close_at_eod=True
+    )
+
+    expected = (y_test.item() - y_test_low_pred.item()) - TRADING_FEE
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+    assert profit < 0
+
+
+def test_eod_short_profit_when_close_below_entry():
+    y_test_pred = torch.tensor([-1.0])
+    y_test = torch.tensor([-0.02])
+    y_test_high_pred = torch.tensor([0.02])
+    y_test_high = torch.tensor([0.03])
+    y_test_low_pred = torch.tensor([-0.01])
+    y_test_low = torch.tensor([-0.015])
+
+    profit = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, close_at_eod=True
+    )
+
+    expected = (-1.0) * (y_test.item() - y_test_high_pred.item()) - TRADING_FEE
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+    assert profit > 0
+
+
+def test_intraday_short_loss_when_exit_not_hit():
+    y_test_pred = torch.tensor([-1.0])
+    y_test = torch.tensor([0.03])
+    y_test_high_pred = torch.tensor([0.02])
+    y_test_high = torch.tensor([0.04])
+    y_test_low_pred = torch.tensor([-0.02])
+    y_test_low = torch.tensor([-0.005])
+
+    profit = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, close_at_eod=False
+    )
+
+    expected = (-1.0) * (y_test.item() - y_test_high_pred.item()) - TRADING_FEE
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+    assert profit < 0
+
+
+def test_entry_exit_totals_match_profit_values_sum():
+    y_test = torch.tensor([0.02, -0.01])
+    y_test_high = torch.tensor([0.035, 0.025])
+    y_test_high_pred = torch.tensor([0.03, 0.02])
+    y_test_low = torch.tensor([-0.02, -0.03])
+    y_test_low_pred = torch.tensor([-0.01, -0.02])
+    y_test_pred = torch.tensor([1.0, -1.0])
+
+    profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
+        y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, close_at_eod=False
+    )
+
+    total = calculate_trading_profit_torch_with_entry_buysell(
+        None,
+        None,
+        y_test,
+        y_test_pred,
+        y_test_high,
+        y_test_high_pred,
+        y_test_low,
+        y_test_low_pred,
+        close_at_eod=False,
+    )
+
+    assert torch.isclose(total, profit_values.sum(), atol=1e-7)
 
 
 def test_crypto_vs_equity_fees():
     """Crypto fees (0.15%) should result in lower profit than equity fees (0.05%)"""
-    CRYPTO_FEE = 0.0015
-    EQUITY_FEE = 0.0005
 
     y_test_pred = torch.tensor([1.0])
     y_test = torch.tensor([0.02])  # 2% profit
 
-    equity_profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred, trading_fee=EQUITY_FEE)
-    crypto_profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred, trading_fee=CRYPTO_FEE)
+    equity_profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred, trading_fee=TRADING_FEE)
+    crypto_profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred, trading_fee=CRYPTO_TRADING_FEE)
 
-    expected_equity = 1.0 * 0.02 - EQUITY_FEE
-    expected_crypto = 1.0 * 0.02 - CRYPTO_FEE
+    expected_equity = 1.0 * 0.02 - TRADING_FEE
+    expected_crypto = 1.0 * 0.02 - CRYPTO_TRADING_FEE
 
     assert torch.isclose(equity_profit, torch.tensor(expected_equity), atol=1e-6)
     assert torch.isclose(crypto_profit, torch.tensor(expected_crypto), atol=1e-6)
     assert crypto_profit < equity_profit, "Crypto fees should reduce profit more than equity fees"
     print(f"✓ Equity profit: {equity_profit.item():.6f}, Crypto profit: {crypto_profit.item():.6f}")
+
+
+def test_crypto_fee_constant_matches_expected_profit():
+    """Single crypto trade should deduct CRYPTO_TRADING_FEE exactly once."""
+    y_test_pred = torch.tensor([1.0])
+    y_test = torch.tensor([0.05])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred, trading_fee=CRYPTO_TRADING_FEE)
+
+    expected = 0.05 - CRYPTO_TRADING_FEE
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
 
 
 def test_entry_exit_custom_fee():

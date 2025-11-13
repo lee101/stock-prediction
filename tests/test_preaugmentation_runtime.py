@@ -7,9 +7,28 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from preaug_sweeps.augmentations import get_augmentation
+from preaug_sweeps.augmentations import AUGMENTATION_REGISTRY, get_augmentation
 from src.models.chronos2_wrapper import Chronos2OHLCWrapper, _default_preaug_dirs
 from src.preaug import PreAugmentationSelector
+
+_ALL_AUGMENTATIONS = tuple(AUGMENTATION_REGISTRY.keys())
+
+
+def _sample_price_frame(length: int = 96) -> pd.DataFrame:
+    rng = np.random.default_rng(12345)
+    base = np.linspace(100.0, 130.0, length)
+    noise = rng.normal(scale=0.5, size=length)
+    frame = pd.DataFrame(
+        {
+            "open": base + noise,
+            "high": base + 0.5 + rng.normal(scale=0.3, size=length),
+            "low": base - 0.5 + rng.normal(scale=0.3, size=length),
+            "close": base + rng.normal(scale=0.2, size=length),
+            "volume": np.abs(rng.normal(loc=5_000.0, scale=500.0, size=length)) + 10.0,
+            "amount": np.abs(rng.normal(loc=9_000.0, scale=900.0, size=length)) + 25.0,
+        }
+    )
+    return frame.reset_index(drop=True)
 
 
 class _DummyChronosPipeline:
@@ -66,6 +85,41 @@ def _write_best_config(directory: Path, symbol: str, strategy: str = "log_return
     path = directory / f"{symbol}.json"
     path.write_text(json.dumps(payload))
     return path
+
+
+@pytest.mark.parametrize("strategy_name", _ALL_AUGMENTATIONS)
+def test_preaugmentation_roundtrip_matches_original(strategy_name: str) -> None:
+    df = _sample_price_frame()
+    augmentation = get_augmentation(strategy_name)
+
+    transformed = augmentation.transform_dataframe(df.copy())
+    restored = augmentation.inverse_transform_predictions(
+        transformed.to_numpy(),
+        context=df,
+        columns=df.columns,
+    )
+
+    assert np.allclose(restored, df.to_numpy(), atol=1e-6, rtol=1e-6)
+
+
+@pytest.mark.parametrize("strategy_name", _ALL_AUGMENTATIONS)
+def test_preaugmentation_restores_future_window(strategy_name: str) -> None:
+    df = _sample_price_frame(80)
+    split = len(df) - 8
+    context = df.iloc[:split].copy()
+    future = df.iloc[split:].copy()
+
+    augmentation = get_augmentation(strategy_name)
+    transformed_full = augmentation.transform_dataframe(df.copy())
+    future_aug = transformed_full.iloc[split:]
+
+    restored = augmentation.inverse_transform_predictions(
+        future_aug.to_numpy(),
+        context=context,
+        columns=df.columns,
+    )
+
+    assert np.allclose(restored, future.to_numpy(), atol=1e-5, rtol=1e-5)
 
 
 def test_preaug_selector_prefers_mae_percent(tmp_path: Path) -> None:

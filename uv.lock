@@ -459,6 +459,20 @@ wheels = [
 ]
 
 [[package]]
+name = "bayesian-optimization"
+version = "1.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "scikit-learn", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "scipy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/81/30/c72190aa569dc274642a9a935ac32a9f6697a635d297705ad7c654503e68/bayesian-optimization-1.4.0.tar.gz", hash = "sha256:5e7b5ada7826a8a342932d67f8ae5e638ade588a12b7f7df058fb7a2defe5866", size = 19792, upload-time = "2022-11-27T23:41:31.87Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2c/af/478deae10abb1cc1034993064b41dbc6015734b4f8cafa2c3d1a05861f75/bayesian_optimization-1.4.0-py3-none-any.whl", hash = "sha256:0984cfcbc9472284778962416f0d4892286da3f54e1df2767ef89263b6e22263", size = 17895, upload-time = "2022-11-27T23:41:29.669Z" },
+]
+
+[[package]]
 name = "bcrypt"
 version = "5.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -786,6 +800,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/52/39/069100b84d7418bc358d81669d5748efb14b9cceacd2f9c75f550424132f/cloudpickle-3.1.1.tar.gz", hash = "sha256:b216fa8ae4019d5482a8ac3c95d8f6346115d8835911fd4aefd1a445e4242c64", size = 22113, upload-time = "2025-01-14T17:02:05.085Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7e/e8/64c37fadfc2816a7701fa8a6ed8d87327c7d54eacfbfb6edab14a2f2be75/cloudpickle-3.1.1-py3-none-any.whl", hash = "sha256:c8c5a44295039331ee9dad40ba100a9c7297b6f988e50e87ccdf3765a668350e", size = 20992, upload-time = "2025-01-14T17:02:02.417Z" },
+]
+
+[[package]]
+name = "cma"
+version = "4.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6b/b8/33083c988054b23c2df09f2b45f922410a86f60bd4be1ab36c74f72d753b/cma-4.4.0.tar.gz", hash = "sha256:de89664f2a8522c74e40e19d26be51380d41082ea2dcefbd5943e0d0d90bd92c", size = 292657, upload-time = "2025-09-20T20:40:32.441Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1e/b4/b3c1258c014cb18fdc1920f08bada2eccb7a49e39b9f68c3552ec8acfadf/cma-4.4.0-py3-none-any.whl", hash = "sha256:46da7f95056b02496f4117269026dce3953ef0ae89717267540566effb85b052", size = 303789, upload-time = "2025-09-20T20:40:26.583Z" },
 ]
 
 [[package]]
@@ -1152,6 +1178,16 @@ sdist = { url = "https://files.pythonhosted.org/packages/17/4d/ac7ffa80c69ea1df3
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c9/7a/cef76fd8438a42f96db64ddaa85280485a9c395e7df3db8158cfec1eee34/dill-0.3.8-py3-none-any.whl", hash = "sha256:c36ca9ffb54365bdd2f8eb3eff7d2a21237f8452b57ace88b1ac615b7e815bd7", size = 116252, upload-time = "2024-01-27T23:42:14.239Z" },
 ]
+
+[[package]]
+name = "directsearch"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "scipy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/42/b0/876bc174ff34a0b2e3b75f10d7c3c9a267a1f56dbac59e943b6f682f6aa8/directsearch-1.0.tar.gz", hash = "sha256:8093ecc401a3d5eff28f053d4ef1b726f5a9c577bd33d6a8b2413a5ba753c734", size = 13605, upload-time = "2022-04-01T03:06:11.488Z" }
 
 [[package]]
 name = "diskcache"
@@ -3155,6 +3191,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c3/b2/cc7948361b46d045632a7a5ebd0ec613d8872b41b3608d860817dd2be1f6/neuralforecast-3.1.2.tar.gz", hash = "sha256:c9f8b4bda5e9d1681a3ec1749a629d8bcb36a6c603f98b07b3ac82ce789c3814", size = 204699, upload-time = "2025-10-01T19:46:26.47Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/98/91/f11d9c6842a811a72dc5a9c7c4b15485b08e1002025f513fbc14316f3a82/neuralforecast-3.1.2-py3-none-any.whl", hash = "sha256:57025d689f7bcb46409c5a829dd3c92190e5157e23305ec4878ad420ef4c9aae", size = 263168, upload-time = "2025-10-01T19:46:25.078Z" },
+]
+
+[[package]]
+name = "nevergrad"
+version = "1.0.12"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "bayesian-optimization", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "cma", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "directsearch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "pandas", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d7/67/8ff218de679bdaa6f12c0bb7c7491b6121e3bd46656166f7364800b188ad/nevergrad-1.0.12.tar.gz", hash = "sha256:ade90dacbb676f6dfc9fee3d4f9c628ec29eec9e3d995a31026ae8a61988b803", size = 413001, upload-time = "2025-04-23T15:34:18.359Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5a/13/8267afdb84a890d7fc3e6f0eef170b0323915c28879e79e8184f7257cf8a/nevergrad-1.0.12-py3-none-any.whl", hash = "sha256:56ff65d6a2f497ecd79af5a796968ee946c05705a6a69ca616eae5988cc5d999", size = 506324, upload-time = "2025-04-23T15:34:16.012Z" },
 ]
 
 [[package]]
@@ -5211,6 +5264,7 @@ dependencies = [
     { name = "loguru", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "matplotlib", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mplfinance", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nevergrad", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "numpy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nvidia-ml-py", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "pandas", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -5412,6 +5466,7 @@ requires-dist = [
     { name = "mplfinance", specifier = ">=0.12" },
     { name = "neuralforecast", marker = "extra == 'all'", specifier = ">=3.1" },
     { name = "neuralforecast", marker = "extra == 'forecasting'", specifier = ">=3.1" },
+    { name = "nevergrad", specifier = ">=1.0.2" },
     { name = "numpy", specifier = ">=1.26,<2", index = "https://pypi.org/simple" },
     { name = "nvidia-ml-py", specifier = ">=13.580.82" },
     { name = "openai", marker = "extra == 'all'", specifier = ">=1.0.0" },
