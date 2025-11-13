@@ -78,7 +78,6 @@ DEFAULT_HOURLY_SYMBOLS: List[str] = [
     "ETHUSD",
     "LINKUSD",
     "UNIUSD",
-    "PAXGUSD",
 ]
 SYMBOL_FILES = [
     REPO_ROOT / "symbolsofinterest.txt",

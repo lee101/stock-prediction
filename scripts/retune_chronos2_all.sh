@@ -84,7 +84,7 @@ tune_hourly() {
     echo "    Using extended context lengths (up to 8192) for dense hourly data"
 
     # Hourly symbols from trade_stock_e2e_hourly.py defaults
-    HOURLY_SYMBOLS="AAPL MSFT NVDA TSLA AMZN AMD GOOG ADBE COIN COUR U SAP SONY BTCUSD ETHUSD SOLUSD LINKUSD UNIUSD PAXGUSD"
+    HOURLY_SYMBOLS="AAPL MSFT NVDA TSLA AMZN AMD GOOG ADBE COIN COUR U SAP SONY BTCUSD ETHUSD SOLUSD LINKUSD UNIUSD"
 
     # Filter to only symbols with hourly data available
     AVAILABLE_HOURLY=""
