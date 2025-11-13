@@ -2,41 +2,41 @@
   "symbol": "SONY",
   "model": "chronos2",
   "config": {
-    "name": "hourly_ctx8192_bs32_median",
+    "name": "direct_ctx7680_bs48_mean_scale_meanstd_s512_eval12",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
-    "context_length": 8192,
-    "batch_size": 32,
+    "context_length": 7680,
+    "batch_size": 48,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "median",
-    "sample_count": 0,
-    "scaler": "none",
+    "aggregation": "mean",
+    "sample_count": 512,
+    "scaler": "meanstd",
     "predict_kwargs": {}
   },
   "validation": {
-    "price_mae": 0.0,
-    "pct_return_mae": 0.05,
-    "latency_s": 0.0
+    "price_mae": 0.10933533609710547,
+    "pct_return_mae": 0.0037405240782210987,
+    "latency_s": 44.820956404233584
   },
   "test": {
-    "price_mae": 0.0,
-    "pct_return_mae": 0.05,
-    "latency_s": 0.0
+    "price_mae": 0.11330459053164009,
+    "pct_return_mae": 0.003957486268087202,
+    "latency_s": 44.489228660066146
   },
   "windows": {
     "val_window": 168,
     "test_window": 168,
-    "forecast_horizon": 1,
-    "bar_interval": "1h"
+    "forecast_horizon": 1
   },
   "metadata": {
-    "source": "bootstrap",
-    "generated_at": "2025-11-12T21:24:56Z",
-    "frequency": "hourly",
-    "notes": "Derived from daily chronos2 config; context extended for hourly bars."
+    "source": "chronos2_benchmark",
+    "generated_at": "2025-11-13T17:38:53Z",
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.0037405240782210987,
+    "frequency": "hourly"
   }
 }

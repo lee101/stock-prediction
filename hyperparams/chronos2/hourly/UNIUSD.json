@@ -2,41 +2,41 @@
   "symbol": "UNIUSD",
   "model": "chronos2",
   "config": {
-    "name": "hourly_ctx8192_bs32_trimmed_mean_10_s512",
+    "name": "direct_ctx7680_bs32_median_eval2",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
-    "context_length": 8192,
+    "context_length": 7680,
     "batch_size": 32,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "trimmed_mean_10",
-    "sample_count": 512,
+    "aggregation": "median",
+    "sample_count": 0,
     "scaler": "none",
     "predict_kwargs": {}
   },
   "validation": {
-    "price_mae": 3.616483497138823e-06,
-    "pct_return_mae": 0.02146589324746746,
-    "latency_s": 3.485113903967431
+    "price_mae": 0.03923959647314886,
+    "pct_return_mae": 0.005986594522282095,
+    "latency_s": 36.414825354047935
   },
   "test": {
-    "price_mae": 2.7538012278886774e-06,
-    "pct_return_mae": 0.016874455191919734,
-    "latency_s": 3.6599634569938644
+    "price_mae": 0.030512098389580123,
+    "pct_return_mae": 0.005091858612695703,
+    "latency_s": 35.87562620794051
   },
   "windows": {
     "val_window": 168,
     "test_window": 168,
-    "forecast_horizon": 1,
-    "bar_interval": "1h"
+    "forecast_horizon": 1
   },
   "metadata": {
     "source": "chronos2_benchmark",
-    "generated_at": "2025-11-12T21:24:56Z",
-    "frequency": "hourly",
-    "notes": "Derived from daily chronos2 config; context extended for hourly bars."
+    "generated_at": "2025-11-13T12:16:41Z",
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.005986594522282095,
+    "frequency": "hourly"
   }
 }
