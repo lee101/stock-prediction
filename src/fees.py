@@ -37,8 +37,8 @@ def get_fee_for_symbol(symbol: str) -> float:
 
         return float(CRYPTO_TRADING_FEE if _is_crypto_symbol(symbol) else TRADING_FEE)
     except Exception:
-        # Conservative defaults: 5 bps equities, 15 bps crypto
-        return 0.0015 if _is_crypto_symbol(symbol) else 0.0005
+        # Conservative defaults: 5 bps equities, 10 bps crypto (standardized with loss_utils.py)
+        return 0.001 if _is_crypto_symbol(symbol) else 0.0005
 
 
 def get_fees_for_symbols(symbols: Iterable[str]) -> List[float]:

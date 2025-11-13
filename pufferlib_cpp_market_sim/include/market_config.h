@@ -6,8 +6,8 @@ namespace market_sim {
 
 struct MarketConfig {
     // Trading fees
-    static constexpr float STOCK_TRADING_FEE = 0.0005f;      // 0.05% for stocks
-    static constexpr float CRYPTO_TRADING_FEE = 0.0015f;     // 0.15% for crypto
+    static constexpr float STOCK_TRADING_FEE = 0.0005f;      // 0.05% (5 bps) for stocks
+    static constexpr float CRYPTO_TRADING_FEE = 0.001f;      // 0.10% (10 bps) for crypto (standardized)
 
     // Leverage settings
     static constexpr float ANNUAL_LEVERAGE_COST = 0.065f;   // 6.5% annual

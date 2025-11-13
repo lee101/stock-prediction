@@ -1,8 +1,26 @@
 # Code Audit: P&L and Trading Logic Issues
 
-**Date:** 2025-11-12
+**Date:** 2025-11-12 (Updated: 2025-11-13)
 **Scope:** P&L calculations, fee handling, position management, and trading logic
 **Focus:** Identifying bugs and issues that may affect profitability
+
+---
+
+## Status Update (2025-11-13)
+
+**✅ RESOLVED - Issue #1: Fee Standardization**
+- Decision: Standardize on **10 bps (0.001)** for crypto fees across entire codebase
+- Files updated:
+  - `src/fees.py` (0.0015 → 0.001)
+  - `stockagent/constants.py` (0.0015 → 0.001)
+  - `pufferlib_cpp_market_sim/include/market_config.h` (0.0015f → 0.001f)
+  - `cppsimulator/include/types.hpp` (0.0015 → 0.001)
+- Rationale: `loss_utils.py` already uses 10 bps, and training data/models are optimized for this rate
+
+**🚧 NEW: Correlation Risk Management**
+- Created comprehensive plan: `docs/correlation_risk_management_plan.md`
+- Implemented correlation matrix calculator: `trainingdata/calculate_correlation_matrix.py`
+- Next: Phase 1 implementation (monitoring and alerts)
 
 ---
 
@@ -10,11 +28,13 @@
 
 This audit identified **10 critical issues** and **5 moderate issues** that may affect P&L accuracy and trading profitability. The most critical findings relate to fee calculation inconsistencies, missing fee deductions in P&L recording, and potential race conditions in position management.
 
+**Issue #1 has been resolved** by standardizing crypto fees to 10 bps across all modules.
+
 ---
 
 ## Critical Issues (P0)
 
-### 1. Fee Calculation Inconsistency Between Training and Live Trading
+### 1. ✅ RESOLVED: Fee Calculation Inconsistency Between Training and Live Trading
 
 **Location:** `loss_utils.py` vs `src/fees.py`
 
@@ -22,13 +42,19 @@ This audit identified **10 critical issues** and **5 moderate issues** that may 
 - `loss_utils.py` uses hardcoded fees:
   - `TRADING_FEE = 0.0005` (5 bps)
   - `CRYPTO_TRADING_FEE = 0.001` (10 bps)
-- `src/fees.py` uses different defaults:
+- `src/fees.py` was using different defaults:
   - Equities: `0.0005` (5 bps) ✓ matches
-  - Crypto: `0.0015` (15 bps) ❌ **MISMATCH** (loss_utils uses 10 bps, fees.py uses 15 bps)
+  - Crypto: `0.0015` (15 bps) ❌ **MISMATCH** (loss_utils uses 10 bps, fees.py used 15 bps)
 
 **Impact:** Model training optimizes for 10 bps crypto fees, but live trading pays 15 bps. This 50% fee difference could significantly impact crypto strategy profitability.
 
-**Recommendation:** Standardize all fee constants to use `src/fees.py` values. Update loss_utils.py to import from fees.py instead of hardcoding.
+**Resolution (2025-11-13):** ✅ Standardized all crypto fees to **10 bps (0.001)** across:
+- `src/fees.py`
+- `stockagent/constants.py`
+- `pufferlib_cpp_market_sim/include/market_config.h`
+- `cppsimulator/include/types.hpp`
+
+Decision rationale: Models and training data already optimize for 10 bps, so standardizing on this value preserves model accuracy.
 
 ---
 
