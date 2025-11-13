@@ -2,30 +2,27 @@
   "symbol": "ARKK",
   "model": "chronos2",
   "config": {
-    "name": "direct_ctx768_bs128_trimmed_mean_10_scale_meanstd_s512_eval18",
-    "model_id": "amazon/chronos-2",
+    "name": "chronos2_ctx2048_bs2048_val20_test20",
+    "model_id": "chronos2",
     "device_map": "cuda",
-    "context_length": 768,
-    "batch_size": 128,
+    "context_length": 2048,
+    "prediction_length": 1,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "trimmed_mean_10",
-    "sample_count": 512,
-    "scaler": "meanstd",
-    "predict_kwargs": {}
+    "batch_size": 2048
   },
   "validation": {
-    "price_mae": 1.0933884859550695,
-    "pct_return_mae": 0.014930721555222612,
-    "latency_s": 4.04903433999425
+    "price_mae": 1.045547866821289,
+    "pct_return_mae": 0.014283064179514105,
+    "latency_s": 0.19627724030142418
   },
   "test": {
-    "price_mae": 1.1515011684063226,
-    "pct_return_mae": 0.015366043450813738,
-    "latency_s": 3.9681591460102936
+    "price_mae": 1.2072372436523438,
+    "pct_return_mae": 0.016083850304606878,
+    "latency_s": 0.19544479374890217
   },
   "windows": {
     "val_window": 20,
@@ -33,7 +30,11 @@
     "forecast_horizon": 1
   },
   "metadata": {
-    "source": "chronos2_benchmark",
-    "generated_at": "2025-11-12T12:22:54Z"
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-13T00:43:58.888279+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 2048,
+    "batch_size": 2048
   }
 }

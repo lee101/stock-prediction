@@ -932,6 +932,58 @@ def test_analyze_symbols_strategy_selection(mock_backtest, mock_snapshot, mock_t
         assert "predictions" in result
 
 
+@patch("trade_stock_e2e._resolve_model_passes")
+@patch("trade_stock_e2e._analyze_symbols_impl")
+def test_analyze_symbols_merges_best_strategy_across_models(mock_impl, mock_resolve_passes):
+    symbol = "BTCUSD"
+
+    base_row = {
+        "strategy": "maxdiff",
+        "strategy_candidate_forecasted_pnl": {"maxdiff": 0.08, "maxdiffalwayson": 0.05},
+        "composite_score": 0.10,
+        "close_prediction_source": "chronos2",
+        "forecast_model": "chronos2",
+        "avg_return": 0.08,
+    }
+    secondary_row = {
+        "strategy": "maxdiff",
+        "strategy_candidate_forecasted_pnl": {"maxdiff": 0.07, "maxdiffalwayson": 0.09},
+        "composite_score": 0.09,
+        "close_prediction_source": "toto",
+        "forecast_model": "toto",
+        "avg_return": 0.07,
+    }
+
+    rerun_row = {**secondary_row, "strategy": "maxdiffalwayson"}
+
+    def impl_side_effect(symbols, *, model_overrides=None, strategy_priorities=None):
+        target = symbols[0]
+        override = (model_overrides or {}).get(target)
+        priority = (strategy_priorities or {}).get(target)
+        if override == "toto" and priority == ["maxdiffalwayson"]:
+            return {target: rerun_row}
+        if override == "toto":
+            return {target: secondary_row}
+        return {target: base_row}
+
+    mock_impl.side_effect = impl_side_effect
+    mock_resolve_passes.return_value = [None, "toto"]
+
+    results = analyze_symbols([symbol])
+
+    assert mock_impl.call_count == 3  # base, secondary, rerun with priority
+    assert symbol in results
+    assert results[symbol]["strategy"] == "maxdiffalwayson"
+    assert results[symbol]["forecast_model"] == "toto"
+
+
+@patch("trade_stock_e2e._resolve_model_passes", return_value=[None])
+@patch("trade_stock_e2e._analyze_symbols_impl", return_value={"ETHUSD": {"strategy": "simple", "composite_score": 0.1}})
+def test_analyze_symbols_skips_secondary_when_not_needed(mock_impl, mock_resolve):
+    results = analyze_symbols(["ETHUSD"])
+    assert results["ETHUSD"]["strategy"] == "simple"
+    mock_impl.assert_called_once()
+
 def test_manage_positions_enters_new_simple_position_without_real_trades():
     current_picks = {
         "AAPL": {

@@ -1,0 +1,62 @@
+{
+  "symbol": "ETHUSD",
+  "best_strategy": "detrending",
+  "mae": 16.996248424703655,
+  "mae_percent": 0.49371423497395256,
+  "rmse": 23.106376140294923,
+  "pct_return_mae": 0.0049507824919098236,
+  "config": {
+    "name": "detrending",
+    "params": {}
+  },
+  "timestamp": "2025-11-13T03:23:56Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 0.49371423497395256,
+  "comparison": {
+    "baseline": {
+      "mae": 17.722786395322004,
+      "mae_percent": 0.5148190181814045,
+      "pct_return_mae": 0.005153076748955453
+    },
+    "percent_change": {
+      "mae": 17.57366249888774,
+      "mae_percent": 0.510487203971313,
+      "pct_return_mae": 0.005110985814944152
+    },
+    "log_returns": {
+      "mae": 17.992099315431556,
+      "mae_percent": 0.5226421341419378,
+      "pct_return_mae": 0.005229924991137595
+    },
+    "differencing": {
+      "mae": 249.8185019093716,
+      "mae_percent": 7.256833830061815,
+      "pct_return_mae": 0.0732246151694315
+    },
+    "detrending": {
+      "mae": 16.996248424703655,
+      "mae_percent": 0.49371423497395256,
+      "pct_return_mae": 0.0049507824919098236
+    },
+    "robust_scaling": {
+      "mae": 17.705912028086182,
+      "mae_percent": 0.5143288444029138,
+      "pct_return_mae": 0.005147080047121192
+    },
+    "minmax_standard": {
+      "mae": 17.578045072924944,
+      "mae_percent": 0.510614510841272,
+      "pct_return_mae": 0.005111215310061217
+    },
+    "rolling_norm": {
+      "mae": 18.70187279436871,
+      "mae_percent": 0.5432599352826251,
+      "pct_return_mae": 0.005445175289725717
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2/hourly",
+    "frequency": "hourly"
+  }
+}

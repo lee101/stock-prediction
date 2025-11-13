@@ -1,0 +1,42 @@
+{
+  "symbol": "SONY",
+  "model": "chronos2",
+  "config": {
+    "name": "hourly_ctx8192_bs32_median",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 8192,
+    "batch_size": 32,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "aggregation": "median",
+    "sample_count": 0,
+    "scaler": "none",
+    "predict_kwargs": {}
+  },
+  "validation": {
+    "price_mae": 0.0,
+    "pct_return_mae": 0.05,
+    "latency_s": 0.0
+  },
+  "test": {
+    "price_mae": 0.0,
+    "pct_return_mae": 0.05,
+    "latency_s": 0.0
+  },
+  "windows": {
+    "val_window": 168,
+    "test_window": 168,
+    "forecast_horizon": 1,
+    "bar_interval": "1h"
+  },
+  "metadata": {
+    "source": "bootstrap",
+    "generated_at": "2025-11-12T21:24:56Z",
+    "frequency": "hourly",
+    "notes": "Derived from daily chronos2 config; context extended for hourly bars."
+  }
+}

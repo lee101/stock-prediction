@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from preaug_sweeps.augmentations import get_augmentation
-from src.models.chronos2_wrapper import Chronos2OHLCWrapper
+from src.models.chronos2_wrapper import Chronos2OHLCWrapper, _default_preaug_dirs
 from src.preaug import PreAugmentationSelector
 
 
@@ -129,3 +129,19 @@ def test_percent_change_inverse_handles_subset_columns() -> None:
         columns=context.columns,
     )
     assert np.allclose(restored, context.values)
+
+
+def test_default_preaug_dirs_prioritize_frequency() -> None:
+    dirs = _default_preaug_dirs("hourly")
+    assert dirs[0] == Path("preaugstrategies") / "chronos2" / "hourly"
+    assert dirs[1] == Path("preaugstrategies") / "best" / "hourly"
+    assert dirs[2] == Path("preaugstrategies") / "chronos2"
+    assert dirs[3] == Path("preaugstrategies") / "best"
+
+
+def test_default_preaug_dirs_without_frequency() -> None:
+    dirs = _default_preaug_dirs(None)
+    assert dirs == (
+        Path("preaugstrategies") / "chronos2",
+        Path("preaugstrategies") / "best",
+    )

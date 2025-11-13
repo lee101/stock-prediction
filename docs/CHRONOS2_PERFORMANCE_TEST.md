@@ -114,7 +114,7 @@ TORCH_COMPILED=1 ONLY_CHRONOS2=1 uv run python -c "
 ## Troubleshooting
 
 ### "Invalid backend" Error in Compiled Mode
-This is expected. The eager mode fix (attn_implementation="eager") may not be compatible with torch.compile. This is why TORCH_COMPILED=0 is the default and recommended setting.
+Eager attention mode (attn_implementation="eager") is now compatible with torch.compile. TORCH_COMPILED=1 is the default and recommended setting for better performance. If you still encounter issues, you can disable compilation with TORCH_COMPILED=0.
 
 ### Test Takes Too Long
 - Reduce `num_runs` from 5 to 3 in the test script

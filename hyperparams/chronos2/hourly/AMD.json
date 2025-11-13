@@ -1,0 +1,42 @@
+{
+  "symbol": "AMD",
+  "model": "chronos2",
+  "config": {
+    "name": "direct_ctx5120_bs32_mean_s512_eval1",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 5120,
+    "batch_size": 32,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "aggregation": "mean",
+    "sample_count": 512,
+    "scaler": "none",
+    "predict_kwargs": {}
+  },
+  "validation": {
+    "price_mae": 3.169712433313889,
+    "pct_return_mae": 0.012991781065485253,
+    "latency_s": 4.7409599300299305
+  },
+  "test": {
+    "price_mae": 2.5757603648190766,
+    "pct_return_mae": 0.010807315734908335,
+    "latency_s": 4.696017650014255
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_benchmark",
+    "generated_at": "2025-11-13T00:40:15Z",
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.012991781065485253,
+    "frequency": "hourly"
+  }
+}
