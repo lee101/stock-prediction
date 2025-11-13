@@ -23,6 +23,12 @@ mis-specified masks continue to raise a `ValueError`. This keeps the
 compiled graph free of data-dependent branching without masking real
 bugs in non-compiled workflows.
 
+On top of the model change, `Chronos2OHLCWrapper` now retries failed
+compiled inferences by restoring the eager model and re-running the
+request. Any `KeyboardInterrupt` is propagated immediately, but Dynamo
+internal crashes (like the `tracer_output` UnboundLocalError) get turned
+into a one-time warning plus automatic fallback.
+
 ## Validation (trainingdata/)
 
 `tests/test_chronos_compile_accuracy.py` now performs back-to-back runs

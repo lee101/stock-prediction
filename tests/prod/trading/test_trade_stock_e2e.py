@@ -359,6 +359,73 @@ def test_analyze_symbols_prefers_maxdiff_for_crypto_when_primary_side_buy(
 @patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)
 @patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
 @patch("trade_stock_e2e.backtest_forecasts")
+def test_analyze_symbols_prefers_pctdiff_when_percent_edge(
+    mock_backtest, mock_snapshot, mock_trading_day_now
+):
+    rows = []
+    for _ in range(70):
+        rows.append(
+            {
+                "simple_strategy_return": 0.0,
+                "simple_strategy_avg_daily_return": 0.0,
+                "simple_strategy_annual_return": 0.0,
+                "simple_strategy_sharpe": 0.1,
+                "simple_strategy_turnover": 0.2,
+                "simple_strategy_max_drawdown": -0.02,
+                "all_signals_strategy_return": 0.0,
+                "all_signals_strategy_avg_daily_return": 0.0,
+                "all_signals_strategy_annual_return": 0.0,
+                "entry_takeprofit_return": 0.0,
+                "entry_takeprofit_avg_daily_return": 0.0,
+                "entry_takeprofit_annual_return": 0.0,
+                "highlow_return": 0.0,
+                "highlow_avg_daily_return": 0.0,
+                "highlow_annual_return": 0.0,
+                "maxdiff_return": -0.01,
+                "maxdiff_avg_daily_return": -0.01,
+                "maxdiff_annual_return": -0.01 * 365,
+                "maxdiff_sharpe": -0.2,
+                "maxdiff_turnover": 0.4,
+                "maxdiff_max_drawdown": -0.05,
+                "pctdiff_return": 0.02,
+                "pctdiff_avg_daily_return": 0.02,
+                "pctdiff_annual_return": 0.02 * 365,
+                "pctdiff_sharpe": 1.5,
+                "pctdiff_turnover": 0.5,
+                "pctdiff_profit": 0.02,
+                "pctdiff_profit_values": [0.02],
+                "pctdiff_entry_low_price": 94.5,
+                "pctdiff_entry_high_price": 105.5,
+                "pctdiff_takeprofit_high_price": 96.39,
+                "pctdiff_takeprofit_low_price": 103.9,
+                "pctdiff_entry_low_multiplier": -0.01,
+                "pctdiff_entry_high_multiplier": 0.01,
+                "pctdiff_long_pct": 0.02,
+                "pctdiff_short_pct": 0.015,
+                "pctdiff_primary_side": "buy",
+                "pctdiff_trade_bias": 0.4,
+                "pctdiff_trades_positive": 8,
+                "pctdiff_trades_negative": 2,
+                "pctdiff_trades_total": 10,
+                "predicted_close": 100.0,
+                "predicted_high": 106.0,
+                "predicted_low": 94.0,
+                "close": 100.0,
+            }
+        )
+
+    mock_backtest.return_value = pd.DataFrame(rows)
+
+    results = analyze_symbols(["AAPL"])
+
+    assert results["AAPL"]["strategy"] == "pctdiff"
+    assert results["AAPL"]["pctdiff_entry_low_price"] == pytest.approx(94.5)
+    assert results["AAPL"]["pctdiff_takeprofit_high_price"] == pytest.approx(96.39)
+
+
+@patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)
+@patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
+@patch("trade_stock_e2e.backtest_forecasts")
 @patch("trade_stock_e2e._log_detail")
 def test_analyze_symbols_marks_crypto_sell_ineligible(
     mock_log, mock_backtest, mock_snapshot, mock_trading_day_now
@@ -1163,7 +1230,7 @@ def test_manage_positions_trend_pnl_resume(mock_summary, monkeypatch):
     mock_summary.assert_called()
 
 
-@pytest.mark.parametrize("strategy_name", ["highlow", "maxdiff"])
+@pytest.mark.parametrize("strategy_name", ["highlow", "maxdiff", "pctdiff"])
 def test_manage_positions_highlow_strategy_uses_limit_orders(strategy_name):
     current_picks = {
         "AAPL": {
@@ -1173,8 +1240,17 @@ def test_manage_positions_highlow_strategy_uses_limit_orders(strategy_name):
             "strategy": strategy_name,
             "predicted_high": 125.0,
             "predicted_low": 100.0,
-            "maxdiffprofit_low_price": 98.5,
-            "maxdiffprofit_high_price": 132.0,
+            **(
+                {
+                    "pctdiff_entry_low_price": 99.0,
+                    "pctdiff_takeprofit_high_price": 130.5,
+                }
+                if strategy_name == "pctdiff"
+                else {
+                    "maxdiffprofit_low_price": 98.5,
+                    "maxdiffprofit_high_price": 132.0,
+                }
+            ),
             "predictions": pd.DataFrame(
                 [{"predicted_low": 100.0, "predicted_high": 125.0}]
             ),
@@ -1190,14 +1266,23 @@ def test_manage_positions_highlow_strategy_uses_limit_orders(strategy_name):
     args, kwargs = mocks["spawn_open_maxdiff"].call_args
     assert args[0] == "AAPL"
     assert args[1] == "buy"
-    assert args[2] == pytest.approx(98.5)
-    assert args[3] == pytest.approx(3.0)
+    expected_entry = (
+        current_picks["AAPL"].get("pctdiff_entry_low_price")
+        if strategy_name == "pctdiff"
+        else current_picks["AAPL"].get("maxdiffprofit_low_price")
+    )
+    assert args[2] == pytest.approx(expected_entry)
     assert kwargs.get("poll_seconds") == trade_module.MAXDIFF_ENTRY_WATCHER_POLL_SECONDS
     assert kwargs.get("force_immediate") is False
     assert kwargs.get("priority_rank") is None
     mocks["spawn_close_maxdiff"].assert_called_once()
     close_args, close_kwargs = mocks["spawn_close_maxdiff"].call_args
-    assert close_args == ("AAPL", "buy", 132.0)
+    expected_exit = (
+        current_picks["AAPL"].get("pctdiff_takeprofit_high_price")
+        if strategy_name == "pctdiff"
+        else current_picks["AAPL"].get("maxdiffprofit_high_price")
+    )
+    assert close_args == ("AAPL", "buy", expected_exit)
     assert close_kwargs.get("poll_seconds") == trade_module.MAXDIFF_EXIT_WATCHER_POLL_SECONDS
     assert close_kwargs.get("price_tolerance") == pytest.approx(
         trade_module.MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE
@@ -1205,7 +1290,7 @@ def test_manage_positions_highlow_strategy_uses_limit_orders(strategy_name):
     mocks["spawn_tp"].assert_not_called()
 
 
-@pytest.mark.parametrize("strategy_name", ["highlow", "maxdiff"])
+@pytest.mark.parametrize("strategy_name", ["highlow", "maxdiff", "pctdiff"])
 def test_manage_positions_highlow_short_uses_maxdiff_prices(strategy_name):
     current_picks = {
         "UNIUSD": {
@@ -1215,8 +1300,17 @@ def test_manage_positions_highlow_short_uses_maxdiff_prices(strategy_name):
             "strategy": strategy_name,
             "predicted_high": 6.8,
             "predicted_low": 6.1,
-            "maxdiffprofit_high_price": 6.9,
-            "maxdiffprofit_low_price": 6.05,
+            **(
+                {
+                    "pctdiff_entry_high_price": 6.95,
+                    "pctdiff_takeprofit_low_price": 6.02,
+                }
+                if strategy_name == "pctdiff"
+                else {
+                    "maxdiffprofit_high_price": 6.9,
+                    "maxdiffprofit_low_price": 6.05,
+                }
+            ),
             "predictions": pd.DataFrame([{"predicted_high": 6.8, "predicted_low": 6.1}]),
         }
     }
@@ -1230,14 +1324,23 @@ def test_manage_positions_highlow_short_uses_maxdiff_prices(strategy_name):
     args, kwargs = mocks["spawn_open_maxdiff"].call_args
     assert args[0] == "UNIUSD"
     assert args[1] == "sell"
-    assert args[2] == pytest.approx(6.9)
-    assert args[3] == pytest.approx(2.0)
+    expected_entry = (
+        current_picks["UNIUSD"].get("pctdiff_entry_high_price")
+        if strategy_name == "pctdiff"
+        else current_picks["UNIUSD"].get("maxdiffprofit_high_price")
+    )
+    assert args[2] == pytest.approx(expected_entry)
     assert kwargs.get("poll_seconds") == trade_module.MAXDIFF_ENTRY_WATCHER_POLL_SECONDS
     assert kwargs.get("force_immediate") is False
     assert kwargs.get("priority_rank") is None
     mocks["spawn_close_maxdiff"].assert_called_once()
     close_args, close_kwargs = mocks["spawn_close_maxdiff"].call_args
-    assert close_args == ("UNIUSD", "sell", 6.05)
+    expected_exit = (
+        current_picks["UNIUSD"].get("pctdiff_takeprofit_low_price")
+        if strategy_name == "pctdiff"
+        else current_picks["UNIUSD"].get("maxdiffprofit_low_price")
+    )
+    assert close_args == ("UNIUSD", "sell", expected_exit)
     assert close_kwargs.get("poll_seconds") == trade_module.MAXDIFF_EXIT_WATCHER_POLL_SECONDS
     assert close_kwargs.get("price_tolerance") == pytest.approx(
         trade_module.MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE

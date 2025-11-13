@@ -1,49 +1,36 @@
 symbols = [
-        'COUR',
-        'GOOG',
-        'TSLA',
-        'NVDA',
-        'AAPL',
-        # "GTLB", no data
-        # "AMPL",  no data
-        "U",
-        "ADSK",
-        # "RBLX", # unpredictable
-        "ADBE",
-        'COIN', # unpredictable
-        # 'QUBT',  no data
-        # 'ARQQ',  no data
-        # avoiding .6% buffer
-        # 'REA.AX',
-        # 'XRO.AX',
-        # 'SEK.AX',
-        # 'NXL.AX',  # data anlytics
-        # 'APX.AX',  # data collection for ml/labelling
-        # 'CDD.AX',
-        # 'NVX.AX',
-        # 'BRN.AX',  # brainchip
-        # 'AV1.AX',
-        # 'TEAM',
-        # 'PFE',
-        # 'MRNA',
-        # 'AMD',
-        'MSFT',
-        # 'META',
-        # 'CRM',
-        'NFLX',
-        'PYPL',
-        'SAP',
-        # 'AMD',  # tmp consider disabling/felt its model was a bit negative for now
-        'SONY',
-        # 'PFE',
-        # 'MRNA',
-    # ]
+    # Top performing equities (high Sharpe, good win rates, high total PNL)
+    'EQIX',     # $14,705 total PNL, 259 trades
+    'GS',       # $13,888 total PNL, 263 trades, 1.19 Sharpe
+    'COST',     # $11,388 total PNL, 244 trades
+    'CRM',      # $10,885 total PNL, 275 trades, 0.85 Sharpe
+    'AXP',      # $10,701 total PNL, 288 trades
+    'BA',       # $10,276 total PNL, 272 trades
+    'GE',       # $9,782 total PNL, 277 trades, 2.03 Sharpe ⭐
+    'LLY',      # $9,141 total PNL, 257 trades
+    'AVGO',     # $8,347 total PNL, 291 trades, 1.18 Sharpe
+    'SPY',      # $7,732 total PNL, 259 trades
+    'SHOP',     # $6,128 total PNL, 288 trades
+    'GLD',      # $5,121 total PNL, 224 trades
+    'PLTR',     # $4,893 total PNL, 282 trades
+    'MCD',      # $4,391 total PNL, 243 trades
+    'V',        # $4,036 total PNL, 241 trades
+    'VTI',      # $3,718 total PNL, 225 trades
+    'QQQ',      # $3,526 total PNL, 277 trades
+    'MA',       # Strong performer across strategies
+    'SAP',      # Profitable across strategies
+    # Keep existing profitable ones
+    'COUR',
+    'ADBE',
+    'INTC',
+    'QUBT',
+]
 
-     symbols = [
-        'BTCUSD',
-        'ETHUSD',
-        # 'LTCUSD',
-        # "PAXGUSD",
-        # "UNIUSD",
-
-        
+# Crypto symbols (top performers)
+symbols = [
+    'BTCUSD',   # Strong consistent performer
+    'ETHUSD',   # $67,805 total PNL (but only 9 trades, 2.7% win rate - monitor closely)
+    'LINKUSD',  # Solid performer
+    'UNIUSD',   # Solid performer
+    'PAXGUSD',  # Solid performer
+]
