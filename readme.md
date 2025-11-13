@@ -354,6 +354,14 @@ python -m traininglib.benchmark_cli --optimizers adamw shampoo muon lion --runs 
 ```bash
 PYTHONPATH=$(pwd) python backtest_test3_inline.py
 ```
+### Offline Backtest
+
+To simulate trading completely offline over two weeks run:
+
+```bash
+PYTHONPATH=$(pwd) python offline_backtest.py
+```
+
 
 ## HFTraining Quick Run (2025-10-17)
 
