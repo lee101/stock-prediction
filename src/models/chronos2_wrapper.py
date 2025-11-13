@@ -6,8 +6,6 @@ the pandas-first API that ships with Chronos 2. The wrapper focuses on:
 
 * Preparing multi-target OHLC panels with long (8k+) context windows
 * Generating quantile forecasts via ``Chronos2Pipeline.predict_df``
-* Pivoting the prediction DataFrame into per-target matrices that downstream
-  evaluators can consume without additional munging
 """
 
 from __future__ import annotations
@@ -25,19 +23,10 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # pragma: no cover
     torch = None  # type: ignore
 
+from chronos import Chronos2Pipeline as _Chronos2Pipeline
+from preaug_sweeps.augmentations import BaseAugmentation
 from src.gpu_utils import should_offload_to_cpu as gpu_should_offload_to_cpu
 from src.preaug import PreAugmentationChoice, PreAugmentationSelector
-
-from preaug_sweeps.augmentations import BaseAugmentation
-
-try:  # pragma: no cover - exercised when dependencies are available.
-    from chronos import Chronos2Pipeline as _Chronos2Pipeline
-except Exception as exc:  # pragma: no cover - graceful degradation on missing deps.
-    _Chronos2Pipeline = None
-    _CHRONOS2_IMPORT_ERROR = exc
-else:  # pragma: no cover - executed when chronos is available.
-    _CHRONOS2_IMPORT_ERROR = None
-
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +71,7 @@ def _require_chronos2_pipeline() -> type:
     if _Chronos2Pipeline is None:
         raise RuntimeError(
             "chronos>=2.0 is unavailable; install `chronos-forecasting>=2.0` to enable Chronos2Pipeline."
-        ) from _CHRONOS2_IMPORT_ERROR
+        )
     return _Chronos2Pipeline
 
 
@@ -655,14 +644,11 @@ class Chronos2OHLCWrapper:
         for level, column_name in zip(quantiles, quantile_columns):
             if column_name not in raw_predictions.columns:
                 raise RuntimeError(f"Chronos2 output missing '{column_name}' column for quantile={level}.")
-            pivot = (
-                raw_predictions.pivot(
-                    index=self.timestamp_column,
-                    columns="target_name",
-                    values=column_name,
-                )
-                .sort_index()
-            )
+            pivot = raw_predictions.pivot(
+                index=self.timestamp_column,
+                columns="target_name",
+                values=column_name,
+            ).sort_index()
             quantile_frames[level] = pivot.astype("float32")
 
         if applied_aug is not None:
