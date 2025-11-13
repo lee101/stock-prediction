@@ -1,0 +1,65 @@
+{
+  "timestamp": "2025-11-13T05:41:01.579560",
+  "symbols": [
+    "BTCUSD",
+    "ETHUSD",
+    "MSFT",
+    "NVDA",
+    "AAPL",
+    "SPY"
+  ],
+  "initial_cash": 100000,
+  "days": 10,
+  "results": [
+    {
+      "strategy": "VolAdjusted_10pct",
+      "final_equity": 129989.79170928297,
+      "return_pct": 0.29989791709282976,
+      "max_dd_pct": 0.0,
+      "sharpe": 30.574499809887584,
+      "volatility": 0.19952868582861502,
+      "trades": 55,
+      "avg_size": 0.41102207830902016
+    },
+    {
+      "strategy": "VolAdjusted_15pct",
+      "final_equity": 142625.65383333626,
+      "return_pct": 0.4262565383333626,
+      "max_dd_pct": 0.0,
+      "sharpe": 31.28356623039541,
+      "volatility": 0.2653479159943906,
+      "trades": 55,
+      "avg_size": 0.5401724071273383
+    },
+    {
+      "strategy": "Kelly_50pct",
+      "final_equity": 189194.52591716283,
+      "return_pct": 0.8919452591716283,
+      "max_dd_pct": 0.0,
+      "sharpe": 30.069505221285446,
+      "volatility": 0.5041673297768932,
+      "trades": 55,
+      "avg_size": 0.879154604441736
+    },
+    {
+      "strategy": "Fixed_25pct",
+      "final_equity": 117432.74008913369,
+      "return_pct": 0.1743274008913369,
+      "max_dd_pct": 0.0,
+      "sharpe": 29.92684260124931,
+      "volatility": 0.12417045675753818,
+      "trades": 55,
+      "avg_size": 0.22272727272727272
+    },
+    {
+      "strategy": "Naive_50pct_Baseline",
+      "final_equity": 137498.93445673713,
+      "return_pct": 0.3749893445673713,
+      "max_dd_pct": 0.0,
+      "sharpe": 29.92684279254851,
+      "volatility": 0.24834091351507648,
+      "trades": 55,
+      "avg_size": 0.44545454545454544
+    }
+  ]
+}

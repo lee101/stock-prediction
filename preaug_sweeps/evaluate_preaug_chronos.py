@@ -18,7 +18,7 @@ import math
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, Iterable, List, Mapping
+from typing import Dict, Iterable, List, Mapping, Sequence
 
 import sys
 
@@ -128,6 +128,27 @@ def _metrics_dict(result: CandidateReport) -> Dict[str, Dict[str, float]]:
     }
 
 
+def _average_metrics(reports: Sequence[CandidateReport]) -> Dict[str, Dict[str, float]]:
+    if not reports:
+        raise ValueError("Cannot average metrics without any successful runs.")
+
+    splits = ("validation", "test")
+    keys = ("mae", "mae_percent", "rmse", "pct_return_mae", "latency_s")
+    aggregated: Dict[str, Dict[str, float]] = {split: {key: 0.0 for key in keys} for split in splits}
+
+    for report in reports:
+        metrics = _metrics_dict(report)
+        for split in splits:
+            for key in keys:
+                aggregated[split][key] += metrics[split][key]
+
+    count = float(len(reports))
+    for split in splits:
+        for key in keys:
+            aggregated[split][key] /= count
+    return aggregated
+
+
 def _evaluate_strategy(
     benchmark: Chronos2Benchmark,
     symbol: str,
@@ -188,6 +209,8 @@ def _persist_best(
     }
     if getattr(args, "frequency", None):
         payload["metadata"]["frequency"] = args.frequency
+    if getattr(args, "strategy_repeats", None):
+        payload["metadata"]["strategy_repeats"] = int(args.strategy_repeats)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     target = args.output_dir / f"{symbol}.json"
     with target.open("w", encoding="utf-8") as fp:
@@ -200,12 +223,25 @@ def _persist_best(
     return target
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("--strategy-repeats must be >= 1")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbols", nargs="+", help="Symbols to evaluate (default: chronos best selections).")
     parser.add_argument("--hyperparam-root", type=Path, default=Path("hyperparams/chronos2"))
     parser.add_argument("--best-selection-root", type=Path, default=Path("hyperparams/best"))
     parser.add_argument("--strategies", nargs="+", help="Augmentation strategies to test (default: all).")
+    parser.add_argument(
+        "--strategy-repeats",
+        type=_positive_int,
+        default=1,
+        help="Repeat each strategy N times and average metrics to smooth stochasticity.",
+    )
     parser.add_argument(
         "--selection-metric",
         choices=SELECTION_METRICS,
@@ -270,13 +306,22 @@ def main() -> int:
             continue
 
         comparison: Dict[str, Dict[str, Dict[str, float]]] = {}
+        successful_runs: Dict[str, int] = {}
+        repeats = args.strategy_repeats
         for strategy in strategies:
-            try:
-                report = _evaluate_strategy(benchmark, symbol, df, val_indices, test_indices, candidate, strategy)
-            except Exception as exc:
-                print(f"[ERROR] {symbol} strategy {strategy} failed: {exc}")
+            reports: List[CandidateReport] = []
+            for run_idx in range(1, repeats + 1):
+                try:
+                    report = _evaluate_strategy(benchmark, symbol, df, val_indices, test_indices, candidate, strategy)
+                except Exception as exc:
+                    print(f"[ERROR] {symbol} strategy {strategy} run {run_idx}/{repeats} failed: {exc}")
+                    continue
+                reports.append(report)
+            if not reports:
+                print(f"[WARN] {symbol} strategy {strategy} failed on all {repeats} run(s).")
                 continue
-            comparison[strategy] = _metrics_dict(report)
+            successful_runs[strategy] = len(reports)
+            comparison[strategy] = _average_metrics(reports)
 
         if not comparison:
             print(f"[WARN] No successful strategies for {symbol}")
@@ -296,6 +341,8 @@ def main() -> int:
             "selection_metric": args.selection_metric,
             "comparison": comparison,
             "output_path": str(target_path),
+            "strategy_repeats": repeats,
+            "successful_runs": successful_runs,
         }
         print(
             f"[{idx}/{len(symbols)}] {symbol}: best={best_strategy} "

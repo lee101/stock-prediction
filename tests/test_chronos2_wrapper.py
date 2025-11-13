@@ -73,6 +73,7 @@ def test_build_panel_truncates_when_history_is_short() -> None:
 class _DummyPipeline:
     def __init__(self) -> None:
         self.recorded_kwargs = []
+        self.model = object()
 
     def predict_df(self, context_df, future_df=None, **kwargs):
         self.recorded_kwargs.append(kwargs)
@@ -168,3 +169,76 @@ def test_unload_blocks_future_predictions() -> None:
 
     with pytest.raises(RuntimeError):
         wrapper.predict_ohlc(df, symbol="BTCUSD", prediction_length=4)
+
+
+class _FailOncePipeline(_DummyPipeline):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures = 1
+
+    def predict_df(self, *args, **kwargs):  # type: ignore[override]
+        if self.failures:
+            self.failures -= 1
+            raise RuntimeError("transient failure")
+        return super().predict_df(*args, **kwargs)
+
+
+def test_compile_failure_falls_back_to_eager() -> None:
+    df = _make_dataframe(32)
+    pipeline = _FailOncePipeline()
+    wrapper = Chronos2OHLCWrapper(
+        pipeline=pipeline,
+        id_column="symbol",
+        timestamp_column="timestamp",
+        target_columns=("open",),
+        default_context_length=16,
+    )
+
+    wrapper._torch_compile_success = True
+    wrapper._torch_compile_enabled = True
+    wrapper._eager_model = object()
+
+    context = df.iloc[:-4]
+    holdout = df.iloc[-4:]
+
+    panel = wrapper.build_panel(
+        context_df=context,
+        holdout_df=holdout,
+        future_covariates=None,
+        symbol="BTCUSD",
+        id_column="symbol",
+        timestamp_column="timestamp",
+        target_columns=("open",),
+        prediction_length=4,
+        context_length=16,
+    )
+
+    def _call() -> pd.DataFrame:
+        return pipeline.predict_df(
+            panel.context_df,
+            future_df=panel.future_df,
+            id_column="symbol",
+            timestamp_column="timestamp",
+            target=list(("open",)),
+            prediction_length=panel.prediction_length,
+            quantile_levels=[0.5],
+            batch_size=8,
+        )
+
+    result = wrapper._call_with_compile_fallback(_call, "unit-test")
+    assert not wrapper._torch_compile_success
+    assert "target_name" in result.columns
+
+
+def test_compile_fallback_propagates_keyboard_interrupt() -> None:
+    pipeline = _DummyPipeline()
+    wrapper = Chronos2OHLCWrapper(pipeline=pipeline, default_context_length=8)
+    wrapper._torch_compile_success = True
+    wrapper._torch_compile_enabled = True
+    wrapper._eager_model = object()
+
+    def _raise() -> pd.DataFrame:  # type: ignore[return-type]
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        wrapper._call_with_compile_fallback(_raise, "kb")

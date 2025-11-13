@@ -1,0 +1,22 @@
+{
+  "config": {
+    "symbols": [
+      "NVDA"
+    ],
+    "initial_capital": 100000,
+    "start_date": "2024-10-28",
+    "end_date": "2024-10-30",
+    "max_symbol_exposure_pct": 60.0,
+    "max_intraday_leverage": 4.0
+  },
+  "results": {
+    "initial_capital": 100000,
+    "final_equity": 100310.98000000001,
+    "total_return_pct": 0.31098000000001047,
+    "sharpe_ratio": 11.22497139462113,
+    "sortino_ratio": 11.22497139462113,
+    "max_drawdown_pct": 0.0,
+    "volatility": 0.02327161228277999,
+    "num_trades": 1
+  }
+}

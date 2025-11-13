@@ -19,6 +19,7 @@ from src.hourly_data_utils import (
 from src.portfolio_filters import filter_positive_forecasts
 from src.hourly_scheduler import HourlyRunCoordinator, resolve_hourly_symbols
 from src.hourly_data_refresh import HourlyDataRefresher
+from src.hourly_pnl_gate import should_block_trade_by_pnl
 from src.logging_utils import setup_logging, get_log_filename
 from src.symbol_filtering import filter_symbols_by_tradable_pairs, get_filter_info
 from src.symbol_utils import is_crypto_symbol
@@ -49,24 +50,32 @@ reset_forecast_cache()
 
 EST = ZoneInfo("America/New_York")
 DEFAULT_HOURLY_SYMBOLS: List[str] = [
-    # Equities
-    "AAPL",
-    "MSFT",
-    "NVDA",
-    "TSLA",
-    "AMZN",
-    "AMD",
-    "GOOG",
-    "ADBE",
-    "COIN",
-    "COUR",
-    "U",
+    # Top performing equities (high Sharpe, good win rates)
+    "EQIX",
+    "GS",
+    "COST",
+    "CRM",
+    "AXP",
+    "BA",
+    "GE",
+    "LLY",
+    "AVGO",
+    "SPY",
+    "SHOP",
+    "GLD",
+    "PLTR",
+    "MCD",
+    "V",
+    "VTI",
+    "QQQ",
+    "MA",
     "SAP",
-    "SONY",
-    # Crypto
+    # Keep existing profitable ones
+    "ADBE",
+    "COUR",
+    # Top crypto performers
     "BTCUSD",
     "ETHUSD",
-    "SOLUSD",
     "LINKUSD",
     "UNIUSD",
     "PAXGUSD",
@@ -88,6 +97,8 @@ HOURLY_DATA_VALIDATOR = HourlyDataValidator(
 )
 HOURLY_REQUIRE_POSITIVE_FORECAST = os.getenv("HOURLY_REQUIRE_POSITIVE_FORECAST", "1").strip().lower() in _TRUTHY
 HOURLY_REQUIRE_POSITIVE_AVG_RETURN = os.getenv("HOURLY_REQUIRE_POSITIVE_AVG_RETURN", "1").strip().lower() in _TRUTHY
+HOURLY_ENABLE_PNL_GATE = os.getenv("HOURLY_ENABLE_PNL_GATE", "1").strip().lower() in _TRUTHY
+HOURLY_PNL_GATE_MAX_TRADES = max(1, int(os.getenv("HOURLY_PNL_GATE_MAX_TRADES", "2")))
 HOURLY_CRYPTO_MAX_STALENESS_HOURS = max(0.1, float(os.getenv("HOURLY_CRYPTO_MAX_STALENESS_HOURS", "1.5")))
 HOURLY_REFRESH_BACKFILL_HOURS = max(6, int(os.getenv("HOURLY_REFRESH_BACKFILL_HOURS", "48")))
 HOURLY_REFRESH_OVERLAP_HOURS = max(0, int(os.getenv("HOURLY_REFRESH_OVERLAP_HOURS", "2")))
@@ -218,6 +229,49 @@ class HourlyTradingEngine:
         self.last_market_close_date: Optional[date] = None
         self._log_hourly_data_statuses(self._latest_data_statuses)
 
+    def _filter_by_recent_pnl(
+        self,
+        picks: Dict[str, Dict],
+        analysis: Dict[str, Dict],
+    ) -> Tuple[Dict[str, Dict], Dict[str, str]]:
+        """Filter picks based on recent PnL performance.
+
+        Blocks trading on symbol+side pairs where the last 1-2 trades
+        (depending on availability) had negative sum PnL.
+
+        Args:
+            picks: Portfolio picks to filter
+            analysis: Analysis data for symbols (includes strategy info)
+
+        Returns:
+            Tuple of (filtered_picks, blocked_symbols_with_reasons)
+        """
+        if not HOURLY_ENABLE_PNL_GATE:
+            return picks, {}
+
+        filtered_picks = {}
+        blocked = {}
+
+        for symbol, pick_data in picks.items():
+            side = pick_data.get("side", "buy")
+            strategy = analysis.get(symbol, {}).get("strategy")
+
+            should_block, reason = should_block_trade_by_pnl(
+                base._get_trade_history_store,
+                symbol,
+                side,
+                strategy=strategy,
+                max_trades=HOURLY_PNL_GATE_MAX_TRADES,
+                logger=logger,
+            )
+
+            if should_block:
+                blocked[symbol] = reason
+            else:
+                filtered_picks[symbol] = pick_data
+
+        return filtered_picks, blocked
+
     def run_cycle(self, now: datetime) -> None:
         logger.info("Starting hourly analysis @ %s", now.isoformat())
         try:
@@ -247,6 +301,13 @@ class HourlyTradingEngine:
                     record.forecast,
                     record.avg_return,
                 )
+
+        # Apply PnL-based blocking for symbols with recent losses
+        picks, pnl_blocked = self._filter_by_recent_pnl(picks, analysis)
+        if pnl_blocked:
+            for symbol, reason in pnl_blocked.items():
+                logger.warning("Hourly PnL gate blocked %s: %s", symbol, reason)
+
         if not picks:
             logger.info("Hourly portfolio empty after filtering; skipping execution cycle.")
             self.coordinator.mark_executed(now)

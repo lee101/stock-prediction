@@ -14,8 +14,9 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, TypeVar
 
+import numpy as np
 import pandas as pd
 
 try:  # pragma: no cover - optional dependency
@@ -197,6 +198,7 @@ class Chronos2OHLCWrapper:
             compile_backend = os.getenv("CHRONOS_COMPILE_BACKEND")
 
         self.pipeline = pipeline
+        self._eager_model = getattr(pipeline, "model", None)
         self.id_column = id_column
         self.timestamp_column = timestamp_column
         self.target_columns: Tuple[str, ...] = tuple(target_columns)
@@ -312,6 +314,29 @@ class Chronos2OHLCWrapper:
 
         self.pipeline = None
 
+    def _disable_torch_compile(self, reason: str, error: Optional[BaseException] = None) -> None:
+        if not self._torch_compile_success:
+            return
+        self._torch_compile_success = False
+        self._torch_compile_enabled = False
+        if self.pipeline is not None and self._eager_model is not None:
+            try:
+                self.pipeline.model = self._eager_model
+            except Exception as exc:  # pragma: no cover - best effort
+                logger.debug("Failed to restore eager Chronos2 model: %s", exc)
+        logger.warning("Chronos2 torch.compile disabled (%s): %s", reason, error)
+
+    def _call_with_compile_fallback(self, func: Callable[[], _T], context: str) -> _T:
+        try:
+            return func()
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            if not self._torch_compile_success:
+                raise
+            self._disable_torch_compile(f"runtime failure during {context}", exc)
+            return func()
+
     def _maybe_apply_preaugmentation(
         self,
         symbol: str,
@@ -352,6 +377,7 @@ class Chronos2OHLCWrapper:
             return context_df, None
 
         augmented_context = context_df.copy()
+        values_adjusted = False
         for column in transformed.columns:
             if column not in augmented_context.columns:
                 continue
@@ -361,6 +387,35 @@ class Chronos2OHLCWrapper:
                 values = series.to_numpy(dtype=target_dtype, copy=False)
             else:
                 values = np.asarray(series, dtype=target_dtype)
+
+            # SAFETY: Prevent very small values that cause PyTorch compilation errors
+            # PyTorch's sympy evaluation in torch._inductor can fail with very small
+            # values (both positive and negative) during symbolic math operations.
+            # Error example: AssertionError: -834735604272579/1000000000000000 ≈ -0.0008
+            #
+            # This happens during memory coalescing analysis in torch.compile() when
+            # sympy's is_constant() check evaluates expressions with values close to zero.
+            # Clamping these values to exactly 0.0 avoids numerical instability.
+            #
+            # Threshold: 0.001 (1e-3) - chosen to catch the error value (-0.0008) while
+            # preserving meaningful signal in augmented data.
+            epsilon = 1e-3  # 0.001
+            very_small_mask = np.abs(values) < epsilon
+            if very_small_mask.any():
+                n_adjusted = very_small_mask.sum()
+                if not values_adjusted:  # Log only once per symbol
+                    logger.debug(
+                        "Clamping %d very small values (abs < %.3f) in column '%s' for %s "
+                        "to prevent PyTorch compilation issues",
+                        n_adjusted,
+                        epsilon,
+                        column,
+                        symbol,
+                    )
+                    values_adjusted = True
+                values = values.copy()
+                values[very_small_mask] = 0.0
+
             augmented_context[column] = values
 
         applied = AppliedAugmentation(
@@ -625,17 +680,20 @@ class Chronos2OHLCWrapper:
 
         predict_options: Dict[str, Any] = dict(predict_kwargs or {})
         effective_batch_size = int(batch_size or self.default_batch_size)
-        raw_predictions = self.pipeline.predict_df(
-            panel.context_df,
-            future_df=panel.future_df,
-            id_column=self.id_column,
-            timestamp_column=self.timestamp_column,
-            target=list(self.target_columns),
-            prediction_length=panel.prediction_length,
-            quantile_levels=list(quantiles),
-            batch_size=effective_batch_size,
-            **predict_options,
-        )
+        def _predict_call() -> pd.DataFrame:
+            return self.pipeline.predict_df(
+                panel.context_df,
+                future_df=panel.future_df,
+                id_column=self.id_column,
+                timestamp_column=self.timestamp_column,
+                target=list(self.target_columns),
+                prediction_length=panel.prediction_length,
+                quantile_levels=list(quantiles),
+                batch_size=effective_batch_size,
+                **predict_options,
+            )
+
+        raw_predictions = self._call_with_compile_fallback(_predict_call, "predict_df")
 
         if "target_name" not in raw_predictions.columns:
             raise RuntimeError("Chronos2 predict_df output is missing the 'target_name' column.")

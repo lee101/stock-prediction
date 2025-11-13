@@ -9,6 +9,7 @@ from src.optimization_utils import (
     optimize_entry_exit_multipliers,
     optimize_entry_exit_multipliers_with_callback,
     optimize_single_parameter,
+    run_bounded_optimizer,
 )
 
 
@@ -387,6 +388,26 @@ def test_optimize_always_on_parallel():
     assert -0.03 <= h_mult <= 0.03
     assert -0.03 <= l_mult <= 0.03
     assert np.isfinite(profit)
+
+
+def test_run_bounded_optimizer_on_quadratic():
+    """Ensure run_bounded_optimizer locates the quadratic minimum."""
+
+    def objective(params):
+        x, y = params
+        return (x - 0.01) ** 2 + (y + 0.02) ** 2
+
+    (best_x, best_y), value = run_bounded_optimizer(
+        objective,
+        bounds=((-0.5, 0.5), (-0.5, 0.5)),
+        maxiter=10,
+        popsize=6,
+        seed=7,
+    )
+
+    assert pytest.approx(best_x, abs=5e-3) == 0.01
+    assert pytest.approx(best_y, abs=5e-3) == -0.02
+    assert value < 1e-4
 
 
 if __name__ == "__main__":

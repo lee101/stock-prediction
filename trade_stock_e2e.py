@@ -148,6 +148,11 @@ if _ALLOW_MAXDIFF_ALWAYS_ENV is None:
     ALLOW_MAXDIFF_ALWAYS_ENTRY = True
 else:
     ALLOW_MAXDIFF_ALWAYS_ENTRY = _ALLOW_MAXDIFF_ALWAYS_ENV.strip().lower() in {"1", "true", "yes", "on"}
+_ALLOW_PCTDIFF_ENV = os.getenv("ALLOW_PCTDIFF_ENTRY")
+if _ALLOW_PCTDIFF_ENV is None:
+    ALLOW_PCTDIFF_ENTRY = True
+else:
+    ALLOW_PCTDIFF_ENTRY = _ALLOW_PCTDIFF_ENV.strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 _quote_client: Optional[StockHistoricalDataClient] = None
@@ -173,7 +178,7 @@ MAX_MAXDIFFS = coerce_positive_int(
 DEFAULT_PROBE_SYMBOLS = {"AAPL", "MSFT", "NVDA"}
 PROBE_SYMBOLS = set() if SIMPLIFIED_MODE or not ENABLE_PROBE_TRADES else set(DEFAULT_PROBE_SYMBOLS)
 
-MAXDIFF_STRATEGIES = {"maxdiff", "maxdiffalwayson"}
+MAXDIFF_STRATEGIES = {"maxdiff", "maxdiffalwayson", "pctdiff"}
 MAXDIFF_LIMIT_STRATEGIES = MAXDIFF_STRATEGIES.union({"highlow"})
 
 
@@ -197,6 +202,34 @@ def _apply_strategy_priority(strategies: List[str], priority: Optional[List[str]
     ordered: List[str] = list(normalized_priority)
     ordered.extend(name for name in strategies if name not in seen)
     return ordered
+
+
+def _lookup_entry_price(data: Dict, strategy: Optional[str], side: str) -> Optional[float]:
+    normalized = (strategy or "").strip().lower()
+    is_buy = is_buy_side(side)
+    if normalized == "maxdiff":
+        return data.get("maxdiffprofit_low_price" if is_buy else "maxdiffprofit_high_price")
+    if normalized == "maxdiffalwayson":
+        return data.get("maxdiffalwayson_low_price" if is_buy else "maxdiffalwayson_high_price")
+    if normalized == "pctdiff":
+        return data.get("pctdiff_entry_low_price" if is_buy else "pctdiff_entry_high_price")
+    if normalized == "highlow":
+        return data.get("predicted_low" if is_buy else "predicted_high")
+    return None
+
+
+def _lookup_takeprofit_price(data: Dict, strategy: Optional[str], side: str) -> Optional[float]:
+    normalized = (strategy or "").strip().lower()
+    is_buy = is_buy_side(side)
+    if normalized == "maxdiff":
+        return data.get("maxdiffprofit_high_price" if is_buy else "maxdiffprofit_low_price")
+    if normalized == "maxdiffalwayson":
+        return data.get("maxdiffalwayson_high_price" if is_buy else "maxdiffalwayson_low_price")
+    if normalized == "pctdiff":
+        return data.get("pctdiff_takeprofit_high_price" if is_buy else "pctdiff_takeprofit_low_price")
+    if normalized == "highlow":
+        return data.get("predicted_high" if is_buy else "predicted_low")
+    return None
 
 
 def _resolve_model_passes(symbol: str, *, now_utc: datetime) -> List[Optional[str]]:
@@ -1160,6 +1193,115 @@ def _format_entry_candidates(picks: Dict[str, Dict]) -> List[str]:
     return lines
 
 
+def _analyze_single_symbol_for_parallel(
+    symbol: str,
+    num_simulations: int,
+    model_override: Optional[str],
+    equities_tradable_now: bool,
+    skip_closed_equity: bool,
+    strategy_priorities: Optional[Dict[str, List[str]]],
+) -> Optional[Dict]:
+    """Analyze a single symbol (used by parallel executor)."""
+    try:
+        if not is_crypto_symbol(symbol) and not equities_tradable_now:
+            if skip_closed_equity:
+                logger.debug(f"{symbol}: Skipping (market closed, equity)")
+                return None
+            logger.debug(f"{symbol}: market closed but analyzing due to MARKETSIM_SKIP_CLOSED_EQUITY override.")
+
+        priority_override = (strategy_priorities or {}).get(symbol)
+
+        # Run backtest
+        backtest_df = backtest_forecasts(symbol, num_simulations, model_override=model_override)
+
+        if backtest_df.empty:
+            logger.warning(f"{symbol}: backtest returned no simulations")
+            return None
+
+        # Process results (same logic as sequential version)
+        # ... [This would need to be extracted from the main loop]
+        # For now, return a simple dict - full implementation would mirror the sequential version
+        return {"symbol": symbol, "backtest_df": backtest_df}
+
+    except Exception as e:
+        logger.error(f"{symbol}: Analysis failed: {e}")
+        return None
+
+
+def _analyze_symbols_parallel(
+    symbols: List[str],
+    *,
+    model_overrides: Optional[Dict[str, Optional[str]]] = None,
+    strategy_priorities: Optional[Dict[str, List[str]]] = None,
+) -> Dict:
+    """Parallel version of symbol analysis using ThreadPoolExecutor."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
+
+    equities_tradable_now = is_nyse_trading_day_now()
+    skip_closed_equity = should_skip_closed_equity()
+
+    env_simulations_raw = os.getenv("MARKETSIM_BACKTEST_SIMULATIONS")
+    num_simulations = 70
+    if env_simulations_raw:
+        try:
+            num_simulations = max(1, int(env_simulations_raw))
+        except ValueError:
+            pass
+
+    # Determine worker count
+    max_workers = int(os.getenv("MARKETSIM_PARALLEL_WORKERS", "0"))
+    if max_workers <= 0:
+        max_workers = min(32, (os.cpu_count() or 1) + 4)
+
+    logger.info(f"Parallel analysis: {len(symbols)} symbols with {max_workers} workers")
+
+    results = {}
+    start_time = time.time()
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_symbol = {}
+        for symbol in symbols:
+            model_override = (model_overrides or {}).get(symbol)
+            future = executor.submit(
+                _analyze_single_symbol_for_parallel,
+                symbol,
+                num_simulations,
+                model_override,
+                equities_tradable_now,
+                skip_closed_equity,
+                strategy_priorities,
+            )
+            future_to_symbol[future] = symbol
+
+        # Collect results
+        completed = 0
+        for future in as_completed(future_to_symbol):
+            symbol = future_to_symbol[future]
+            completed += 1
+
+            try:
+                result = future.result()
+                if result:
+                    results[symbol] = result
+                    logger.info(f"[{completed}/{len(symbols)}] ✓ {symbol}")
+                else:
+                    logger.info(f"[{completed}/{len(symbols)}] ✗ {symbol} (skipped)")
+            except Exception as e:
+                logger.error(f"[{completed}/{len(symbols)}] ✗ {symbol} failed: {e}")
+
+    elapsed = time.time() - start_time
+    logger.info(f"Parallel analysis complete: {elapsed:.1f}s ({elapsed/len(symbols):.2f}s avg)")
+
+    # NOTE: This is a simplified version. Full implementation would need to:
+    # 1. Extract the result processing logic from _analyze_symbols_impl
+    # 2. Apply the same strategy selection and ranking
+    # 3. Handle all the edge cases
+
+    return results
+
+
 def _analyze_symbols_impl(
     symbols: List[str],
     *,
@@ -1167,6 +1309,13 @@ def _analyze_symbols_impl(
     strategy_priorities: Optional[Dict[str, List[str]]] = None,
 ) -> Dict:
     """Run backtest analysis on symbols and return results sorted by average return."""
+    # Check if parallel analysis is enabled
+    use_parallel = os.getenv("MARKETSIM_PARALLEL_ANALYSIS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+    if use_parallel and len(symbols) > 1:
+        logger.info(f"Using PARALLEL analysis for {len(symbols)} symbols")
+        return _analyze_symbols_parallel(symbols, model_overrides=model_overrides, strategy_priorities=strategy_priorities)
+
     results = {}
     equities_tradable_now = is_nyse_trading_day_now()
     skip_closed_equity = should_skip_closed_equity()
@@ -1267,6 +1416,7 @@ def _analyze_symbols_impl(
                 "highlow": _mean_return("highlow_avg_daily_return", "highlow_return"),
                 "maxdiff": _mean_return("maxdiff_avg_daily_return", "maxdiff_return"),
                 "maxdiffalwayson": _mean_return("maxdiffalwayson_avg_daily_return", "maxdiffalwayson_return"),
+                "pctdiff": _mean_return("pctdiff_avg_daily_return", "pctdiff_return"),
             }
             strategy_returns_annual = {
                 "simple": _mean_return("simple_strategy_annual_return", "simple_strategy_return"),
@@ -1275,6 +1425,7 @@ def _analyze_symbols_impl(
                 "highlow": _mean_return("highlow_annual_return", "highlow_return"),
                 "maxdiff": _mean_return("maxdiff_annual_return", "maxdiff_return"),
                 "maxdiffalwayson": _mean_return("maxdiffalwayson_annual_return", "maxdiffalwayson_return"),
+                "pctdiff": _mean_return("pctdiff_annual_return", "pctdiff_return"),
             }
             strategy_returns = strategy_returns_daily
             strategy_recent_sums: Dict[str, Optional[float]] = {}
@@ -1297,6 +1448,7 @@ def _analyze_symbols_impl(
                 "highlow": ("highlow_avg_daily_return", "highlow_return"),
                 "maxdiff": ("maxdiff_avg_daily_return", "maxdiff_return"),
                 "maxdiffalwayson": ("maxdiffalwayson_avg_daily_return", "maxdiffalwayson_return"),
+                "pctdiff": ("pctdiff_avg_daily_return", "pctdiff_return"),
             }
 
             unprofit_return = 0.0
@@ -1435,6 +1587,11 @@ def _analyze_symbols_impl(
             maxdiff_trade_bias = _optional_numeric(last_prediction.get("maxdiff_trade_bias"))
             maxdiffalwayson_high_price = _optional_numeric(last_prediction.get("maxdiffalwayson_high_price"))
             maxdiffalwayson_low_price = _optional_numeric(last_prediction.get("maxdiffalwayson_low_price"))
+            pctdiff_entry_low_price = _optional_numeric(last_prediction.get("pctdiff_entry_low_price"))
+            pctdiff_entry_high_price = _optional_numeric(last_prediction.get("pctdiff_entry_high_price"))
+            pctdiff_takeprofit_high_price = _optional_numeric(last_prediction.get("pctdiff_takeprofit_high_price"))
+            pctdiff_takeprofit_low_price = _optional_numeric(last_prediction.get("pctdiff_takeprofit_low_price"))
+            pctdiff_trade_bias = _optional_numeric(last_prediction.get("pctdiff_trade_bias"))
 
             # Fix inverted high/low pairs using fallback model predictions
             # Prefer using other models' predictions over blindly flipping
@@ -1490,12 +1647,37 @@ def _analyze_symbols_impl(
                 label="maxdiffalwayson",
             )
 
+            if (
+                pctdiff_entry_low_price is not None
+                and pctdiff_takeprofit_high_price is not None
+                and pctdiff_takeprofit_high_price < pctdiff_entry_low_price
+            ):
+                logger.warning(
+                    f"{symbol}: pctdiff long takeprofit {pctdiff_takeprofit_high_price:.4f} below entry {pctdiff_entry_low_price:.4f}; clamping"
+                )
+                pctdiff_takeprofit_high_price = pctdiff_entry_low_price
+            if (
+                pctdiff_entry_high_price is not None
+                and pctdiff_takeprofit_low_price is not None
+                and pctdiff_takeprofit_low_price > pctdiff_entry_high_price
+            ):
+                logger.warning(
+                    f"{symbol}: pctdiff short takeprofit {pctdiff_takeprofit_low_price:.4f} above entry {pctdiff_entry_high_price:.4f}; clamping"
+                )
+                pctdiff_takeprofit_low_price = pctdiff_entry_high_price
+
             maxdiff_primary_side_raw = raw_last_prediction.get("maxdiff_primary_side")
             maxdiff_primary_side = (
                 str(maxdiff_primary_side_raw).strip().lower() if maxdiff_primary_side_raw is not None else None
             )
             if maxdiff_primary_side == "":
                 maxdiff_primary_side = None
+            pctdiff_primary_side_raw = raw_last_prediction.get("pctdiff_primary_side")
+            pctdiff_primary_side = (
+                str(pctdiff_primary_side_raw).strip().lower() if pctdiff_primary_side_raw is not None else None
+            )
+            if pctdiff_primary_side == "":
+                pctdiff_primary_side = None
 
             snapshot_parts = [
                 f"{symbol} prediction snapshot",
@@ -1512,11 +1694,24 @@ def _analyze_symbols_impl(
                 snapshot_parts.append(f"maxdiffalwayson_high={maxdiffalwayson_high_price:.4f}")
             if maxdiffalwayson_low_price is not None:
                 snapshot_parts.append(f"maxdiffalwayson_low={maxdiffalwayson_low_price:.4f}")
+            if pctdiff_entry_low_price is not None:
+                snapshot_parts.append(f"pctdiff_entry_low={pctdiff_entry_low_price:.4f}")
+            if pctdiff_entry_high_price is not None:
+                snapshot_parts.append(f"pctdiff_entry_high={pctdiff_entry_high_price:.4f}")
+            if pctdiff_takeprofit_high_price is not None:
+                snapshot_parts.append(f"pctdiff_tp_high={pctdiff_takeprofit_high_price:.4f}")
+            if pctdiff_takeprofit_low_price is not None:
+                snapshot_parts.append(f"pctdiff_tp_low={pctdiff_takeprofit_low_price:.4f}")
             if maxdiff_primary_side:
                 bias_fragment = maxdiff_primary_side
                 if maxdiff_trade_bias is not None and math.isfinite(maxdiff_trade_bias):
                     bias_fragment = f"{bias_fragment}({maxdiff_trade_bias:+.3f})"
                 snapshot_parts.append(f"maxdiff_side={bias_fragment}")
+            if pctdiff_primary_side:
+                pctdiff_bias = pctdiff_primary_side
+                if pctdiff_trade_bias is not None and math.isfinite(pctdiff_trade_bias):
+                    pctdiff_bias = f"{pctdiff_bias}({pctdiff_trade_bias:+.3f})"
+                snapshot_parts.append(f"pctdiff_side={pctdiff_bias}")
             _log_detail(" ".join(snapshot_parts))
 
             # Helper to get forecasted PnL from last_prediction
@@ -1587,6 +1782,14 @@ def _analyze_symbols_impl(
                     "turnover": _mean_column("maxdiffalwayson_turnover"),
                     "max_drawdown": _mean_column("maxdiffalwayson_max_drawdown"),
                 },
+                "pctdiff": {
+                    "avg_return": strategy_returns.get("pctdiff", 0.0),
+                    "forecasted_pnl": _get_forecasted_pnl("pctdiff"),
+                    "annual_return": strategy_returns_annual.get("pctdiff", 0.0),
+                    "sharpe": _mean_column("pctdiff_sharpe"),
+                    "turnover": _mean_column("pctdiff_turnover"),
+                    "max_drawdown": _mean_column("pctdiff_max_drawdown"),
+                },
             }
 
             for strat_name, (primary_col, fallback_col) in _strategy_series_map.items():
@@ -1615,8 +1818,10 @@ def _analyze_symbols_impl(
                     allow_config = ALLOW_MAXDIFF_ENTRY
                 elif name == "maxdiffalwayson":
                     allow_config = ALLOW_MAXDIFF_ALWAYS_ENTRY
+                elif name == "pctdiff":
+                    allow_config = ALLOW_PCTDIFF_ENTRY
 
-                if name in {"takeprofit", "highlow", "maxdiff", "maxdiffalwayson"}:
+                if name in {"takeprofit", "highlow", "maxdiff", "maxdiffalwayson", "pctdiff"}:
                     if not allow_config:
                         strategy_ineligible[name] = "disabled_by_config"
                         continue
@@ -1726,6 +1931,32 @@ def _analyze_symbols_impl(
                     else:
                         candidate_position_side = "buy"
                         candidate_predicted_movement = dominant_move
+                elif candidate_name == "pctdiff":
+                    entry_buy_price = pctdiff_entry_low_price
+                    tp_buy_price = pctdiff_takeprofit_high_price
+                    entry_sell_price = pctdiff_entry_high_price
+                    tp_sell_price = pctdiff_takeprofit_low_price
+                    pctdiff_bias = pctdiff_trade_bias
+                    if pctdiff_primary_side in {"buy", "sell"}:
+                        candidate_position_side = pctdiff_primary_side
+                    elif pctdiff_bias is not None:
+                        if pctdiff_bias > 0:
+                            candidate_position_side = "buy"
+                        elif pctdiff_bias < 0:
+                            candidate_position_side = "sell"
+                    if candidate_position_side == "buy" and tp_buy_price is not None:
+                        candidate_predicted_movement = tp_buy_price - close_price
+                    elif candidate_position_side == "sell" and tp_sell_price is not None:
+                        candidate_predicted_movement = tp_sell_price - close_price
+                    else:
+                        buy_move = (tp_buy_price - close_price) if tp_buy_price is not None else None
+                        sell_move = (tp_sell_price - close_price) if tp_sell_price is not None else None
+                        if buy_move is not None and (sell_move is None or abs(buy_move) >= abs(sell_move)):
+                            candidate_position_side = "buy"
+                            candidate_predicted_movement = buy_move
+                        elif sell_move is not None:
+                            candidate_position_side = "sell"
+                            candidate_predicted_movement = sell_move
 
                 if candidate_position_side is None and candidate_name == "all_signals":
                     if all(x > 0 for x in [close_movement_raw, high_movement, low_movement]):
@@ -2159,11 +2390,23 @@ def _analyze_symbols_impl(
                 result_row["maxdiffalwayson_high_price"] = maxdiffalwayson_high_price
             if maxdiffalwayson_low_price is not None:
                 result_row["maxdiffalwayson_low_price"] = maxdiffalwayson_low_price
+            if pctdiff_entry_low_price is not None:
+                result_row["pctdiff_entry_low_price"] = pctdiff_entry_low_price
+            if pctdiff_entry_high_price is not None:
+                result_row["pctdiff_entry_high_price"] = pctdiff_entry_high_price
+            if pctdiff_takeprofit_high_price is not None:
+                result_row["pctdiff_takeprofit_high_price"] = pctdiff_takeprofit_high_price
+            if pctdiff_takeprofit_low_price is not None:
+                result_row["pctdiff_takeprofit_low_price"] = pctdiff_takeprofit_low_price
 
             if maxdiff_primary_side_raw is not None:
                 result_row["maxdiff_primary_side"] = str(maxdiff_primary_side_raw).strip().lower() or "neutral"
             if maxdiff_trade_bias is not None:
                 result_row["maxdiff_trade_bias"] = _metric(maxdiff_trade_bias, default=0.0)
+            if pctdiff_primary_side_raw is not None:
+                result_row["pctdiff_primary_side"] = str(pctdiff_primary_side_raw).strip().lower() or "neutral"
+            if pctdiff_trade_bias is not None:
+                result_row["pctdiff_trade_bias"] = _metric(pctdiff_trade_bias, default=0.0)
 
             maxdiff_numeric_keys = (
                 "maxdiffprofit_high_price",
@@ -2180,6 +2423,29 @@ def _analyze_symbols_impl(
                     result_row[count_key] = int(round(coerce_numeric(last_prediction.get(count_key), default=0.0)))
             if "maxdiffprofit_profit_values" in last_prediction:
                 result_row["maxdiffprofit_profit_values"] = last_prediction.get("maxdiffprofit_profit_values")
+
+            pctdiff_numeric_keys = (
+                "pctdiff_entry_low_price",
+                "pctdiff_entry_high_price",
+                "pctdiff_takeprofit_high_price",
+                "pctdiff_takeprofit_low_price",
+                "pctdiff_entry_low_multiplier",
+                "pctdiff_entry_high_multiplier",
+                "pctdiff_long_pct",
+                "pctdiff_short_pct",
+                "pctdiff_profit",
+            )
+            for key in pctdiff_numeric_keys:
+                if key in last_prediction:
+                    result_row[key] = coerce_numeric(last_prediction.get(key), default=0.0)
+            for count_key in ("pctdiff_trades_positive", "pctdiff_trades_negative", "pctdiff_trades_total"):
+                if count_key in last_prediction:
+                    result_row[count_key] = int(round(coerce_numeric(last_prediction.get(count_key), default=0.0)))
+            for key in ("pctdiff_entry_hits", "pctdiff_takeprofit_hits"):
+                if key in last_prediction:
+                    result_row[key] = int(round(coerce_numeric(last_prediction.get(key), default=0.0)))
+            if "pctdiff_profit_values" in last_prediction:
+                result_row["pctdiff_profit_values"] = last_prediction.get("pctdiff_profit_values")
 
             maxdiffalwayson_numeric_keys = (
                 "maxdiffalwayson_high_price",
@@ -2700,12 +2966,8 @@ def manage_positions(
         )
 
         # Determine new forecast prices
-        if entry_strategy == "maxdiffalwayson":
-            preferred_limit = pick_data.get("maxdiffalwayson_low_price" if is_buy else "maxdiffalwayson_high_price")
-            fallback = pick_data.get("maxdiffprofit_low_price" if is_buy else "maxdiffprofit_high_price")
-        else:
-            preferred_limit = pick_data.get("maxdiffprofit_low_price" if is_buy else "maxdiffprofit_high_price")
-            fallback = pick_data.get("predicted_low" if is_buy else "predicted_high")
+        preferred_limit = _lookup_entry_price(pick_data, entry_strategy, normalized_side)
+        fallback = pick_data.get("predicted_low" if is_buy else "predicted_high")
         new_limit_price = preferred_limit if preferred_limit is not None else fallback
 
         # Decide whether to spawn and which price to use
@@ -2749,10 +3011,9 @@ def manage_positions(
         )
 
         # Determine new forecast takeprofit price
-        if entry_strategy == "maxdiffalwayson":
-            new_takeprofit_price = pick_data.get("maxdiffalwayson_high_price" if is_buy else "maxdiffalwayson_low_price")
-        else:
-            new_takeprofit_price = pick_data.get("maxdiffprofit_high_price" if is_buy else "maxdiffprofit_low_price")
+        new_takeprofit_price = _lookup_takeprofit_price(pick_data, entry_strategy, normalized_side)
+        if new_takeprofit_price is None:
+            new_takeprofit_price = pick_data.get("predicted_high" if is_buy else "predicted_low")
 
         # Decide whether to spawn and which price to use
         should_spawn_exit, takeprofit_price, exit_spawn_reason = should_spawn_watcher(
@@ -3148,6 +3409,7 @@ def manage_positions(
 
         entry_strategy = data.get("strategy")
         stored_entry_strategy = "maxdiff" if entry_strategy in MAXDIFF_LIMIT_STRATEGIES else entry_strategy
+        recorded_entry_strategy = entry_strategy
 
         if effective_probe and target_qty <= 0:
             logger.warning(f"{symbol}: Unable to determine positive probe quantity; deferring trade.")
@@ -3230,27 +3492,26 @@ def manage_positions(
                     logger.info(f"Target quantity for {symbol}: {target_qty} at price {entry_price}")
 
                     if is_highlow_entry:
-                        fallback_candidates: List[Optional[float]]
-                        if is_buy_side(data["side"]):
-                            if entry_strategy == "maxdiffalwayson":
-                                preferred_limit = data.get("maxdiffalwayson_low_price")
-                                fallback_candidates = [
-                                    data.get("maxdiffprofit_low_price"),
-                                    data.get("predicted_low"),
+                        preferred_limit = _lookup_entry_price(data, entry_strategy, data["side"])
+                        fallback_candidates: List[Optional[float]] = []
+                        if entry_strategy == "maxdiffalwayson":
+                            fallback_candidates.extend(
+                                [
+                                    data.get("maxdiffprofit_low_price" if is_buy_side(data["side"]) else "maxdiffprofit_high_price"),
+                                    data.get("predicted_low" if is_buy_side(data["side"]) else "predicted_high"),
                                 ]
-                            else:
-                                preferred_limit = data.get("maxdiffprofit_low_price")
-                                fallback_candidates = [data.get("predicted_low")]
+                            )
+                        elif entry_strategy == "pctdiff":
+                            fallback_candidates.extend(
+                                [
+                                    data.get("maxdiffprofit_low_price" if is_buy_side(data["side"]) else "maxdiffprofit_high_price"),
+                                    data.get("predicted_low" if is_buy_side(data["side"]) else "predicted_high"),
+                                ]
+                            )
                         else:
-                            if entry_strategy == "maxdiffalwayson":
-                                preferred_limit = data.get("maxdiffalwayson_high_price")
-                                fallback_candidates = [
-                                    data.get("maxdiffprofit_high_price"),
-                                    data.get("predicted_high"),
-                                ]
-                            else:
-                                preferred_limit = data.get("maxdiffprofit_high_price")
-                                fallback_candidates = [data.get("predicted_high")]
+                            fallback_candidates.append(
+                                data.get("predicted_low" if is_buy_side(data["side"]) else "predicted_high")
+                            )
                         limit_reference = preferred_limit
                         if limit_reference is None:
                             for candidate in fallback_candidates:
@@ -3388,9 +3649,9 @@ def manage_positions(
                     data["side"],
                     mode="probe_transition",
                     qty=target_qty,
-                    strategy=stored_entry_strategy,
+                    strategy=recorded_entry_strategy,
                 )
-                _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
+                _tag_active_trade_strategy(symbol, data["side"], recorded_entry_strategy)
                 _normalize_active_trade_patch(_update_active_trade)
             elif effective_probe:
                 _mark_probe_active(symbol, data["side"], target_qty, strategy=stored_entry_strategy)
@@ -3399,9 +3660,9 @@ def manage_positions(
                     data["side"],
                     mode="probe",
                     qty=target_qty,
-                    strategy=stored_entry_strategy,
+                    strategy=recorded_entry_strategy,
                 )
-                _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
+                _tag_active_trade_strategy(symbol, data["side"], recorded_entry_strategy)
                 _normalize_active_trade_patch(_update_active_trade)
             else:
                 _update_active_trade(
@@ -3409,9 +3670,9 @@ def manage_positions(
                     data["side"],
                     mode="normal",
                     qty=target_qty,
-                    strategy=stored_entry_strategy,
+                    strategy=recorded_entry_strategy,
                 )
-                _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
+                _tag_active_trade_strategy(symbol, data["side"], recorded_entry_strategy)
                 _normalize_active_trade_patch(_update_active_trade)
 
             if (
@@ -3434,22 +3695,20 @@ def manage_positions(
                 total_exposure_value = total_exposure_value - current_abs_value + projected_value
 
             if is_highlow_entry:
-                if is_buy_side(data["side"]):
-                    highlow_tp_reference = (
-                        data.get("maxdiffalwayson_high_price")
-                        if entry_strategy == "maxdiffalwayson"
-                        else data.get("maxdiffprofit_high_price")
+                highlow_tp_reference = _lookup_takeprofit_price(data, entry_strategy, data["side"])
+                if highlow_tp_reference is None:
+                    fallback_candidates = []
+                    if entry_strategy in {"maxdiffalwayson", "pctdiff"}:
+                        fallback_candidates.append(
+                            data.get("maxdiffprofit_high_price" if is_buy_side(data["side"]) else "maxdiffprofit_low_price")
+                        )
+                    fallback_candidates.append(
+                        data.get("predicted_high" if is_buy_side(data["side"]) else "predicted_low")
                     )
-                    if highlow_tp_reference is None:
-                        highlow_tp_reference = data.get("maxdiffprofit_high_price") or data.get("predicted_high")
-                else:
-                    highlow_tp_reference = (
-                        data.get("maxdiffalwayson_low_price")
-                        if entry_strategy == "maxdiffalwayson"
-                        else data.get("maxdiffprofit_low_price")
-                    )
-                    if highlow_tp_reference is None:
-                        highlow_tp_reference = data.get("maxdiffprofit_low_price") or data.get("predicted_low")
+                    for candidate in fallback_candidates:
+                        if candidate is not None:
+                            highlow_tp_reference = candidate
+                            break
                 takeprofit_price = coerce_numeric(highlow_tp_reference, default=float("nan"))
                 if math.isnan(takeprofit_price) or takeprofit_price <= 0:
                     logger.debug(
@@ -3507,15 +3766,16 @@ def manage_positions(
             )
             entry_strategy = data.get("strategy")
             stored_entry_strategy = "maxdiff" if entry_strategy in MAXDIFF_LIMIT_STRATEGIES else entry_strategy
+            recorded_entry_strategy = entry_strategy
             _mark_probe_transitioned(symbol, data["side"], current_position_size, strategy=stored_entry_strategy)
             _update_active_trade(
                 symbol,
                 data["side"],
                 mode="probe_transition",
                 qty=current_position_size,
-                strategy=stored_entry_strategy,
+                strategy=recorded_entry_strategy,
             )
-            _tag_active_trade_strategy(symbol, data["side"], stored_entry_strategy)
+            _tag_active_trade_strategy(symbol, data["side"], recorded_entry_strategy)
             _normalize_active_trade_patch(_update_active_trade)
 
 
@@ -3556,9 +3816,15 @@ def manage_market_close(
         if not entry_mode:
             entry_mode = "normal"
         entry_strategy = active_trade_meta.get("entry_strategy")
-        if not entry_strategy and symbol in previous_picks:
-            entry_strategy = previous_picks.get(symbol, {}).get("strategy")
-        lookup_entry_strategy = "highlow" if entry_strategy in MAXDIFF_STRATEGIES else entry_strategy
+        previous_pick_strategy = previous_picks.get(symbol, {}).get("strategy") if symbol in previous_picks else None
+        if not entry_strategy:
+            entry_strategy = previous_pick_strategy
+        elif entry_strategy == "maxdiff" and previous_pick_strategy in MAXDIFF_LIMIT_STRATEGIES:
+            entry_strategy = previous_pick_strategy
+
+        lookup_entry_strategy = entry_strategy
+        if entry_strategy in {"maxdiff", "maxdiffalwayson"}:
+            lookup_entry_strategy = "highlow"
 
         next_forecast = all_analyzed_results.get(symbol)
         if next_forecast:
@@ -3778,26 +4044,37 @@ def signal_handler(signum, frame):
 
 def main():
     symbols = [
+        # Top performing equities (high Sharpe, good win rates)
+        "EQIX",
+        "GS",
+        "COST",
+        "CRM",
+        "AXP",
+        "BA",
+        "GE",
+        "LLY",
+        "AVGO",
+        "SPY",
+        "SHOP",
+        "GLD",
+        "PLTR",
+        "MCD",
+        "V",
+        "VTI",
+        "QQQ",
+        "MA",
+        "SAP",
+        # Keep existing profitable ones
         "COUR",
-        "GOOG",
-        "TSLA",
-        "NVDA",
-        "AAPL",
-        "U",
-        "ADSK",
         "ADBE",
-        "MSFT",
-        "COIN",
-        # "MSFT",
-        # "NFLX",
-        # adding more as we do quite well now with volatility
-        "AMZN",
-        "AMD",
         "INTC",
         "QUBT",
+        # Top crypto performers
         "BTCUSD",
         "ETHUSD",
         "UNIUSD",
+        "LINKUSD",
+        "PAXGUSD",
     ]
 
     # Filter symbols by TRADABLE_PAIRS env var if set

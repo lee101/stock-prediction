@@ -1,0 +1,2116 @@
+{
+  "strategies_included": [
+    "maxdiff"
+  ],
+  "top_40": [
+    {
+      "symbol": "ETHUSD",
+      "total_pnl": 67805.12999999996,
+      "total_trades": 9,
+      "avg_win_rate": 0.02681992337164751,
+      "avg_sharpe": 0.3175779480881525,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 67805.12999999996
+      }
+    },
+    {
+      "symbol": "EQIX",
+      "total_pnl": 14704.503518676764,
+      "total_trades": 259,
+      "avg_win_rate": 0.49373499307709834,
+      "avg_sharpe": -0.03868900012549888,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 14704.503518676764
+      }
+    },
+    {
+      "symbol": "GS",
+      "total_pnl": 13887.65748596195,
+      "total_trades": 263,
+      "avg_win_rate": 0.5096230523862102,
+      "avg_sharpe": 1.1920286787818135,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 13887.65748596195
+      }
+    },
+    {
+      "symbol": "COST",
+      "total_pnl": 11388.083004760643,
+      "total_trades": 244,
+      "avg_win_rate": 0.5317550096961862,
+      "avg_sharpe": 0.3061252842203055,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 11388.083004760643
+      }
+    },
+    {
+      "symbol": "CRM",
+      "total_pnl": 10884.831693267915,
+      "total_trades": 275,
+      "avg_win_rate": 0.5053371551049569,
+      "avg_sharpe": 0.846245109538115,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 10884.831693267915
+      }
+    },
+    {
+      "symbol": "AXP",
+      "total_pnl": 10701.354437255879,
+      "total_trades": 288,
+      "avg_win_rate": 0.5206019857335648,
+      "avg_sharpe": 0.6082253875826676,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 10701.354437255879
+      }
+    },
+    {
+      "symbol": "BA",
+      "total_pnl": 10276.152728271472,
+      "total_trades": 272,
+      "avg_win_rate": 0.4992127025021762,
+      "avg_sharpe": 0.9298271292491841,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 10276.152728271472
+      }
+    },
+    {
+      "symbol": "GE",
+      "total_pnl": 9781.954205322269,
+      "total_trades": 277,
+      "avg_win_rate": 0.5542678554675459,
+      "avg_sharpe": 2.0307507236126505,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 9781.954205322269
+      }
+    },
+    {
+      "symbol": "LLY",
+      "total_pnl": 9141.290943908727,
+      "total_trades": 257,
+      "avg_win_rate": 0.5135362444572971,
+      "avg_sharpe": -0.17992876065187227,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 9141.290943908727
+      }
+    },
+    {
+      "symbol": "AVGO",
+      "total_pnl": 8346.560371780395,
+      "total_trades": 291,
+      "avg_win_rate": 0.48189738108468755,
+      "avg_sharpe": 1.1826348345116013,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 8346.560371780395
+      }
+    },
+    {
+      "symbol": "SPY",
+      "total_pnl": 7731.844000000005,
+      "total_trades": 259,
+      "avg_win_rate": 0.5232890303710738,
+      "avg_sharpe": -0.16713649592313623,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 7731.844000000005
+      }
+    },
+    {
+      "symbol": "SHOP",
+      "total_pnl": 6127.90801448821,
+      "total_trades": 288,
+      "avg_win_rate": 0.5264688398976325,
+      "avg_sharpe": 0.4213306883421137,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 6127.90801448821
+      }
+    },
+    {
+      "symbol": "GLD",
+      "total_pnl": 5120.727500000017,
+      "total_trades": 224,
+      "avg_win_rate": 0.5206964088543036,
+      "avg_sharpe": 0.07699727570985244,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 5120.727500000017
+      }
+    },
+    {
+      "symbol": "PLTR",
+      "total_pnl": 4893.154671621315,
+      "total_trades": 282,
+      "avg_win_rate": 0.500540813313748,
+      "avg_sharpe": 0.06067630199961411,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 4893.154671621315
+      }
+    },
+    {
+      "symbol": "MCD",
+      "total_pnl": 4390.681857299809,
+      "total_trades": 243,
+      "avg_win_rate": 0.5102887609466557,
+      "avg_sharpe": -0.11180929988491838,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 4390.681857299809
+      }
+    },
+    {
+      "symbol": "V",
+      "total_pnl": 4036.4807647704874,
+      "total_trades": 241,
+      "avg_win_rate": 0.5002940042413727,
+      "avg_sharpe": -0.3994762759855596,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 4036.4807647704874
+      }
+    },
+    {
+      "symbol": "VTI",
+      "total_pnl": 3718.470352172888,
+      "total_trades": 225,
+      "avg_win_rate": 0.4870299291351923,
+      "avg_sharpe": -0.07366381734905501,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 3718.470352172888
+      }
+    },
+    {
+      "symbol": "QQQ",
+      "total_pnl": 3525.9404999999497,
+      "total_trades": 277,
+      "avg_win_rate": 0.5272308960389456,
+      "avg_sharpe": 0.10850316322259462,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 3525.9404999999497
+      }
+    },
+    {
+      "symbol": "SAP",
+      "total_pnl": 3489.986999999981,
+      "total_trades": 254,
+      "avg_win_rate": 0.510020784169391,
+      "avg_sharpe": 0.09339818145380265,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 3489.986999999981
+      }
+    },
+    {
+      "symbol": "MA",
+      "total_pnl": 2331.7600097655886,
+      "total_trades": 241,
+      "avg_win_rate": 0.5545962121813515,
+      "avg_sharpe": -0.6025027323494729,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 2331.7600097655886
+      }
+    },
+    {
+      "symbol": "ARKW",
+      "total_pnl": 2292.1512878417725,
+      "total_trades": 304,
+      "avg_win_rate": 0.5230495117288338,
+      "avg_sharpe": 0.048106476049022046,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 2292.1512878417725
+      }
+    },
+    {
+      "symbol": "NKE",
+      "total_pnl": 2275.533044815057,
+      "total_trades": 268,
+      "avg_win_rate": 0.49155500931816726,
+      "avg_sharpe": -0.7209173517166558,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 2275.533044815057
+      }
+    },
+    {
+      "symbol": "HON",
+      "total_pnl": 2233.111563110335,
+      "total_trades": 253,
+      "avg_win_rate": 0.5357315929684351,
+      "avg_sharpe": -0.9461517804869611,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 2233.111563110335
+      }
+    },
+    {
+      "symbol": "JPM",
+      "total_pnl": 2117.5389686584313,
+      "total_trades": 261,
+      "avg_win_rate": 0.5047856229642933,
+      "avg_sharpe": -0.328054757758844,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 2117.5389686584313
+      }
+    },
+    {
+      "symbol": "ATOM-USD",
+      "total_pnl": 1864.9856545448374,
+      "total_trades": 411,
+      "avg_win_rate": 0.479526987076882,
+      "avg_sharpe": -1.185245251370101,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 1864.9856545448374
+      }
+    },
+    {
+      "symbol": "UBER",
+      "total_pnl": 1820.3893241882301,
+      "total_trades": 289,
+      "avg_win_rate": 0.5316154734498388,
+      "avg_sharpe": 1.1241196699019813,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 1820.3893241882301
+      }
+    },
+    {
+      "symbol": "COP",
+      "total_pnl": 1555.3266807556201,
+      "total_trades": 270,
+      "avg_win_rate": 0.48987005268372386,
+      "avg_sharpe": 0.05265520525347536,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 1555.3266807556201
+      }
+    },
+    {
+      "symbol": "WFC",
+      "total_pnl": 1455.6609558105497,
+      "total_trades": 266,
+      "avg_win_rate": 0.5176636959531696,
+      "avg_sharpe": 0.28137493282396453,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 1455.6609558105497
+      }
+    },
+    {
+      "symbol": "RTX",
+      "total_pnl": 1059.1689956665268,
+      "total_trades": 258,
+      "avg_win_rate": 0.46701609793715054,
+      "avg_sharpe": -0.5208107740805626,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 1059.1689956665268
+      }
+    },
+    {
+      "symbol": "WMT",
+      "total_pnl": 827.3775226592993,
+      "total_trades": 238,
+      "avg_win_rate": 0.5592659533449007,
+      "avg_sharpe": -0.7592606086527645,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 827.3775226592993
+      }
+    },
+    {
+      "symbol": "ARKQ",
+      "total_pnl": 785.9962738037184,
+      "total_trades": 298,
+      "avg_win_rate": 0.48927527151211364,
+      "avg_sharpe": -0.6878564453601697,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 785.9962738037184
+      }
+    },
+    {
+      "symbol": "XLK",
+      "total_pnl": 690.3359092712344,
+      "total_trades": 257,
+      "avg_win_rate": 0.5026348651348652,
+      "avg_sharpe": -0.7315946529166695,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 690.3359092712344
+      }
+    },
+    {
+      "symbol": "GOOG",
+      "total_pnl": 440.79599999999846,
+      "total_trades": 167,
+      "avg_win_rate": 0.3064352056612119,
+      "avg_sharpe": 0.11530040529430365,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 440.79599999999846
+      }
+    },
+    {
+      "symbol": "DIA",
+      "total_pnl": 422.6020000000026,
+      "total_trades": 196,
+      "avg_win_rate": 0.5082494990389727,
+      "avg_sharpe": -0.5991413222740279,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 422.6020000000026
+      }
+    },
+    {
+      "symbol": "TSM",
+      "total_pnl": 250.70510177609503,
+      "total_trades": 275,
+      "avg_win_rate": 0.5006557683802266,
+      "avg_sharpe": -0.68949935600429,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 250.70510177609503
+      }
+    },
+    {
+      "symbol": "USO",
+      "total_pnl": 183.61300000000392,
+      "total_trades": 280,
+      "avg_win_rate": 0.5296472361487842,
+      "avg_sharpe": 0.01711561083568784,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 183.61300000000392
+      }
+    },
+    {
+      "symbol": "DBA",
+      "total_pnl": 159.85402622223296,
+      "total_trades": 212,
+      "avg_win_rate": 0.5165726086778718,
+      "avg_sharpe": -1.1565267373171233,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 159.85402622223296
+      }
+    },
+    {
+      "symbol": "XRP-USD",
+      "total_pnl": 54.35087400674816,
+      "total_trades": 398,
+      "avg_win_rate": 0.4658983154298509,
+      "avg_sharpe": -0.982256045277014,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 54.35087400674816
+      }
+    },
+    {
+      "symbol": "MS",
+      "total_pnl": 33.6251380920321,
+      "total_trades": 251,
+      "avg_win_rate": 0.48906093906093906,
+      "avg_sharpe": -0.3863510703332283,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 33.6251380920321
+      }
+    },
+    {
+      "symbol": "DOGE-USD",
+      "total_pnl": 0.7140206128359132,
+      "total_trades": 418,
+      "avg_win_rate": 0.5019545814372651,
+      "avg_sharpe": -0.181495143850252,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 0.7140206128359132
+      }
+    }
+  ],
+  "all_symbols": [
+    {
+      "symbol": "ETHUSD",
+      "total_pnl": 67805.12999999996,
+      "total_trades": 9,
+      "avg_win_rate": 0.02681992337164751,
+      "avg_sharpe": 0.3175779480881525,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 67805.12999999996
+      }
+    },
+    {
+      "symbol": "EQIX",
+      "total_pnl": 14704.503518676764,
+      "total_trades": 259,
+      "avg_win_rate": 0.49373499307709834,
+      "avg_sharpe": -0.03868900012549888,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 14704.503518676764
+      }
+    },
+    {
+      "symbol": "GS",
+      "total_pnl": 13887.65748596195,
+      "total_trades": 263,
+      "avg_win_rate": 0.5096230523862102,
+      "avg_sharpe": 1.1920286787818135,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 13887.65748596195
+      }
+    },
+    {
+      "symbol": "COST",
+      "total_pnl": 11388.083004760643,
+      "total_trades": 244,
+      "avg_win_rate": 0.5317550096961862,
+      "avg_sharpe": 0.3061252842203055,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 11388.083004760643
+      }
+    },
+    {
+      "symbol": "CRM",
+      "total_pnl": 10884.831693267915,
+      "total_trades": 275,
+      "avg_win_rate": 0.5053371551049569,
+      "avg_sharpe": 0.846245109538115,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 10884.831693267915
+      }
+    },
+    {
+      "symbol": "AXP",
+      "total_pnl": 10701.354437255879,
+      "total_trades": 288,
+      "avg_win_rate": 0.5206019857335648,
+      "avg_sharpe": 0.6082253875826676,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 10701.354437255879
+      }
+    },
+    {
+      "symbol": "BA",
+      "total_pnl": 10276.152728271472,
+      "total_trades": 272,
+      "avg_win_rate": 0.4992127025021762,
+      "avg_sharpe": 0.9298271292491841,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 10276.152728271472
+      }
+    },
+    {
+      "symbol": "GE",
+      "total_pnl": 9781.954205322269,
+      "total_trades": 277,
+      "avg_win_rate": 0.5542678554675459,
+      "avg_sharpe": 2.0307507236126505,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 9781.954205322269
+      }
+    },
+    {
+      "symbol": "LLY",
+      "total_pnl": 9141.290943908727,
+      "total_trades": 257,
+      "avg_win_rate": 0.5135362444572971,
+      "avg_sharpe": -0.17992876065187227,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 9141.290943908727
+      }
+    },
+    {
+      "symbol": "AVGO",
+      "total_pnl": 8346.560371780395,
+      "total_trades": 291,
+      "avg_win_rate": 0.48189738108468755,
+      "avg_sharpe": 1.1826348345116013,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 8346.560371780395
+      }
+    },
+    {
+      "symbol": "SPY",
+      "total_pnl": 7731.844000000005,
+      "total_trades": 259,
+      "avg_win_rate": 0.5232890303710738,
+      "avg_sharpe": -0.16713649592313623,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 7731.844000000005
+      }
+    },
+    {
+      "symbol": "SHOP",
+      "total_pnl": 6127.90801448821,
+      "total_trades": 288,
+      "avg_win_rate": 0.5264688398976325,
+      "avg_sharpe": 0.4213306883421137,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 6127.90801448821
+      }
+    },
+    {
+      "symbol": "GLD",
+      "total_pnl": 5120.727500000017,
+      "total_trades": 224,
+      "avg_win_rate": 0.5206964088543036,
+      "avg_sharpe": 0.07699727570985244,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 5120.727500000017
+      }
+    },
+    {
+      "symbol": "PLTR",
+      "total_pnl": 4893.154671621315,
+      "total_trades": 282,
+      "avg_win_rate": 0.500540813313748,
+      "avg_sharpe": 0.06067630199961411,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 4893.154671621315
+      }
+    },
+    {
+      "symbol": "MCD",
+      "total_pnl": 4390.681857299809,
+      "total_trades": 243,
+      "avg_win_rate": 0.5102887609466557,
+      "avg_sharpe": -0.11180929988491838,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 4390.681857299809
+      }
+    },
+    {
+      "symbol": "V",
+      "total_pnl": 4036.4807647704874,
+      "total_trades": 241,
+      "avg_win_rate": 0.5002940042413727,
+      "avg_sharpe": -0.3994762759855596,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 4036.4807647704874
+      }
+    },
+    {
+      "symbol": "VTI",
+      "total_pnl": 3718.470352172888,
+      "total_trades": 225,
+      "avg_win_rate": 0.4870299291351923,
+      "avg_sharpe": -0.07366381734905501,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 3718.470352172888
+      }
+    },
+    {
+      "symbol": "QQQ",
+      "total_pnl": 3525.9404999999497,
+      "total_trades": 277,
+      "avg_win_rate": 0.5272308960389456,
+      "avg_sharpe": 0.10850316322259462,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 3525.9404999999497
+      }
+    },
+    {
+      "symbol": "SAP",
+      "total_pnl": 3489.986999999981,
+      "total_trades": 254,
+      "avg_win_rate": 0.510020784169391,
+      "avg_sharpe": 0.09339818145380265,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 3489.986999999981
+      }
+    },
+    {
+      "symbol": "MA",
+      "total_pnl": 2331.7600097655886,
+      "total_trades": 241,
+      "avg_win_rate": 0.5545962121813515,
+      "avg_sharpe": -0.6025027323494729,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 2331.7600097655886
+      }
+    },
+    {
+      "symbol": "ARKW",
+      "total_pnl": 2292.1512878417725,
+      "total_trades": 304,
+      "avg_win_rate": 0.5230495117288338,
+      "avg_sharpe": 0.048106476049022046,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 2292.1512878417725
+      }
+    },
+    {
+      "symbol": "NKE",
+      "total_pnl": 2275.533044815057,
+      "total_trades": 268,
+      "avg_win_rate": 0.49155500931816726,
+      "avg_sharpe": -0.7209173517166558,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 2275.533044815057
+      }
+    },
+    {
+      "symbol": "HON",
+      "total_pnl": 2233.111563110335,
+      "total_trades": 253,
+      "avg_win_rate": 0.5357315929684351,
+      "avg_sharpe": -0.9461517804869611,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 2233.111563110335
+      }
+    },
+    {
+      "symbol": "JPM",
+      "total_pnl": 2117.5389686584313,
+      "total_trades": 261,
+      "avg_win_rate": 0.5047856229642933,
+      "avg_sharpe": -0.328054757758844,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 2117.5389686584313
+      }
+    },
+    {
+      "symbol": "ATOM-USD",
+      "total_pnl": 1864.9856545448374,
+      "total_trades": 411,
+      "avg_win_rate": 0.479526987076882,
+      "avg_sharpe": -1.185245251370101,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 1864.9856545448374
+      }
+    },
+    {
+      "symbol": "UBER",
+      "total_pnl": 1820.3893241882301,
+      "total_trades": 289,
+      "avg_win_rate": 0.5316154734498388,
+      "avg_sharpe": 1.1241196699019813,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 1820.3893241882301
+      }
+    },
+    {
+      "symbol": "COP",
+      "total_pnl": 1555.3266807556201,
+      "total_trades": 270,
+      "avg_win_rate": 0.48987005268372386,
+      "avg_sharpe": 0.05265520525347536,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 1555.3266807556201
+      }
+    },
+    {
+      "symbol": "WFC",
+      "total_pnl": 1455.6609558105497,
+      "total_trades": 266,
+      "avg_win_rate": 0.5176636959531696,
+      "avg_sharpe": 0.28137493282396453,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 1455.6609558105497
+      }
+    },
+    {
+      "symbol": "RTX",
+      "total_pnl": 1059.1689956665268,
+      "total_trades": 258,
+      "avg_win_rate": 0.46701609793715054,
+      "avg_sharpe": -0.5208107740805626,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 1059.1689956665268
+      }
+    },
+    {
+      "symbol": "WMT",
+      "total_pnl": 827.3775226592993,
+      "total_trades": 238,
+      "avg_win_rate": 0.5592659533449007,
+      "avg_sharpe": -0.7592606086527645,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 827.3775226592993
+      }
+    },
+    {
+      "symbol": "ARKQ",
+      "total_pnl": 785.9962738037184,
+      "total_trades": 298,
+      "avg_win_rate": 0.48927527151211364,
+      "avg_sharpe": -0.6878564453601697,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 785.9962738037184
+      }
+    },
+    {
+      "symbol": "XLK",
+      "total_pnl": 690.3359092712344,
+      "total_trades": 257,
+      "avg_win_rate": 0.5026348651348652,
+      "avg_sharpe": -0.7315946529166695,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 690.3359092712344
+      }
+    },
+    {
+      "symbol": "GOOG",
+      "total_pnl": 440.79599999999846,
+      "total_trades": 167,
+      "avg_win_rate": 0.3064352056612119,
+      "avg_sharpe": 0.11530040529430365,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 440.79599999999846
+      }
+    },
+    {
+      "symbol": "DIA",
+      "total_pnl": 422.6020000000026,
+      "total_trades": 196,
+      "avg_win_rate": 0.5082494990389727,
+      "avg_sharpe": -0.5991413222740279,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 422.6020000000026
+      }
+    },
+    {
+      "symbol": "TSM",
+      "total_pnl": 250.70510177609503,
+      "total_trades": 275,
+      "avg_win_rate": 0.5006557683802266,
+      "avg_sharpe": -0.68949935600429,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 250.70510177609503
+      }
+    },
+    {
+      "symbol": "USO",
+      "total_pnl": 183.61300000000392,
+      "total_trades": 280,
+      "avg_win_rate": 0.5296472361487842,
+      "avg_sharpe": 0.01711561083568784,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 183.61300000000392
+      }
+    },
+    {
+      "symbol": "DBA",
+      "total_pnl": 159.85402622223296,
+      "total_trades": 212,
+      "avg_win_rate": 0.5165726086778718,
+      "avg_sharpe": -1.1565267373171233,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 159.85402622223296
+      }
+    },
+    {
+      "symbol": "XRP-USD",
+      "total_pnl": 54.35087400674816,
+      "total_trades": 398,
+      "avg_win_rate": 0.4658983154298509,
+      "avg_sharpe": -0.982256045277014,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 54.35087400674816
+      }
+    },
+    {
+      "symbol": "MS",
+      "total_pnl": 33.6251380920321,
+      "total_trades": 251,
+      "avg_win_rate": 0.48906093906093906,
+      "avg_sharpe": -0.3863510703332283,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 33.6251380920321
+      }
+    },
+    {
+      "symbol": "DOGE-USD",
+      "total_pnl": 0.7140206128359132,
+      "total_trades": 418,
+      "avg_win_rate": 0.5019545814372651,
+      "avg_sharpe": -0.181495143850252,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 0.7140206128359132
+      }
+    },
+    {
+      "symbol": "SHIB-USD",
+      "total_pnl": 0.00038700075651832257,
+      "total_trades": 285,
+      "avg_win_rate": 0.2455823901530309,
+      "avg_sharpe": -1.6158439255065113,
+      "strategies_profitable": 1,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 0.00038700075651832257
+      }
+    },
+    {
+      "symbol": "PAXGUSD",
+      "total_pnl": 0.0,
+      "total_trades": 0,
+      "avg_win_rate": 0.0,
+      "avg_sharpe": 0.0,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 0.0
+      }
+    },
+    {
+      "symbol": "BTCUSD",
+      "total_pnl": 0.0,
+      "total_trades": 0,
+      "avg_win_rate": 0.0,
+      "avg_sharpe": 0.0,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 0.0
+      }
+    },
+    {
+      "symbol": "ETH-USD",
+      "total_pnl": 0.0,
+      "total_trades": 0,
+      "avg_win_rate": 0.0,
+      "avg_sharpe": 0.0,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 0.0
+      }
+    },
+    {
+      "symbol": "BTC-USD",
+      "total_pnl": 0.0,
+      "total_trades": 0,
+      "avg_win_rate": 0.0,
+      "avg_sharpe": 0.0,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": 0.0
+      }
+    },
+    {
+      "symbol": "XLM-USD",
+      "total_pnl": -0.24132174775006554,
+      "total_trades": 384,
+      "avg_win_rate": 0.4619741719282387,
+      "avg_sharpe": -1.1665773569958355,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -0.24132174775006554
+      }
+    },
+    {
+      "symbol": "ALGO-USD",
+      "total_pnl": -19.132041762024052,
+      "total_trades": 452,
+      "avg_win_rate": 0.5181133420284502,
+      "avg_sharpe": -0.09673582490340943,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -19.132041762024052
+      }
+    },
+    {
+      "symbol": "UNI-USD",
+      "total_pnl": -20.62736465745038,
+      "total_trades": 338,
+      "avg_win_rate": 0.43479710879109584,
+      "avg_sharpe": -2.0658241251116465,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -20.62736465745038
+      }
+    },
+    {
+      "symbol": "MATIC-USD",
+      "total_pnl": -132.9873139381408,
+      "total_trades": 377,
+      "avg_win_rate": 0.4441404997295278,
+      "avg_sharpe": -2.857323794410139,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -132.9873139381408
+      }
+    },
+    {
+      "symbol": "O",
+      "total_pnl": -153.24170837400925,
+      "total_trades": 262,
+      "avg_win_rate": 0.5018396979697289,
+      "avg_sharpe": -1.3212569817331472,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -153.24170837400925
+      }
+    },
+    {
+      "symbol": "XLF",
+      "total_pnl": -171.7541189193671,
+      "total_trades": 237,
+      "avg_win_rate": 0.5001172803804382,
+      "avg_sharpe": -0.8999764783100167,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -171.7541189193671
+      }
+    },
+    {
+      "symbol": "ADA-USD",
+      "total_pnl": -198.90295694023354,
+      "total_trades": 450,
+      "avg_win_rate": 0.45255263903828824,
+      "avg_sharpe": -1.8972237320128083,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -198.90295694023354
+      }
+    },
+    {
+      "symbol": "SLB",
+      "total_pnl": -255.85190505982382,
+      "total_trades": 287,
+      "avg_win_rate": 0.476111599551391,
+      "avg_sharpe": -1.245950590245728,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -255.85190505982382
+      }
+    },
+    {
+      "symbol": "KO",
+      "total_pnl": -266.36008720397786,
+      "total_trades": 243,
+      "avg_win_rate": 0.4643912331218833,
+      "avg_sharpe": -2.1844201560052414,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -266.36008720397786
+      }
+    },
+    {
+      "symbol": "XLI",
+      "total_pnl": -317.3758819579907,
+      "total_trades": 234,
+      "avg_win_rate": 0.48136578333946756,
+      "avg_sharpe": -1.2469857443957848,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -317.3758819579907
+      }
+    },
+    {
+      "symbol": "DBC",
+      "total_pnl": -518.5351430892895,
+      "total_trades": 231,
+      "avg_win_rate": 0.5092714303240619,
+      "avg_sharpe": -2.0733037462214803,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -518.5351430892895
+      }
+    },
+    {
+      "symbol": "REIT",
+      "total_pnl": -555.8431747436546,
+      "total_trades": 242,
+      "avg_win_rate": 0.4568203726098463,
+      "avg_sharpe": -2.485195033831013,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -555.8431747436546
+      }
+    },
+    {
+      "symbol": "BAC",
+      "total_pnl": -562.0301301956179,
+      "total_trades": 274,
+      "avg_win_rate": 0.46062526225064926,
+      "avg_sharpe": -1.43659129696926,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -562.0301301956179
+      }
+    },
+    {
+      "symbol": "SLV",
+      "total_pnl": -576.2460000000015,
+      "total_trades": 268,
+      "avg_win_rate": 0.4724243120140953,
+      "avg_sharpe": -1.9413686075377181,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -576.2460000000015
+      }
+    },
+    {
+      "symbol": "MMM",
+      "total_pnl": -612.5157646179077,
+      "total_trades": 246,
+      "avg_win_rate": 0.5172351040772094,
+      "avg_sharpe": -0.4391381016981059,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -612.5157646179077
+      }
+    },
+    {
+      "symbol": "ABT",
+      "total_pnl": -847.1791587829885,
+      "total_trades": 277,
+      "avg_win_rate": 0.48038393495049847,
+      "avg_sharpe": -1.1371946045006027,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -847.1791587829885
+      }
+    },
+    {
+      "symbol": "COUR",
+      "total_pnl": -861.7620000000022,
+      "total_trades": 276,
+      "avg_win_rate": 0.43123638344226584,
+      "avg_sharpe": -2.543176770171638,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -861.7620000000022
+      }
+    },
+    {
+      "symbol": "DOT-USD",
+      "total_pnl": -893.7678416013717,
+      "total_trades": 417,
+      "avg_win_rate": 0.4211724773456461,
+      "avg_sharpe": -2.6887724330254037,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -893.7678416013717
+      }
+    },
+    {
+      "symbol": "LINKUSD",
+      "total_pnl": -923.4349419666548,
+      "total_trades": 487,
+      "avg_win_rate": 0.4896808451148154,
+      "avg_sharpe": -0.44554064642837116,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -923.4349419666548
+      }
+    },
+    {
+      "symbol": "ICLN",
+      "total_pnl": -1071.4144678115836,
+      "total_trades": 257,
+      "avg_win_rate": 0.4404897476104907,
+      "avg_sharpe": -3.94777947317449,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -1071.4144678115836
+      }
+    },
+    {
+      "symbol": "EOG",
+      "total_pnl": -1178.6133644103684,
+      "total_trades": 274,
+      "avg_win_rate": 0.5016917856191931,
+      "avg_sharpe": -0.8058459446958911,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -1178.6133644103684
+      }
+    },
+    {
+      "symbol": "XLE",
+      "total_pnl": -1320.123477554328,
+      "total_trades": 256,
+      "avg_win_rate": 0.512951986094401,
+      "avg_sharpe": -0.9994893832123773,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -1320.123477554328
+      }
+    },
+    {
+      "symbol": "CAT",
+      "total_pnl": -1363.1777114868146,
+      "total_trades": 265,
+      "avg_win_rate": 0.4637256190661764,
+      "avg_sharpe": -1.1373836063791238,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -1363.1777114868146
+      }
+    },
+    {
+      "symbol": "XLP",
+      "total_pnl": -1398.3728725433375,
+      "total_trades": 223,
+      "avg_win_rate": 0.4846348096348096,
+      "avg_sharpe": -3.349205078749508,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -1398.3728725433375
+      }
+    },
+    {
+      "symbol": "ARKG",
+      "total_pnl": -1492.3312492370655,
+      "total_trades": 300,
+      "avg_win_rate": 0.4783484918933835,
+      "avg_sharpe": -1.5911373371012312,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -1492.3312492370655
+      }
+    },
+    {
+      "symbol": "XLU",
+      "total_pnl": -1736.9434082031266,
+      "total_trades": 256,
+      "avg_win_rate": 0.4933632157316368,
+      "avg_sharpe": -3.3132886894429925,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -1736.9434082031266
+      }
+    },
+    {
+      "symbol": "MOON",
+      "total_pnl": -1737.6106517791764,
+      "total_trades": 194,
+      "avg_win_rate": 0.39739780527595653,
+      "avg_sharpe": -4.094054680165437,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -1737.6106517791764
+      }
+    },
+    {
+      "symbol": "UNIUSD",
+      "total_pnl": -1823.4018525710035,
+      "total_trades": 615,
+      "avg_win_rate": 0.5031682662615725,
+      "avg_sharpe": -1.4994038390003632,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -1823.4018525710035
+      }
+    },
+    {
+      "symbol": "CVX",
+      "total_pnl": -1909.2783172607215,
+      "total_trades": 264,
+      "avg_win_rate": 0.4895477329687856,
+      "avg_sharpe": -1.0473724762965002,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -1909.2783172607215
+      }
+    },
+    {
+      "symbol": "ORCL",
+      "total_pnl": -2109.654020309439,
+      "total_trades": 259,
+      "avg_win_rate": 0.5029297456929036,
+      "avg_sharpe": -0.6610669952828863,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2109.654020309439
+      }
+    },
+    {
+      "symbol": "SNY",
+      "total_pnl": -2120.557114410406,
+      "total_trades": 249,
+      "avg_win_rate": 0.464420667052246,
+      "avg_sharpe": -3.3873407236430384,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2120.557114410406
+      }
+    },
+    {
+      "symbol": "UNG",
+      "total_pnl": -2136.0564999999997,
+      "total_trades": 289,
+      "avg_win_rate": 0.4366308498681808,
+      "avg_sharpe": -3.9893149340430862,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2136.0564999999997
+      }
+    },
+    {
+      "symbol": "VXUS",
+      "total_pnl": -2240.8342071533143,
+      "total_trades": 227,
+      "avg_win_rate": 0.4348455466102525,
+      "avg_sharpe": -4.06816649624112,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2240.8342071533143
+      }
+    },
+    {
+      "symbol": "PLD",
+      "total_pnl": -2273.29608840943,
+      "total_trades": 253,
+      "avg_win_rate": 0.5008325266065204,
+      "avg_sharpe": -0.5907653689113374,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2273.29608840943
+      }
+    },
+    {
+      "symbol": "EFA",
+      "total_pnl": -2283.9470699310295,
+      "total_trades": 226,
+      "avg_win_rate": 0.4404244877929088,
+      "avg_sharpe": -3.6901135735141177,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2283.9470699310295
+      }
+    },
+    {
+      "symbol": "PFE",
+      "total_pnl": -2337.1823652267453,
+      "total_trades": 254,
+      "avg_win_rate": 0.43681885709749485,
+      "avg_sharpe": -5.051959834616204,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2337.1823652267453
+      }
+    },
+    {
+      "symbol": "ADBE",
+      "total_pnl": -2452.1094999999623,
+      "total_trades": 278,
+      "avg_win_rate": 0.5084232975486845,
+      "avg_sharpe": -0.0445555455875613,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2452.1094999999623
+      }
+    },
+    {
+      "symbol": "EEM",
+      "total_pnl": -2532.18825588226,
+      "total_trades": 240,
+      "avg_win_rate": 0.42735181485181484,
+      "avg_sharpe": -4.871427251467713,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2532.18825588226
+      }
+    },
+    {
+      "symbol": "NVO",
+      "total_pnl": -2663.403511810293,
+      "total_trades": 266,
+      "avg_win_rate": 0.45310180016062374,
+      "avg_sharpe": -1.6037450225681358,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2663.403511810293
+      }
+    },
+    {
+      "symbol": "XOM",
+      "total_pnl": -2668.9504375457936,
+      "total_trades": 272,
+      "avg_win_rate": 0.4823658539602812,
+      "avg_sharpe": -1.9084293864822164,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2668.9504375457936
+      }
+    },
+    {
+      "symbol": "TM",
+      "total_pnl": -2684.3002250671125,
+      "total_trades": 260,
+      "avg_win_rate": 0.5126863633442581,
+      "avg_sharpe": -1.22466906717086,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2684.3002250671125
+      }
+    },
+    {
+      "symbol": "ARKK",
+      "total_pnl": -2803.1124563217186,
+      "total_trades": 294,
+      "avg_win_rate": 0.48645019411273277,
+      "avg_sharpe": -1.4575979663506324,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2803.1124563217186
+      }
+    },
+    {
+      "symbol": "INTC",
+      "total_pnl": -2955.214496803279,
+      "total_trades": 338,
+      "avg_win_rate": 0.4906176505103009,
+      "avg_sharpe": -3.0077301541844212,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2955.214496803279
+      }
+    },
+    {
+      "symbol": "MRVL",
+      "total_pnl": -2961.5795478820733,
+      "total_trades": 295,
+      "avg_win_rate": 0.4952303906149433,
+      "avg_sharpe": -0.9401865253779156,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2961.5795478820733
+      }
+    },
+    {
+      "symbol": "IWM",
+      "total_pnl": -2971.2965000000095,
+      "total_trades": 246,
+      "avg_win_rate": 0.48699436528383894,
+      "avg_sharpe": -1.3463045390565536,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -2971.2965000000095
+      }
+    },
+    {
+      "symbol": "LINK-USD",
+      "total_pnl": -3009.32894830704,
+      "total_trades": 419,
+      "avg_win_rate": 0.433830991838761,
+      "avg_sharpe": -2.9539311354082587,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -3009.32894830704
+      }
+    },
+    {
+      "symbol": "AVAX-USD",
+      "total_pnl": -3018.188785839068,
+      "total_trades": 421,
+      "avg_win_rate": 0.46440078549459085,
+      "avg_sharpe": -0.8096926888182512,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -3018.188785839068
+      }
+    },
+    {
+      "symbol": "ABBV",
+      "total_pnl": -3026.614184570328,
+      "total_trades": 277,
+      "avg_win_rate": 0.4955317644172133,
+      "avg_sharpe": -0.917979229700764,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -3026.614184570328
+      }
+    },
+    {
+      "symbol": "AMT",
+      "total_pnl": -3169.078555297876,
+      "total_trades": 293,
+      "avg_win_rate": 0.4789632327822812,
+      "avg_sharpe": -1.7640871688658946,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -3169.078555297876
+      }
+    },
+    {
+      "symbol": "LYFT",
+      "total_pnl": -3190.6927424430864,
+      "total_trades": 286,
+      "avg_win_rate": 0.46083873421131044,
+      "avg_sharpe": -2.4548685935967516,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -3190.6927424430864
+      }
+    },
+    {
+      "symbol": "SNOW",
+      "total_pnl": -3308.702748107904,
+      "total_trades": 279,
+      "avg_win_rate": 0.4953118089341,
+      "avg_sharpe": -0.3382401447490581,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -3308.702748107904
+      }
+    },
+    {
+      "symbol": "NET",
+      "total_pnl": -4575.7510000000075,
+      "total_trades": 303,
+      "avg_win_rate": 0.4946048140116903,
+      "avg_sharpe": -1.5390661440047035,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -4575.7510000000075
+      }
+    },
+    {
+      "symbol": "LMT",
+      "total_pnl": -4960.619119262628,
+      "total_trades": 240,
+      "avg_win_rate": 0.4574171442592495,
+      "avg_sharpe": -1.1332182960188952,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -4960.619119262628
+      }
+    },
+    {
+      "symbol": "AMD",
+      "total_pnl": -5253.483610153194,
+      "total_trades": 297,
+      "avg_win_rate": 0.5018960485678752,
+      "avg_sharpe": -1.6404943935167957,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -5253.483610153194
+      }
+    },
+    {
+      "symbol": "SOL-USD",
+      "total_pnl": -5386.121446609491,
+      "total_trades": 431,
+      "avg_win_rate": 0.43433447378479506,
+      "avg_sharpe": -1.2115195943731962,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -5386.121446609491
+      }
+    },
+    {
+      "symbol": "ADSK",
+      "total_pnl": -5532.351000000039,
+      "total_trades": 302,
+      "avg_win_rate": 0.4801480511232833,
+      "avg_sharpe": -1.0018793365525986,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -5532.351000000039
+      }
+    },
+    {
+      "symbol": "TMO",
+      "total_pnl": -5715.644760131785,
+      "total_trades": 256,
+      "avg_win_rate": 0.4873098392835235,
+      "avg_sharpe": -1.7122832675162216,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -5715.644760131785
+      }
+    },
+    {
+      "symbol": "MRK",
+      "total_pnl": -6295.812969970732,
+      "total_trades": 248,
+      "avg_win_rate": 0.42827742433005583,
+      "avg_sharpe": -4.447740073499865,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -6295.812969970732
+      }
+    },
+    {
+      "symbol": "SONY",
+      "total_pnl": -6404.708000000018,
+      "total_trades": 247,
+      "avg_win_rate": 0.43380041011619963,
+      "avg_sharpe": -3.5804566987740847,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -6404.708000000018
+      }
+    },
+    {
+      "symbol": "PYPL",
+      "total_pnl": -6676.237000000018,
+      "total_trades": 267,
+      "avg_win_rate": 0.45465395502873096,
+      "avg_sharpe": -2.61801643755606,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -6676.237000000018
+      }
+    },
+    {
+      "symbol": "PG",
+      "total_pnl": -6692.432730102544,
+      "total_trades": 242,
+      "avg_win_rate": 0.46461608566871726,
+      "avg_sharpe": -4.058570994122394,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -6692.432730102544
+      }
+    },
+    {
+      "symbol": "META",
+      "total_pnl": -6929.467000000025,
+      "total_trades": 1187,
+      "avg_win_rate": 0.48490289892757343,
+      "avg_sharpe": -1.0657476639278647,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -6929.467000000025
+      }
+    },
+    {
+      "symbol": "XLV",
+      "total_pnl": -6958.337480163569,
+      "total_trades": 212,
+      "avg_win_rate": 0.4239671147565884,
+      "avg_sharpe": -5.0350391173636355,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -6958.337480163569
+      }
+    },
+    {
+      "symbol": "MU",
+      "total_pnl": -6958.699534988412,
+      "total_trades": 276,
+      "avg_win_rate": 0.48808488982637593,
+      "avg_sharpe": -2.183062073668461,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -6958.699534988412
+      }
+    },
+    {
+      "symbol": "PSA",
+      "total_pnl": -7169.572463989283,
+      "total_trades": 254,
+      "avg_win_rate": 0.4641808827567342,
+      "avg_sharpe": -1.6923658251351548,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -7169.572463989283
+      }
+    },
+    {
+      "symbol": "COIN",
+      "total_pnl": -7252.496500000022,
+      "total_trades": 296,
+      "avg_win_rate": 0.4735748002904866,
+      "avg_sharpe": -0.9614205913515447,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -7252.496500000022
+      }
+    },
+    {
+      "symbol": "UPS",
+      "total_pnl": -7356.387791442901,
+      "total_trades": 250,
+      "avg_win_rate": 0.4471177944862155,
+      "avg_sharpe": -2.405605739529264,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -7356.387791442901
+      }
+    },
+    {
+      "symbol": "JNJ",
+      "total_pnl": -8161.156417846669,
+      "total_trades": 234,
+      "avg_win_rate": 0.43728289254605046,
+      "avg_sharpe": -4.938357696493699,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -8161.156417846669
+      }
+    },
+    {
+      "symbol": "CCI",
+      "total_pnl": -8282.754570007295,
+      "total_trades": 251,
+      "avg_win_rate": 0.44301151634742963,
+      "avg_sharpe": -3.9035971653279224,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -8282.754570007295
+      }
+    },
+    {
+      "symbol": "BABA",
+      "total_pnl": -8704.544819641118,
+      "total_trades": 283,
+      "avg_win_rate": 0.4513351903017049,
+      "avg_sharpe": -2.5050560681602208,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -8704.544819641118
+      }
+    },
+    {
+      "symbol": "AVAXUSD",
+      "total_pnl": -8734.913410134004,
+      "total_trades": 475,
+      "avg_win_rate": 0.4668307893332772,
+      "avg_sharpe": -2.4308818429406776,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -8734.913410134004
+      }
+    },
+    {
+      "symbol": "TGT",
+      "total_pnl": -8837.302141571,
+      "total_trades": 267,
+      "avg_win_rate": 0.45208949976751833,
+      "avg_sharpe": -2.968875714502524,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -8837.302141571
+      }
+    },
+    {
+      "symbol": "MSFT",
+      "total_pnl": -9331.926000000032,
+      "total_trades": 1115,
+      "avg_win_rate": 0.46736620041899984,
+      "avg_sharpe": -2.3657215230811905,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -9331.926000000032
+      }
+    },
+    {
+      "symbol": "QCOM",
+      "total_pnl": -9704.155588531483,
+      "total_trades": 281,
+      "avg_win_rate": 0.4783441747451035,
+      "avg_sharpe": -1.823942318936379,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -9704.155588531483
+      }
+    },
+    {
+      "symbol": "DOCU",
+      "total_pnl": -10140.25145759586,
+      "total_trades": 279,
+      "avg_win_rate": 0.4761872630293683,
+      "avg_sharpe": -1.156645704111737,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -10140.25145759586
+      }
+    },
+    {
+      "symbol": "U",
+      "total_pnl": -10143.327000000012,
+      "total_trades": 310,
+      "avg_win_rate": 0.46933176743955624,
+      "avg_sharpe": -1.7433502297120995,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -10143.327000000012
+      }
+    },
+    {
+      "symbol": "SOLUSD",
+      "total_pnl": -12074.582204393677,
+      "total_trades": 338,
+      "avg_win_rate": 0.44826954027224925,
+      "avg_sharpe": -2.751751612727884,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -12074.582204393677
+      }
+    },
+    {
+      "symbol": "CRWD",
+      "total_pnl": -12247.930000000037,
+      "total_trades": 291,
+      "avg_win_rate": 0.4720824969663979,
+      "avg_sharpe": -1.9607644540874172,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -12247.930000000037
+      }
+    },
+    {
+      "symbol": "TSLA",
+      "total_pnl": -13593.418999999987,
+      "total_trades": 1161,
+      "avg_win_rate": 0.4471021055092636,
+      "avg_sharpe": -3.1070238164584,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -13593.418999999987
+      }
+    },
+    {
+      "symbol": "HD",
+      "total_pnl": -13885.905490112196,
+      "total_trades": 263,
+      "avg_win_rate": 0.4582529312792471,
+      "avg_sharpe": -2.832988537813509,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -13885.905490112196
+      }
+    },
+    {
+      "symbol": "AMZN",
+      "total_pnl": -15112.646999999957,
+      "total_trades": 1176,
+      "avg_win_rate": 0.4788797715002534,
+      "avg_sharpe": -1.2793024887103053,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -15112.646999999957
+      }
+    },
+    {
+      "symbol": "ROKU",
+      "total_pnl": -16457.85369186398,
+      "total_trades": 289,
+      "avg_win_rate": 0.4320023285967559,
+      "avg_sharpe": -2.9580157804430076,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -16457.85369186398
+      }
+    },
+    {
+      "symbol": "ASML",
+      "total_pnl": -17165.65930175779,
+      "total_trades": 260,
+      "avg_win_rate": 0.4599108661150375,
+      "avg_sharpe": -1.3282014121168764,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -17165.65930175779
+      }
+    },
+    {
+      "symbol": "AAPL",
+      "total_pnl": -20663.549000000115,
+      "total_trades": 1123,
+      "avg_win_rate": 0.4749566816363414,
+      "avg_sharpe": -0.9848185753616115,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -20663.549000000115
+      }
+    },
+    {
+      "symbol": "BLK",
+      "total_pnl": -23525.90813598634,
+      "total_trades": 226,
+      "avg_win_rate": 0.4607313481152491,
+      "avg_sharpe": -1.7016456878477322,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -23525.90813598634
+      }
+    },
+    {
+      "symbol": "NFLX",
+      "total_pnl": -25285.456999999995,
+      "total_trades": 1125,
+      "avg_win_rate": 0.44301948740290337,
+      "avg_sharpe": -3.576643575321231,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -25285.456999999995
+      }
+    },
+    {
+      "symbol": "GOOGL",
+      "total_pnl": -27048.651999999922,
+      "total_trades": 1140,
+      "avg_win_rate": 0.47370810738989333,
+      "avg_sharpe": -2.0872650363514,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -27048.651999999922
+      }
+    },
+    {
+      "symbol": "LTCUSD",
+      "total_pnl": -27828.17527789401,
+      "total_trades": 375,
+      "avg_win_rate": 0.49170460911637387,
+      "avg_sharpe": -1.4670352827695896,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -27828.17527789401
+      }
+    },
+    {
+      "symbol": "NVDA",
+      "total_pnl": -29972.64400000008,
+      "total_trades": 1156,
+      "avg_win_rate": 0.4626353684114138,
+      "avg_sharpe": -1.9553484417970526,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -29972.64400000008
+      }
+    },
+    {
+      "symbol": "UNH",
+      "total_pnl": -38627.05139465333,
+      "total_trades": 263,
+      "avg_win_rate": 0.4505605333778709,
+      "avg_sharpe": -3.3902398462302292,
+      "strategies_profitable": 0,
+      "strategies_total": 1,
+      "strategy_pnls": {
+        "maxdiff": -38627.05139465333
+      }
+    }
+  ],
+  "summary": {
+    "total_pnl": -324674.922010377,
+    "top_40_pnl": 232808.3094011598,
+    "total_trades": 43920,
+    "profitable_symbols": 41,
+    "total_symbols": 135
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "ETHUSD": {
+    "best_strategy": "percent_change",
+    "selection_value": 0.5085830370068277,
+    "selection_metric": "mae_percent",
+    "comparison": {
+      "percent_change": {
+        "validation": {
+          "mae": 22.128195690141126,
+          "mae_percent": 0.5989822381580975,
+          "rmse": 31.241115938913296,
+          "pct_return_mae": 0.006067618128335973,
+          "latency_s": 41.80758229197818
+        },
+        "test": {
+          "mae": 17.5518884169161,
+          "mae_percent": 0.5085830370068277,
+          "rmse": 23.63116858467392,
+          "pct_return_mae": 0.005079888671376059,
+          "latency_s": 40.86505886809027
+        }
+      }
+    },
+    "output_path": "preaugstrategies/chronos2/hourly/ETHUSD.json"
+  }
+}

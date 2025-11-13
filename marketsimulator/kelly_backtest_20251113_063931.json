@@ -1,0 +1,23 @@
+{
+  "config": {
+    "symbols": [
+      "NVDA",
+      "AAPL"
+    ],
+    "initial_capital": 100000,
+    "start_date": "2024-10-01",
+    "end_date": "2024-10-15",
+    "max_symbol_exposure_pct": 60.0,
+    "max_intraday_leverage": 4.0
+  },
+  "results": {
+    "initial_capital": 100000,
+    "final_equity": 111828.04999999999,
+    "total_return_pct": 11.828049999999989,
+    "sharpe_ratio": 16.178630715459718,
+    "sortino_ratio": 1629473859.6216753,
+    "max_drawdown_pct": 0.2639623801647013,
+    "volatility": 0.15988433014353737,
+    "num_trades": 3
+  }
+}
