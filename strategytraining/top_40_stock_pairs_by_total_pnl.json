@@ -1,0 +1,2981 @@
+{
+  "top_40": [
+    {
+      "symbol": "ETHUSD",
+      "total_pnl": 225984.28399999999,
+      "total_trades": 37,
+      "avg_win_rate": 0.028546341908410874,
+      "avg_sharpe": 0.2625985741078511,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 30596.36099999996,
+        "buy_hold": 5244.312000000005,
+        "entry_takeprofit": 28545.701000000045,
+        "highlow": 28545.701000000045,
+        "maxdiff": 67805.12999999996,
+        "simple_strategy": 65247.07899999997
+      }
+    },
+    {
+      "symbol": "COST",
+      "total_pnl": 157307.16791381832,
+      "total_trades": 1156,
+      "avg_win_rate": 0.5723711101420079,
+      "avg_sharpe": 1.725867989079792,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 28005.963482666004,
+        "buy_hold": 22822.914343261706,
+        "entry_takeprofit": 35552.55787353521,
+        "highlow": 33465.116412353644,
+        "maxdiff": 11388.083004760643,
+        "simple_strategy": 26072.532797241125
+      }
+    },
+    {
+      "symbol": "EQIX",
+      "total_pnl": 130176.03858337401,
+      "total_trades": 1301,
+      "avg_win_rate": 0.5210271181633411,
+      "avg_sharpe": 0.5261827843653505,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 30128.611541747996,
+        "buy_hold": 49938.82655639647,
+        "entry_takeprofit": 17594.30858459478,
+        "highlow": -4018.620700073232,
+        "maxdiff": 14704.503518676764,
+        "simple_strategy": 21828.40908203124
+      }
+    },
+    {
+      "symbol": "GS",
+      "total_pnl": 106673.17573547353,
+      "total_trades": 1314,
+      "avg_win_rate": 0.5343653057468847,
+      "avg_sharpe": 1.1993366208220924,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 18240.1400299072,
+        "buy_hold": 18752.181417846637,
+        "entry_takeprofit": 18574.41040954584,
+        "highlow": 21395.364410400383,
+        "maxdiff": 13887.65748596195,
+        "simple_strategy": 15823.421981811505
+      }
+    },
+    {
+      "symbol": "LLY",
+      "total_pnl": 93326.3834915159,
+      "total_trades": 1329,
+      "avg_win_rate": 0.528349878678826,
+      "avg_sharpe": 0.5007820989391485,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -430.4365234375764,
+        "buy_hold": 9140.68453979482,
+        "entry_takeprofit": 34463.87786102292,
+        "highlow": 28128.548712158135,
+        "maxdiff": 9141.290943908727,
+        "simple_strategy": 12882.417958068869
+      }
+    },
+    {
+      "symbol": "QQQ",
+      "total_pnl": 84444.94899999979,
+      "total_trades": 1076,
+      "avg_win_rate": 0.5648019886603478,
+      "avg_sharpe": 1.657636171100303,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 15737.975500000015,
+        "buy_hold": 15478.268499999947,
+        "entry_takeprofit": 26281.9745,
+        "highlow": 10959.627499999886,
+        "maxdiff": 3525.9404999999497,
+        "simple_strategy": 12461.162499999991
+      }
+    },
+    {
+      "symbol": "MA",
+      "total_pnl": 74398.86154785153,
+      "total_trades": 1207,
+      "avg_win_rate": 0.5570412172966352,
+      "avg_sharpe": 0.7044646034494148,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 11697.996618652345,
+        "buy_hold": 18257.283853149424,
+        "entry_takeprofit": 21235.833993530316,
+        "highlow": 9526.254983520495,
+        "maxdiff": 2331.7600097655886,
+        "simple_strategy": 11349.732089233366
+      }
+    },
+    {
+      "symbol": "SPY",
+      "total_pnl": 68289.78749999974,
+      "total_trades": 932,
+      "avg_win_rate": 0.5841244589890101,
+      "avg_sharpe": 1.444293414236727,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 17267.498999999945,
+        "buy_hold": 13164.183999999957,
+        "entry_takeprofit": 16878.600999999908,
+        "highlow": 1536.2064999999711,
+        "maxdiff": 7731.844000000005,
+        "simple_strategy": 11711.452999999958
+      }
+    },
+    {
+      "symbol": "ASML",
+      "total_pnl": 59595.15132446276,
+      "total_trades": 1208,
+      "avg_win_rate": 0.49204409097170215,
+      "avg_sharpe": 0.04204284539168455,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2585.905154418957,
+        "buy_hold": 10633.485922241052,
+        "entry_takeprofit": 19906.565203857317,
+        "highlow": 55774.58829650885,
+        "maxdiff": -17165.65930175779,
+        "simple_strategy": -6967.923641967733
+      }
+    },
+    {
+      "symbol": "GE",
+      "total_pnl": 51907.60210990907,
+      "total_trades": 1410,
+      "avg_win_rate": 0.5598855980047931,
+      "avg_sharpe": 1.8433711527263295,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 4533.812438583405,
+        "buy_hold": 5993.77225456238,
+        "entry_takeprofit": 8686.401062774643,
+        "highlow": 14947.081023025501,
+        "maxdiff": 9781.954205322269,
+        "simple_strategy": 7964.581125640881
+      }
+    },
+    {
+      "symbol": "AVGO",
+      "total_pnl": 47447.90143508909,
+      "total_trades": 1255,
+      "avg_win_rate": 0.5036822081713722,
+      "avg_sharpe": 0.9098943358708739,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5616.327766799915,
+        "buy_hold": 6454.893027114844,
+        "entry_takeprofit": 7296.126621246351,
+        "highlow": 12449.266648101817,
+        "maxdiff": 8346.560371780395,
+        "simple_strategy": 7284.727000045764
+      }
+    },
+    {
+      "symbol": "BLK",
+      "total_pnl": 41112.731854247606,
+      "total_trades": 1155,
+      "avg_win_rate": 0.4813543267877633,
+      "avg_sharpe": -0.022446351853161028,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 12081.694702148343,
+        "buy_hold": 56611.574847412005,
+        "entry_takeprofit": -4553.795544433691,
+        "highlow": 4628.886639404169,
+        "maxdiff": -23525.90813598634,
+        "simple_strategy": -4129.720654296878
+      }
+    },
+    {
+      "symbol": "GLD",
+      "total_pnl": 40858.32100000011,
+      "total_trades": 1042,
+      "avg_win_rate": 0.5371354766091608,
+      "avg_sharpe": 0.6632136739160875,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5348.601000000028,
+        "buy_hold": 2902.7010000000028,
+        "entry_takeprofit": 10756.65450000002,
+        "highlow": 10842.758000000023,
+        "maxdiff": 5120.727500000017,
+        "simple_strategy": 5886.879000000021
+      }
+    },
+    {
+      "symbol": "AXP",
+      "total_pnl": 38432.60988311763,
+      "total_trades": 1145,
+      "avg_win_rate": 0.5198366519960947,
+      "avg_sharpe": -0.23150932636812072,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 4919.945455932622,
+        "buy_hold": -5856.283341979999,
+        "entry_takeprofit": 9898.202764892534,
+        "highlow": 10402.010639953602,
+        "maxdiff": 10701.354437255879,
+        "simple_strategy": 8367.379927062988
+      }
+    },
+    {
+      "symbol": "PLTR",
+      "total_pnl": 37768.26181631084,
+      "total_trades": 1708,
+      "avg_win_rate": 0.5157256575508572,
+      "avg_sharpe": 0.8040366255548367,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 4374.252934741971,
+        "buy_hold": 7390.379757928847,
+        "entry_takeprofit": 7264.935763835896,
+        "highlow": 9102.341632318487,
+        "maxdiff": 4893.154671621315,
+        "simple_strategy": 4743.197055864332
+      }
+    },
+    {
+      "symbol": "V",
+      "total_pnl": 36217.6971664428,
+      "total_trades": 1171,
+      "avg_win_rate": 0.5198197513986987,
+      "avg_sharpe": 0.3638592827027318,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 9081.317198181128,
+        "buy_hold": 8988.763415527417,
+        "entry_takeprofit": 1733.9102722167336,
+        "highlow": 4518.940892028844,
+        "maxdiff": 4036.4807647704874,
+        "simple_strategy": 7858.284623718191
+      }
+    },
+    {
+      "symbol": "SAP",
+      "total_pnl": 32706.553999999916,
+      "total_trades": 1318,
+      "avg_win_rate": 0.5213026180905438,
+      "avg_sharpe": 0.6422631066411411,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5926.460999999979,
+        "buy_hold": 3408.534999999998,
+        "entry_takeprofit": 11464.369999999972,
+        "highlow": 5010.972999999987,
+        "maxdiff": 3489.986999999981,
+        "simple_strategy": 3406.2279999999955
+      }
+    },
+    {
+      "symbol": "VTI",
+      "total_pnl": 31249.605751037616,
+      "total_trades": 1084,
+      "avg_win_rate": 0.5245272515009357,
+      "avg_sharpe": 0.7622420337450291,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5883.575852966325,
+        "buy_hold": 4607.2007278442,
+        "entry_takeprofit": 5178.8984298706055,
+        "highlow": 3602.1635070800985,
+        "maxdiff": 3718.470352172888,
+        "simple_strategy": 8259.296881103499
+      }
+    },
+    {
+      "symbol": "JPM",
+      "total_pnl": 27744.692202758815,
+      "total_trades": 1262,
+      "avg_win_rate": 0.5499698497101545,
+      "avg_sharpe": 0.9839042689980522,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 7592.962252807618,
+        "buy_hold": 4765.447074890142,
+        "entry_takeprofit": 6752.403581237773,
+        "highlow": 1226.0950256348206,
+        "maxdiff": 2117.5389686584313,
+        "simple_strategy": 5290.245299530025
+      }
+    },
+    {
+      "symbol": "CRM",
+      "total_pnl": 26511.540984344643,
+      "total_trades": 1405,
+      "avg_win_rate": 0.5066903984494012,
+      "avg_sharpe": 0.3411013617657823,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 6372.797427368247,
+        "buy_hold": -727.2386871338185,
+        "entry_takeprofit": 7399.594914245599,
+        "highlow": -5729.592739868172,
+        "maxdiff": 10884.831693267915,
+        "simple_strategy": 8311.148376464873
+      }
+    },
+    {
+      "symbol": "DIA",
+      "total_pnl": 24626.895499999977,
+      "total_trades": 956,
+      "avg_win_rate": 0.5210756835756836,
+      "avg_sharpe": 0.0378314346488782,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5927.073499999977,
+        "buy_hold": 2582.920000000009,
+        "entry_takeprofit": 5564.923499999957,
+        "highlow": 7024.516500000038,
+        "maxdiff": 422.6020000000026,
+        "simple_strategy": 3104.8599999999933
+      }
+    },
+    {
+      "symbol": "UBER",
+      "total_pnl": 18925.491067695595,
+      "total_trades": 1606,
+      "avg_win_rate": 0.5158614758571985,
+      "avg_sharpe": 1.0929722293484911,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 3168.3070302963242,
+        "buy_hold": 5019.861210823055,
+        "entry_takeprofit": 4044.477828216548,
+        "highlow": 3339.7219373702947,
+        "maxdiff": 1820.3893241882301,
+        "simple_strategy": 1532.7337368011422
+      }
+    },
+    {
+      "symbol": "SHOP",
+      "total_pnl": 17901.203294372535,
+      "total_trades": 1661,
+      "avg_win_rate": 0.5285334507436193,
+      "avg_sharpe": 0.5542088514741184,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 2617.812205505362,
+        "buy_hold": 683.0823902130273,
+        "entry_takeprofit": 3822.243225479116,
+        "highlow": -2838.4202415466298,
+        "maxdiff": 6127.90801448821,
+        "simple_strategy": 7488.577700233451
+      }
+    },
+    {
+      "symbol": "CVX",
+      "total_pnl": 15451.45493927009,
+      "total_trades": 1321,
+      "avg_win_rate": 0.5357526002262843,
+      "avg_sharpe": 0.3713379820200544,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1512.5817192077666,
+        "buy_hold": 2898.5900100708186,
+        "entry_takeprofit": 6066.578395080586,
+        "highlow": 5211.148175811771,
+        "maxdiff": -1909.2783172607215,
+        "simple_strategy": 1671.8349563598695
+      }
+    },
+    {
+      "symbol": "COP",
+      "total_pnl": 14047.684342575107,
+      "total_trades": 1440,
+      "avg_win_rate": 0.5027210185257683,
+      "avg_sharpe": 0.38026475261497045,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -567.5376728057718,
+        "buy_hold": 7267.1600612640195,
+        "entry_takeprofit": 1629.7277107238924,
+        "highlow": 4318.213215637207,
+        "maxdiff": 1555.3266807556201,
+        "simple_strategy": -155.20565299986174
+      }
+    },
+    {
+      "symbol": "BA",
+      "total_pnl": 12908.074542236356,
+      "total_trades": 1204,
+      "avg_win_rate": 0.5032178275619696,
+      "avg_sharpe": -0.019697819530463963,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5388.78311004641,
+        "buy_hold": -2717.268589782707,
+        "entry_takeprofit": -2629.4425064087154,
+        "highlow": -2785.948971557569,
+        "maxdiff": 10276.152728271472,
+        "simple_strategy": 5375.798771667465
+      }
+    },
+    {
+      "symbol": "MCD",
+      "total_pnl": 12693.119358825661,
+      "total_trades": 1075,
+      "avg_win_rate": 0.503976761542551,
+      "avg_sharpe": -0.007521360562269122,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 6609.511677551298,
+        "buy_hold": 5008.623881530715,
+        "entry_takeprofit": -3218.48682403567,
+        "highlow": -2653.6606201171708,
+        "maxdiff": 4390.681857299809,
+        "simple_strategy": 2556.4493865966797
+      }
+    },
+    {
+      "symbol": "GOOG",
+      "total_pnl": 12534.48549999997,
+      "total_trades": 883,
+      "avg_win_rate": 0.3180831012588315,
+      "avg_sharpe": 0.45931378170077997,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1382.1399999999849,
+        "buy_hold": 277.29199999999946,
+        "entry_takeprofit": 4778.855999999989,
+        "highlow": 4006.75,
+        "maxdiff": 440.79599999999846,
+        "simple_strategy": 1648.6514999999981
+      }
+    },
+    {
+      "symbol": "MS",
+      "total_pnl": 11200.172049713132,
+      "total_trades": 1322,
+      "avg_win_rate": 0.5143157982941264,
+      "avg_sharpe": 0.06591412777361484,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 2910.2821411132645,
+        "buy_hold": 2946.776097106944,
+        "entry_takeprofit": 938.867002868662,
+        "highlow": 2814.453278350843,
+        "maxdiff": 33.6251380920321,
+        "simple_strategy": 1556.1683921813856
+      }
+    },
+    {
+      "symbol": "XLK",
+      "total_pnl": 11144.413796234145,
+      "total_trades": 1305,
+      "avg_win_rate": 0.5131171137943583,
+      "avg_sharpe": -0.021724569188938708,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 3851.5637336731015,
+        "buy_hold": 743.1946250915644,
+        "entry_takeprofit": -1321.2466278075954,
+        "highlow": 3375.9808052063017,
+        "maxdiff": 690.3359092712344,
+        "simple_strategy": 3804.585350799538
+      }
+    },
+    {
+      "symbol": "EOG",
+      "total_pnl": 11026.18758926396,
+      "total_trades": 1431,
+      "avg_win_rate": 0.5216765931987132,
+      "avg_sharpe": 0.14563646309244888,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 2943.781157684316,
+        "buy_hold": 2861.7752197265736,
+        "entry_takeprofit": 5004.870204544073,
+        "highlow": 2126.3374401092497,
+        "maxdiff": -1178.6133644103684,
+        "simple_strategy": -731.9630683898831
+      }
+    },
+    {
+      "symbol": "WFC",
+      "total_pnl": 10956.767964172332,
+      "total_trades": 1341,
+      "avg_win_rate": 0.5199401597427913,
+      "avg_sharpe": 0.5179106152916021,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 2326.717270278922,
+        "buy_hold": 1287.9968738555772,
+        "entry_takeprofit": 1464.44722938537,
+        "highlow": 2523.723753356924,
+        "maxdiff": 1455.6609558105497,
+        "simple_strategy": 1898.221881484987
+      }
+    },
+    {
+      "symbol": "CAT",
+      "total_pnl": 10913.141127014313,
+      "total_trades": 1337,
+      "avg_win_rate": 0.47584398101038966,
+      "avg_sharpe": -0.378279335103531,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -1937.6594711303678,
+        "buy_hold": 5164.954077148528,
+        "entry_takeprofit": -2709.3879745482955,
+        "highlow": 10642.07405853276,
+        "maxdiff": -1363.1777114868146,
+        "simple_strategy": 1116.338148498502
+      }
+    },
+    {
+      "symbol": "XLI",
+      "total_pnl": 9970.208495330855,
+      "total_trades": 1093,
+      "avg_win_rate": 0.5111175739465214,
+      "avg_sharpe": 0.10905994765734016,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1805.2064582824687,
+        "buy_hold": 4245.660893249517,
+        "entry_takeprofit": 1007.129887390146,
+        "highlow": 2600.0375198364572,
+        "maxdiff": -317.3758819579907,
+        "simple_strategy": 629.5496185302572
+      }
+    },
+    {
+      "symbol": "RTX",
+      "total_pnl": 9114.847301483202,
+      "total_trades": 1208,
+      "avg_win_rate": 0.49376818357081514,
+      "avg_sharpe": 0.2752742608847553,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1672.870864105229,
+        "buy_hold": 1095.5374908447084,
+        "entry_takeprofit": 988.4169639587781,
+        "highlow": 2137.558992767341,
+        "maxdiff": 1059.1689956665268,
+        "simple_strategy": 2161.2939941406175
+      }
+    },
+    {
+      "symbol": "USO",
+      "total_pnl": 8007.650500000046,
+      "total_trades": 1502,
+      "avg_win_rate": 0.5355331480524979,
+      "avg_sharpe": 0.34940359460708253,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 17.159000000006927,
+        "buy_hold": -122.50849999999991,
+        "entry_takeprofit": 2667.24450000001,
+        "highlow": 4658.214500000025,
+        "maxdiff": 183.61300000000392,
+        "simple_strategy": 603.9280000000008
+      }
+    },
+    {
+      "symbol": "PLD",
+      "total_pnl": 7510.058979797415,
+      "total_trades": 1285,
+      "avg_win_rate": 0.517736629269137,
+      "avg_sharpe": 0.4743948660244138,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 4439.816957855235,
+        "buy_hold": 3992.4723114014087,
+        "entry_takeprofit": 1231.876538085935,
+        "highlow": -1810.3332939147913,
+        "maxdiff": -2273.29608840943,
+        "simple_strategy": 1929.5225547790578
+      }
+    },
+    {
+      "symbol": "NVO",
+      "total_pnl": 5088.862320709217,
+      "total_trades": 1382,
+      "avg_win_rate": 0.4877903292957473,
+      "avg_sharpe": -0.2403730191832465,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -3310.7183849334806,
+        "buy_hold": 10348.128191757194,
+        "entry_takeprofit": -887.7920589447085,
+        "highlow": 4795.387396240236,
+        "maxdiff": -2663.403511810293,
+        "simple_strategy": -3192.739311599731
+      }
+    },
+    {
+      "symbol": "TM",
+      "total_pnl": 5029.142706298893,
+      "total_trades": 1361,
+      "avg_win_rate": 0.4978301618974994,
+      "avg_sharpe": -0.5143339667681063,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1563.7654701233023,
+        "buy_hold": -3507.962629699732,
+        "entry_takeprofit": 4907.2968566894815,
+        "highlow": 1821.5375350952108,
+        "maxdiff": -2684.3002250671125,
+        "simple_strategy": 2928.805699157743
+      }
+    },
+    {
+      "symbol": "WMT",
+      "total_pnl": 4118.87238464357,
+      "total_trades": 1129,
+      "avg_win_rate": 0.5306898389135232,
+      "avg_sharpe": -0.321648655928593,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1623.6441287994467,
+        "buy_hold": -1440.6552406310966,
+        "entry_takeprofit": 1066.3555706024213,
+        "highlow": 2016.6934150695802,
+        "maxdiff": 827.3775226592993,
+        "simple_strategy": 25.45698814391926
+      }
+    }
+  ],
+  "all_symbols": [
+    {
+      "symbol": "ETHUSD",
+      "total_pnl": 225984.28399999999,
+      "total_trades": 37,
+      "avg_win_rate": 0.028546341908410874,
+      "avg_sharpe": 0.2625985741078511,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 30596.36099999996,
+        "buy_hold": 5244.312000000005,
+        "entry_takeprofit": 28545.701000000045,
+        "highlow": 28545.701000000045,
+        "maxdiff": 67805.12999999996,
+        "simple_strategy": 65247.07899999997
+      }
+    },
+    {
+      "symbol": "COST",
+      "total_pnl": 157307.16791381832,
+      "total_trades": 1156,
+      "avg_win_rate": 0.5723711101420079,
+      "avg_sharpe": 1.725867989079792,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 28005.963482666004,
+        "buy_hold": 22822.914343261706,
+        "entry_takeprofit": 35552.55787353521,
+        "highlow": 33465.116412353644,
+        "maxdiff": 11388.083004760643,
+        "simple_strategy": 26072.532797241125
+      }
+    },
+    {
+      "symbol": "EQIX",
+      "total_pnl": 130176.03858337401,
+      "total_trades": 1301,
+      "avg_win_rate": 0.5210271181633411,
+      "avg_sharpe": 0.5261827843653505,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 30128.611541747996,
+        "buy_hold": 49938.82655639647,
+        "entry_takeprofit": 17594.30858459478,
+        "highlow": -4018.620700073232,
+        "maxdiff": 14704.503518676764,
+        "simple_strategy": 21828.40908203124
+      }
+    },
+    {
+      "symbol": "GS",
+      "total_pnl": 106673.17573547353,
+      "total_trades": 1314,
+      "avg_win_rate": 0.5343653057468847,
+      "avg_sharpe": 1.1993366208220924,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 18240.1400299072,
+        "buy_hold": 18752.181417846637,
+        "entry_takeprofit": 18574.41040954584,
+        "highlow": 21395.364410400383,
+        "maxdiff": 13887.65748596195,
+        "simple_strategy": 15823.421981811505
+      }
+    },
+    {
+      "symbol": "LLY",
+      "total_pnl": 93326.3834915159,
+      "total_trades": 1329,
+      "avg_win_rate": 0.528349878678826,
+      "avg_sharpe": 0.5007820989391485,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -430.4365234375764,
+        "buy_hold": 9140.68453979482,
+        "entry_takeprofit": 34463.87786102292,
+        "highlow": 28128.548712158135,
+        "maxdiff": 9141.290943908727,
+        "simple_strategy": 12882.417958068869
+      }
+    },
+    {
+      "symbol": "QQQ",
+      "total_pnl": 84444.94899999979,
+      "total_trades": 1076,
+      "avg_win_rate": 0.5648019886603478,
+      "avg_sharpe": 1.657636171100303,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 15737.975500000015,
+        "buy_hold": 15478.268499999947,
+        "entry_takeprofit": 26281.9745,
+        "highlow": 10959.627499999886,
+        "maxdiff": 3525.9404999999497,
+        "simple_strategy": 12461.162499999991
+      }
+    },
+    {
+      "symbol": "MA",
+      "total_pnl": 74398.86154785153,
+      "total_trades": 1207,
+      "avg_win_rate": 0.5570412172966352,
+      "avg_sharpe": 0.7044646034494148,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 11697.996618652345,
+        "buy_hold": 18257.283853149424,
+        "entry_takeprofit": 21235.833993530316,
+        "highlow": 9526.254983520495,
+        "maxdiff": 2331.7600097655886,
+        "simple_strategy": 11349.732089233366
+      }
+    },
+    {
+      "symbol": "SPY",
+      "total_pnl": 68289.78749999974,
+      "total_trades": 932,
+      "avg_win_rate": 0.5841244589890101,
+      "avg_sharpe": 1.444293414236727,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 17267.498999999945,
+        "buy_hold": 13164.183999999957,
+        "entry_takeprofit": 16878.600999999908,
+        "highlow": 1536.2064999999711,
+        "maxdiff": 7731.844000000005,
+        "simple_strategy": 11711.452999999958
+      }
+    },
+    {
+      "symbol": "ASML",
+      "total_pnl": 59595.15132446276,
+      "total_trades": 1208,
+      "avg_win_rate": 0.49204409097170215,
+      "avg_sharpe": 0.04204284539168455,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2585.905154418957,
+        "buy_hold": 10633.485922241052,
+        "entry_takeprofit": 19906.565203857317,
+        "highlow": 55774.58829650885,
+        "maxdiff": -17165.65930175779,
+        "simple_strategy": -6967.923641967733
+      }
+    },
+    {
+      "symbol": "GE",
+      "total_pnl": 51907.60210990907,
+      "total_trades": 1410,
+      "avg_win_rate": 0.5598855980047931,
+      "avg_sharpe": 1.8433711527263295,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 4533.812438583405,
+        "buy_hold": 5993.77225456238,
+        "entry_takeprofit": 8686.401062774643,
+        "highlow": 14947.081023025501,
+        "maxdiff": 9781.954205322269,
+        "simple_strategy": 7964.581125640881
+      }
+    },
+    {
+      "symbol": "AVGO",
+      "total_pnl": 47447.90143508909,
+      "total_trades": 1255,
+      "avg_win_rate": 0.5036822081713722,
+      "avg_sharpe": 0.9098943358708739,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5616.327766799915,
+        "buy_hold": 6454.893027114844,
+        "entry_takeprofit": 7296.126621246351,
+        "highlow": 12449.266648101817,
+        "maxdiff": 8346.560371780395,
+        "simple_strategy": 7284.727000045764
+      }
+    },
+    {
+      "symbol": "BLK",
+      "total_pnl": 41112.731854247606,
+      "total_trades": 1155,
+      "avg_win_rate": 0.4813543267877633,
+      "avg_sharpe": -0.022446351853161028,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 12081.694702148343,
+        "buy_hold": 56611.574847412005,
+        "entry_takeprofit": -4553.795544433691,
+        "highlow": 4628.886639404169,
+        "maxdiff": -23525.90813598634,
+        "simple_strategy": -4129.720654296878
+      }
+    },
+    {
+      "symbol": "GLD",
+      "total_pnl": 40858.32100000011,
+      "total_trades": 1042,
+      "avg_win_rate": 0.5371354766091608,
+      "avg_sharpe": 0.6632136739160875,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5348.601000000028,
+        "buy_hold": 2902.7010000000028,
+        "entry_takeprofit": 10756.65450000002,
+        "highlow": 10842.758000000023,
+        "maxdiff": 5120.727500000017,
+        "simple_strategy": 5886.879000000021
+      }
+    },
+    {
+      "symbol": "AXP",
+      "total_pnl": 38432.60988311763,
+      "total_trades": 1145,
+      "avg_win_rate": 0.5198366519960947,
+      "avg_sharpe": -0.23150932636812072,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 4919.945455932622,
+        "buy_hold": -5856.283341979999,
+        "entry_takeprofit": 9898.202764892534,
+        "highlow": 10402.010639953602,
+        "maxdiff": 10701.354437255879,
+        "simple_strategy": 8367.379927062988
+      }
+    },
+    {
+      "symbol": "PLTR",
+      "total_pnl": 37768.26181631084,
+      "total_trades": 1708,
+      "avg_win_rate": 0.5157256575508572,
+      "avg_sharpe": 0.8040366255548367,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 4374.252934741971,
+        "buy_hold": 7390.379757928847,
+        "entry_takeprofit": 7264.935763835896,
+        "highlow": 9102.341632318487,
+        "maxdiff": 4893.154671621315,
+        "simple_strategy": 4743.197055864332
+      }
+    },
+    {
+      "symbol": "V",
+      "total_pnl": 36217.6971664428,
+      "total_trades": 1171,
+      "avg_win_rate": 0.5198197513986987,
+      "avg_sharpe": 0.3638592827027318,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 9081.317198181128,
+        "buy_hold": 8988.763415527417,
+        "entry_takeprofit": 1733.9102722167336,
+        "highlow": 4518.940892028844,
+        "maxdiff": 4036.4807647704874,
+        "simple_strategy": 7858.284623718191
+      }
+    },
+    {
+      "symbol": "SAP",
+      "total_pnl": 32706.553999999916,
+      "total_trades": 1318,
+      "avg_win_rate": 0.5213026180905438,
+      "avg_sharpe": 0.6422631066411411,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5926.460999999979,
+        "buy_hold": 3408.534999999998,
+        "entry_takeprofit": 11464.369999999972,
+        "highlow": 5010.972999999987,
+        "maxdiff": 3489.986999999981,
+        "simple_strategy": 3406.2279999999955
+      }
+    },
+    {
+      "symbol": "VTI",
+      "total_pnl": 31249.605751037616,
+      "total_trades": 1084,
+      "avg_win_rate": 0.5245272515009357,
+      "avg_sharpe": 0.7622420337450291,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5883.575852966325,
+        "buy_hold": 4607.2007278442,
+        "entry_takeprofit": 5178.8984298706055,
+        "highlow": 3602.1635070800985,
+        "maxdiff": 3718.470352172888,
+        "simple_strategy": 8259.296881103499
+      }
+    },
+    {
+      "symbol": "JPM",
+      "total_pnl": 27744.692202758815,
+      "total_trades": 1262,
+      "avg_win_rate": 0.5499698497101545,
+      "avg_sharpe": 0.9839042689980522,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 7592.962252807618,
+        "buy_hold": 4765.447074890142,
+        "entry_takeprofit": 6752.403581237773,
+        "highlow": 1226.0950256348206,
+        "maxdiff": 2117.5389686584313,
+        "simple_strategy": 5290.245299530025
+      }
+    },
+    {
+      "symbol": "CRM",
+      "total_pnl": 26511.540984344643,
+      "total_trades": 1405,
+      "avg_win_rate": 0.5066903984494012,
+      "avg_sharpe": 0.3411013617657823,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 6372.797427368247,
+        "buy_hold": -727.2386871338185,
+        "entry_takeprofit": 7399.594914245599,
+        "highlow": -5729.592739868172,
+        "maxdiff": 10884.831693267915,
+        "simple_strategy": 8311.148376464873
+      }
+    },
+    {
+      "symbol": "DIA",
+      "total_pnl": 24626.895499999977,
+      "total_trades": 956,
+      "avg_win_rate": 0.5210756835756836,
+      "avg_sharpe": 0.0378314346488782,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5927.073499999977,
+        "buy_hold": 2582.920000000009,
+        "entry_takeprofit": 5564.923499999957,
+        "highlow": 7024.516500000038,
+        "maxdiff": 422.6020000000026,
+        "simple_strategy": 3104.8599999999933
+      }
+    },
+    {
+      "symbol": "UBER",
+      "total_pnl": 18925.491067695595,
+      "total_trades": 1606,
+      "avg_win_rate": 0.5158614758571985,
+      "avg_sharpe": 1.0929722293484911,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 3168.3070302963242,
+        "buy_hold": 5019.861210823055,
+        "entry_takeprofit": 4044.477828216548,
+        "highlow": 3339.7219373702947,
+        "maxdiff": 1820.3893241882301,
+        "simple_strategy": 1532.7337368011422
+      }
+    },
+    {
+      "symbol": "SHOP",
+      "total_pnl": 17901.203294372535,
+      "total_trades": 1661,
+      "avg_win_rate": 0.5285334507436193,
+      "avg_sharpe": 0.5542088514741184,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 2617.812205505362,
+        "buy_hold": 683.0823902130273,
+        "entry_takeprofit": 3822.243225479116,
+        "highlow": -2838.4202415466298,
+        "maxdiff": 6127.90801448821,
+        "simple_strategy": 7488.577700233451
+      }
+    },
+    {
+      "symbol": "CVX",
+      "total_pnl": 15451.45493927009,
+      "total_trades": 1321,
+      "avg_win_rate": 0.5357526002262843,
+      "avg_sharpe": 0.3713379820200544,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1512.5817192077666,
+        "buy_hold": 2898.5900100708186,
+        "entry_takeprofit": 6066.578395080586,
+        "highlow": 5211.148175811771,
+        "maxdiff": -1909.2783172607215,
+        "simple_strategy": 1671.8349563598695
+      }
+    },
+    {
+      "symbol": "COP",
+      "total_pnl": 14047.684342575107,
+      "total_trades": 1440,
+      "avg_win_rate": 0.5027210185257683,
+      "avg_sharpe": 0.38026475261497045,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -567.5376728057718,
+        "buy_hold": 7267.1600612640195,
+        "entry_takeprofit": 1629.7277107238924,
+        "highlow": 4318.213215637207,
+        "maxdiff": 1555.3266807556201,
+        "simple_strategy": -155.20565299986174
+      }
+    },
+    {
+      "symbol": "BA",
+      "total_pnl": 12908.074542236356,
+      "total_trades": 1204,
+      "avg_win_rate": 0.5032178275619696,
+      "avg_sharpe": -0.019697819530463963,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5388.78311004641,
+        "buy_hold": -2717.268589782707,
+        "entry_takeprofit": -2629.4425064087154,
+        "highlow": -2785.948971557569,
+        "maxdiff": 10276.152728271472,
+        "simple_strategy": 5375.798771667465
+      }
+    },
+    {
+      "symbol": "MCD",
+      "total_pnl": 12693.119358825661,
+      "total_trades": 1075,
+      "avg_win_rate": 0.503976761542551,
+      "avg_sharpe": -0.007521360562269122,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 6609.511677551298,
+        "buy_hold": 5008.623881530715,
+        "entry_takeprofit": -3218.48682403567,
+        "highlow": -2653.6606201171708,
+        "maxdiff": 4390.681857299809,
+        "simple_strategy": 2556.4493865966797
+      }
+    },
+    {
+      "symbol": "GOOG",
+      "total_pnl": 12534.48549999997,
+      "total_trades": 883,
+      "avg_win_rate": 0.3180831012588315,
+      "avg_sharpe": 0.45931378170077997,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1382.1399999999849,
+        "buy_hold": 277.29199999999946,
+        "entry_takeprofit": 4778.855999999989,
+        "highlow": 4006.75,
+        "maxdiff": 440.79599999999846,
+        "simple_strategy": 1648.6514999999981
+      }
+    },
+    {
+      "symbol": "MS",
+      "total_pnl": 11200.172049713132,
+      "total_trades": 1322,
+      "avg_win_rate": 0.5143157982941264,
+      "avg_sharpe": 0.06591412777361484,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 2910.2821411132645,
+        "buy_hold": 2946.776097106944,
+        "entry_takeprofit": 938.867002868662,
+        "highlow": 2814.453278350843,
+        "maxdiff": 33.6251380920321,
+        "simple_strategy": 1556.1683921813856
+      }
+    },
+    {
+      "symbol": "XLK",
+      "total_pnl": 11144.413796234145,
+      "total_trades": 1305,
+      "avg_win_rate": 0.5131171137943583,
+      "avg_sharpe": -0.021724569188938708,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 3851.5637336731015,
+        "buy_hold": 743.1946250915644,
+        "entry_takeprofit": -1321.2466278075954,
+        "highlow": 3375.9808052063017,
+        "maxdiff": 690.3359092712344,
+        "simple_strategy": 3804.585350799538
+      }
+    },
+    {
+      "symbol": "EOG",
+      "total_pnl": 11026.18758926396,
+      "total_trades": 1431,
+      "avg_win_rate": 0.5216765931987132,
+      "avg_sharpe": 0.14563646309244888,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 2943.781157684316,
+        "buy_hold": 2861.7752197265736,
+        "entry_takeprofit": 5004.870204544073,
+        "highlow": 2126.3374401092497,
+        "maxdiff": -1178.6133644103684,
+        "simple_strategy": -731.9630683898831
+      }
+    },
+    {
+      "symbol": "WFC",
+      "total_pnl": 10956.767964172332,
+      "total_trades": 1341,
+      "avg_win_rate": 0.5199401597427913,
+      "avg_sharpe": 0.5179106152916021,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 2326.717270278922,
+        "buy_hold": 1287.9968738555772,
+        "entry_takeprofit": 1464.44722938537,
+        "highlow": 2523.723753356924,
+        "maxdiff": 1455.6609558105497,
+        "simple_strategy": 1898.221881484987
+      }
+    },
+    {
+      "symbol": "CAT",
+      "total_pnl": 10913.141127014313,
+      "total_trades": 1337,
+      "avg_win_rate": 0.47584398101038966,
+      "avg_sharpe": -0.378279335103531,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -1937.6594711303678,
+        "buy_hold": 5164.954077148528,
+        "entry_takeprofit": -2709.3879745482955,
+        "highlow": 10642.07405853276,
+        "maxdiff": -1363.1777114868146,
+        "simple_strategy": 1116.338148498502
+      }
+    },
+    {
+      "symbol": "XLI",
+      "total_pnl": 9970.208495330855,
+      "total_trades": 1093,
+      "avg_win_rate": 0.5111175739465214,
+      "avg_sharpe": 0.10905994765734016,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1805.2064582824687,
+        "buy_hold": 4245.660893249517,
+        "entry_takeprofit": 1007.129887390146,
+        "highlow": 2600.0375198364572,
+        "maxdiff": -317.3758819579907,
+        "simple_strategy": 629.5496185302572
+      }
+    },
+    {
+      "symbol": "RTX",
+      "total_pnl": 9114.847301483202,
+      "total_trades": 1208,
+      "avg_win_rate": 0.49376818357081514,
+      "avg_sharpe": 0.2752742608847553,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1672.870864105229,
+        "buy_hold": 1095.5374908447084,
+        "entry_takeprofit": 988.4169639587781,
+        "highlow": 2137.558992767341,
+        "maxdiff": 1059.1689956665268,
+        "simple_strategy": 2161.2939941406175
+      }
+    },
+    {
+      "symbol": "USO",
+      "total_pnl": 8007.650500000046,
+      "total_trades": 1502,
+      "avg_win_rate": 0.5355331480524979,
+      "avg_sharpe": 0.34940359460708253,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 17.159000000006927,
+        "buy_hold": -122.50849999999991,
+        "entry_takeprofit": 2667.24450000001,
+        "highlow": 4658.214500000025,
+        "maxdiff": 183.61300000000392,
+        "simple_strategy": 603.9280000000008
+      }
+    },
+    {
+      "symbol": "PLD",
+      "total_pnl": 7510.058979797415,
+      "total_trades": 1285,
+      "avg_win_rate": 0.517736629269137,
+      "avg_sharpe": 0.4743948660244138,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 4439.816957855235,
+        "buy_hold": 3992.4723114014087,
+        "entry_takeprofit": 1231.876538085935,
+        "highlow": -1810.3332939147913,
+        "maxdiff": -2273.29608840943,
+        "simple_strategy": 1929.5225547790578
+      }
+    },
+    {
+      "symbol": "NVO",
+      "total_pnl": 5088.862320709217,
+      "total_trades": 1382,
+      "avg_win_rate": 0.4877903292957473,
+      "avg_sharpe": -0.2403730191832465,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -3310.7183849334806,
+        "buy_hold": 10348.128191757194,
+        "entry_takeprofit": -887.7920589447085,
+        "highlow": 4795.387396240236,
+        "maxdiff": -2663.403511810293,
+        "simple_strategy": -3192.739311599731
+      }
+    },
+    {
+      "symbol": "TM",
+      "total_pnl": 5029.142706298893,
+      "total_trades": 1361,
+      "avg_win_rate": 0.4978301618974994,
+      "avg_sharpe": -0.5143339667681063,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1563.7654701233023,
+        "buy_hold": -3507.962629699732,
+        "entry_takeprofit": 4907.2968566894815,
+        "highlow": 1821.5375350952108,
+        "maxdiff": -2684.3002250671125,
+        "simple_strategy": 2928.805699157743
+      }
+    },
+    {
+      "symbol": "WMT",
+      "total_pnl": 4118.87238464357,
+      "total_trades": 1129,
+      "avg_win_rate": 0.5306898389135232,
+      "avg_sharpe": -0.321648655928593,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1623.6441287994467,
+        "buy_hold": -1440.6552406310966,
+        "entry_takeprofit": 1066.3555706024213,
+        "highlow": 2016.6934150695802,
+        "maxdiff": 827.3775226592993,
+        "simple_strategy": 25.45698814391926
+      }
+    },
+    {
+      "symbol": "AMD",
+      "total_pnl": 3754.7303695678656,
+      "total_trades": 1612,
+      "avg_win_rate": 0.5083428662162164,
+      "avg_sharpe": -0.2985735343168634,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 3595.50485343933,
+        "buy_hold": -3538.5903587341118,
+        "entry_takeprofit": -1747.3172164917141,
+        "highlow": -52.41273345949048,
+        "maxdiff": -5253.483610153194,
+        "simple_strategy": 10751.029434967046
+      }
+    },
+    {
+      "symbol": "XLF",
+      "total_pnl": 3178.495635604884,
+      "total_trades": 1111,
+      "avg_win_rate": 0.5101066574750786,
+      "avg_sharpe": 0.36945400814342033,
+      "strategies_profitable": 5,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 138.08216648102052,
+        "buy_hold": 214.20620059966313,
+        "entry_takeprofit": 1292.1659278869724,
+        "highlow": 1480.671492195137,
+        "maxdiff": -171.7541189193671,
+        "simple_strategy": 225.12396736145774
+      }
+    },
+    {
+      "symbol": "DBA",
+      "total_pnl": 2474.337541961693,
+      "total_trades": 992,
+      "avg_win_rate": 0.5473603394656026,
+      "avg_sharpe": 0.21804393018137622,
+      "strategies_profitable": 6,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 340.1497907638602,
+        "buy_hold": 473.83488426209055,
+        "entry_takeprofit": 338.18784465790054,
+        "highlow": 530.6395875930798,
+        "maxdiff": 159.85402622223296,
+        "simple_strategy": 631.6714084625294
+      }
+    },
+    {
+      "symbol": "SLB",
+      "total_pnl": 1310.8699518203716,
+      "total_trades": 1505,
+      "avg_win_rate": 0.4944040344368273,
+      "avg_sharpe": -0.4674168856520175,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -49.88783874512319,
+        "buy_hold": 2747.616628074648,
+        "entry_takeprofit": 1478.7274559021093,
+        "highlow": -1983.526006889333,
+        "maxdiff": -255.85190505982382,
+        "simple_strategy": -626.2083814621055
+      }
+    },
+    {
+      "symbol": "ORCL",
+      "total_pnl": 1250.1715099334951,
+      "total_trades": 1325,
+      "avg_win_rate": 0.5074833061675167,
+      "avg_sharpe": 0.13023352870483054,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2184.74770545959,
+        "buy_hold": 1047.8920581817383,
+        "entry_takeprofit": 1678.631940460211,
+        "highlow": 4944.435163879426,
+        "maxdiff": -2109.654020309439,
+        "simple_strategy": -2126.3859268188507
+      }
+    },
+    {
+      "symbol": "SLV",
+      "total_pnl": 1141.8269999999939,
+      "total_trades": 1348,
+      "avg_win_rate": 0.49210266069786196,
+      "avg_sharpe": -0.908219270270684,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -170.6295000000007,
+        "buy_hold": -121.92150000000424,
+        "entry_takeprofit": 738.521500000001,
+        "highlow": 1627.2965,
+        "maxdiff": -576.2460000000015,
+        "simple_strategy": -355.19400000000087
+      }
+    },
+    {
+      "symbol": "XOM",
+      "total_pnl": 1028.2645523070742,
+      "total_trades": 1338,
+      "avg_win_rate": 0.5062147726427912,
+      "avg_sharpe": -0.4892945993251738,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -902.2853790283325,
+        "buy_hold": 4044.1680271148625,
+        "entry_takeprofit": 729.674159240737,
+        "highlow": 341.7853866577043,
+        "maxdiff": -2668.9504375457936,
+        "simple_strategy": -516.1272041321035
+      }
+    },
+    {
+      "symbol": "KO",
+      "total_pnl": 114.7982265472674,
+      "total_trades": 1045,
+      "avg_win_rate": 0.4866473553393058,
+      "avg_sharpe": -1.1530243862081486,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 161.54635238648098,
+        "buy_hold": 886.6328002929722,
+        "entry_takeprofit": 450.3382747650221,
+        "highlow": -810.0962577819764,
+        "maxdiff": -266.36008720397786,
+        "simple_strategy": -307.2628559112536
+      }
+    },
+    {
+      "symbol": "BAC",
+      "total_pnl": 82.49012660977542,
+      "total_trades": 1101,
+      "avg_win_rate": 0.5085353644177174,
+      "avg_sharpe": -0.5090570224923685,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 836.9836305618196,
+        "buy_hold": -957.7671144485485,
+        "entry_takeprofit": -372.29422855377516,
+        "highlow": 1594.2560884475633,
+        "maxdiff": -562.0301301956179,
+        "simple_strategy": -456.65811920166607
+      }
+    },
+    {
+      "symbol": "XRP-USD",
+      "total_pnl": 48.09358453154556,
+      "total_trades": 2307,
+      "avg_win_rate": 0.47749001519264406,
+      "avg_sharpe": -0.6400250405836209,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -24.033998650312398,
+        "buy_hold": -96.83649131059667,
+        "entry_takeprofit": -3.5339124053715665,
+        "highlow": 4.569984763860418,
+        "maxdiff": 54.35087400674816,
+        "simple_strategy": 113.57712812721762
+      }
+    },
+    {
+      "symbol": "UNI-USD",
+      "total_pnl": 38.57471583713594,
+      "total_trades": 1883,
+      "avg_win_rate": 0.4715866594450857,
+      "avg_sharpe": -0.9347570408530061,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -20.428692453448445,
+        "buy_hold": 59.57755668318357,
+        "entry_takeprofit": 20.154416606806635,
+        "highlow": 20.24841060939862,
+        "maxdiff": -20.62736465745038,
+        "simple_strategy": -20.349610951354055
+      }
+    },
+    {
+      "symbol": "XLE",
+      "total_pnl": 30.430640029901042,
+      "total_trades": 1326,
+      "avg_win_rate": 0.5195706712734577,
+      "avg_sharpe": -0.33908699016665717,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -159.16707458495875,
+        "buy_hold": 1506.070290374756,
+        "entry_takeprofit": 842.3149635314949,
+        "highlow": 560.7295913696416,
+        "maxdiff": -1320.123477554328,
+        "simple_strategy": -1399.3936531067047
+      }
+    },
+    {
+      "symbol": "ETH-USD",
+      "total_pnl": 0.0,
+      "total_trades": 0,
+      "avg_win_rate": 0.0,
+      "avg_sharpe": 0.0,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 0.0,
+        "buy_hold": 0.0,
+        "entry_takeprofit": 0.0,
+        "highlow": 0.0,
+        "maxdiff": 0.0,
+        "simple_strategy": 0.0
+      }
+    },
+    {
+      "symbol": "PAXGUSD",
+      "total_pnl": 0.0,
+      "total_trades": 0,
+      "avg_win_rate": 0.0,
+      "avg_sharpe": 0.0,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 0.0,
+        "buy_hold": 0.0,
+        "entry_takeprofit": 0.0,
+        "highlow": 0.0,
+        "maxdiff": 0.0,
+        "simple_strategy": 0.0
+      }
+    },
+    {
+      "symbol": "BTCUSD",
+      "total_pnl": 0.0,
+      "total_trades": 0,
+      "avg_win_rate": 0.0,
+      "avg_sharpe": 0.0,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 0.0,
+        "buy_hold": 0.0,
+        "entry_takeprofit": 0.0,
+        "highlow": 0.0,
+        "maxdiff": 0.0,
+        "simple_strategy": 0.0
+      }
+    },
+    {
+      "symbol": "BTC-USD",
+      "total_pnl": 0.0,
+      "total_trades": 0,
+      "avg_win_rate": 0.0,
+      "avg_sharpe": 0.0,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 0.0,
+        "buy_hold": 0.0,
+        "entry_takeprofit": 0.0,
+        "highlow": 0.0,
+        "maxdiff": 0.0,
+        "simple_strategy": 0.0
+      }
+    },
+    {
+      "symbol": "SHIB-USD",
+      "total_pnl": -0.005705198892746906,
+      "total_trades": 1528,
+      "avg_win_rate": 0.2860295317331147,
+      "avg_sharpe": -1.7960015946444452,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -0.0020521999531410984,
+        "buy_hold": -0.003215500846636127,
+        "entry_takeprofit": 0.00022340109803735582,
+        "highlow": 0.0026637992046744355,
+        "maxdiff": 0.00038700075651832257,
+        "simple_strategy": -0.003711699152199794
+      }
+    },
+    {
+      "symbol": "ABT",
+      "total_pnl": -14.986334991468539,
+      "total_trades": 1012,
+      "avg_win_rate": 0.5027744171320022,
+      "avg_sharpe": -0.4871119373053488,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1972.9224357604944,
+        "buy_hold": -1741.306476592994,
+        "entry_takeprofit": -1252.7348602295133,
+        "highlow": 742.0443367004682,
+        "maxdiff": -847.1791587829885,
+        "simple_strategy": 1111.2673881530645
+      }
+    },
+    {
+      "symbol": "XLM-USD",
+      "total_pnl": -70.89293972179314,
+      "total_trades": 2278,
+      "avg_win_rate": 0.47300330500133997,
+      "avg_sharpe": -1.3661736825167188,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -5.457738912850621,
+        "buy_hold": 6.749755866825545,
+        "entry_takeprofit": -36.140907201916036,
+        "highlow": -21.626907843351425,
+        "maxdiff": -0.24132174775006554,
+        "simple_strategy": -14.175819882750531
+      }
+    },
+    {
+      "symbol": "DOGE-USD",
+      "total_pnl": -73.48547594249254,
+      "total_trades": 2440,
+      "avg_win_rate": 0.5011386606407398,
+      "avg_sharpe": -0.7981577767292997,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 9.277883899211956,
+        "buy_hold": -25.81544169783592,
+        "entry_takeprofit": -16.36249066665777,
+        "highlow": -34.50381098464135,
+        "maxdiff": 0.7140206128359132,
+        "simple_strategy": -6.795637105405364
+      }
+    },
+    {
+      "symbol": "MATIC-USD",
+      "total_pnl": -209.87066400349113,
+      "total_trades": 2195,
+      "avg_win_rate": 0.46907773203356945,
+      "avg_sharpe": -1.5988576955023934,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 35.702638262510476,
+        "buy_hold": 6.8961979389190695,
+        "entry_takeprofit": -109.63074946999538,
+        "highlow": 43.088041704892944,
+        "maxdiff": -132.9873139381408,
+        "simple_strategy": -52.939478501677456
+      }
+    },
+    {
+      "symbol": "ALGO-USD",
+      "total_pnl": -384.69270183592994,
+      "total_trades": 2188,
+      "avg_win_rate": 0.5058736510797178,
+      "avg_sharpe": -1.1223074381827076,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -1.0396465502678627,
+        "buy_hold": -115.19347517415866,
+        "entry_takeprofit": -102.01631644442675,
+        "highlow": -105.05289323702463,
+        "maxdiff": -19.132041762024052,
+        "simple_strategy": -42.25832866802795
+      }
+    },
+    {
+      "symbol": "XLP",
+      "total_pnl": -662.4132320404051,
+      "total_trades": 969,
+      "avg_win_rate": 0.5110789795000321,
+      "avg_sharpe": -1.0576480854588923,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 639.956813812255,
+        "buy_hold": 142.24967384338834,
+        "entry_takeprofit": -379.61353149414117,
+        "highlow": -137.37133483886464,
+        "maxdiff": -1398.3728725433375,
+        "simple_strategy": 470.73801918029494
+      }
+    },
+    {
+      "symbol": "TSM",
+      "total_pnl": -708.8104988099922,
+      "total_trades": 1487,
+      "avg_win_rate": 0.4899556812869506,
+      "avg_sharpe": -0.5216030126672,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -5145.947224426274,
+        "buy_hold": 1789.6880676269202,
+        "entry_takeprofit": 1756.8664463042815,
+        "highlow": 889.3677104949384,
+        "maxdiff": 250.70510177609503,
+        "simple_strategy": -249.49060058595296
+      }
+    },
+    {
+      "symbol": "REIT",
+      "total_pnl": -756.8363887786925,
+      "total_trades": 1157,
+      "avg_win_rate": 0.49242034768350557,
+      "avg_sharpe": -0.8366981189695742,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 256.8775480270381,
+        "buy_hold": 77.664306831359,
+        "entry_takeprofit": -79.18474979400958,
+        "highlow": -401.795450210569,
+        "maxdiff": -555.8431747436546,
+        "simple_strategy": -54.55486888885639
+      }
+    },
+    {
+      "symbol": "ADA-USD",
+      "total_pnl": -1197.6098016396168,
+      "total_trades": 2023,
+      "avg_win_rate": 0.4430272664655799,
+      "avg_sharpe": -2.4009066410290134,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -204.7626457393172,
+        "buy_hold": 34.36267388165017,
+        "entry_takeprofit": -328.6111489266159,
+        "highlow": -293.1350485369561,
+        "maxdiff": -198.90295694023354,
+        "simple_strategy": -206.56067537814408
+      }
+    },
+    {
+      "symbol": "AVAX-USD",
+      "total_pnl": -2072.544674110369,
+      "total_trades": 2580,
+      "avg_win_rate": 0.49150381574131785,
+      "avg_sharpe": -0.16398748276794184,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 3687.187175369272,
+        "buy_hold": 1738.045225620275,
+        "entry_takeprofit": -2254.737019824981,
+        "highlow": 3280.629440307623,
+        "maxdiff": -3018.188785839068,
+        "simple_strategy": -5505.4807097434905
+      }
+    },
+    {
+      "symbol": "XLU",
+      "total_pnl": -2445.254350662228,
+      "total_trades": 1153,
+      "avg_win_rate": 0.5149135221503642,
+      "avg_sharpe": -1.439835870016206,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 390.92840003967376,
+        "buy_hold": 513.068427276612,
+        "entry_takeprofit": -870.4957077026347,
+        "highlow": 743.049374771118,
+        "maxdiff": -1736.9434082031266,
+        "simple_strategy": -1484.8614368438703
+      }
+    },
+    {
+      "symbol": "O",
+      "total_pnl": -2472.098643493612,
+      "total_trades": 1152,
+      "avg_win_rate": 0.5092725772679333,
+      "avg_sharpe": -1.0395256480891881,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -751.0607967376691,
+        "buy_hold": -4.601739883418304,
+        "entry_takeprofit": -1295.6317813873166,
+        "highlow": -584.6047225952061,
+        "maxdiff": -153.24170837400925,
+        "simple_strategy": 317.04210548400715
+      }
+    },
+    {
+      "symbol": "ARKQ",
+      "total_pnl": -2506.620339965829,
+      "total_trades": 1213,
+      "avg_win_rate": 0.49013073126850215,
+      "avg_sharpe": -1.1653204969982116,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2138.3401649475145,
+        "buy_hold": -1597.8396167755182,
+        "entry_takeprofit": 1422.5855464935298,
+        "highlow": -2470.449530792236,
+        "maxdiff": 785.9962738037184,
+        "simple_strategy": 1491.4271522521922
+      }
+    },
+    {
+      "symbol": "DBC",
+      "total_pnl": -2941.8100135803024,
+      "total_trades": 1135,
+      "avg_win_rate": 0.522768264873528,
+      "avg_sharpe": -1.3910950642762188,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -609.5526006698522,
+        "buy_hold": -460.44611473083273,
+        "entry_takeprofit": -667.9243108749424,
+        "highlow": -452.6047895431493,
+        "maxdiff": -518.5351430892895,
+        "simple_strategy": -232.74705467223635
+      }
+    },
+    {
+      "symbol": "SOL-USD",
+      "total_pnl": -3305.5174696922236,
+      "total_trades": 2573,
+      "avg_win_rate": 0.4716880719589454,
+      "avg_sharpe": -0.5662598338030983,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -10465.420818996427,
+        "buy_hold": 14419.205497455616,
+        "entry_takeprofit": 3713.153689098392,
+        "highlow": -3770.4532442093446,
+        "maxdiff": -5386.121446609491,
+        "simple_strategy": -1815.8811464309692
+      }
+    },
+    {
+      "symbol": "NKE",
+      "total_pnl": -4091.243624115029,
+      "total_trades": 1359,
+      "avg_win_rate": 0.4976720239684636,
+      "avg_sharpe": -0.9967687175033326,
+      "strategies_profitable": 4,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1968.35997161864,
+        "buy_hold": -2988.691417312618,
+        "entry_takeprofit": 435.56280174253516,
+        "highlow": -6890.073560333267,
+        "maxdiff": 2275.533044815057,
+        "simple_strategy": 1108.0655353546235
+      }
+    },
+    {
+      "symbol": "VXUS",
+      "total_pnl": -4108.1795547485135,
+      "total_trades": 1043,
+      "avg_win_rate": 0.4699683085518999,
+      "avg_sharpe": -1.741644683315535,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -1759.5416519164946,
+        "buy_hold": 572.9821403503302,
+        "entry_takeprofit": -279.2848114013623,
+        "highlow": 300.2840476989777,
+        "maxdiff": -2240.8342071533143,
+        "simple_strategy": -701.7850723266502
+      }
+    },
+    {
+      "symbol": "UNG",
+      "total_pnl": -4334.408999999998,
+      "total_trades": 1767,
+      "avg_win_rate": 0.4666311315350287,
+      "avg_sharpe": -2.1291024556024953,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -1378.7854999999995,
+        "buy_hold": 845.4059999999993,
+        "entry_takeprofit": -930.3264999999999,
+        "highlow": 927.0465000000008,
+        "maxdiff": -2136.0564999999997,
+        "simple_strategy": -1661.6929999999988
+      }
+    },
+    {
+      "symbol": "ATOM-USD",
+      "total_pnl": -4971.34500541686,
+      "total_trades": 2453,
+      "avg_win_rate": 0.48288038675102424,
+      "avg_sharpe": -1.2578363381789601,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1239.961546516422,
+        "buy_hold": -1045.7265362739581,
+        "entry_takeprofit": -3769.0920063018784,
+        "highlow": -4619.223351097112,
+        "maxdiff": 1864.9856545448374,
+        "simple_strategy": 1357.7496871948297
+      }
+    },
+    {
+      "symbol": "EFA",
+      "total_pnl": -5125.306692886354,
+      "total_trades": 1066,
+      "avg_win_rate": 0.46471252918621336,
+      "avg_sharpe": -1.5132541786802503,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2262.675027465819,
+        "buy_hold": 687.7996269226132,
+        "entry_takeprofit": 45.22688407897931,
+        "highlow": -445.51497573852976,
+        "maxdiff": -2283.9470699310295,
+        "simple_strategy": -866.196130752568
+      }
+    },
+    {
+      "symbol": "DOT-USD",
+      "total_pnl": -5488.870596265789,
+      "total_trades": 2463,
+      "avg_win_rate": 0.4609422231322659,
+      "avg_sharpe": -1.5729578454765158,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -293.06835753917375,
+        "buy_hold": -778.4096103668214,
+        "entry_takeprofit": -1294.3358384609237,
+        "highlow": -2159.4268034696593,
+        "maxdiff": -893.7678416013717,
+        "simple_strategy": -69.86214482783902
+      }
+    },
+    {
+      "symbol": "EEM",
+      "total_pnl": -5673.146895599359,
+      "total_trades": 1104,
+      "avg_win_rate": 0.4616423659186817,
+      "avg_sharpe": -2.3544268541895295,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -732.2500804901097,
+        "buy_hold": 641.8485473632791,
+        "entry_takeprofit": -1783.6951904296839,
+        "highlow": -424.9965581894003,
+        "maxdiff": -2532.18825588226,
+        "simple_strategy": -841.865357971184
+      }
+    },
+    {
+      "symbol": "ICLN",
+      "total_pnl": -5690.317716598514,
+      "total_trades": 1308,
+      "avg_win_rate": 0.42876281140600025,
+      "avg_sharpe": -2.9105187054781645,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -1090.3283727645896,
+        "buy_hold": -251.20027322769715,
+        "entry_takeprofit": -942.8210869789125,
+        "highlow": -1053.1295522689816,
+        "maxdiff": -1071.4144678115836,
+        "simple_strategy": -1281.4239635467507
+      }
+    },
+    {
+      "symbol": "LINKUSD",
+      "total_pnl": -5763.819445667915,
+      "total_trades": 2341,
+      "avg_win_rate": 0.5050455044345193,
+      "avg_sharpe": -0.3016464698870769,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2.901006618650854,
+        "buy_hold": -1694.6951197270032,
+        "entry_takeprofit": -2111.363836791302,
+        "highlow": -1048.8294124033036,
+        "maxdiff": -923.4349419666548,
+        "simple_strategy": 17.40487183900018
+      }
+    },
+    {
+      "symbol": "PSA",
+      "total_pnl": -6134.411404418974,
+      "total_trades": 1261,
+      "avg_win_rate": 0.5038639536704552,
+      "avg_sharpe": -0.40240358797883924,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 3165.0608367920177,
+        "buy_hold": 5854.744950866698,
+        "entry_takeprofit": -2160.215898132301,
+        "highlow": -3946.2401611328314,
+        "maxdiff": -7169.572463989283,
+        "simple_strategy": -1878.1886688232735
+      }
+    },
+    {
+      "symbol": "MRVL",
+      "total_pnl": -6354.981492996231,
+      "total_trades": 1712,
+      "avg_win_rate": 0.5005639345310601,
+      "avg_sharpe": -0.6188664871410724,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -647.8004287719682,
+        "buy_hold": 2292.289978408811,
+        "entry_takeprofit": -4539.446535491944,
+        "highlow": 66.95314254759478,
+        "maxdiff": -2961.5795478820733,
+        "simple_strategy": -565.3981018066515
+      }
+    },
+    {
+      "symbol": "UNIUSD",
+      "total_pnl": -7136.682382709012,
+      "total_trades": 3596,
+      "avg_win_rate": 0.494721531680937,
+      "avg_sharpe": -1.5154765627259354,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -1630.0683300710032,
+        "buy_hold": 66.0546718590058,
+        "entry_takeprofit": -1009.0732055210034,
+        "highlow": -1072.861024834004,
+        "maxdiff": -1823.4018525710035,
+        "simple_strategy": -1667.3326415710037
+      }
+    },
+    {
+      "symbol": "COUR",
+      "total_pnl": -7792.222000000004,
+      "total_trades": 1295,
+      "avg_win_rate": 0.4593675029025046,
+      "avg_sharpe": -2.1889488689580188,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -451.8190000000011,
+        "buy_hold": -1299.1200000000003,
+        "entry_takeprofit": -3155.1180000000004,
+        "highlow": -1858.5599999999977,
+        "maxdiff": -861.7620000000022,
+        "simple_strategy": -165.84300000000235
+      }
+    },
+    {
+      "symbol": "ABBV",
+      "total_pnl": -8237.819946289148,
+      "total_trades": 1014,
+      "avg_win_rate": 0.5517558880174979,
+      "avg_sharpe": 0.5429908533092932,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2728.0358932495146,
+        "buy_hold": -1557.5819686889627,
+        "entry_takeprofit": -3684.8750518799116,
+        "highlow": 1060.4860847472755,
+        "maxdiff": -3026.614184570328,
+        "simple_strategy": 1698.801067352293
+      }
+    },
+    {
+      "symbol": "HON",
+      "total_pnl": -8497.26090240473,
+      "total_trades": 1188,
+      "avg_win_rate": 0.5119288484420064,
+      "avg_sharpe": -1.1747480268735686,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1405.5525482178018,
+        "buy_hold": -6727.53392333977,
+        "entry_takeprofit": -5110.946655273487,
+        "highlow": -6926.570895385743,
+        "maxdiff": 2233.111563110335,
+        "simple_strategy": 6629.126460266132
+      }
+    },
+    {
+      "symbol": "MMM",
+      "total_pnl": -8817.52058334351,
+      "total_trades": 1216,
+      "avg_win_rate": 0.4969726910516384,
+      "avg_sharpe": -0.9804130624924837,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 1881.1579032897935,
+        "buy_hold": -3573.5094802856665,
+        "entry_takeprofit": -3541.268647766101,
+        "highlow": -2401.9204429626616,
+        "maxdiff": -612.5157646179077,
+        "simple_strategy": -569.4641510009669
+      }
+    },
+    {
+      "symbol": "MU",
+      "total_pnl": -9834.991571426417,
+      "total_trades": 1568,
+      "avg_win_rate": 0.483727574809333,
+      "avg_sharpe": -1.2323323429559243,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -3574.5773864746225,
+        "buy_hold": 192.99672889709927,
+        "entry_takeprofit": 1511.8749065399152,
+        "highlow": 1108.711224746712,
+        "maxdiff": -6958.699534988412,
+        "simple_strategy": -2115.2975101471084
+      }
+    },
+    {
+      "symbol": "MOON",
+      "total_pnl": -10020.891201400756,
+      "total_trades": 1144,
+      "avg_win_rate": 0.41477825431689874,
+      "avg_sharpe": -3.5644807197483543,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -1118.669403839112,
+        "buy_hold": -1371.914489364618,
+        "entry_takeprofit": -2201.1478690147414,
+        "highlow": -1631.9920202255244,
+        "maxdiff": -1737.6106517791764,
+        "simple_strategy": -1959.556767177584
+      }
+    },
+    {
+      "symbol": "SNY",
+      "total_pnl": -12021.695964813262,
+      "total_trades": 1228,
+      "avg_win_rate": 0.47161736898579004,
+      "avg_sharpe": -2.6516985802297275,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -3025.273639678954,
+        "buy_hold": -422.3745586395289,
+        "entry_takeprofit": -1971.9050785064865,
+        "highlow": 543.9284244537339,
+        "maxdiff": -2120.557114410406,
+        "simple_strategy": -5025.51399803162
+      }
+    },
+    {
+      "symbol": "LYFT",
+      "total_pnl": -12267.234792518617,
+      "total_trades": 1694,
+      "avg_win_rate": 0.4680927536832295,
+      "avg_sharpe": -1.6135940398418072,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -1803.4001211166378,
+        "buy_hold": -645.0859463691703,
+        "entry_takeprofit": -1616.8457450866708,
+        "highlow": -2180.923566436766,
+        "maxdiff": -3190.6927424430864,
+        "simple_strategy": -2830.286671066285
+      }
+    },
+    {
+      "symbol": "SNOW",
+      "total_pnl": -12547.864978027264,
+      "total_trades": 1616,
+      "avg_win_rate": 0.5148119621508492,
+      "avg_sharpe": 0.04494727413391123,
+      "strategies_profitable": 3,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 7204.444693756119,
+        "buy_hold": 1289.7892395019935,
+        "entry_takeprofit": -12980.373337554935,
+        "highlow": -8956.820865631087,
+        "maxdiff": -3308.702748107904,
+        "simple_strategy": 4203.798040008547
+      }
+    },
+    {
+      "symbol": "AVAXUSD",
+      "total_pnl": -13267.769678720497,
+      "total_trades": 2295,
+      "avg_win_rate": 0.48862523294857724,
+      "avg_sharpe": -0.6426547581514035,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -681.6583866315016,
+        "buy_hold": -265.71804258399584,
+        "entry_takeprofit": -1409.972947121498,
+        "highlow": -755.2969652364991,
+        "maxdiff": -8734.913410134004,
+        "simple_strategy": -1420.2099270129988
+      }
+    },
+    {
+      "symbol": "INTC",
+      "total_pnl": -13300.010847854612,
+      "total_trades": 1890,
+      "avg_win_rate": 0.47924512011542036,
+      "avg_sharpe": -2.416894984714655,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2921.088893890379,
+        "buy_hold": -1827.342808532723,
+        "entry_takeprofit": -2169.316228485106,
+        "highlow": -464.52900428771864,
+        "maxdiff": -2955.214496803279,
+        "simple_strategy": -2962.5194158554054
+      }
+    },
+    {
+      "symbol": "BABA",
+      "total_pnl": -13550.9681182862,
+      "total_trades": 1309,
+      "avg_win_rate": 0.4655335254986958,
+      "avg_sharpe": -1.2003886486847257,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -1482.8233245849688,
+        "buy_hold": 4067.4319076538095,
+        "entry_takeprofit": -2141.5114540100285,
+        "highlow": 811.9651824950924,
+        "maxdiff": -8704.544819641118,
+        "simple_strategy": -6101.485610198987
+      }
+    },
+    {
+      "symbol": "LINK-USD",
+      "total_pnl": -14011.452491569526,
+      "total_trades": 2535,
+      "avg_win_rate": 0.465331588322127,
+      "avg_sharpe": -2.1801275171584993,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -4282.5496377468135,
+        "buy_hold": 118.81079435348158,
+        "entry_takeprofit": -2089.9969936847697,
+        "highlow": -1231.6367603778822,
+        "maxdiff": -3009.32894830704,
+        "simple_strategy": -3516.750945806501
+      }
+    },
+    {
+      "symbol": "PFE",
+      "total_pnl": -14339.345014190667,
+      "total_trades": 1241,
+      "avg_win_rate": 0.42894628090061526,
+      "avg_sharpe": -4.385309515754023,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2285.913481140135,
+        "buy_hold": -1991.6589605331405,
+        "entry_takeprofit": -2445.957075691223,
+        "highlow": -3711.757220077514,
+        "maxdiff": -2337.1823652267453,
+        "simple_strategy": -1566.8759115219086
+      }
+    },
+    {
+      "symbol": "ARKW",
+      "total_pnl": -16294.838687515308,
+      "total_trades": 1350,
+      "avg_win_rate": 0.5071953997803355,
+      "avg_sharpe": -1.1085469215939856,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -3750.842659759525,
+        "buy_hold": -5843.299704360958,
+        "entry_takeprofit": -2488.4457843780524,
+        "highlow": -6433.442933273338,
+        "maxdiff": 2292.1512878417725,
+        "simple_strategy": -70.95889358521026
+      }
+    },
+    {
+      "symbol": "MRK",
+      "total_pnl": -17618.801034545868,
+      "total_trades": 1152,
+      "avg_win_rate": 0.4624117841223104,
+      "avg_sharpe": -2.2113277343314355,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2213.685029602043,
+        "buy_hold": -2598.115264129602,
+        "entry_takeprofit": -1682.6185836791801,
+        "highlow": -2159.7993041992195,
+        "maxdiff": -6295.812969970732,
+        "simple_strategy": -2668.769882965091
+      }
+    },
+    {
+      "symbol": "PG",
+      "total_pnl": -18893.960366821324,
+      "total_trades": 1072,
+      "avg_win_rate": 0.4948737665842929,
+      "avg_sharpe": -2.087148733561113,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -3097.867403411865,
+        "buy_hold": -1289.7353080749508,
+        "entry_takeprofit": -4702.615895080578,
+        "highlow": 1625.0929702758676,
+        "maxdiff": -6692.432730102544,
+        "simple_strategy": -4736.402000427253
+      }
+    },
+    {
+      "symbol": "HD",
+      "total_pnl": -20237.314352416735,
+      "total_trades": 1272,
+      "avg_win_rate": 0.5070613718640035,
+      "avg_sharpe": -0.7908163263006958,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 5689.749201965376,
+        "buy_hold": -1778.9659881591688,
+        "entry_takeprofit": -9234.528152465755,
+        "highlow": -1224.8060745239563,
+        "maxdiff": -13885.905490112196,
+        "simple_strategy": 197.14215087896446
+      }
+    },
+    {
+      "symbol": "ARKG",
+      "total_pnl": -20934.24031715393,
+      "total_trades": 1365,
+      "avg_win_rate": 0.439836756493918,
+      "avg_sharpe": -2.6989122661547147,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -3374.4315467834504,
+        "buy_hold": -3314.8275417327814,
+        "entry_takeprofit": -5774.335839843747,
+        "highlow": -4229.128049087523,
+        "maxdiff": -1492.3312492370655,
+        "simple_strategy": -2749.186090469363
+      }
+    },
+    {
+      "symbol": "NET",
+      "total_pnl": -21380.65600000001,
+      "total_trades": 1596,
+      "avg_win_rate": 0.5133706899722107,
+      "avg_sharpe": -0.7966200976599184,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 587.360999999993,
+        "buy_hold": -788.4589999999989,
+        "entry_takeprofit": -2715.1080000000075,
+        "highlow": -7529.489999999985,
+        "maxdiff": -4575.7510000000075,
+        "simple_strategy": -6359.209000000003
+      }
+    },
+    {
+      "symbol": "ARKK",
+      "total_pnl": -21929.18238220215,
+      "total_trades": 1368,
+      "avg_win_rate": 0.48548300963365326,
+      "avg_sharpe": -1.7614076156124996,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -3836.8634578704828,
+        "buy_hold": -4838.679549598703,
+        "entry_takeprofit": -5111.9901487350335,
+        "highlow": -5381.2603986740105,
+        "maxdiff": -2803.1124563217186,
+        "simple_strategy": 42.723628997799096
+      }
+    },
+    {
+      "symbol": "COIN",
+      "total_pnl": -23860.480500000107,
+      "total_trades": 1479,
+      "avg_win_rate": 0.49517119782432334,
+      "avg_sharpe": -0.10701395907722101,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2521.145000000026,
+        "buy_hold": 11476.202000000023,
+        "entry_takeprofit": -12076.566500000034,
+        "highlow": -6084.954500000023,
+        "maxdiff": -7252.496500000022,
+        "simple_strategy": -7401.520000000024
+      }
+    },
+    {
+      "symbol": "CRWD",
+      "total_pnl": -24103.767500000104,
+      "total_trades": 1486,
+      "avg_win_rate": 0.5030084471138733,
+      "avg_sharpe": -0.7287240146719448,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -15421.447500000022,
+        "buy_hold": 10148.358000000018,
+        "entry_takeprofit": 2950.747999999985,
+        "highlow": -3752.0620000000145,
+        "maxdiff": -12247.930000000037,
+        "simple_strategy": -5781.434000000034
+      }
+    },
+    {
+      "symbol": "ADSK",
+      "total_pnl": -25386.3930000001,
+      "total_trades": 1422,
+      "avg_win_rate": 0.510643399737216,
+      "avg_sharpe": -0.4937526862342421,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -6697.734999999997,
+        "buy_hold": 3256.4239999999772,
+        "entry_takeprofit": -9658.864000000045,
+        "highlow": -5546.001000000015,
+        "maxdiff": -5532.351000000039,
+        "simple_strategy": -1207.86599999998
+      }
+    },
+    {
+      "symbol": "PYPL",
+      "total_pnl": -26578.25100000004,
+      "total_trades": 1537,
+      "avg_win_rate": 0.4775854878409058,
+      "avg_sharpe": -1.65800926047406,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -5716.510500000011,
+        "buy_hold": -1402.0700000000015,
+        "entry_takeprofit": -4670.279499999997,
+        "highlow": -4709.283000000009,
+        "maxdiff": -6676.237000000018,
+        "simple_strategy": -3403.871000000001
+      }
+    },
+    {
+      "symbol": "IWM",
+      "total_pnl": -27236.135000000002,
+      "total_trades": 1253,
+      "avg_win_rate": 0.49461947652737126,
+      "avg_sharpe": -1.5561278887416023,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -7259.302999999991,
+        "buy_hold": -4561.755999999985,
+        "entry_takeprofit": -2870.684500000012,
+        "highlow": -4498.874,
+        "maxdiff": -2971.2965000000095,
+        "simple_strategy": -5074.221000000003
+      }
+    },
+    {
+      "symbol": "QCOM",
+      "total_pnl": -29007.482480621293,
+      "total_trades": 1546,
+      "avg_win_rate": 0.4990470882233959,
+      "avg_sharpe": -0.9415033804368207,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -6211.2336357116765,
+        "buy_hold": -1614.0595962523967,
+        "entry_takeprofit": -10877.11488494872,
+        "highlow": 83.71814727783385,
+        "maxdiff": -9704.155588531483,
+        "simple_strategy": -684.6369224548544
+      }
+    },
+    {
+      "symbol": "SONY",
+      "total_pnl": -31842.78400000003,
+      "total_trades": 1263,
+      "avg_win_rate": 0.43901289557249307,
+      "avg_sharpe": -2.9499817805953863,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -6659.798000000011,
+        "buy_hold": -1586.5789999999834,
+        "entry_takeprofit": -7210.629000000016,
+        "highlow": -2735.1030000000037,
+        "maxdiff": -6404.708000000018,
+        "simple_strategy": -7245.967
+      }
+    },
+    {
+      "symbol": "XLV",
+      "total_pnl": -31982.10371551515,
+      "total_trades": 983,
+      "avg_win_rate": 0.4275182906761854,
+      "avg_sharpe": -3.6721994392775366,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -6317.542932891842,
+        "buy_hold": -5175.905702209484,
+        "entry_takeprofit": -4404.706889343261,
+        "highlow": -1612.4332565307777,
+        "maxdiff": -6958.337480163569,
+        "simple_strategy": -7513.17745437622
+      }
+    },
+    {
+      "symbol": "U",
+      "total_pnl": -36172.35100000004,
+      "total_trades": 1508,
+      "avg_win_rate": 0.45079023192369005,
+      "avg_sharpe": -1.8053729749108305,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -2249.868000000007,
+        "buy_hold": -3701.162000000001,
+        "entry_takeprofit": -5005.030000000007,
+        "highlow": -11362.552999999994,
+        "maxdiff": -10143.327000000012,
+        "simple_strategy": -3710.411000000012
+      }
+    },
+    {
+      "symbol": "UPS",
+      "total_pnl": -37033.7985771181,
+      "total_trades": 1248,
+      "avg_win_rate": 0.47382864455232876,
+      "avg_sharpe": -1.8646286357783517,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -3485.5655494690236,
+        "buy_hold": -1969.5883064270129,
+        "entry_takeprofit": -10271.412000274719,
+        "highlow": -9413.234454345722,
+        "maxdiff": -7356.387791442901,
+        "simple_strategy": -4537.610475158721
+      }
+    },
+    {
+      "symbol": "AMT",
+      "total_pnl": -39058.047956848175,
+      "total_trades": 1127,
+      "avg_win_rate": 0.4611091301666909,
+      "avg_sharpe": -1.7610747579571948,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -3223.739259338372,
+        "buy_hold": -9065.927192688008,
+        "entry_takeprofit": -8775.152853393582,
+        "highlow": -10103.057444763155,
+        "maxdiff": -3169.078555297876,
+        "simple_strategy": -4721.092651367182
+      }
+    },
+    {
+      "symbol": "JNJ",
+      "total_pnl": -40505.86752014157,
+      "total_trades": 1022,
+      "avg_win_rate": 0.41308450321608214,
+      "avg_sharpe": -3.8811125817711765,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -6030.676019287112,
+        "buy_hold": -5007.62147979735,
+        "entry_takeprofit": -8731.101535034173,
+        "highlow": -3873.05735473632,
+        "maxdiff": -8161.156417846669,
+        "simple_strategy": -8702.254713439943
+      }
+    },
+    {
+      "symbol": "CCI",
+      "total_pnl": -43534.965328216545,
+      "total_trades": 1265,
+      "avg_win_rate": 0.43825587109255837,
+      "avg_sharpe": -3.415830133288763,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -10149.693302154546,
+        "buy_hold": -5837.3156845093035,
+        "entry_takeprofit": -6083.128916168222,
+        "highlow": -5259.120333099385,
+        "maxdiff": -8282.754570007295,
+        "simple_strategy": -7922.9525222777975
+      }
+    },
+    {
+      "symbol": "LMT",
+      "total_pnl": -48293.26896057115,
+      "total_trades": 1135,
+      "avg_win_rate": 0.4739129048339574,
+      "avg_sharpe": -1.070913251210483,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -10595.543560790982,
+        "buy_hold": -23527.72902221682,
+        "entry_takeprofit": 7241.5008056641345,
+        "highlow": -3586.00819396973,
+        "maxdiff": -4960.619119262628,
+        "simple_strategy": -12864.869869995131
+      }
+    },
+    {
+      "symbol": "AMZN",
+      "total_pnl": -51370.75799999999,
+      "total_trades": 6263,
+      "avg_win_rate": 0.4876201432633041,
+      "avg_sharpe": -1.015681688896582,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 6187.044000000005,
+        "buy_hold": -5153.965999999994,
+        "entry_takeprofit": 2272.6299999999856,
+        "highlow": -27185.40599999999,
+        "maxdiff": -15112.646999999957,
+        "simple_strategy": -12378.413000000028
+      }
+    },
+    {
+      "symbol": "DOCU",
+      "total_pnl": -53008.61293106095,
+      "total_trades": 1567,
+      "avg_win_rate": 0.49438609350255386,
+      "avg_sharpe": -0.5607888738971517,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -4346.419482040441,
+        "buy_hold": 408.4030788421387,
+        "entry_takeprofit": -17642.783901596085,
+        "highlow": -20168.780419540435,
+        "maxdiff": -10140.25145759586,
+        "simple_strategy": -1118.7807491302592
+      }
+    },
+    {
+      "symbol": "TGT",
+      "total_pnl": -55050.613313293325,
+      "total_trades": 1365,
+      "avg_win_rate": 0.45110168397707096,
+      "avg_sharpe": -2.49783553392144,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -8580.9389007568,
+        "buy_hold": -5213.829844665503,
+        "entry_takeprofit": -11317.404513549798,
+        "highlow": -10548.371643066415,
+        "maxdiff": -8837.302141571,
+        "simple_strategy": -10552.766269683807
+      }
+    },
+    {
+      "symbol": "MSFT",
+      "total_pnl": -59477.57800000022,
+      "total_trades": 6028,
+      "avg_win_rate": 0.47370161517486115,
+      "avg_sharpe": -1.8851533493083588,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -1307.0420000000486,
+        "buy_hold": -16515.98000000004,
+        "entry_takeprofit": -13366.861000000039,
+        "highlow": -12774.411000000027,
+        "maxdiff": -9331.926000000032,
+        "simple_strategy": -6181.358000000028
+      }
+    },
+    {
+      "symbol": "SOLUSD",
+      "total_pnl": -59753.16009074871,
+      "total_trades": 1631,
+      "avg_win_rate": 0.45998382998866744,
+      "avg_sharpe": -1.5409552916755844,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -20049.496710831685,
+        "buy_hold": 802.2770120067407,
+        "entry_takeprofit": -15187.587304418177,
+        "highlow": -12171.047546320724,
+        "maxdiff": -12074.582204393677,
+        "simple_strategy": -1072.7233367911813
+      }
+    },
+    {
+      "symbol": "AAPL",
+      "total_pnl": -69473.02700000053,
+      "total_trades": 6053,
+      "avg_win_rate": 0.494964356587319,
+      "avg_sharpe": -0.638289268536809,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -3639.713000000138,
+        "buy_hold": -16205.006000000005,
+        "entry_takeprofit": -6195.853000000096,
+        "highlow": 2394.746999999934,
+        "maxdiff": -20663.549000000115,
+        "simple_strategy": -25163.653000000108
+      }
+    },
+    {
+      "symbol": "META",
+      "total_pnl": -71508.69099999982,
+      "total_trades": 6385,
+      "avg_win_rate": 0.4884613400930216,
+      "avg_sharpe": -1.4028484904462726,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -6229.179999999966,
+        "buy_hold": -25827.34999999998,
+        "entry_takeprofit": -11931.674999999952,
+        "highlow": -14823.83399999993,
+        "maxdiff": -6929.467000000025,
+        "simple_strategy": -5767.184999999969
+      }
+    },
+    {
+      "symbol": "ADBE",
+      "total_pnl": -71927.23099999953,
+      "total_trades": 1318,
+      "avg_win_rate": 0.5134116642640758,
+      "avg_sharpe": -0.40670191063016675,
+      "strategies_profitable": 2,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": 817.039500000079,
+        "buy_hold": -14029.092499999933,
+        "entry_takeprofit": -31738.391499999907,
+        "highlow": -24629.802499999918,
+        "maxdiff": -2452.1094999999623,
+        "simple_strategy": 105.12550000011834
+      }
+    },
+    {
+      "symbol": "TSLA",
+      "total_pnl": -72104.366,
+      "total_trades": 6409,
+      "avg_win_rate": 0.4609778410568257,
+      "avg_sharpe": -2.4612972857911326,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -5734.227000000001,
+        "buy_hold": -5819.428999999993,
+        "entry_takeprofit": -15330.123000000001,
+        "highlow": -21982.62400000001,
+        "maxdiff": -13593.418999999987,
+        "simple_strategy": -9644.543999999998
+      }
+    },
+    {
+      "symbol": "NFLX",
+      "total_pnl": -88499.36800000003,
+      "total_trades": 6097,
+      "avg_win_rate": 0.4674821325025081,
+      "avg_sharpe": -2.3495524349076398,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -19562.395,
+        "buy_hold": -8991.321000000025,
+        "entry_takeprofit": -6238.581000000024,
+        "highlow": -8327.537999999995,
+        "maxdiff": -25285.456999999995,
+        "simple_strategy": -20094.075999999983
+      }
+    },
+    {
+      "symbol": "ROKU",
+      "total_pnl": -88506.24325141901,
+      "total_trades": 1716,
+      "avg_win_rate": 0.45777300696513984,
+      "avg_sharpe": -1.9970133913626336,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -17211.60714073181,
+        "buy_hold": -12047.42664604187,
+        "entry_takeprofit": -12341.568352508546,
+        "highlow": -19410.10781288148,
+        "maxdiff": -16457.85369186398,
+        "simple_strategy": -11037.679607391336
+      }
+    },
+    {
+      "symbol": "TMO",
+      "total_pnl": -92392.0371093748,
+      "total_trades": 1247,
+      "avg_win_rate": 0.46513955099481413,
+      "avg_sharpe": -2.0009830378271634,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -10019.805731201137,
+        "buy_hold": -6976.242810058524,
+        "entry_takeprofit": -26942.186709594673,
+        "highlow": -31088.250158691393,
+        "maxdiff": -5715.644760131785,
+        "simple_strategy": -11649.90693969727
+      }
+    },
+    {
+      "symbol": "GOOGL",
+      "total_pnl": -135709.05299999964,
+      "total_trades": 6024,
+      "avg_win_rate": 0.47774700150231686,
+      "avg_sharpe": -1.7016005663082725,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -24016.47799999997,
+        "buy_hold": -25110.902999999966,
+        "entry_takeprofit": -13427.161999999928,
+        "highlow": -24045.078999999925,
+        "maxdiff": -27048.651999999922,
+        "simple_strategy": -22060.778999999933
+      }
+    },
+    {
+      "symbol": "LTCUSD",
+      "total_pnl": -143141.51925793808,
+      "total_trades": 2236,
+      "avg_win_rate": 0.4954868886703252,
+      "avg_sharpe": -1.354973399867336,
+      "strategies_profitable": 1,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -29784.756673379496,
+        "buy_hold": 2711.8280855054945,
+        "entry_takeprofit": -33919.07325623952,
+        "highlow": -42494.01851687355,
+        "maxdiff": -27828.17527789401,
+        "simple_strategy": -11827.323619057002
+      }
+    },
+    {
+      "symbol": "NVDA",
+      "total_pnl": -152257.4930000003,
+      "total_trades": 6363,
+      "avg_win_rate": 0.47797902742977155,
+      "avg_sharpe": -1.515521722152796,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -27882.895000000077,
+        "buy_hold": -10145.198000000022,
+        "entry_takeprofit": -19659.903999999995,
+        "highlow": -41577.956000000035,
+        "maxdiff": -29972.64400000008,
+        "simple_strategy": -23018.89600000009
+      }
+    },
+    {
+      "symbol": "UNH",
+      "total_pnl": -192441.59700012192,
+      "total_trades": 1239,
+      "avg_win_rate": 0.4767738811469462,
+      "avg_sharpe": -2.285439796742238,
+      "strategies_profitable": 0,
+      "strategies_total": 6,
+      "strategy_pnls": {
+        "all_signals_strategy": -33179.94002685539,
+        "buy_hold": -13157.151223754834,
+        "entry_takeprofit": -39523.25182189945,
+        "highlow": -27578.074414062477,
+        "maxdiff": -38627.05139465333,
+        "simple_strategy": -40376.12811889645
+      }
+    }
+  ]
+}
