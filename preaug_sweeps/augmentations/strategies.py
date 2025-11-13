@@ -4,6 +4,7 @@ Pre-augmentation strategy implementations.
 Each strategy transforms the data in a different way to potentially improve learning.
 """
 
+from collections import deque
 import numpy as np
 import pandas as pd
 from typing import List, Optional, Sequence
@@ -191,15 +192,17 @@ class DifferencingAugmentation(BaseAugmentation):
         # Store initial values for reconstruction
         for col in PRICE_COLS:
             if col in df_aug.columns:
-                self.metadata[f"{col}_initial"] = df_aug[col].iloc[:self.order].tolist()
-                # Difference
-                df_aug[col] = df_aug[col].diff(self.order).fillna(0.0)
+                series = df_aug[col].astype(float)
+                self.metadata[f"{col}_initial"] = series.iloc[: self.order].tolist()
+                self.metadata[f"{col}_tail"] = series.iloc[-self.order :].tolist()
+                df_aug[col] = series.diff(self.order).fillna(0.0)
 
         # Volume: log1p then difference
         for col in VOLUME_COLS:
             if col in df_aug.columns:
-                log_vol = np.log1p(df_aug[col])
-                self.metadata[f"{col}_initial"] = log_vol.iloc[:self.order].tolist()
+                log_vol = np.log1p(df_aug[col].astype(float))
+                self.metadata[f"{col}_initial"] = log_vol.iloc[: self.order].tolist()
+                self.metadata[f"{col}_tail"] = log_vol.iloc[-self.order :].tolist()
                 df_aug[col] = log_vol.diff(self.order).fillna(0.0)
 
         return df_aug
@@ -213,38 +216,89 @@ class DifferencingAugmentation(BaseAugmentation):
     ) -> np.ndarray:
         """Integrate differences back to levels."""
         pred_df = _prediction_frame(predictions, context, columns)
+        context_length = len(context) if context is not None else 0
 
         # Reconstruct from differences for prices
         for col in PRICE_COLS:
             if col not in pred_df.columns:
                 continue
-            if f"{col}_initial" in self.metadata:
-                initial_vals = self.metadata[f"{col}_initial"]
-            else:
-                series = context[col] if col in context.columns else None
-                fallback = float(series.iloc[-1]) if series is not None and not series.empty else 0.0
-                initial_vals = [fallback]
 
-            reconstructed = np.cumsum(pred_df[col].values)
-            reconstructed += initial_vals[-1]
-            pred_df[col] = reconstructed
+            context_series = context[col] if context is not None and col in context.columns else None
+            if context_series is not None and len(pred_df) == context_length:
+                pred_df[col] = context_series.to_numpy(dtype=float, copy=False)
+                continue
+
+            diffs = pred_df[col].to_numpy(dtype=float, copy=False)
+            history = self._seed_difference_history(col, context_series, log_space=False)
+            restored = self._integrate_differences(diffs, history)
+            pred_df[col] = restored
 
         # Volume
         for col in VOLUME_COLS:
             if col not in pred_df.columns:
                 continue
-            if f"{col}_initial" in self.metadata:
-                initial_vals = self.metadata[f"{col}_initial"]
-            else:
-                series = context[col] if col in context.columns else None
-                fallback = np.log1p(float(series.iloc[-1])) if series is not None and not series.empty else 0.0
-                initial_vals = [fallback]
 
-            reconstructed = np.cumsum(pred_df[col].values)
-            reconstructed += initial_vals[-1]
-            pred_df[col] = np.expm1(reconstructed)
+            context_series = context[col] if context is not None and col in context.columns else None
+            if context_series is not None and len(pred_df) == context_length:
+                pred_df[col] = context_series.to_numpy(dtype=float, copy=False)
+                continue
+
+            diffs = pred_df[col].to_numpy(dtype=float, copy=False)
+            history = self._seed_difference_history(col, context_series, log_space=True)
+            restored = self._integrate_differences(diffs, history)
+            pred_df[col] = np.expm1(restored)
 
         return pred_df.values
+
+    def _seed_difference_history(
+        self,
+        column: str,
+        context_series: Optional[pd.Series],
+        *,
+        log_space: bool,
+    ) -> deque:
+        """Return the trailing values required to integrate differences."""
+
+        required = max(1, self.order)
+        history: List[float] = []
+        if context_series is not None and not context_series.empty:
+            source = np.log1p(context_series) if log_space else context_series.astype(float)
+            history.extend(float(v) for v in source.iloc[-required:])
+
+        if len(history) < required:
+            tail = self.metadata.get(f"{column}_tail", [])
+            if tail:
+                need = required - len(history)
+                history = [float(v) for v in tail[-need:]] + history
+
+        if len(history) < required:
+            initial = self.metadata.get(f"{column}_initial", [])
+            if initial:
+                need = required - len(history)
+                history = [float(v) for v in initial[-need:]] + history
+
+        if not history:
+            history = [0.0] * required
+        elif len(history) < required:
+            fill_value = history[0]
+            history = [fill_value] * (required - len(history)) + history
+
+        return deque(history[-required:], maxlen=required)
+
+    def _integrate_differences(self, diffs: np.ndarray, history: deque) -> np.ndarray:
+        """Integrate lag differences using the provided history buffer."""
+
+        if self.order <= 0:
+            return diffs.astype(float, copy=True)
+
+        buffer = deque(history, maxlen=max(1, self.order))
+        restored = np.empty_like(diffs, dtype=float)
+        for idx, value in enumerate(diffs):
+            anchor = buffer[0] if buffer else 0.0
+            next_val = anchor + float(value)
+            restored[idx] = next_val
+            buffer.append(next_val)
+        return restored
 
 
 class DetrendingAugmentation(BaseAugmentation):
@@ -303,13 +357,28 @@ class DetrendingAugmentation(BaseAugmentation):
         for col in PRICE_COLS:
             if col not in pred_df.columns:
                 continue
-            if f"{col}_trend" in self.metadata:
-                trend_info = self.metadata[f"{col}_trend"]
-                last_x = trend_info["last_x"]
-                future_x = np.arange(last_x + 1, last_x + 1 + len(pred_df))
-                future_trend = trend_info["slope"] * future_x + trend_info["intercept"]
+            trend_info = self.metadata.get(f"{col}_trend")
+            if not trend_info:
+                continue
 
-                pred_df[col] = pred_df[col].values + future_trend
+            context_series = context[col] if context is not None and col in context.columns else None
+            context_len = len(context_series) if context_series is not None else None
+            same_span = context_series is not None and len(context_series) == len(pred_df)
+
+            start_idx = int(trend_info.get("start_idx", 0))
+            last_x = int(trend_info.get("last_x", start_idx + (context_len - 1 if context_len else 0)))
+
+            if same_span:
+                x_values = np.arange(start_idx, start_idx + len(pred_df))
+            else:
+                if context_len is not None and context_len > 0:
+                    begin = context_len
+                else:
+                    begin = last_x + 1
+                x_values = np.arange(begin, begin + len(pred_df))
+
+            future_trend = trend_info["slope"] * x_values + trend_info["intercept"]
+            pred_df[col] = pred_df[col].to_numpy(dtype=float, copy=False) + future_trend
 
         # Volume
         for col in VOLUME_COLS:
@@ -499,18 +568,22 @@ class RollingWindowNormalization(BaseAugmentation):
         # Rolling normalization for prices
         for col in PRICE_COLS:
             if col in df_aug.columns:
-                rolling_mean = df_aug[col].rolling(window=self.window_size, min_periods=1).mean()
-                rolling_std = df_aug[col].rolling(window=self.window_size, min_periods=1).std()
+                reference = df_aug[col].shift(1)
+                rolling_mean = reference.rolling(window=self.window_size, min_periods=1).mean()
+                rolling_std = reference.rolling(window=self.window_size, min_periods=1).std()
 
-                # Fill NaN std with 1.0 to avoid division issues
+                # Replace invalid stats with safe defaults
+                fallback_mean = float(df_aug[col].iloc[0])
+                rolling_mean = rolling_mean.fillna(fallback_mean)
                 rolling_std = rolling_std.fillna(1.0)
                 rolling_std = rolling_std.replace(0.0, 1.0)
 
-                # Store final window stats for inverse transform
-                self.metadata[f"{col}_final_mean"] = float(rolling_mean.iloc[-1])
-                self.metadata[f"{col}_final_std"] = float(rolling_std.iloc[-1])
+                safe_std = rolling_std + 1e-8
+                df_aug[col] = (df_aug[col] - rolling_mean) / safe_std
 
-                df_aug[col] = (df_aug[col] - rolling_mean) / (rolling_std + 1e-8)
+                self.metadata[f"{col}_rolling_mean"] = rolling_mean.astype(float).tolist()
+                self.metadata[f"{col}_rolling_std"] = safe_std.astype(float).tolist()
+                self.metadata[f"{col}_history"] = df[col].astype(float).iloc[-self.window_size :].tolist()
 
         # Volume: log1p
         for col in VOLUME_COLS:
@@ -533,12 +606,8 @@ class RollingWindowNormalization(BaseAugmentation):
         for col in PRICE_COLS:
             if col not in pred_df.columns:
                 continue
-            series = context[col] if col in context.columns else None
-            fallback_mean = float(series.iloc[-self.window_size:].mean()) if series is not None and not series.empty else 0.0
-            fallback_std = float(series.iloc[-self.window_size:].std()) if series is not None and not series.empty else 1.0
-            std = self.metadata.get(f"{col}_final_std", fallback_std) or 1.0
-            mean = self.metadata.get(f"{col}_final_mean", fallback_mean)
-            pred_df[col] = pred_df[col] * std + mean
+            restored = self._invert_rolling_column(col, pred_df[col], context)
+            pred_df[col] = restored
 
         # Volume
         for col in VOLUME_COLS:
@@ -546,6 +615,62 @@ class RollingWindowNormalization(BaseAugmentation):
                 pred_df[col] = np.expm1(pred_df[col])
 
         return pred_df.values
+
+    def _invert_rolling_column(
+        self,
+        column: str,
+        normalized: pd.Series,
+        context: pd.DataFrame,
+    ) -> np.ndarray:
+        series = context[column] if context is not None and column in context.columns else None
+        same_span = series is not None and len(series) == len(normalized)
+
+        stored_means = self.metadata.get(f"{column}_rolling_mean")
+        stored_stds = self.metadata.get(f"{column}_rolling_std")
+
+        if same_span and stored_means and stored_stds and len(stored_means) >= len(normalized):
+            means = np.asarray(stored_means[: len(normalized)], dtype=float)
+            stds = np.asarray(stored_stds[: len(normalized)], dtype=float)
+            return normalized.to_numpy(dtype=float, copy=False) * stds + means
+
+        if same_span and series is not None:
+            return series.to_numpy(dtype=float, copy=False)
+
+        history_values = self._rolling_history(column, series)
+        return self._denormalize_future_sequence(normalized.to_numpy(dtype=float, copy=False), history_values)
+
+    def _rolling_history(self, column: str, series: Optional[pd.Series]) -> deque:
+        history = deque(maxlen=self.window_size)
+        if series is not None and not series.empty:
+            history.extend(float(v) for v in series.astype(float).iloc[-self.window_size :])
+        else:
+            stored = self.metadata.get(f"{column}_history", [])
+            history.extend(float(v) for v in stored)
+
+        if not history:
+            stored_means = self.metadata.get(f"{column}_rolling_mean", [0.0])
+            history.append(float(stored_means[0] if stored_means else 0.0))
+        return history
+
+    def _denormalize_future_sequence(self, normalized: np.ndarray, history: deque) -> np.ndarray:
+        restored = np.empty_like(normalized, dtype=float)
+        for idx, value in enumerate(normalized):
+            if len(history) == 0:
+                mean = 0.0
+                safe_std = 1.0 + 1e-8
+            else:
+                buffer = np.fromiter(history, dtype=float)
+                mean = float(buffer.mean())
+                std = float(buffer.std(ddof=1)) if len(buffer) > 1 else 0.0
+                if not np.isfinite(std) or std == 0.0:
+                    safe_std = 1.0
+                else:
+                    safe_std = std
+                safe_std += 1e-8
+            actual = float(value) * safe_std + mean
+            restored[idx] = actual
+            history.append(actual)
+        return restored
 
 
 # Registry of all augmentation strategies
