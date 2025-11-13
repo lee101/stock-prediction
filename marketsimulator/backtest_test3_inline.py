@@ -5,19 +5,27 @@ import os
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 from .logging_utils import logger
 from .state import get_state
+from src.chronos2_params import resolve_chronos2_params
+from src.models.chronos2_wrapper import _default_preaug_dirs
+from src.preaug import PreAugmentationChoice, PreAugmentationSelector
 
 _REAL_BACKTEST_MODULE = None
 _REAL_BACKTEST_ERROR: Optional[Exception] = None
 _DEFAULT_NUM_SIMULATIONS = int(os.getenv("MARKETSIM_NUM_SIMULATIONS", "20"))
+_PCTDIFF_MAX_RETURN = float(os.getenv("PCTDIFF_MAX_DAILY_RETURN", "0.10"))
 _SKIP_REAL_IMPORT = os.getenv("MARKETSIM_SKIP_REAL_IMPORT", "0").lower() in {"1", "true", "yes", "on"}
 _LOOKAHEAD_ENV_KEY = "MARKETSIM_FORECAST_LOOKAHEAD"
+
+_PREAUG_SELECTOR: Optional[PreAugmentationSelector] = None
+_PREAUG_DIRS: Tuple[Path, ...] = ()
+_PREAUG_CACHE: Dict[str, Optional[PreAugmentationChoice]] = {}
 
 _REAL_BACKTEST_PATH = Path(__file__).resolve().parent.parent / "backtest_test3_inline.py"
 if _REAL_BACKTEST_PATH.exists() and not _SKIP_REAL_IMPORT:
@@ -38,6 +46,111 @@ if _REAL_BACKTEST_PATH.exists() and not _SKIP_REAL_IMPORT:
         )
 elif _SKIP_REAL_IMPORT:
     logger.info("[sim] Skipping real backtest_test3_inline import (mock analytics enabled).")
+
+
+def _reset_preaug_cache() -> None:
+    global _PREAUG_SELECTOR, _PREAUG_DIRS, _PREAUG_CACHE
+    _PREAUG_SELECTOR = None
+    _PREAUG_DIRS = ()
+    _PREAUG_CACHE.clear()
+
+
+def _preaug_dirs() -> Tuple[Path, ...]:
+    try:
+        freq = os.getenv("CHRONOS2_FREQUENCY")
+        return tuple(_default_preaug_dirs(freq))
+    except Exception as exc:  # pragma: no cover - defensive guard for path issues
+        logger.debug("[sim] Unable to resolve pre-augmentation directories: %s", exc)
+        return ()
+
+
+def _get_preaug_selector() -> Optional[PreAugmentationSelector]:
+    global _PREAUG_SELECTOR, _PREAUG_DIRS
+    dirs = _preaug_dirs()
+    if _PREAUG_SELECTOR is not None and dirs == _PREAUG_DIRS:
+        return _PREAUG_SELECTOR
+    if not dirs:
+        _reset_preaug_cache()
+        return None
+    try:
+        selector = PreAugmentationSelector(dirs)
+    except Exception as exc:  # pragma: no cover - invalid configs shouldn't break simulator
+        logger.debug("[sim] Failed to build pre-augmentation selector: %s", exc)
+        _reset_preaug_cache()
+        return None
+    _PREAUG_SELECTOR = selector
+    _PREAUG_DIRS = dirs
+    _PREAUG_CACHE.clear()
+    return _PREAUG_SELECTOR
+
+
+def _resolve_preaug_choice(symbol: str) -> Optional[PreAugmentationChoice]:
+    key = symbol.upper()
+    if key in _PREAUG_CACHE:
+        return _PREAUG_CACHE[key]
+    selector = _get_preaug_selector()
+    if selector is None:
+        _PREAUG_CACHE[key] = None
+        return None
+    choice = selector.get_choice(key)
+    _PREAUG_CACHE[key] = choice
+    return choice
+
+
+def _assign_metadata_column(result: pd.DataFrame, column: str, value) -> None:
+    if result.empty or value is None:
+        return
+    length = len(result)
+    if isinstance(value, dict):
+        result[column] = [dict(value) for _ in range(length)]
+    elif isinstance(value, (list, tuple)):
+        seq = list(value)
+        result[column] = [seq.copy() for _ in range(length)]
+    else:
+        result[column] = value
+
+
+def _annotate_chronos2_metadata(result: pd.DataFrame, symbol: str) -> None:
+    """Attach Chronos2 pre-aug and hyperparameter metadata to fallback outputs."""
+
+    if result.empty:
+        return
+
+    choice = _resolve_preaug_choice(symbol)
+    if choice is not None:
+        result["chronos2_preaug_strategy"] = choice.strategy
+        source_path = getattr(choice, "source_path", None)
+        if source_path:
+            result["chronos2_preaug_source"] = str(source_path)
+
+    try:
+        params = resolve_chronos2_params(symbol, frequency=os.getenv("CHRONOS2_FREQUENCY"))
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.debug("[sim] Failed to resolve Chronos2 params for %s: %s", symbol, exc)
+        return
+
+    if not params:
+        return
+
+    _assign_metadata_column(result, "chronos2_context_length", params.get("context_length"))
+    _assign_metadata_column(result, "chronos2_batch_size", params.get("batch_size"))
+    _assign_metadata_column(result, "chronos2_prediction_length", params.get("prediction_length"))
+    quantiles = params.get("quantile_levels") or (0.1, 0.5, 0.9)
+    _assign_metadata_column(result, "chronos2_quantile_levels", list(quantiles))
+    predict_kwargs = dict(params.get("predict_kwargs") or {})
+    _assign_metadata_column(result, "chronos2_predict_kwargs", predict_kwargs)
+    config_path = params.get("_config_path")
+    if config_path:
+        _assign_metadata_column(result, "chronos2_hparams_config_path", config_path)
+    model_id = params.get("model_id")
+    if model_id:
+        _assign_metadata_column(result, "chronos2_model_id", model_id)
+
+
+def _reset_chronos2_metadata_cache() -> None:
+    """Expose cache reset for unit tests."""
+
+    _reset_preaug_cache()
 
 
 def _resolve_lookahead(default: int = 1) -> int:
@@ -444,6 +557,8 @@ def _fallback_backtest(symbol: str, num_simulations: int | None = None) -> pd.Da
 
     result["simulated_backtest"] = True
 
+    _annotate_chronos2_metadata(result, symbol)
+
     latency_env = os.getenv("MARKETSIM_FALLBACK_INFERENCE_LATENCY")
     if latency_env is None:
         latency = 0.15
@@ -475,6 +590,42 @@ def backtest_forecasts(symbol: str, num_simulations: int | None = None) -> pd.Da
             _REAL_BACKTEST_ERROR,
         )
     return _fallback_backtest(symbol, num_simulations)
+
+
+def validate_pctdiff(
+    symbol: str,
+    *,
+    num_simulations: Optional[int] = None,
+    max_return: Optional[float] = None,
+) -> float:
+    """Validate pctdiff return magnitudes for the given symbol."""
+
+    frame = backtest_forecasts(symbol, num_simulations=num_simulations)
+    if frame is None or frame.empty:
+        raise ValueError(f"No backtest analytics available for {symbol}")
+    if "pctdiff_return" not in frame.columns:
+        raise ValueError("pctdiff_return column missing from backtest output")
+
+    returns = frame["pctdiff_return"].astype(float).to_numpy()
+    if returns.size == 0:
+        raise ValueError("pctdiff return series empty")
+    max_abs = float(np.max(np.abs(returns)))
+    if np.isnan(max_abs):
+        raise ValueError("pctdiff returns contain NaN")
+
+    limit = _PCTDIFF_MAX_RETURN if max_return is None else max_return
+    if limit is not None and limit > 0 and max_abs > limit:
+        raise ValueError(
+            f"pctdiff returns {max_abs:.4f} exceed limit {limit:.4f} for {symbol} (num_simulations={num_simulations})"
+        )
+
+    logger.info(
+        "[sim] pctdiff validation for %s succeeded (max |return|=%.4f, limit %.4f)",
+        symbol,
+        max_abs,
+        limit if limit is not None else max_abs,
+    )
+    return max_abs
 
 
 def release_model_resources() -> None:
