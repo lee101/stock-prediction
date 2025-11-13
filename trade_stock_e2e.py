@@ -4074,7 +4074,6 @@ def main():
         "ETHUSD",
         "UNIUSD",
         "LINKUSD",
-        "PAXGUSD",
     ]
 
     # Filter symbols by TRADABLE_PAIRS env var if set
