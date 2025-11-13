@@ -22,7 +22,8 @@ Examples:
     export MARKETSIM_FAST_SIMULATE=0
 """
 
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Sequence, Tuple
+import logging
 import os
 from dataclasses import dataclass
 
@@ -42,6 +43,8 @@ _USE_DIRECT = os.getenv("MARKETSIM_USE_DIRECT_OPTIMIZER", "1") in {"1", "true", 
 # Set MARKETSIM_FAST_OPTIMIZE=1 for rapid iteration (maxfun=100 instead of 500)
 # Similar to MARKETSIM_FAST_SIMULATE but for the optimizer itself
 _FAST_MODE = os.getenv("MARKETSIM_FAST_OPTIMIZE", "0") in {"1", "true", "yes", "on"}
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -113,8 +116,9 @@ def _evaluate_entry_exit_profit(
     if close_at_eod:
         bought_profits = ctx.long_multiplier * low_to_close * long_entry
         sold_profits = ctx.short_multiplier * high_to_close * short_entry
-        hit_trading_points = (long_entry_mask_bool | short_entry_mask_bool).to(dtype)
-        fee_cost = ctx.abs_positions * fee * hit_trading_points
+        long_fee = torch.abs(ctx.long_multiplier) * fee * long_entry
+        short_fee = torch.abs(ctx.short_multiplier) * fee * short_entry
+        fee_cost = long_fee + short_fee
         return bought_profits + sold_profits - fee_cost
 
     bought_profits = ctx.long_multiplier * low_to_close * long_entry
@@ -130,8 +134,9 @@ def _evaluate_entry_exit_profit(
     missed_low_points = sold_profits * (1.0 - reached_low)
     adjusted_profits = hit_low_points + missed_low_points
 
-    both_hit_mask = (long_entry_mask_bool & short_entry_mask_bool).to(dtype)
-    fee_cost = ctx.abs_positions * fee * both_hit_mask
+    long_fee = torch.abs(ctx.long_multiplier) * fee * long_entry
+    short_fee = torch.abs(ctx.short_multiplier) * fee * short_entry
+    fee_cost = long_fee + short_fee
 
     return bought_adjusted + adjusted_profits - fee_cost
 
@@ -461,3 +466,45 @@ def optimize_single_parameter(
     )
 
     return float(result.x[0]), float(-result.fun)
+
+
+def run_bounded_optimizer(
+    objective: Callable[[Sequence[float]], float],
+    bounds: Sequence[Tuple[float, float]],
+    *,
+    maxiter: int = 50,
+    popsize: int = 10,
+    atol: float = 1e-5,
+    seed: Optional[int] = 42,
+    workers: int = 1,
+):
+    """Minimize a bounded objective using DIRECT (preferred) or differential evolution."""
+
+    if not bounds:
+        raise ValueError("bounds must be non-empty")
+
+    maxfun = 100 if _FAST_MODE else maxiter * max(popsize, 1)
+    if _USE_DIRECT:
+        try:
+            result = direct(
+                objective,
+                bounds=bounds,
+                maxfun=maxfun,
+            )
+            best_params = tuple(float(x) for x in result.x)
+            return best_params, float(result.fun)
+        except Exception as exc:  # pragma: no cover - fallback path
+            logger.debug("DIRECT optimizer failed, falling back to differential evolution: %s", exc)
+
+    result = differential_evolution(
+        objective,
+        bounds=bounds,
+        maxiter=maxiter,
+        popsize=popsize,
+        atol=atol,
+        seed=seed,
+        workers=workers,
+        updating="deferred" if workers != 1 else "immediate",
+    )
+    best_params = tuple(float(x) for x in result.x)
+    return best_params, float(result.fun)

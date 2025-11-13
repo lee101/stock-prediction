@@ -22,8 +22,8 @@ def apply(verbose: bool = True) -> int:
         tweaks.append("Scalar output capture")
 
     if "CHRONOS_COMPILE" not in os.environ:
-        os.environ["CHRONOS_COMPILE"] = "1"
-        tweaks.append("Compilation enabled")
+        os.environ["CHRONOS_COMPILE"] = "0"
+        tweaks.append("Compilation disabled by default")
 
     os.environ.setdefault("CHRONOS_COMPILE_MODE", "reduce-overhead")
     os.environ.setdefault("CHRONOS_COMPILE_BACKEND", "inductor")

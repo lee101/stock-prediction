@@ -1,0 +1,1220 @@
+[
+  {
+    "symbol": "AAPL",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ABBV",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ABNB",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ABT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ADBE",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ADI",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ADSK",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "AEP",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "AFRM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "AMAT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "AMD",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "AMGN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "AMT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "AMZN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ANSS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "APD",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ARKG",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ARKK",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ARKQ",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ARKW",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ARM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ASML",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "AVGO",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "AXP",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "AZN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "BA",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "BAC",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "BIIB",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "BILL",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "BLK",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "BMY",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "BNTX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "BRK.B",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "BSX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "C",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "CAT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "CCI",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "CDNS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "CL",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "CMG",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "COIN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "COP",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "COST",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "COUR",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "CRM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "CRWD",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "CSCO",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "CVS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "CVX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "D",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "DASH",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "DBA",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "DBC",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "DDOG",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "DE",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "DHR",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "DIA",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "DIS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "DOCU",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "DUK",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "EBAY",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ECL",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "EEM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "EFA",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "EL",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "EMR",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ENPH",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "EOG",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "EQIX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ETN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "EW",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "F",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "FCX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "FDX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "FSLR",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "GD",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "GE",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "GILD",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "GLD",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "GM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "GOOG",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "GOOGL",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "GS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "HD",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "HON",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "HOOD",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ICLN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "INTC",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "INTU",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ISRG",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "IWM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "JNJ",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "JPM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "KLAC",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "KO",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "LCID",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "LIN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "LLY",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "LMT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "LOW",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "LRCX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "LULU",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "LYFT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MA",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MCD",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MCHP",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MDT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "META",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MMM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MO",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MPC",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MPWR",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MRK",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MRNA",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MRVL",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MSFT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MU",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "MXL",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NEE",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NEM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NET",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NFLX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NKE",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NOC",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NOW",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NTT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NVDA",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NVO",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NVS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "NXPI",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "O",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "OKTA",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ON",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ORCL",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "PEP",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "PFE",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "PG",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "PLD",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "PLTR",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "PLUG",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "PM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "PSA",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "PSX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "PTON",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "PYPL",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "QCLN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "QCOM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "QQQ",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "QRVO",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "RBLX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "REGN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "REIT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "RIVN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ROKU",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "RTX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SBUX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SCHW",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SHOP",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SLB",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SLV",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SNOW",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SNPS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SNY",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SO",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SOFI",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SONY",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SPG",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SPOT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SPY",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SQ",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SWKS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "SYK",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "T",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "TAN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "TDG",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "TGT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "TJX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "TM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "TMO",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "TMUS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "TSLA",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "TSM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "TWLO",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "TXN",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "U",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "UBER",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "UNG",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "UNH",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "UPS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "UPST",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "USO",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "V",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "VEEV",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "VLO",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "VRTX",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "VTI",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "VXUS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "VZ",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "WBD",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "WDAY",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "WFC",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "WM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "WMT",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "XLE",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "XLF",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "XLI",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "XLK",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "XLP",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "XLU",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "XLV",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "XLY",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "XOM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "YUM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ZM",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "ZS",
+    "validated": true,
+    "source": "curated_list"
+  },
+  {
+    "symbol": "BTC-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "ETH-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "ETHUSD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "BTCUSD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "SOL-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "SOLUSD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "AVAX-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "AVAXUSD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "MATIC-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "LINK-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "LINKUSD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "UNI-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "UNIUSD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "DOT-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "ATOM-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "XRP-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "ADA-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "ALGO-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "XLM-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "DOGE-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "SHIB-USD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "LTCUSD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  },
+  {
+    "symbol": "PAXGUSD",
+    "validated": true,
+    "source": "crypto",
+    "is_crypto": true
+  }
+]
