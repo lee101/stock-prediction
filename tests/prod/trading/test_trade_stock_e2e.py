@@ -359,6 +359,93 @@ def test_analyze_symbols_prefers_maxdiff_for_crypto_when_primary_side_buy(
 @patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)
 @patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
 @patch("trade_stock_e2e.backtest_forecasts")
+@patch("trade_stock_e2e._log_detail")
+def test_positive_forecast_overrides_entry_gate_and_records_candidate_map(
+    mock_log, mock_backtest, mock_snapshot, mock_trading_day_now
+):
+    row = {
+        "simple_strategy_return": 0.01,
+        "simple_strategy_avg_daily_return": 0.01,
+        "simple_strategy_annual_return": 0.01 * 365,
+        "simple_strategy_sharpe": 0.7,
+        "simple_strategy_turnover": 0.6,
+        "simple_strategy_max_drawdown": -0.03,
+        "all_signals_strategy_return": 0.008,
+        "all_signals_strategy_avg_daily_return": 0.008,
+        "all_signals_strategy_annual_return": 0.008 * 365,
+        "all_signals_strategy_sharpe": 0.65,
+        "all_signals_strategy_turnover": 0.7,
+        "all_signals_strategy_max_drawdown": -0.04,
+        "entry_takeprofit_return": 0.004,
+        "entry_takeprofit_avg_daily_return": 0.004,
+        "entry_takeprofit_annual_return": 0.004 * 365,
+        "entry_takeprofit_sharpe": 0.55,
+        "entry_takeprofit_turnover": 0.8,
+        "entry_takeprofit_max_drawdown": -0.05,
+        "highlow_return": 0.006,
+        "highlow_avg_daily_return": 0.006,
+        "highlow_annual_return": 0.006 * 365,
+        "highlow_sharpe": 0.7,
+        "highlow_turnover": 0.8,
+        "highlow_max_drawdown": -0.05,
+        "maxdiff_return": 0.005,
+        "maxdiff_avg_daily_return": 0.0002,
+        "maxdiff_annual_return": 0.005 * 365,
+        "maxdiff_sharpe": 1.1,
+        "maxdiff_turnover": 0.6,
+        "maxdiff_max_drawdown": -0.04,
+        "maxdiffalwayson_return": 0.007,
+        "maxdiffalwayson_avg_daily_return": 0.007,
+        "maxdiffalwayson_annual_return": 0.007 * 365,
+        "maxdiffalwayson_sharpe": 0.9,
+        "maxdiffalwayson_turnover": 0.7,
+        "maxdiffalwayson_max_drawdown": -0.05,
+        "pctdiff_return": 0.004,
+        "pctdiff_avg_daily_return": 0.004,
+        "pctdiff_annual_return": 0.004 * 365,
+        "pctdiff_sharpe": 0.75,
+        "pctdiff_turnover": 1.1,
+        "pctdiff_max_drawdown": -0.05,
+        "close": 50.0,
+        "predicted_close": 50.6,
+        "predicted_high": 51.2,
+        "predicted_low": 49.8,
+        "maxdiffprofit_high_price": 51.4,
+        "maxdiffprofit_low_price": 49.2,
+        "maxdiff_primary_side": "buy",
+        "maxdiff_trade_bias": 0.4,
+        "pctdiff_entry_low_price": 49.7,
+        "pctdiff_takeprofit_high_price": 51.1,
+        "pctdiff_entry_high_price": 50.9,
+        "pctdiff_takeprofit_low_price": 49.2,
+        "pctdiff_trade_bias": 0.1,
+        "simple_forecasted_pnl": 0.003,
+        "all_signals_forecasted_pnl": 0.002,
+        "entry_takeprofit_forecasted_pnl": 0.001,
+        "highlow_forecasted_pnl": 0.0015,
+        "maxdiff_forecasted_pnl": 0.012,
+        "maxdiffalwayson_forecasted_pnl": 0.004,
+        "pctdiff_forecasted_pnl": 0.0025,
+    }
+
+    mock_backtest.return_value = pd.DataFrame([row] * 70)
+
+    with patch.object(trade_module, "ALLOW_MAXDIFF_ENTRY", True):
+        results = analyze_symbols(["UNIUSD"])
+
+    assert "UNIUSD" in results
+    entry = results["UNIUSD"]
+    assert entry["strategy"] == "maxdiff"
+    assert entry["strategy_candidate_forecasted_pnl"]["maxdiff"] == pytest.approx(0.012)
+    reason = entry["strategy_entry_ineligible"].get("maxdiff")
+    assert reason and reason.startswith("edge")
+    notes = entry.get("strategy_selection_notes", [])
+    assert any("allowed_by_forecast" in note for note in notes)
+
+
+@patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)
+@patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
+@patch("trade_stock_e2e.backtest_forecasts")
 def test_analyze_symbols_prefers_pctdiff_when_percent_edge(
     mock_backtest, mock_snapshot, mock_trading_day_now
 ):

@@ -111,3 +111,56 @@ def ensure_huggingface_cache_dir(
     if logger:
         logger.info(f"Using Hugging Face cache directory: {resolved}")
     return resolved
+
+
+def find_hf_snapshot_dir(
+    repo_id: str,
+    *,
+    logger: Optional[logging.Logger] = None,
+    extra_candidates: Optional[Iterable[Path]] = None,
+) -> Optional[Path]:
+    """
+    Locate the most recent cached snapshot directory for ``repo_id``.
+
+    Args:
+        repo_id: Hugging Face repository identifier, e.g. ``"amazon/chronos-2"``.
+        logger: Optional logger for debug output.
+        extra_candidates: Optional iterable of additional cache roots to probe
+            before falling back to the default candidate search order.
+
+    Returns:
+        Path to the newest snapshot directory containing a ``config.json`` file,
+        or ``None`` if no cached snapshot exists.
+    """
+
+    repo_fragment = repo_id.replace("/", "--")
+    candidates = _candidate_paths(extra_candidates=extra_candidates)
+
+    for cache_root in candidates:
+        hub_dir = cache_root / "hub" / f"models--{repo_fragment}" / "snapshots"
+        try:
+            snapshot_dirs = sorted(
+                (path for path in hub_dir.iterdir() if path.is_dir()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        except FileNotFoundError:
+            continue
+        except PermissionError:
+            if logger:
+                logger.debug("Skipping Hugging Face cache %s (permission denied)", hub_dir)
+            continue
+        except OSError as exc:
+            if logger:
+                logger.debug("Skipping Hugging Face cache %s (%s)", hub_dir, exc)
+            continue
+
+        for snapshot_dir in snapshot_dirs:
+            if (snapshot_dir / "config.json").exists():
+                if logger:
+                    logger.debug("Found cached snapshot for %s at %s", repo_id, snapshot_dir)
+                return snapshot_dir
+
+    if logger:
+        logger.debug("No cached snapshot found for %s across %d candidates", repo_id, len(candidates))
+    return None

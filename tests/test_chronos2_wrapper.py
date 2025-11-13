@@ -6,10 +6,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.models import chronos2_wrapper as chronos2_mod
 from src.models.chronos2_wrapper import (
     Chronos2OHLCWrapper,
     Chronos2PreparedPanel,
     DEFAULT_QUANTILE_LEVELS,
+    _resolve_model_source,
 )
 
 
@@ -242,3 +244,46 @@ def test_compile_fallback_propagates_keyboard_interrupt() -> None:
 
     with pytest.raises(KeyboardInterrupt):
         wrapper._call_with_compile_fallback(_raise, "kb")
+
+
+def test_resolve_model_source_prefers_local_override(monkeypatch, tmp_path):
+    snapshot_dir = tmp_path / "chronos2_snapshot"
+    snapshot_dir.mkdir()
+    (snapshot_dir / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CHRONOS2_LOCAL_MODEL_DIR", str(snapshot_dir))
+    monkeypatch.delenv("CHRONOS2_MODEL_ID_OVERRIDE", raising=False)
+
+    resolved = _resolve_model_source("chronos2")
+
+    assert resolved == str(snapshot_dir)
+
+
+def test_resolve_model_source_uses_cached_snapshot(monkeypatch, tmp_path):
+    snapshot_dir = tmp_path / "chronos2_cached"
+    snapshot_dir.mkdir()
+    (snapshot_dir / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.delenv("CHRONOS2_LOCAL_MODEL_DIR", raising=False)
+    monkeypatch.setattr(chronos2_mod, "find_hf_snapshot_dir", lambda *args, **kwargs: snapshot_dir)
+
+    resolved = _resolve_model_source("chronos2")
+
+    assert resolved == str(snapshot_dir)
+
+
+def test_resolve_model_source_fallback(monkeypatch):
+    monkeypatch.delenv("CHRONOS2_LOCAL_MODEL_DIR", raising=False)
+    monkeypatch.setattr(chronos2_mod, "find_hf_snapshot_dir", lambda *args, **kwargs: None)
+
+    resolved = _resolve_model_source("chronos2")
+
+    assert resolved == "amazon/chronos-2"
+
+
+def test_resolve_model_source_accepts_direct_path(tmp_path):
+    local_repo = tmp_path / "offline-chronos2"
+    local_repo.mkdir()
+    (local_repo / "config.json").write_text("{}", encoding="utf-8")
+
+    resolved = _resolve_model_source(str(local_repo))
+
+    assert resolved == str(local_repo)
