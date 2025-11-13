@@ -2,30 +2,30 @@
   "symbol": "AAPL",
   "model": "chronos2",
   "config": {
-    "name": "direct_ctx3072_bs32_median_eval3",
+    "name": "direct_ctx8448_bs48_mean_s512_eval2",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
-    "context_length": 3072,
-    "batch_size": 32,
+    "context_length": 8448,
+    "batch_size": 48,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "median",
-    "sample_count": 0,
+    "aggregation": "mean",
+    "sample_count": 512,
     "scaler": "none",
     "predict_kwargs": {}
   },
   "validation": {
-    "price_mae": 0.8772419448125929,
-    "pct_return_mae": 0.0035285203753408715,
-    "latency_s": 35.47128984113806
+    "price_mae": 0.8771746850271417,
+    "pct_return_mae": 0.0035259578470858825,
+    "latency_s": 37.98374682398571
   },
   "test": {
-    "price_mae": 1.1323077210925876,
-    "pct_return_mae": 0.0042502894252063285,
-    "latency_s": 35.80846512304561
+    "price_mae": 1.1229299642163397,
+    "pct_return_mae": 0.004220247419887843,
+    "latency_s": 37.64440590603044
   },
   "windows": {
     "val_window": 168,
@@ -34,9 +34,9 @@
   },
   "metadata": {
     "source": "chronos2_benchmark",
-    "generated_at": "2025-11-13T08:31:39Z",
+    "generated_at": "2025-11-13T12:43:32Z",
     "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.0035285203753408715,
+    "selection_value": 0.0035259578470858825,
     "frequency": "hourly"
   }
 }

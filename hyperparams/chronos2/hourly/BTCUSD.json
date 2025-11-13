@@ -2,41 +2,41 @@
   "symbol": "BTCUSD",
   "model": "chronos2",
   "config": {
-    "name": "hourly_ctx8192_bs32_mean_minus_std_0.5_s512",
+    "name": "direct_ctx3072_bs32_median_scale_meanstd_eval13",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
-    "context_length": 8192,
+    "context_length": 3072,
     "batch_size": 32,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "mean_minus_std_0.5",
-    "sample_count": 512,
-    "scaler": "none",
+    "aggregation": "median",
+    "sample_count": 0,
+    "scaler": "meanstd",
     "predict_kwargs": {}
   },
   "validation": {
-    "price_mae": 1457.0876190077724,
-    "pct_return_mae": 0.012829849204967488,
-    "latency_s": 3.2408960690154345
+    "price_mae": 401.2534084706957,
+    "pct_return_mae": 0.003760903213112974,
+    "latency_s": 33.562506167043466
   },
   "test": {
-    "price_mae": 2664.59813325897,
-    "pct_return_mae": 0.0229444080493838,
-    "latency_s": 3.229416954003682
+    "price_mae": 326.72707902431233,
+    "pct_return_mae": 0.0031606237430333835,
+    "latency_s": 33.49700228101574
   },
   "windows": {
     "val_window": 168,
     "test_window": 168,
-    "forecast_horizon": 1,
-    "bar_interval": "1h"
+    "forecast_horizon": 1
   },
   "metadata": {
     "source": "chronos2_benchmark",
-    "generated_at": "2025-11-12T21:24:56Z",
-    "frequency": "hourly",
-    "notes": "Derived from daily chronos2 config; context extended for hourly bars."
+    "generated_at": "2025-11-13T11:26:45Z",
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.003760903213112974,
+    "frequency": "hourly"
   }
 }

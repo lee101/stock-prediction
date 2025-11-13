@@ -2,30 +2,30 @@
   "symbol": "AMD",
   "model": "chronos2",
   "config": {
-    "name": "direct_ctx7680_bs32_median_eval2",
+    "name": "direct_ctx8192_bs48_mean_s1024_eval12",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
-    "context_length": 7680,
-    "batch_size": 32,
+    "context_length": 8192,
+    "batch_size": 48,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "median",
-    "sample_count": 0,
+    "aggregation": "mean",
+    "sample_count": 1024,
     "scaler": "none",
     "predict_kwargs": {}
   },
   "validation": {
-    "price_mae": 2.399942590622674,
-    "pct_return_mae": 0.012672830776905316,
-    "latency_s": 44.037373845043476
+    "price_mae": 2.371295850285467,
+    "pct_return_mae": 0.012534101126875311,
+    "latency_s": 37.54740529501578
   },
   "test": {
-    "price_mae": 2.375099596296039,
-    "pct_return_mae": 0.009780851050464442,
-    "latency_s": 45.08588495320873
+    "price_mae": 2.3798716044943484,
+    "pct_return_mae": 0.009798626177903886,
+    "latency_s": 37.38682404891006
   },
   "windows": {
     "val_window": 168,
@@ -34,9 +34,9 @@
   },
   "metadata": {
     "source": "chronos2_benchmark",
-    "generated_at": "2025-11-13T08:31:39Z",
+    "generated_at": "2025-11-13T13:19:24Z",
     "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.012672830776905316,
+    "selection_value": 0.012534101126875311,
     "frequency": "hourly"
   }
 }
