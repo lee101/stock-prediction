@@ -284,19 +284,73 @@ class HourlyDataRefresher:
         return self.data_root / folder / f"{symbol.upper()}.csv"
 
     def _load_existing_frame(self, path: Path) -> pd.DataFrame:
+        """Load existing data using split cache: historical (pkl) + recent (csv)."""
         if not path.exists():
             return pd.DataFrame()
+
+        # Split at Nov 1, 2025 - older data cached, recent data in CSV
+        cache_cutoff = datetime(2025, 11, 1, tzinfo=timezone.utc)
+        cache_path = path.parent / f"{path.stem}_hist.pkl"
+
+        historical = pd.DataFrame()
+        if cache_path.exists():
+            try:
+                import pickle
+                with open(cache_path, 'rb') as f:
+                    cache_data = pickle.load(f)
+                    historical = cache_data.get('data', pd.DataFrame())
+                    cached_until = cache_data.get('cutoff', None)
+                    if cached_until == cache_cutoff and not historical.empty:
+                        self._logger.debug(f"{path.stem}: loaded {len(historical)} historical rows")
+                    else:
+                        historical = pd.DataFrame()
+            except Exception:
+                historical = pd.DataFrame()
+
+        # Load recent CSV
         try:
             frame = pd.read_csv(path)
         except OSError:
-            return pd.DataFrame()
+            return historical if not historical.empty else pd.DataFrame()
+
         if frame.empty or "timestamp" not in frame.columns:
-            return pd.DataFrame()
+            return historical if not historical.empty else pd.DataFrame()
+
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
         frame = frame.dropna(subset=["timestamp"])
         if frame.empty:
-            return pd.DataFrame()
+            return historical if not historical.empty else pd.DataFrame()
+
         frame = frame.set_index("timestamp").sort_index()
+
+        # Filter CSV to recent if cache exists
+        if not historical.empty:
+            frame = frame[frame.index >= cache_cutoff]
+
+        # Combine
+        if not historical.empty:
+            combined = pd.concat([historical, frame])
+            combined = combined[~combined.index.duplicated(keep="last")]
+            combined.sort_index(inplace=True)
+            return combined
+
+        # Create cache if enough historical data
+        if len(frame) > 1000:
+            hist_part = frame[frame.index < cache_cutoff]
+            if len(hist_part) > 100:
+                try:
+                    import pickle
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(cache_path, 'wb') as f:
+                        pickle.dump({'data': hist_part, 'cutoff': cache_cutoff}, f)
+                    self._logger.info(f"{path.stem}: cached {len(hist_part)} historical rows")
+                    # Trim CSV to recent only
+                    recent = frame[frame.index >= cache_cutoff]
+                    if not recent.empty:
+                        recent.to_csv(path)
+                except Exception:
+                    pass
+
         return frame
 
 
