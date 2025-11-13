@@ -1,57 +1,57 @@
 {
   "symbol": "ETHUSD",
   "best_strategy": "detrending",
-  "mae": 16.996248424703655,
-  "mae_percent": 0.49371423497395256,
-  "rmse": 23.106376140294923,
-  "pct_return_mae": 0.0049507824919098236,
+  "mae": 16.826963419242926,
+  "mae_percent": 0.48757763017188793,
+  "rmse": 23.241174023249975,
+  "pct_return_mae": 0.00487994581808945,
   "config": {
     "name": "detrending",
     "params": {}
   },
-  "timestamp": "2025-11-13T03:23:56Z",
+  "timestamp": "2025-11-13T04:14:25Z",
   "selection_metric": "mae_percent",
-  "selection_value": 0.49371423497395256,
+  "selection_value": 0.48757763017188793,
   "comparison": {
     "baseline": {
-      "mae": 17.722786395322004,
-      "mae_percent": 0.5148190181814045,
-      "pct_return_mae": 0.005153076748955453
+      "mae": 17.580348981743956,
+      "mae_percent": 0.5094077095520981,
+      "pct_return_mae": 0.0050874926190820164
     },
     "percent_change": {
-      "mae": 17.57366249888774,
-      "mae_percent": 0.510487203971313,
-      "pct_return_mae": 0.005110985814944152
+      "mae": 17.541430332959653,
+      "mae_percent": 0.5082800038531577,
+      "pct_return_mae": 0.005074766774807506
     },
     "log_returns": {
-      "mae": 17.992099315431556,
-      "mae_percent": 0.5226421341419378,
-      "pct_return_mae": 0.005229924991137595
+      "mae": 18.08632686405303,
+      "mae_percent": 0.5240689107818771,
+      "pct_return_mae": 0.005233538368210711
     },
     "differencing": {
-      "mae": 249.8185019093716,
-      "mae_percent": 7.256833830061815,
-      "pct_return_mae": 0.0732246151694315
+      "mae": 283.0504678905231,
+      "mae_percent": 8.201662588466874,
+      "pct_return_mae": 0.08268438929213379
     },
     "detrending": {
-      "mae": 16.996248424703655,
-      "mae_percent": 0.49371423497395256,
-      "pct_return_mae": 0.0049507824919098236
+      "mae": 16.826963419242926,
+      "mae_percent": 0.48757763017188793,
+      "pct_return_mae": 0.00487994581808945
     },
     "robust_scaling": {
-      "mae": 17.705912028086182,
-      "mae_percent": 0.5143288444029138,
-      "pct_return_mae": 0.005147080047121192
+      "mae": 17.440060028405156,
+      "mae_percent": 0.5053427006907844,
+      "pct_return_mae": 0.005048024499375013
     },
     "minmax_standard": {
-      "mae": 17.578045072924944,
-      "mae_percent": 0.510614510841272,
-      "pct_return_mae": 0.005111215310061217
+      "mae": 17.50064516000519,
+      "mae_percent": 0.5070982138010949,
+      "pct_return_mae": 0.0050633044383945735
     },
     "rolling_norm": {
-      "mae": 18.70187279436871,
-      "mae_percent": 0.5432599352826251,
-      "pct_return_mae": 0.005445175289725717
+      "mae": 18.944318500825776,
+      "mae_percent": 0.5489300528989719,
+      "pct_return_mae": 0.005487286518840373
     }
   },
   "metadata": {
