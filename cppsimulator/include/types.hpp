@@ -7,8 +7,8 @@
 namespace msim {
 
 struct FeeLeverageConfig {
-  double stock_fee = 0.0005;       // equities trading fee
-  double crypto_fee = 0.0015;      // crypto trading fee
+  double stock_fee = 0.0005;       // equities trading fee (5 bps)
+  double crypto_fee = 0.001;       // crypto trading fee (10 bps, standardized)
   double slip_bps = 1.5;           // linear slippage, basis points
   double annual_leverage = 0.065; // 6.5% annual financing
   double intraday_max = 4.0;       // <= 4x intraday leverage

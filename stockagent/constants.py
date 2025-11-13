@@ -28,8 +28,8 @@ SIMULATION_OPEN_TIME = "09:30"
 SIMULATION_CLOSE_TIME = "16:00"
 
 # approx taker fees (per-side) used in simulator
-TRADING_FEE = 0.0005  # equities
-CRYPTO_TRADING_FEE = 0.0015  # crypto
+TRADING_FEE = 0.0005  # equities (5 bps)
+CRYPTO_TRADING_FEE = 0.001  # crypto (10 bps, standardized with loss_utils.py)
 
 # GPT-5 reasoning effort used for plan generation.
 DEFAULT_REASONING_EFFORT = "high"
