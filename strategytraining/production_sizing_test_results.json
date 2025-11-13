@@ -1,0 +1,50 @@
+{
+  "timestamp": "2025-11-13T06:34:57.870260",
+  "dataset": "full_strategy_dataset_20251112_082320_trades.parquet",
+  "num_trades": 7874,
+  "symbols": [
+    "ETHUSD",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "SPY"
+  ],
+  "production": {
+    "strategy": "Production_Kelly50pct_4x",
+    "return_pct": 1.2165827042565165,
+    "sharpe": 1.4437976762747233,
+    "max_dd_pct": 0.05123168151787757,
+    "win_rate": 0.6121412242824485,
+    "avg_size": 0.0005360190943229752,
+    "max_symbol_exposure": 63.23988568251352,
+    "max_total_exposure": 60.0,
+    "num_violations": 6319,
+    "avg_leverage": 0.7899415798831597
+  },
+  "baselines": [
+    {
+      "strategy": "Baseline_Fixed_50pct",
+      "return_pct": 26.81861261762714,
+      "sharpe": 1.4240979864249603,
+      "max_dd_pct": 0.10862314427650728,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.5
+    },
+    {
+      "strategy": "Conservative_Fixed_25pct",
+      "return_pct": 13.915702168905998,
+      "sharpe": 1.9331341044536559,
+      "max_dd_pct": 0.07599388801821658,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.25
+    },
+    {
+      "strategy": "VolAdjusted_15pct",
+      "return_pct": 29.766382032617464,
+      "sharpe": 2.015948084781921,
+      "max_dd_pct": 0.122516824748806,
+      "win_rate": 0.6121412242824485,
+      "avg_size": 0.5689176810983788
+    }
+  ]
+}
