@@ -2932,6 +2932,7 @@ def run_single_simulation(
     spread,
     *,
     model_override: Optional[str] = None,
+    skip_strategy_eval: bool = False,
 ):
     last_preds = {
         "instrument": symbol,
@@ -3273,6 +3274,10 @@ def run_single_simulation(
     low_preds_tensor = _ensure_tensor_key("low_predictions")
     _ensure_tensor_key("high_actual_movement_values")
     _ensure_tensor_key("low_actual_movement_values")
+
+    # Skip expensive strategy evaluations if only predictions are needed
+    if skip_strategy_eval:
+        return {"last_preds": last_preds}
 
     maxdiff_eval, maxdiff_returns_np, maxdiff_metadata = evaluate_maxdiff_strategy(
         last_preds,

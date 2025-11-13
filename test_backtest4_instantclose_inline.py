@@ -177,7 +177,10 @@ def _load_or_fetch_data(timestamp_str: str):
             logger.warning(f"Failed to load data cache: {e}")
 
     logger.info(f"Fetching fresh data (bucket={bucket})")
-    data = download_daily_stock_data(timestamp_str, symbols=None)
+    # Fetch all common symbols for better caching
+    symbols = ['BTCUSD', 'ETHUSD', 'GOOG', 'META', 'TSLA', 'NVDA', 'AAPL', 'MSFT',
+               'UNIUSD', 'LINKUSD', 'PAXGUSD', 'ADBE', 'COUR', 'COIN']
+    data = download_daily_stock_data(timestamp_str, symbols=symbols)
 
     try:
         with open(cache_path, 'wb') as f:
@@ -228,6 +231,7 @@ def _generate_all_predictions(
                 is_crypto,
                 sim_idx,
                 spread,
+                skip_strategy_eval=True,
             )
 
             last_preds = result.get('last_preds')
@@ -413,20 +417,31 @@ def compare_close_policies(symbol: str, num_simulations: int = 50) -> Optional[D
     data_start = time.perf_counter()
     current_time_formatted = '2024-09-07--03-36-27'  # Use same test dataset
 
+    # Try loading from cache first
     bucket = _get_data_cache_bucket(current_time_formatted)
     if bucket not in _data_cache:
         _data_cache[bucket] = _load_or_fetch_data(current_time_formatted)
 
     all_data = _data_cache[bucket]
+    stock_data = None
 
-    # Handle both indexed and non-indexed DataFrames
+    # Extract symbol data from cache
     if 'symbol' in all_data.index.names:
-        stock_data = all_data.loc[symbol] if symbol in all_data.index.get_level_values('symbol') else all_data[all_data.index.get_level_values('symbol') == symbol]
+        if symbol in all_data.index.get_level_values('symbol'):
+            stock_data = all_data.loc[symbol]
     elif 'symbol' in all_data.columns:
-        stock_data = all_data[all_data['symbol'] == symbol]
-    else:
-        # Assume single symbol data
-        stock_data = all_data
+        filtered = all_data[all_data['symbol'] == symbol]
+        if not filtered.empty:
+            stock_data = filtered
+
+    # Fallback: symbol not in cache - fetch separately
+    if stock_data is None or (hasattr(stock_data, 'empty') and stock_data.empty):
+        logger.info(f"{symbol} not in cache - fetching separately")
+        stock_data = download_daily_stock_data(current_time_formatted, symbols=[symbol])
+        if 'symbol' in stock_data.index.names:
+            stock_data = stock_data.loc[symbol] if symbol in stock_data.index.get_level_values('symbol') else stock_data
+        elif 'symbol' in stock_data.columns:
+            stock_data = stock_data[stock_data['symbol'] == symbol]
 
     logger.info(f"Data loading took {time.perf_counter() - data_start:.3f}s")
 
