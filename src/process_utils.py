@@ -42,7 +42,7 @@ UTC = ZoneInfo("UTC")
 NEW_YORK = ZoneInfo("America/New_York")
 
 # Strategy families that rely on staged entry watchers (MaxDiff variants).
-MAXDIFF_STRATEGY_NAMES = {"maxdiff", "maxdiffalwayson", "highlow"}
+MAXDIFF_STRATEGY_NAMES = {"maxdiff", "maxdiffalwayson", "pctdiff", "highlow"}
 
 
 def _calculate_next_crypto_bar_time(current_time: Optional[datetime] = None) -> datetime:
