@@ -46,6 +46,36 @@ DEFAULT_QUANTILE_LEVELS: Tuple[float, ...] = (0.1, 0.5, 0.9)
 _BOOL_TRUE = {"1", "true", "yes", "on"}
 
 
+def _normalize_frequency(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"daily", "hourly"}:
+        return normalized
+    return None
+
+
+def _default_preaug_dirs(frequency: Optional[str]) -> Tuple[Path, ...]:
+    base_dirs = (
+        Path("preaugstrategies") / "chronos2",
+        Path("preaugstrategies") / "best",
+    )
+    if not frequency:
+        return base_dirs
+    freq_dirs = (
+        Path("preaugstrategies") / "chronos2" / frequency,
+        Path("preaugstrategies") / "best" / frequency,
+    )
+    ordered: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in (*freq_dirs, *base_dirs):
+        if candidate in seen:
+            continue
+        ordered.append(candidate)
+        seen.add(candidate)
+    return tuple(ordered)
+
+
 def _require_chronos2_pipeline() -> type:
     """Return the Chronos2Pipeline class or raise a descriptive error."""
 
@@ -190,11 +220,11 @@ class Chronos2OHLCWrapper:
         self._compile_mode = compile_mode
         self._compile_backend = compile_backend
 
-        default_preaug_dirs: Sequence[str | Path]
         if preaugmentation_dirs is None:
-            default_preaug_dirs = (Path("preaugstrategies") / "chronos2", Path("preaugstrategies") / "best")
+            freq = _normalize_frequency(os.getenv("CHRONOS2_FREQUENCY"))
+            default_preaug_dirs = _default_preaug_dirs(freq)
         else:
-            default_preaug_dirs = preaugmentation_dirs
+            default_preaug_dirs = tuple(Path(d) for d in preaugmentation_dirs if d)
         dirs_list = [Path(d) for d in default_preaug_dirs if d]
         self._preaug_selector: Optional[PreAugmentationSelector] = (
             PreAugmentationSelector(dirs_list) if dirs_list else None

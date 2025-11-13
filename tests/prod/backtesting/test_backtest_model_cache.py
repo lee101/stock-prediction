@@ -170,6 +170,19 @@ def test_resolve_best_model_force_toto_overrides_chronos(monkeypatch):
     assert module.resolve_best_model("ETHUSD") == "chronos2"
 
 
+def test_entry_exit_optimizer_backend_detected(monkeypatch):
+    module = _fresh_module()
+    backend = getattr(module, "_ENTRY_EXIT_OPTIMIZER_BACKEND", None)
+    allowed = {
+        "nevergrad",
+        "scipy-direct",
+        "scipy-direct (fallback)",
+        "torch-grid",
+        "torch-grid+nevergrad",
+    }
+    assert backend in allowed
+
+
 def test_load_kronos_keeps_toto_pipeline_when_sufficient_memory(monkeypatch):
     module = _fresh_module()
     monkeypatch.setattr(module.torch.cuda, "is_available", lambda: True)

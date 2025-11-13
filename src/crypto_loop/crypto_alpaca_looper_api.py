@@ -1,12 +1,15 @@
 import datetime
+import os
 from typing import Optional
 
 import requests
 from alpaca.trading import Order
 
-from src.logging_utils import setup_logging
+from src.logging_utils import setup_logging, get_log_filename
 
-logger = setup_logging("crypto_alpaca_looper_api.log")
+# Detect if we're in hourly mode based on TRADE_STATE_SUFFIX env var
+_is_hourly = os.getenv("TRADE_STATE_SUFFIX", "") == "hourly"
+logger = setup_logging(get_log_filename("crypto_alpaca_looper_api.log", is_hourly=_is_hourly))
 
 
 def submit_order(order_data):

@@ -13,6 +13,8 @@ import pandas as pd
 import pytz
 from loguru import logger
 
+from hyperparamstore import load_model_selection
+
 # Direct import - fail hard if backtest module unavailable (production mode)
 from backtest_test3_inline import backtest_forecasts, release_model_resources
 
@@ -32,9 +34,10 @@ from src.fixtures import all_crypto_symbols
 
 # Note: Use all_crypto_symbols for identification checks (fees, trading hours, etc.)
 # Use active_crypto_symbols for deciding what to actively trade
-from src.logging_utils import setup_logging
+from src.logging_utils import setup_logging, get_log_filename
 from src.trade_analysis_summary import build_analysis_summary_messages
 from src.work_stealing_config import is_crypto_out_of_hours
+from src.portfolio_filters import get_selected_strategy_forecast
 from src.portfolio_risk import record_portfolio_snapshot
 from src.process_utils import (
     MAXDIFF_WATCHERS_DIR,
@@ -45,6 +48,7 @@ from src.process_utils import (
     spawn_open_position_at_maxdiff_takeprofit,
 )
 from src.sizing_utils import get_qty
+from src.symbol_filtering import filter_symbols_by_tradable_pairs, get_filter_info
 from src.symbol_utils import is_crypto_symbol
 from src.trade_stock_env_utils import (
     TRUTHY_ENV_VALUES,
@@ -98,8 +102,8 @@ from stock.state import get_state_dir, get_state_file, resolve_state_suffix
 # Keep frequently patched helpers accessible for external callers.
 _EXPORTED_ENV_HELPERS = (reset_symbol_entry_counters, get_entry_counter_snapshot)
 
-# Configure logging
-logger = setup_logging("trade_stock_e2e.log")
+# Configure logging (daily mode, is_hourly=False)
+logger = setup_logging(get_log_filename("trade_stock_e2e.log", is_hourly=False))
 
 ensure_huggingface_cache_dir(logger=logger)
 
@@ -174,6 +178,161 @@ MAXDIFF_LIMIT_STRATEGIES = MAXDIFF_STRATEGIES.union({"highlow"})
 
 
 _DRAW_SUSPENDED: Dict[Tuple[str, str], bool] = {}
+
+
+def _apply_strategy_priority(strategies: List[str], priority: Optional[List[str]]) -> List[str]:
+    if not priority:
+        return list(strategies)
+    normalized_priority: List[str] = []
+    seen: set[str] = set()
+    strategy_set = {name for name in strategies}
+    for name in priority:
+        normalized = (name or "").strip().lower()
+        if not normalized or normalized in seen or normalized not in strategy_set:
+            continue
+        normalized_priority.append(normalized)
+        seen.add(normalized)
+    if not normalized_priority:
+        return list(strategies)
+    ordered: List[str] = list(normalized_priority)
+    ordered.extend(name for name in strategies if name not in seen)
+    return ordered
+
+
+def _resolve_model_passes(symbol: str, *, now_utc: datetime) -> List[Optional[str]]:
+    passes: List[Optional[str]] = [None]
+    if not (is_crypto_symbol(symbol) and is_crypto_out_of_hours(now_utc)):
+        return passes
+    selection = load_model_selection(symbol)
+    if not selection:
+        return passes
+    metadata = selection.get("metadata") or {}
+    candidate_map = metadata.get("candidate_pct_return_mae") or {}
+    scored_models: List[Tuple[str, float]] = []
+    for name, value in candidate_map.items():
+        if not name:
+            continue
+        normalized = str(name).strip().lower()
+        if normalized not in {"toto", "kronos", "chronos2"}:
+            continue
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            score = float("inf")
+        scored_models.append((normalized, score))
+    if not scored_models:
+        return passes
+    scored_models.sort(key=lambda item: (item[1], item[0]))
+    ordered_unique: List[str] = []
+    for name, _ in scored_models:
+        if name not in ordered_unique:
+            ordered_unique.append(name)
+    best_model = str(selection.get("model", "")).strip().lower()
+    top_models = [name for name in ordered_unique if name in {"toto", "kronos", "chronos2"}]
+    if not top_models:
+        return passes
+    preferred = best_model if best_model in top_models else top_models[0]
+    second_best = next((name for name in top_models if name != preferred), None)
+    if second_best:
+        passes.append(second_best)
+    return passes
+
+
+def _resolve_row_model(row: Dict[str, object]) -> Optional[str]:
+    candidate = row.get("forecast_model") or row.get("close_prediction_source")
+    if not candidate:
+        return None
+    normalized = str(candidate).strip().lower()
+    if normalized in {"toto", "kronos", "chronos2"}:
+        return normalized
+    return None
+
+
+def _merge_symbol_runs(
+    symbol: str,
+    *,
+    base_row: Dict[str, object],
+    secondary_row: Dict[str, object],
+) -> Dict[str, object]:
+    runs = [row for row in (base_row, secondary_row) if row]
+    candidate_best: Dict[str, Dict[str, object]] = {}
+    for row in runs:
+        forecasts = row.get("strategy_candidate_forecasted_pnl") or {}
+        if not isinstance(forecasts, dict):
+            continue
+        model_name = _resolve_row_model(row)
+        if not model_name:
+            continue
+        for strat, pnl in forecasts.items():
+            try:
+                score = float(pnl)
+            except (TypeError, ValueError):
+                continue
+            entry = candidate_best.get(strat)
+            if entry is None or score > entry["pnl"]:
+                candidate_best[strat] = {"pnl": score, "model": model_name, "row": row}
+
+    def _ordered_strategies() -> List[str]:
+        if not candidate_best:
+            return []
+        positive = [name for name, data in candidate_best.items() if data["pnl"] > 0]
+        target = positive if positive else list(candidate_best)
+        return sorted(target, key=lambda name: candidate_best[name]["pnl"], reverse=True)
+
+    ordered = _ordered_strategies()
+    rerun_cache: Dict[Tuple[str, str], Optional[Dict[str, object]]] = {}
+
+    def _rerun(model_name: str, strategy: str) -> Optional[Dict[str, object]]:
+        key = (model_name, strategy)
+        if key in rerun_cache:
+            return rerun_cache[key]
+        result = _analyze_symbols_impl(
+            [symbol],
+            model_overrides={symbol: model_name},
+            strategy_priorities={symbol: [strategy]},
+        )
+        row = result.get(symbol) if result else None
+        rerun_cache[key] = row
+        return row
+
+    for strategy in ordered:
+        entry = candidate_best[strategy]
+        current_row = entry["row"]
+        if current_row.get("strategy") == strategy:
+            return current_row
+        candidate_model = entry["model"]
+        rerun_row = _rerun(candidate_model, strategy)
+        if rerun_row and rerun_row.get("strategy") == strategy:
+            return rerun_row
+
+    fallback_rows = [row for row in runs if row]
+    if not fallback_rows:
+        return base_row
+    return max(fallback_rows, key=lambda row: get_selected_strategy_forecast(row))
+
+
+def analyze_symbols(symbols: List[str]) -> Dict:
+    base_results = _analyze_symbols_impl(symbols)
+    if not base_results:
+        return base_results
+    now_utc = datetime.now(timezone.utc)
+    final_results = dict(base_results)
+    for symbol in symbols:
+        base_row = base_results.get(symbol)
+        if not base_row:
+            continue
+        passes = _resolve_model_passes(symbol, now_utc=now_utc)
+        if len(passes) < 2:
+            continue
+        second_model = passes[1]
+        logger.info("%s: Crypto out-of-hours — evaluating %s as secondary model.", symbol, second_model)
+        secondary = _analyze_symbols_impl([symbol], model_overrides={symbol: second_model})
+        secondary_row = secondary.get(symbol)
+        if not secondary_row:
+            continue
+        merged = _merge_symbol_runs(symbol, base_row=base_row, secondary_row=secondary_row)
+        final_results[symbol] = merged
+    return dict(sorted(final_results.items(), key=lambda x: x[1]["composite_score"], reverse=True))
 
 
 def _strategy_key(symbol: Optional[str], strategy: Optional[str]) -> Tuple[str, str]:
@@ -1001,7 +1160,12 @@ def _format_entry_candidates(picks: Dict[str, Dict]) -> List[str]:
     return lines
 
 
-def analyze_symbols(symbols: List[str]) -> Dict:
+def _analyze_symbols_impl(
+    symbols: List[str],
+    *,
+    model_overrides: Optional[Dict[str, Optional[str]]] = None,
+    strategy_priorities: Optional[Dict[str, List[str]]] = None,
+) -> Dict:
     """Run backtest analysis on symbols and return results sorted by average return."""
     results = {}
     equities_tradable_now = is_nyse_trading_day_now()
@@ -1036,6 +1200,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             logger.debug(
                 f"{symbol}: market closed but analyzing due to MARKETSIM_SKIP_CLOSED_EQUITY override."
             )
+        model_override = (model_overrides or {}).get(symbol)
+        priority_override = (strategy_priorities or {}).get(symbol)
         try:
             kelly_fraction = None
             # not many because we need to adapt strats? eg the wierd spikes in uniusd are a big opportunity to trade w high/low
@@ -1044,7 +1210,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             used_fallback_engine = False
 
             try:
-                backtest_df = backtest_forecasts(symbol, num_simulations)
+                backtest_df = backtest_forecasts(symbol, num_simulations, model_override=model_override)
             except Exception as exc:
                 logger.error(f"backtest_forecasts failed for {symbol}: {exc}. Skipping symbol.")
                 continue
@@ -1052,7 +1218,6 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             if backtest_df.empty:
                 logger.warning(f"Skipping {symbol} - backtest returned no simulations.")
                 continue
-            raw_last_prediction = backtest_df.iloc[0]
 
             required_columns = {
                 "simple_strategy_return",
@@ -1185,7 +1350,7 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     logger.info(f"{symbol}: Retrying predictions (attempt {retry_count + 1}/{max_retries + 1})")
                     # Re-run predictions to see if model can fix itself
                     try:
-                        retry_backtest_df = backtest_forecasts(symbol, num_simulations)
+                        retry_backtest_df = backtest_forecasts(symbol, num_simulations, model_override=model_override)
                         if not retry_backtest_df.empty:
                             raw_last_prediction = retry_backtest_df.iloc[0]
                             retry_prediction = raw_last_prediction.apply(
@@ -1502,6 +1667,8 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                     )
             else:
                 ordered_strategies = ["simple"]
+
+            ordered_strategies = _apply_strategy_priority(ordered_strategies, priority_override)
 
             if strategy_ineligible:
                 logger.debug("%s strategy entry gates rejected: %s", symbol, strategy_ineligible)
@@ -1958,6 +2125,23 @@ def analyze_symbols(symbols: List[str]) -> Dict:
                 "walk_forward_notes": walk_forward_notes,
                 "backtest_samples": sample_size,
             }
+            if model_override:
+                result_row["model_override"] = model_override
+            forecast_model = str(result_row.get("close_prediction_source") or "").strip().lower()
+            if forecast_model:
+                result_row["forecast_model"] = forecast_model
+            for source_key in ("chronos2_preaug_strategy", "chronos2_preaug_source", "chronos2_hparams_config_path", "chronos2_model_id"):
+                value = raw_last_prediction.get(source_key)
+                if isinstance(value, str) and value:
+                    result_row[source_key] = value
+            for numeric_key in ("chronos2_context_length", "chronos2_batch_size", "chronos2_prediction_length"):
+                value = raw_last_prediction.get(numeric_key)
+                if value is not None and math.isfinite(coerce_numeric(value, default=float("nan"))):
+                    result_row[numeric_key] = coerce_numeric(value, default=0.0)
+            if raw_last_prediction.get("chronos2_quantile_levels"):
+                result_row["chronos2_quantile_levels"] = raw_last_prediction.get("chronos2_quantile_levels")
+            if raw_last_prediction.get("chronos2_predict_kwargs"):
+                result_row["chronos2_predict_kwargs"] = raw_last_prediction.get("chronos2_predict_kwargs")
             if selection_notes:
                 result_row["strategy_selection_notes"] = selection_notes
             if ordered_strategies:
@@ -2138,15 +2322,17 @@ def build_portfolio(
         strategy_return_key = f"{strategy}_return"
         strategy_return = data.get(strategy_return_key, 0)
         avg_return = data.get("avg_return", 0)
+        strategy_forecast = get_selected_strategy_forecast(data)
 
         # Debug logging for strategy selection
         logger.debug(
             f"Portfolio eval {symbol}: strategy={strategy} {strategy_return_key}={strategy_return:.4f} "
-            f"avg_return={avg_return:.4f} passed={avg_return > 0 and strategy_return > 0}"
+            f"avg_return={avg_return:.4f} forecast={strategy_forecast:.4f} "
+            f"passed={avg_return > 0 and strategy_return > 0 and strategy_forecast > 0}"
         )
 
-        # Include if selected strategy is profitable
-        if avg_return > 0 and strategy_return > 0:
+        # Include if selected strategy is profitable with positive forecast
+        if avg_return > 0 and strategy_return > 0 and strategy_forecast > 0:
             picks[symbol] = data
 
     # Ensure we reach the minimum desired portfolio size using best remaining composites.
@@ -2157,20 +2343,17 @@ def build_portfolio(
             if symbol in picks or data.get("trade_blocked"):
                 continue
 
-            # Check if the SELECTED strategy has positive returns
             strategy = data.get("strategy", "simple")
             strategy_return_key = f"{strategy}_return"
             strategy_return = data.get(strategy_return_key, 0)
-            composite = data.get("composite_score", 0)
+            strategy_forecast = get_selected_strategy_forecast(data)
 
-            # Debug logging for fallback selection
             logger.debug(
                 f"Portfolio fallback {symbol}: strategy={strategy} {strategy_return_key}={strategy_return:.4f} "
-                f"composite={composite:.4f} passed={strategy_return > 0 or composite > 0}"
+                f"forecast={strategy_forecast:.4f} passed={strategy_return > 0 and strategy_forecast > 0}"
             )
 
-            # Include if strategy is profitable or has positive composite score
-            if strategy_return > 0 or composite > 0:
+            if strategy_return > 0 and strategy_forecast > 0:
                 picks[symbol] = data
 
     # Optionally expand with high-price-edge opportunities to keep broader exposure.
@@ -2190,7 +2373,10 @@ def build_portfolio(
         for symbol, data in sorted_by_edge:
             if len(picks) >= max_expanded:
                 break
-            picks[symbol] = data
+            strategy_forecast = get_selected_strategy_forecast(data)
+            avg_return = data.get("avg_return", 0)
+            if avg_return > 0 and strategy_forecast > 0:
+                picks[symbol] = data
 
     # Ensure probe-mode symbols are represented even if they fell outside the ranking filters.
     if ENABLE_PROBE_TRADES:
@@ -2198,15 +2384,21 @@ def build_portfolio(
         for symbol, data in probe_candidates:
             if symbol in picks:
                 continue
+            strategy_forecast = get_selected_strategy_forecast(data)
+            if strategy_forecast <= 0:
+                continue
             if max_expanded and len(picks) < max_expanded:
                 picks[symbol] = data
             elif len(picks) < max_positions:
                 picks[symbol] = data
             else:
-                # Replace the weakest pick to guarantee probe follow-up.
-                weakest_symbol, _ = min(picks.items(), key=lambda item: item[1].get("composite_score", float("-inf")))
-                picks.pop(weakest_symbol, None)
-                picks[symbol] = data
+                weakest_symbol, weakest_data = min(
+                    picks.items(), key=lambda item: item[1].get("composite_score", float("-inf"))
+                )
+                weakest_forecast = get_selected_strategy_forecast(weakest_data)
+                if weakest_forecast <= 0:
+                    picks.pop(weakest_symbol, None)
+                    picks[symbol] = data
 
     return picks
 
@@ -3607,6 +3799,18 @@ def main():
         "ETHUSD",
         "UNIUSD",
     ]
+
+    # Filter symbols by TRADABLE_PAIRS env var if set
+    original_symbols = symbols
+    symbols = filter_symbols_by_tradable_pairs(symbols)
+    filter_info = get_filter_info(original_symbols, symbols)
+    if filter_info["was_filtered"]:
+        logger.info(
+            "TRADABLE_PAIRS filter: %d/%d symbols selected: %s",
+            filter_info["filtered_count"],
+            filter_info["original_count"],
+            ", ".join(symbols)
+        )
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C

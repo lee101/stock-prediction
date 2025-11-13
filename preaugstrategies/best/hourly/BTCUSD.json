@@ -1,0 +1,62 @@
+{
+  "symbol": "BTCUSD",
+  "best_strategy": "rolling_norm",
+  "mae": 367.23759875705633,
+  "mae_percent": 0.35559686750944103,
+  "rmse": 476.41378774823784,
+  "pct_return_mae": 0.003552760977331556,
+  "config": {
+    "name": "rolling_norm",
+    "params": {}
+  },
+  "timestamp": "2025-11-13T03:13:24Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 0.35559686750944103,
+  "comparison": {
+    "baseline": {
+      "mae": 408.164203618705,
+      "mae_percent": 0.39522617707865704,
+      "pct_return_mae": 0.003952660982051717
+    },
+    "percent_change": {
+      "mae": 381.3574100367866,
+      "mae_percent": 0.36926910771003696,
+      "pct_return_mae": 0.0036980353173498674
+    },
+    "log_returns": {
+      "mae": 387.16667561713194,
+      "mae_percent": 0.37489423065467264,
+      "pct_return_mae": 0.003754334655950928
+    },
+    "differencing": {
+      "mae": 6386.544789163515,
+      "mae_percent": 6.184103503894431,
+      "pct_return_mae": 0.061636792002394504
+    },
+    "detrending": {
+      "mae": 387.6449240375683,
+      "mae_percent": 0.37535731951260576,
+      "pct_return_mae": 0.003759007270430587
+    },
+    "robust_scaling": {
+      "mae": 382.8887729468032,
+      "mae_percent": 0.3707519293374115,
+      "pct_return_mae": 0.0037126406294032597
+    },
+    "minmax_standard": {
+      "mae": 381.7212174294326,
+      "mae_percent": 0.3696213831024248,
+      "pct_return_mae": 0.0037016054209206236
+    },
+    "rolling_norm": {
+      "mae": 367.23759875705633,
+      "mae_percent": 0.35559686750944103,
+      "pct_return_mae": 0.003552760977331556
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2/hourly",
+    "frequency": "hourly"
+  }
+}

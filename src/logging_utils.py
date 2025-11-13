@@ -76,6 +76,44 @@ def _resolve_level(*keys: str, default: str = "INFO") -> int:
     return getattr(logging, default.upper(), logging.INFO)
 
 
+def get_log_filename(base_name: str, is_hourly: bool = False, is_paper: bool = None) -> str:
+    """
+    Generate log filename based on trading mode (hourly vs daily) and paper vs live.
+
+    Args:
+        base_name: Base log filename (e.g., "trade_stock_e2e.log" or "alpaca_cli.log")
+        is_hourly: Whether this is hourly trading (vs daily)
+        is_paper: Whether this is paper trading. If None, reads from env PAPER variable
+
+    Returns:
+        Modified log filename with appropriate suffixes
+
+    Examples:
+        trade_stock_e2e.log (daily live)
+        trade_stock_e2e_paper.log (daily paper)
+        trade_stock_e2e_hourly.log (hourly live)
+        trade_stock_e2e_hourly_paper.log (hourly paper)
+    """
+    if is_paper is None:
+        is_paper = _env_flag("PAPER", default=False)
+
+    # Remove .log extension if present
+    if base_name.endswith(".log"):
+        base_name = base_name[:-4]
+
+    # Build suffix parts
+    suffixes = []
+    if is_hourly:
+        suffixes.append("hourly")
+    if is_paper:
+        suffixes.append("paper")
+
+    # Construct final filename
+    if suffixes:
+        return f"{base_name}_{'_'.join(suffixes)}.log"
+    return f"{base_name}.log"
+
+
 def setup_logging(log_file: str) -> logging.Logger:
     """Configure logging to output to both stdout and a file with optional compact formatting."""
     try:

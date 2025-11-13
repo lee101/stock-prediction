@@ -10,10 +10,10 @@ This document describes the integration of Amazon's Chronos2 time-series forecas
 **Required:** Run the trading system with Chronos2-only mode using:
 
 ```bash
-TORCH_COMPILED=0 ONLY_CHRONOS2=1 PAPER=1 python trade_stock_e2e.py
+ONLY_CHRONOS2=1 PAPER=1 python trade_stock_e2e.py
 ```
 
-**IMPORTANT:** `TORCH_COMPILED=0` is **required** to avoid "Invalid backend" SDPA errors. The system uses eager attention (no SDPA) by default when TORCH_COMPILED=0.
+**NOTE:** `TORCH_COMPILED=1` is now **enabled by default** for faster inference. The system uses eager attention (no SDPA) to ensure compatibility with torch.compile. If you experience issues, you can disable compilation with `TORCH_COMPILED=0`.
 
 Variants accepted for ONLY_CHRONOS2:
 ```bash
@@ -25,7 +25,7 @@ ONLY_CHRONOS2=on
 ```
 
 **Optional overrides:**
-- `TORCH_COMPILED=1` - Enable torch.compile (may cause SDPA errors, use with caution)
+- `TORCH_COMPILED=0` - Disable torch.compile (enabled by default for better performance)
 - `MARKETSIM_FORCE_TOTO=1` - Temporarily fall back to Toto (takes precedence over ONLY_CHRONOS2)
 
 Example with Toto fallback:
@@ -55,7 +55,7 @@ Chronos2 hyperparameters are loaded from `hyperparams/chronos2/{SYMBOL}.json`:
 ### Environment Variables for Tuning
 
 **Core flags:**
-- `TORCH_COMPILED` - Enable torch.compile (default: "0" = disabled, set "1" to enable)
+- `TORCH_COMPILED` - Control torch.compile (default: "1" = enabled, set "0" to disable)
 - `ONLY_CHRONOS2` - Force Chronos2 model for all predictions (set "1" to enable)
 
 **Advanced tuning (rarely needed):**
@@ -243,14 +243,14 @@ All features tested and verified with REAL training data (trainingdata/BTCUSD.cs
 
 **Root Cause**: Incompatible Flash Attention or memory-efficient SDPA backends on some CUDA configurations. Occurs when torch.compile is enabled or when SDPA backends are not properly configured.
 
-**Solution**: Force eager attention mode (no SDPA) by setting `TORCH_COMPILED=0` and passing `attn_implementation="eager"` to the model. This is now the default behavior.
+**Solution**: Force eager attention mode (no SDPA) by passing `attn_implementation="eager"` to the model. This is now the default behavior and is compatible with torch.compile.
 
 In `load_chronos2_wrapper()`:
 ```python
-# Disable torch.compile by default (TORCH_COMPILED=0)
-compile_enabled = os.getenv("TORCH_COMPILED", "0") in {"1", "true", "yes", "on"}
+# Enable torch.compile by default (TORCH_COMPILED=1)
+compile_enabled = os.getenv("TORCH_COMPILED", "1") in {"1", "true", "yes", "on"}
 
-# Force eager attention (no SDPA)
+# Force eager attention (no SDPA) - compatible with torch.compile
 attn_implementation = "eager"
 
 # Also disable SDPA backends at torch level as backup
@@ -261,7 +261,7 @@ torch.backends.cuda.enable_math_sdp(True)
 wrapper = Chronos2OHLCWrapper.from_pretrained(
     model_id=params["model_id"],
     ...
-    torch_compile=compile_enabled,  # Defaults to False
+    torch_compile=compile_enabled,  # Defaults to True
     attn_implementation=attn_implementation,  # Force eager
 )
 ```
