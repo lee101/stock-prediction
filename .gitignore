@@ -208,3 +208,4 @@ optimization_analysis_prof.md
 optimization_analysis_svg.md
 simulation_results/
 chronos2_benchmarks
+backtest_cache/

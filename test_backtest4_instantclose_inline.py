@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import numpy as np
 import pandas as pd
 import torch
+import hashlib
+import pickle
 from typing import Dict, Tuple, Optional, List
 from dataclasses import dataclass
 from datetime import datetime
@@ -144,52 +146,69 @@ def calculate_profit_with_limit_orders(
     return filled_returns, unfilled_flags, hold_durations
 
 
-def _generate_forecasts_for_sim(
-    simulation_data: pd.DataFrame,
+_CACHE_DIR = Path("backtest_cache/forecasts")
+_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+def _get_all_predictions_cache_path(symbol: str, data_hash: str) -> Path:
+    return _CACHE_DIR / f"{symbol}_all_preds_{data_hash}.pkl"
+
+def _generate_all_predictions(
+    stock_data: pd.DataFrame,
     symbol: str,
-    sim_idx: int,
     trading_fee: float,
     spread: float,
     is_crypto: bool,
-) -> Optional[Dict]:
-    """Generate forecasts for a single simulation using run_single_simulation."""
+    num_simulations: int,
+) -> Optional[List[Dict]]:
+    """Pre-compute predictions for all simulations once."""
+    data_hash = hashlib.md5(str(len(stock_data)).encode()).hexdigest()[:16]
+    cache_path = _get_all_predictions_cache_path(symbol, data_hash)
+
+    if cache_path.exists():
+        try:
+            logger.info(f"Loading cached predictions for {symbol}...")
+            with open(cache_path, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load prediction cache: {e}")
+
+    logger.info(f"Generating predictions for {num_simulations} simulations...")
+    all_predictions = []
+
+    for sim_idx in range(num_simulations):
+        simulation_data = stock_data.iloc[:-(sim_idx + 1)].copy(deep=True)
+        if simulation_data.empty or len(simulation_data) < 100:
+            all_predictions.append(None)
+            continue
+
+        try:
+            result = run_single_simulation(
+                simulation_data,
+                symbol,
+                trading_fee,
+                is_crypto,
+                sim_idx,
+                spread,
+            )
+
+            last_preds = result.get('last_preds')
+            all_predictions.append(last_preds)
+
+            if (sim_idx + 1) % 5 == 0:
+                logger.info(f"  Generated predictions for {sim_idx + 1}/{num_simulations} simulations")
+
+        except Exception as exc:
+            logger.warning(f"Failed to generate predictions for sim {sim_idx}: {exc}")
+            all_predictions.append(None)
+
     try:
-        # Use run_single_simulation which handles all forecast generation
-        result = run_single_simulation(
-            simulation_data,
-            symbol,
-            trading_fee,
-            is_crypto,
-            sim_idx,
-            spread,
-        )
+        with open(cache_path, 'wb') as f:
+            pickle.dump(all_predictions, f)
+        logger.info(f"Saved prediction cache to {cache_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save prediction cache: {e}")
 
-        # The result dict contains last_preds with all the required data
-        last_preds = result.get('last_preds')
-
-        if last_preds is None:
-            logger.warning(f"No predictions returned for {symbol} sim {sim_idx}")
-            return None
-
-        # Verify we have all required predictions
-        required_keys = [
-            'close_actual_movement_values',
-            'high_actual_movement_values',
-            'low_actual_movement_values',
-            'high_predictions',
-            'low_predictions',
-        ]
-
-        for key in required_keys:
-            if key not in last_preds or last_preds[key] is None:
-                logger.warning(f"Missing {key} for {symbol} sim {sim_idx}")
-                return None
-
-        return last_preds
-
-    except Exception as exc:
-        logger.warning(f"Failed to generate forecasts for {symbol} sim {sim_idx}: {exc}")
-        return None
+    return all_predictions
 
 
 def evaluate_strategy_with_close_policy(
@@ -369,25 +388,29 @@ def compare_close_policies(symbol: str, num_simulations: int = 50) -> Optional[D
 
     logger.info(f"Running {num_simulations} simulations...")
 
+    # Pre-compute all predictions once
+    all_predictions = _generate_all_predictions(
+        stock_data, symbol, trading_fee, spread, is_crypto, num_simulations
+    )
+
+    if all_predictions is None:
+        print("Failed to generate predictions\n")
+        return None
+
     # Collect metrics for each policy
     instant_close_metrics = []
     keep_open_metrics = []
 
     for sim_idx in range(num_simulations):
-        # Create simulation data (same pattern as backtest)
+        last_preds = all_predictions[sim_idx]
+        if last_preds is None:
+            continue
+
         simulation_data = stock_data.iloc[:-(sim_idx + 1)].copy(deep=True)
         if simulation_data.empty or len(simulation_data) < 100:
             continue
 
         try:
-            # Generate forecasts (simplified - just for maxdiffalwayson comparison)
-            last_preds = _generate_forecasts_for_sim(
-                simulation_data, symbol, sim_idx,
-                trading_fee, spread, is_crypto
-            )
-
-            if last_preds is None:
-                continue
 
             # Evaluate both policies using the REAL MaxDiffAlwaysOn strategy with grid search
             from backtest_test3_inline import evaluate_maxdiff_always_on_strategy
