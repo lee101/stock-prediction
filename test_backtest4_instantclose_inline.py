@@ -148,6 +148,45 @@ def calculate_profit_with_limit_orders(
 
 _CACHE_DIR = Path("backtest_cache/forecasts")
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_DATA_CACHE_DIR = Path("backtest_cache/data")
+_DATA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+_data_cache = {}
+
+def _get_data_cache_bucket(timestamp_str: str) -> str:
+    """Round timestamp to 2-hour bucket for daily data caching."""
+    from datetime import datetime
+    if timestamp_str and '--' in timestamp_str:
+        dt = datetime.strptime(timestamp_str, '%Y-%m-%d--%H-%M-%S')
+    else:
+        dt = datetime.now()
+    bucket_hour = (dt.hour // 2) * 2
+    return dt.strftime(f'%Y-%m-%d--{bucket_hour:02d}-00-00')
+
+def _load_or_fetch_data(timestamp_str: str):
+    """Load data from disk cache or fetch and cache."""
+    bucket = _get_data_cache_bucket(timestamp_str)
+    cache_path = _DATA_CACHE_DIR / f"data_{bucket}.pkl"
+
+    if cache_path.exists():
+        try:
+            logger.info(f"Loading data from cache (bucket={bucket})")
+            with open(cache_path, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load data cache: {e}")
+
+    logger.info(f"Fetching fresh data (bucket={bucket})")
+    data = download_daily_stock_data(timestamp_str, symbols=None)
+
+    try:
+        with open(cache_path, 'wb') as f:
+            pickle.dump(data, f)
+        logger.info(f"Saved data cache to {cache_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save data cache: {e}")
+
+    return data
 
 def _get_all_predictions_cache_path(symbol: str, data_hash: str) -> Path:
     return _CACHE_DIR / f"{symbol}_all_preds_{data_hash}.pkl"
@@ -363,15 +402,33 @@ def compare_close_policies(symbol: str, num_simulations: int = 50) -> Optional[D
 
     Prints comparative results including fees and opportunity costs.
     """
+    import time
+    total_start = time.perf_counter()
     print(f"\n{'='*80}")
     print(f"Close Policy Comparison for {symbol}")
     print(f"{'='*80}\n")
 
     logger.info(f"Loading data for {symbol}...")
 
-    # Download the latest data (use same pattern as backtest_test3_inline.py)
+    data_start = time.perf_counter()
     current_time_formatted = '2024-09-07--03-36-27'  # Use same test dataset
-    stock_data = download_daily_stock_data(current_time_formatted, symbols=[symbol])
+
+    bucket = _get_data_cache_bucket(current_time_formatted)
+    if bucket not in _data_cache:
+        _data_cache[bucket] = _load_or_fetch_data(current_time_formatted)
+
+    all_data = _data_cache[bucket]
+
+    # Handle both indexed and non-indexed DataFrames
+    if 'symbol' in all_data.index.names:
+        stock_data = all_data.loc[symbol] if symbol in all_data.index.get_level_values('symbol') else all_data[all_data.index.get_level_values('symbol') == symbol]
+    elif 'symbol' in all_data.columns:
+        stock_data = all_data[all_data['symbol'] == symbol]
+    else:
+        # Assume single symbol data
+        stock_data = all_data
+
+    logger.info(f"Data loading took {time.perf_counter() - data_start:.3f}s")
 
     is_crypto = symbol in crypto_symbols
     trading_fee = CRYPTO_TRADING_FEE if is_crypto else TRADING_FEE
@@ -388,20 +445,27 @@ def compare_close_policies(symbol: str, num_simulations: int = 50) -> Optional[D
 
     logger.info(f"Running {num_simulations} simulations...")
 
+    pred_start = time.perf_counter()
     # Pre-compute all predictions once
     all_predictions = _generate_all_predictions(
         stock_data, symbol, trading_fee, spread, is_crypto, num_simulations
     )
+    logger.info(f"Prediction generation/loading took {time.perf_counter() - pred_start:.3f}s")
 
     if all_predictions is None:
         print("Failed to generate predictions\n")
         return None
 
+    opt_start = time.perf_counter()
+
     # Collect metrics for each policy
     instant_close_metrics = []
     keep_open_metrics = []
 
+    import time
+    sim_times = []
     for sim_idx in range(num_simulations):
+        sim_start = time.perf_counter()
         last_preds = all_predictions[sim_idx]
         if last_preds is None:
             continue
@@ -432,6 +496,7 @@ def compare_close_policies(symbol: str, num_simulations: int = 50) -> Optional[D
                 is_crypto=is_crypto,
                 close_at_eod=False
             )
+            sim_times.append(time.perf_counter() - sim_start)
 
             # Convert to metrics format
             instant_metrics = PositionCloseMetrics(
@@ -479,6 +544,11 @@ def compare_close_policies(symbol: str, num_simulations: int = 50) -> Optional[D
     if not instant_close_metrics or not keep_open_metrics:
         print("❌ No valid simulations completed\n")
         return None
+
+    logger.info(f"Optimization loop took {time.perf_counter() - opt_start:.3f}s")
+    if sim_times:
+        avg_time = sum(sim_times) / len(sim_times)
+        logger.info(f"Avg time per sim: {avg_time:.3f}s (min={min(sim_times):.3f}s, max={max(sim_times):.3f}s)")
 
     # Aggregate results
     def avg_metrics(metrics_list: List[PositionCloseMetrics]) -> PositionCloseMetrics:
