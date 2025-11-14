@@ -1,0 +1,63 @@
+{
+  "symbol": "SAP",
+  "best_strategy": "differencing",
+  "mae": 4.134313293457036,
+  "mae_percent": 1.5633186025947594,
+  "rmse": 5.131152018965215,
+  "pct_return_mae": 0.015690628708957426,
+  "config": {
+    "name": "differencing",
+    "params": {}
+  },
+  "timestamp": "2025-11-13T22:38:42Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 1.5633186025947594,
+  "comparison": {
+    "baseline": {
+      "mae": 11.442499999999997,
+      "mae_percent": 4.326782186173581,
+      "pct_return_mae": 0.04361698343578458
+    },
+    "percent_change": {
+      "mae": 11.243244628906247,
+      "mae_percent": 4.251437236193433,
+      "pct_return_mae": 0.04288226956380973
+    },
+    "log_returns": {
+      "mae": 10.69083068847656,
+      "mae_percent": 4.042551520934955,
+      "pct_return_mae": 0.0407819426125277
+    },
+    "differencing": {
+      "mae": 4.134313293457036,
+      "mae_percent": 1.5633186025947594,
+      "pct_return_mae": 0.015690628708957426
+    },
+    "detrending": {
+      "mae": 41.56431091308593,
+      "mae_percent": 15.716820628299796,
+      "pct_return_mae": 0.15756822016546937
+    },
+    "robust_scaling": {
+      "mae": 11.330219726562497,
+      "mae_percent": 4.2843253553264695,
+      "pct_return_mae": 0.043202804605647335
+    },
+    "minmax_standard": {
+      "mae": 11.33731506347656,
+      "mae_percent": 4.28700833346627,
+      "pct_return_mae": 0.04323734081039443
+    },
+    "rolling_norm": {
+      "mae": 8.111952819824223,
+      "mae_percent": 3.0673937475111215,
+      "pct_return_mae": 0.030675731696004065
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "frequency": "daily",
+    "strategy_repeats": 1
+  }
+}
