@@ -1,0 +1,147 @@
+name: Fast CI (GitHub Runners)
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install linting dependencies
+        run: |
+          uv pip install --system ruff flake8
+
+      - name: Run Ruff linter
+        run: ruff check src tests --output-format=github
+
+      - name: Run Ruff format check
+        run: ruff format --check src tests
+
+  fast-unit-tests:
+    name: Fast Unit Tests (CPU)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+
+    env:
+      # CI mode flags
+      CI: "1"
+      FAST_CI: "1"
+      CPU_ONLY: "1"
+      FAST_SIMULATE: "1"
+
+      # Market simulator flags
+      MARKETSIM_ALLOW_MOCK_ANALYTICS: "1"
+      MARKETSIM_SKIP_REAL_IMPORT: "1"
+      MARKETSIM_ALLOW_CPU_FALLBACK: "1"
+
+      # Trading flags
+      ALP_PAPER: "1"
+      PYTHONUNBUFFERED: "1"
+
+      # Skip heavy dependencies for unit tests
+      SKIP_TORCH_CHECK: "0"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1  # Shallow clone for faster checkout
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install CPU-only PyTorch and dependencies
+        run: |
+          # Install PyTorch CPU version first
+          uv pip install --system \
+            torch==2.9.0 \
+            --index-url https://download.pytorch.org/whl/cpu
+
+          # Install core dependencies (excluding heavy ML dependencies)
+          uv pip install --system \
+            numpy pandas pytest pytest-asyncio pytest-env \
+            scikit-learn scipy matplotlib seaborn \
+            pydantic loguru typer requests aiohttp \
+            cvxpy cachetools diskcache tqdm retry \
+            psutil filelock joblib
+
+      - name: Run fast unit tests
+        run: |
+          python -m pytest \
+            -v \
+            -m "unit and not slow and not model_required and not cuda_required" \
+            --tb=short \
+            --maxfail=10 \
+            tests/
+
+      - name: Run smoke tests (minimal model tests)
+        continue-on-error: true
+        run: |
+          # Install minimal model dependencies for smoke tests
+          uv pip install --system chronos-forecasting
+
+          python -m pytest \
+            -v \
+            -m "smoke and model_required and not cuda_required" \
+            --tb=short \
+            --maxfail=3 \
+            tests/
+
+  type-check:
+    name: Type Checking
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system --requirement requirements.txt
+          uv pip install --system ty pyright mypy
+
+      - name: Type check with ty
+        continue-on-error: true
+        run: ty check
+
+      - name: Type check with Pyright
+        continue-on-error: true
+        run: python -m pyright src
+
+      - name: Type check with mypy
+        continue-on-error: true
+        run: mypy src --config-file pyproject.toml

@@ -24,6 +24,11 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # pragma: no cover
     torch = None  # type: ignore
 
+try:  # pragma: no cover - surface chronos version info when available
+    import chronos as _chronos_pkg
+except Exception:  # pragma: no cover
+    _chronos_pkg = None  # type: ignore
+
 from chronos import Chronos2Pipeline as _Chronos2Pipeline
 from preaug_sweeps.augmentations import BaseAugmentation
 try:  # pragma: no cover - backward compatibility with pre-helper snapshots
@@ -33,6 +38,7 @@ except ImportError:  # pragma: no cover
         return None
 from src.gpu_utils import should_offload_to_cpu as gpu_should_offload_to_cpu
 from src.preaug import PreAugmentationChoice, PreAugmentationSelector
+from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +46,12 @@ DEFAULT_TARGET_COLUMNS: Tuple[str, ...] = ("open", "high", "low", "close")
 DEFAULT_QUANTILE_LEVELS: Tuple[float, ...] = (0.1, 0.5, 0.9)
 _BOOL_TRUE = {"1", "true", "yes", "on"}
 _DEFAULT_MODEL_ID = "amazon/chronos-2"
+
+
+def _chronos_version() -> str:
+    if _chronos_pkg is not None:  # pragma: no branch - lightweight accessor
+        return getattr(_chronos_pkg, "__version__", "unknown")
+    return "unknown"
 
 
 def _path_contains_config(path: Path) -> bool:
@@ -328,33 +340,121 @@ class Chronos2OHLCWrapper:
         compile_backend: Optional[str] = None,
         torch_dtype: Optional[Any] = None,
         preaugmentation_dirs: Optional[Sequence[str | Path]] = None,
+        cache_policy: str = "prefer",
+        force_refresh: bool = False,
+        cache_manager: Optional[ModelCacheManager] = None,
         **kwargs,
     ) -> "Chronos2OHLCWrapper":
         """
         Instantiate Chronos2 via Hugging Face and wrap it with OHLC helpers.
         """
 
+        policy = (cache_policy or "prefer").strip().lower()
+        if policy not in {"prefer", "never", "only"}:
+            raise ValueError("Chronos2 cache_policy must be 'prefer', 'never', or 'only'.")
+
         pipeline_cls = _require_chronos2_pipeline()
         resolved_model_id = _resolve_model_source(model_id)
         if resolved_model_id != model_id:
             logger.info("Resolved Chronos2 model_id '%s' to '%s'", model_id, resolved_model_id)
-        pipeline = pipeline_cls.from_pretrained(resolved_model_id, device_map=device_map, **kwargs)
-        device_hint = device_map if isinstance(device_map, str) else "cuda"
-        return cls(
-            pipeline,
-            device_hint=device_hint,
-            id_column=id_column,
-            timestamp_column=timestamp_column,
-            target_columns=target_columns,
-            default_context_length=default_context_length,
-            default_batch_size=default_batch_size,
-            quantile_levels=quantile_levels,
-            torch_compile=torch_compile,
-            compile_mode=compile_mode,
-            compile_backend=compile_backend,
-            torch_dtype=torch_dtype,
-            preaugmentation_dirs=preaugmentation_dirs,
-        )
+
+        manager = cache_manager or ModelCacheManager("chronos2")
+        dtype_token = dtype_to_token(torch_dtype if torch_dtype is not None else None)
+        torch_version = getattr(torch, "__version__", "unknown") if torch is not None else "unknown"
+        metadata_requirements = {
+            "model_id": resolved_model_id,
+            "dtype": dtype_token,
+            "compile_mode": (compile_mode or "none"),
+            "compile_backend": (compile_backend or "none"),
+            "torch_version": torch_version,
+            "chronos_version": _chronos_version(),
+        }
+        use_cache = policy != "never"
+        loaded_from_cache = False
+
+        with manager.compilation_env(resolved_model_id, dtype_token):
+            metadata = manager.load_metadata(resolved_model_id, dtype_token) if use_cache else None
+            pipeline: _Chronos2Pipeline
+            if (
+                use_cache
+                and not force_refresh
+                and metadata
+                and manager.metadata_matches(metadata, metadata_requirements)
+            ):
+                cache_path = manager.load_pretrained_path(resolved_model_id, dtype_token)
+                if cache_path is not None:
+                    try:
+                        pipeline = pipeline_cls.from_pretrained(str(cache_path), device_map=device_map, **kwargs)
+                        loaded_from_cache = True
+                        logger.info(
+                            "Loaded Chronos2 model '%s' (%s) from compiled cache.",
+                            resolved_model_id,
+                            dtype_token,
+                        )
+                    except Exception as exc:  # pragma: no cover - unexpected load failures
+                        loaded_from_cache = False
+                        logger.warning("Failed to load Chronos2 cache from %s: %s", cache_path, exc)
+            if policy == "only" and not loaded_from_cache:
+                raise RuntimeError(
+                    f"Compiled Chronos2 cache unavailable for model '{resolved_model_id}' "
+                    f"and dtype '{dtype_token}'. Run cache warmup utilities first."
+                )
+
+            if not loaded_from_cache:
+                pipeline = pipeline_cls.from_pretrained(resolved_model_id, device_map=device_map, **kwargs)
+                logger.info(
+                    "Loaded Chronos2 model '%s' from source (cache_policy=%s).",
+                    resolved_model_id,
+                    policy,
+                )
+
+            device_hint = device_map if isinstance(device_map, str) else "cuda"
+            wrapper = cls(
+                pipeline,
+                device_hint=device_hint,
+                id_column=id_column,
+                timestamp_column=timestamp_column,
+                target_columns=target_columns,
+                default_context_length=default_context_length,
+                default_batch_size=default_batch_size,
+                quantile_levels=quantile_levels,
+                torch_compile=torch_compile,
+                compile_mode=compile_mode,
+                compile_backend=compile_backend,
+                torch_dtype=torch_dtype,
+                preaugmentation_dirs=preaugmentation_dirs,
+            )
+
+            if use_cache and (force_refresh or not loaded_from_cache):
+                model_obj = getattr(wrapper, "pipeline", None)
+                if model_obj is not None:
+                    model_attr = getattr(model_obj, "model", None)
+                else:
+                    model_attr = None
+                if model_attr is not None:
+                    metadata_payload = {
+                        **metadata_requirements,
+                        "device_map": str(device_map),
+                        "cache_policy": policy,
+                    }
+                    try:
+                        manager.persist_model_state(
+                            model_id=resolved_model_id,
+                            dtype_token=dtype_token,
+                            model=model_attr,
+                            metadata=metadata_payload,
+                            force=force_refresh,
+                        )
+                    except ModelCacheError as exc:
+                        logger.warning(
+                            "Failed to persist Chronos2 cache for model '%s': %s",
+                            resolved_model_id,
+                            exc,
+                        )
+                else:
+                    logger.debug("Chronos2 pipeline missing model attribute; skipping cache persistence.")
+
+        return wrapper
 
     def unload(self) -> None:
         """Release GPU memory by offloading the Chronos2 model to CPU if needed."""
