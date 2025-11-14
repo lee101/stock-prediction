@@ -1,52 +1,40 @@
 {
   "symbol": "GOOG",
-  "model": "chronos2",
+  "model": "toto",
   "config": {
-    "name": "ctx2048_bs64_median",
-    "model_id": "amazon/chronos-2",
-    "device_map": "cuda",
-    "context_length": 2048,
-    "batch_size": 64,
-    "quantile_levels": [
-      0.1,
-      0.5,
-      0.9
-    ],
-    "aggregation": "median",
-    "sample_count": 0,
-    "scaler": "none",
-    "predict_kwargs": {
-      "predict_batches_jointly": true
-    }
+    "name": "toto_opt_trimmed_mean_5_1024_spb128",
+    "num_samples": 1024,
+    "aggregate": "trimmed_mean_5",
+    "samples_per_batch": 128
   },
   "validation": {
-    "price_mae": 4.122365570068351,
-    "pct_return_mae": 0.018495479585444487,
-    "latency_s": 4.501878790018964
+    "price_mae": 3.2070672554462947,
+    "pct_return_mae": 0.014546290494042796,
+    "latency_s": 6.505802530999063
   },
   "test": {
-    "price_mae": 2.4802154541015637,
-    "pct_return_mae": 0.010064264898685307,
-    "latency_s": 4.505142241978319
+    "price_mae": 3.0672919656087374,
+    "pct_return_mae": 0.012422907987358369,
+    "latency_s": 6.482925680000335
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/chronos2/GOOG.json",
+  "config_path": "hyperparams/toto/GOOG.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
-    "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.010064264898685307,
-    "kronos_pct_return_mae": 0.04745632833717102,
-    "toto_pct_return_mae": 0.012422907987358369,
-    "chronos2_pct_return_mae": 0.010064264898685307,
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.014546290494042796,
+    "kronos_pct_return_mae": 0.05028949744776691,
+    "toto_pct_return_mae": 0.014546290494042796,
+    "chronos2_pct_return_mae": 0.0186872608202286,
     "candidate_pct_return_mae": {
-      "kronos": 0.04745632833717102,
-      "toto": 0.012422907987358369,
-      "chronos2": 0.010064264898685307
+      "kronos": 0.05028949744776691,
+      "toto": 0.014546290494042796,
+      "chronos2": 0.0186872608202286
     },
-    "improvement_pct": 18.98623970388602
+    "improvement_pct": 22.159322150110324
   }
 }

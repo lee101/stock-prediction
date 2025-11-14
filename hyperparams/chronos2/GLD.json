@@ -1,0 +1,40 @@
+{
+  "symbol": "GLD",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "chronos2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 2.330491638183594,
+    "pct_return_mae": 0.007572717417304897,
+    "latency_s": 0.06751421355293133
+  },
+  "test": {
+    "price_mae": 1.8759735107421875,
+    "pct_return_mae": 0.00604802209794339,
+    "latency_s": 0.06842291845241562
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-13T22:26:18.854793+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 512,
+    "batch_size": 128
+  }
+}

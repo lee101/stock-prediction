@@ -1,0 +1,40 @@
+{
+  "symbol": "PLTR",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx512_bs128_val20_test20",
+    "model_id": "chronos2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 84.30794868469238,
+    "pct_return_mae": 0.992909492975494,
+    "latency_s": 0.06586915219959337
+  },
+  "test": {
+    "price_mae": 85.77968101501465,
+    "pct_return_mae": 1.0102423426616027,
+    "latency_s": 0.06255918259703322
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-13T22:26:40.274492+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 512,
+    "batch_size": 128
+  }
+}

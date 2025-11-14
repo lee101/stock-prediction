@@ -1,52 +1,40 @@
 {
   "symbol": "AAPL",
-  "model": "chronos2",
+  "model": "toto",
   "config": {
-    "name": "ctx512_bs64_median",
-    "model_id": "amazon/chronos-2",
-    "device_map": "cuda",
-    "context_length": 512,
-    "batch_size": 64,
-    "quantile_levels": [
-      0.1,
-      0.5,
-      0.9
-    ],
-    "aggregation": "median",
-    "sample_count": 0,
-    "scaler": "none",
-    "predict_kwargs": {
-      "predict_batches_jointly": true
-    }
+    "name": "toto_opt_median_1024_spb16",
+    "num_samples": 1024,
+    "aggregate": "median",
+    "samples_per_batch": 16
   },
   "validation": {
-    "price_mae": 2.1924258985663867,
-    "pct_return_mae": 0.01767867121584992,
-    "latency_s": 5.065134404001583
+    "price_mae": 1.8822143354560352,
+    "pct_return_mae": 0.015103577520730771,
+    "latency_s": 80.20276487600313
   },
   "test": {
-    "price_mae": 2.414961423005667,
-    "pct_return_mae": 0.01863727561931778,
-    "latency_s": 4.021384122992458
+    "price_mae": 2.6959879421717714,
+    "pct_return_mae": 0.02066276378336577,
+    "latency_s": 79.53264727000897
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/chronos2/AAPL.json",
+  "config_path": "hyperparams/toto/AAPL.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
-    "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.01863727561931778,
-    "kronos_pct_return_mae": 0.03402690832893461,
-    "toto_pct_return_mae": 0.02066276378336577,
-    "chronos2_pct_return_mae": 0.01863727561931778,
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.015103577520730771,
+    "kronos_pct_return_mae": 0.03370767637617554,
+    "toto_pct_return_mae": 0.015103577520730771,
+    "chronos2_pct_return_mae": 0.01810335750521031,
     "candidate_pct_return_mae": {
-      "kronos": 0.03402690832893461,
-      "toto": 0.02066276378336577,
-      "chronos2": 0.01863727561931778
+      "kronos": 0.03370767637617554,
+      "toto": 0.015103577520730771,
+      "chronos2": 0.01810335750521031
     },
-    "improvement_pct": 9.802600394041075
+    "improvement_pct": 16.570296331032388
   }
 }

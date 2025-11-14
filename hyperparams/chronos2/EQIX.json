@@ -1,0 +1,40 @@
+{
+  "symbol": "EQIX",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx1024_bs128_val20_test20",
+    "model_id": "chronos2",
+    "device_map": "cuda",
+    "context_length": 1024,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 79.63700866699219,
+    "pct_return_mae": 0.09267984086124156,
+    "latency_s": 0.068705205648439
+  },
+  "test": {
+    "price_mae": 75.1754150390625,
+    "pct_return_mae": 0.08748753398852702,
+    "latency_s": 0.06891193129995372
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-13T22:23:52.348835+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 1024,
+    "batch_size": 128
+  }
+}

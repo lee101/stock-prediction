@@ -2,32 +2,27 @@
   "symbol": "ARKK",
   "model": "chronos2",
   "config": {
-    "name": "ctx512_bs64_median",
-    "model_id": "amazon/chronos-2",
+    "name": "chronos2_ctx2048_bs2048_val20_test20",
+    "model_id": "chronos2",
     "device_map": "cuda",
-    "context_length": 512,
-    "batch_size": 64,
+    "context_length": 2048,
+    "prediction_length": 1,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "median",
-    "sample_count": 0,
-    "scaler": "none",
-    "predict_kwargs": {
-      "predict_batches_jointly": true
-    }
+    "batch_size": 2048
   },
   "validation": {
-    "price_mae": 1.1138881683349608,
-    "pct_return_mae": 0.015176414211567549,
-    "latency_s": 4.294324806985969
+    "price_mae": 1.045547866821289,
+    "pct_return_mae": 0.014283064179514105,
+    "latency_s": 0.19627724030142418
   },
   "test": {
-    "price_mae": 1.1948829650878907,
-    "pct_return_mae": 0.015928646239301916,
-    "latency_s": 4.243585666998115
+    "price_mae": 1.2072372436523438,
+    "pct_return_mae": 0.016083850304606878,
+    "latency_s": 0.19544479374890217
   },
   "windows": {
     "val_window": 20,
@@ -37,13 +32,13 @@
   "config_path": "hyperparams/chronos2/ARKK.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
-    "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.015928646239301916,
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.014283064179514105,
     "kronos_pct_return_mae": null,
     "toto_pct_return_mae": null,
-    "chronos2_pct_return_mae": 0.015928646239301916,
+    "chronos2_pct_return_mae": 0.014283064179514105,
     "candidate_pct_return_mae": {
-      "chronos2": 0.015928646239301916
+      "chronos2": 0.014283064179514105
     },
     "improvement_pct": 0.0
   }

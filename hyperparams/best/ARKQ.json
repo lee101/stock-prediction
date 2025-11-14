@@ -2,32 +2,27 @@
   "symbol": "ARKQ",
   "model": "chronos2",
   "config": {
-    "name": "ctx512_bs64_median",
-    "model_id": "amazon/chronos-2",
+    "name": "chronos2_ctx512_bs2048_val20_test20",
+    "model_id": "chronos2",
     "device_map": "cuda",
     "context_length": 512,
-    "batch_size": 64,
+    "prediction_length": 1,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "median",
-    "sample_count": 0,
-    "scaler": "none",
-    "predict_kwargs": {
-      "predict_batches_jointly": true
-    }
+    "batch_size": 2048
   },
   "validation": {
-    "price_mae": 1.429742813110351,
-    "pct_return_mae": 0.01527016767140223,
-    "latency_s": 4.289404586997989
+    "price_mae": 1.408776092529297,
+    "pct_return_mae": 0.01510155637727723,
+    "latency_s": 0.197344705901196
   },
   "test": {
-    "price_mae": 1.3032924652099602,
-    "pct_return_mae": 0.01333993767142343,
-    "latency_s": 4.655715606008016
+    "price_mae": 1.341427993774414,
+    "pct_return_mae": 0.013726986798345409,
+    "latency_s": 0.20373395154747415
   },
   "windows": {
     "val_window": 20,
@@ -37,13 +32,13 @@
   "config_path": "hyperparams/chronos2/ARKQ.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
-    "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.01333993767142343,
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.01510155637727723,
     "kronos_pct_return_mae": null,
     "toto_pct_return_mae": null,
-    "chronos2_pct_return_mae": 0.01333993767142343,
+    "chronos2_pct_return_mae": 0.01510155637727723,
     "candidate_pct_return_mae": {
-      "chronos2": 0.01333993767142343
+      "chronos2": 0.01510155637727723
     },
     "improvement_pct": 0.0
   }

@@ -2,32 +2,27 @@
   "symbol": "TSLA",
   "model": "chronos2",
   "config": {
-    "name": "ctx1024_bs64_median",
-    "model_id": "amazon/chronos-2",
+    "name": "chronos2_ctx4096_bs2048_val20_test20",
+    "model_id": "chronos2",
     "device_map": "cuda",
-    "context_length": 1024,
-    "batch_size": 64,
+    "context_length": 4096,
+    "prediction_length": 1,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "median",
-    "sample_count": 0,
-    "scaler": "none",
-    "predict_kwargs": {
-      "predict_batches_jointly": true
-    }
+    "batch_size": 2048
   },
   "validation": {
-    "price_mae": 9.661648559570315,
-    "pct_return_mae": 0.02701256450068612,
-    "latency_s": 4.749194365977019
+    "price_mae": 8.877394104003907,
+    "pct_return_mae": 0.011765772761477961,
+    "latency_s": 0.19615412410057614
   },
   "test": {
-    "price_mae": 11.164378356933593,
-    "pct_return_mae": 0.02571074769811076,
-    "latency_s": 4.616278235007485
+    "price_mae": 11.755125427246094,
+    "pct_return_mae": 0.013859964913233259,
+    "latency_s": 0.1927803723498073
   },
   "windows": {
     "val_window": 20,
@@ -37,16 +32,16 @@
   "config_path": "hyperparams/chronos2/TSLA.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
-    "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.02571074769811076,
-    "kronos_pct_return_mae": 0.05869174080175053,
-    "toto_pct_return_mae": 0.02831435876641577,
-    "chronos2_pct_return_mae": 0.02571074769811076,
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.011765772761477961,
+    "kronos_pct_return_mae": 0.02368779367810309,
+    "toto_pct_return_mae": 0.021012896969727725,
+    "chronos2_pct_return_mae": 0.011765772761477961,
     "candidate_pct_return_mae": {
-      "kronos": 0.05869174080175053,
-      "toto": 0.02831435876641577,
-      "chronos2": 0.02571074769811076
+      "kronos": 0.02368779367810309,
+      "toto": 0.021012896969727725,
+      "chronos2": 0.011765772761477961
     },
-    "improvement_pct": 9.195373590424394
+    "improvement_pct": 44.00689834234496
   }
 }
