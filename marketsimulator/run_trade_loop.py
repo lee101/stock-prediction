@@ -49,6 +49,10 @@ else:  # pragma: no cover
     from wandboard import WandBoardLogger
 
 from src.cache_utils import ensure_huggingface_cache_dir
+from trade_stock_e2e import (
+    STRATEGYTRAINING_FAST_RESULTS_PATH,
+    _load_strategytraining_symbols,
+)
 
 ensure_huggingface_cache_dir(logger=logger)
 
@@ -58,6 +62,62 @@ ENV_MOCK_ANALYTICS = "MARKETSIM_USE_MOCK_ANALYTICS"
 DEFAULT_FAST_BACKTEST_SIMS = 24
 DEFAULT_FAST_SWEEP_POINTS = 101
 DEFAULT_FAST_KRONOS_SAMPLES = 64
+DEFAULT_SIM_SYMBOLS = [
+    "EQIX",
+    "GS",
+    "COST",
+    "CRM",
+    "AXP",
+    "BA",
+    "GE",
+    "LLY",
+    "AVGO",
+    "SPY",
+    "SHOP",
+    "GLD",
+    "PLTR",
+    "MCD",
+    "V",
+    "VTI",
+    "QQQ",
+    "MA",
+    "SAP",
+    "COUR",
+    "ADBE",
+    "INTC",
+    "QUBT",
+    "BTCUSD",
+    "ETHUSD",
+    "UNIUSD",
+    "LINKUSD",
+]
+
+
+def _resolve_simulation_symbols(
+    cli_symbols: Optional[Sequence[str]],
+    *,
+    fast_results_path: Path = STRATEGYTRAINING_FAST_RESULTS_PATH,
+) -> List[str]:
+    """Resolve the symbol list for simulations, mirroring trade_stock_e2e defaults."""
+
+    if cli_symbols:
+        return list(cli_symbols)
+
+    experiment_symbols = _load_strategytraining_symbols(fast_results_path)
+    if experiment_symbols:
+        logger.info(
+            "[sim] Using %d experiment symbols from %s.",
+            len(experiment_symbols),
+            fast_results_path,
+        )
+        return experiment_symbols
+
+    logger.warning(
+        "[sim] Falling back to built-in symbol list (%d entries); experiment file missing or empty at %s.",
+        len(DEFAULT_SIM_SYMBOLS),
+        fast_results_path,
+    )
+    return list(DEFAULT_SIM_SYMBOLS)
 
 
 def _configure_fast_mode(
@@ -117,7 +177,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--symbols",
         nargs="+",
-        default=["AAPL", "MSFT", "NVDA"],
+        default=None,
         help="Symbols to simulate.",
     )
     parser.add_argument(
@@ -891,6 +951,7 @@ def _log_to_wandboard(
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parse_args(argv)
+    args.symbols = _resolve_simulation_symbols(args.symbols)
     if getattr(args, "stub_config", False):
         stub_return = 0.0125
         stub_sharpe = 1.0500

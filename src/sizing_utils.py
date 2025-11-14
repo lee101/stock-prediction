@@ -20,8 +20,8 @@ MAX_SYMBOL_EXPOSURE_PCT = 60.0
 
 # Enhanced sizing configuration
 USE_ENHANCED_KELLY_SIZING = os.getenv("USE_ENHANCED_KELLY_SIZING", "true").lower() == "true"
-MAX_INTRADAY_LEVERAGE_STOCKS = float(os.getenv("MAX_INTRADAY_LEVERAGE", "4.0"))
-MAX_OVERNIGHT_LEVERAGE_STOCKS = float(os.getenv("MAX_OVERNIGHT_LEVERAGE", "2.0"))
+MAX_INTRADAY_LEVERAGE_STOCKS = float(os.getenv("MAX_INTRADAY_LEVERAGE", "1.0"))
+MAX_OVERNIGHT_LEVERAGE_STOCKS = float(os.getenv("MAX_OVERNIGHT_LEVERAGE", "1.0"))
 
 # Lazy-load enhanced sizing components
 _kelly_strategy = None

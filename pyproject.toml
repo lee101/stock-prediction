@@ -285,3 +285,124 @@ check_untyped_defs = true
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false  # More lenient for tests
+
+[tool.ruff]
+# Exclude common non-source directories
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".venv*",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    "models",
+    "data",
+    "results",
+    "runs",
+    "lightning_logs*",
+    "tensorboard_logs*",
+    "compiled_models",
+    "external",
+]
+
+# Same as Black.
+line-length = 100
+indent-width = 4
+
+# Assume Python 3.11+
+target-version = "py311"
+
+[tool.ruff.lint]
+# Enable pycodestyle (E, W), Pyflakes (F), isort (I), and other common rules
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+    "RUF",    # Ruff-specific rules
+]
+
+# Ignore specific rules that may be too strict for ML/research code
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "E741",   # Ambiguous variable name (common in math/ML code: l, O, I)
+    "N802",   # Function name should be lowercase (common in ML: forward, etc.)
+    "N803",   # Argument name should be lowercase
+    "N806",   # Variable in function should be lowercase
+    "B008",   # Do not perform function call in argument defaults
+    "B905",   # `zip()` without an explicit `strict=` parameter
+    "SIM108", # Use ternary operator instead of if-else (sometimes less readable)
+    "RUF012", # Mutable class attributes should be annotated with `ClassVar`
+]
+
+# Allow autofix for all enabled rules (when `--fix` is provided)
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.format]
+# Use double quotes for strings
+quote-style = "double"
+
+# Indent with spaces
+indent-style = "space"
+
+# Respect magic trailing commas
+skip-magic-trailing-comma = false
+
+# Auto-detect line ending
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "src",
+    "marketsimulator",
+    "differentiable_market",
+    "differentiable_market_kronos",
+    "differentiable_market_totoembedding",
+    "gymrl",
+    "hfshared",
+    "hfinference",
+    "hftraining",
+    "toto",
+    "traininglib",
+    "strategytraining",
+    "strategytrainingneural",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Ignore all rules in test files that would be too restrictive
+"tests/**/*.py" = ["N", "SIM", "B"]
+"**/test_*.py" = ["N", "SIM", "B"]
+
+# Allow prints and asserts in scripts
+"scripts/**/*.py" = ["T201"]
+
+# Allow star imports in __init__.py
+"__init__.py" = ["F401", "F403"]
+
+# Note: Black and isort are replaced by Ruff's built-in formatter and import sorter
+# Ruff handles both formatting and import sorting with better performance

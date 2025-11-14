@@ -212,11 +212,27 @@ def pytest_addoption(parser):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Automatically mark and optionally skip experimental tests."""
+    """Automatically mark and optionally skip experimental tests.
+
+    Also applies CI-specific test filtering based on environment variables.
+    """
     run_experimental = config.getoption("--run-experimental")
     mark_experimental = pytest.mark.experimental
     skip_marker = pytest.mark.skip(reason="experimental suite disabled; pass --run-experimental to include")
     experimental_root = Path(config.rootpath, "tests", "experimental").resolve()
+
+    # CI mode detection
+    is_ci = os.getenv("CI", "0") in ("1", "true", "TRUE", "yes", "YES")
+    is_fast_ci = os.getenv("FAST_CI", "0") in ("1", "true", "TRUE", "yes", "YES")
+    cpu_only = os.getenv("CPU_ONLY", "0") in ("1", "true", "TRUE", "yes", "YES")
+
+    # Check for CUDA availability
+    has_cuda = False
+    try:
+        import torch
+        has_cuda = torch.cuda.is_available()
+    except Exception:
+        pass
 
     for item in items:
         path = Path(str(item.fspath)).resolve()
@@ -230,6 +246,28 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(mark_experimental)
             if not run_experimental:
                 item.add_marker(skip_marker)
+
+        # Skip slow tests in fast CI mode
+        if is_fast_ci and "slow" in item.keywords:
+            item.add_marker(pytest.mark.skip(reason="Slow test skipped in FAST_CI mode"))
+
+        # Skip model-required tests in fast CI unless specifically marked as smoke test
+        if is_fast_ci and "model_required" in item.keywords and "smoke" not in item.keywords:
+            item.add_marker(pytest.mark.skip(reason="Model test skipped in FAST_CI mode (only smoke tests run)"))
+
+        # Skip CUDA tests when running on CPU-only or no CUDA available
+        if (cpu_only or not has_cuda) and ("cuda_required" in item.keywords or "gpu_required" in item.keywords):
+            item.add_marker(pytest.mark.skip(reason="GPU test skipped on CPU-only environment"))
+
+        # Skip self-hosted-only tests on non-self-hosted runners
+        if is_ci and "self_hosted_only" in item.keywords:
+            if not os.getenv("SELF_HOSTED", "0") in ("1", "true", "TRUE", "yes", "YES"):
+                item.add_marker(pytest.mark.skip(reason="Self-hosted only test skipped on standard runner"))
+
+        # Skip external/network tests in CI unless explicitly enabled
+        if is_ci and not os.getenv("RUN_EXTERNAL_TESTS", "0") in ("1", "true", "TRUE", "yes", "YES"):
+            if "external" in item.keywords or "network_required" in item.keywords:
+                item.add_marker(pytest.mark.skip(reason="External/network test skipped in CI"))
 
         def cancel_orders(self):
             self._orders.clear()
@@ -447,3 +485,98 @@ if "fal" not in sys.modules:
     fal_mod.App = _FalApp
     fal_mod.endpoint = lambda *a, **k: (lambda fn: fn)
     sys.modules["fal"] = fal_mod
+
+
+# ============================================================================
+# CI Mode Fixtures
+# ============================================================================
+
+
+@pytest.fixture(scope="session")
+def ci_mode():
+    """Returns True if running in CI environment."""
+    return os.getenv("CI", "0") in ("1", "true", "TRUE", "yes", "YES")
+
+
+@pytest.fixture(scope="session")
+def fast_ci_mode():
+    """Returns True if running in fast CI mode (limited test suite)."""
+    return os.getenv("FAST_CI", "0") in ("1", "true", "TRUE", "yes", "YES")
+
+
+@pytest.fixture(scope="session")
+def cpu_only_mode():
+    """Returns True if running on CPU-only (no GPU available)."""
+    return os.getenv("CPU_ONLY", "0") in ("1", "true", "TRUE", "yes", "YES")
+
+
+@pytest.fixture(scope="session")
+def fast_simulate_mode():
+    """Returns True if fast simulation mode is enabled (minimal iterations)."""
+    return os.getenv("FAST_SIMULATE", "0") in ("1", "true", "TRUE", "yes", "YES")
+
+
+@pytest.fixture(scope="function")
+def fast_model_config():
+    """Provides fast model configuration for CI testing.
+
+    Returns dict with minimal settings for quick model tests:
+    - Small context lengths
+    - Few prediction steps
+    - Minimal samples
+    """
+    return {
+        "context_length": 8,
+        "prediction_length": 2,
+        "num_samples": 2,
+        "batch_size": 1,
+        "device": "cpu",
+    }
+
+
+@pytest.fixture(scope="function")
+def fast_simulation_config():
+    """Provides fast simulation configuration for CI testing.
+
+    Returns dict with minimal settings for quick simulation tests:
+    - Few timesteps
+    - Single environment
+    - Minimal episodes
+    """
+    return {
+        "total_timesteps": 100,
+        "num_envs": 1,
+        "num_episodes": 1,
+        "max_steps": 50,
+        "device": "cpu",
+    }
+
+
+@pytest.fixture(autouse=True, scope="function")
+def setup_fast_simulate_env(fast_simulate_mode):
+    """Auto-apply FAST_SIMULATE environment variable to each test if enabled."""
+    if fast_simulate_mode:
+        original = os.environ.get("FAST_SIMULATE")
+        os.environ["FAST_SIMULATE"] = "1"
+        yield
+        if original is None:
+            os.environ.pop("FAST_SIMULATE", None)
+        else:
+            os.environ["FAST_SIMULATE"] = original
+    else:
+        yield
+
+
+@pytest.fixture(scope="function")
+def torch_device(cpu_only_mode):
+    """Returns appropriate torch device based on environment.
+
+    Returns 'cpu' in CPU_ONLY mode, otherwise 'cuda' if available.
+    """
+    try:
+        import torch
+        if cpu_only_mode:
+            return "cpu"
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu"
