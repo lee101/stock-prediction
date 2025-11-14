@@ -10,14 +10,18 @@ the pandas-first API that ships with Chronos 2. The wrapper focuses on:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple, TypeVar
 
 import numpy as np
 import pandas as pd
+from pandas.util import hash_pandas_object
 
 try:  # pragma: no cover - optional dependency
     import torch
@@ -46,6 +50,59 @@ DEFAULT_TARGET_COLUMNS: Tuple[str, ...] = ("open", "high", "low", "close")
 DEFAULT_QUANTILE_LEVELS: Tuple[float, ...] = (0.1, 0.5, 0.9)
 _BOOL_TRUE = {"1", "true", "yes", "on"}
 _DEFAULT_MODEL_ID = "amazon/chronos-2"
+_DEFAULT_PREDICTION_CACHE_SIZE = 64
+_DEFAULT_PREDICTION_CACHE_DECIMALS = 8
+
+
+def _safe_bool(value: Optional[str], default: bool = True) -> bool:
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"0", "false", "no", "off", "never"}:
+        return False
+    if normalized in {"1", "true", "yes", "on", "prefer"}:
+        return True
+    return default
+
+
+def _round_float_columns(df: pd.DataFrame, decimals: int) -> pd.DataFrame:
+    if decimals < 0 or df.empty:
+        return df
+    float_cols = df.select_dtypes(include=["float16", "float32", "float64"])
+    if float_cols.empty:
+        return df
+    rounded = df.copy()
+    rounded[float_cols.columns] = float_cols.round(decimals)
+    return rounded
+
+
+def _hash_dataframe_for_cache(df: Optional[pd.DataFrame], decimals: int) -> str:
+    if df is None:
+        return "none"
+    if df.empty:
+        return f"empty:{df.shape}"
+    rounded = _round_float_columns(df, decimals)
+    hashed = hash_pandas_object(rounded, index=True).values.tobytes()
+    return hashlib.sha256(hashed).hexdigest()
+
+
+def _serialize_for_cache(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_serialize_for_cache(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _serialize_for_cache(val) for key, val in sorted(value.items())}
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, Path):
+        return str(value)
+    return repr(value)
+
+
+def _stable_options_payload(options: Mapping[str, Any]) -> str:
+    normalized = {str(key): _serialize_for_cache(val) for key, val in sorted(options.items())}
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 
 def _chronos_version() -> str:
@@ -211,6 +268,15 @@ class Chronos2PredictionBatch:
     applied_augmentation: Optional[str] = None
     applied_choice: Optional[PreAugmentationChoice] = None
 
+
+@dataclass
+class _CachedPrediction:
+    raw_dataframe: pd.DataFrame
+    quantile_frames: QuantileFrameMap
+    applied_augmentation: Optional[str]
+    applied_choice: Optional[PreAugmentationChoice]
+    panel: Chronos2PreparedPanel
+
     def quantile(self, level: float) -> pd.DataFrame:
         """Return the pivoted frame for the requested quantile level."""
 
@@ -252,6 +318,9 @@ class Chronos2OHLCWrapper:
         compile_backend: Optional[str] = None,
         torch_dtype: Optional[Any] = None,
         preaugmentation_dirs: Optional[Sequence[str | Path]] = None,
+        prediction_cache_enabled: Optional[bool] = None,
+        prediction_cache_size: Optional[int] = None,
+        prediction_cache_decimals: Optional[int] = None,
     ) -> None:
         if pipeline is None:
             raise RuntimeError("Chronos2Pipeline instance is required.")
@@ -290,6 +359,28 @@ class Chronos2OHLCWrapper:
         self._preaug_selector: Optional[PreAugmentationSelector] = (
             PreAugmentationSelector(dirs_list) if dirs_list else None
         )
+
+        if prediction_cache_enabled is None:
+            self._prediction_cache_enabled = _safe_bool(os.getenv("CHRONOS2_PREDICTION_CACHE"), default=True)
+        else:
+            self._prediction_cache_enabled = bool(prediction_cache_enabled)
+        default_cache_size = int(
+            os.getenv("CHRONOS2_PREDICTION_CACHE_SIZE", str(_DEFAULT_PREDICTION_CACHE_SIZE))
+        )
+        default_decimals = int(
+            os.getenv("CHRONOS2_CACHE_DECIMALS", str(_DEFAULT_PREDICTION_CACHE_DECIMALS))
+        )
+        if prediction_cache_size is None:
+            self._prediction_cache_capacity = max(0, default_cache_size)
+        else:
+            self._prediction_cache_capacity = max(0, int(prediction_cache_size))
+        if prediction_cache_decimals is None:
+            self._prediction_cache_decimals = max(0, default_decimals)
+        else:
+            self._prediction_cache_decimals = max(0, int(prediction_cache_decimals))
+        self._prediction_cache: "OrderedDict[str, _CachedPrediction]" = OrderedDict()
+        self._prediction_cache_hits = 0
+        self._prediction_cache_misses = 0
 
         dtype_obj = _parse_torch_dtype(torch_dtype)
         if dtype_obj is not None and torch is not None:
@@ -340,6 +431,9 @@ class Chronos2OHLCWrapper:
         compile_backend: Optional[str] = None,
         torch_dtype: Optional[Any] = None,
         preaugmentation_dirs: Optional[Sequence[str | Path]] = None,
+        prediction_cache_enabled: Optional[bool] = None,
+        prediction_cache_size: Optional[int] = None,
+        prediction_cache_decimals: Optional[int] = None,
         cache_policy: str = "prefer",
         force_refresh: bool = False,
         cache_manager: Optional[ModelCacheManager] = None,
@@ -417,13 +511,16 @@ class Chronos2OHLCWrapper:
                 target_columns=target_columns,
                 default_context_length=default_context_length,
                 default_batch_size=default_batch_size,
-                quantile_levels=quantile_levels,
-                torch_compile=torch_compile,
-                compile_mode=compile_mode,
-                compile_backend=compile_backend,
-                torch_dtype=torch_dtype,
-                preaugmentation_dirs=preaugmentation_dirs,
-            )
+            quantile_levels=quantile_levels,
+            torch_compile=torch_compile,
+            compile_mode=compile_mode,
+            compile_backend=compile_backend,
+            torch_dtype=torch_dtype,
+            preaugmentation_dirs=preaugmentation_dirs,
+            prediction_cache_enabled=prediction_cache_enabled,
+            prediction_cache_size=prediction_cache_size,
+            prediction_cache_decimals=prediction_cache_decimals,
+        )
 
             if use_cache and (force_refresh or not loaded_from_cache):
                 model_obj = getattr(wrapper, "pipeline", None)
@@ -841,6 +938,21 @@ class Chronos2OHLCWrapper:
 
         predict_options: Dict[str, Any] = dict(predict_kwargs or {})
         effective_batch_size = int(batch_size or self.default_batch_size)
+        cache_key = None
+        cached_batch: Optional[Chronos2PredictionBatch] = None
+        if self._prediction_cache_enabled and self._prediction_cache_capacity > 0:
+            cache_key = self._build_prediction_cache_key(
+                context_df=panel.context_df,
+                future_df=panel.future_df,
+                symbol=resolved_symbol,
+                quantiles=quantiles,
+                prediction_length=panel.prediction_length,
+                predict_options=predict_options,
+            )
+            cached_batch = self._prediction_cache_lookup(cache_key)
+            if cached_batch is not None:
+                return cached_batch
+
         def _predict_call() -> pd.DataFrame:
             return self.pipeline.predict_df(
                 panel.context_df,
@@ -880,13 +992,99 @@ class Chronos2OHLCWrapper:
                 applied_aug,
             )
 
-        return Chronos2PredictionBatch(
+        batch_result = Chronos2PredictionBatch(
             panel=panel,
             raw_dataframe=raw_predictions,
             quantile_frames=quantile_frames,
             applied_augmentation=applied_aug.choice.strategy if applied_aug else None,
             applied_choice=applied_aug.choice if applied_aug else None,
         )
+        if cache_key is not None:
+            self._prediction_cache_store(cache_key, batch_result)
+        return batch_result
+
+    # ------------------------------------------------------------------ #
+    # Prediction cache helpers
+    # ------------------------------------------------------------------ #
+    def _build_prediction_cache_key(
+        self,
+        *,
+        context_df: pd.DataFrame,
+        future_df: Optional[pd.DataFrame],
+        symbol: Optional[str],
+        quantiles: Tuple[float, ...],
+        prediction_length: int,
+        predict_options: Mapping[str, Any],
+    ) -> Optional[str]:
+        if not self._prediction_cache_enabled or self._prediction_cache_capacity <= 0:
+            return None
+        payload = {
+            "context": _hash_dataframe_for_cache(context_df, self._prediction_cache_decimals),
+            "future": _hash_dataframe_for_cache(future_df, self._prediction_cache_decimals),
+            "symbol": symbol or "",
+            "quantiles": ",".join(format(level, ".6f") for level in quantiles),
+            "prediction_length": int(prediction_length),
+            "targets": "|".join(self.target_columns),
+            "options": _stable_options_payload(predict_options),
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    def _prediction_cache_lookup(self, cache_key: Optional[str]) -> Optional[Chronos2PredictionBatch]:
+        if cache_key is None:
+            return None
+        cached = self._prediction_cache.get(cache_key)
+        if cached is None:
+            self._prediction_cache_misses += 1
+            return None
+        self._prediction_cache_hits += 1
+        self._prediction_cache.move_to_end(cache_key)
+        return self._clone_cached_prediction(cached)
+
+    def _prediction_cache_store(self, cache_key: str, batch: Chronos2PredictionBatch) -> None:
+        if not self._prediction_cache_enabled or self._prediction_cache_capacity <= 0:
+            return
+        snapshot = self._snapshot_prediction(batch)
+        self._prediction_cache[cache_key] = snapshot
+        self._prediction_cache.move_to_end(cache_key)
+        while len(self._prediction_cache) > self._prediction_cache_capacity:
+            self._prediction_cache.popitem(last=False)
+
+    def _snapshot_prediction(self, batch: Chronos2PredictionBatch) -> _CachedPrediction:
+        quantiles_copy: QuantileFrameMap = {
+            level: frame.copy(deep=True) for level, frame in batch.quantile_frames.items()
+        }
+        return _CachedPrediction(
+            raw_dataframe=batch.raw_dataframe.copy(deep=True),
+            quantile_frames=quantiles_copy,
+            applied_augmentation=batch.applied_augmentation,
+            applied_choice=batch.applied_choice,
+            panel=batch.panel,
+        )
+
+    def _clone_cached_prediction(self, cached: _CachedPrediction) -> Chronos2PredictionBatch:
+        quantiles_copy: QuantileFrameMap = {
+            level: frame.copy(deep=True) for level, frame in cached.quantile_frames.items()
+        }
+        return Chronos2PredictionBatch(
+            panel=cached.panel,
+            raw_dataframe=cached.raw_dataframe.copy(deep=True),
+            quantile_frames=quantiles_copy,
+            applied_augmentation=cached.applied_augmentation,
+            applied_choice=cached.applied_choice,
+        )
+
+    def prediction_cache_stats(self) -> Dict[str, Any]:
+        total = self._prediction_cache_hits + self._prediction_cache_misses
+        hit_rate = (self._prediction_cache_hits / total * 100.0) if total else 0.0
+        return {
+            "enabled": bool(self._prediction_cache_enabled and self._prediction_cache_capacity > 0),
+            "entries": len(self._prediction_cache),
+            "capacity": self._prediction_cache_capacity,
+            "hits": self._prediction_cache_hits,
+            "misses": self._prediction_cache_misses,
+            "hit_rate_percent": hit_rate,
+            "decimals": self._prediction_cache_decimals,
+        }
 
 
 __all__ = [
