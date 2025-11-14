@@ -1,0 +1,40 @@
+{
+  "symbol": "CRM",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx1024_bs128_val20_test20",
+    "model_id": "chronos2",
+    "device_map": "cuda",
+    "context_length": 1024,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 38.11108169555664,
+    "pct_return_mae": 0.1347443154751982,
+    "latency_s": 0.06524684485048056
+  },
+  "test": {
+    "price_mae": 37.28646697998047,
+    "pct_return_mae": 0.13182883419159974,
+    "latency_s": 0.0701078141486505
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-13T22:24:57.660382+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 1024,
+    "batch_size": 128
+  }
+}

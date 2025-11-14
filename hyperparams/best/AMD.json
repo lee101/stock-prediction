@@ -2,32 +2,27 @@
   "symbol": "AMD",
   "model": "chronos2",
   "config": {
-    "name": "ctx2048_bs64_median",
-    "model_id": "amazon/chronos-2",
+    "name": "chronos2_ctx4096_bs2048_val20_test20",
+    "model_id": "chronos2",
     "device_map": "cuda",
-    "context_length": 2048,
-    "batch_size": 64,
+    "context_length": 4096,
+    "prediction_length": 1,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "median",
-    "sample_count": 0,
-    "scaler": "none",
-    "predict_kwargs": {
-      "predict_batches_jointly": true
-    }
+    "batch_size": 2048
   },
   "validation": {
-    "price_mae": 2.7896347045898438,
-    "pct_return_mae": 0.017242868449696518,
-    "latency_s": 4.437194339967391
+    "price_mae": 3.1509780883789062,
+    "pct_return_mae": 0.009312405065489682,
+    "latency_s": 0.19585278240192566
   },
   "test": {
-    "price_mae": 7.114459228515623,
-    "pct_return_mae": 0.03722455434437532,
-    "latency_s": 4.37963662698894
+    "price_mae": 6.244341278076172,
+    "pct_return_mae": 0.017025347045648297,
+    "latency_s": 0.19414286945029743
   },
   "windows": {
     "val_window": 20,
@@ -37,16 +32,16 @@
   "config_path": "hyperparams/chronos2/AMD.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
-    "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.03722455434437532,
-    "kronos_pct_return_mae": 0.1138060353878074,
-    "toto_pct_return_mae": 0.0382740191865654,
-    "chronos2_pct_return_mae": 0.03722455434437532,
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.009312405065489682,
+    "kronos_pct_return_mae": 0.02130915623741788,
+    "toto_pct_return_mae": 0.015727062711985894,
+    "chronos2_pct_return_mae": 0.009312405065489682,
     "candidate_pct_return_mae": {
-      "kronos": 0.1138060353878074,
-      "toto": 0.0382740191865654,
-      "chronos2": 0.03722455434437532
+      "kronos": 0.02130915623741788,
+      "toto": 0.015727062711985894,
+      "chronos2": 0.009312405065489682
     },
-    "improvement_pct": 2.741977102207377
+    "improvement_pct": 40.787385184186235
   }
 }

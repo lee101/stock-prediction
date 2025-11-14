@@ -1,61 +1,45 @@
 {
   "symbol": "LINKUSD",
-  "best_strategy": "rolling_norm",
-  "mae": 0.566176265022075,
-  "mae_percent": 2.507347051937186,
-  "rmse": 0.7162787203273098,
-  "pct_return_mae": 0.025076083636887854,
+  "model": "chronos2",
   "config": {
-    "name": "rolling_norm",
-    "params": {}
+    "name": "chronos2_ctx1024_bs2048_val20_test20",
+    "model_id": "chronos2",
+    "device_map": "cuda",
+    "context_length": 1024,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 2048
   },
-  "timestamp": "2025-11-12T20:39:26Z",
-  "selection_metric": "mae_percent",
-  "selection_value": 2.507347051937186,
-  "comparison": {
-    "baseline": {
-      "mae": 0.6669055637439925,
-      "mae_percent": 2.9534330604777463,
-      "pct_return_mae": 0.029648556139508248
-    },
-    "percent_change": {
-      "mae": 0.6705728114420803,
-      "mae_percent": 2.969673696605729,
-      "pct_return_mae": 0.029842329922489093
-    },
-    "log_returns": {
-      "mae": 0.7072530163903237,
-      "mae_percent": 3.1321142816730743,
-      "pct_return_mae": 0.03118865829626643
-    },
-    "differencing": {
-      "mae": 7.086369116056083,
-      "mae_percent": 31.382429483138395,
-      "pct_return_mae": 0.3075611095318615
-    },
-    "detrending": {
-      "mae": 0.5786836651670331,
-      "mae_percent": 2.5627368568765307,
-      "pct_return_mae": 0.025691349298445902
-    },
-    "robust_scaling": {
-      "mae": 0.6733498294442972,
-      "mae_percent": 2.981971894766268,
-      "pct_return_mae": 0.02992604229644924
-    },
-    "minmax_standard": {
-      "mae": 0.6621676678388818,
-      "mae_percent": 2.9324509917052213,
-      "pct_return_mae": 0.02940613473154465
-    },
-    "rolling_norm": {
-      "mae": 0.566176265022075,
-      "mae_percent": 2.507347051937186,
-      "pct_return_mae": 0.025076083636887854
-    }
+  "validation": {
+    "price_mae": 0.6864423751831055,
+    "pct_return_mae": 0.028674484954671044,
+    "latency_s": 0.20446360705100233
   },
+  "test": {
+    "price_mae": 0.5699775695800782,
+    "pct_return_mae": 0.025124477188226097,
+    "latency_s": 0.20671372984725167
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/chronos2/LINKUSD.json",
   "metadata": {
-    "source": "chronos2_preaug_eval",
-    "hyperparam_root": "hyperparams/chronos2"
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.028674484954671044,
+    "kronos_pct_return_mae": null,
+    "toto_pct_return_mae": null,
+    "chronos2_pct_return_mae": 0.028674484954671044,
+    "candidate_pct_return_mae": {
+      "chronos2": 0.028674484954671044
+    },
+    "improvement_pct": 0.0
   }
 }

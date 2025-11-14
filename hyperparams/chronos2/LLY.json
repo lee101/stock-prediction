@@ -1,0 +1,40 @@
+{
+  "symbol": "LLY",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx2048_bs128_val20_test20",
+    "model_id": "chronos2",
+    "device_map": "cuda",
+    "context_length": 2048,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 166.658203125,
+    "pct_return_mae": 0.19163163983137713,
+    "latency_s": 0.07059412545058877
+  },
+  "test": {
+    "price_mae": 120.428564453125,
+    "pct_return_mae": 0.13847457164398747,
+    "latency_s": 0.07010946224909276
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-13T22:25:46.633057+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 2048,
+    "batch_size": 128
+  }
+}
