@@ -1,0 +1,40 @@
+{
+  "symbol": "VTI",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx2048_bs128_val20_test20",
+    "model_id": "chronos2",
+    "device_map": "cuda",
+    "context_length": 2048,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 1.8962432861328125,
+    "pct_return_mae": 0.006551937799289037,
+    "latency_s": 0.06828379769722233
+  },
+  "test": {
+    "price_mae": 1.5958465576171874,
+    "pct_return_mae": 0.005335926839458921,
+    "latency_s": 0.06696691984834616
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-13T22:27:55.625299+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 2048,
+    "batch_size": 128
+  }
+}

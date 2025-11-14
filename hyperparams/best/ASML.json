@@ -2,32 +2,27 @@
   "symbol": "ASML",
   "model": "chronos2",
   "config": {
-    "name": "ctx1024_bs64_median",
-    "model_id": "amazon/chronos-2",
+    "name": "chronos2_ctx1024_bs2048_val20_test20",
+    "model_id": "chronos2",
     "device_map": "cuda",
     "context_length": 1024,
-    "batch_size": 64,
+    "prediction_length": 1,
     "quantile_levels": [
       0.1,
       0.5,
       0.9
     ],
-    "aggregation": "median",
-    "sample_count": 0,
-    "scaler": "none",
-    "predict_kwargs": {
-      "predict_batches_jointly": true
-    }
+    "batch_size": 2048
   },
   "validation": {
-    "price_mae": 12.1880615234375,
-    "pct_return_mae": 0.015854974728663613,
-    "latency_s": 3.672746724994795
+    "price_mae": 10.934194946289063,
+    "pct_return_mae": 0.014092990565021729,
+    "latency_s": 0.1683010763001221
   },
   "test": {
-    "price_mae": 10.115997314453125,
-    "pct_return_mae": 0.01398298362598826,
-    "latency_s": 3.713435995974578
+    "price_mae": 11.28514404296875,
+    "pct_return_mae": 0.015643859777345205,
+    "latency_s": 0.16730905639851698
   },
   "windows": {
     "val_window": 20,
@@ -37,13 +32,13 @@
   "config_path": "hyperparams/chronos2/ASML.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
-    "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.01398298362598826,
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.014092990565021729,
     "kronos_pct_return_mae": null,
     "toto_pct_return_mae": null,
-    "chronos2_pct_return_mae": 0.01398298362598826,
+    "chronos2_pct_return_mae": 0.014092990565021729,
     "candidate_pct_return_mae": {
-      "chronos2": 0.01398298362598826
+      "chronos2": 0.014092990565021729
     },
     "improvement_pct": 0.0
   }

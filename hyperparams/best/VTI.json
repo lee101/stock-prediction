@@ -1,8 +1,8 @@
 {
-  "symbol": "BAC",
+  "symbol": "VTI",
   "model": "chronos2",
   "config": {
-    "name": "chronos2_ctx2048_bs2048_val20_test20",
+    "name": "chronos2_ctx2048_bs128_val20_test20",
     "model_id": "chronos2",
     "device_map": "cuda",
     "context_length": 2048,
@@ -12,33 +12,33 @@
       0.5,
       0.9
     ],
-    "batch_size": 2048
+    "batch_size": 128
   },
   "validation": {
-    "price_mae": 0.39903812408447265,
-    "pct_return_mae": 0.007018124720855184,
-    "latency_s": 0.18874308130034478
+    "price_mae": 1.8962432861328125,
+    "pct_return_mae": 0.006551937799289037,
+    "latency_s": 0.06828379769722233
   },
   "test": {
-    "price_mae": 0.5474464416503906,
-    "pct_return_mae": 0.00944014951283254,
-    "latency_s": 0.19009884715123918
+    "price_mae": 1.5958465576171874,
+    "pct_return_mae": 0.005335926839458921,
+    "latency_s": 0.06696691984834616
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/chronos2/BAC.json",
+  "config_path": "hyperparams/chronos2/VTI.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
     "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.007018124720855184,
+    "selection_value": 0.006551937799289037,
     "kronos_pct_return_mae": null,
     "toto_pct_return_mae": null,
-    "chronos2_pct_return_mae": 0.007018124720855184,
+    "chronos2_pct_return_mae": 0.006551937799289037,
     "candidate_pct_return_mae": {
-      "chronos2": 0.007018124720855184
+      "chronos2": 0.006551937799289037
     },
     "improvement_pct": 0.0
   }

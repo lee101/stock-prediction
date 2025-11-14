@@ -1,0 +1,40 @@
+{
+  "symbol": "SAP",
+  "model": "chronos2",
+  "config": {
+    "name": "chronos2_ctx2048_bs128_val20_test20",
+    "model_id": "chronos2",
+    "device_map": "cuda",
+    "context_length": 2048,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 128
+  },
+  "validation": {
+    "price_mae": 6.230021667480469,
+    "pct_return_mae": 0.022524392602651072,
+    "latency_s": 0.07033445529523305
+  },
+  "test": {
+    "price_mae": 11.441391754150391,
+    "pct_return_mae": 0.04136589141197008,
+    "latency_s": 0.06689736164989882
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "chronos2_hyperparam_eval",
+    "generated_at": "2025-11-13T22:28:38.506694+00:00",
+    "evaluated_windows": 40,
+    "repeats": 1,
+    "context_length": 2048,
+    "batch_size": 128
+  }
+}

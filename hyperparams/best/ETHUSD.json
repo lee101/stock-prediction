@@ -1,52 +1,40 @@
 {
   "symbol": "ETHUSD",
-  "model": "chronos2",
+  "model": "toto",
   "config": {
-    "name": "ctx1024_bs64_median",
-    "model_id": "amazon/chronos-2",
-    "device_map": "cuda",
-    "context_length": 1024,
-    "batch_size": 64,
-    "quantile_levels": [
-      0.1,
-      0.5,
-      0.9
-    ],
-    "aggregation": "median",
-    "sample_count": 0,
-    "scaler": "none",
-    "predict_kwargs": {
-      "predict_batches_jointly": true
-    }
+    "name": "toto_opt_trimmed_mean_20_128_spb32",
+    "num_samples": 128,
+    "aggregate": "trimmed_mean_20",
+    "samples_per_batch": 32
   },
   "validation": {
-    "price_mae": 63.22744140625,
-    "pct_return_mae": 0.014209620567022399,
-    "latency_s": 4.654269301005115
+    "price_mae": 62.02477150941513,
+    "pct_return_mae": 0.013847725324620433,
+    "latency_s": 3.2247907968994696
   },
   "test": {
-    "price_mae": 142.40008544921875,
-    "pct_return_mae": 0.03383837060134516,
-    "latency_s": 4.556465837980795
+    "price_mae": 157.50411455203326,
+    "pct_return_mae": 0.037483454478883606,
+    "latency_s": 3.2239193098794203
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/chronos2/ETHUSD.json",
+  "config_path": "hyperparams/toto/ETHUSD.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
-    "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.03383837060134516,
-    "kronos_pct_return_mae": 0.05037643676348456,
-    "toto_pct_return_mae": 0.037483454478883606,
-    "chronos2_pct_return_mae": 0.03383837060134516,
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.013847725324620433,
+    "kronos_pct_return_mae": 0.03146391595310581,
+    "toto_pct_return_mae": 0.013847725324620433,
+    "chronos2_pct_return_mae": 0.01575636992056077,
     "candidate_pct_return_mae": {
-      "kronos": 0.05037643676348456,
-      "toto": 0.037483454478883606,
-      "chronos2": 0.03383837060134516
+      "kronos": 0.03146391595310581,
+      "toto": 0.013847725324620433,
+      "chronos2": 0.01575636992056077
     },
-    "improvement_pct": 9.724514264265348
+    "improvement_pct": 12.113479218647386
   }
 }

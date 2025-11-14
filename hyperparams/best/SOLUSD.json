@@ -1,61 +1,47 @@
 {
   "symbol": "SOLUSD",
-  "best_strategy": "detrending",
-  "mae": 6.772839507528326,
-  "mae_percent": 3.0117003451357096,
-  "rmse": 8.63395060490502,
-  "pct_return_mae": 0.0306923459279551,
+  "model": "chronos2",
   "config": {
-    "name": "detrending",
-    "params": {}
+    "name": "chronos2_ctx2048_bs2048_val20_test20",
+    "model_id": "chronos2",
+    "device_map": "cuda",
+    "context_length": 2048,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 2048
   },
-  "timestamp": "2025-11-12T20:39:56Z",
-  "selection_metric": "mae_percent",
-  "selection_value": 3.0117003451357096,
-  "comparison": {
-    "baseline": {
-      "mae": 6.879795094761796,
-      "mae_percent": 3.0592606303937884,
-      "pct_return_mae": 0.031175477153109532
-    },
-    "percent_change": {
-      "mae": 6.891958984846815,
-      "mae_percent": 3.0646695865526525,
-      "pct_return_mae": 0.03124018696625582
-    },
-    "log_returns": {
-      "mae": 7.02247264165684,
-      "mae_percent": 3.122705514441208,
-      "pct_return_mae": 0.03184921321252334
-    },
-    "differencing": {
-      "mae": 25.21515901373545,
-      "mae_percent": 11.21250592456937,
-      "pct_return_mae": 0.11011147439381272
-    },
-    "detrending": {
-      "mae": 6.772839507528326,
-      "mae_percent": 3.0117003451357096,
-      "pct_return_mae": 0.0306923459279551
-    },
-    "robust_scaling": {
-      "mae": 7.0692648538165415,
-      "mae_percent": 3.1435127580433035,
-      "pct_return_mae": 0.03201027393670546
-    },
-    "minmax_standard": {
-      "mae": 6.994438893856071,
-      "mae_percent": 3.110239657567857,
-      "pct_return_mae": 0.03171563622493177
-    },
-    "rolling_norm": {
-      "mae": 6.793689024450302,
-      "mae_percent": 3.020971566938622,
-      "pct_return_mae": 0.030825082576231407
-    }
+  "validation": {
+    "price_mae": 5.9363761901855465,
+    "pct_return_mae": 0.01789270742756798,
+    "latency_s": 0.19201819305162643
   },
+  "test": {
+    "price_mae": 8.252499389648438,
+    "pct_return_mae": 0.02247596656416901,
+    "latency_s": 0.19256051065021892
+  },
+  "windows": {
+    "val_window": 20,
+    "test_window": 20,
+    "forecast_horizon": 1
+  },
+  "config_path": "hyperparams/chronos2/SOLUSD.json",
   "metadata": {
-    "source": "chronos2_preaug_eval",
-    "hyperparam_root": "hyperparams/chronos2"
+    "source": "update_best_configs_by_return_mae",
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.01789270742756798,
+    "kronos_pct_return_mae": 0.04190535277874756,
+    "toto_pct_return_mae": 0.02740297138716944,
+    "chronos2_pct_return_mae": 0.01789270742756798,
+    "candidate_pct_return_mae": {
+      "kronos": 0.04190535277874756,
+      "toto": 0.02740297138716944,
+      "chronos2": 0.01789270742756798
+    },
+    "improvement_pct": 34.70522895212137
   }
 }

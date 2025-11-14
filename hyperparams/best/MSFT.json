@@ -1,40 +1,47 @@
 {
   "symbol": "MSFT",
-  "model": "toto",
+  "model": "chronos2",
   "config": {
-    "name": "toto_opt_median_512_spb32",
-    "num_samples": 512,
-    "aggregate": "median",
-    "samples_per_batch": 32
+    "name": "chronos2_ctx512_bs2048_val20_test20",
+    "model_id": "chronos2",
+    "device_map": "cuda",
+    "context_length": 512,
+    "prediction_length": 1,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "batch_size": 2048
   },
   "validation": {
-    "price_mae": 1.8903733231149993,
-    "pct_return_mae": 0.019374266645414938,
-    "latency_s": 12.255187171977013
+    "price_mae": 1.7906654357910157,
+    "pct_return_mae": 0.018369865026193616,
+    "latency_s": 0.1636196170496987
   },
   "test": {
-    "price_mae": 1.2780832719761925,
-    "pct_return_mae": 0.012995321067946328,
-    "latency_s": 12.31778372998815
+    "price_mae": 1.3916500091552735,
+    "pct_return_mae": 0.014148379442653635,
+    "latency_s": 0.1619266477486235
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/toto/MSFT.json",
+  "config_path": "hyperparams/chronos2/MSFT.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
-    "selection_metric": "test_pct_return_mae",
-    "selection_value": 0.012995321067946328,
-    "kronos_pct_return_mae": 0.013084358859162534,
-    "toto_pct_return_mae": 0.012995321067946328,
-    "chronos2_pct_return_mae": 0.014148379442653635,
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.018369865026193616,
+    "kronos_pct_return_mae": 0.01964137663083227,
+    "toto_pct_return_mae": 0.019374266645414938,
+    "chronos2_pct_return_mae": 0.018369865026193616,
     "candidate_pct_return_mae": {
-      "kronos": 0.013084358859162534,
-      "toto": 0.012995321067946328,
-      "chronos2": 0.014148379442653635
+      "kronos": 0.01964137663083227,
+      "toto": 0.019374266645414938,
+      "chronos2": 0.018369865026193616
     },
-    "improvement_pct": 0.680490287484399
+    "improvement_pct": 5.184204582313938
   }
 }

@@ -1,11 +1,11 @@
 {
-  "symbol": "BAC",
+  "symbol": "AAVEUSD",
   "model": "chronos2",
   "config": {
-    "name": "chronos2_ctx2048_bs2048_val20_test20",
+    "name": "chronos2_ctx512_bs2048_val20_test20",
     "model_id": "chronos2",
     "device_map": "cuda",
-    "context_length": 2048,
+    "context_length": 512,
     "prediction_length": 1,
     "quantile_levels": [
       0.1,
@@ -15,30 +15,30 @@
     "batch_size": 2048
   },
   "validation": {
-    "price_mae": 0.39903812408447265,
-    "pct_return_mae": 0.007018124720855184,
-    "latency_s": 0.18874308130034478
+    "price_mae": 11.418899536132812,
+    "pct_return_mae": 0.044901884068810086,
+    "latency_s": 0.1805103915510699
   },
   "test": {
-    "price_mae": 0.5474464416503906,
-    "pct_return_mae": 0.00944014951283254,
-    "latency_s": 0.19009884715123918
+    "price_mae": 9.821192932128906,
+    "pct_return_mae": 0.045268146152058014,
+    "latency_s": 0.17770329424893133
   },
   "windows": {
     "val_window": 20,
     "test_window": 20,
     "forecast_horizon": 1
   },
-  "config_path": "hyperparams/chronos2/BAC.json",
+  "config_path": "hyperparams/chronos2/AAVEUSD.json",
   "metadata": {
     "source": "update_best_configs_by_return_mae",
     "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.007018124720855184,
+    "selection_value": 0.044901884068810086,
     "kronos_pct_return_mae": null,
     "toto_pct_return_mae": null,
-    "chronos2_pct_return_mae": 0.007018124720855184,
+    "chronos2_pct_return_mae": 0.044901884068810086,
     "candidate_pct_return_mae": {
-      "chronos2": 0.007018124720855184
+      "chronos2": 0.044901884068810086
     },
     "improvement_pct": 0.0
   }
