@@ -36,6 +36,7 @@ class KronosPredictionCache:
         ttl_seconds: float = 300,  # 5 minutes default
         enabled: bool = True,
         max_cache_size_mb: int = 1000,  # 1GB default
+        value_precision: Optional[int] = None,
     ):
         if cache_dir is None:
             cache_dir = os.path.join(
@@ -48,6 +49,10 @@ class KronosPredictionCache:
         self.ttl_seconds = ttl_seconds
         self.enabled = enabled and os.environ.get("TESTING") != "True"
         self.max_cache_size_mb = max_cache_size_mb
+        if value_precision is None:
+            env_precision = os.environ.get("KRONOS_CACHE_DECIMALS")
+            value_precision = int(env_precision) if env_precision not in (None, "") else 8
+        self._value_precision = max(0, int(value_precision))
 
         # Stats tracking
         self.hits = 0
@@ -81,6 +86,10 @@ class KronosPredictionCache:
         subset = subset.sort_index(axis=1)  # Sort columns alphabetically
         if "timestamp" in subset.columns:
             subset["timestamp"] = subset["timestamp"].astype(str)
+
+        float_cols = subset.select_dtypes(include=["float16", "float32", "float64"])
+        if not float_cols.empty and self._value_precision is not None:
+            subset[float_cols.columns] = float_cols.round(self._value_precision)
 
         # Create hash from data values
         data_bytes = subset.to_csv(index=False).encode("utf-8")
@@ -311,11 +320,14 @@ def get_prediction_cache() -> KronosPredictionCache:
         ttl_seconds = float(os.environ.get("KRONOS_PREDICTION_CACHE_TTL", "300"))
         enabled = os.environ.get("KRONOS_PREDICTION_CACHE_ENABLED", "1") == "1"
         max_size_mb = int(os.environ.get("KRONOS_PREDICTION_CACHE_MAX_SIZE_MB", "1000"))
+        precision = os.environ.get("KRONOS_CACHE_DECIMALS")
+        precision_int = int(precision) if precision not in (None, "") else 8
 
         _global_cache = KronosPredictionCache(
             ttl_seconds=ttl_seconds,
             enabled=enabled,
             max_cache_size_mb=max_size_mb,
+            value_precision=precision_int,
         )
 
     return _global_cache

@@ -15,6 +15,15 @@ def cached_function(tensor):
     return tensor * 2
 
 
+_noise_counter = {"calls": 0}
+
+
+@disk_cache(ignore_kwargs={"noise"})
+def cached_with_noise(value, *, noise: float = 0.0):
+    _noise_counter["calls"] += 1
+    return value + noise
+
+
 def test_disk_cache_with_torch_tensor():
     # Create a random tensor
     tensor = torch.rand(5, 5)
@@ -83,6 +92,20 @@ def test_disk_cache_with_numpy_array():
 
     # Check if the result is correct
     assert torch.all(result.eq(tensor * 2)), "Result is not correct for numpy array converted to tensor"
+
+
+def test_disk_cache_ignores_specified_kwargs():
+    cached_with_noise.cache_clear()
+    _noise_counter["calls"] = 0
+    result1 = cached_with_noise(5, noise=0.1)
+    result2 = cached_with_noise(5, noise=0.9)
+    assert result1 == result2 == 5.1
+    assert _noise_counter["calls"] == 1
+
+    # Different positional argument should produce miss
+    result3 = cached_with_noise(6, noise=0.0)
+    assert result3 == 6.0
+    assert _noise_counter["calls"] == 2
 
 
 if __name__ == "__main__":

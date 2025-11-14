@@ -1894,7 +1894,7 @@ def release_model_resources(*, force: bool = False) -> None:
     _release_stale_kronos_wrappers(now)
 
 
-@disk_cache
+@disk_cache(ignore_kwargs={"samples_per_batch"})
 def cached_predict(context, prediction_length, num_samples, samples_per_batch, *, symbol: Optional[str] = None):
     pipeline_instance = load_toto_pipeline()
     inference_mode_ctor = getattr(torch, "inference_mode", None)
