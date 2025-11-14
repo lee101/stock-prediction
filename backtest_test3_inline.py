@@ -30,6 +30,7 @@ from src.maxdiff_optimizer import (
     optimize_maxdiff_always_on,
     optimize_maxdiff_entry_exit,
 )
+from src.models.model_cache import dtype_to_token
 from src.optimization_utils import run_bounded_optimizer
 from src.pctdiff_helpers import (
     clip_pctdiff_returns,
@@ -2374,16 +2375,71 @@ def resolve_best_model(symbol: str) -> str:
     return model
 
 
-_chronos2_wrapper_cache: Dict[str, Any] = {}
+ChronosWrapperKey = Tuple[Tuple[str, Any], ...]
+
+
+def _round_cache_float(value: float, *, places: int = 12) -> float:
+    if not np.isfinite(value):
+        return float(value)
+    rounded = round(float(value), places)
+    return 0.0 if rounded == 0.0 else rounded
+
+
+def _normalize_cache_component(value: Any) -> Any:
+    if isinstance(value, float):
+        return _round_cache_float(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_normalize_cache_component(item) for item in value)
+    if isinstance(value, dict):
+        return tuple(sorted((str(key), _normalize_cache_component(val)) for key, val in value.items()))
+    if isinstance(value, np.ndarray):
+        return tuple(_normalize_cache_component(item) for item in value.tolist())
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
+def _normalize_quantile_levels(levels: Sequence[Any]) -> Tuple[float, ...]:
+    normalized: List[float] = []
+    for level in levels:
+        try:
+            normalized.append(_round_cache_float(float(level)))
+        except (TypeError, ValueError):
+            continue
+    return tuple(normalized)
+
+
+def _chronos2_cache_key(
+    params: Dict[str, Any],
+    *,
+    compile_enabled: bool,
+    compile_mode: str,
+    compile_backend: str,
+    dtype_token: str,
+    attn_implementation: str,
+) -> ChronosWrapperKey:
+    quantiles = _normalize_quantile_levels(params.get("quantile_levels") or ())
+    fields = {
+        "model_id": str(params.get("model_id") or ""),
+        "device_map": str(params.get("device_map") or ""),
+        "context_length": int(params.get("context_length") or 0),
+        "batch_size": int(params.get("batch_size") or 0),
+        "quantile_levels": quantiles,
+        "torch_compile": bool(compile_enabled),
+        "compile_mode": (compile_mode or "").strip(),
+        "compile_backend": (compile_backend or "").strip(),
+        "dtype": dtype_token,
+        "attn_impl": (attn_implementation or "").strip(),
+    }
+    return tuple((key, _normalize_cache_component(val)) for key, val in sorted(fields.items()))
+
+
+_chronos2_wrapper_cache: Dict[ChronosWrapperKey, Any] = {}
+
 
 def load_chronos2_wrapper(params: Dict[str, Any]) -> Any:
     """Load Chronos2 wrapper with symbol-specific hyperparameters."""
     from src.models.chronos2_wrapper import Chronos2OHLCWrapper
-
-    cache_key = params["model_id"]
-    cached = _chronos2_wrapper_cache.get(cache_key)
-    if cached is not None:
-        return cached
 
     torch_compiled_flag = os.getenv("TORCH_COMPILED", "0")
     compile_enabled = torch_compiled_flag in {"1", "true", "yes", "on"}
@@ -2394,8 +2450,22 @@ def load_chronos2_wrapper(params: Dict[str, Any]) -> Any:
     compile_mode = os.getenv("CHRONOS_COMPILE_MODE", "reduce-overhead")
     compile_backend = os.getenv("CHRONOS_COMPILE_BACKEND", "inductor")
     dtype_env = os.getenv("CHRONOS_DTYPE", "float32")
+    dtype_token = dtype_to_token(dtype_env)
 
     attn_implementation = "eager"
+
+    cache_key = _chronos2_cache_key(
+        params,
+        compile_enabled=compile_enabled,
+        compile_mode=compile_mode,
+        compile_backend=compile_backend,
+        dtype_token=dtype_token,
+        attn_implementation=attn_implementation,
+    )
+    cached = _chronos2_wrapper_cache.get(cache_key)
+    if cached is not None:
+        logger.debug("Reusing cached Chronos2 wrapper for key=%s", cache_key)
+        return cached
 
     try:
         torch.backends.cuda.enable_flash_sdp(False)

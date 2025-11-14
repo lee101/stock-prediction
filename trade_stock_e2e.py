@@ -1,3 +1,4 @@
+import json
 import logging
 import math
 import os
@@ -159,6 +160,36 @@ ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip(
 crypto_symbols = all_crypto_symbols
 
 
+STRATEGYTRAINING_FAST_RESULTS_PATH = Path("strategytraining/sizing_strategy_fast_test_results.json")
+
+
+def _load_strategytraining_symbols(path: Path = STRATEGYTRAINING_FAST_RESULTS_PATH) -> List[str]:
+    """Load the latest symbol cohort used for sizing experiments."""
+
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text())
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Unable to parse %s for neural symbols: %s", path, exc)
+        return []
+
+    symbols = payload.get("symbols")
+    if not isinstance(symbols, list):
+        return []
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        if not isinstance(symbol, str):
+            continue
+        clean = symbol.strip().upper()
+        if not clean or clean in seen:
+            continue
+        normalized.append(clean)
+        seen.add(clean)
+    return normalized
+
+
 def _parse_neural_strategy_list(raw: str) -> List[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
@@ -175,7 +206,12 @@ NEURAL_SIZING_METRICS_CSV = os.getenv(
 _NEURAL_REFERENCE_STRATEGIES = _parse_neural_strategy_list(
     os.getenv(
         "MARKETSIM_NEURAL_REFERENCE_STRATEGIES",
-        "VolAdjusted_10pct,VolAdjusted_15pct,CorrAware_Moderate",
+        (
+            "VolAdjusted_10pct_StockDirShutdown,"
+            "VolAdjusted_10pct_UnprofitShutdown,"
+            "VolAdjusted_10pct_UnprofitShutdown_StockDirShutdown,"
+            "VolAdjusted_15pct_StockDirShutdown"
+        ),
     )
 )
 NEURAL_MIN_SCALE = ensure_lower_bound(
@@ -225,7 +261,30 @@ def _refresh_neural_scale(force: bool = False) -> Optional[float]:
     optimizer = _get_portfolio_optimizer()
     if optimizer is None:
         return None
-    return optimizer.compute_scale(force=force)
+    scale = optimizer.compute_scale(force=force)
+    if scale is None:
+        reason = optimizer.disabled_reason
+        if reason:
+            logger.warning("Neural sizing unavailable (%s)", reason)
+        else:
+            logger.warning("Neural sizing returned no scale; keeping existing sizing rules.")
+        return None
+    scores = optimizer.last_scores
+    if scores:
+        detail = ", ".join(f"{score.name}={score.weight:.3f}@{score.date}" for score in scores)
+        logger.info(
+            "Neural sizing scale %.3f from %s (weights: %s)",
+            scale,
+            _NEURAL_CONFIG.run_dir if _NEURAL_CONFIG else "unknown",
+            detail,
+        )
+    else:
+        logger.info(
+            "Neural sizing scale %.3f from %s",
+            scale,
+            _NEURAL_CONFIG.run_dir if _NEURAL_CONFIG else "unknown",
+        )
+    return scale
 
 
 def _apply_neural_scale(
@@ -4286,8 +4345,8 @@ def signal_handler(signum, frame):
 
 
 def main():
-    symbols = [
-        # Top performing equities (high Sharpe, good win rates)
+    fallback_symbols = [
+        # Historical equity basket
         "EQIX",
         "GS",
         "COST",
@@ -4307,17 +4366,33 @@ def main():
         "QQQ",
         "MA",
         "SAP",
-        # Keep existing profitable ones
         "COUR",
         "ADBE",
         "INTC",
         "QUBT",
-        # Top crypto performers
+        # Crypto fallbacks
         "BTCUSD",
         "ETHUSD",
         "UNIUSD",
         "LINKUSD",
     ]
+
+    symbols = _load_strategytraining_symbols()
+    if symbols:
+        logger.info(
+            "Loaded %d experiment symbols from %s: %s",
+            len(symbols),
+            STRATEGYTRAINING_FAST_RESULTS_PATH,
+            ", ".join(symbols),
+        )
+    else:
+        symbols = fallback_symbols
+        logger.warning(
+            "Using fallback symbol list (%d entries); re-run strategytraining/test_sizing_on_precomputed_pnl.py "
+            "to refresh %s if you expect neural symbols to be enforced.",
+            len(symbols),
+            STRATEGYTRAINING_FAST_RESULTS_PATH,
+        )
 
     # Filter symbols by TRADABLE_PAIRS env var if set
     original_symbols = symbols
@@ -4347,12 +4422,18 @@ def main():
     last_market_open_hour2_run = None
     last_market_close_run = None
     last_crypto_midnight_refresh = None
+    last_neural_refresh_date = None
 
     while True:
         try:
             market_open, market_close = get_market_hours()
             now = datetime.now(pytz.timezone("US/Eastern"))
             today = now.date()
+
+            if NEURAL_SIZING_ENABLED and last_neural_refresh_date != today:
+                _refresh_neural_scale(force=True)
+                last_neural_refresh_date = today
+
             analysis_window_minutes = max(MARKET_CLOSE_ANALYSIS_WINDOW_MINUTES, 1)
             close_analysis_window_start = market_close - timedelta(minutes=analysis_window_minutes)
             close_analysis_window_end = market_close

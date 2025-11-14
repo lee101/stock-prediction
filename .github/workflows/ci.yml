@@ -1,4 +1,4 @@
-name: CI
+name: Full CI (Self-Hosted with GPU)
 
 on:
   push:
@@ -12,8 +12,17 @@ jobs:
   quality:
     runs-on: [self-hosted, stock-ci, gpu]
     env:
+      # CI mode flags
+      CI: "1"
+      SELF_HOSTED: "1"
+      # Note: FAST_CI is NOT set - this runs the full test suite
+      # Note: CPU_ONLY is NOT set - GPU tests are enabled
+
+      # Market simulator flags
       MARKETSIM_ALLOW_MOCK_ANALYTICS: "1"
       MARKETSIM_SKIP_REAL_IMPORT: "1"
+
+      # Trading flags
       ALP_PAPER: "1"
       PYTHONUNBUFFERED: "1"
     strategy:
@@ -38,10 +47,12 @@ jobs:
       - name: Install dependencies
         run: |
           uv pip install --system --requirement requirements.txt
-          uv pip install --system ty ruff pyright
+          uv pip install --system ty ruff pyright flake8
 
       - name: Lint with Ruff
-        run: ruff check src
+        run: |
+          ruff check src tests
+          ruff format --check src tests
 
       - name: Type check with ty
         continue-on-error: true
