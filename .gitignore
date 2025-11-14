@@ -209,3 +209,6 @@ optimization_analysis_svg.md
 simulation_results/
 chronos2_benchmarks
 backtest_cache/
+trade_stock_e2e_paper.prof
+build
+*.so

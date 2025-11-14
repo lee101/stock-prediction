@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 from pathlib import Path
+from types import ModuleType
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - used for type hints only
@@ -19,7 +20,7 @@ SKIP_REAL_IMPORT = os.getenv("MARKETSIM_SKIP_REAL_IMPORT", "0").lower() in {"1",
 if ALLOW_MOCK_ANALYTICS:
     from . import predict_stock_forecasting_mock as fallback_module  # pragma: no cover
 else:
-    fallback_module = None  # type: ignore[assignment]
+    fallback_module: ModuleType | None = None
 
 if ALLOW_MOCK_ANALYTICS and SKIP_REAL_IMPORT:
     _real_module = None

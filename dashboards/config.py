@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Dict, Iterable, List, Sequence
+
+tomllib: ModuleType | None = None
 
 try:  # Python 3.11+
     import tomllib  # type: ignore[attr-defined]
 except ModuleNotFoundError:  # pragma: no cover - fallback for <3.11
-    tomllib = None  # type: ignore[assignment]
+    tomllib = None
 
 
 DEFAULT_SPREAD_SYMBOLS: Sequence[str] = (

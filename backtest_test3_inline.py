@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -62,6 +62,131 @@ def _tensor(data: Union[np.ndarray, torch.Tensor, List[float]], *, device: torch
 
 
 ensure_huggingface_cache_dir(logger=logger)
+
+_PRICE_CACHE_KEY = "_strategy_price_window_cache"
+
+
+def _prepare_price_window_cache(
+    last_preds: Dict[str, torch.Tensor],
+    simulation_data: pd.DataFrame,
+    validation_len: int,
+    device: torch.device,
+) -> Optional[Dict[str, object]]:
+    """Memoize OHLC-derived tensors shared by MaxDiff, AlwaysOn, and PctDiff."""
+
+    if validation_len <= 0:
+        return None
+
+    cache_id = (id(simulation_data), validation_len)
+    cached = last_preds.get(_PRICE_CACHE_KEY)
+    if isinstance(cached, dict) and cached.get("cache_id") == cache_id:
+        return cached
+
+    def _select_window(series: pd.Series) -> Optional[pd.Series]:
+        window = series.iloc[-(validation_len + 2) : -2]
+        if len(window) != validation_len:
+            window = series.tail(validation_len)
+        return window if len(window) == validation_len else None
+
+    high_series = _select_window(simulation_data["High"])
+    low_series = _select_window(simulation_data["Low"])
+    close_series = _select_window(simulation_data["Close"])
+    if high_series is None or low_series is None or close_series is None:
+        return None
+
+    close_vals = np.asarray(close_series.to_numpy(dtype=float, copy=True))
+    high_vals = np.asarray(high_series.to_numpy(dtype=float, copy=True))
+    low_vals = np.asarray(low_series.to_numpy(dtype=float, copy=True))
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        close_to_high_np = np.abs(
+            1.0 - np.divide(high_vals, close_vals, out=np.zeros_like(high_vals), where=close_vals != 0.0)
+        )
+        close_to_low_np = np.abs(
+            1.0 - np.divide(low_vals, close_vals, out=np.zeros_like(low_vals), where=close_vals != 0.0)
+        )
+    close_to_high_tensor = _tensor(np.nan_to_num(close_to_high_np, nan=0.0, posinf=0.0, neginf=0.0), device=device)
+    close_to_low_tensor = _tensor(np.nan_to_num(close_to_low_np, nan=0.0, posinf=0.0, neginf=0.0), device=device)
+
+    def _prepare_pred_tensor(key: str) -> Optional[torch.Tensor]:
+        values = last_preds.get(key)
+        if values is None:
+            return None
+        tensor = _tensor(values, device=device).view(-1)
+        if tensor.shape[0] < validation_len:
+            return None
+        return tensor[-validation_len:]
+
+    high_actual_base = _prepare_pred_tensor("high_actual_movement_values")
+    low_actual_base = _prepare_pred_tensor("low_actual_movement_values")
+    high_pred_base = _prepare_pred_tensor("high_predictions")
+    low_pred_base = _prepare_pred_tensor("low_predictions")
+    if any(t is None for t in (high_actual_base, low_actual_base, high_pred_base, low_pred_base)):
+        return None
+
+    high_actual = high_actual_base + close_to_high_tensor
+    low_actual = low_actual_base - close_to_low_tensor
+    high_pred = high_pred_base + close_to_high_tensor
+    low_pred = low_pred_base - close_to_low_tensor
+
+    high_pred_base_np = high_pred_base.detach().cpu().numpy().copy()
+    low_pred_base_np = low_pred_base.detach().cpu().numpy().copy()
+
+    cache: Dict[str, object] = {
+        "cache_id": cache_id,
+        "validation_len": validation_len,
+        "close_vals": close_vals,
+        "high_vals": high_vals,
+        "low_vals": low_vals,
+        "close_to_high_tensor": close_to_high_tensor,
+        "close_to_low_tensor": close_to_low_tensor,
+        "high_actual": high_actual,
+        "low_actual": low_actual,
+        "high_pred": high_pred,
+        "low_pred": low_pred,
+        "high_actual_base": high_actual_base,
+        "low_actual_base": low_actual_base,
+        "high_pred_base": high_pred_base,
+        "low_pred_base": low_pred_base,
+        "high_pred_base_np": high_pred_base_np,
+        "low_pred_base_np": low_pred_base_np,
+    }
+    last_preds[_PRICE_CACHE_KEY] = cache
+    return cache
+
+
+def _get_valid_forecast_mask(cache: Dict[str, object]) -> torch.Tensor:
+    mask = cache.get("valid_forecast_mask")
+    if mask is None:
+        mask = validate_forecast_order(cache["high_pred"], cache["low_pred"])  # type: ignore[arg-type]
+        cache["valid_forecast_mask"] = mask
+    return mask  # type: ignore[return-value]
+
+
+def _get_base_maxdiff_trades(cache: Dict[str, object], *, is_crypto: bool) -> torch.Tensor:
+    key = "maxdiff_trades_crypto" if is_crypto else "maxdiff_trades_equity"
+    trades = cache.get(key)
+    if trades is None:
+        high_pred = cast(torch.Tensor, cache["high_pred"])
+        low_pred = cast(torch.Tensor, cache["low_pred"])
+        with torch.no_grad():
+            trades_tensor = torch.where(
+                torch.abs(high_pred) > torch.abs(low_pred),
+                torch.ones_like(high_pred),
+                -torch.ones_like(high_pred),
+            )
+            if is_crypto:
+                trades_tensor = torch.where(trades_tensor < 0, torch.zeros_like(trades_tensor), trades_tensor)
+        trades = trades_tensor.detach()
+        cache[key] = trades
+        cache[f"{key}_np"] = trades.cpu().numpy().copy()
+    return trades  # type: ignore[return-value]
+
+
+def _clear_strategy_cache(last_preds: Dict[str, torch.Tensor]) -> None:
+    cache = last_preds.pop(_PRICE_CACHE_KEY, None)
+    if isinstance(cache, dict):
+        cache.clear()
 
 
 def _apply_fast_simulate_optimizations():
@@ -397,46 +522,9 @@ def evaluate_maxdiff_strategy(
         )
         return eval_zero, eval_zero.returns, _zero_metadata()
 
-    high_series = simulation_data["High"].iloc[-(validation_len + 2) : -2]
-    low_series = simulation_data["Low"].iloc[-(validation_len + 2) : -2]
-    close_series = simulation_data["Close"].iloc[-(validation_len + 2) : -2]
-
-    if len(high_series) != validation_len:
-        high_series = simulation_data["High"].tail(validation_len)
-        low_series = simulation_data["Low"].tail(validation_len)
-        close_series = simulation_data["Close"].tail(validation_len)
-
-    close_vals = close_series.to_numpy(dtype=float)
-    high_vals = high_series.to_numpy(dtype=float)
-    low_vals = low_series.to_numpy(dtype=float)
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        close_to_high_np = np.abs(
-            1.0 - np.divide(high_vals, close_vals, out=np.zeros_like(high_vals), where=close_vals != 0.0)
-        )
-        close_to_low_np = np.abs(
-            1.0 - np.divide(low_vals, close_vals, out=np.zeros_like(low_vals), where=close_vals != 0.0)
-        )
-    close_to_high_np = np.nan_to_num(close_to_high_np, nan=0.0, posinf=0.0, neginf=0.0)
-    close_to_low_np = np.nan_to_num(close_to_low_np, nan=0.0, posinf=0.0, neginf=0.0)
-
-    close_to_high = _tensor(close_to_high_np, device=device)
-    close_to_low = _tensor(close_to_low_np, device=device)
-
-    high_actual_values = last_preds.get("high_actual_movement_values")
-    low_actual_values = last_preds.get("low_actual_movement_values")
-    high_pred_values = last_preds.get("high_predictions")
-    low_pred_values = last_preds.get("low_predictions")
-
-    if high_actual_values is None or low_actual_values is None or high_pred_values is None or low_pred_values is None:
-        logger.warning(
-            "MaxDiff strategy skipped: missing prediction arrays "
-            "(high_actual=%s, low_actual=%s, high_pred=%s, low_pred=%s)",
-            "None" if high_actual_values is None else type(high_actual_values).__name__,
-            "None" if low_actual_values is None else type(low_actual_values).__name__,
-            "None" if high_pred_values is None else type(high_pred_values).__name__,
-            "None" if low_pred_values is None else type(low_pred_values).__name__,
-        )
+    price_cache = _prepare_price_window_cache(last_preds, simulation_data, validation_len, device)
+    if price_cache is None:
+        logger.warning("MaxDiff strategy skipped: price window cache unavailable (len=%d)", validation_len)
         eval_zero = StrategyEvaluation(
             total_return=0.0,
             avg_daily_return=0.0,
@@ -446,32 +534,21 @@ def evaluate_maxdiff_strategy(
         )
         return eval_zero, eval_zero.returns, _zero_metadata()
 
-    high_actual_base = _tensor(high_actual_values, device=device)
-    low_actual_base = _tensor(low_actual_values, device=device)
-    high_pred_base = _tensor(high_pred_values, device=device)
-    low_pred_base = _tensor(low_pred_values, device=device)
-
-    high_actual = high_actual_base + close_to_high
-    low_actual = low_actual_base - close_to_low
-    high_pred = high_pred_base + close_to_high
-    low_pred = low_pred_base - close_to_low
+    high_actual = cast(torch.Tensor, price_cache["high_actual"])
+    low_actual = cast(torch.Tensor, price_cache["low_actual"])
+    high_pred = cast(torch.Tensor, price_cache["high_pred"])
+    low_pred = cast(torch.Tensor, price_cache["low_pred"])
 
     if _LOG_STRATEGY_TIMINGS:
         timings["prep"] = time.perf_counter() - timer_start
 
     with torch.no_grad():
         # Validate forecast order
-        valid_forecast_mask = validate_forecast_order(high_pred, low_pred)
+        valid_forecast_mask = _get_valid_forecast_mask(price_cache)
         num_invalid = int((~valid_forecast_mask).sum().item())
         num_valid = int(valid_forecast_mask.sum().item())
 
-        maxdiff_trades = torch.where(
-            torch.abs(high_pred) > torch.abs(low_pred),
-            torch.ones_like(high_pred),
-            -torch.ones_like(high_pred),
-        )
-        if is_crypto:
-            maxdiff_trades = torch.where(maxdiff_trades < 0, torch.zeros_like(maxdiff_trades), maxdiff_trades)
+        maxdiff_trades = _get_base_maxdiff_trades(price_cache, is_crypto=is_crypto)
 
         # Skip invalid forecasts if requested
         if skip_invalid_forecasts:
@@ -642,38 +719,8 @@ def evaluate_maxdiff_always_on_strategy(
         )
         return eval_zero, eval_zero.returns, _zero_metadata()
 
-    high_series = simulation_data["High"].iloc[-(validation_len + 2) : -2]
-    low_series = simulation_data["Low"].iloc[-(validation_len + 2) : -2]
-    close_series = simulation_data["Close"].iloc[-(validation_len + 2) : -2]
-
-    if len(high_series) != validation_len:
-        high_series = simulation_data["High"].tail(validation_len)
-        low_series = simulation_data["Low"].tail(validation_len)
-        close_series = simulation_data["Close"].tail(validation_len)
-
-    close_vals = close_series.to_numpy(dtype=float)
-    high_vals = high_series.to_numpy(dtype=float)
-    low_vals = low_series.to_numpy(dtype=float)
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        close_to_high_np = np.abs(
-            1.0 - np.divide(high_vals, close_vals, out=np.zeros_like(high_vals), where=close_vals != 0.0)
-        )
-        close_to_low_np = np.abs(
-            1.0 - np.divide(low_vals, close_vals, out=np.zeros_like(low_vals), where=close_vals != 0.0)
-        )
-    close_to_high_np = np.nan_to_num(close_to_high_np, nan=0.0, posinf=0.0, neginf=0.0)
-    close_to_low_np = np.nan_to_num(close_to_low_np, nan=0.0, posinf=0.0, neginf=0.0)
-
-    close_to_high = _tensor(close_to_high_np, device=device)
-    close_to_low = _tensor(close_to_low_np, device=device)
-
-    high_actual_values = last_preds.get("high_actual_movement_values")
-    low_actual_values = last_preds.get("low_actual_movement_values")
-    high_pred_values = last_preds.get("high_predictions")
-    low_pred_values = last_preds.get("low_predictions")
-
-    if high_actual_values is None or low_actual_values is None or high_pred_values is None or low_pred_values is None:
+    price_cache = _prepare_price_window_cache(last_preds, simulation_data, validation_len, device)
+    if price_cache is None:
         eval_zero = StrategyEvaluation(
             total_return=0.0,
             avg_daily_return=0.0,
@@ -683,10 +730,10 @@ def evaluate_maxdiff_always_on_strategy(
         )
         return eval_zero, eval_zero.returns, _zero_metadata()
 
-    high_actual = _tensor(high_actual_values, device=device) + close_to_high
-    low_actual = _tensor(low_actual_values, device=device) - close_to_low
-    high_pred = _tensor(high_pred_values, device=device) + close_to_high
-    low_pred = _tensor(low_pred_values, device=device) - close_to_low
+    high_actual = cast(torch.Tensor, price_cache["high_actual"])
+    low_actual = cast(torch.Tensor, price_cache["low_actual"])
+    high_pred = cast(torch.Tensor, price_cache["high_pred"])
+    low_pred = cast(torch.Tensor, price_cache["low_pred"])
 
     buy_indicator = torch.ones_like(close_actual)
     sell_indicator = torch.zeros_like(close_actual) if is_crypto else -torch.ones_like(close_actual)
@@ -856,79 +903,48 @@ def evaluate_pctdiff_strategy(
         zero_eval = StrategyEvaluation(0.0, 0.0, 0.0, 0.0, np.zeros(0, dtype=float))
         return zero_eval, zero_eval.returns, _zero_metadata()
 
-    high_series = simulation_data["High"].iloc[-(validation_len + 2) : -2]
-    low_series = simulation_data["Low"].iloc[-(validation_len + 2) : -2]
-    close_series = simulation_data["Close"].iloc[-(validation_len + 2) : -2]
-
-    if len(high_series) != validation_len:
-        high_series = simulation_data["High"].tail(validation_len)
-        low_series = simulation_data["Low"].tail(validation_len)
-        close_series = simulation_data["Close"].tail(validation_len)
-
-    close_vals = close_series.to_numpy(dtype=float)
-    high_vals = high_series.to_numpy(dtype=float)
-    low_vals = low_series.to_numpy(dtype=float)
-
-    high_actual_values = last_preds.get("high_actual_movement_values")
-    low_actual_values = last_preds.get("low_actual_movement_values")
-    high_pred_values = last_preds.get("high_predictions")
-    low_pred_values = last_preds.get("low_predictions")
-
-    if any(value is None for value in (high_actual_values, low_actual_values, high_pred_values, low_pred_values)):
+    price_cache = _prepare_price_window_cache(last_preds, simulation_data, validation_len, device)
+    if price_cache is None:
         zero_eval = StrategyEvaluation(0.0, 0.0, 0.0, 0.0, np.zeros(0, dtype=float))
         return zero_eval, zero_eval.returns, _zero_metadata()
 
-    high_actual_tensor = _tensor(high_actual_values, device=device).view(-1)
-    low_actual_tensor = _tensor(low_actual_values, device=device).view(-1)
-    high_pred_tensor = _tensor(high_pred_values, device=device).view(-1)
-    low_pred_tensor = _tensor(low_pred_values, device=device).view(-1)
+    close_vals = cast(np.ndarray, price_cache["close_vals"])
+    high_vals = cast(np.ndarray, price_cache["high_vals"])
+    low_vals = cast(np.ndarray, price_cache["low_vals"])
+    high_pred_raw_np = cast(np.ndarray, price_cache["high_pred_base_np"])
+    low_pred_raw_np = cast(np.ndarray, price_cache["low_pred_base_np"])
 
-    if (
-        high_actual_tensor.shape[0] < validation_len
-        or low_actual_tensor.shape[0] < validation_len
-        or high_pred_tensor.shape[0] < validation_len
-        or low_pred_tensor.shape[0] < validation_len
-    ):
-        zero_eval = StrategyEvaluation(0.0, 0.0, 0.0, 0.0, np.zeros(0, dtype=float))
-        return zero_eval, zero_eval.returns, _zero_metadata()
-
-    high_actual_tensor = high_actual_tensor[-validation_len:]
-    low_actual_tensor = low_actual_tensor[-validation_len:]
-    high_pred_tensor = high_pred_tensor[-validation_len:]
-    low_pred_tensor = low_pred_tensor[-validation_len:]
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        close_to_high_np = np.abs(
-            1.0 - np.divide(high_vals, close_vals, out=np.zeros_like(high_vals), where=close_vals != 0.0)
-        )
-        close_to_low_np = np.abs(
-            1.0 - np.divide(low_vals, close_vals, out=np.zeros_like(low_vals), where=close_vals != 0.0)
-        )
-    close_to_high = _tensor(np.nan_to_num(close_to_high_np, nan=0.0, posinf=0.0, neginf=0.0), device=device)
-    close_to_low = _tensor(np.nan_to_num(close_to_low_np, nan=0.0, posinf=0.0, neginf=0.0), device=device)
-
-    high_actual = high_actual_tensor + close_to_high
-    low_actual = low_actual_tensor - close_to_low
-    high_pred = high_pred_tensor + close_to_high
-    low_pred = low_pred_tensor - close_to_low
-
-    valid_forecast_mask = validate_forecast_order(high_pred, low_pred)
-    maxdiff_trades = torch.where(
-        torch.abs(high_pred) > torch.abs(low_pred),
-        torch.ones_like(high_pred),
-        -torch.ones_like(high_pred),
-    )
-    if is_crypto:
-        maxdiff_trades = torch.where(maxdiff_trades < 0, torch.zeros_like(maxdiff_trades), maxdiff_trades)
-    maxdiff_trades = torch.where(valid_forecast_mask, maxdiff_trades, torch.zeros_like(maxdiff_trades))
-
-    trades_np = maxdiff_trades.detach().cpu().numpy()
-    low_pred_raw_np = low_pred_tensor.detach().cpu().numpy()
-    high_pred_raw_np = high_pred_tensor.detach().cpu().numpy()
+    valid_forecast_mask = _get_valid_forecast_mask(price_cache)
+    base_trades = _get_base_maxdiff_trades(price_cache, is_crypto=is_crypto)
+    maxdiff_trades = torch.where(valid_forecast_mask, base_trades, torch.zeros_like(base_trades))
+    valid_mask_np = price_cache.get("valid_forecast_mask_np")
+    if valid_mask_np is None:
+        valid_mask_np = valid_forecast_mask.detach().cpu().numpy().astype(bool, copy=True)
+        price_cache["valid_forecast_mask_np"] = valid_mask_np
+    trades_np_key = "maxdiff_trades_crypto_np" if is_crypto else "maxdiff_trades_equity_np"
+    base_trades_np = price_cache.get(trades_np_key)
+    if base_trades_np is None:
+        base_trades_np = base_trades.detach().cpu().numpy().copy()
+        price_cache[trades_np_key] = base_trades_np
+    trades_np = np.where(valid_mask_np, base_trades_np, 0.0)
 
     if close_vals.size == 0 or close_vals.size != trades_np.size:
         zero_eval = StrategyEvaluation(0.0, 0.0, 0.0, 0.0, np.zeros(0, dtype=float))
         return zero_eval, zero_eval.returns, _zero_metadata()
+
+    trade_indices = np.flatnonzero(trades_np)
+    if trade_indices.size == 0:
+        zero_eval = StrategyEvaluation(0.0, 0.0, 0.0, 0.0, np.zeros_like(close_vals, dtype=float))
+        return zero_eval, zero_eval.returns, _zero_metadata()
+
+    long_entry_base = close_vals * (1.0 + low_pred_raw_np)
+    short_entry_base = close_vals * (1.0 + high_pred_raw_np)
+    trade_weights = trades_np[trade_indices]
+    trade_close_vals = close_vals[trade_indices]
+    trade_high_vals = high_vals[trade_indices]
+    trade_low_vals = low_vals[trade_indices]
+    trade_long_entry_base = long_entry_base[trade_indices]
+    trade_short_entry_base = short_entry_base[trade_indices]
 
     low_mult_values = np.linspace(multiplier_bounds[0], multiplier_bounds[1], 7)
     high_mult_values = np.linspace(multiplier_bounds[0], multiplier_bounds[1], 7)
@@ -943,16 +959,14 @@ def evaluate_pctdiff_strategy(
         returns = np.zeros_like(close_vals, dtype=float)
         entry_hits = 0
         takeprofit_hits = 0
-        for idx in range(close_vals.size):
-            trade_weight = float(trades_np[idx])
-            if trade_weight == 0:
-                continue
-            close_price = close_vals[idx]
-            actual_high = high_vals[idx]
-            actual_low = low_vals[idx]
+        for pos in range(trade_indices.size):
+            idx = int(trade_indices[pos])
+            trade_weight = float(trade_weights[pos])
+            close_price = float(trade_close_vals[pos])
+            actual_high = float(trade_high_vals[pos])
+            actual_low = float(trade_low_vals[pos])
             if trade_weight > 0:
-                entry_price = close_price * (1.0 + low_pred_raw_np[idx])
-                entry_price *= 1.0 + low_mult
+                entry_price = float(trade_long_entry_base[pos]) * (1.0 + low_mult)
                 entry_price = max(entry_price, 1e-6)
                 if actual_low > entry_price:
                     continue
@@ -964,8 +978,7 @@ def evaluate_pctdiff_strategy(
                     takeprofit_hits += 1
                 profit = (exit_price - entry_price) * abs(trade_weight)
             else:
-                entry_price = close_price * (1.0 + high_pred_raw_np[idx])
-                entry_price *= 1.0 + high_mult
+                entry_price = float(trade_short_entry_base[pos]) * (1.0 + high_mult)
                 entry_price = max(entry_price, 1e-6)
                 if actual_high < entry_price:
                     continue
@@ -2204,16 +2217,7 @@ def resolve_best_model(symbol: str) -> str:
 _chronos2_wrapper_cache: Dict[str, Any] = {}
 
 def load_chronos2_wrapper(params: Dict[str, Any]) -> Any:
-    """
-    Load Chronos2 wrapper with symbol-specific hyperparameters.
-
-    Compilation is DISABLED by default for maximum stability and to avoid
-    numerical issues. To enable compilation, set TORCH_COMPILED=1.
-
-    For more control over compile settings, see src/chronos_compile_config.py:
-        from src.chronos_compile_config import apply_production_compiled
-        apply_production_compiled()
-    """
+    """Load Chronos2 wrapper with symbol-specific hyperparameters."""
     from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 
     cache_key = params["model_id"]
@@ -2221,27 +2225,18 @@ def load_chronos2_wrapper(params: Dict[str, Any]) -> Any:
     if cached is not None:
         return cached
 
-    # torch.compile is DISABLED by default (set TORCH_COMPILED=1 to enable)
-    # This ensures maximum stability and avoids potential numerical issues
-    # See tests/test_chronos2_compile_fuzzing.py for extensive testing
     torch_compiled_flag = os.getenv("TORCH_COMPILED", "0")
     compile_enabled = torch_compiled_flag in {"1", "true", "yes", "on"}
 
-    # Also check legacy CHRONOS_COMPILE flag for backwards compatibility
     if not compile_enabled:
         compile_enabled = os.getenv("CHRONOS_COMPILE") in {"1", "true", "yes", "on"}
 
-    # Use safest compile settings when enabled (based on extensive testing)
-    # See src/chronos_compile_config.py for configuration details
-    compile_mode = os.getenv("CHRONOS_COMPILE_MODE", "reduce-overhead")  # Safest: reduce-overhead
-    compile_backend = os.getenv("CHRONOS_COMPILE_BACKEND", "inductor")  # Safest: inductor
-    dtype_env = os.getenv("CHRONOS_DTYPE", "float32")  # Safest: float32
+    compile_mode = os.getenv("CHRONOS_COMPILE_MODE", "reduce-overhead")
+    compile_backend = os.getenv("CHRONOS_COMPILE_BACKEND", "inductor")
+    dtype_env = os.getenv("CHRONOS_DTYPE", "float32")
 
-    # Force eager attention to completely avoid SDPA backends
-    # This is more reliable than just disabling specific backends
     attn_implementation = "eager"
 
-    # Also disable SDPA backends at the torch level as backup
     try:
         torch.backends.cuda.enable_flash_sdp(False)
         torch.backends.cuda.enable_mem_efficient_sdp(False)
@@ -3319,55 +3314,59 @@ def run_single_simulation(
 
     # Skip expensive strategy evaluations if only predictions are needed
     if skip_strategy_eval:
+        _clear_strategy_cache(last_preds)
         return {"last_preds": last_preds}
 
-    maxdiff_eval, maxdiff_returns_np, maxdiff_metadata = evaluate_maxdiff_strategy(
-        last_preds,
-        simulation_data,
-        trading_fee=trading_fee,
-        trading_days_per_year=trading_days_per_year,
-        is_crypto=is_crypto,
-    )
-    last_preds.update(maxdiff_metadata)
-    maxdiff_return = maxdiff_eval.total_return
-    maxdiff_sharpe = maxdiff_eval.sharpe_ratio
-    maxdiff_avg_daily = maxdiff_eval.avg_daily_return
-    maxdiff_annual = maxdiff_eval.annualized_return
-    maxdiff_returns = maxdiff_returns_np
-    maxdiff_finalday_return = float(maxdiff_returns[-1]) if maxdiff_returns.size else 0.0
-    maxdiff_turnover = float(maxdiff_metadata.get("maxdiff_turnover", 0.0))
+    try:
+        maxdiff_eval, maxdiff_returns_np, maxdiff_metadata = evaluate_maxdiff_strategy(
+            last_preds,
+            simulation_data,
+            trading_fee=trading_fee,
+            trading_days_per_year=trading_days_per_year,
+            is_crypto=is_crypto,
+        )
+        last_preds.update(maxdiff_metadata)
+        maxdiff_return = maxdiff_eval.total_return
+        maxdiff_sharpe = maxdiff_eval.sharpe_ratio
+        maxdiff_avg_daily = maxdiff_eval.avg_daily_return
+        maxdiff_annual = maxdiff_eval.annualized_return
+        maxdiff_returns = maxdiff_returns_np
+        maxdiff_finalday_return = float(maxdiff_returns[-1]) if maxdiff_returns.size else 0.0
+        maxdiff_turnover = float(maxdiff_metadata.get("maxdiff_turnover", 0.0))
 
-    maxdiff_always_eval, maxdiff_always_returns_np, maxdiff_always_metadata = evaluate_maxdiff_always_on_strategy(
-        last_preds,
-        simulation_data,
-        trading_fee=trading_fee,
-        trading_days_per_year=trading_days_per_year,
-        is_crypto=is_crypto,
-    )
-    last_preds.update(maxdiff_always_metadata)
-    maxdiff_always_return = maxdiff_always_eval.total_return
-    maxdiff_always_sharpe = maxdiff_always_eval.sharpe_ratio
-    maxdiff_always_avg_daily = maxdiff_always_eval.avg_daily_return
-    maxdiff_always_annual = maxdiff_always_eval.annualized_return
-    maxdiff_always_returns = maxdiff_always_returns_np
-    maxdiff_always_finalday_return = float(maxdiff_always_returns[-1]) if maxdiff_always_returns.size else 0.0
-    maxdiff_always_turnover = float(maxdiff_always_metadata.get("maxdiffalwayson_turnover", 0.0))
+        maxdiff_always_eval, maxdiff_always_returns_np, maxdiff_always_metadata = evaluate_maxdiff_always_on_strategy(
+            last_preds,
+            simulation_data,
+            trading_fee=trading_fee,
+            trading_days_per_year=trading_days_per_year,
+            is_crypto=is_crypto,
+        )
+        last_preds.update(maxdiff_always_metadata)
+        maxdiff_always_return = maxdiff_always_eval.total_return
+        maxdiff_always_sharpe = maxdiff_always_eval.sharpe_ratio
+        maxdiff_always_avg_daily = maxdiff_always_eval.avg_daily_return
+        maxdiff_always_annual = maxdiff_always_eval.annualized_return
+        maxdiff_always_returns = maxdiff_always_returns_np
+        maxdiff_always_finalday_return = float(maxdiff_always_returns[-1]) if maxdiff_always_returns.size else 0.0
+        maxdiff_always_turnover = float(maxdiff_always_metadata.get("maxdiffalwayson_turnover", 0.0))
 
-    pctdiff_eval, pctdiff_returns_np, pctdiff_metadata = evaluate_pctdiff_strategy(
-        last_preds,
-        simulation_data,
-        trading_fee=trading_fee,
-        trading_days_per_year=trading_days_per_year,
-        is_crypto=is_crypto,
-    )
-    last_preds.update(pctdiff_metadata)
-    pctdiff_return = pctdiff_eval.total_return
-    pctdiff_sharpe = pctdiff_eval.sharpe_ratio
-    pctdiff_avg_daily = pctdiff_eval.avg_daily_return
-    pctdiff_annual = pctdiff_eval.annualized_return
-    pctdiff_returns = pctdiff_returns_np
-    pctdiff_finalday_return = float(pctdiff_returns[-1]) if pctdiff_returns.size else 0.0
-    pctdiff_turnover = float(pctdiff_metadata.get("pctdiff_turnover", 0.0))
+        pctdiff_eval, pctdiff_returns_np, pctdiff_metadata = evaluate_pctdiff_strategy(
+            last_preds,
+            simulation_data,
+            trading_fee=trading_fee,
+            trading_days_per_year=trading_days_per_year,
+            is_crypto=is_crypto,
+        )
+        last_preds.update(pctdiff_metadata)
+        pctdiff_return = pctdiff_eval.total_return
+        pctdiff_sharpe = pctdiff_eval.sharpe_ratio
+        pctdiff_avg_daily = pctdiff_eval.avg_daily_return
+        pctdiff_annual = pctdiff_eval.annualized_return
+        pctdiff_returns = pctdiff_returns_np
+        pctdiff_finalday_return = float(pctdiff_returns[-1]) if pctdiff_returns.size else 0.0
+        pctdiff_turnover = float(pctdiff_metadata.get("pctdiff_turnover", 0.0))
+    finally:
+        _clear_strategy_cache(last_preds)
 
     pctdiff_mid_returns_np, pctdiff_mid_metadata = pctdiff_midpoint_stub_returns(
         enabled=ENABLE_PCTDIFF_MIDPOINT,

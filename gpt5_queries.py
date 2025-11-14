@@ -8,8 +8,9 @@ import json
 import math
 import os
 import re
-from dataclasses import dataclass
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from types import ModuleType
 from decimal import Decimal
 from typing import Any, Dict, FrozenSet, Iterable as TypingIterable, List, Optional, Tuple
 
@@ -19,17 +20,22 @@ from openai import AsyncOpenAI, OpenAI
 from src.cache import cache
 from src.utils import log_time
 
+np: ModuleType | None = None
+
 try:
     import numpy as np  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - numpy is optional
-    np = None  # type: ignore[assignment]
+    np = None
+
+jsonschema: ModuleType | None = None
+_JsonSchemaValidationError: type[Exception] | None = None
 
 try:  # pragma: no cover - jsonschema is optional but strongly recommended
     import jsonschema
     from jsonschema import ValidationError as _JsonSchemaValidationError
 except ImportError:  # pragma: no cover
-    jsonschema = None  # type: ignore[assignment]
-    _JsonSchemaValidationError = None  # type: ignore[assignment]
+    jsonschema = None
+    _JsonSchemaValidationError = None
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 _ASYNC_CLIENT: Optional[AsyncOpenAI] = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
@@ -951,7 +957,7 @@ async def query_to_gpt5_async(
         exception_retry_backoff = 0.0
     attempt = 0
     exception_attempt = 0
-    response = None  # type: ignore[assignment]
+    response: Any | None = None
     have_adjusted_reasoning = False
 
     client = _ensure_async_client()

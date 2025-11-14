@@ -24,15 +24,19 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from src.leverage_settings import get_leverage_settings
 from src.gpu_utils import cli_flag_was_provided, detect_total_vram_bytes, recommend_batch_size
 
+BaseModelTrainer: type[Any] | None = None
+PortfolioRLConfig: type[Any] | None = None
+TotoOptions: type[Any] | None = None
+
 try:  # Defer heavy hftraining imports until the optional extras are installed.
-    from hftraining.base_model_trainer import BaseModelTrainer, PortfolioRLConfig
-    from hftraining.toto_features import TotoOptions
+    from hftraining.base_model_trainer import BaseModelTrainer as _BaseTrainer, PortfolioRLConfig as _PortfolioCfg
+    from hftraining.toto_features import TotoOptions as _TotoOptions
 except Exception as exc:  # pragma: no cover - triggered when extras missing
-    BaseModelTrainer = None  # type: ignore[assignment]
-    PortfolioRLConfig = None  # type: ignore[assignment]
-    TotoOptions = None  # type: ignore[assignment]
     _HFTRAINING_IMPORT_ERROR: Exception | None = exc
 else:  # pragma: no cover - exercised when extras present
+    BaseModelTrainer = _BaseTrainer
+    PortfolioRLConfig = _PortfolioCfg
+    TotoOptions = _TotoOptions
     _HFTRAINING_IMPORT_ERROR = None
 
 

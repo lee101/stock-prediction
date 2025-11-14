@@ -3,17 +3,20 @@ from __future__ import annotations
 import math
 import numbers
 from decimal import Decimal
+from types import ModuleType
 from typing import Any, Literal, Optional
 
 import numpy as np
 
-try:  # Pandas is optional at runtime for certain unit tests.
-    import pandas as pd
+pd: ModuleType | None = None
 
-    _HAS_PANDAS = True
+try:  # Pandas is optional at runtime for certain unit tests.
+    import pandas as _pd
 except Exception:  # pragma: no cover - pandas missing in minimal envs.
-    pd = None  # type: ignore[assignment]
     _HAS_PANDAS = False
+else:
+    pd = _pd
+    _HAS_PANDAS = True
 
 PreferStrategy = Literal["first", "last", "mean"]
 

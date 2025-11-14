@@ -7,8 +7,6 @@ import json
 import os
 from collections.abc import MutableMapping
 
-# import sqlite3
-
 try:
     import cPickle as pickle
 except ImportError:
@@ -106,65 +104,3 @@ class PickleShelf(MemoryShelf):
     def save(self):
         with open(self.filename, 'wb') as f:
             pickle.dump(self.data, f)
-
-# class SQLiteShelf(JSONShelf):
-#     """A shelf backed by an SQLite database.
-#     """
-#
-#     def __init__(self, filename):
-#         self.conn = sqlite3.connect(filename)
-#         self.conn.execute(
-#             "CREATE TABLE IF NOT EXISTS jsonshelve (key TEXT, value TEXT)"
-#         )
-#
-#     def close(self):
-#         self.conn.close()
-#
-#     def save(self):
-#         self.conn.commit()
-#
-#     def __getitem__(self, key):
-#         c = self.conn.execute(
-#             "SELECT value FROM jsonshelve WHERE key = ? LIMIT 1", (key,)
-#         )
-#         row = c.fetchone()
-#         c.close()
-#         if not row:
-#             raise KeyError()
-#         return json.loads(row[0])
-#
-#     def __setitem__(self, key, value):
-#         self.conn.execute(
-#             "INSERT OR REPLACE INTO jsonshelve (key, value) VALUES (?, ?)",
-#             (key, json.dumps(value))
-#         )
-#
-#     def __delitem__(self, key):
-#         c = self.conn.execute(
-#             "DELETE FROM jsonshelve WHERE key = ?", (key,)
-#         )
-#         if not c.rowcount:
-#             # No row was deleted.
-#             raise KeyError()
-#
-#     def __iter__(self):
-#         c = self.conn.execute("SELECT key FROM jsonshelve")
-#
-#         # This is somewhat dangerous: we allow client code to execute
-#         # while the cursor is still open. This means it's possible for
-#         # the client to create "dangling" cursors that lock the database
-#         # indefinitely. For this reason, this iterator should *only* be
-#         # used in a for loop or immediately passed to list() to avoid
-#         # exceptional conditions causing inadvertent locking.
-#         for row in c:
-#             yield row[0]
-#         c.close()
-#
-#         # The less-efficient but safer alternative is:
-#         # return iter([r[0] for r in c])
-#
-#     def __len__(self):
-#         c = self.conn.execute(
-#             "SELECT COUNT(*) FROM jsonshelve"
-#         )
-#         return c.fetchone()[0]

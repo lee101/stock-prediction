@@ -15,14 +15,19 @@ logic discoverable and easy to override in tests.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import ModuleType
 from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optional
 
+torch: ModuleType | None = None
+
 try:  # torch is optional at import time so unit tests can guard explicitly.
-    import torch
-    from torch.optim import Optimizer as TorchOptimizer
+    import torch as _torch_mod
+    from torch.optim import Optimizer as _TorchOptimizer
 except ModuleNotFoundError:  # pragma: no cover - exercised when torch missing.
-    torch = None  # type: ignore[assignment]
-    TorchOptimizer = Any  # type: ignore[misc,assignment]
+    TorchOptimizer = Any  # type: ignore[misc]
+else:
+    torch = _torch_mod
+    TorchOptimizer = _TorchOptimizer
 
 
 OptimizerFactory = Callable[[Iterable], TorchOptimizer]
