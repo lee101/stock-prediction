@@ -1,0 +1,63 @@
+{
+  "symbol": "CRM",
+  "best_strategy": "differencing",
+  "mae": 4.5631254882812495,
+  "mae_percent": 1.8670229671801895,
+  "rmse": 5.2353880381007984,
+  "pct_return_mae": 0.018556999150907097,
+  "config": {
+    "name": "differencing",
+    "params": {}
+  },
+  "timestamp": "2025-11-13T22:32:54Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 1.8670229671801895,
+  "comparison": {
+    "baseline": {
+      "mae": 37.69350000000001,
+      "mae_percent": 15.42246216855935,
+      "pct_return_mae": 0.15378070621466036
+    },
+    "percent_change": {
+      "mae": 38.3645189819336,
+      "mae_percent": 15.697012551603006,
+      "pct_return_mae": 0.15650760314774131
+    },
+    "log_returns": {
+      "mae": 38.059442382812506,
+      "mae_percent": 15.572189112324143,
+      "pct_return_mae": 0.1552675859166514
+    },
+    "differencing": {
+      "mae": 4.5631254882812495,
+      "mae_percent": 1.8670229671801895,
+      "pct_return_mae": 0.018556999150907097
+    },
+    "detrending": {
+      "mae": 55.64244104003907,
+      "mae_percent": 22.7663507476434,
+      "pct_return_mae": 0.22694697908775602
+    },
+    "robust_scaling": {
+      "mae": 38.40371881103516,
+      "mae_percent": 15.713051334982975,
+      "pct_return_mae": 0.15666983617640792
+    },
+    "minmax_standard": {
+      "mae": 38.34647851562501,
+      "mae_percent": 15.68963121505566,
+      "pct_return_mae": 0.15643673396200136
+    },
+    "rolling_norm": {
+      "mae": 8.069398254394528,
+      "mae_percent": 3.3016299707227623,
+      "pct_return_mae": 0.0326226395487535
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "frequency": "daily",
+    "strategy_repeats": 1
+  }
+}
