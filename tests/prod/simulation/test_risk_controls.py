@@ -24,6 +24,7 @@ def test_forecast_plus_sim_nonpositive_detects_negative_sum(trade_module):
 
 
 def test_collect_forced_reasons_includes_last_two_losses(monkeypatch, trade_module):
+    monkeypatch.setattr(trade_module, "DISABLE_RECENT_PNL_PROBE", False)
     monkeypatch.setattr(trade_module, "_recent_trade_pnls", lambda *args, **kwargs: [-5.0, -3.0])
     data = {
         "side": "buy",
@@ -37,6 +38,7 @@ def test_collect_forced_reasons_includes_last_two_losses(monkeypatch, trade_modu
 
 
 def test_apply_forced_probe_annotations_sets_trade_mode(monkeypatch, trade_module):
+    monkeypatch.setattr(trade_module, "DISABLE_RECENT_PNL_PROBE", False)
     monkeypatch.setattr(trade_module, "_recent_trade_pnls", lambda *args, **kwargs: [-2.0, -2.5])
     data = {
         "side": "buy",

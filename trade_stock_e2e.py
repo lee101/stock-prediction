@@ -18,6 +18,10 @@ from backtest_test3_inline import backtest_forecasts, release_model_resources
 
 
 import src.trade_stock_state_utils as state_utils
+from portfolio_allocation_optimizer_wrapper import (
+    PortfolioAllocationOptimizer,
+    PortfolioOptimizerConfig,
+)
 from alpaca.data import StockHistoricalDataClient
 from data_curate_daily import download_exchange_latest_data, get_ask, get_bid
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
@@ -70,6 +74,8 @@ from src.trade_stock_env_utils import (
     get_entry_counter_snapshot,
     reset_symbol_entry_counters,
 )
+
+_TRUTHY = TRUTHY_ENV_VALUES
 from src.trade_stock_forecast_snapshot import load_latest_forecast_snapshot as _load_forecast_snapshot
 from src.trade_stock_gate_utils import (
     DISABLE_TRADE_GATES,
@@ -152,6 +158,106 @@ ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip(
 # Backwards-compatible alias required by older tests/utilities
 crypto_symbols = all_crypto_symbols
 
+
+def _parse_neural_strategy_list(raw: str) -> List[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+NEURAL_SIZING_ENABLED = os.getenv("MARKETSIM_ENABLE_NEURAL_SIZING", "1").strip().lower() in _TRUTHY
+NEURAL_SIZING_RUN_DIR = os.getenv(
+    "MARKETSIM_NEURAL_RUN_DIR",
+    "strategytrainingneural/reports/run_20251114_093401",
+)
+NEURAL_SIZING_METRICS_CSV = os.getenv(
+    "MARKETSIM_NEURAL_METRICS_CSV",
+    "strategytraining/reports/sizing_strategy_daily_metrics.csv",
+)
+_NEURAL_REFERENCE_STRATEGIES = _parse_neural_strategy_list(
+    os.getenv(
+        "MARKETSIM_NEURAL_REFERENCE_STRATEGIES",
+        "VolAdjusted_10pct,VolAdjusted_15pct,CorrAware_Moderate",
+    )
+)
+NEURAL_MIN_SCALE = ensure_lower_bound(
+    coerce_numeric(os.getenv("MARKETSIM_NEURAL_MIN_SCALE"), default=0.35),
+    0.0,
+    default=0.35,
+)
+NEURAL_MAX_SCALE = ensure_lower_bound(
+    coerce_numeric(os.getenv("MARKETSIM_NEURAL_MAX_SCALE"), default=1.0),
+    0.0,
+    default=1.0,
+)
+if NEURAL_MAX_SCALE < NEURAL_MIN_SCALE:
+    NEURAL_MAX_SCALE = NEURAL_MIN_SCALE
+NEURAL_DEVICE = os.getenv("MARKETSIM_NEURAL_DEVICE")
+NEURAL_ASSET_CLASS = os.getenv("MARKETSIM_NEURAL_ASSET_CLASS", "all")
+_NEURAL_CONFIG: Optional[PortfolioOptimizerConfig]
+if NEURAL_SIZING_ENABLED:
+    _NEURAL_CONFIG = PortfolioOptimizerConfig(
+        run_dir=NEURAL_SIZING_RUN_DIR,
+        metrics_csv=NEURAL_SIZING_METRICS_CSV,
+        reference_strategies=_NEURAL_REFERENCE_STRATEGIES,
+        min_scale=NEURAL_MIN_SCALE,
+        max_scale=NEURAL_MAX_SCALE,
+        asset_class=NEURAL_ASSET_CLASS,
+        device=NEURAL_DEVICE or None,
+    )
+else:
+    _NEURAL_CONFIG = None
+_PORTFOLIO_OPTIMIZER: Optional[PortfolioAllocationOptimizer] = None
+
+DISABLE_RECENT_PNL_PROBE = os.getenv("MARKETSIM_DISABLE_RECENT_PNL_PROBE", "1").strip().lower() in _TRUTHY
+
+
+def _get_portfolio_optimizer() -> Optional[PortfolioAllocationOptimizer]:
+    if not NEURAL_SIZING_ENABLED or _NEURAL_CONFIG is None:
+        return None
+    global _PORTFOLIO_OPTIMIZER
+    if _PORTFOLIO_OPTIMIZER is None:
+        if not _NEURAL_CONFIG.reference_strategies:
+            return None
+        _PORTFOLIO_OPTIMIZER = PortfolioAllocationOptimizer(_NEURAL_CONFIG)
+    return _PORTFOLIO_OPTIMIZER
+
+
+def _refresh_neural_scale(force: bool = False) -> Optional[float]:
+    optimizer = _get_portfolio_optimizer()
+    if optimizer is None:
+        return None
+    return optimizer.compute_scale(force=force)
+
+
+def _apply_neural_scale(
+    target_qty: float,
+    *,
+    min_qty: float,
+    symbol: str,
+    strategy: Optional[str],
+    effective_probe: bool,
+) -> float:
+    if not NEURAL_SIZING_ENABLED or effective_probe or target_qty <= 0:
+        return target_qty
+    optimizer = _get_portfolio_optimizer()
+    if optimizer is None:
+        return target_qty
+    scale = optimizer.last_scale or optimizer.compute_scale()
+    if scale is None or scale <= 0:
+        return target_qty
+    scaled_qty = target_qty * scale
+    if scaled_qty < min_qty and target_qty >= min_qty:
+        scaled_qty = min_qty
+    if not math.isclose(scaled_qty, target_qty):
+        logger.info(
+            "Neural sizing applied scale %.3f to %s (%s) qty %.4f → %.4f",
+            scale,
+            symbol,
+            strategy or "unknown",
+            target_qty,
+            scaled_qty,
+        )
+    return scaled_qty
+
 _quote_client: Optional[StockHistoricalDataClient] = None
 # Cooldown state now managed by src.cooldown_utils
 
@@ -161,7 +267,6 @@ _active_trades_store: Optional[FlatShelf] = None
 _trade_history_store: Optional[FlatShelf] = None
 _maxdiff_plans_store: Optional[FlatShelf] = None
 
-_TRUTHY = TRUTHY_ENV_VALUES
 
 SIMPLIFIED_MODE = os.getenv("MARKETSIM_SIMPLE_MODE", "0").strip().lower() in _TRUTHY
 
@@ -1232,13 +1337,14 @@ def _collect_forced_probe_reasons(symbol: str, data: Dict, probe_state: ProbeSta
     else:
         data.pop("global_force_probe", None)
 
-    pnls = _recent_trade_pnls(symbol, normalized_side, strategy=None, limit=2)
-    if len(pnls) >= 2:
-        recent_window = pnls[:2]
-        pnl_sum = sum(recent_window)
-        if pnl_sum <= 0:
-            formatted = ", ".join(f"{pnl:.2f}" for pnl in recent_window)
-            reasons.append(f"recent_pnl_sum={pnl_sum:.2f} [{formatted}]")
+    if not DISABLE_RECENT_PNL_PROBE:
+        pnls = _recent_trade_pnls(symbol, normalized_side, strategy=None, limit=2)
+        if len(pnls) >= 2:
+            recent_window = pnls[:2]
+            pnl_sum = sum(recent_window)
+            if pnl_sum <= 0:
+                formatted = ", ".join(f"{pnl:.2f}" for pnl in recent_window)
+                reasons.append(f"recent_pnl_sum={pnl_sum:.2f} [{formatted}]")
 
     forecast_pair = _forecast_plus_sim_nonpositive(data)
     if forecast_pair is not None:
@@ -3430,6 +3536,13 @@ def manage_positions(
                 target_qty = _get_simple_qty(symbol, entry_price, positions)
                 if target_qty < min_trade_qty:
                     target_qty = min_trade_qty
+                target_qty = _apply_neural_scale(
+                    target_qty,
+                    min_qty=min_trade_qty,
+                    symbol=symbol,
+                    strategy=data.get("strategy"),
+                    effective_probe=effective_probe,
+                )
                 target_value = target_qty * entry_price
                 logger.info(
                     f"{symbol}: Simple sizing - Current position: {current_position_size} qty (${current_position_value:.2f}), "
@@ -3466,6 +3579,13 @@ def manage_positions(
                 target_qty = ensure_lower_bound(base_qty * kelly_value, 0.0, default=0.0)
                 if target_qty < min_trade_qty:
                     target_qty = min_trade_qty
+                target_qty = _apply_neural_scale(
+                    target_qty,
+                    min_qty=min_trade_qty,
+                    symbol=symbol,
+                    strategy=data.get("strategy"),
+                    effective_probe=effective_probe,
+                )
                 target_value = target_qty * entry_price
                 logger.info(
                     f"{symbol}: Current position: {current_position_size} qty (${current_position_value:.2f}), "
@@ -4210,6 +4330,9 @@ def main():
             filter_info["original_count"],
             ", ".join(symbols)
         )
+
+    if NEURAL_SIZING_ENABLED:
+        _refresh_neural_scale(force=True)
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C

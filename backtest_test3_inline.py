@@ -129,9 +129,8 @@ def _prepare_price_window_cache(
     high_pred = high_pred_base + close_to_high_tensor
     low_pred = low_pred_base - close_to_low_tensor
 
-    high_pred_base_np = high_pred_base.detach().cpu().numpy().copy()
-    low_pred_base_np = low_pred_base.detach().cpu().numpy().copy()
-
+    # OPTIMIZATION: Defer GPU→CPU transfers - keep tensors on GPU, convert lazily when needed
+    # Store tensor refs instead of immediate numpy conversion to avoid expensive .cpu() calls
     cache: Dict[str, object] = {
         "cache_id": cache_id,
         "validation_len": validation_len,
@@ -148,11 +147,126 @@ def _prepare_price_window_cache(
         "low_actual_base": low_actual_base,
         "high_pred_base": high_pred_base,
         "low_pred_base": low_pred_base,
-        "high_pred_base_np": high_pred_base_np,
-        "low_pred_base_np": low_pred_base_np,
+        # Store GPU tensors - will convert to numpy only when accessed
+        "_high_pred_base_tensor": high_pred_base.detach(),
+        "_low_pred_base_tensor": low_pred_base.detach(),
     }
     last_preds[_PRICE_CACHE_KEY] = cache
     return cache
+
+
+_STRATEGY_SEQUENCE_KEYS = (
+    "high_actual_movement_values",
+    "low_actual_movement_values",
+    "high_predictions",
+    "low_predictions",
+)
+
+
+def _sequence_length(values: Optional[Union[np.ndarray, torch.Tensor, Sequence[float]]]) -> int:
+    if values is None:
+        return 0
+    try:
+        tensor = torch.as_tensor(values, dtype=torch.float32)
+    except Exception:
+        return 0
+    return int(tensor.reshape(-1).shape[0])
+
+
+def _align_close_actual_window(
+    last_preds: Dict[str, torch.Tensor],
+    close_actual: torch.Tensor,
+    *,
+    logger_prefix: str,
+) -> Tuple[torch.Tensor, int]:
+    base_len = int(close_actual.numel())
+    if base_len <= 0:
+        empty = close_actual.new_zeros((0,), dtype=close_actual.dtype)
+        return empty, 0
+
+    lengths: Dict[str, int] = {"close_actual_movement_values": base_len}
+    for key in _STRATEGY_SEQUENCE_KEYS:
+        seq_len = _sequence_length(last_preds.get(key))
+        if seq_len:
+            lengths[key] = seq_len
+
+    effective_len = min(lengths.values()) if lengths else base_len
+    if effective_len <= 0:
+        empty = close_actual.new_zeros((0,), dtype=close_actual.dtype)
+        return empty, 0
+
+    if effective_len < base_len:
+        close_actual = close_actual[-effective_len:]
+        try:
+            last_preds["close_actual_movement_values"] = close_actual.detach().cpu()
+        except Exception:
+            last_preds["close_actual_movement_values"] = close_actual.detach()
+        if logger.isEnabledFor(logging.DEBUG):
+            debug_lengths = ", ".join(f"{k}={lengths.get(k, 0)}" for k in sorted(lengths))
+            logger.debug(
+                "%s: trimmed validation window from %d to %d (%s)",
+                logger_prefix,
+                base_len,
+                effective_len,
+                debug_lengths,
+            )
+
+    return close_actual, effective_len
+
+
+def _get_lazy_numpy(cache: Dict[str, object], key: str) -> Any:
+    """
+    Lazily convert GPU tensor to numpy array with non-blocking transfer.
+
+    OPTIMIZATION: Defers expensive GPU→CPU transfers until truly needed.
+    Uses non_blocking=True to avoid synchronization points.
+    """
+    np_key = f"{key}_np"
+    if np_key in cache:
+        return cache[np_key]
+
+    tensor_key = f"_{key}_tensor"
+    tensor = cache.get(tensor_key)
+    if tensor is None:
+        # Fallback to old behavior if tensor not found
+        return cache.get(np_key)
+
+    # Use non_blocking transfer when possible to avoid sync
+    if isinstance(tensor, torch.Tensor):
+        if tensor.is_cuda:
+            # Non-blocking transfer: doesn't wait for GPU to finish
+            cpu_tensor = tensor.to("cpu", non_blocking=True)
+        else:
+            cpu_tensor = tensor
+
+        # Convert to numpy and cache
+        # Note: .numpy() will sync if non_blocking was used, but only when accessed
+        numpy_array = cpu_tensor.numpy().copy()
+        cache[np_key] = numpy_array
+        return numpy_array
+
+    return None
+
+
+def _require_price_cache_numpy(cache: Dict[str, object], key: str) -> np.ndarray:
+    """Fetch a numpy array from the cache, converting tensors lazily when needed."""
+
+    np_key = f"{key}_np"
+    cached_np = cache.get(np_key)
+    if isinstance(cached_np, np.ndarray):
+        return cached_np
+
+    lazy_np = _get_lazy_numpy(cache, key)
+    if isinstance(lazy_np, np.ndarray):
+        return lazy_np
+
+    tensor = cache.get(key)
+    if isinstance(tensor, torch.Tensor):
+        converted = tensor.detach().cpu().numpy().copy()
+        cache[np_key] = converted
+        return converted
+
+    raise KeyError(f"{np_key} is missing and no tensor is available for lazy conversion")
 
 
 def _get_valid_forecast_mask(cache: Dict[str, object]) -> torch.Tensor:
@@ -179,7 +293,8 @@ def _get_base_maxdiff_trades(cache: Dict[str, object], *, is_crypto: bool) -> to
                 trades_tensor = torch.where(trades_tensor < 0, torch.zeros_like(trades_tensor), trades_tensor)
         trades = trades_tensor.detach()
         cache[key] = trades
-        cache[f"{key}_np"] = trades.cpu().numpy().copy()
+        # OPTIMIZATION: Defer GPU→CPU transfer - store tensor, convert lazily
+        cache[f"_{key}_tensor"] = trades
     return trades  # type: ignore[return-value]
 
 
@@ -476,7 +591,11 @@ def evaluate_maxdiff_strategy(
     )
     if "close_actual_movement_values" not in last_preds:
         last_preds["close_actual_movement_values"] = close_actual
-    validation_len = int(close_actual.numel())
+    close_actual, validation_len = _align_close_actual_window(
+        last_preds,
+        close_actual,
+        logger_prefix="MaxDiff",
+    )
 
     def _zero_metadata() -> Dict[str, object]:
         high_price = float(last_preds.get("high_predicted_price_value", 0.0))
@@ -684,7 +803,13 @@ def evaluate_maxdiff_always_on_strategy(
         last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
         device=device,
     )
-    validation_len = int(close_actual.numel())
+    if "close_actual_movement_values" not in last_preds:
+        last_preds["close_actual_movement_values"] = close_actual
+    close_actual, validation_len = _align_close_actual_window(
+        last_preds,
+        close_actual,
+        logger_prefix="MaxDiffAlwaysOn",
+    )
 
     def _zero_metadata() -> Dict[str, object]:
         high_price = float(last_preds.get("high_predicted_price_value", 0.0))
@@ -875,9 +1000,17 @@ def evaluate_pctdiff_strategy(
         last_preds.get("close_actual_movement_values", torch.tensor([], dtype=torch.float32)),
         device=device,
     )
-    validation_len = int(close_actual.numel())
+    if "close_actual_movement_values" not in last_preds:
+        last_preds["close_actual_movement_values"] = close_actual
+    close_actual, validation_len = _align_close_actual_window(
+        last_preds,
+        close_actual,
+        logger_prefix="PctDiff",
+    )
 
     def _zero_metadata() -> Dict[str, object]:
+        low_entry_price = float(last_preds.get("low_predicted_price_value", 0.0) or 0.0)
+        high_entry_price = float(last_preds.get("high_predicted_price_value", 0.0) or 0.0)
         return {
             "pctdiff_profit": 0.0,
             "pctdiff_profit_values": [],
@@ -886,10 +1019,10 @@ def evaluate_pctdiff_strategy(
             "pctdiff_entry_high_multiplier": 0.0,
             "pctdiff_long_pct": 0.0,
             "pctdiff_short_pct": 0.0,
-            "pctdiff_entry_low_price": float(last_preds.get("low_predicted_price_value", 0.0) or 0.0),
-            "pctdiff_entry_high_price": float(last_preds.get("high_predicted_price_value", 0.0) or 0.0),
-            "pctdiff_takeprofit_high_price": 0.0,
-            "pctdiff_takeprofit_low_price": 0.0,
+            "pctdiff_entry_low_price": low_entry_price,
+            "pctdiff_entry_high_price": high_entry_price,
+            "pctdiff_takeprofit_high_price": low_entry_price,
+            "pctdiff_takeprofit_low_price": high_entry_price,
             "pctdiff_primary_side": "neutral",
             "pctdiff_trade_bias": 0.0,
             "pctdiff_trades_positive": 0,
@@ -911,8 +1044,8 @@ def evaluate_pctdiff_strategy(
     close_vals = cast(np.ndarray, price_cache["close_vals"])
     high_vals = cast(np.ndarray, price_cache["high_vals"])
     low_vals = cast(np.ndarray, price_cache["low_vals"])
-    high_pred_raw_np = cast(np.ndarray, price_cache["high_pred_base_np"])
-    low_pred_raw_np = cast(np.ndarray, price_cache["low_pred_base_np"])
+    high_pred_raw_np = _require_price_cache_numpy(price_cache, "high_pred_base")
+    low_pred_raw_np = _require_price_cache_numpy(price_cache, "low_pred_base")
 
     valid_forecast_mask = _get_valid_forecast_mask(price_cache)
     base_trades = _get_base_maxdiff_trades(price_cache, is_crypto=is_crypto)
@@ -1683,6 +1816,33 @@ def _reset_model_caches() -> None:
     _forced_kronos_logged_symbols.clear()
     _forced_toto_logged_symbols.clear()
     _cpu_fallback_log_state.clear()
+
+    # Also clear prediction cache
+    from src.kronos_prediction_cache import clear_prediction_cache
+
+    clear_prediction_cache()
+
+
+def log_prediction_cache_stats() -> None:
+    """Log statistics about the Kronos prediction cache."""
+    try:
+        from src.kronos_prediction_cache import get_prediction_cache
+
+        cache = get_prediction_cache()
+        stats = cache.get_stats()
+
+        if stats["enabled"] and (stats["hits"] + stats["misses"]) > 0:
+            logger.info(
+                "Kronos Prediction Cache Stats: hits=%d misses=%d hit_rate=%.1f%% entries=%d size=%.1fMB",
+                stats["hits"],
+                stats["misses"],
+                stats["hit_rate_percent"],
+                stats["num_entries"],
+                stats["cache_size_mb"],
+            )
+    except Exception:
+        # Don't let cache stats logging break anything
+        pass
 
 
 def release_model_resources(*, force: bool = False) -> None:
@@ -3138,28 +3298,74 @@ def run_single_simulation(
         kronos_abs = None
         need_kronos = use_kronos or key_to_predict == "Close"
         if need_kronos and ensure_kronos_ready():
-            try:
-                kronos_results = kronos_wrapper.predict_series(
-                    data=kronos_df,
-                    timestamp_col="timestamp",
-                    columns=[key_to_predict],
-                    pred_len=7,
-                    lookback=int(kronos_params["max_context"]),
-                    temperature=float(kronos_params["temperature"]),
-                    top_p=float(kronos_params["top_p"]),
-                    top_k=int(kronos_params["top_k"]),
-                    sample_count=int(kronos_params["sample_count"]),
-                )
-                kronos_entry = kronos_results.get(key_to_predict)
-                if kronos_entry is not None and len(kronos_entry.percent) > 0:
-                    kronos_predictions = torch.tensor(kronos_entry.percent, dtype=torch.float32)
-                    kronos_abs = float(kronos_entry.absolute[-1])
-            except Exception as exc:
-                if key_to_predict == "Close":
-                    logger.warning("Kronos forecast failed for %s %s: %s", symbol, key_to_predict, exc)
-                kronos_predictions = None
-                kronos_abs = None
-                kronos_wrapper = None
+            # Try to get prediction from cache first
+            from src.kronos_prediction_cache import get_prediction_cache
+
+            pred_cache = get_prediction_cache()
+            cached_result = pred_cache.get(
+                symbol=symbol,
+                column=key_to_predict,
+                data=kronos_df,
+                pred_len=7,
+                lookback=int(kronos_params["max_context"]),
+                temperature=float(kronos_params["temperature"]),
+                top_p=float(kronos_params["top_p"]),
+                top_k=int(kronos_params["top_k"]),
+                sample_count=int(kronos_params["sample_count"]),
+            )
+
+            if cached_result is not None:
+                # Cache hit - use cached prediction
+                kronos_predictions = cached_result.get("predictions")
+                kronos_abs = cached_result.get("absolute_last")
+                if key_to_predict == "Close" and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Kronos prediction cache HIT for %s %s (hit_rate=%.1f%%)",
+                        symbol,
+                        key_to_predict,
+                        pred_cache.get_stats()["hit_rate_percent"],
+                    )
+            else:
+                # Cache miss - compute new prediction
+                try:
+                    kronos_results = kronos_wrapper.predict_series(
+                        data=kronos_df,
+                        timestamp_col="timestamp",
+                        columns=[key_to_predict],
+                        pred_len=7,
+                        lookback=int(kronos_params["max_context"]),
+                        temperature=float(kronos_params["temperature"]),
+                        top_p=float(kronos_params["top_p"]),
+                        top_k=int(kronos_params["top_k"]),
+                        sample_count=int(kronos_params["sample_count"]),
+                    )
+                    kronos_entry = kronos_results.get(key_to_predict)
+                    if kronos_entry is not None and len(kronos_entry.percent) > 0:
+                        kronos_predictions = torch.tensor(kronos_entry.percent, dtype=torch.float32)
+                        kronos_abs = float(kronos_entry.absolute[-1])
+
+                        # Save to cache for future use
+                        pred_cache.set(
+                            symbol=symbol,
+                            column=key_to_predict,
+                            data=kronos_df,
+                            pred_len=7,
+                            result={
+                                "predictions": kronos_predictions,
+                                "absolute_last": kronos_abs,
+                            },
+                            lookback=int(kronos_params["max_context"]),
+                            temperature=float(kronos_params["temperature"]),
+                            top_p=float(kronos_params["top_p"]),
+                            top_k=int(kronos_params["top_k"]),
+                            sample_count=int(kronos_params["sample_count"]),
+                        )
+                except Exception as exc:
+                    if key_to_predict == "Close":
+                        logger.warning("Kronos forecast failed for %s %s: %s", symbol, key_to_predict, exc)
+                    kronos_predictions = None
+                    kronos_abs = None
+                    kronos_wrapper = None
 
         chronos2_predictions = None
         chronos2_abs = None
