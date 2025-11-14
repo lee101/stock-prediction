@@ -9,20 +9,30 @@ from typing import Any, Dict, Optional, Tuple
 
 from src.runtime_imports import setup_src_imports
 
+torch: ModuleType | None = None
+np: ModuleType | None = None
+pd: ModuleType | None = None
+
 try:  # pragma: no cover - exercised in production environments
-    import torch  # type: ignore[attr-defined]
+    import torch as _torch_mod  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover - torch not installed locally
-    torch = None  # type: ignore[assignment]
+    _torch_mod = None
+else:
+    torch = _torch_mod
 
 try:  # pragma: no cover - exercised in production environments
-    import numpy as np  # type: ignore[attr-defined]
+    import numpy as _np_mod  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover - numpy not installed locally
-    np = None  # type: ignore[assignment]
+    _np_mod = None
+else:
+    np = _np_mod
 
 try:  # pragma: no cover - exercised in production environments
-    import pandas as pd  # type: ignore[attr-defined]
+    import pandas as _pd_mod  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover - pandas optional
-    pd = None  # type: ignore[assignment]
+    _pd_mod = None
+else:
+    pd = _pd_mod
 
 
 def setup_training_imports(

@@ -18,6 +18,7 @@ The position sizing dataset is built by:
 - **Realistic Simulation**: Uses marketsimulator with slippage, fees, and position sizing
 - **Comprehensive Metrics**: Trades, positions, equity curves, Sharpe ratios, drawdowns
 - **Scalable**: Process 100+ symbols in parallel
+- **Chronos2-native Forecasts**: Collection enforces Chronos2 with the per-symbol pre-augmentation and hyperparameter metadata baked into every record.
 
 ## Data Structure
 
@@ -55,6 +56,14 @@ Time-series of position changes:
 Basic usage - process all symbols:
 ```bash
 python strategytraining/collect_position_sizing_dataset.py
+```
+
+Use the exact `trade_stock_e2e.py` symbol universe with Chronos2 forecasting:
+```bash
+python strategytraining/collect_strategy_pnl_dataset.py \
+    --use-trade-stock-symbols \
+    --data-dir trainingdata/train \
+    --dataset-name trade_stock_core
 ```
 
 Process specific symbols:

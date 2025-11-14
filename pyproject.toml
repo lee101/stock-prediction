@@ -254,3 +254,34 @@ exclude = [
 [tool.ty.rules]
 unresolved-import = "ignore"
 unresolved-attribute = "ignore"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false  # Start permissive, tighten over time
+disallow_any_unimported = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+check_untyped_defs = true
+ignore_missing_imports = true  # Don't fail on missing stubs
+
+# Per-module strictness - gradually increase
+[[tool.mypy.overrides]]
+module = [
+    "src.env_parsing",
+    "src.price_calculations",
+    "src.strategy_price_lookup",
+    "src.torch_device_utils",
+]
+disallow_untyped_defs = true  # Require type hints in new modules
+disallow_incomplete_defs = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false  # More lenient for tests

@@ -213,9 +213,12 @@ def _evaluate_hftraining(target: EvalTarget) -> EvaluationResult:
 
     config_summary: Dict[str, Any] = {}
     if isinstance(config_payload, Mapping):
-        training_section: Mapping[str, Any] = config_payload
-        if "training" in config_payload and isinstance(config_payload["training"], Mapping):
-            training_section = config_payload["training"]  # type: ignore[assignment]
+        training_candidate = config_payload.get("training")
+        training_section: Mapping[str, Any]
+        if isinstance(training_candidate, Mapping):
+            training_section = training_candidate
+        else:
+            training_section = config_payload
         for key in ("max_steps", "learning_rate", "batch_size", "gradient_accumulation_steps", "scheduler"):
             if key in training_section:
                 config_summary[key] = training_section[key]

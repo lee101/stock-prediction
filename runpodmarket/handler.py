@@ -4,6 +4,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Dict, Iterable, Optional
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -64,15 +65,19 @@ def _warmup_cuda(torch_module: Any) -> None:
         LOG.warning("CUDA warmup failed on %s: %s", device_name, exc)
 
 
+_np: ModuleType | None = None
+_pd: ModuleType | None = None
+_torch: ModuleType | None = None
+
 try:  # Heavy numerics injected for the simulator runtime.
-    import numpy as _np  # type: ignore
-    import pandas as _pd  # type: ignore
-    import torch as _torch  # type: ignore
+    import numpy as _np
+    import pandas as _pd
+    import torch as _torch
 except Exception as exc:  # pragma: no cover - runtime environment check
     LOG.warning("Failed to import torch/numpy/pandas during startup: %s", exc)
-    _np = None  # type: ignore[assignment]
-    _pd = None  # type: ignore[assignment]
-    _torch = None  # type: ignore[assignment]
+    _np = None
+    _pd = None
+    _torch = None
 else:
     configure_tf32_backends(_torch, logger=LOG)
     setup_training_imports(_torch, _np, _pd)

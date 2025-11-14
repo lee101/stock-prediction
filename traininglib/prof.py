@@ -4,18 +4,29 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from pathlib import Path
-from typing import ContextManager, Iterable, Optional
+from types import ModuleType
+from typing import Any, ContextManager, Iterable, Optional
+
+torch: ModuleType | None = None
 
 try:
-    import torch
+    import torch as _torch_mod
     from torch.profiler import (
         ProfilerActivity,
-        profile,
-        schedule,
-        tensorboard_trace_handler,
+        profile as _profile,
+        schedule as _schedule,
+        tensorboard_trace_handler as _tensorboard_trace_handler,
     )
 except Exception:  # pragma: no cover - torch profiler may be unavailable on CPU-only builds
-    profile = None  # type: ignore[assignment]
+    profile: Any | None = None
+    schedule = None
+    tensorboard_trace_handler = None
+    ProfilerActivity = Any
+else:
+    torch = _torch_mod
+    profile = _profile
+    schedule = _schedule
+    tensorboard_trace_handler = _tensorboard_trace_handler
 
 
 def _ensure_dir(path: str | Path) -> Path:
@@ -45,7 +56,7 @@ def maybe_profile(
         Scheduling knobs forwarded to ``torch.profiler.schedule``.
     """
 
-    if not enabled or profile is None:
+    if not enabled or profile is None or schedule is None or tensorboard_trace_handler is None or torch is None:
         return nullcontext()
 
     activities: Iterable[ProfilerActivity]

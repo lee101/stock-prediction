@@ -5,6 +5,7 @@ This script runs the full collection across all symbols with progress tracking
 and automatic resume capability.
 """
 
+import argparse
 import sys
 import json
 import time
@@ -14,9 +15,33 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from strategytraining.collect_strategy_pnl_dataset import StrategyPnLCollector
+from strategytraining.symbol_sources import load_trade_stock_symbols
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--use-trade-stock-symbols",
+        action="store_true",
+        help="Restrict collection to the trade_stock_e2e.py symbol universe.",
+    )
+    parser.add_argument(
+        "--trade-stock-script",
+        type=Path,
+        default=Path("trade_stock_e2e.py"),
+        help="Path to trade_stock_e2e.py when extracting trade symbols.",
+    )
+    parser.add_argument(
+        "--max-symbols",
+        type=int,
+        default=None,
+        help="Limit the number of symbols processed during this run.",
+    )
+    return parser.parse_args()
 
 
 def main():
+    args = _parse_args()
     print("="*80)
     print("FULL STRATEGY PNL DATASET COLLECTION")
     print("="*80)
@@ -32,9 +57,20 @@ def main():
         min_data_points=500  # Lower threshold to include more symbols
     )
 
-    # Get all available symbols
-    all_symbols = collector.get_available_symbols()
-    print(f"Total symbols found: {len(all_symbols)}")
+    # Get symbol universe
+    if args.use_trade_stock_symbols:
+        all_symbols = load_trade_stock_symbols(args.trade_stock_script)
+        print(
+            f"Total symbols from {args.trade_stock_script}: {len(all_symbols)} "
+            "(trade_stock_e2e universe)"
+        )
+    else:
+        all_symbols = collector.get_available_symbols()
+        print(f"Total symbols found in data dir: {len(all_symbols)}")
+
+    if args.max_symbols:
+        all_symbols = all_symbols[: args.max_symbols]
+        print(f"Limiting to first {len(all_symbols)} symbols (max_symbols={args.max_symbols})")
 
     # Check for existing progress
     progress_file = Path('strategytraining/datasets/collection_progress.json')

@@ -30,6 +30,7 @@ import random
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -37,10 +38,12 @@ import pandas as pd
 import torch
 from sklearn.metrics import mean_absolute_error
 
+optuna: ModuleType | None = None
+
 try:  # Optional dependency; required when --search-method=optuna
     import optuna
 except ModuleNotFoundError:  # pragma: no cover - optuna optional
-    optuna = None  # type: ignore[assignment]
+    optuna = None
 
 from src.models.kronos_wrapper import KronosForecastingWrapper
 from src.models.toto_wrapper import TotoPipeline

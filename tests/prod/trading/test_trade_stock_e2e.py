@@ -32,6 +32,7 @@ from trade_stock_e2e import (
     reset_symbol_entry_counters,
     is_tradeable,
 )
+from src.risk_state import ProbeState
 
 
 def make_position(symbol, side, qty=1, current_price=100):
@@ -354,6 +355,20 @@ def test_analyze_symbols_prefers_maxdiff_for_crypto_when_primary_side_buy(
     assert outcome["strategy"] == "maxdiff"
     assert outcome["side"] == "buy"
     assert outcome["maxdiff_entry_allowed"] is True
+
+
+def test_collect_forced_probe_reasons_uses_pnl_sum(monkeypatch):
+    probe_state = ProbeState(force_probe=False, reason=None, probe_date=None, state={})
+    data = {"side": "buy"}
+
+    monkeypatch.setattr(trade_module, "_recent_trade_pnls", lambda *_, **__: [-2.0, 1.0])
+    reasons = trade_module._collect_forced_probe_reasons("AAPL", data, probe_state)
+    assert any("recent_pnl_sum" in reason for reason in reasons)
+
+    monkeypatch.setattr(trade_module, "_recent_trade_pnls", lambda *_, **__: [1.5, -0.5])
+    data = {"side": "buy"}
+    reasons = trade_module._collect_forced_probe_reasons("AAPL", data, probe_state)
+    assert not any("recent_pnl_sum" in reason for reason in reasons)
 
 
 @patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)

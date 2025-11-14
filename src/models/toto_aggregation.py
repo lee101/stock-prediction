@@ -39,10 +39,11 @@ def _require_numpy() -> ModuleType:
     if np is not None:
         return np
     try:
-        np = import_module("numpy")  # type: ignore[assignment]
+        module = import_module("numpy")
     except ModuleNotFoundError as exc:
         raise RuntimeError("NumPy is unavailable. Call setup_toto_aggregation_imports before use.") from exc
-    return np
+    np = module
+    return module
 
 
 _DEFAULT_METHODS = {

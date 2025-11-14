@@ -81,10 +81,11 @@ def _require_torch() -> ModuleType:
     if torch is not None:
         return torch
     try:
-        torch = import_module("torch")  # type: ignore[assignment]
+        module = import_module("torch")
     except ModuleNotFoundError as exc:
         raise RuntimeError("Torch is unavailable. Call setup_toto_wrapper_imports before use.") from exc
-    return torch
+    torch = module
+    return module
 
 
 def _require_numpy() -> ModuleType:
@@ -92,10 +93,11 @@ def _require_numpy() -> ModuleType:
     if np is not None:
         return np
     try:
-        np = import_module("numpy")  # type: ignore[assignment]
+        module = import_module("numpy")
     except ModuleNotFoundError as exc:
         raise RuntimeError("NumPy is unavailable. Call setup_toto_wrapper_imports before use.") from exc
-    return np
+    np = module
+    return module
 
 
 if TYPE_CHECKING:
@@ -419,7 +421,8 @@ class TotoPipeline:
                     if compile_backend:
                         compile_kwargs["backend"] = compile_backend
                     try:
-                        self.model = torch.compile(self.model, **compile_kwargs)  # type: ignore[assignment]
+                        compiled_model = torch.compile(self.model, **compile_kwargs)
+                        self.model = cast(TotoModelType, compiled_model)
                         self._compiled = True
                     except Exception as exc:
                         logger.debug(f"torch.compile fallback failed for Toto model: {exc}")

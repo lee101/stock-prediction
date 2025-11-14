@@ -40,7 +40,6 @@ from src.stock_utils import pairs_equal, remap_symbols
 from src.symbol_utils import is_crypto_symbol
 from src.trading_obj_utils import filter_to_realistic_positions
 
-# Detect if we're in hourly mode based on TRADE_STATE_SUFFIX env var
 _is_hourly = os.getenv("TRADE_STATE_SUFFIX", "") == "hourly"
 logger = setup_logging(get_log_filename("alpaca_cli.log", is_hourly=_is_hourly))
 
@@ -76,7 +75,6 @@ def _get_time_in_force_for_qty(qty: float, symbol: str = None) -> str:
         return "gtc"
 
 
-# Market order spread threshold - don't use market orders if spread exceeds this
 _MARKET_ORDER_SPREAD_CAP_RAW = os.getenv("MARKET_ORDER_MAX_SPREAD_PCT", "0.01")
 try:
     MARKET_ORDER_MAX_SPREAD_PCT = max(float(_MARKET_ORDER_SPREAD_CAP_RAW), 0.0)
@@ -90,7 +88,6 @@ except ValueError:
 
 _PLACEHOLDER_TOKEN = "placeholder"
 
-# Select credentials based on PAPER environment variable
 _TRADING_KEY_ID = ALP_KEY_ID if PAPER else ALP_KEY_ID_PROD
 _TRADING_SECRET_KEY = ALP_SECRET_KEY if PAPER else ALP_SECRET_KEY_PROD
 _IS_PAPER = PAPER
@@ -310,7 +307,6 @@ def cancel_all_orders(retries=3):
     return result
 
 
-# alpaca_api.submit_order(short_stock, qty, side, "market", "gtc")
 def open_market_order_violently(symbol, qty, side, retries=3):
     """Submit a market order.
 
@@ -380,8 +376,6 @@ def _parse_available_balance(error_str: str) -> float:
             pass
     return 0.0
 
-
-# er_stock:372 - LTCUSD buying 116.104 at 83.755
 
 def has_current_open_position(symbol: str, side: str) -> bool:
     # normalize side out of paranoia
