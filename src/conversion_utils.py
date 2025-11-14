@@ -29,10 +29,11 @@ def _torch_module() -> ModuleType | None:
     if torch is not None:
         return torch
     try:
-        torch = import_module("torch")  # type: ignore[assignment]
+        module = import_module("torch")
     except ModuleNotFoundError:
         return None
-    return torch
+    torch = module
+    return module
 
 
 def unwrap_tensor(data: Any):

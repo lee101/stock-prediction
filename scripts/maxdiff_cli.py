@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 import alpaca_wrapper
 import typer
@@ -42,11 +42,14 @@ def _get_watcher_logger(symbol: str, side: str, mode: str):
     log_filename = f"logs/{symbol.lower()}_{side}_{mode}_watcher.log"
     return setup_logging(log_filename)
 
+StockHistoricalDataClient: type[Any] | None = None
+
 try:
-    from alpaca.data import StockHistoricalDataClient
+    from alpaca.data import StockHistoricalDataClient as _StockHistoricalDataClient
 except Exception as exc:  # pragma: no cover - fallback in simulator environments
-    StockHistoricalDataClient = None  # type: ignore[assignment]
     logger.warning(f"StockHistoricalDataClient unavailable: {exc}")
+else:
+    StockHistoricalDataClient = _StockHistoricalDataClient
 
 
 app = typer.Typer(help="Maxdiff strategy helpers for staged entry/exit automation.")

@@ -31,7 +31,7 @@ class PodRequest:
     interruptible: bool = False
     volume_gb: int = 20
     container_disk_gb: int = 50
-    ports: list[str] = None  # type: ignore[assignment]
+    ports: Optional[list[str]] = None
     env: JsonDict | None = None
     support_public_ip: bool = True
 

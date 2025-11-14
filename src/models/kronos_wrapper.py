@@ -70,10 +70,11 @@ def _require_torch() -> ModuleType:
     if torch is not None:
         return torch
     try:
-        torch = import_module("torch")  # type: ignore[assignment]
+        module = import_module("torch")
     except ModuleNotFoundError as exc:
         raise RuntimeError("Torch is unavailable. Call setup_kronos_wrapper_imports before use.") from exc
-    return torch
+    torch = module
+    return module
 
 
 def _require_numpy() -> ModuleType:
@@ -81,10 +82,11 @@ def _require_numpy() -> ModuleType:
     if np is not None:
         return np
     try:
-        np = import_module("numpy")  # type: ignore[assignment]
+        module = import_module("numpy")
     except ModuleNotFoundError as exc:
         raise RuntimeError("NumPy is unavailable. Call setup_kronos_wrapper_imports before use.") from exc
-    return np
+    np = module
+    return module
 
 
 def _require_pandas() -> ModuleType:
@@ -92,10 +94,11 @@ def _require_pandas() -> ModuleType:
     if pd is not None:
         return pd
     try:
-        pd = import_module("pandas")  # type: ignore[assignment]
+        module = import_module("pandas")
     except ModuleNotFoundError as exc:
         raise RuntimeError("pandas is unavailable. Call setup_kronos_wrapper_imports before use.") from exc
-    return pd
+    pd = module
+    return module
 
 
 @dataclass(frozen=True)

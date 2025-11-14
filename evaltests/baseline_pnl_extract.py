@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Dict, Iterable, Iterator, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -26,25 +26,33 @@ if str(REPO_ROOT) not in sys.path:
 try:
     import alpaca_wrapper as _alpaca_wrapper  # type: ignore  # noqa: WPS433
 except Exception:
-    _alpaca_wrapper = None  # type: ignore[assignment]
+    _alpaca_wrapper: ModuleType | None = None
 else:
     if hasattr(_alpaca_wrapper, "get_all_positions"):
-        _alpaca_wrapper.get_all_positions = lambda: []  # type: ignore[assignment]
+        setattr(_alpaca_wrapper, "get_all_positions", lambda: [])
     if hasattr(_alpaca_wrapper, "get_account"):
-        _alpaca_wrapper.get_account = lambda: SimpleNamespace(  # type: ignore[assignment]
-            equity=10_000.0,
-            cash=8_000.0,
-            buying_power=12_000.0,
-            multiplier=1.0,
+        setattr(
+            _alpaca_wrapper,
+            "get_account",
+            lambda: SimpleNamespace(
+                equity=10_000.0,
+                cash=8_000.0,
+                buying_power=12_000.0,
+                multiplier=1.0,
+            ),
         )
     if hasattr(_alpaca_wrapper, "get_clock"):
-        _alpaca_wrapper.get_clock = lambda: SimpleNamespace(  # type: ignore[assignment]
-            is_open=True,
-            next_open=None,
-            next_close=None,
+        setattr(
+            _alpaca_wrapper,
+            "get_clock",
+            lambda: SimpleNamespace(
+                is_open=True,
+                next_open=None,
+                next_close=None,
+            ),
         )
     if hasattr(_alpaca_wrapper, "re_setup_vars"):
-        _alpaca_wrapper.re_setup_vars = lambda *_, **__: None  # type: ignore[assignment]
+        setattr(_alpaca_wrapper, "re_setup_vars", lambda *_, **__: None)
 
 from deepseek_wrapper import call_deepseek_chat  # type: ignore
 from stockagent.agentsimulator.data_models import AccountPosition, AccountSnapshot, TradingPlan
@@ -240,19 +248,19 @@ def offline_alpaca_state() -> Iterator[None]:
 
     try:
         if original_positions is not None:
-            alp.get_all_positions = _fake_positions  # type: ignore[assignment]
+            setattr(alp, "get_all_positions", _fake_positions)
         if original_account is not None:
-            alp.get_account = _fake_account  # type: ignore[assignment]
+            setattr(alp, "get_account", _fake_account)
         if original_clock is not None:
-            alp.get_clock = _fake_clock  # type: ignore[assignment]
+            setattr(alp, "get_clock", _fake_clock)
         yield
     finally:
         if original_positions is not None:
-            alp.get_all_positions = original_positions  # type: ignore[assignment]
+            setattr(alp, "get_all_positions", original_positions)
         if original_account is not None:
-            alp.get_account = original_account  # type: ignore[assignment]
+            setattr(alp, "get_account", original_account)
         if original_clock is not None:
-            alp.get_clock = original_clock  # type: ignore[assignment]
+            setattr(alp, "get_clock", original_clock)
 
 
 def _build_sample_market_bundle() -> MarketDataBundle:

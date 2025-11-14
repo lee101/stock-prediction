@@ -11,10 +11,14 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping, MutableMapping, Optional, Tuple
 
+Trainer: Any | None = None
+
 try:
-    from transformers import Trainer
+    from transformers import Trainer as _Trainer
 except ModuleNotFoundError:  # pragma: no cover - import guarded at runtime.
-    Trainer = None  # type: ignore[assignment]
+    Trainer = None
+else:
+    Trainer = _Trainer
 
 from .optimizers import create_optimizer, optimizer_registry
 
@@ -100,7 +104,7 @@ def attach_optimizer_to_trainer(
         scheduler_builder=scheduler_builder,
         num_training_steps=num_training_steps,
     )
-    trainer.create_optimizer = lambda: optimizer  # type: ignore[assignment]
-    trainer.create_optimizer_and_scheduler = lambda _: (optimizer, scheduler)  # type: ignore[assignment]
+    setattr(trainer, "create_optimizer", lambda: optimizer)
+    setattr(trainer, "create_optimizer_and_scheduler", lambda _: (optimizer, scheduler))
     trainer.optimizers = (optimizer, scheduler)
     return optimizer, scheduler

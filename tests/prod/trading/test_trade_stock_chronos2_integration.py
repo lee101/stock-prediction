@@ -22,7 +22,9 @@ if "scripts.alpaca_cli" not in sys.modules:
     stub_cli.set_strategy_for_symbol = _noop_set_strategy
     sys.modules["scripts.alpaca_cli"] = stub_cli
 
-if not hasattr(backtest_test3_inline, "download_daily_stock_data"):
+backtest_module = backtest_test3_inline
+
+if not hasattr(backtest_module, "download_daily_stock_data"):
     module_path = Path(__file__).resolve().parents[3] / "backtest_test3_inline.py"
     spec = importlib.util.spec_from_file_location("backtest_test3_inline", module_path)
     if spec is None or spec.loader is None:
@@ -30,7 +32,7 @@ if not hasattr(backtest_test3_inline, "download_daily_stock_data"):
     module = importlib.util.module_from_spec(spec)
     sys.modules["backtest_test3_inline"] = module
     spec.loader.exec_module(module)
-    backtest_test3_inline = module  # type: ignore[assignment]
+    backtest_module = module
     trade_stock_e2e.backtest_forecasts = module.backtest_forecasts  # type: ignore[attr-defined]
     trade_stock_e2e.release_model_resources = module.release_model_resources  # type: ignore[attr-defined]
 
@@ -70,8 +72,8 @@ def test_trade_stock_e2e_uses_chronos2_swept_configs(monkeypatch):
         assert symbols == [symbol], f"Unexpected symbol request: {symbols}"
         return ohlc_df.copy()
 
-    monkeypatch.setattr(backtest_test3_inline, "download_daily_stock_data", _load_training_stock_data)
-    monkeypatch.setattr(backtest_test3_inline, "fetch_spread", lambda _: 0.75)
+    monkeypatch.setattr(backtest_module, "download_daily_stock_data", _load_training_stock_data)
+    monkeypatch.setattr(backtest_module, "fetch_spread", lambda _: 0.75)
 
     monkeypatch.setenv("ONLY_CHRONOS2", "1")
     monkeypatch.setenv("MARKETSIM_BACKTEST_SIMULATIONS", "3")

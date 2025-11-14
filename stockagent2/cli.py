@@ -5,12 +5,15 @@ import json
 import sys
 from dataclasses import fields
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple, Union, cast
+
+tomllib: ModuleType | None = None
 
 try:
     import tomllib  # type: ignore[attr-defined]
 except ModuleNotFoundError:  # pragma: no cover - Python <3.11 fallback
-    tomllib = None  # type: ignore[assignment]
+    tomllib = None
 
 from stockagent2.agentsimulator.runner import (
     PipelineSimulationConfig,

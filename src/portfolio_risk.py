@@ -151,14 +151,16 @@ def record_portfolio_snapshot(
                 if not math.isfinite(effective_day_pl):
                     effective_day_pl = None
 
-        # Disabled dynamic risk adjustment - always use 2.0x
-        risk_threshold = 2.0
-        # if effective_day_pl is not None:
-        #     risk_threshold = configured_max if effective_day_pl >= 0 else DEFAULT_MIN_RISK_THRESHOLD
-        # elif reference is None:
-        #     risk_threshold = DEFAULT_MIN_RISK_THRESHOLD
-        # else:
-        #     risk_threshold = configured_max if portfolio_value >= reference.portfolio_value else DEFAULT_MIN_RISK_THRESHOLD
+        if effective_day_pl is not None:
+            risk_threshold = configured_max if effective_day_pl >= 0 else DEFAULT_MIN_RISK_THRESHOLD
+        elif reference is None:
+            risk_threshold = DEFAULT_MIN_RISK_THRESHOLD
+        else:
+            risk_threshold = (
+                configured_max
+                if float(portfolio_value) >= float(reference.portfolio_value)
+                else DEFAULT_MIN_RISK_THRESHOLD
+            )
 
         risk_threshold = _clamp_threshold(risk_threshold)
 

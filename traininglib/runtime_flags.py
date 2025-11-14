@@ -10,17 +10,22 @@ import torch.nn.functional as F
 
 from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
 
+FlashAttnFunc = Callable[..., torch.Tensor]
+SageAttnFunc = Callable[..., torch.Tensor]
+
 try:
-    from flash_attn.flash_attn_interface import flash_attn_func as _flash_attn_func
+    from flash_attn.flash_attn_interface import flash_attn_func as _imported_flash_attn_func
 except Exception:  # pragma: no cover - optional dependency
-    _flash_attn_func = None  # type: ignore[assignment]
+    _flash_attn_func: FlashAttnFunc | None = None
+else:
+    _flash_attn_func = _imported_flash_attn_func
 
 try:
     import sageattention
 
-    _sage_attn = sageattention.sageattn
+    _sage_attn: SageAttnFunc | None = sageattention.sageattn
 except Exception:  # pragma: no cover - optional dependency
-    _sage_attn = None  # type: ignore[assignment]
+    _sage_attn = None
 
 
 _FLASH_ATTENTION_DTYPES = {torch.float16, torch.bfloat16}
@@ -178,11 +183,11 @@ def _sdpa_kernel_patch():
 
         return original_sdpa(q, k, v, attn_mask, dropout_p, is_causal)
 
-    F.scaled_dot_product_attention = _patched_sdpa  # type: ignore[assignment]
+    setattr(F, "scaled_dot_product_attention", _patched_sdpa)
     try:
         yield True
     finally:
-        F.scaled_dot_product_attention = original_sdpa  # type: ignore[assignment]
+        setattr(F, "scaled_dot_product_attention", original_sdpa)
 
 
 @contextlib.contextmanager

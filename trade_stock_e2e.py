@@ -14,8 +14,6 @@ import pytz
 from loguru import logger
 
 from hyperparamstore import load_model_selection
-
-# Direct import - fail hard if backtest module unavailable (production mode)
 from backtest_test3_inline import backtest_forecasts, release_model_resources
 
 
@@ -31,14 +29,12 @@ from src.comparisons import is_buy_side, is_same_side, is_sell_side
 from src.cooldown_utils import can_trade_now, clear_cooldown, record_loss_timestamp
 from src.date_utils import is_nyse_trading_day_ending, is_nyse_trading_day_now
 from src.fixtures import all_crypto_symbols
-
-# Note: Use all_crypto_symbols for identification checks (fees, trading hours, etc.)
-# Use active_crypto_symbols for deciding what to actively trade
 from src.logging_utils import setup_logging, get_log_filename
 from src.trade_analysis_summary import build_analysis_summary_messages
 from src.work_stealing_config import is_crypto_out_of_hours
 from src.portfolio_filters import get_selected_strategy_forecast
 from src.portfolio_risk import record_portfolio_snapshot
+from src.risk_state import ProbeState, record_day_pl, resolve_probe_state
 from src.process_utils import (
     MAXDIFF_WATCHERS_DIR,
     backout_near_market,
@@ -99,10 +95,8 @@ from stock.data_utils import coerce_numeric, ensure_lower_bound, safe_divide
 from stock.state import ensure_state_dir as _shared_ensure_state_dir
 from stock.state import get_state_dir, get_state_file, resolve_state_suffix
 
-# Keep frequently patched helpers accessible for external callers.
 _EXPORTED_ENV_HELPERS = (reset_symbol_entry_counters, get_entry_counter_snapshot)
 
-# Configure logging (daily mode, is_hourly=False)
 logger = setup_logging(get_log_filename("trade_stock_e2e.log", is_hourly=False))
 
 ensure_huggingface_cache_dir(logger=logger)
@@ -154,6 +148,9 @@ if _ALLOW_PCTDIFF_ENV is None:
 else:
     ALLOW_PCTDIFF_ENTRY = _ALLOW_PCTDIFF_ENV.strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_TAKEPROFIT_BRACKETS = os.getenv("ENABLE_TAKEPROFIT_BRACKETS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+# Backwards-compatible alias required by older tests/utilities
+crypto_symbols = all_crypto_symbols
 
 _quote_client: Optional[StockHistoricalDataClient] = None
 # Cooldown state now managed by src.cooldown_utils
@@ -385,7 +382,6 @@ def _load_latest_forecast_snapshot() -> Dict[str, Dict[str, object]]:
     )
 
 
-# Wrapper for backwards compatibility
 def _normalize_series(series: pd.Series) -> pd.Series:
     return normalize_series(series, coerce_numeric)
 
@@ -413,16 +409,10 @@ def fetch_bid_ask(symbol: str) -> Tuple[Optional[float], Optional[float]]:
     return get_bid(symbol), get_ask(symbol)
 
 
-# Wrapper for backwards compatibility
 def _record_loss_timestamp(symbol: str, closed_at: Optional[str]) -> None:
     record_loss_timestamp(symbol, closed_at, logger=logger)
 
 
-# Direct use of imported function
-# clear_cooldown is imported directly from src.cooldown_utils
-
-
-# Wrapper to use imported cooldown function with local symbol-specific cooldown
 def can_trade_now(symbol: str, now: datetime, min_cooldown_minutes: int = PROBE_LOSS_COOLDOWN_MINUTES) -> bool:
     from src.cooldown_utils import can_trade_now as can_trade_now_base
 
@@ -483,6 +473,36 @@ def _get_trade_history_store() -> Optional[FlatShelf]:
         return _trade_history_store
     _trade_history_store = _init_store("trade history", TRADE_HISTORY_FILE)
     return _trade_history_store
+
+
+def _recent_trade_pnls(
+    symbol: str,
+    side: str,
+    *,
+    strategy: Optional[str] = None,
+    limit: int = 2,
+) -> List[float]:
+    store = _get_trade_history_store()
+    if store is None or limit <= 0:
+        return []
+    try:
+        store.load()
+    except Exception as exc:
+        logger.error("Failed loading trade history store for PnL lookup: %s", exc)
+        return []
+    key = state_utils.state_key(symbol, side, strategy)
+    history = store.get(key, [])
+    if not isinstance(history, list) or not history:
+        return []
+    recent: List[float] = []
+    for entry in reversed(history):
+        pnl_value = coerce_numeric(entry.get("pnl"), default=None)
+        if pnl_value is None:
+            continue
+        recent.append(float(pnl_value))
+        if len(recent) >= limit:
+            break
+    return recent
 
 
 def _get_maxdiff_plans_store() -> Optional[FlatShelf]:
@@ -1024,21 +1044,23 @@ def _record_trade_outcome(position, reason: str) -> None:
         except Exception as exc:
             logger.error(f"Failed loading trade history store: {exc}")
         else:
-            history_key = key
-            history = history_store.get(history_key, [])
-            history.append(
-                {
-                    "symbol": position.symbol,
-                    "side": normalized_side,
-                    "qty": qty_value,
-                    "pnl": pnl_value,
-                    "closed_at": record["closed_at"],
-                    "reason": reason,
-                    "mode": trade_mode,
-                    "entry_strategy": entry_strategy,
-                }
-            )
-            history_store[history_key] = history[-100:]
+            entry = {
+                "symbol": position.symbol,
+                "side": normalized_side,
+                "qty": qty_value,
+                "pnl": pnl_value,
+                "closed_at": record["closed_at"],
+                "reason": reason,
+                "mode": trade_mode,
+                "entry_strategy": entry_strategy,
+            }
+            history_keys = {key, state_utils.state_key(position.symbol, normalized_side)}
+            for history_key in history_keys:
+                history = history_store.get(history_key, [])
+                if not isinstance(history, list):
+                    history = []
+                history.append(entry)
+                history_store[history_key] = history[-100:]
 
 
 def _evaluate_trade_block(symbol: str, side: str, strategy: Optional[str] = None) -> Dict[str, Optional[object]]:
@@ -1148,6 +1170,12 @@ def _pick_notes(data: Dict) -> str:
             notes.append("probe-ready")
         if data.get("probe_expired"):
             notes.append("probe-expired")
+    if data.get("forced_probe"):
+        reasons = data.get("forced_probe_reasons") or []
+        if reasons:
+            notes.append(f"risk:{';'.join(reasons)[:48]}")
+        else:
+            notes.append("risk-forced")
     return ", ".join(notes) if notes else "-"
 
 
@@ -1171,6 +1199,81 @@ def _format_plan_line(symbol: str, data: Dict) -> str:
     if notes != "-":
         parts.append(f"notes={notes}")
     return " ".join(parts)
+
+
+def _forecast_plus_sim_nonpositive(data: Dict) -> Optional[Tuple[float, float]]:
+    strategy = data.get("strategy")
+    if not strategy:
+        return None
+    forecasts = data.get("strategy_candidate_forecasted_pnl") or {}
+    forecasted = coerce_numeric(forecasts.get(strategy), default=None)
+    recent_sum = coerce_numeric(data.get("recent_return_sum"), default=None)
+    if forecasted is None or recent_sum is None:
+        return None
+    combined = float(forecasted) + float(recent_sum)
+    if combined <= 0:
+        return float(forecasted), float(recent_sum)
+    return None
+
+
+def _collect_forced_probe_reasons(symbol: str, data: Dict, probe_state: ProbeState) -> List[str]:
+    reasons: List[str] = []
+    side = data.get("side")
+    if not side:
+        data.pop("global_force_probe", None)
+        return reasons
+
+    normalized_side = _normalize_side_for_key(side)
+
+    if probe_state.force_probe:
+        reason = probe_state.reason or "previous_day_loss"
+        reasons.append(f"global_loss:{reason}")
+        data["global_force_probe"] = True
+    else:
+        data.pop("global_force_probe", None)
+
+    pnls = _recent_trade_pnls(symbol, normalized_side, strategy=None, limit=2)
+    if len(pnls) >= 2:
+        recent_window = pnls[:2]
+        pnl_sum = sum(recent_window)
+        if pnl_sum <= 0:
+            formatted = ", ".join(f"{pnl:.2f}" for pnl in recent_window)
+            reasons.append(f"recent_pnl_sum={pnl_sum:.2f} [{formatted}]")
+
+    forecast_pair = _forecast_plus_sim_nonpositive(data)
+    if forecast_pair is not None:
+        reasons.append(f"forecast+sim<=0 ({forecast_pair[0]:.4f}+{forecast_pair[1]:.4f})")
+
+    return reasons
+
+
+def _apply_forced_probe_annotations(
+    picks: Dict[str, Dict],
+    probe_state: Optional[ProbeState] = None,
+) -> ProbeState:
+    active_state = probe_state or resolve_probe_state()
+    if not picks:
+        return active_state
+
+    for symbol, data in picks.items():
+        previous_reasons = list(data.get("forced_probe_reasons") or [])
+        reasons = _collect_forced_probe_reasons(symbol, data, active_state)
+        if reasons:
+            data["forced_probe"] = True
+            data["forced_probe_reasons"] = reasons
+            if data.get("trade_mode") != "probe":
+                data["trade_mode"] = "probe"
+            if not data.get("pending_probe"):
+                data["pending_probe"] = True
+            if previous_reasons != reasons:
+                logger.info(f"{symbol}: Risk controls forcing probe mode ({'; '.join(reasons)})")
+        else:
+            if previous_reasons:
+                logger.info(f"{symbol}: Risk controls cleared forced probe mode")
+            data.pop("forced_probe", None)
+            data.pop("forced_probe_reasons", None)
+
+    return active_state
 
 
 def _format_entry_candidates(picks: Dict[str, Dict]) -> List[str]:
@@ -1197,13 +1300,13 @@ def _analyze_single_symbol_for_parallel(
     symbol: str,
     num_simulations: int,
     model_override: Optional[str],
-    equities_tradable_now: bool,
     skip_closed_equity: bool,
     strategy_priorities: Optional[Dict[str, List[str]]],
 ) -> Optional[Dict]:
     """Analyze a single symbol (used by parallel executor)."""
     try:
-        if not is_crypto_symbol(symbol) and not equities_tradable_now:
+        # Check market hours for each symbol to avoid wasting time on stocks when market closes mid-analysis
+        if not is_crypto_symbol(symbol) and not is_nyse_trading_day_now():
             if skip_closed_equity:
                 logger.debug(f"{symbol}: Skipping (market closed, equity)")
                 return None
@@ -1238,7 +1341,6 @@ def _analyze_symbols_parallel(
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time
 
-    equities_tradable_now = is_nyse_trading_day_now()
     skip_closed_equity = should_skip_closed_equity()
 
     env_simulations_raw = os.getenv("MARKETSIM_BACKTEST_SIMULATIONS")
@@ -1269,7 +1371,6 @@ def _analyze_symbols_parallel(
                 symbol,
                 num_simulations,
                 model_override,
-                equities_tradable_now,
                 skip_closed_equity,
                 strategy_priorities,
             )
@@ -1317,7 +1418,6 @@ def _analyze_symbols_impl(
         return _analyze_symbols_parallel(symbols, model_overrides=model_overrides, strategy_priorities=strategy_priorities)
 
     results = {}
-    equities_tradable_now = is_nyse_trading_day_now()
     skip_closed_equity = should_skip_closed_equity()
     skipped_equity_symbols: List[str] = []
 
@@ -1342,7 +1442,9 @@ def _analyze_symbols_impl(
     latest_snapshot = _load_latest_forecast_snapshot()
 
     for symbol in symbols:
-        if not is_crypto_symbol(symbol) and not equities_tradable_now:
+        # Check market hours for each symbol (not just once at start) to avoid wasting time
+        # on stocks when market closes mid-analysis
+        if not is_crypto_symbol(symbol) and not is_nyse_trading_day_now():
             if skip_closed_equity:
                 skipped_equity_symbols.append(symbol)
                 continue
@@ -2565,11 +2667,12 @@ def build_portfolio(
                     continue
                 if side == "sell" and pred_move >= 0:
                     continue
-            if data.get("trade_blocked"):
+            if data.get("trade_blocked") and data.get("trade_mode") != "probe":
                 continue
             simple_picks[symbol] = data
             if len(simple_picks) >= limit:
                 break
+        _apply_forced_probe_annotations(simple_picks)
         return simple_picks
 
     sorted_by_composite = sorted(all_results.items(), key=lambda item: item[1].get("composite_score", 0), reverse=True)
@@ -2580,7 +2683,7 @@ def build_portfolio(
     for symbol, data in sorted_by_composite:
         if len(picks) >= max_positions:
             break
-        if data.get("trade_blocked"):
+        if data.get("trade_blocked") and data.get("trade_mode") != "probe":
             continue
 
         # Check if the SELECTED strategy has positive returns
@@ -2606,7 +2709,7 @@ def build_portfolio(
         for symbol, data in sorted_by_composite:
             if len(picks) >= max_positions:
                 break
-            if symbol in picks or data.get("trade_blocked"):
+            if symbol in picks or (data.get("trade_blocked") and data.get("trade_mode") != "probe"):
                 continue
 
             strategy = data.get("strategy", "simple")
@@ -2628,7 +2731,9 @@ def build_portfolio(
             (
                 (symbol, data)
                 for symbol, data in all_results.items()
-                if symbol not in picks and not data.get("trade_blocked")
+                if symbol not in picks and (
+                    not data.get("trade_blocked") or data.get("trade_mode") == "probe"
+                )
             ),
             key=lambda item: (
                 item[1].get("edge_strength", 0),
@@ -2666,6 +2771,7 @@ def build_portfolio(
                     picks.pop(weakest_symbol, None)
                     picks[symbol] = data
 
+    _apply_forced_probe_annotations(picks)
     return picks
 
 
@@ -2743,6 +2849,13 @@ def manage_positions(
     logger.info("EXECUTING POSITION CHANGES:")
 
     total_exposure_value = _calculate_total_exposure_value(positions)
+    probe_state = _apply_forced_probe_annotations(current_picks)
+    if probe_state.force_probe:
+        logger.warning(
+            "Global risk controls active: restricting new entries to probe trades for %s (%s)",
+            probe_state.probe_date.isoformat() if probe_state.probe_date else "current session",
+            probe_state.reason or "previous day loss",
+        )
 
     day_pl_value = None
     try:
@@ -2759,10 +2872,14 @@ def manage_positions(
             logger.warning("Failed to compute day P&L for risk snapshot: %s", exc)
 
     snapshot_kwargs = {}
+    risk_timestamp = datetime.now(timezone.utc)
     if day_pl_value is not None:
         snapshot_kwargs["day_pl"] = day_pl_value
+        record_day_pl(day_pl_value, observed_at=risk_timestamp)
+    else:
+        record_day_pl(None, observed_at=risk_timestamp)
     try:
-        snapshot = record_portfolio_snapshot(total_exposure_value, **snapshot_kwargs)
+        snapshot = record_portfolio_snapshot(total_exposure_value, observed_at=risk_timestamp, **snapshot_kwargs)
     except TypeError as exc:
         if snapshot_kwargs and "unexpected keyword argument" in str(exc):
             snapshot = record_portfolio_snapshot(total_exposure_value)
@@ -3145,11 +3262,17 @@ def manage_positions(
                     data["trade_mode"] = "probe"
                 trade_mode = data.get("trade_mode", "normal")
                 is_probe_trade = trade_mode == "probe"
-                force_probe = _symbol_force_probe(symbol)
+                forced_by_state = bool(data.get("forced_probe"))
+                force_probe = bool(_symbol_force_probe(symbol)) or forced_by_state
                 if force_probe and data.get("trade_mode") != "probe":
                     data["trade_mode"] = "probe"
                     current_picks[symbol] = data
-                    logger.info(f"{symbol}: Forcing probe mode via MARKETSIM_SYMBOL_FORCE_PROBE_MAP.")
+                    reason_msg = (
+                        "; ".join(data.get("forced_probe_reasons", []))
+                        if forced_by_state
+                        else "MARKETSIM_SYMBOL_FORCE_PROBE_MAP"
+                    )
+                    logger.info(f"{symbol}: Forcing probe mode ({reason_msg}).")
                     trade_mode = data["trade_mode"]
                     is_probe_trade = True
                 probe_transition_ready = data.get("probe_transition_ready", False)

@@ -1,23 +1,4 @@
-"""
-Chronos2 torch.compile configuration helper.
-
-This module provides safe, production-tested torch.compile settings for Chronos2.
-It centralizes all compilation configuration to ensure consistency and reliability.
-
-Usage:
-    from src.chronos_compile_config import ChronosCompileConfig, apply_safest_settings
-
-    # Use safest settings (recommended for production)
-    apply_safest_settings()
-
-    # Or customize
-    config = ChronosCompileConfig(
-        enabled=True,
-        mode="reduce-overhead",
-        backend="inductor",
-    )
-    config.apply()
-"""
+"""Chronos2 torch.compile configuration helper."""
 
 from __future__ import annotations
 
@@ -28,11 +9,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Safe defaults based on extensive testing
-SAFEST_MODE = "reduce-overhead"  # Best balance of speed and stability
-SAFEST_BACKEND = "inductor"  # Most mature and well-tested backend
-SAFEST_DTYPE = "float32"  # Most numerically stable
-SAFEST_ATTN_IMPL = "eager"  # Avoids SDPA backend issues
+SAFEST_MODE = "reduce-overhead"
+SAFEST_BACKEND = "inductor"
+SAFEST_DTYPE = "float32"
+SAFEST_ATTN_IMPL = "eager"
 
 
 @dataclass
@@ -44,30 +24,24 @@ class ChronosCompileConfig:
     backend: str = SAFEST_BACKEND
     dtype: str = SAFEST_DTYPE
     attn_implementation: str = SAFEST_ATTN_IMPL
-    # Additional safety flags
     disable_flash_sdp: bool = True
     disable_mem_efficient_sdp: bool = True
     enable_math_sdp: bool = True
-    # Cache directory for compiled models
     cache_dir: Optional[str] = None
 
     def apply(self, verbose: bool = True) -> None:
         """Apply this configuration to environment variables."""
-        # Main compile flag
         os.environ["TORCH_COMPILED"] = "1" if self.enabled else "0"
         os.environ["CHRONOS_COMPILE"] = "1" if self.enabled else "0"
 
         if self.enabled:
-            # Compile settings
             if self.mode:
                 os.environ["CHRONOS_COMPILE_MODE"] = self.mode
             if self.backend:
                 os.environ["CHRONOS_COMPILE_BACKEND"] = self.backend
 
-        # Dtype setting (applies whether compiled or not)
         os.environ["CHRONOS_DTYPE"] = self.dtype
 
-        # Set cache directory for inductor
         if self.enabled and self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
             os.environ["TORCHINDUCTOR_CACHE_DIR"] = self.cache_dir
@@ -126,7 +100,7 @@ class ChronosCompileConfig:
     def safest(cls) -> ChronosCompileConfig:
         """Get the safest configuration (disabled by default)."""
         return cls(
-            enabled=False,  # Disabled by default for maximum safety
+            enabled=False,
             mode=SAFEST_MODE,
             backend=SAFEST_BACKEND,
             dtype=SAFEST_DTYPE,

@@ -27,11 +27,16 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
+# Enforce Chronos2 forecasting for dataset generation unless explicitly overridden.
+os.environ.setdefault("ONLY_CHRONOS2", "1")
+os.environ.setdefault("CHRONOS2_FREQUENCY", "daily")
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from marketsimulator.environment import activate_simulation
 from marketsimulator.backtest_test3_inline import backtest_forecasts
+from strategytraining.symbol_sources import load_trade_stock_symbols
 
 
 # Available strategies from backtest_test3_inline.py
@@ -44,6 +49,17 @@ STRATEGIES = [
     'maxdiffalwayson',
     'buy_hold',
 ]
+
+CHRONOS_METADATA_COLUMNS = (
+    "model_used",
+    "chronos2_preaug_strategy",
+    "chronos2_preaug_source",
+    "chronos2_model_id",
+    "chronos2_hparams_config_path",
+    "chronos2_context_length",
+    "chronos2_prediction_length",
+    "chronos2_batch_size",
+)
 
 
 class StrategyPnLCollector:
@@ -70,6 +86,7 @@ class StrategyPnLCollector:
         self.window_details = []  # Detailed window-level data
         self.strategy_trades = []  # Individual trade-level data per strategy
         self.forecast_anomalies = []  # Records of forecast anomalies for monitoring
+        self.symbol_metadata: Dict[str, Dict[str, object]] = {}
 
     @staticmethod
     def is_crypto(symbol: str) -> bool:
@@ -181,6 +198,7 @@ class StrategyPnLCollector:
                     for label, count in model_series.value_counts(dropna=False).items()
                 }
                 _record('model_mismatch', models=unexpected, counts=counts)
+                raise RuntimeError(f"{symbol}: forecast execution used non-Chronos2 models: {unexpected}")
 
         numeric_df = forecast_df.select_dtypes(include=[np.number]).replace([np.inf, -np.inf], np.nan)
         return_cols = [col for col in numeric_df.columns if col.endswith('_return')]
@@ -218,6 +236,27 @@ class StrategyPnLCollector:
                 _record('invalid_price_range', count=invalid)
 
         return anomalies
+
+    @staticmethod
+    def _extract_chronos_metadata(forecast_df: pd.DataFrame) -> Dict[str, object]:
+        """Summarise Chronos2 metadata columns for downstream dataset records."""
+
+        metadata: Dict[str, object] = {}
+
+        for column in CHRONOS_METADATA_COLUMNS:
+            if column not in forecast_df.columns:
+                continue
+            series = forecast_df[column].dropna()
+            if series.empty:
+                continue
+            value = series.iloc[0]
+            if isinstance(value, (np.integer, int)):
+                metadata[column] = int(value)
+            elif isinstance(value, (np.floating, float)):
+                metadata[column] = float(value)
+            else:
+                metadata[column] = str(value)
+        return metadata
 
     def calculate_rolling_windows(
         self,
@@ -420,7 +459,8 @@ class StrategyPnLCollector:
         forecast_df: pd.DataFrame,
         start_idx: int,
         end_idx: int,
-        window_num: int
+        window_num: int,
+        chronos_metadata: Optional[Dict[str, object]] = None,
     ) -> List[Dict]:
         """
         Process one window: slice forecasts and simulate all strategies
@@ -471,6 +511,9 @@ class StrategyPnLCollector:
                     result['end_time'] = str(end_time)
                     result['num_bars'] = len(window_df)
                     result['is_crypto'] = self.is_crypto(symbol)
+                    if chronos_metadata:
+                        for key, value in chronos_metadata.items():
+                            result.setdefault(key, value)
                     results.append(result)
 
             return results
@@ -503,6 +546,7 @@ class StrategyPnLCollector:
         if len(windows) == 0:
             return None
 
+        chronos_metadata: Dict[str, object] = {}
         # Generate forecasts ONCE for entire symbol (optimization!)
         print(f"Generating forecasts for {symbol}...")
         try:
@@ -520,6 +564,8 @@ class StrategyPnLCollector:
                 anomalies = self.detect_forecast_anomalies(symbol, forecast_df)
                 if anomalies:
                     self.forecast_anomalies.extend(anomalies)
+                chronos_metadata = self._extract_chronos_metadata(forecast_df)
+                self.symbol_metadata[symbol] = dict(chronos_metadata)
         except Exception as e:
             print(f"  Error generating forecasts for {symbol}: {e}")
             import traceback
@@ -529,8 +575,16 @@ class StrategyPnLCollector:
         # Process each window
         total_results = 0
 
-        for window_num, (start_idx, end_idx) in enumerate(tqdm(windows, desc=f"{symbol} windows")):
-            results = self.process_window(symbol, df, forecast_df, start_idx, end_idx, window_num)
+        for window_num, (start_idx, end_idx) in enumerate(tqdm(windows, desc=f"{symbol} windows"), 1):
+            results = self.process_window(
+                symbol,
+                df,
+                forecast_df,
+                start_idx,
+                end_idx,
+                window_num,
+                chronos_metadata,
+            )
 
             for result in results:
                 # Store strategy performance summary
@@ -543,6 +597,9 @@ class StrategyPnLCollector:
                     'is_crypto': result['is_crypto'],
                     **result['summary']
                 }
+                for meta_key in CHRONOS_METADATA_COLUMNS:
+                    if meta_key in result and meta_key not in perf_record:
+                        perf_record[meta_key] = result[meta_key]
                 self.strategy_performance.append(perf_record)
 
                 # Store individual trades
@@ -554,6 +611,9 @@ class StrategyPnLCollector:
                         'is_crypto': result['is_crypto'],
                         **trade
                     }
+                    for meta_key in CHRONOS_METADATA_COLUMNS:
+                        if meta_key in result and meta_key not in trade_record:
+                            trade_record[meta_key] = result[meta_key]
                     self.strategy_trades.append(trade_record)
 
                 total_results += 1
@@ -665,7 +725,8 @@ class StrategyPnLCollector:
             'num_strategy_windows': len(perf_df),
             'num_trades': len(trades_df),
             'symbols': perf_df['symbol'].unique().tolist(),
-            'forecast_anomaly_count': len(self.forecast_anomalies)
+            'forecast_anomaly_count': len(self.forecast_anomalies),
+            'symbol_metadata': self.symbol_metadata,
         }
 
         metadata_path = f"{output_base}_metadata.json"
@@ -703,6 +764,17 @@ def main():
     parser.add_argument('--dataset-name', default='strategy_pnl_dataset')
     parser.add_argument('--min-data-points', type=int, default=2000,
                         help='Minimum number of bars required to process a symbol')
+    parser.add_argument(
+        '--use-trade-stock-symbols',
+        action='store_true',
+        help='Load the symbol universe from trade_stock_e2e.py instead of scanning the data directory.',
+    )
+    parser.add_argument(
+        '--trade-stock-script',
+        type=Path,
+        default=Path('trade_stock_e2e.py'),
+        help='Path to the trade_stock_e2e.py script when extracting the default symbol universe.',
+    )
 
     args = parser.parse_args()
 
@@ -714,8 +786,18 @@ def main():
         min_data_points=args.min_data_points
     )
 
+    resolved_symbols: Optional[List[str]] = None
+    if args.symbols:
+        resolved_symbols = [s.strip().upper() for s in args.symbols if s]
+    elif args.use_trade_stock_symbols:
+        resolved_symbols = load_trade_stock_symbols(args.trade_stock_script)
+        print(
+            f"Using {len(resolved_symbols)} symbols from {args.trade_stock_script} "
+            "(trade_stock_e2e default universe)."
+        )
+
     results = collector.collect_all_symbols(
-        symbols=args.symbols,
+        symbols=resolved_symbols,
         max_symbols=args.max_symbols
     )
 

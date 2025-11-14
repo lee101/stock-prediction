@@ -428,7 +428,7 @@ try:  # pragma: no cover - best-effort compatibility shim
                     args = (ctx,) + args
             return _chronos_predict(self, *args, **kwargs)
 
-        ChronosPipeline.predict = _predict_with_context  # type: ignore[assignment]
+        setattr(ChronosPipeline, "predict", _predict_with_context)
 except Exception:
     pass
 

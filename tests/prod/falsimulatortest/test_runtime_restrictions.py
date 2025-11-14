@@ -25,7 +25,7 @@ def _build_torch_stub() -> ModuleType:
     torch_stub.no_grad = lambda *args, **kwargs: _ctx()
     torch_stub.autocast = lambda *args, **kwargs: _ctx()
     torch_stub.compile = lambda module, **kwargs: module  # pragma: no cover - not exercised
-    torch_stub.tensor = lambda data, **kwargs: data  # type: ignore[assignment]
+    setattr(torch_stub, "tensor", lambda data, **kwargs: data)
     torch_stub.zeros = lambda *args, **kwargs: 0
     torch_stub.ones_like = lambda tensor, **kwargs: tensor
     torch_stub.zeros_like = lambda tensor, **kwargs: tensor
@@ -38,9 +38,9 @@ def _build_torch_stub() -> ModuleType:
         get_device_name=lambda idx: f"cuda:{idx}",
         current_device=lambda: 0,
     )
-    torch_stub.cuda = cuda_ns  # type: ignore[assignment]
+    setattr(torch_stub, "cuda", cuda_ns)
     backends_ns = SimpleNamespace(cuda=SimpleNamespace(enable_flash_sdp=lambda *args, **kwargs: None))
-    torch_stub.backends = backends_ns  # type: ignore[assignment]
+    setattr(torch_stub, "backends", backends_ns)
     return torch_stub
 
 
