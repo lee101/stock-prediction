@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -9,6 +12,7 @@ from marketsimulator.sizing_strategies import FixedFractionStrategy
 from strategytraining.test_sizing_on_precomputed_pnl import (
     GlobalGateConfig,
     PrecomputedPnLSizingTester,
+    _build_result_from_returns,
     build_daily_metrics_df,
 )
 
@@ -156,6 +160,7 @@ def test_daily_curve_and_metrics_dataframe_alignment():
     assert all('rolling_sharpe' in point for point in result.daily_curve)
     assert all('rolling_sortino' in point for point in result.daily_curve)
     assert all('rolling_ann_return' in point for point in result.daily_curve)
+    assert all(math.isfinite(point['rolling_ann_return']) for point in result.daily_curve)
     assert result.sortino_ratio is not None
     assert result.annualized_return_pct is not None
 
@@ -164,3 +169,21 @@ def test_daily_curve_and_metrics_dataframe_alignment():
     assert df['strategy'].unique().tolist() == ["Fixed_50pct_CurveTest"]
     assert set(df['mode']) == {"normal"}
     assert {'rolling_sortino', 'rolling_ann_return', 'annualization_days', 'day_class'} <= set(df.columns)
+    assert not df['rolling_ann_return'].isna().any()
+
+
+def test_ml_result_builder_produces_finite_ann_return():
+    """Rolling annualized return is always finite for ML-derived results."""
+
+    dates = [pd.Timestamp("2025-01-01") + pd.Timedelta(days=i) for i in range(5)]
+    daily_pnls = np.array([500.0, -250.0, 0.0, 125.0, -75.0], dtype=float)
+
+    result = _build_result_from_returns(
+        "ML_Test",
+        daily_pnls,
+        dates,
+        initial_capital=50_000.0,
+    )
+
+    assert len(result.daily_curve) == len(dates)
+    assert all(math.isfinite(point['rolling_ann_return']) for point in result.daily_curve)

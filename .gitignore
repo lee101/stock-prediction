@@ -212,3 +212,6 @@ backtest_cache/
 trade_stock_e2e_paper.prof
 build
 *.so
+stategytraining/forecast_cache/
+strategytraining/forecast_cache/
+backtest_test3_inline.log*
