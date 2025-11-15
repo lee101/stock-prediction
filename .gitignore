@@ -224,3 +224,6 @@ strategytraining/forecast_cache/
 backtest_test3_inline.log*
 plots
 strategytraining2/datasets/
+
+# local dev files
+.local/
