@@ -224,3 +224,4 @@ strategytraining/forecast_cache/
 backtest_test3_inline.log*
 plots
 strategytraining2/datasets/
+hourlycryptotraining/checkpoints/
