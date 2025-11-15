@@ -19,11 +19,78 @@ Any bugs here can lead to:
 - Poor risk management
 """
 
+import importlib
+import importlib.util
+import sys
+import types
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.trade_stock_utils import kelly_lite
+
+
+tradeapi_mod = sys.modules.setdefault("alpaca_trade_api", types.ModuleType("alpaca_trade_api"))
+if not hasattr(tradeapi_mod, "REST"):
+    class _TestDummyREST:
+        def __init__(self, *args, **kwargs):
+            self._orders = []
+
+        def get_all_positions(self):
+            return []
+
+        def get_account(self):
+            return types.SimpleNamespace(
+                equity=1.0,
+                cash=1.0,
+                multiplier=1,
+                buying_power=1.0,
+            )
+
+        def get_clock(self):
+            return types.SimpleNamespace(is_open=True)
+
+        def cancel_orders(self):
+            self._orders.clear()
+            return []
+
+        def submit_order(self, *args, **kwargs):
+            self._orders.append((args, kwargs))
+            return types.SimpleNamespace(id=len(self._orders))
+
+    tradeapi_mod.REST = _TestDummyREST
+
+
+def _load_evaluate_daily_returns():
+    try:
+        module = importlib.import_module("backtest_test3_inline")
+    except ImportError:
+        module = None
+
+    if module is None or not hasattr(module, "_evaluate_daily_returns"):
+        module_path = Path(__file__).resolve().parents[1] / "backtest_test3_inline.py"
+        spec = importlib.util.spec_from_file_location("backtest_test3_inline_testshim", module_path)
+        if spec is None or spec.loader is None:
+            pytest.skip(
+                "Unable to load backtest_test3_inline module for critical math tests",
+                allow_module_level=True,
+            )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+
+    evaluate_fn = getattr(module, "_evaluate_daily_returns", None)
+    if evaluate_fn is None:
+        pytest.skip(
+            "backtest_test3_inline missing _evaluate_daily_returns; cannot validate Sharpe math",
+            allow_module_level=True,
+        )
+    return evaluate_fn
+
+
+_evaluate_daily_returns = _load_evaluate_daily_returns()
 
 
 class TestKellyCriterion:
@@ -166,8 +233,6 @@ class TestSharpeRatio:
 
     def test_sharpe_basic_calculation(self):
         """Test basic Sharpe ratio formula"""
-        from backtest_test3_inline import _evaluate_daily_returns
-
         # Daily returns: mean=0.01 (1%), std=0.02 (2%)
         # Sharpe = (0.01 / 0.02) * sqrt(252) = 0.5 * 15.87 = 7.94
 
@@ -195,6 +260,24 @@ class TestSharpeRatio:
 
         # Should be positive for positive returns
         assert result.sharpe_ratio > 0, "Positive returns should give positive Sharpe"
+
+    def test_sharpe_constant_returns_large_window(self):
+        """Constant returns over long windows should not explode Sharpe."""
+        daily_returns = np.ones(64) * 0.01
+
+        result = _evaluate_daily_returns(daily_returns, trading_days_per_year=252)
+
+        assert result.sharpe_ratio == 0.0, "Constant returns must give Sharpe=0"
+
+    def test_sharpe_near_constant_returns_get_clamped(self):
+        """Tiny floating noise should be treated as zero volatility."""
+        base = 0.01
+        noise = np.full(64, base)
+        noise[::8] += 5e-11  # stay below tolerance window
+
+        result = _evaluate_daily_returns(noise, trading_days_per_year=252)
+
+        assert result.sharpe_ratio == 0.0, "Near-constant returns should not create huge Sharpe"
 
     def test_sharpe_empty_returns(self):
         """Test Sharpe with empty returns array"""

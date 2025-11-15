@@ -4,7 +4,8 @@ import re
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from time import sleep
+from time import sleep, monotonic
+from threading import Lock
 
 import cachetools
 import math
@@ -1504,16 +1505,60 @@ equity = 30000
 cash = 30000
 total_buying_power = 20000
 
+_ACCOUNT_CACHE_TTL_SECONDS = float(os.getenv("ALPACA_ACCOUNT_CACHE_TTL", "15"))
+_account_refresh_lock = Lock()
+_last_account_refresh = 0.0
+
+
+def refresh_account_cache(force: bool = False) -> None:
+    """Refresh cached account fields so child processes see current buying power."""
+
+    global equity, cash, total_buying_power, _last_account_refresh
+
+    now = monotonic()
+    if not force and now - _last_account_refresh < _ACCOUNT_CACHE_TTL_SECONDS:
+        return
+
+    try:
+        account = get_account()
+    except Exception as exc:  # pragma: no cover - network failures handled upstream
+        logger.warning(f"Unable to refresh account cache: {exc}")
+        return
+
+    try:
+        account_equity = float(getattr(account, "equity", equity))
+    except (TypeError, ValueError):
+        account_equity = equity
+    try:
+        account_cash = max(float(getattr(account, "cash", cash)), 0.0)
+    except (TypeError, ValueError):
+        account_cash = cash
+    try:
+        multiplier = float(getattr(account, "multiplier", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        multiplier = 1.0
+
+    buying_power_raw = getattr(account, "buying_power", None)
+    try:
+        account_buying_power = float(buying_power_raw)
+    except (TypeError, ValueError):
+        account_buying_power = multiplier * account_equity
+
+    with _account_refresh_lock:
+        equity = account_equity
+        cash = account_cash
+        total_buying_power = account_buying_power
+        _last_account_refresh = now
+
 try:
+    refresh_account_cache(force=True)
     positions = get_all_positions()
     print(positions)
     account = get_account()
     print(account)
-    # Figure out how much money we have to work with, accounting for margin
-    equity = float(account.equity)
-    cash = max(float(account.cash), 0)
-    margin_multiplier = float(account.multiplier)
-    total_buying_power = margin_multiplier * equity
+    margin_multiplier = float(getattr(account, "multiplier", 1.0) or 1.0)
+    if getattr(account, "buying_power", None) in (None, ""):
+        total_buying_power = margin_multiplier * equity
     print(f"Initial total buying power = {total_buying_power}")
     alpaca_clock = get_clock()
     print(alpaca_clock)
