@@ -116,6 +116,11 @@ def _update_status(config_path: Optional[Path], status: dict, **changes) -> dict
 def _entry_requires_cash(side: str, price: float, qty: float) -> bool:
     if qty <= 0 or price <= 0:
         return False
+
+    refresh = getattr(alpaca_wrapper, "refresh_account_cache", None)
+    if callable(refresh):
+        refresh()
+
     notional = abs(price * qty)
     cash = float(getattr(alpaca_wrapper, "cash", 0.0) or 0.0)
     if side == "buy":

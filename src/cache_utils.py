@@ -108,8 +108,6 @@ def ensure_huggingface_cache_dir(
     for env_key in _HF_ENV_VARS:
         os.environ[env_key] = str(resolved)
 
-    if logger:
-        logger.info(f"Using Hugging Face cache directory: {resolved}")
     return resolved
 
 

@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import sleep
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 import alpaca_wrapper
 import pandas as pd
@@ -17,6 +17,7 @@ from loguru import logger
 from hyperparamstore import load_model_selection
 from backtest_test3_inline import backtest_forecasts, release_model_resources
 
+from neuralpricingstrategy.runtime import NeuralPricingAdjuster
 
 import src.trade_stock_state_utils as state_utils
 from portfolio_allocation_optimizer_wrapper import (
@@ -101,6 +102,7 @@ from src.trading_obj_utils import filter_to_realistic_positions
 from stock.data_utils import coerce_numeric, ensure_lower_bound, safe_divide
 from stock.state import ensure_state_dir as _shared_ensure_state_dir
 from stock.state import get_state_dir, get_state_file, resolve_state_suffix
+from strategytraining2 import log_strategy_snapshot
 
 _EXPORTED_ENV_HELPERS = (reset_symbol_entry_counters, get_entry_counter_snapshot)
 
@@ -207,10 +209,15 @@ _NEURAL_REFERENCE_STRATEGIES = _parse_neural_strategy_list(
     os.getenv(
         "MARKETSIM_NEURAL_REFERENCE_STRATEGIES",
         (
+            "VolAdjusted_10pct,"
+            "VolAdjusted_10pct_UnprofitShutdown,"
             "VolAdjusted_10pct_StockDirShutdown,"
             "VolAdjusted_10pct_UnprofitShutdown,"
             "VolAdjusted_10pct_UnprofitShutdown_StockDirShutdown,"
-            "VolAdjusted_15pct_StockDirShutdown"
+            "VolAdjusted_15pct,"
+            "VolAdjusted_15pct_UnprofitShutdown,"
+            "VolAdjusted_15pct_StockDirShutdown,"
+            "VolAdjusted_15pct_UnprofitShutdown_StockDirShutdown"
         ),
     )
 )
@@ -242,6 +249,12 @@ if NEURAL_SIZING_ENABLED:
 else:
     _NEURAL_CONFIG = None
 _PORTFOLIO_OPTIMIZER: Optional[PortfolioAllocationOptimizer] = None
+
+NEURAL_PRICING_ENABLED = os.getenv("MARKETSIM_ENABLE_NEURAL_PRICING", "0").strip().lower() in _TRUTHY
+NEURAL_PRICING_RUN_DIR = os.getenv("MARKETSIM_NEURAL_PRICING_RUN_DIR")
+NEURAL_PRICING_DEVICE = os.getenv("MARKETSIM_NEURAL_PRICING_DEVICE")
+_neural_pricing_adjuster: Optional[NeuralPricingAdjuster] = None
+_neural_pricing_disabled_reason: Optional[str] = None
 
 DISABLE_RECENT_PNL_PROBE = os.getenv("MARKETSIM_DISABLE_RECENT_PNL_PROBE", "1").strip().lower() in _TRUTHY
 
@@ -284,7 +297,59 @@ def _refresh_neural_scale(force: bool = False) -> Optional[float]:
             scale,
             _NEURAL_CONFIG.run_dir if _NEURAL_CONFIG else "unknown",
         )
+    optimizer.refresh_strategy_weights(force=force)
     return scale
+
+
+def _get_neural_pricing_adjuster() -> Optional[NeuralPricingAdjuster]:
+    if not NEURAL_PRICING_ENABLED or not NEURAL_PRICING_RUN_DIR:
+        return None
+    global _neural_pricing_adjuster, _neural_pricing_disabled_reason
+    if _neural_pricing_adjuster is not None:
+        return _neural_pricing_adjuster
+    try:
+        _neural_pricing_adjuster = NeuralPricingAdjuster(
+            run_dir=NEURAL_PRICING_RUN_DIR,
+            device=NEURAL_PRICING_DEVICE,
+        )
+        _neural_pricing_disabled_reason = None
+        logger.info("Neural pricing initialized (run_dir=%s)", NEURAL_PRICING_RUN_DIR)
+    except Exception as exc:  # pragma: no cover - defensive
+        _neural_pricing_adjuster = None
+        _neural_pricing_disabled_reason = str(exc)
+        logger.warning("Neural pricing disabled: %s", exc)
+    return _neural_pricing_adjuster
+
+
+def _apply_neural_pricing(symbol: str, prediction_row) -> None:
+    adjuster = _get_neural_pricing_adjuster()
+    if adjuster is None:
+        return
+    try:
+        payload = prediction_row.to_dict()
+    except AttributeError:
+        payload = dict(prediction_row)
+    adjustment = adjuster.adjust(payload, symbol=symbol)
+    if adjustment is None:
+        if adjuster.last_error:
+            logger.debug("Neural pricing skipped for %s: %s", symbol, adjuster.last_error)
+        return
+    prediction_row["neuralpricing_low_price"] = adjustment.low_price
+    prediction_row["neuralpricing_high_price"] = adjustment.high_price
+    prediction_row["neuralpricing_low_delta"] = adjustment.low_delta
+    prediction_row["neuralpricing_high_delta"] = adjustment.high_delta
+    prediction_row["neuralpricing_pnl_gain"] = adjustment.pnl_gain
+    prediction_row["neuralpricing_run_dir"] = NEURAL_PRICING_RUN_DIR
+    logger.debug(
+        "%s neural pricing low %.4f→%.4f (Δ%+.3f) high %.4f→%.4f (Δ%+.3f)",
+        symbol,
+        adjustment.base_low_price,
+        adjustment.low_price,
+        adjustment.low_delta,
+        adjustment.base_high_price,
+        adjustment.high_price,
+        adjustment.high_delta,
+    )
 
 
 def _apply_neural_scale(
@@ -294,13 +359,18 @@ def _apply_neural_scale(
     symbol: str,
     strategy: Optional[str],
     effective_probe: bool,
+    strategy_key: Optional[str] = None,
 ) -> float:
     if not NEURAL_SIZING_ENABLED or effective_probe or target_qty <= 0:
         return target_qty
     optimizer = _get_portfolio_optimizer()
     if optimizer is None:
         return target_qty
-    scale = optimizer.last_scale or optimizer.compute_scale()
+    scale = None
+    if strategy_key:
+        scale = optimizer.get_strategy_weight(strategy_key)
+    if scale is None:
+        scale = optimizer.last_scale or optimizer.compute_scale()
     if scale is None or scale <= 0:
         return target_qty
     scaled_qty = target_qty * scale
@@ -308,14 +378,30 @@ def _apply_neural_scale(
         scaled_qty = min_qty
     if not math.isclose(scaled_qty, target_qty):
         logger.info(
-            "Neural sizing applied scale %.3f to %s (%s) qty %.4f → %.4f",
+            "Neural sizing applied scale %.3f to %s (%s/%s) qty %.4f → %.4f",
             scale,
             symbol,
             strategy or "unknown",
+            strategy_key or "default",
             target_qty,
             scaled_qty,
         )
     return scaled_qty
+
+
+def _resolve_neural_strategy_name(symbol: str, data: Dict[str, object]) -> str:
+    is_crypto = is_crypto_symbol(symbol)
+    base = "VolAdjusted_10pct" if is_crypto else "VolAdjusted_15pct"
+    gate_config = str(data.get("gate_config") or "-").replace(" ", "")
+    gate_tokens = {token.strip() for token in gate_config.split("+") if token}
+    components: List[str] = []
+    if any("UnprofitShutdown" in token for token in gate_tokens) or data.get("gate_blocked_days"):
+        components.append("UnprofitShutdown")
+    if any("StockDirShutdown" in token for token in gate_tokens) or data.get("symbol_gate_blocks"):
+        components.append("StockDirShutdown")
+    if components:
+        return base + "_" + "_".join(components)
+    return base
 
 _quote_client: Optional[StockHistoricalDataClient] = None
 # Cooldown state now managed by src.cooldown_utils
@@ -331,6 +417,9 @@ SIMPLIFIED_MODE = os.getenv("MARKETSIM_SIMPLE_MODE", "0").strip().lower() in _TR
 
 ENABLE_KELLY_SIZING = os.getenv("MARKETSIM_ENABLE_KELLY_SIZING", "0").strip().lower() in _TRUTHY
 ENABLE_PROBE_TRADES = os.getenv("MARKETSIM_ENABLE_PROBE_TRADES", "0").strip().lower() in _TRUTHY
+PROBE_TRADE_MODE = os.getenv("PROBE_TRADE", "0").strip().lower() in _TRUTHY
+if PROBE_TRADE_MODE and not ENABLE_PROBE_TRADES:
+    ENABLE_PROBE_TRADES = True
 MAX_MAXDIFFS = coerce_positive_int(
     os.getenv("MARKETSIM_MAX_MAXDIFFS"),
     15,
@@ -339,7 +428,7 @@ MAX_MAXDIFFS = coerce_positive_int(
 DEFAULT_PROBE_SYMBOLS = {"AAPL", "MSFT", "NVDA"}
 PROBE_SYMBOLS = set() if SIMPLIFIED_MODE or not ENABLE_PROBE_TRADES else set(DEFAULT_PROBE_SYMBOLS)
 
-MAXDIFF_STRATEGIES = {"maxdiff", "maxdiffalwayson", "pctdiff"}
+MAXDIFF_STRATEGIES = {"maxdiff", "maxdiffalwayson"}  # Disabled pctdiff - needs debugging
 MAXDIFF_LIMIT_STRATEGIES = MAXDIFF_STRATEGIES.union({"highlow"})
 
 
@@ -664,6 +753,37 @@ def _recent_trade_pnls(
         if pnl_value is None:
             continue
         recent.append(float(pnl_value))
+        if len(recent) >= limit:
+            break
+    return recent
+
+
+def _recent_trade_pnl_pcts(
+    symbol: str,
+    side: str,
+    *,
+    strategy: Optional[str] = None,
+    limit: int = 2,
+) -> List[float]:
+    store = _get_trade_history_store()
+    if store is None or limit <= 0:
+        return []
+    try:
+        store.load()
+    except Exception as exc:
+        logger.error("Failed loading trade history store for PnL pct lookup: %s", exc)
+        return []
+    key = state_utils.state_key(symbol, side, strategy)
+    history = store.get(key, [])
+    if not isinstance(history, list) or not history:
+        return []
+    recent: List[float] = []
+    for entry in reversed(history):
+        raw_pct = entry.get("pnl_pct")
+        if raw_pct is None:
+            continue
+        pnl_pct = coerce_numeric(raw_pct, default=0.0)
+        recent.append(float(pnl_pct))
         if len(recent) >= limit:
             break
     return recent
@@ -1159,11 +1279,19 @@ def _record_trade_outcome(position, reason: str) -> None:
         qty_value = float(getattr(position, "qty", 0.0) or 0.0)
     except Exception:
         qty_value = 0.0
+    entry_price = coerce_numeric(getattr(position, "avg_entry_price", None), default=None)
+    notional = None
+    if entry_price is not None and qty_value:
+        notional = abs(float(entry_price) * float(qty_value))
+    elif hasattr(position, "market_value"):
+        notional = abs(coerce_numeric(getattr(position, "market_value", 0.0), default=0.0))
+    pnl_pct = safe_divide(pnl_value, notional, default=0.0) if notional and notional > 0 else 0.0
     record = {
         "symbol": position.symbol,
         "side": normalized_side,
         "qty": qty_value,
         "pnl": pnl_value,
+        "pnl_pct": pnl_pct,
         "closed_at": datetime.now(timezone.utc).isoformat(),
         "reason": reason,
         "mode": trade_mode,
@@ -1213,6 +1341,7 @@ def _record_trade_outcome(position, reason: str) -> None:
                 "side": normalized_side,
                 "qty": qty_value,
                 "pnl": pnl_value,
+                "pnl_pct": pnl_pct,
                 "closed_at": record["closed_at"],
                 "reason": reason,
                 "mode": trade_mode,
@@ -1233,7 +1362,8 @@ def _evaluate_trade_block(symbol: str, side: str, strategy: Optional[str] = None
     When strategy is provided, blocks are strategy-specific (e.g., ETHUSD-buy-maxdiff can be
     blocked independently from ETHUSD-buy-highlow).
     """
-    record = _load_trade_outcome(symbol, side, strategy=strategy)
+    normalized_side = _normalize_side_for_key(side)
+    record = _load_trade_outcome(symbol, normalized_side, strategy=strategy)
     learning_state = dict(_load_learning_state(symbol, side, strategy=strategy))
     now_utc = datetime.now(timezone.utc)
     probe_summary = _describe_probe_state(learning_state, now_utc)
@@ -1265,6 +1395,18 @@ def _evaluate_trade_block(symbol: str, side: str, strategy: Optional[str] = None
             if last_closed_at is None or now_utc - last_closed_at <= LOSS_BLOCK_COOLDOWN:
                 blocked = True
                 block_reason = f"Last {side} trade for {symbol} lost {last_pnl:.2f} on {ts_repr}; cooling down"
+    forced_probe_reason = None
+    if ENABLE_PROBE_TRADES and PROBE_TRADE_MODE and blocked:
+        pct_values = _recent_trade_pnl_pcts(symbol, normalized_side, strategy=None, limit=2)
+        if len(pct_values) < 2 and strategy:
+            pct_values = _recent_trade_pnl_pcts(symbol, normalized_side, strategy=strategy, limit=2)
+        if len(pct_values) >= 2:
+            pct_sum = sum(pct_values[:2])
+            if pct_sum <= 0:
+                blocked = False
+                pending_probe = True
+                trade_mode = "probe"
+                forced_probe_reason = f"recent pnl_pct sum {pct_sum:.4f}; forcing probe trade"
     if probe_summary.get("probe_expired"):
         block_reason = block_reason or (
             f"Probe duration exceeded {PROBE_MAX_DURATION} for {symbol} {side}; scheduling backout"
@@ -1272,6 +1414,8 @@ def _evaluate_trade_block(symbol: str, side: str, strategy: Optional[str] = None
     cooldown_expires = None
     if last_closed_at is not None:
         cooldown_expires = (last_closed_at + LOSS_BLOCK_COOLDOWN).isoformat()
+    if forced_probe_reason:
+        block_reason = forced_probe_reason
     learning_state["trade_mode"] = trade_mode
     learning_state["probe_transition_ready"] = probe_transition_ready
     learning_state["probe_expires_at"] = probe_summary.get("probe_expires_at")
@@ -1370,10 +1514,12 @@ def _forecast_plus_sim_nonpositive(data: Dict) -> Optional[Tuple[float, float]]:
     if not strategy:
         return None
     forecasts = data.get("strategy_candidate_forecasted_pnl") or {}
-    forecasted = coerce_numeric(forecasts.get(strategy), default=None)
-    recent_sum = coerce_numeric(data.get("recent_return_sum"), default=None)
-    if forecasted is None or recent_sum is None:
+    raw_forecast = forecasts.get(strategy)
+    raw_recent = data.get("recent_return_sum")
+    if raw_forecast is None or raw_recent is None:
         return None
+    forecasted = coerce_numeric(raw_forecast, default=0.0)
+    recent_sum = coerce_numeric(raw_recent, default=0.0)
     combined = float(forecasted) + float(recent_sum)
     if combined <= 0:
         return float(forecasted), float(recent_sum)
@@ -1397,13 +1543,19 @@ def _collect_forced_probe_reasons(symbol: str, data: Dict, probe_state: ProbeSta
         data.pop("global_force_probe", None)
 
     if not DISABLE_RECENT_PNL_PROBE:
-        pnls = _recent_trade_pnls(symbol, normalized_side, strategy=None, limit=2)
+        pnls = _recent_trade_pnl_pcts(symbol, normalized_side, strategy=None, limit=2)
+        pct_mode = True
+        if len(pnls) < 2:
+            pnls = _recent_trade_pnls(symbol, normalized_side, strategy=None, limit=2)
+            pct_mode = False
         if len(pnls) >= 2:
             recent_window = pnls[:2]
             pnl_sum = sum(recent_window)
             if pnl_sum <= 0:
-                formatted = ", ".join(f"{pnl:.2f}" for pnl in recent_window)
-                reasons.append(f"recent_pnl_sum={pnl_sum:.2f} [{formatted}]")
+                fmt = "{:.4f}" if pct_mode else "{:.2f}"
+                formatted = ", ".join(fmt.format(pnl) for pnl in recent_window)
+                label = "recent_pnl_pct_sum" if pct_mode else "recent_pnl_sum"
+                reasons.append(f"{label}={fmt.format(pnl_sum)} [{formatted}]")
 
     forecast_pair = _forecast_plus_sim_nonpositive(data)
     if forecast_pair is not None:
@@ -1620,15 +1772,49 @@ def _analyze_symbols_impl(
         priority_override = (strategy_priorities or {}).get(symbol)
         try:
             kelly_fraction = None
-            # not many because we need to adapt strats? eg the wierd spikes in uniusd are a big opportunity to trade w high/low
-            # but then i bumped up because its not going to say buy crypto when its down, if its most recent based?
             num_simulations = env_simulations or 70
             used_fallback_engine = False
 
-            try:
-                backtest_df = backtest_forecasts(symbol, num_simulations, model_override=model_override)
-            except Exception as exc:
-                logger.error(f"backtest_forecasts failed for {symbol}: {exc}. Skipping symbol.")
+            candidates: List[Optional[str]] = []
+            if model_override:
+                candidates.append(model_override)
+            else:
+                candidates.extend(["chronos2", "toto"])
+            candidates.append(None)
+
+            backtest_df = None
+            chosen_model: Optional[str] = None
+            attempted: set[str] = set()
+            for candidate in candidates:
+                key = (candidate or "auto").lower()
+                if key in attempted:
+                    continue
+                attempted.add(key)
+                override_arg = None if candidate in (None, "auto") else candidate
+                try:
+                    backtest_df = backtest_forecasts(symbol, num_simulations, model_override=override_arg)
+                    chosen_model = candidate
+                    used_fallback_engine = override_arg == "toto"
+                    break
+                except Exception as exc:
+                    if candidate == "chronos2" and not model_override:
+                        logger.warning(
+                            "%s: Chronos2 model failed (%s); retrying with Toto",
+                            symbol,
+                            exc,
+                        )
+                        continue
+                    logger.error(
+                        "%s: backtest (%s) failed: %s",
+                        symbol,
+                        candidate or "auto",
+                        exc,
+                    )
+                    backtest_df = None
+                    break
+
+            if backtest_df is None:
+                logger.error(f"backtest_forecasts failed for {symbol}: unable to produce simulations.")
                 continue
 
             if backtest_df.empty:
@@ -1914,6 +2100,8 @@ def _analyze_symbols_impl(
                 label="maxdiffalwayson",
             )
 
+            _apply_neural_pricing(symbol, last_prediction)
+
             if (
                 pctdiff_entry_low_price is not None
                 and pctdiff_takeprofit_high_price is not None
@@ -1961,6 +2149,12 @@ def _analyze_symbols_impl(
                 snapshot_parts.append(f"maxdiffalwayson_high={maxdiffalwayson_high_price:.4f}")
             if maxdiffalwayson_low_price is not None:
                 snapshot_parts.append(f"maxdiffalwayson_low={maxdiffalwayson_low_price:.4f}")
+            neural_high_price = last_prediction.get("neuralpricing_high_price")
+            neural_low_price = last_prediction.get("neuralpricing_low_price")
+            if neural_high_price is not None:
+                snapshot_parts.append(f"neuralpricing_high={neural_high_price:.4f}")
+            if neural_low_price is not None:
+                snapshot_parts.append(f"neuralpricing_low={neural_low_price:.4f}")
             if pctdiff_entry_low_price is not None:
                 snapshot_parts.append(f"pctdiff_entry_low={pctdiff_entry_low_price:.4f}")
             if pctdiff_entry_high_price is not None:
@@ -2665,6 +2859,23 @@ def _analyze_symbols_impl(
                 result_row["pctdiff_takeprofit_high_price"] = pctdiff_takeprofit_high_price
             if pctdiff_takeprofit_low_price is not None:
                 result_row["pctdiff_takeprofit_low_price"] = pctdiff_takeprofit_low_price
+            neural_high_price = last_prediction.get("neuralpricing_high_price")
+            neural_low_price = last_prediction.get("neuralpricing_low_price")
+            if neural_high_price is not None:
+                result_row["neuralpricing_high_price"] = neural_high_price
+            if neural_low_price is not None:
+                result_row["neuralpricing_low_price"] = neural_low_price
+            neural_high_delta = last_prediction.get("neuralpricing_high_delta")
+            neural_low_delta = last_prediction.get("neuralpricing_low_delta")
+            if neural_high_delta is not None:
+                result_row["neuralpricing_high_delta"] = neural_high_delta
+            if neural_low_delta is not None:
+                result_row["neuralpricing_low_delta"] = neural_low_delta
+            neural_pnl_gain = last_prediction.get("neuralpricing_pnl_gain")
+            if neural_pnl_gain is not None:
+                result_row["neuralpricing_pnl_gain"] = neural_pnl_gain
+
+            result_row["neural_strategy"] = _resolve_neural_strategy_name(symbol, result_row)
 
             if maxdiff_primary_side_raw is not None:
                 result_row["maxdiff_primary_side"] = str(maxdiff_primary_side_raw).strip().lower() or "neutral"
@@ -2737,6 +2948,10 @@ def _analyze_symbols_impl(
                     result_row[count_key] = int(round(coerce_numeric(last_prediction.get(count_key), default=0.0)))
             if "maxdiffalwayson_profit_values" in last_prediction:
                 result_row["maxdiffalwayson_profit_values"] = last_prediction.get("maxdiffalwayson_profit_values")
+            try:
+                log_strategy_snapshot(symbol, result_row, now_utc)
+            except Exception as exc:
+                logger.debug("Failed to log strategy snapshot for %s: %s", symbol, exc)
             results[symbol] = result_row
             _log_analysis_summary(symbol, result_row)
 
@@ -2750,6 +2965,8 @@ def _analyze_symbols_impl(
                     "maxdiffprofit_low_price": result_row.get("maxdiffprofit_low_price"),
                     "maxdiffalwayson_high_price": result_row.get("maxdiffalwayson_high_price"),
                     "maxdiffalwayson_low_price": result_row.get("maxdiffalwayson_low_price"),
+                    "neuralpricing_high_price": result_row.get("neuralpricing_high_price"),
+                    "neuralpricing_low_price": result_row.get("neuralpricing_low_price"),
                     "avg_return": maxdiff_return,
                     "status": "identified",
                     "created_at": datetime.now(timezone.utc).isoformat(),
@@ -2767,6 +2984,8 @@ def _analyze_symbols_impl(
                     "maxdiffprofit_low_price": result_row.get("maxdiffprofit_low_price"),
                     "maxdiffalwayson_high_price": result_row.get("maxdiffalwayson_high_price"),
                     "maxdiffalwayson_low_price": result_row.get("maxdiffalwayson_low_price"),
+                    "neuralpricing_high_price": result_row.get("neuralpricing_high_price"),
+                    "neuralpricing_low_price": result_row.get("neuralpricing_low_price"),
                     "avg_return": maxdiffalwayson_return,
                     "status": "identified",
                     "created_at": datetime.now(timezone.utc).isoformat(),
@@ -2949,15 +3168,58 @@ def log_trading_plan(picks: Dict[str, Dict], action: str):
     logger.info("TRADING PLAN (%s) count=%d | %s", action, len(picks), " ; ".join(compact_lines))
 
 
-def _cancel_non_crypto_orders_out_of_hours():
-    """Cancel non-crypto limit orders during out-of-hours to free buying power for crypto.
+def _build_position_lookup(positions: Optional[List[object]]) -> Dict[str, Dict[str, object]]:
+    lookup: Dict[str, Dict[str, object]] = {}
+    if not positions:
+        return lookup
+    for pos in positions:
+        symbol = getattr(pos, "symbol", None)
+        if not symbol:
+            continue
+        raw_side = str(getattr(pos, "side", "")).lower()
+        if raw_side not in {"long", "short"}:
+            continue
+        try:
+            qty = abs(float(getattr(pos, "qty", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            qty = 0.0
+        if qty <= 0:
+            continue
+        lookup[symbol] = {"side": raw_side, "qty": qty}
+    return lookup
 
-    During out-of-hours (NYSE closed), stock orders can't execute but reserve buying power.
-    Canceling them frees up capital for crypto trading, which is available 24/7.
-    Stock orders will be re-placed when market hours return.
-    """
+
+def _is_closing_order(order, position_lookup: Dict[str, Dict[str, object]]) -> bool:
+    symbol = getattr(order, "symbol", None)
+    if not symbol:
+        return False
+    position = position_lookup.get(symbol)
+    if not position:
+        return False
+    order_side = str(getattr(order, "side", "")).lower()
+    pos_side = str(position.get("side", ""))
+    if pos_side == "long" and order_side == "sell":
+        return True
+    if pos_side == "short" and order_side == "buy":
+        return True
+    return False
+
+
+def _cancel_non_crypto_orders_out_of_hours(active_positions: Optional[List[object]] = None):
+    """Cancel non-crypto entry orders during out-of-hours while keeping closing orders alive."""
     if not is_crypto_out_of_hours():
         return  # Market is open, keep stock orders
+
+    positions_source = active_positions
+    if positions_source is None:
+        try:
+            raw_positions = alpaca_wrapper.get_all_positions()
+            positions_source = filter_to_realistic_positions(raw_positions)
+        except Exception as exc:
+            logger.warning(f"Failed to fetch positions for out-of-hours cleanup: {exc}")
+            positions_source = []
+
+    position_lookup = _build_position_lookup(positions_source)
 
     try:
         orders = alpaca_wrapper.get_orders()
@@ -2973,25 +3235,38 @@ def _cancel_non_crypto_orders_out_of_hours():
         if not symbol or is_crypto_symbol(symbol):
             continue  # Keep crypto orders
 
-        # This is a non-crypto order during out-of-hours - cancel it
+        if _is_closing_order(order, position_lookup):
+            logger.debug(
+                "Preserving closing order %s (%s) for %s during out-of-hours cleanup",
+                getattr(order, "id", "unknown"),
+                getattr(order, "side", "n/a"),
+                symbol,
+            )
+            continue
+
+        # This is a non-crypto entry/scale order during out-of-hours - cancel it
         order_id = getattr(order, "id", None)
         limit_price = getattr(order, "limit_price", None)
         qty = getattr(order, "qty", 0)
 
-        if order_id:
+        if not order_id:
+            continue
+
+        try:
+            alpaca_wrapper.cancel_order(order)
+            cancelled_count += 1
+            notional = 0.0
             try:
-                alpaca_wrapper.cancel_order(order)
-                cancelled_count += 1
+                notional = abs(float(qty) * float(limit_price)) if limit_price else 0.0
+            except (TypeError, ValueError):
                 notional = 0.0
-                if limit_price:
-                    notional = abs(float(qty) * float(limit_price))
-                    freed_notional += notional
-                logger.info(
-                    f"Cancelled non-crypto order during out-of-hours: {symbol} "
-                    f"(freed ${notional:.2f} buying power for crypto)"
-                )
-            except Exception as exc:
-                logger.warning(f"Failed to cancel {symbol} order {order_id}: {exc}")
+            freed_notional += notional
+            logger.info(
+                f"Cancelled non-crypto order during out-of-hours: {symbol} "
+                f"(freed ${notional:.2f} buying power for crypto)"
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to cancel {symbol} order {order_id}: {exc}")
 
     if cancelled_count > 0:
         logger.info(
@@ -3006,11 +3281,11 @@ def manage_positions(
     all_analyzed_results: Dict[str, Dict],
 ):
     """Execute actual position management."""
-    # Cancel non-crypto orders during out-of-hours to free buying power for crypto
-    _cancel_non_crypto_orders_out_of_hours()
-
     positions = alpaca_wrapper.get_all_positions()
     positions = filter_to_realistic_positions(positions)
+
+    # Cancel non-crypto orders during out-of-hours to free buying power for crypto
+    _cancel_non_crypto_orders_out_of_hours(positions)
     logger.info("EXECUTING POSITION CHANGES:")
 
     total_exposure_value = _calculate_total_exposure_value(positions)
@@ -3601,6 +3876,7 @@ def manage_positions(
                     symbol=symbol,
                     strategy=data.get("strategy"),
                     effective_probe=effective_probe,
+                    strategy_key=data.get("neural_strategy"),
                 )
                 target_value = target_qty * entry_price
                 logger.info(
@@ -3644,6 +3920,7 @@ def manage_positions(
                     symbol=symbol,
                     strategy=data.get("strategy"),
                     effective_probe=effective_probe,
+                    strategy_key=data.get("neural_strategy"),
                 )
                 target_value = target_qty * entry_price
                 logger.info(

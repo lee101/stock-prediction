@@ -25,7 +25,7 @@ def test_forecast_plus_sim_nonpositive_detects_negative_sum(trade_module):
 
 def test_collect_forced_reasons_includes_last_two_losses(monkeypatch, trade_module):
     monkeypatch.setattr(trade_module, "DISABLE_RECENT_PNL_PROBE", False)
-    monkeypatch.setattr(trade_module, "_recent_trade_pnls", lambda *args, **kwargs: [-5.0, -3.0])
+    monkeypatch.setattr(trade_module, "_recent_trade_pnl_pcts", lambda *args, **kwargs: [-0.05, -0.03])
     data = {
         "side": "buy",
         "strategy": "simple",
@@ -34,11 +34,12 @@ def test_collect_forced_reasons_includes_last_two_losses(monkeypatch, trade_modu
     }
     probe_state = ProbeState(force_probe=False, reason=None, probe_date=None, state={})
     reasons = trade_module._collect_forced_probe_reasons("AAPL", data, probe_state)
-    assert any("recent_pnl_sum" in reason for reason in reasons)
+    assert any("recent_pnl_pct_sum" in reason for reason in reasons)
 
 
 def test_apply_forced_probe_annotations_sets_trade_mode(monkeypatch, trade_module):
     monkeypatch.setattr(trade_module, "DISABLE_RECENT_PNL_PROBE", False)
+    monkeypatch.setattr(trade_module, "_recent_trade_pnl_pcts", lambda *args, **kwargs: [])
     monkeypatch.setattr(trade_module, "_recent_trade_pnls", lambda *args, **kwargs: [-2.0, -2.5])
     data = {
         "side": "buy",
@@ -55,6 +56,7 @@ def test_apply_forced_probe_annotations_sets_trade_mode(monkeypatch, trade_modul
 
 
 def test_collect_forced_reasons_includes_global(monkeypatch, trade_module):
+    monkeypatch.setattr(trade_module, "_recent_trade_pnl_pcts", lambda *args, **kwargs: [])
     monkeypatch.setattr(trade_module, "_recent_trade_pnls", lambda *args, **kwargs: [])
     data = {
         "side": "sell",

@@ -358,17 +358,20 @@ def test_analyze_symbols_prefers_maxdiff_for_crypto_when_primary_side_buy(
 
 
 def test_collect_forced_probe_reasons_uses_pnl_sum(monkeypatch):
+    monkeypatch.setattr(trade_module, "DISABLE_RECENT_PNL_PROBE", False)
     probe_state = ProbeState(force_probe=False, reason=None, probe_date=None, state={})
     data = {"side": "buy"}
 
-    monkeypatch.setattr(trade_module, "_recent_trade_pnls", lambda *_, **__: [-2.0, 1.0])
+    monkeypatch.setattr(trade_module, "_recent_trade_pnl_pcts", lambda *_, **__: [-0.02, -0.03])
+    monkeypatch.setattr(trade_module, "_recent_trade_pnls", lambda *_, **__: [])
     reasons = trade_module._collect_forced_probe_reasons("AAPL", data, probe_state)
-    assert any("recent_pnl_sum" in reason for reason in reasons)
+    assert any("recent_pnl_pct_sum" in reason for reason in reasons)
 
-    monkeypatch.setattr(trade_module, "_recent_trade_pnls", lambda *_, **__: [1.5, -0.5])
+    monkeypatch.setattr(trade_module, "_recent_trade_pnl_pcts", lambda *_, **__: [0.02, -0.01])
+    monkeypatch.setattr(trade_module, "_recent_trade_pnls", lambda *_, **__: [])
     data = {"side": "buy"}
     reasons = trade_module._collect_forced_probe_reasons("AAPL", data, probe_state)
-    assert not any("recent_pnl_sum" in reason for reason in reasons)
+    assert not any("recent_pnl_pct_sum" in reason for reason in reasons)
 
 
 @patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)
@@ -718,8 +721,45 @@ def test_analyze_symbols_skips_equities_when_market_closed(mock_backtest, mock_s
 
     assert "AAPL" not in results
     assert "BTCUSD" in results
-    assert mock_backtest.call_count == 1
+    assert all(call.args[0] == "BTCUSD" for call in mock_backtest.call_args_list)
     assert mock_backtest.call_args[0][0] == "BTCUSD"
+
+
+@patch("trade_stock_e2e.is_nyse_trading_day_now", return_value=True)
+@patch("trade_stock_e2e._load_latest_forecast_snapshot", return_value={})
+@patch("trade_stock_e2e.backtest_forecasts")
+def test_analyze_symbols_falls_back_to_toto(mock_backtest, mock_snapshot, mock_trading_day_now):
+    def _side_effect(symbol, num_simulations, model_override=None):
+        if model_override in (None, "chronos2"):
+            raise RuntimeError("Chronos failed")
+        return pd.DataFrame(
+            {
+                "simple_strategy_return": [0.02],
+                "simple_strategy_avg_daily_return": [0.02],
+                "simple_strategy_annual_return": [0.02 * 365],
+                "all_signals_strategy_return": [0.01],
+                "all_signals_strategy_avg_daily_return": [0.01],
+                "all_signals_strategy_annual_return": [0.01 * 365],
+                "entry_takeprofit_return": [0.005],
+                "entry_takeprofit_avg_daily_return": [0.005],
+                "entry_takeprofit_annual_return": [0.005 * 365],
+                "highlow_return": [0.004],
+                "highlow_avg_daily_return": [0.004],
+                "highlow_annual_return": [0.004 * 365],
+                "close": [100.0],
+                "predicted_close": [101.0],
+                "predicted_high": [102.0],
+                "predicted_low": [99.0],
+            }
+        )
+
+    mock_backtest.side_effect = _side_effect
+
+    results = analyze_symbols(["BTCUSD"])
+
+    assert "BTCUSD" in results
+    overrides = [call.kwargs.get("model_override") for call in mock_backtest.call_args_list]
+    assert "toto" in overrides
 
 
 @patch("trade_stock_e2e.fetch_bid_ask", return_value=(100.0, 101.0))
@@ -1521,6 +1561,36 @@ def test_manage_positions_prioritises_maxdiffalwayson_force_immediate():
     assert force_map["GOOG"] == {False}
 
 
+@patch("trade_stock_e2e.is_crypto_out_of_hours", return_value=True)
+def test_cancel_non_crypto_orders_out_of_hours_skips_closing_orders(mock_out_of_hours, monkeypatch):
+    positions = [
+        types.SimpleNamespace(symbol="COUR", side="long", qty="200"),
+        types.SimpleNamespace(symbol="MSFT", side="short", qty="-50"),
+    ]
+
+    orders = [
+        types.SimpleNamespace(symbol="COUR", side="sell", qty="200", limit_price=15.0, id="close-long"),
+        types.SimpleNamespace(symbol="COUR", side="buy", qty="50", limit_price=14.5, id="add-long"),
+        types.SimpleNamespace(symbol="MSFT", side="buy", qty="50", limit_price=505.0, id="close-short"),
+        types.SimpleNamespace(symbol="MSFT", side="sell", qty="10", limit_price=510.0, id="new-short"),
+        types.SimpleNamespace(symbol="ETHUSD", side="sell", qty="0.5", limit_price=3200.0, id="crypto-order"),
+        types.SimpleNamespace(symbol="GE", side="buy", qty="20", limit_price=110.0, id="ge-entry"),
+    ]
+
+    monkeypatch.setattr(trade_module.alpaca_wrapper, "get_orders", lambda: list(orders))
+
+    cancelled = []
+
+    def fake_cancel(order):
+        cancelled.append(order.id)
+
+    monkeypatch.setattr(trade_module.alpaca_wrapper, "cancel_order", fake_cancel)
+
+    trade_module._cancel_non_crypto_orders_out_of_hours(positions)
+
+    assert set(cancelled) == {"add-long", "new-short", "ge-entry"}
+
+
 def test_build_portfolio_core_prefers_profitable_strategies():
     results = {
         "AAA": {
@@ -1626,3 +1696,62 @@ def test_build_portfolio_includes_probe_candidate():
     assert "CORE" in picks
     assert "PROBE" in picks
     assert "WEAK" not in picks  # replaced to respect probe inclusion
+
+
+@pytest.fixture
+def simple_result_row():
+    return {
+        "gate_config": "-",
+        "gate_blocked_days": 0,
+        "symbol_gate_blocks": 0,
+    }
+
+
+def test_resolve_neural_strategy(simple_result_row):
+    resolver = getattr(trade_module, "_resolve_neural_strategy_name")
+    assert resolver("BTCUSD", simple_result_row) == "VolAdjusted_10pct"
+
+    unprofit_row = dict(simple_result_row)
+    unprofit_row["gate_config"] = "UnprofitShutdown_Window2"
+    assert resolver("AAPL", unprofit_row) == "VolAdjusted_15pct_UnprofitShutdown"
+
+    both_row = dict(simple_result_row)
+    both_row["gate_config"] = "UnprofitShutdown_Window2+StockDirShutdown_Window2"
+    assert resolver("BTCUSD", both_row) == "VolAdjusted_10pct_UnprofitShutdown_StockDirShutdown"
+
+
+def test_apply_neural_scale_uses_strategy_weight(monkeypatch):
+    class StubOptimizer:
+        def __init__(self):
+            self.weights = {"VolAdjusted_10pct": 0.8}
+            self.last_scale = None
+
+        def get_strategy_weight(self, name):
+            return self.weights.get(name)
+
+        def compute_scale(self, force: bool = False):
+            self.last_scale = 0.5
+            return self.last_scale
+
+    stub = StubOptimizer()
+    monkeypatch.setattr(trade_module, "_get_portfolio_optimizer", lambda: stub)
+
+    scaled = trade_module._apply_neural_scale(
+        10.0,
+        min_qty=1.0,
+        symbol="BTCUSD",
+        strategy="pctdiff",
+        effective_probe=False,
+        strategy_key="VolAdjusted_10pct",
+    )
+    assert scaled == pytest.approx(8.0)
+
+    scaled_fallback = trade_module._apply_neural_scale(
+        10.0,
+        min_qty=1.0,
+        symbol="BTCUSD",
+        strategy="pctdiff",
+        effective_probe=False,
+        strategy_key="Missing",
+    )
+    assert scaled_fallback == pytest.approx(5.0)

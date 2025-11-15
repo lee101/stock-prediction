@@ -37,6 +37,9 @@ def get_entry_price(
     is_buy = is_buy_side(side)
 
     if normalized == "maxdiff":
+        neural_key = "neuralpricing_low_price" if is_buy else "neuralpricing_high_price"
+        if neural_key in data and data[neural_key] is not None:
+            return data.get(neural_key)
         return data.get("maxdiffprofit_low_price" if is_buy else "maxdiffprofit_high_price")
 
     if normalized == "maxdiffalwayson":
@@ -80,6 +83,9 @@ def get_takeprofit_price(
     is_buy = is_buy_side(side)
 
     if normalized == "maxdiff":
+        neural_key = "neuralpricing_high_price" if is_buy else "neuralpricing_low_price"
+        if neural_key in data and data[neural_key] is not None:
+            return data.get(neural_key)
         return data.get("maxdiffprofit_high_price" if is_buy else "maxdiffprofit_low_price")
 
     if normalized == "maxdiffalwayson":

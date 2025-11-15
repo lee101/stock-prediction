@@ -144,5 +144,22 @@ class NeuralStrategyEvaluator:
             return None
         return float(sum(score.weight for score in scores) / len(scores))
 
+    def latest_strategy_weights(self, cutoff_date: Optional[str] = None) -> Dict[str, float]:
+        frame = self._frame
+        if cutoff_date:
+            cutoff_ts = pd.to_datetime(cutoff_date)
+            frame = frame[frame["date"] <= cutoff_ts]
+        if frame.empty:
+            return {}
+        ordered = frame.sort_values(["strategy", "date"])
+        latest = ordered.groupby("strategy", as_index=False).tail(1)
+        if latest.empty:
+            return {}
+        features = self._builder.transform(latest)
+        with torch.inference_mode():
+            tensor = torch.from_numpy(features.astype("float32")).to(self.device)
+            weights = self._model(tensor).detach().cpu().numpy()
+        return {strategy: float(weight) for strategy, weight in zip(latest["strategy"], weights)}
+
 
 __all__ = ["NeuralStrategyEvaluator", "StrategyScore"]

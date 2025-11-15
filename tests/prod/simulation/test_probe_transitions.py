@@ -70,6 +70,9 @@ def test_manage_positions_promotes_probe(monkeypatch):
     positions = [make_position(symbol, qty=1.0, price=10.0, side="long")]
     module.alpaca_wrapper.equity = 1000.0
 
+    monkeypatch.setattr(module, "ENABLE_PROBE_TRADES", True)
+    monkeypatch.setattr(module, "_recent_trade_pnl_pcts", lambda *args, **kwargs: [])
+    monkeypatch.setattr(module, "_recent_trade_pnls", lambda *args, **kwargs: [])
     monkeypatch.setattr(module.alpaca_wrapper, "get_all_positions", lambda: positions)
     monkeypatch.setattr(module, "filter_to_realistic_positions", lambda pos: pos)
     monkeypatch.setattr(module, "_handle_live_drawdown", lambda *_: None)
@@ -157,16 +160,13 @@ def test_manage_positions_promotes_probe(monkeypatch):
     assert len(transition_calls) == 1
     trans_symbol, trans_side, trans_qty = transition_calls[0]
     assert (trans_symbol, trans_side) == (symbol, "buy")
-    assert trans_qty == pytest.approx(5.0)
+    assert trans_qty == pytest.approx(1.0)
     assert probe_active_calls == []
     assert len(active_trade_updates) >= 1
     act_symbol, act_side, act_mode, act_qty = active_trade_updates[-1]
     assert (act_symbol, act_side, act_mode) == (symbol, "buy", "probe_transition")
-    assert act_qty == pytest.approx(5.0)
-    assert len(ramp_calls) == 1
-    ramp_symbol, ramp_side, ramp_qty = ramp_calls[0]
-    assert (ramp_symbol, ramp_side) == (symbol, "buy")
-    assert ramp_qty == pytest.approx(5.0)
+    assert act_qty == pytest.approx(1.0)
+    assert ramp_calls == []
 
 
 def test_manage_positions_backouts_expired_probe(monkeypatch):
@@ -237,6 +237,37 @@ def test_manage_positions_backouts_expired_probe(monkeypatch):
 
     assert record_calls == [(symbol, "probe_duration_exceeded")]
     assert backout_calls == [symbol]
+
+
+def test_evaluate_trade_block_forces_probe_with_recent_losses(monkeypatch):
+    module = trade_stock_e2e
+    timestamp = datetime(2025, 11, 14, 16, 0, tzinfo=timezone.utc).isoformat()
+    monkeypatch.setattr(module, "PROBE_TRADE_MODE", True)
+    monkeypatch.setattr(module, "ENABLE_PROBE_TRADES", True)
+    monkeypatch.setattr(module, "_load_trade_outcome", lambda *args, **kwargs: {"pnl": -5.0, "closed_at": timestamp})
+    monkeypatch.setattr(module, "_load_learning_state", lambda *args, **kwargs: {})
+    monkeypatch.setattr(module, "_recent_trade_pnl_pcts", lambda *args, **kwargs: [-0.02, -0.03])
+
+    result = module._evaluate_trade_block("ETHUSD", "buy")
+
+    assert result["trade_mode"] == "probe"
+    assert result["pending_probe"] is True
+    assert result["blocked"] is False
+
+
+def test_evaluate_trade_block_remains_blocked_when_recent_positive(monkeypatch):
+    module = trade_stock_e2e
+    timestamp = datetime(2025, 11, 14, 16, 0, tzinfo=timezone.utc).isoformat()
+    monkeypatch.setattr(module, "PROBE_TRADE_MODE", True)
+    monkeypatch.setattr(module, "ENABLE_PROBE_TRADES", True)
+    monkeypatch.setattr(module, "_load_trade_outcome", lambda *args, **kwargs: {"pnl": -5.0, "closed_at": timestamp})
+    monkeypatch.setattr(module, "_load_learning_state", lambda *args, **kwargs: {})
+    monkeypatch.setattr(module, "_recent_trade_pnl_pcts", lambda *args, **kwargs: [0.05, -0.01])
+
+    result = module._evaluate_trade_block("ETHUSD", "buy")
+
+    assert result["blocked"] is True
+    assert result["trade_mode"] == "normal"
 
 
 def test_manage_positions_promotes_large_notional_probe(monkeypatch):

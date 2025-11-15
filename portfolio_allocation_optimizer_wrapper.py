@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from strategytrainingneural.runtime import NeuralStrategyEvaluator, StrategyScore
 
@@ -42,6 +42,7 @@ class PortfolioAllocationOptimizer:
         self._evaluator: Optional[NeuralStrategyEvaluator] = None
         self._last_scores: List[StrategyScore] = []
         self._last_scale: Optional[float] = None
+        self._strategy_weights: Dict[str, float] = {}
         self._disabled_reason: Optional[str] = None
 
     @property
@@ -117,6 +118,20 @@ class PortfolioAllocationOptimizer:
             scale,
         )
         return scale
+
+    def refresh_strategy_weights(self, *, force: bool = False, cutoff_date: Optional[str] = None) -> Dict[str, float]:
+        evaluator = self._ensure_evaluator()
+        if evaluator is None:
+            return {}
+        if self._strategy_weights and not force:
+            return dict(self._strategy_weights)
+        raw = evaluator.latest_strategy_weights(cutoff_date=cutoff_date)
+        scaled = {name: self._scale_from_weight(weight) for name, weight in raw.items()}
+        self._strategy_weights = scaled
+        return dict(scaled)
+
+    def get_strategy_weight(self, strategy_name: str) -> Optional[float]:
+        return self._strategy_weights.get(strategy_name)
 
 
 __all__ = [

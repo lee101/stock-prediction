@@ -17,6 +17,8 @@ def sample_data():
         # Maxdiff strategy
         "maxdiffprofit_low_price": 95.0,
         "maxdiffprofit_high_price": 105.0,
+        "neuralpricing_low_price": 96.5,
+        "neuralpricing_high_price": 103.5,
         # Maxdiff always on strategy
         "maxdiffalwayson_low_price": 94.0,
         "maxdiffalwayson_high_price": 106.0,
@@ -37,12 +39,18 @@ class TestGetEntryPrice:
     def test_maxdiff_buy(self, sample_data):
         """Test maxdiff strategy buy entry price."""
         price = get_entry_price(sample_data, "maxdiff", "buy")
-        assert price == 95.0
+        assert price == 96.5
 
     def test_maxdiff_sell(self, sample_data):
         """Test maxdiff strategy sell entry price."""
         price = get_entry_price(sample_data, "maxdiff", "sell")
-        assert price == 105.0
+        assert price == 103.5
+
+    def test_maxdiff_fallback_without_neural(self, sample_data):
+        """Ensure fallback to maxdiffprofit fields when neural pricing absent."""
+        sample_data.pop("neuralpricing_low_price", None)
+        sample_data.pop("neuralpricing_high_price", None)
+        assert get_entry_price(sample_data, "maxdiff", "buy") == 95.0
 
     def test_maxdiffalwayson_buy(self, sample_data):
         """Test maxdiffalwayson strategy buy entry price."""
@@ -76,12 +84,12 @@ class TestGetEntryPrice:
 
     def test_case_insensitive(self, sample_data):
         """Test strategy name is case-insensitive."""
-        assert get_entry_price(sample_data, "MaxDiff", "buy") == 95.0
+        assert get_entry_price(sample_data, "MaxDiff", "buy") == 96.5
         assert get_entry_price(sample_data, "PCTDIFF", "sell") == 104.0
 
     def test_whitespace_stripped(self, sample_data):
         """Test whitespace is stripped from strategy name."""
-        assert get_entry_price(sample_data, "  maxdiff  ", "buy") == 95.0
+        assert get_entry_price(sample_data, "  maxdiff  ", "buy") == 96.5
 
     def test_unknown_strategy_returns_none(self, sample_data):
         """Test unknown strategy returns None."""
@@ -107,12 +115,12 @@ class TestGetTakeprofitPrice:
     def test_maxdiff_buy(self, sample_data):
         """Test maxdiff strategy buy take-profit price."""
         price = get_takeprofit_price(sample_data, "maxdiff", "buy")
-        assert price == 105.0
+        assert price == 103.5
 
     def test_maxdiff_sell(self, sample_data):
         """Test maxdiff strategy sell take-profit price."""
         price = get_takeprofit_price(sample_data, "maxdiff", "sell")
-        assert price == 95.0
+        assert price == 96.5
 
     def test_pctdiff_buy(self, sample_data):
         """Test pctdiff strategy buy take-profit price."""

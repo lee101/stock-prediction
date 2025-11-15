@@ -222,3 +222,5 @@ build
 stategytraining/forecast_cache/
 strategytraining/forecast_cache/
 backtest_test3_inline.log*
+plots
+strategytraining2/datasets/

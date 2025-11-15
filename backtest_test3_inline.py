@@ -43,7 +43,7 @@ from src.torch_backend import configure_tf32_backends, maybe_set_float32_precisi
 from torch.utils.tensorboard import SummaryWriter
 
 logger = setup_logging("backtest_test3_inline.log")
-logger.info("Entry/exit optimizer backend: %s", ENTRY_EXIT_OPTIMIZER_BACKEND)
+logger.debug("Entry/exit optimizer backend: %s", ENTRY_EXIT_OPTIMIZER_BACKEND)
 
 _LOG_STRATEGY_TIMINGS = read_env_flag("MAXDIFF_TIMING_DEBUG") or logger.isEnabledFor(logging.DEBUG)
 
@@ -504,6 +504,10 @@ class StrategyEvaluation:
     returns: ReturnSeries
 
 
+_SHARPE_MIN_STD = 1e-9
+_SHARPE_MIN_RETURN_SPAN = 1e-9
+
+
 def _log_table(title: str, headers: List[str], rows: List[List[str]]) -> None:
     log_table(title, headers, rows, logger)
 
@@ -537,11 +541,16 @@ def _evaluate_daily_returns(daily_returns: ReturnSeries, trading_days_per_year: 
         )
 
     total_return = float(np.sum(returns_np))
+    mean = float(np.mean(returns_np))
     std = float(np.std(returns_np))
-    if std == 0.0 or not np.isfinite(std):
+    span = float(np.ptp(returns_np))
+    if (
+        not np.isfinite(std)
+        or std <= _SHARPE_MIN_STD
+        or span <= _SHARPE_MIN_RETURN_SPAN
+    ):
         sharpe = 0.0
     else:
-        mean = float(np.mean(returns_np))
         sharpe = float((mean / std) * np.sqrt(max(trading_days_per_year, 1)))
     avg_daily, annualized = _compute_return_profile(returns_np, trading_days_per_year)
     return StrategyEvaluation(
@@ -2554,8 +2563,6 @@ current_date_formatted = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 # test data on same dataset
 if __name__ == "__main__":
     current_date_formatted = "2024-12-11-18-22-30"
-
-print(f"current_date_formatted: {current_date_formatted}")
 
 tb_writer = SummaryWriter(log_dir=f"./logs/{current_date_formatted}")
 
