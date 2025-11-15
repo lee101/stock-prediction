@@ -391,6 +391,7 @@ known-first-party = [
     "traininglib",
     "strategytraining",
     "strategytrainingneural",
+    "neuralpricingstrategy",
 ]
 
 [tool.ruff.lint.per-file-ignores]

@@ -381,7 +381,7 @@ def test_spawn_open_prunes_conflicting_watchers(tmp_watchers_dir, monkeypatch):
     }
     old_path.write_text(json.dumps(old_metadata))
 
-    # Watcher for a different strategy should remain untouched
+    # Watcher for a different strategy should also be terminated
     other_limit = 97.75
     other_suffix = process_utils._format_float(other_limit, 4)
     other_path = process_utils._watcher_config_path(symbol, side, "entry", suffix=other_suffix)
@@ -419,7 +419,7 @@ def test_spawn_open_prunes_conflicting_watchers(tmp_watchers_dir, monkeypatch):
         entry_strategy=entry_strategy,
     )
 
-    expected_pid_set = {11111, 22222}
+    expected_pid_set = {11111, 22222, 33333}
     killed_pid_set = {pid for pid, sig in killed if sig == process_utils.signal.SIGTERM}
     assert killed_pid_set == expected_pid_set
 
@@ -429,11 +429,11 @@ def test_spawn_open_prunes_conflicting_watchers(tmp_watchers_dir, monkeypatch):
 
     old_metadata_after = json.loads(old_path.read_text())
     assert old_metadata_after["active"] is False
-    assert old_metadata_after["state"] == "superseded_entry_watcher"
+    assert old_metadata_after["state"] == "legacy_strategy_entry_watcher"
 
     other_metadata_after = json.loads(other_path.read_text())
-    assert other_metadata_after["active"] is True
-    assert other_metadata_after["entry_strategy"] == "maxdiff"
+    assert other_metadata_after["active"] is False
+    assert other_metadata_after["state"] == "strategy_changed_entry_watcher"
 
 
 def test_spawn_open_prunes_conflicts_with_matching_watcher(tmp_watchers_dir, monkeypatch):
@@ -534,7 +534,7 @@ def test_spawn_open_prunes_conflicts_with_matching_watcher(tmp_watchers_dir, mon
     assert stale_after["active"] is False
 
     legacy_after = json.loads(legacy_path.read_text())
-    assert legacy_after["state"] == "superseded_entry_watcher"
+    assert legacy_after["state"] == "legacy_strategy_entry_watcher"
     assert legacy_after["active"] is False
 
 
@@ -589,6 +589,74 @@ def test_spawn_close_skips_identical_watcher(tmp_watchers_dir, monkeypatch):
     assert killed == []
     # Should NOT spawn new process
     assert spawned == []
+
+
+def test_spawn_close_prunes_strategy_conflicts(tmp_watchers_dir, monkeypatch):
+    """Exit watcher spawn should terminate ones from other strategies."""
+    symbol = "NFLX"
+    side = "sell"
+    takeprofit_price = 420.0
+    entry_strategy = "pctdiff"
+
+    other_tp = 415.0
+    other_suffix = process_utils._format_float(other_tp, 4)
+    other_path = process_utils._watcher_config_path(symbol, side, "exit", suffix=other_suffix)
+    other_path.parent.mkdir(parents=True, exist_ok=True)
+    other_metadata = {
+        "pid": 24680,
+        "active": True,
+        "mode": "exit",
+        "symbol": symbol,
+        "side": side,
+        "takeprofit_price": other_tp,
+        "price_tolerance": process_utils.MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE,
+        "entry_strategy": "maxdiff",
+        "expiry_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+    }
+    other_path.write_text(json.dumps(other_metadata))
+
+    legacy_tp = 410.0
+    legacy_suffix = process_utils._format_float(legacy_tp, 4)
+    legacy_path = process_utils._watcher_config_path(symbol, side, "exit", suffix=legacy_suffix)
+    legacy_metadata = dict(other_metadata)
+    legacy_metadata.update({
+        "pid": 13579,
+        "takeprofit_price": legacy_tp,
+    })
+    legacy_metadata.pop("entry_strategy", None)
+    legacy_path.write_text(json.dumps(legacy_metadata))
+
+    killed = []
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            return
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(process_utils.os, "kill", fake_kill)
+    monkeypatch.setattr(process_utils, "_is_data_bar_fresh", lambda symbol, current_time=None: True)
+
+    dummy_process = SimpleNamespace(pid=11111)
+    monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: dummy_process)
+
+    process_utils.spawn_close_position_at_maxdiff_takeprofit(
+        symbol,
+        side,
+        takeprofit_price,
+        entry_strategy=entry_strategy,
+    )
+
+    expected_pid_set = {24680, 13579}
+    killed_pid_set = {pid for pid, sig in killed if sig == process_utils.signal.SIGTERM}
+    assert killed_pid_set == expected_pid_set
+
+    other_after = json.loads(other_path.read_text())
+    assert other_after["state"] == "strategy_changed_exit_watcher"
+    assert other_after["active"] is False
+
+    legacy_after = json.loads(legacy_path.read_text())
+    assert legacy_after["state"] == "legacy_strategy_exit_watcher"
+    assert legacy_after["active"] is False
 
 
 def test_spawn_open_stores_strategy_in_metadata(tmp_watchers_dir, monkeypatch):
@@ -661,7 +729,7 @@ def test_calculate_next_crypto_bar_time():
     current = datetime(2025, 11, 1, 14, 30, 0, tzinfo=timezone.utc)
     next_bar = process_utils._calculate_next_crypto_bar_time(current)
 
-    expected = datetime(2025, 11, 2, 0, 0, 0, tzinfo=timezone.utc)
+    expected = datetime(2025, 11, 3, 3, 0, 0, tzinfo=timezone.utc)
     assert next_bar == expected
 
 
@@ -671,7 +739,7 @@ def test_calculate_next_crypto_bar_time_near_midnight():
     current = datetime(2025, 11, 1, 23, 59, 0, tzinfo=timezone.utc)
     next_bar = process_utils._calculate_next_crypto_bar_time(current)
 
-    expected = datetime(2025, 11, 2, 0, 0, 0, tzinfo=timezone.utc)
+    expected = datetime(2025, 11, 3, 3, 0, 0, tzinfo=timezone.utc)
     assert next_bar == expected
 
 
@@ -718,8 +786,8 @@ def test_calculate_market_aware_expiry_crypto():
     current = datetime(2025, 11, 1, 2, 0, 0, tzinfo=timezone.utc)
     expiry = process_utils._calculate_market_aware_expiry("BTCUSD", current)
 
-    # Should expire at next UTC midnight (Nov 2 00:00)
-    expected = datetime(2025, 11, 2, 0, 0, 0, tzinfo=timezone.utc)
+    # Should expire at the next 22:00 ET crypto analysis run (Nov 2 02:00 UTC)
+    expected = datetime(2025, 11, 2, 2, 0, 0, tzinfo=timezone.utc)
     assert expiry == expected
 
 
