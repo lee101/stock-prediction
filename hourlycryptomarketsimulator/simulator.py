@@ -46,17 +46,16 @@ class HourlyCryptoMarketSimulator:
         per_hour_rows: List[Dict[str, float]] = []
         trades: List[TradeRecord] = []
         for row in frame.itertuples(index=False):
-            buy_qty = max(0.0, row.buy_amount)
-            sell_qty = max(0.0, row.sell_amount)
-            buy_fill = bool(row.low <= row.buy_price and buy_qty > 0)
-            sell_fill = bool(row.high >= row.sell_price and sell_qty > 0)
+            intensity = float(np.clip(getattr(row, "trade_amount", 0.0), 0.0, 1.0))
+            buy_fill = bool(row.low <= row.buy_price and intensity > 0)
+            sell_fill = bool(row.high >= row.sell_price and intensity > 0)
             executed_buy = 0.0
             executed_sell = 0.0
             if buy_fill:
                 max_buy = cash / (row.buy_price * (1 + self.config.maker_fee)) if row.buy_price > 0 else 0.0
-                executed_buy = min(buy_qty, max_buy)
+                executed_buy = intensity * max_buy
             if sell_fill:
-                executed_sell = min(sell_qty, inventory)
+                executed_sell = intensity * max(0.0, inventory)
             if executed_buy > 0:
                 cash -= executed_buy * row.buy_price * (1 + self.config.maker_fee)
                 inventory += executed_buy

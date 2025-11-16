@@ -12,6 +12,7 @@ from data_curate_daily import download_exchange_latest_data, get_ask, get_bid
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from scripts.alpaca_cli import get_strategy_for_symbol, set_strategy_for_symbol
 from src.forecast_utils import extract_forecasted_pnl, load_latest_forecast_snapshot
+from src.maxdiff_exit_tracker import ExitTargetTracker
 from src.logging_utils import setup_logging
 from src.stock_utils import pairs_equal
 from src.trading_obj_utils import filter_to_realistic_positions
@@ -633,6 +634,11 @@ def close_position_at_maxdiff_takeprofit(
         "--config-path",
         help="Path to persist watcher status updates.",
     ),
+    target_qty: Optional[float] = typer.Option(
+        None,
+        "--target-qty",
+        help="Optional maximum quantity to close; defaults to unwinding the entire position.",
+    ),
 ) -> None:
     side = _normalize_side(side)
     exit_side = "sell" if side == "buy" else "buy"
@@ -675,6 +681,15 @@ def close_position_at_maxdiff_takeprofit(
         },
     )
     status = _update_status(config_path, status, state="initializing")
+    tracker = ExitTargetTracker(target_qty)
+    if tracker.is_partial():
+        status = _update_status(
+            config_path,
+            status,
+            target_qty=tracker.target_qty,
+            target_remaining=tracker.remaining(),
+            target_filled=tracker.filled_qty,
+        )
 
     consecutive_errors = 0
     # Crypto watchers run 24/7 - retry indefinitely
@@ -703,18 +718,57 @@ def close_position_at_maxdiff_takeprofit(
 
                 position = _position_for_symbol(symbol, side)
                 qty = abs(float(getattr(position, "qty", 0.0) or 0.0)) if position else 0.0
-                status = _update_status(
-                    config_path,
-                    status,
-                    active=True,
-                    position_qty=qty,
-                )
+                base_updates = {
+                    "active": True,
+                    "position_qty": qty,
+                }
+                if tracker.is_partial():
+                    base_updates.update(
+                        target_qty=tracker.target_qty,
+                        target_remaining=tracker.remaining(),
+                        target_filled=tracker.filled_qty,
+                    )
+                status = _update_status(config_path, status, **base_updates)
 
                 if position is None or qty <= 0:
                     status = _update_status(config_path, status, state="awaiting_position")
                     _cancel_orders(symbol, side=exit_side)
                     time.sleep(poll_seconds)
                     consecutive_errors = 0  # Reset error counter on success
+                    continue
+
+                order_qty, remaining_target, target_reached = tracker.plan_order(qty)
+                if tracker.is_partial():
+                    status = _update_status(
+                        config_path,
+                        status,
+                        target_qty=tracker.target_qty,
+                        target_remaining=remaining_target,
+                        target_filled=tracker.filled_qty,
+                    )
+
+                if target_reached:
+                    watcher_logger.info(
+                        "Target exit quantity filled for %s; shutting down watcher.",
+                        symbol,
+                    )
+                    _cancel_orders(symbol, side=exit_side)
+                    if asset_class.lower() == "crypto":
+                        _cancel_orders(symbol)
+                    status = _update_status(
+                        config_path,
+                        status,
+                        state="target_filled",
+                        active=False,
+                        target_remaining=0.0,
+                        target_filled=tracker.filled_qty,
+                    )
+                    break
+
+                if order_qty <= 0:
+                    status = _update_status(config_path, status, state="awaiting_target_qty")
+                    time.sleep(poll_seconds)
+                    consecutive_errors = 0
                     continue
 
                 if _has_takeprofit_order(symbol, exit_side, takeprofit_price, tolerance=price_tolerance):
@@ -740,7 +794,7 @@ def close_position_at_maxdiff_takeprofit(
                 _cancel_orders(symbol, side=exit_side)
                 status = _update_status(config_path, status, state="submitting_exit")
                 try:
-                    alpaca_wrapper.open_order_at_price(symbol, qty, exit_side, takeprofit_price)
+                    alpaca_wrapper.open_order_at_price(symbol, order_qty, exit_side, takeprofit_price)
                 except Exception as exc:
                     watcher_logger.error("Failed to submit takeprofit order for %s: %s", symbol, exc)
                     status = _update_status(

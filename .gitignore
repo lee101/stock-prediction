@@ -225,3 +225,11 @@ backtest_test3_inline.log*
 plots
 strategytraining2/datasets/
 hourlycryptotraining/checkpoints/
+hourlycryptotraining/forecast_cache_hourly/
+hourlycryptotraining/checkpoints
+hourlycryptotraining/checkpoints.py
+hourlycryptotraining/checkpoints_1024ctx
+hourlycryptotraining/checkpoints_1024ctx_amp
+hourlycryptotraining/checkpoints_1024ctx_b32
+hourlycryptotraining/checkpoints_256ctx
+hourlycryptotraining/checkpoints_ema

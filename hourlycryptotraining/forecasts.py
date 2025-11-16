@@ -3,16 +3,17 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import pandas as pd
 
 from src.chronos2_params import resolve_chronos2_params
 
 try:  # pragma: no cover - optional heavyweight dependency
-    from src.models.chronos2_wrapper import Chronos2OHLCWrapper
+    from src.models.chronos2_wrapper import Chronos2OHLCWrapper, Chronos2PredictionBatch
 except Exception as exc:  # pragma: no cover - surfaced in tests when chronos missing
     Chronos2OHLCWrapper = None  # type: ignore
+    Chronos2PredictionBatch = Any  # type: ignore
     _CHRONOS_IMPORT_ERROR = exc
 else:  # pragma: no cover
     _CHRONOS_IMPORT_ERROR = None
@@ -66,8 +67,15 @@ class DailyChronosForecastManager:
         *,
         start: Optional[pd.Timestamp] = None,
         end: Optional[pd.Timestamp] = None,
+        cache_only: bool = False,
     ) -> pd.DataFrame:
-        """Ensure hourly 1-step-ahead forecasts exist for the requested range."""
+        """Ensure hourly 1-step-ahead forecasts exist for the requested range.
+
+        Args:
+            start: Start timestamp for forecast range
+            end: End timestamp for forecast range
+            cache_only: If True, only load from cache without generating missing forecasts (saves GPU memory during training)
+        """
 
         history = self._load_history()
         if history.empty:
@@ -76,19 +84,38 @@ class DailyChronosForecastManager:
         end_ts = self._coerce_timestamp(end) or history["timestamp"].max()
         existing = self.cache.load(self.config.symbol)
         existing_ts = set(pd.to_datetime(existing["timestamp"], utc=True)) if not existing.empty else set()
-        new_rows: List[pd.DataFrame] = []
         min_idx = self.config.context_hours
+        missing_indices: List[int] = []
         for idx in range(min_idx, len(history)):
             target_ts = history.iloc[idx]["timestamp"]
             if target_ts <= start_ts or target_ts > end_ts:
                 continue
             if target_ts in existing_ts:
                 continue
-            row = self._generate_hour_forecast(history, idx)
-            if row is None or row.empty:
+            missing_indices.append(idx)
+
+        if not missing_indices:
+            return existing
+
+        # Cache-only mode: skip generation, just return existing cache
+        if cache_only:
+            if missing_indices:
+                logger.info(
+                    "Cache-only mode: Skipping %d missing forecasts for %s (use without cache_only to generate)",
+                    len(missing_indices),
+                    self.config.symbol,
+                )
+            return existing
+
+        new_rows: List[pd.DataFrame] = []
+        batch_size = max(1, int(self.config.batch_size))
+        for start in range(0, len(missing_indices), batch_size):
+            chunk = missing_indices[start : start + batch_size]
+            frame = self._generate_forecast_chunk(history, chunk)
+            if frame is None or frame.empty:
                 continue
-            new_rows.append(row)
-            existing_ts.update(pd.to_datetime(row["timestamp"], utc=True))
+            new_rows.append(frame)
+            existing_ts.update(pd.to_datetime(frame["timestamp"], utc=True))
         if not new_rows:
             return existing
         combined = (
@@ -120,45 +147,84 @@ class DailyChronosForecastManager:
         frame = frame.sort_values("timestamp").reset_index(drop=True)
         return frame
 
-    def _generate_hour_forecast(self, history: pd.DataFrame, target_idx: int) -> Optional[pd.DataFrame]:
-        context_end_idx = target_idx
-        context_start_idx = max(0, context_end_idx - self.config.context_hours)
-        context = history.iloc[context_start_idx:context_end_idx].copy()
-        if context.empty or len(context) < max(16, self.config.context_hours // 8):
-            return None
-        target_ts = history.iloc[target_idx]["timestamp"]
+    def _generate_forecast_chunk(self, history: pd.DataFrame, target_indices: Sequence[int]) -> Optional[pd.DataFrame]:
+        if not target_indices:
+            return pd.DataFrame()
+        min_context = max(16, self.config.context_hours // 8)
+        records: List[Dict[str, object]] = []
+        for ordinal, target_idx in enumerate(target_indices):
+            context_end_idx = target_idx
+            context_start_idx = max(0, context_end_idx - self.config.context_hours)
+            context = history.iloc[context_start_idx:context_end_idx].copy()
+            if context.empty or len(context) < min_context:
+                continue
+            target_ts = history.iloc[target_idx]["timestamp"]
+            issued_at = context["timestamp"].max()
+            if pd.isna(target_ts) or pd.isna(issued_at):
+                continue
+            records.append(
+                {
+                    "context": context,
+                    "target_ts": target_ts,
+                    "issued_at": issued_at,
+                    "batch_symbol": self._build_batch_symbol(target_ts, ordinal),
+                }
+            )
+        if not records:
+            return pd.DataFrame()
         wrapper = self._ensure_wrapper()
         if wrapper is None:
-            heur = self._heuristic_forecast(context, target_ts)
-            return pd.DataFrame([heur])
+            rows = [self._heuristic_forecast(rec["context"], rec["target_ts"]) for rec in records]
+            return pd.DataFrame(rows)
+
+        contexts = [rec["context"] for rec in records]
+        symbols = [rec["batch_symbol"] for rec in records]
         try:
-            batch = wrapper.predict_ohlc(  # type: ignore[attr-defined]
-                context,
-                symbol=self.config.symbol,
+            batches = wrapper.predict_ohlc_batch(  # type: ignore[attr-defined]
+                contexts,
+                symbols=symbols,
                 prediction_length=self.config.prediction_horizon_hours,
-                context_length=min(len(context), self.config.context_hours),
+                context_length=self.config.context_hours,
                 batch_size=self.config.batch_size,
                 predict_kwargs=self._predict_kwargs,
             )
         except Exception as exc:
-            logger.warning("Chronos forecast failed for %s @ %s: %s", self.config.symbol, target_ts, exc)
-            heur = self._heuristic_forecast(context, target_ts)
-            return pd.DataFrame([heur])
+            logger.warning("Chronos batch forecast failed for %s: %s", self.config.symbol, exc)
+            rows = [self._heuristic_forecast(rec["context"], rec["target_ts"]) for rec in records]
+            return pd.DataFrame(rows)
 
-        issued_at = context["timestamp"].max()
-        quantiles: Mapping[float, pd.DataFrame] = batch.quantile_frames  # type: ignore[attr-defined]
-        return pd.DataFrame([
-            {
-                "timestamp": target_ts,
-                "symbol": self.config.symbol,
-                "issued_at": issued_at,
-                "predicted_close_p50": self._extract_quantile(quantiles, 0.5, "close", target_ts),
-                "predicted_close_p10": self._extract_quantile(quantiles, 0.1, "close", target_ts),
-                "predicted_close_p90": self._extract_quantile(quantiles, 0.9, "close", target_ts),
-                "predicted_high_p50": self._extract_quantile(quantiles, 0.5, "high", target_ts),
-                "predicted_low_p50": self._extract_quantile(quantiles, 0.5, "low", target_ts),
-            }
-        ]).dropna(subset=["predicted_close_p50", "predicted_high_p50", "predicted_low_p50"])
+        rows: List[Dict[str, object]] = []
+        for rec, batch in zip(records, batches):
+            row = self._forecast_row_from_batch(batch, rec["target_ts"], rec["issued_at"])
+            if row is not None:
+                rows.append(row)
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows).dropna(subset=["predicted_close_p50", "predicted_high_p50", "predicted_low_p50"])
+
+    def _forecast_row_from_batch(
+        self,
+        batch: Chronos2PredictionBatch,
+        target_ts: pd.Timestamp,
+        issued_at: pd.Timestamp,
+    ) -> Optional[Dict[str, object]]:
+        quantiles: Mapping[float, pd.DataFrame] = batch.quantile_frames
+        if not quantiles:
+            return None
+        return {
+            "timestamp": target_ts,
+            "symbol": self.config.symbol,
+            "issued_at": issued_at,
+            "predicted_close_p50": self._extract_quantile(quantiles, 0.5, "close", target_ts),
+            "predicted_close_p10": self._extract_quantile(quantiles, 0.1, "close", target_ts),
+            "predicted_close_p90": self._extract_quantile(quantiles, 0.9, "close", target_ts),
+            "predicted_high_p50": self._extract_quantile(quantiles, 0.5, "high", target_ts),
+            "predicted_low_p50": self._extract_quantile(quantiles, 0.5, "low", target_ts),
+        }
+
+    def _build_batch_symbol(self, target_ts: pd.Timestamp, ordinal: int) -> str:
+        suffix = pd.Timestamp(target_ts).strftime("%Y%m%dT%H%M%SZ")
+        return f"{self.config.symbol.upper()}__{suffix}__{ordinal}"
 
     def _ensure_wrapper(self) -> Optional[object]:
         if self._wrapper is not None:
