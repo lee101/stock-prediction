@@ -17,8 +17,7 @@ def test_simulator_generates_trades():
             "timestamp": bars["timestamp"],
             "buy_price": [10.0, 10.4, 10.6],
             "sell_price": [10.6, 10.9, 11.2],
-            "buy_amount": [1.0, 0.0, 0.0],
-            "sell_amount": [0.0, 1.0, 1.0],
+            "trade_amount": [1.0, 0.5, 0.3],
         }
     )
     sim = HourlyCryptoMarketSimulator(SimulationConfig(initial_cash=5_000.0))

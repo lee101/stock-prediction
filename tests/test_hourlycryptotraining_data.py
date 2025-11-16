@@ -54,6 +54,8 @@ def test_data_module_produces_sequences(tmp_path):
         val_fraction=0.2,
         min_history_hours=60,
         feature_columns=["return_1h", "chronos_close_delta", "chronos_high_delta", "chronos_low_delta"],
+        refresh_hours=0,
+        validation_days=5,
     )
     module = HourlyCryptoDataModule(config)
     sample = module.train_dataset[0]
