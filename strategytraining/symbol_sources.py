@@ -8,23 +8,19 @@ from typing import Iterable, List
 
 
 class _TradeStockSymbolExtractor(ast.NodeVisitor):
-    """Extract the literal ``symbols = [...]`` assignment inside trade_stock_e2e."""
+    """Extract the literal ``symbols = [...]`` assignment anywhere in the module."""
 
     def __init__(self) -> None:
-        self._candidates: List[str] | None = None
+        self._targets = ("symbols", "fallback_symbols")
+        self._candidates: Dict[str, List[str]] = {}
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: D401 - behaviour documented at class level
-        if node.name != "main" or self._candidates is not None:
-            return
-        for stmt in node.body:
-            if not isinstance(stmt, ast.Assign):
-                continue
-            for target in stmt.targets:
-                if isinstance(target, ast.Name) and target.id == "symbols":
-                    values = self._literal_strings(stmt.value)
-                    if values:
-                        self._candidates = values
-                        return
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in self._targets and target.id not in self._candidates:
+                values = self._literal_strings(node.value)
+                if values:
+                    self._candidates[target.id] = values
+        self.generic_visit(node)
 
     @staticmethod
     def _literal_strings(node: ast.AST) -> List[str] | None:
@@ -41,7 +37,11 @@ class _TradeStockSymbolExtractor(ast.NodeVisitor):
         return None
 
     def symbols(self) -> List[str] | None:
-        return self._candidates
+        for key in self._targets:
+            candidate = self._candidates.get(key)
+            if candidate:
+                return candidate
+        return None
 
 
 def _dedupe_preserve(items: Iterable[str]) -> List[str]:

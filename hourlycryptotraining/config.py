@@ -26,12 +26,14 @@ class DatasetConfig:
 
     symbol: str = "LINKUSD"
     data_root: Path = Path("trainingdatahourly") / "crypto"
-    forecast_cache_dir: Path = Path("hourlycryptotraining") / "forecast_cache"
+    forecast_cache_dir: Path = Path("hourlycryptotraining") / "forecast_cache_hourly"
     sequence_length: int = 72
     val_fraction: float = 0.15
     min_history_hours: int = 24 * 30
     max_feature_lookback_hours: int = 24 * 7
     feature_columns: Optional[Sequence[str]] = None
+    refresh_hours: int = 72
+    validation_days: int = 70
 
 
 @dataclass
@@ -47,9 +49,18 @@ class TrainingConfig:
     maker_fee: float = DEFAULT_MAKER_FEE_RATE
     return_weight: float = 0.08
     price_offset_pct: float = 0.03
+    min_price_gap_pct: float = 0.0003
     max_trade_qty: float = 3.0
     initial_cash: float = 1.0
     sortino_target_sign: float = 1.0
+    transformer_dim: int = 256
+    transformer_layers: int = 4
+    transformer_heads: int = 8
+    transformer_dropout: float = 0.1
+    optimizer_name: str = "muon"
+    warmup_steps: int = 100
+    ema_decay: float = 0.0
+    dry_train_steps: Optional[int] = None
     device: Optional[str] = None
     run_name: Optional[str] = None
     wandb_project: Optional[str] = "hourly-crypto"
@@ -62,5 +73,9 @@ class TrainingConfig:
     seed: int = 1337
     num_workers: int = 0
     price_smoothing_hours: int = 4
+    use_compile: bool = True
+    use_amp: bool = False
+    amp_dtype: str = "bfloat16"
+    use_tf32: bool = True
     forecast_config: ForecastConfig = field(default_factory=ForecastConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)

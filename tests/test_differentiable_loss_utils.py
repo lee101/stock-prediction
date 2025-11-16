@@ -27,8 +27,7 @@ def test_simulation_respects_cash_and_inventory_limits() -> None:
     closes = torch.tensor([1.00, 1.20])
     buy_prices = torch.tensor([0.95, 1.10])
     sell_prices = torch.tensor([1.10, 1.25])
-    buy_amounts = torch.tensor([10.0, 0.0])
-    sell_amounts = torch.tensor([0.0, 10.0])
+    trade_intensity = torch.tensor([1.0, 1.0])
 
     result = simulate_hourly_trades(
         highs=highs,
@@ -36,8 +35,7 @@ def test_simulation_respects_cash_and_inventory_limits() -> None:
         closes=closes,
         buy_prices=buy_prices,
         sell_prices=sell_prices,
-        buy_amounts=buy_amounts,
-        sell_amounts=sell_amounts,
+        trade_intensity=trade_intensity,
         initial_cash=1.0,
         maker_fee=DEFAULT_MAKER_FEE_RATE,
     )
