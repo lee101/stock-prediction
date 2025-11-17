@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import time
 import math
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -9,14 +9,19 @@ from typing import Dict, List, Optional
 import torch
 from torch.nn.utils import clip_grad_norm_
 
-from differentiable_loss_utils import compute_hourly_objective, simulate_hourly_trades, simulate_hourly_trades_binary
+from differentiable_loss_utils import (
+    compute_hourly_objective,
+    get_periods_per_year,
+    simulate_hourly_trades,
+    simulate_hourly_trades_binary,
+)
+from hourlycryptotraining.optimizers import Muon
 from wandboard import WandBoardLogger
 
-from .config import TrainingConfig
-from .data import FeatureNormalizer, HourlyCryptoDataModule, MultiSymbolDataModule
-from .model import HourlyCryptoPolicy, PolicyHeadConfig
-from .optimizers import Muon
 from .checkpoints import CheckpointRecord, save_checkpoint, write_manifest
+from .config import DailyTrainingConfig
+from .data import DailyDataModule, FeatureNormalizer
+from .model import DailyMultiAssetPolicy, DailyPolicyConfig
 
 
 @dataclass
@@ -38,31 +43,36 @@ class TrainingArtifacts:
     normalizer: FeatureNormalizer
     history: List[TrainingHistoryEntry] = field(default_factory=list)
     feature_columns: List[str] = field(default_factory=list)
-    config: Optional[TrainingConfig] = None
+    config: Optional[DailyTrainingConfig] = None
     checkpoint_paths: List[Path] = field(default_factory=list)
     best_checkpoint: Optional[Path] = None
 
 
-class HourlyCryptoTrainer:
-    def __init__(self, config: TrainingConfig, data_module: HourlyCryptoDataModule) -> None:
+class NeuralDailyTrainer:
+    """Train the daily multi-asset transformer policy."""
+
+    def __init__(self, config: DailyTrainingConfig, data_module: DailyDataModule) -> None:
         self.config = config
         self.data = data_module
         self.device = torch.device(config.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-        run_name = self.config.run_name or time.strftime("hourlycrypto_%Y%m%d_%H%M%S")
+        run_name = self.config.run_name or time.strftime("neuraldaily_%Y%m%d_%H%M%S")
         self.config.run_name = run_name
         self.checkpoint_dir = self.config.checkpoint_root / run_name
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._checkpoint_records: List[CheckpointRecord] = []
         self.best_checkpoint_path: Optional[Path] = None
 
+        # Determine periods per year based on first symbol (252 for stocks, 365 for crypto)
+        first_symbol = self.data.symbols[0] if self.data.symbols else ""
+        self.periods_per_year = get_periods_per_year(frequency="daily", symbol=first_symbol)
+
     def train(self) -> TrainingArtifacts:
         torch.manual_seed(self.config.seed)
-        # Enable TF32 for faster matmul on Ampere+ GPUs
-        if self.config.use_tf32:
+        if self.config.use_tf32 and torch.cuda.is_available():
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
-        model = HourlyCryptoPolicy(
-            PolicyHeadConfig(
+        policy = DailyMultiAssetPolicy(
+            DailyPolicyConfig(
                 input_dim=len(self.data.feature_columns),
                 hidden_dim=self.config.transformer_dim,
                 dropout=self.config.transformer_dropout,
@@ -73,21 +83,16 @@ class HourlyCryptoTrainer:
                 num_layers=self.config.transformer_layers,
             )
         ).to(self.device)
-        # Compile model for 2x speedup (disabled for long sequences due to CUDA RNG overflow)
         if self.config.use_compile:
-            model = torch.compile(model, mode="max-autotune")
-        optimizer = self._build_optimizer(model)
-        use_ema = self.config.ema_decay and self.config.ema_decay > 0
-        ema_state: Optional[Dict[str, torch.Tensor]] = None
-        if use_ema:
-            ema_state = {name: param.detach().clone() for name, param in model.named_parameters() if param.requires_grad}
+            policy = torch.compile(policy, mode="max-autotune")  # type: ignore[attr-defined]
+        optimizer = self._build_optimizer(policy)
         train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
         val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
         scheduler = self._build_scheduler(optimizer, train_loader)
-        # Setup AMP scaler if using mixed precision
-        scaler = None
-        if self.config.use_amp:
-            scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.cuda.amp.GradScaler() if (self.config.use_amp and torch.cuda.is_available()) else None
+        ema_state: Optional[Dict[str, torch.Tensor]] = None
+        if self.config.ema_decay and self.config.ema_decay > 0:
+            ema_state = {name: param.detach().clone() for name, param in policy.named_parameters() if param.requires_grad}
         history: List[TrainingHistoryEntry] = []
         best_state = None
         best_score = float("-inf")
@@ -96,16 +101,15 @@ class HourlyCryptoTrainer:
             "project": self.config.wandb_project,
             "entity": self.config.wandb_entity,
             "log_dir": self.config.log_dir,
-            "tensorboard_subdir": self.config.run_name or "hourlycrypto",
+            "tensorboard_subdir": self.config.run_name or "neuraldaily",
             "log_metrics": True,
         }
         with WandBoardLogger(**wandb_kwargs) as tracker:
-            tracker.watch(model)
+            tracker.watch(policy)
             global_step = 0
-            stop_requested = False
             for epoch in range(1, self.config.epochs + 1):
                 train_metrics, global_step = self._run_epoch(
-                    model,
+                    policy,
                     train_loader,
                     optimizer,
                     scheduler,
@@ -115,7 +119,7 @@ class HourlyCryptoTrainer:
                     scaler=scaler,
                 )
                 val_metrics, _ = self._run_epoch(
-                    model,
+                    policy,
                     val_loader,
                     optimizer=None,
                     scheduler=None,
@@ -123,25 +127,6 @@ class HourlyCryptoTrainer:
                     global_step=global_step,
                     scaler=None,
                 )
-
-                # Per-symbol validation for multi-symbol training
-                per_symbol_metrics = {}
-                if isinstance(self.data, MultiSymbolDataModule):
-                    for symbol in self.data.symbols:
-                        symbol_loader = self.data.modules[symbol].val_dataloader(
-                            self.config.batch_size, self.config.num_workers
-                        )
-                        symbol_metrics, _ = self._run_epoch(
-                            model,
-                            symbol_loader,
-                            optimizer=None,
-                            scheduler=None,
-                            train=False,
-                            global_step=global_step,
-                            scaler=None,
-                        )
-                        per_symbol_metrics[symbol] = symbol_metrics
-
                 entry = TrainingHistoryEntry(
                     epoch=epoch,
                     train_loss=train_metrics["loss"],
@@ -154,31 +139,24 @@ class HourlyCryptoTrainer:
                     val_return=val_metrics["return"],
                 )
                 history.append(entry)
-                self._maybe_save_checkpoint(model, val_metrics, epoch)
+                self._maybe_save_checkpoint(policy, val_metrics, epoch)
 
-                # Print metrics
                 binary_info = ""
                 if "binary_return" in val_metrics:
                     binary_info = (
-                        f" | Binary: Sortino: {val_metrics['binary_sortino']:.4f} "
-                        f"Return: {val_metrics['binary_return']:.4f}"
+                        f" | Binary: Sortino {val_metrics['binary_sortino']:.4f} "
+                        f"Return {val_metrics['binary_return']:.4f}"
                     )
-                print(f"Epoch {epoch}/{self.config.epochs} | "
-                      f"Train Loss: {train_metrics['loss']:.4f} Score: {train_metrics['score']:.4f} "
-                      f"Sortino: {train_metrics['sortino']:.4f} Return: {train_metrics['return']:.4f} | "
-                      f"Val Loss: {val_metrics['loss']:.4f} Score: {val_metrics['score']:.4f} "
-                      f"Sortino: {val_metrics['sortino']:.4f} Return: {val_metrics['return']:.4f}"
-                      f"{binary_info}")
 
-                # Print per-symbol metrics if available
-                if per_symbol_metrics:
-                    for symbol, metrics in per_symbol_metrics.items():
-                        print(f"  {symbol}: Sortino: {metrics['sortino']:.4f} "
-                              f"Return: {metrics['return']:.4f} "
-                              f"Binary Sortino: {metrics['binary_sortino']:.4f} "
-                              f"Binary Return: {metrics['binary_return']:.4f}")
-
-                # Log metrics to wandb
+                summary = (
+                    f"Epoch {epoch}/{self.config.epochs} | "
+                    f"Train Loss {train_metrics['loss']:.4f} Score {train_metrics['score']:.4f} "
+                    f"Sortino {train_metrics['sortino']:.4f} Return {train_metrics['return']:.4f} | "
+                    f"Val Loss {val_metrics['loss']:.4f} Score {val_metrics['score']:.4f} "
+                    f"Sortino {val_metrics['sortino']:.4f} Return {val_metrics['return']:.4f}"
+                    f"{binary_info}"
+                )
+                print(summary)
                 log_dict = {
                     "loss/train": train_metrics["loss"],
                     "loss/val": val_metrics["loss"],
@@ -188,10 +166,14 @@ class HourlyCryptoTrainer:
                     "sortino/val": val_metrics["sortino"],
                     "return/train": train_metrics["return"],
                     "return/val": val_metrics["return"],
-                    "fill_ratio/buy_train": train_metrics["buy_fill"],
-                    "fill_ratio/sell_train": train_metrics["sell_fill"],
-                    "fill_ratio/buy_val": val_metrics["buy_fill"],
-                    "fill_ratio/sell_val": val_metrics["sell_fill"],
+                    "fill/buy_train": train_metrics["buy_fill"],
+                    "fill/sell_train": train_metrics["sell_fill"],
+                    "fill/buy_val": val_metrics["buy_fill"],
+                    "fill/sell_val": val_metrics["sell_fill"],
+                    "exposure/train": train_metrics.get("avg_trade_amount", 0.0),
+                    "exposure/val": val_metrics.get("avg_trade_amount", 0.0),
+                    "leverage/excess_train": train_metrics.get("avg_over_leverage", 0.0),
+                    "leverage/excess_val": val_metrics.get("avg_over_leverage", 0.0),
                 }
 
                 # Add binary metrics if available
@@ -201,31 +183,18 @@ class HourlyCryptoTrainer:
                     log_dict["binary/buy_fill"] = val_metrics["binary_buy_fill"]
                     log_dict["binary/sell_fill"] = val_metrics["binary_sell_fill"]
 
-                # Add per-symbol metrics if available
-                if per_symbol_metrics:
-                    for symbol, metrics in per_symbol_metrics.items():
-                        log_dict[f"{symbol}/sortino"] = metrics["sortino"]
-                        log_dict[f"{symbol}/return"] = metrics["return"]
-                        if "binary_return" in metrics:
-                            log_dict[f"{symbol}/binary_sortino"] = metrics["binary_sortino"]
-                            log_dict[f"{symbol}/binary_return"] = metrics["binary_return"]
-
                 tracker.log(log_dict, step=epoch)
-
-                # Check for early stopping
-                if self.config.dry_train_steps and global_step >= self.config.dry_train_steps:
-                    stop_requested = True
-                if stop_requested:
-                    break
                 if val_metrics["score"] > best_score:
                     best_score = val_metrics["score"]
-                    if ema_state is not None and self.config.ema_decay > 0:
-                        best_state = {k: v.detach().cpu().clone() for k, v in ema_state.items()}
-                    else:
-                        best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                    best_state = {k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
+                if self.config.dry_train_steps and global_step >= self.config.dry_train_steps:
+                    break
+
         if best_state is None:
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-        return TrainingArtifacts(
+            best_state = {k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
+        if self.data.normalizer is None:
+            raise RuntimeError("DailyDataModule did not expose a fitted normalizer.")
+        artifacts = TrainingArtifacts(
             state_dict=best_state,
             normalizer=self.data.normalizer,
             history=history,
@@ -234,10 +203,12 @@ class HourlyCryptoTrainer:
             checkpoint_paths=[record.path for record in self._checkpoint_records],
             best_checkpoint=self.best_checkpoint_path,
         )
+        return artifacts
 
+    # ------------------------------------------------------------------
     def _run_epoch(
         self,
-        model: HourlyCryptoPolicy,
+        model: DailyMultiAssetPolicy,
         loader,
         optimizer: Optional[torch.optim.Optimizer],
         scheduler: Optional[torch.optim.lr_scheduler.LambdaLR],
@@ -251,32 +222,25 @@ class HourlyCryptoTrainer:
             model.train()
         else:
             model.eval()
-        total_loss = 0.0
-        total_score = 0.0
-        total_sortino = 0.0
-        total_return = 0.0
-        buy_fill = 0.0
-        sell_fill = 0.0
-        # Binary simulation metrics (validation only)
-        total_binary_sortino = 0.0
-        total_binary_return = 0.0
-        binary_buy_fill = 0.0
-        binary_sell_fill = 0.0
+        totals = {key: 0.0 for key in ("loss", "score", "sortino", "return", "buy_fill", "sell_fill")}
+        totals["avg_trade_amount"] = 0.0
+        totals["avg_over_leverage"] = 0.0
+        b_totals = {key: 0.0 for key in ("score", "return", "buy_fill", "sell_fill")}
         batches = 0
-        for batch in loader:
-            batch = {k: v.to(self.device) for k, v in batch.items()}
-            # Determine AMP dtype and whether to use AMP
-            use_amp = scaler is not None
-            amp_dtype = torch.bfloat16 if self.config.amp_dtype == "bfloat16" else torch.float16
+        amp_dtype = torch.bfloat16 if self.config.amp_dtype == "bfloat16" else torch.float16
 
-            # Forward pass with optional AMP
+        for batch in loader:
+            batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
+            use_amp = scaler is not None
             with torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype):
                 outputs = model(batch["features"])
+                asset_class_flag = batch["asset_class"].view(-1)
                 actions = model.decode_actions(
                     outputs,
                     reference_close=batch["reference_close"],
                     chronos_high=batch["chronos_high"],
                     chronos_low=batch["chronos_low"],
+                    asset_class=asset_class_flag,
                 )
                 sim = simulate_hourly_trades(
                     highs=batch["high"],
@@ -291,28 +255,27 @@ class HourlyCryptoTrainer:
                 score, sortino, ann_return = compute_hourly_objective(
                     sim.returns,
                     return_weight=self.config.return_weight,
+                    periods_per_year=self.periods_per_year,
                 )
                 loss = -score.mean()
+                inventory_path = sim.inventory_path
+                limits = torch.where(
+                    asset_class_flag > 0.5,
+                    torch.as_tensor(self.config.crypto_max_leverage, device=inventory_path.device, dtype=inventory_path.dtype),
+                    torch.as_tensor(self.config.equity_max_leverage, device=inventory_path.device, dtype=inventory_path.dtype),
+                )
+                excess = torch.relu(inventory_path - limits.unsqueeze(-1))
+                avg_excess = excess.mean()
+                fee_per_step = self.config.leverage_fee_rate / max(1, self.config.steps_per_year)
+                if fee_per_step > 0:
+                    loss = loss + fee_per_step * avg_excess
+                over_leverage_value = avg_excess.detach()
+                if self.config.exposure_penalty > 0:
+                    avg_amount = actions["trade_amount"].mean()
+                    risk_cap = torch.as_tensor(self.config.risk_threshold, dtype=avg_amount.dtype, device=avg_amount.device)
+                    over_exposure = torch.relu(avg_amount - risk_cap)
+                    loss = loss + self.config.exposure_penalty * over_exposure.pow(2)
 
-                # Compute binary simulation metrics for validation
-                if not train:
-                    with torch.no_grad():
-                        binary_sim = simulate_hourly_trades_binary(
-                            highs=batch["high"],
-                            lows=batch["low"],
-                            closes=batch["close"],
-                            buy_prices=actions["buy_price"],
-                            sell_prices=actions["sell_price"],
-                            trade_intensity=actions["trade_amount"],
-                            maker_fee=self.config.maker_fee,
-                            initial_cash=self.config.initial_cash,
-                        )
-                        _, binary_sortino, binary_ann_return = compute_hourly_objective(
-                            binary_sim.returns,
-                            return_weight=self.config.return_weight,
-                        )
-
-            # Backward pass with optional AMP
             if train and optimizer is not None:
                 optimizer.zero_grad()
                 if scaler is not None:
@@ -334,49 +297,61 @@ class HourlyCryptoTrainer:
                         for name, param in model.named_parameters():
                             if param.requires_grad:
                                 ema_state[name].mul_(decay).add_(param.detach(), alpha=1 - decay)
+
             batch_size = sim.pnl.shape[0]
-            total_loss += float(loss.item()) * batch_size
-            total_score += float(score.mean().item()) * batch_size
-            total_sortino += float(sortino.mean().item()) * batch_size
-            total_return += float(ann_return.mean().item()) * batch_size
-            buy_fill += float(sim.buy_fill_probability.mean().item()) * batch_size
-            sell_fill += float(sim.sell_fill_probability.mean().item()) * batch_size
-
-            # Accumulate binary metrics (validation only)
-            if not train:
-                total_binary_sortino += float(binary_sortino.mean().item()) * batch_size
-                total_binary_return += float(binary_ann_return.mean().item()) * batch_size
-                binary_buy_fill += float(binary_sim.buy_fill_probability.mean().item()) * batch_size
-                binary_sell_fill += float(binary_sim.sell_fill_probability.mean().item()) * batch_size
-
             batches += batch_size
+            totals["loss"] += float(loss.item()) * batch_size
+            totals["score"] += float(score.mean().item()) * batch_size
+            totals["sortino"] += float(sortino.mean().item()) * batch_size
+            totals["return"] += float(ann_return.mean().item()) * batch_size
+            totals["buy_fill"] += float(sim.buy_fill_probability.mean().item()) * batch_size
+            totals["sell_fill"] += float(sim.sell_fill_probability.mean().item()) * batch_size
+            totals["avg_trade_amount"] += float(actions["trade_amount"].mean().item()) * batch_size
+            totals["avg_over_leverage"] += float(over_leverage_value.item()) * batch_size
+
+            if not train:
+                with torch.no_grad():
+                    binary = simulate_hourly_trades_binary(
+                        highs=batch["high"],
+                        lows=batch["low"],
+                        closes=batch["close"],
+                        buy_prices=actions["buy_price"],
+                        sell_prices=actions["sell_price"],
+                        trade_intensity=actions["trade_amount"],
+                        maker_fee=self.config.maker_fee,
+                        initial_cash=self.config.initial_cash,
+                    )
+                    _, b_sortino, b_return = compute_hourly_objective(
+                        binary.returns,
+                        return_weight=self.config.return_weight,
+                        periods_per_year=self.periods_per_year,
+                    )
+                    b_totals["score"] += float(b_sortino.mean().item()) * batch_size
+                    b_totals["return"] += float(b_return.mean().item()) * batch_size
+                    b_totals["buy_fill"] += float(binary.buy_fill_probability.mean().item()) * batch_size
+                    b_totals["sell_fill"] += float(binary.sell_fill_probability.mean().item()) * batch_size
+
         metrics = {
-            "loss": total_loss / max(1, batches),
-            "score": total_score / max(1, batches),
-            "sortino": total_sortino / max(1, batches),
-            "return": total_return / max(1, batches),
-            "buy_fill": buy_fill / max(1, batches),
-            "sell_fill": sell_fill / max(1, batches),
+            "loss": totals["loss"] / max(1, batches),
+            "score": totals["score"] / max(1, batches),
+            "sortino": totals["sortino"] / max(1, batches),
+            "return": totals["return"] / max(1, batches),
+            "buy_fill": totals["buy_fill"] / max(1, batches),
+            "sell_fill": totals["sell_fill"] / max(1, batches),
+            "avg_trade_amount": totals["avg_trade_amount"] / max(1, batches),
+            "avg_over_leverage": totals["avg_over_leverage"] / max(1, batches),
         }
-
-        # Add binary simulation metrics for validation
         if not train:
-            metrics["binary_sortino"] = total_binary_sortino / max(1, batches)
-            metrics["binary_return"] = total_binary_return / max(1, batches)
-            metrics["binary_buy_fill"] = binary_buy_fill / max(1, batches)
-            metrics["binary_sell_fill"] = binary_sell_fill / max(1, batches)
-
+            metrics["binary_sortino"] = b_totals["score"] / max(1, batches)
+            metrics["binary_return"] = b_totals["return"] / max(1, batches)
+            metrics["binary_buy_fill"] = b_totals["buy_fill"] / max(1, batches)
+            metrics["binary_sell_fill"] = b_totals["sell_fill"] / max(1, batches)
         return metrics, global_step
 
-    def _build_optimizer(self, model: HourlyCryptoPolicy) -> torch.optim.Optimizer:
+    def _build_optimizer(self, model: DailyMultiAssetPolicy) -> torch.optim.Optimizer:
         name = (self.config.optimizer_name or "adamw").lower()
         if name == "muon":
-            return Muon(
-                model.parameters(),
-                lr=self.config.learning_rate,
-                momentum=0.95,
-                weight_decay=self.config.weight_decay,
-            )
+            return Muon(model.parameters(), lr=self.config.learning_rate, momentum=0.95, weight_decay=self.config.weight_decay)
         return torch.optim.AdamW(model.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
 
     def _build_scheduler(self, optimizer: torch.optim.Optimizer, loader) -> Optional[torch.optim.lr_scheduler.LambdaLR]:
@@ -393,27 +368,28 @@ class HourlyCryptoTrainer:
 
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    def _maybe_save_checkpoint(self, model: HourlyCryptoPolicy, val_metrics: Dict[str, float], epoch: int) -> None:
-        val_loss = float(val_metrics.get("loss", float("inf")))
-        checkpoint_name = f"epoch{epoch:04d}_valloss{val_loss:.6f}.pt"
-        path = self.checkpoint_dir / checkpoint_name
+    def _maybe_save_checkpoint(self, model: DailyMultiAssetPolicy, val_metrics: Dict[str, float], epoch: int) -> None:
+        val_loss = val_metrics["loss"]
+        ckpt_path = self.checkpoint_dir / f"epoch_{epoch:04d}.pt"
         save_checkpoint(
-            path,
+            ckpt_path,
             state_dict=model.state_dict(),
             normalizer=self.data.normalizer,
             feature_columns=list(self.data.feature_columns),
-            metrics={k: float(v) for k, v in val_metrics.items()},
+            metrics=val_metrics,
             config=self.config,
         )
-        record = CheckpointRecord(path=path, val_loss=val_loss, epoch=epoch, timestamp=time.time())
+        record = CheckpointRecord(path=ckpt_path, val_loss=val_loss, epoch=epoch, timestamp=time.time())
         self._checkpoint_records.append(record)
-        self._checkpoint_records.sort(key=lambda rec: rec.val_loss)
-        while len(self._checkpoint_records) > max(1, self.config.top_k_checkpoints):
-            removed = self._checkpoint_records.pop()
+        self._checkpoint_records.sort(key=lambda item: item.val_loss)
+        if len(self._checkpoint_records) > self.config.top_k_checkpoints:
+            dropped = self._checkpoint_records.pop()
             try:
-                removed.path.unlink()
-            except FileNotFoundError:
+                dropped.path.unlink(missing_ok=True)
+            except Exception:
                 pass
         write_manifest(self.checkpoint_dir, self._checkpoint_records, self.config, list(self.data.feature_columns))
-        if self._checkpoint_records:
-            self.best_checkpoint_path = self._checkpoint_records[0].path
+        self.best_checkpoint_path = self._checkpoint_records[0].path if self._checkpoint_records else ckpt_path
+
+
+__all__ = ["NeuralDailyTrainer", "TrainingArtifacts", "TrainingHistoryEntry"]

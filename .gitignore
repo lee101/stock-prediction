@@ -233,3 +233,10 @@ hourlycryptotraining/checkpoints_1024ctx_amp
 hourlycryptotraining/checkpoints_1024ctx_b32
 hourlycryptotraining/checkpoints_256ctx
 hourlycryptotraining/checkpoints_ema
+tmp_dbg
+tmp_dbg2
+tmp_dbg3
+tmp_toto_export
+hourlycryptotraining/checkpoints_*
+neuraldailytraining/checkpoints/
+hourlycryptomarketsimulator/*.csv
