@@ -14,7 +14,7 @@ class PolicyHeadConfig:
     hidden_dim: int = 256
     depth: int = 3
     dropout: float = 0.1
-    price_offset_pct: float = 0.03
+    price_offset_pct: float = 0.0003
     max_trade_qty: float = 3.0
     min_price_gap_pct: float = 0.0003
     num_heads: int = 8
@@ -82,20 +82,20 @@ class HourlyCryptoPolicy(nn.Module):
         reference_close: torch.Tensor,
         chronos_high: torch.Tensor,
         chronos_low: torch.Tensor,
+        dynamic_offset_pct: torch.Tensor | None = None,
     ) -> Dict[str, torch.Tensor]:
-        price_scale = reference_close * self.price_offset_pct
+        if dynamic_offset_pct is None:
+            offset_pct = torch.full_like(reference_close, self.price_offset_pct)
+        else:
+            offset_pct = dynamic_offset_pct.to(reference_close.device, reference_close.dtype)
+        offset_pct = torch.clamp(offset_pct, min=1e-6)
+        price_scale = reference_close * offset_pct
         buy_raw = torch.tanh(outputs["buy_price_logits"]).squeeze(-1)
         sell_raw = torch.tanh(outputs["sell_price_logits"]).squeeze(-1)
-        buy_price = torch.clamp(
-            chronos_low + price_scale * buy_raw,
-            min=reference_close * (1.0 - 2 * self.price_offset_pct),
-            max=reference_close,
-        )
-        sell_price = torch.clamp(
-            chronos_high + price_scale * sell_raw,
-            min=reference_close,
-            max=reference_close * (1.0 + 2 * self.price_offset_pct),
-        )
+        min_buy = reference_close * (1.0 - 2 * offset_pct)
+        max_sell = reference_close * (1.0 + 2 * offset_pct)
+        buy_price = torch.maximum(min_buy, torch.minimum(chronos_low + price_scale * buy_raw, reference_close))
+        sell_price = torch.minimum(max_sell, torch.maximum(chronos_high + price_scale * sell_raw, reference_close))
         gap = reference_close * self.min_gap_pct
         sell_price = torch.maximum(sell_price, buy_price + gap)
         trade_amount = torch.sigmoid(outputs["trade_amount_logits"]).squeeze(-1)

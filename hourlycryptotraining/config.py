@@ -48,7 +48,7 @@ class TrainingConfig:
     grad_clip: float = 1.0
     maker_fee: float = DEFAULT_MAKER_FEE_RATE
     return_weight: float = 0.08
-    price_offset_pct: float = 0.03
+    price_offset_pct: float = 0.0003
     min_price_gap_pct: float = 0.0003
     max_trade_qty: float = 3.0
     initial_cash: float = 1.0

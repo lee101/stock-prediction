@@ -40,7 +40,7 @@ def test_spawn_watchers_clamps_by_cash(monkeypatch):
 
     monkeypatch.setattr(module, "spawn_open_position_at_maxdiff_takeprofit", fake_spawn_open)
     monkeypatch.setattr(module, "spawn_close_position_at_maxdiff_takeprofit", fake_spawn_close)
-    module._spawn_watchers(plan, dry_run=False)
+    module._spawn_watchers(plan, dry_run=False, symbol="LINKUSD")
     assert calls["buy_qty"] == pytest.approx(1.25)
     assert calls["sell_price"] == 12.0
     assert calls["sell_qty"] == pytest.approx(0.5)
@@ -59,15 +59,24 @@ def test_main_skips_trading_when_mode_train(monkeypatch):
         checkpoint_root=None,
         checkpoint_path=None,
         force_retrain=False,
+        training_symbols=None,
+        price_offset_pct=None,
+        price_offset_span_multiplier=0.0,
+        price_offset_max_pct=0.003,
+        symbol="LINKUSD",
     )
     monkeypatch.setattr(module, "_parse_args", lambda: args)
     monkeypatch.setattr(module, "_configure_logging", lambda level: None)
-    config = SimpleNamespace(force_retrain=False)
+    config = SimpleNamespace(force_retrain=False, price_offset_pct=0.0003)
     monkeypatch.setattr(module, "_build_training_config", lambda parsed: config)
     monkeypatch.setattr(module, "_ensure_forecasts", lambda config, cache_only=False: None)
-    monkeypatch.setattr(module, "_load_pretrained_policy", lambda config: None)
-    monkeypatch.setattr(module, "_train_policy", lambda config: ("data", "policy", None))
-    monkeypatch.setattr(module, "_infer_actions", lambda policy, data, config: pd.DataFrame())
+    monkeypatch.setattr(module, "_load_pretrained_policy", lambda config, **kwargs: None)
+    monkeypatch.setattr(module, "_train_policy", lambda config, **kwargs: ("data", "policy", None))
+    monkeypatch.setattr(
+        module,
+        "_infer_actions",
+        lambda policy, data, config, offset_params=None: pd.DataFrame(),
+    )
     simulate_calls = {"count": 0}
 
     def fake_simulate(actions, data_module, window):
@@ -88,7 +97,7 @@ def test_main_skips_trading_when_mode_train(monkeypatch):
     monkeypatch.setattr(module, "_build_trading_plan", fake_build_plan)
     spawn_calls = {"count": 0}
 
-    def fake_spawn_watchers(plan, dry_run):
+    def fake_spawn_watchers(plan, dry_run, symbol):
         spawn_calls["count"] += 1
 
     monkeypatch.setattr(module, "_spawn_watchers", fake_spawn_watchers)

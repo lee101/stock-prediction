@@ -288,7 +288,12 @@ class MultiSymbolDataset(Dataset):
 
 
 class MultiSymbolDataModule:
-    """Data module for training on multiple crypto pairs."""
+    """Data module for training on multiple crypto pairs.
+
+    The module maintains a primary/target symbol (taken from ``config.symbol``)
+    whose frame, feature columns, and normalizer are exposed so the object can
+    be consumed anywhere a ``HourlyCryptoDataModule`` is expected.
+    """
 
     def __init__(self, symbols: Sequence[str], config: DatasetConfig) -> None:
         """Initialize multi-symbol data module.
@@ -297,7 +302,29 @@ class MultiSymbolDataModule:
             symbols: List of symbols to train on (e.g., ["BTCUSD", "ETHUSD", "UNIUSD"])
             config: Base dataset config (will be overridden per symbol)
         """
-        self.symbols = list(symbols)
+
+        cleaned: List[str] = []
+        seen: set[str] = set()
+        for symbol in symbols:
+            if not symbol:
+                continue
+            token = symbol.upper()
+            if token not in seen:
+                cleaned.append(token)
+                seen.add(token)
+        if not cleaned:
+            raise ValueError("At least one symbol is required for multi-symbol training.")
+
+        target_symbol = (config.symbol or cleaned[0]).upper()
+        if target_symbol not in seen:
+            cleaned.insert(0, target_symbol)
+            seen.add(target_symbol)
+        else:
+            # Ensure target symbol is first so validation + inference stay aligned
+            cleaned = [target_symbol] + [sym for sym in cleaned if sym != target_symbol]
+
+        self.symbols = cleaned
+        self.target_symbol = target_symbol
         self.base_config = config
         self.modules: Dict[str, HourlyCryptoDataModule] = {}
         self.normalizers: Dict[str, FeatureNormalizer] = {}
@@ -324,10 +351,11 @@ class MultiSymbolDataModule:
         train_datasets = [mod.train_dataset for mod in self.modules.values()]
         self.train_dataset = MultiSymbolDataset(train_datasets)
 
-        # Use first symbol for validation (or target symbol if specified)
-        target_symbol = self.symbols[0] if len(self.symbols) > 0 else "LINKUSD"
-        self.val_dataset = self.modules[target_symbol].val_dataset
-        self.normalizer = self.modules[target_symbol].normalizer
+        target_module = self.modules[self.target_symbol]
+        self.val_dataset = target_module.val_dataset
+        self.normalizer = target_module.normalizer
+        self.feature_columns = target_module.feature_columns
+        self.frame = target_module.frame
 
     def train_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
         return DataLoader(
