@@ -44,8 +44,33 @@ class TradingPlan:
     trade_amount: float
 
 
+@dataclass
+class PriceOffsetParams:
+    base_pct: float
+    span_multiplier: float = 0.0
+    max_pct: Optional[float] = None
+
+    def build_tensor(
+        self,
+        reference_close: torch.Tensor,
+        chronos_high: torch.Tensor,
+        chronos_low: torch.Tensor,
+    ) -> torch.Tensor:
+        offsets = torch.full_like(reference_close, self.base_pct)
+        if self.span_multiplier:
+            span = torch.clamp(
+                (chronos_high - chronos_low)
+                / reference_close.clamp(min=1e-6),
+                min=0.0,
+            )
+            offsets = offsets + self.span_multiplier * span
+        if self.max_pct is not None:
+            offsets = torch.clamp(offsets, max=self.max_pct)
+        return torch.clamp(offsets, min=1e-6)
+
+
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Hourly Chronos-driven LINKUSD trading loop")
+    parser = argparse.ArgumentParser(description="Hourly Chronos-driven crypto trading loop")
     parser.add_argument("--mode", choices=["train", "simulate", "trade"], default="trade")
     parser.add_argument("--daemon", action="store_true", help="Run continuously, waking every hour aligned to UTC")
     parser.add_argument("--epochs", type=int, default=50)
@@ -64,6 +89,25 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16"], default="bfloat16", help="AMP dtype (bfloat16 or float16)")
     parser.add_argument("--training-symbols", type=str, nargs="+", default=None, help="Train on multiple symbols (e.g., BTCUSD ETHUSD UNIUSD LINKUSD)")
     parser.add_argument("--dropout", type=float, default=None, help="Override transformer dropout rate")
+    parser.add_argument("--symbol", type=str, default="LINKUSD", help="Primary trading symbol (e.g., UNIUSD)")
+    parser.add_argument(
+        "--price-offset-pct",
+        type=float,
+        default=None,
+        help="Base limit offset as a decimal fraction (0.0003 = 0.03%%)",
+    )
+    parser.add_argument(
+        "--price-offset-span-multiplier",
+        type=float,
+        default=0.15,
+        help="Linear multiplier on (Chronos_high - Chronos_low)/reference_close to widen offsets",
+    )
+    parser.add_argument(
+        "--price-offset-max-pct",
+        type=float,
+        default=0.003,
+        help="Upper clamp for the effective offset (0.003 = 0.3%%). Use 0 to disable",
+    )
     return parser.parse_args()
 
 
@@ -108,6 +152,11 @@ def _build_training_config(args: argparse.Namespace) -> TrainingConfig:
         cfg.amp_dtype = args.amp_dtype
     if args.dropout is not None:
         cfg.transformer_dropout = args.dropout
+    if args.price_offset_pct is not None:
+        cfg.price_offset_pct = max(1e-6, args.price_offset_pct)
+    symbol = (args.symbol or cfg.dataset.symbol).upper()
+    cfg.dataset.symbol = symbol
+    cfg.forecast_config.symbol = symbol
     return cfg
 
 
@@ -166,7 +215,10 @@ def _find_global_best_checkpoint(checkpoint_root: Path) -> Optional[Path]:
     return best_path
 
 
-def _load_pretrained_policy(config: TrainingConfig) -> Optional[Tuple[HourlyCryptoDataModule, HourlyCryptoPolicy, Path]]:
+def _load_pretrained_policy(
+    config: TrainingConfig,
+    price_offset_override: Optional[float] = None,
+) -> Optional[Tuple[HourlyCryptoDataModule, HourlyCryptoPolicy, Path]]:
     if config.preload_checkpoint_path:
         ckpt_path = config.preload_checkpoint_path
     else:
@@ -181,6 +233,17 @@ def _load_pretrained_policy(config: TrainingConfig) -> Optional[Tuple[HourlyCryp
     dataset_cfg = replace(config.dataset, feature_columns=tuple(feature_columns))
     data_module = HourlyCryptoDataModule(dataset_cfg)
     data_module.normalizer = payload["normalizer"]
+
+    payload_cfg = payload.get("config") or {}
+    ckpt_offset = payload_cfg.get("price_offset_pct") if isinstance(payload_cfg, dict) else None
+    effective_offset = (
+        price_offset_override
+        if price_offset_override is not None
+        else ckpt_offset
+        if ckpt_offset is not None
+        else config.price_offset_pct
+    )
+    config.price_offset_pct = max(1e-6, float(effective_offset))
 
     # Detect max_len from checkpoint's positional encoding for backward compatibility
     state_dict = payload["state_dict"]
@@ -221,6 +284,7 @@ def _infer_actions(
     policy: HourlyCryptoPolicy,
     data_module: HourlyCryptoDataModule,
     config: TrainingConfig,
+    offset_params: Optional[PriceOffsetParams] = None,
 ) -> pd.DataFrame:
     device = torch.device(config.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     policy = policy.to(device).eval()
@@ -244,11 +308,17 @@ def _infer_actions(
             high_tensor = torch.from_numpy(chronos_high[window]).unsqueeze(0).to(device)
             low_tensor = torch.from_numpy(chronos_low[window]).unsqueeze(0).to(device)
             outputs = policy(feat)
+            offset_tensor = (
+                offset_params.build_tensor(ref_tensor, high_tensor, low_tensor)
+                if offset_params
+                else None
+            )
             decoded = policy.decode_actions(
                 outputs,
                 reference_close=ref_tensor,
                 chronos_high=high_tensor,
                 chronos_low=low_tensor,
+                dynamic_offset_pct=offset_tensor,
             )
             ts = pd.Timestamp(timestamps[idx - 1])
             rows.append(
@@ -257,6 +327,7 @@ def _infer_actions(
                     "buy_price": float(decoded["buy_price"][0, -1].item()),
                     "sell_price": float(decoded["sell_price"][0, -1].item()),
                     "trade_amount": float(decoded["trade_amount"][0, -1].item()),
+                    "offset_pct": float(offset_tensor[0, -1].item()) if offset_tensor is not None else float(config.price_offset_pct),
                 }
             )
     return pd.DataFrame(rows)
@@ -272,7 +343,9 @@ def _simulate(actions: pd.DataFrame, data_module: HourlyCryptoDataModule, window
         cutoff = merged_bars["timestamp"].max() - pd.Timedelta(hours=window_hours)
         merged_bars = merged_bars[merged_bars["timestamp"] >= cutoff]
         actions = actions[actions["timestamp"] >= cutoff]
-    simulator = HourlyCryptoMarketSimulator(SimulationConfig())
+    simulator = HourlyCryptoMarketSimulator(
+        SimulationConfig(symbol=data_module.config.symbol.upper())
+    )
     result = simulator.run(merged_bars, actions)
     logger.info(
         "Simulation: total_return=%.2f%% sortino=%.2f final_cash=%.2f inventory=%.4f",
@@ -336,8 +409,8 @@ def _cancel_existing_orders(symbol: str) -> None:
         logger.error(f"Error fetching/cancelling orders for {symbol}: {exc}")
 
 
-def _spawn_watchers(plan: TradingPlan, dry_run: bool) -> None:
-    symbol = "LINKUSD"
+def _spawn_watchers(plan: TradingPlan, dry_run: bool, symbol: str) -> None:
+    symbol = symbol.upper()
 
     # Cancel existing orders before placing new ones
     if not dry_run:
@@ -419,12 +492,20 @@ def _run_trading_cycle(args: argparse.Namespace, config: TrainingConfig) -> None
     # Use cache-only mode during training to avoid loading Chronos2 on GPU
     cache_only = args.mode == "train"
     _ensure_forecasts(config, cache_only=cache_only)
-    loaded = None if config.force_retrain else _load_pretrained_policy(config)
+    loaded = None if config.force_retrain else _load_pretrained_policy(config, price_offset_override=args.price_offset_pct)
     if loaded is None:
         data_module, policy, checkpoint_path = _train_policy(config, training_symbols=args.training_symbols)
     else:
         data_module, policy, checkpoint_path = loaded
-    actions = _infer_actions(policy, data_module, config)
+    max_pct = None
+    if args.price_offset_max_pct is not None and args.price_offset_max_pct > 0:
+        max_pct = args.price_offset_max_pct
+    offset_params = PriceOffsetParams(
+        base_pct=config.price_offset_pct,
+        span_multiplier=max(0.0, args.price_offset_span_multiplier or 0.0),
+        max_pct=max_pct,
+    )
+    actions = _infer_actions(policy, data_module, config, offset_params=offset_params)
     _simulate(actions, data_module, args.window_hours)
     if args.mode in {"simulate", "train"}:
         return
@@ -432,7 +513,7 @@ def _run_trading_cycle(args: argparse.Namespace, config: TrainingConfig) -> None
     if not plan:
         logger.warning("No trading plan generated")
         return
-    _spawn_watchers(plan, args.dry_run)
+    _spawn_watchers(plan, args.dry_run, config.dataset.symbol)
 
 
 def main() -> None:

@@ -16,8 +16,31 @@ from typing import Iterable, Tuple
 import torch
 
 DEFAULT_MAKER_FEE_RATE = 0.0008  # 8 bps maker fee
-HOURLY_PERIODS_PER_YEAR = 24 * 365
+HOURLY_PERIODS_PER_YEAR = 24 * 365  # 8760 hours
+DAILY_PERIODS_PER_YEAR_CRYPTO = 365  # Crypto trades 24/7
+DAILY_PERIODS_PER_YEAR_STOCK = 252   # ~252 trading days/year for stocks
 _EPS = 1e-8
+
+
+def get_periods_per_year(frequency: str = "hourly", symbol: str = "") -> float:
+    """Get annualization factor based on data frequency and symbol type.
+
+    Args:
+        frequency: "hourly" or "daily"
+        symbol: Symbol name (e.g., "BTCUSD", "AAPL")
+
+    Returns:
+        Number of periods per year for annualization
+    """
+    if frequency == "hourly":
+        return HOURLY_PERIODS_PER_YEAR
+    elif frequency == "daily":
+        # Crypto symbols typically end in USD (BTCUSD, ETHUSD)
+        # Stock symbols are typically 1-5 letters (AAPL, TSLA)
+        is_crypto = symbol.endswith("USD") and len(symbol) > 5
+        return DAILY_PERIODS_PER_YEAR_CRYPTO if is_crypto else DAILY_PERIODS_PER_YEAR_STOCK
+    else:
+        raise ValueError(f"Unknown frequency: {frequency}")
 
 
 def _as_tensor(value: torch.Tensor | float, reference: torch.Tensor) -> torch.Tensor:
@@ -87,6 +110,7 @@ class HourlySimulationResult:
     sell_fill_probability: torch.Tensor
     executed_buys: torch.Tensor
     executed_sells: torch.Tensor
+    inventory_path: torch.Tensor
 
 
 def simulate_hourly_trades(
@@ -130,6 +154,8 @@ def simulate_hourly_trades(
     sell_prob_list = []
     exec_buy_list = []
     exec_sell_list = []
+    inventory_history = []
+    inventory_history = []
 
     for idx in range(steps):
         close = closes[..., idx]
@@ -169,6 +195,8 @@ def simulate_hourly_trades(
         sell_prob_list.append(sell_prob)
         exec_buy_list.append(executed_buys)
         exec_sell_list.append(executed_sells)
+        inventory_history.append(inventory.clone())
+        inventory_history.append(inventory.clone())
 
     pnl_tensor = torch.stack(pnl_list, dim=-1)
     returns_tensor = torch.stack(return_list, dim=-1)
@@ -177,6 +205,7 @@ def simulate_hourly_trades(
     sell_prob_tensor = torch.stack(sell_prob_list, dim=-1)
     exec_buy_tensor = torch.stack(exec_buy_list, dim=-1)
     exec_sell_tensor = torch.stack(exec_sell_list, dim=-1)
+    inventory_path_tensor = torch.stack(inventory_history, dim=-1)
 
     return HourlySimulationResult(
         pnl=pnl_tensor,
@@ -188,6 +217,7 @@ def simulate_hourly_trades(
         sell_fill_probability=sell_prob_tensor,
         executed_buys=exec_buy_tensor,
         executed_sells=exec_sell_tensor,
+        inventory_path=inventory_path_tensor,
     )
 
 
@@ -229,6 +259,7 @@ def simulate_hourly_trades_binary(
     sell_fill_list = []
     exec_buy_list = []
     exec_sell_list = []
+    inventory_history = []
 
     for idx in range(steps):
         close = closes[..., idx]
@@ -268,6 +299,7 @@ def simulate_hourly_trades_binary(
         sell_fill_list.append(sell_fill.float())
         exec_buy_list.append(executed_buys)
         exec_sell_list.append(executed_sells)
+        inventory_history.append(inventory.clone())
 
     pnl_tensor = torch.stack(pnl_list, dim=-1)
     returns_tensor = torch.stack(return_list, dim=-1)
@@ -276,6 +308,7 @@ def simulate_hourly_trades_binary(
     sell_fill_tensor = torch.stack(sell_fill_list, dim=-1)
     exec_buy_tensor = torch.stack(exec_buy_list, dim=-1)
     exec_sell_tensor = torch.stack(exec_sell_list, dim=-1)
+    inventory_path_tensor = torch.stack(inventory_history, dim=-1)
 
     return HourlySimulationResult(
         pnl=pnl_tensor,
@@ -287,6 +320,7 @@ def simulate_hourly_trades_binary(
         sell_fill_probability=sell_fill_tensor,
         executed_buys=exec_buy_tensor,
         executed_sells=exec_sell_tensor,
+        inventory_path=inventory_path_tensor,
     )
 
 
