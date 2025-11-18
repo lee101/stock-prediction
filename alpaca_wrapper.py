@@ -8,6 +8,7 @@ from time import sleep, monotonic
 from threading import Lock
 
 import cachetools
+import diskcache
 import math
 import pandas as pd
 import requests.exceptions
@@ -194,9 +195,32 @@ def force_open_the_clock_func():
     force_open_the_clock = True
 
 
-def get_clock_internal(retries=3):
+def get_clock_internal(retries=3, use_cache=True):
+    """
+    Get clock data from Alpaca API with disk-based caching.
+
+    Args:
+        retries: Number of retries on failure.
+        use_cache: If True, check disk cache first. If False, always fetch fresh data.
+
+    Returns:
+        Clock object from Alpaca API or cached data.
+    """
+    cache_key = f"clock_{_IS_PAPER}"
+
+    # Check disk cache first if enabled
+    if use_cache:
+        cached_clock = _account_diskcache.get(cache_key)
+        if cached_clock is not None:
+            logger.debug("Using cached clock data")
+            return cached_clock
+
+    # Fetch from API
     try:
-        return alpaca_api.get_clock()
+        clock = alpaca_api.get_clock()
+        # Store in disk cache with TTL
+        _account_diskcache.set(cache_key, clock, expire=_CLOCK_DISKCACHE_TTL_SECONDS)
+        return clock
     except Exception as e:
         logger.error(e)
         if _missing_alpaca_credentials() or _is_unauthorized_error(e):
@@ -205,7 +229,7 @@ def get_clock_internal(retries=3):
         if retries > 0:
             sleep(.1)
             logger.error("retrying get clock")
-            return get_clock_internal(retries - 1)
+            return get_clock_internal(retries - 1, use_cache=False)
         raise e
 
 
@@ -1485,9 +1509,32 @@ def download_training_pairs(
 
 
 @retry(delay=.1, tries=3)
-def get_account():
+def get_account(*, use_cache: bool = True):
+    """
+    Get account data from Alpaca API with disk-based caching.
+
+    Args:
+        use_cache: If True, check disk cache first. If False, always fetch fresh data.
+
+    Returns:
+        Account object from Alpaca API or cached data.
+    """
+    cache_key = f"account_{_IS_PAPER}"
+
+    # Check disk cache first if enabled
+    if use_cache:
+        cached_data = _account_diskcache.get(cache_key)
+        if cached_data is not None:
+            logger.debug(f"Using cached account data (age: {_account_diskcache.get(cache_key + '_age', 'unknown')}s)")
+            return cached_data
+
+    # Fetch from API
     try:
-        return alpaca_api.get_account()
+        account = alpaca_api.get_account()
+        # Store in disk cache with TTL
+        _account_diskcache.set(cache_key, account, expire=_ACCOUNT_DISKCACHE_TTL_SECONDS)
+        _account_diskcache.set(cache_key + '_age', 0, expire=_ACCOUNT_DISKCACHE_TTL_SECONDS)
+        return account
     except Exception as e:
         logger.error(e)
         if _missing_alpaca_credentials() or _is_unauthorized_error(e):
@@ -1506,8 +1553,15 @@ cash = 30000
 total_buying_power = 20000
 
 _ACCOUNT_CACHE_TTL_SECONDS = float(os.getenv("ALPACA_ACCOUNT_CACHE_TTL", "15"))
+_ACCOUNT_DISKCACHE_TTL_SECONDS = float(os.getenv("ALPACA_ACCOUNT_DISKCACHE_TTL", "30"))
+_CLOCK_DISKCACHE_TTL_SECONDS = float(os.getenv("ALPACA_CLOCK_DISKCACHE_TTL", "5"))
 _account_refresh_lock = Lock()
 _last_account_refresh = 0.0
+
+# Disk cache for account and clock data - persists across processes
+_account_diskcache_dir = Path.home() / ".cache" / "alpaca_account"
+_account_diskcache_dir.mkdir(parents=True, exist_ok=True)
+_account_diskcache = diskcache.Cache(str(_account_diskcache_dir))
 
 
 def refresh_account_cache(force: bool = False) -> None:
@@ -1550,27 +1604,90 @@ def refresh_account_cache(force: bool = False) -> None:
         total_buying_power = account_buying_power
         _last_account_refresh = now
 
-try:
-    refresh_account_cache(force=True)
-    positions = get_all_positions()
-    print(positions)
-    account = get_account()
-    print(account)
-    margin_multiplier = float(getattr(account, "multiplier", 1.0) or 1.0)
-    if getattr(account, "buying_power", None) in (None, ""):
-        total_buying_power = margin_multiplier * equity
-    print(f"Initial total buying power = {total_buying_power}")
-    alpaca_clock = get_clock()
-    print(alpaca_clock)
-    if not alpaca_clock.is_open:
-        print("Market closed")
-except requests.exceptions.ConnectionError as e:
-    logger.error("offline/connection error", e)
-except APIError as e:
-    logger.error("alpaca error", e)
-except Exception as e:
-    logger.error("exception", e)
-    traceback.print_exc()
+
+def get_account_status(*, use_cache: bool = True, force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    Get and return account status information.
+
+    This is an explicit function that should only be called when account status
+    is actually needed (e.g., in stock_cli.py status command), not on import.
+
+    Args:
+        use_cache: If True, use disk cache for account and clock data (default: True).
+        force_refresh: If True, force refresh the in-memory account cache (default: False).
+
+    Returns:
+        Dictionary with account information including positions, account details,
+        buying power, and market status.
+    """
+    result = {
+        "success": False,
+        "error": None,
+        "positions": None,
+        "account": None,
+        "buying_power": None,
+        "market_status": None,
+    }
+
+    try:
+        refresh_account_cache(force=force_refresh)
+        result["positions"] = get_all_positions()
+        account = get_account(use_cache=use_cache)
+        result["account"] = account
+
+        margin_multiplier = float(getattr(account, "multiplier", 1.0) or 1.0)
+        if getattr(account, "buying_power", None) in (None, ""):
+            buying_power = margin_multiplier * equity
+        else:
+            buying_power = float(getattr(account, "buying_power", 0))
+        result["buying_power"] = buying_power
+
+        alpaca_clock = get_clock()
+        result["market_status"] = {
+            "is_open": alpaca_clock.is_open,
+            "clock": alpaca_clock,
+        }
+        result["success"] = True
+
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Offline/connection error: {e}")
+        result["error"] = f"Connection error: {e}"
+    except APIError as e:
+        logger.error(f"API error: {e}")
+        result["error"] = f"API error: {e}"
+    except Exception as e:
+        logger.error(f"Error getting account status: {e}")
+        result["error"] = str(e)
+
+    return result
+
+
+# REMOVED: Module-level account fetching that was causing rate limit issues
+# This code used to run on every import, causing unnecessary API calls.
+# Use get_account_status() explicitly when needed instead.
+#
+# Old code (now removed):
+# try:
+#     refresh_account_cache(force=True)
+#     positions = get_all_positions()
+#     print(positions)
+#     account = get_account()
+#     print(account)
+#     margin_multiplier = float(getattr(account, "multiplier", 1.0) or 1.0)
+#     if getattr(account, "buying_power", None) in (None, ""):
+#         total_buying_power = margin_multiplier * equity
+#     print(f"Initial total buying power = {total_buying_power}")
+#     alpaca_clock = get_clock()
+#     print(alpaca_clock)
+#     if not alpaca_clock.is_open:
+#         print("Market closed")
+# except requests.exceptions.ConnectionError as e:
+#     logger.error("offline/connection error", e)
+# except APIError as e:
+#     logger.error(f"API error: {e}")
+#
+# If you need to see account status, call get_account_status() explicitly
+# or use: python -c "import alpaca_wrapper; status = alpaca_wrapper.get_account_status(); print(status)"
 
 
 def close_position_near_market(position, pct_above_market=0.0):
