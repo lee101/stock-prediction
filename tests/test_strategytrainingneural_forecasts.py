@@ -21,6 +21,8 @@ class StubChronosWrapper:
         context_length: int,
         future_covariates: pd.DataFrame | None = None,
         batch_size: int,
+        quantile_levels=None,
+        predict_kwargs=None,
     ) -> SimpleNamespace:
         if future_covariates is not None:
             next_ts = pd.to_datetime(future_covariates["timestamp"].iloc[0], utc=True)
@@ -71,6 +73,8 @@ def test_forecast_generator_creates_cache(tmp_path):
     assert set(["timestamp", "symbol", "forecast_move_pct"]).issubset(cached.columns)
     assert cached["symbol"].iloc[0] == symbol
     assert cached["forecast_move_pct"].iloc[0] != 0.0
+    quantiles = json.loads(cached["quantile_levels"].iloc[0])
+    assert all(level in quantiles for level in (0.1, 0.5, 0.9))
 
 
 def test_trade_window_join_with_forecasts(tmp_path):
@@ -116,3 +120,9 @@ def test_trade_window_join_with_forecasts(tmp_path):
     assert dataset["forecast_move_pct"].max() > 0
     for column in FORECAST_COLUMNS:
         assert column in dataset.columns
+
+
+def test_forecast_config_injects_required_quantiles():
+    cfg = ForecastGenerationConfig(quantile_levels=(0.2, 0.8), frequency="daily")
+    assert all(level in cfg.quantile_levels for level in (0.1, 0.5, 0.9))
+    assert 0.2 in cfg.quantile_levels and 0.8 in cfg.quantile_levels

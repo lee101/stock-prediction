@@ -240,3 +240,4 @@ tmp_toto_export
 hourlycryptotraining/checkpoints_*
 neuraldailytraining/checkpoints/
 hourlycryptomarketsimulator/*.csv
+.locks

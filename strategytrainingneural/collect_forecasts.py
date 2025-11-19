@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from pathlib import Path
 from typing import List, Sequence
 
@@ -33,14 +34,14 @@ def parse_args() -> argparse.Namespace:
         "--batch-size",
         type=int,
         default=128,
-        help="Batch size for Chronos2 predictions.",
+        help="Fallback batch size when symbol-specific config is unavailable.",
     )
     parser.add_argument(
         "--quantile",
         action="append",
         type=float,
         dest="quantiles",
-        help="Quantile level to request (default: 0.1,0.5,0.9). Can be specified multiple times.",
+        help="Additional quantile level to request (defaults include 0.1/0.5/0.9). Can be specified multiple times.",
     )
     parser.add_argument(
         "--symbol",
@@ -75,6 +76,17 @@ def parse_args() -> argparse.Namespace:
         "--model-id",
         default="amazon/chronos-2",
         help="Chronos2 model identifier or local path.",
+    )
+    parser.add_argument(
+        "--frequency",
+        choices=("daily", "hourly"),
+        default="daily",
+        help="Cadence for hyperparam/pre-augmentation selection.",
+    )
+    parser.add_argument(
+        "--no-symbol-hyperparams",
+        action="store_true",
+        help="Use CLI fallback context/batch settings instead of per-symbol configs.",
     )
     parser.add_argument(
         "--log-level",
@@ -112,13 +124,16 @@ def main() -> None:
         prediction_length=1,
         quantile_levels=quantiles,
         batch_size=args.batch_size,
+        frequency=args.frequency,
+        use_symbol_hyperparams=not args.no_symbol_hyperparams,
     )
+    os.environ.setdefault("CHRONOS2_FREQUENCY", args.frequency)
     wrapper_kwargs = {
         "model_id": args.model_id,
         "device_map": args.device_map,
-        "default_context_length": args.context_length,
-        "default_batch_size": args.batch_size,
-        "quantile_levels": quantiles,
+        "default_context_length": config.context_length,
+        "default_batch_size": config.batch_size,
+        "quantile_levels": config.quantile_levels,
     }
     generator = ChronosForecastGenerator(
         data_dir=Path(args.data_dir),

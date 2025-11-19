@@ -381,6 +381,7 @@ class NeuralDailyTrainer:
         )
         record = CheckpointRecord(path=ckpt_path, val_loss=val_loss, epoch=epoch, timestamp=time.time())
         self._checkpoint_records.append(record)
+        # Sort by val_loss ASCENDING: more negative losses come first and are better (loss = -score)
         self._checkpoint_records.sort(key=lambda item: item.val_loss)
         if len(self._checkpoint_records) > self.config.top_k_checkpoints:
             dropped = self._checkpoint_records.pop()
