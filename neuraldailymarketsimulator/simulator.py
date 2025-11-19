@@ -20,6 +20,8 @@ class SimulationResult:
     equity: float
     cash: float
     daily_return: float
+    leverage: float = 0.0
+    leverage_cost: float = 0.0
 
 
 class NeuralDailyMarketSimulator:
@@ -30,12 +32,21 @@ class NeuralDailyMarketSimulator:
         *,
         maker_fee: float = 0.0008,
         initial_cash: float = 1.0,
+        leverage_fee_rate: float = 0.065,
+        equity_max_leverage: float = 2.0,
+        crypto_max_leverage: float = 1.0,
     ) -> None:
         self.runtime = runtime
         self.symbols = [symbol.upper() for symbol in symbols]
         self.maker_fee = maker_fee
         self.initial_cash = initial_cash
+        self.leverage_fee_rate = leverage_fee_rate
+        self.daily_leverage_rate = leverage_fee_rate / 365.0
+        self.equity_max_leverage = equity_max_leverage
+        self.crypto_max_leverage = crypto_max_leverage
         self.frames: Dict[str, pd.DataFrame] = {}
+        self.crypto_symbols: set[str] = set()
+
         for symbol in self.symbols:
             frame = runtime._builder.build(symbol)  # type: ignore[attr-defined]
             if frame.empty:
@@ -43,6 +54,11 @@ class NeuralDailyMarketSimulator:
             frame = frame.copy()
             frame["date"] = pd.to_datetime(frame["date"], utc=True)
             self.frames[symbol] = frame
+
+            # Track which symbols are crypto (end with USD or -USD)
+            if symbol.upper().endswith("USD") or symbol.upper().endswith("-USD"):
+                self.crypto_symbols.add(symbol)
+
         if not self.frames:
             raise ValueError("No symbols have usable historical data for simulation.")
 
@@ -74,6 +90,31 @@ class NeuralDailyMarketSimulator:
         daily_returns: List[float] = []
 
         for date in dates:
+            # Calculate leverage cost at start of day
+            # Separate stock and crypto positions
+            stock_value = sum(
+                inventory.get(symbol, 0.0) * last_close.get(symbol, 0.0)
+                for symbol in self.symbols if symbol not in self.crypto_symbols
+            )
+            crypto_value = sum(
+                inventory.get(symbol, 0.0) * last_close.get(symbol, 0.0)
+                for symbol in self.symbols if symbol in self.crypto_symbols
+            )
+            positions_value = stock_value + crypto_value
+            current_equity = cash + positions_value
+
+            # Calculate overall leverage for reporting
+            leverage = positions_value / current_equity if current_equity > 0 else 0.0
+            leverage_cost = 0.0
+
+            # Only charge leverage fees on stocks (crypto can't leverage)
+            # Stocks can leverage up to 2x, crypto max 1x
+            if current_equity > 0 and stock_value > current_equity:
+                # Stock positions are leveraged beyond 1x
+                leveraged_amount = min(stock_value - current_equity, current_equity)  # Cap at 2x
+                leverage_cost = leveraged_amount * self.daily_leverage_rate
+                cash -= leverage_cost
+
             symbol_rows: Dict[str, pd.Series] = {}
             for symbol, frame in self.frames.items():
                 rows = frame[frame["date"] == date]
@@ -115,6 +156,8 @@ class NeuralDailyMarketSimulator:
                     equity=float(portfolio_value),
                     cash=float(cash),
                     daily_return=float(daily_return),
+                    leverage=float(leverage),
+                    leverage_cost=float(leverage_cost),
                 )
             )
             daily_returns.append(float(daily_return))
@@ -122,10 +165,14 @@ class NeuralDailyMarketSimulator:
 
         sortino = self._sortino_ratio(daily_returns)
         final_equity = results[-1].equity if results else self.initial_cash
+        total_leverage_costs = sum(result.leverage_cost for result in results)
+        max_leverage = max((result.leverage for result in results), default=0.0)
         summary = {
             "final_equity": final_equity,
             "pnl": final_equity - self.initial_cash,
             "sortino": sortino,
+            "total_leverage_costs": total_leverage_costs,
+            "max_leverage": max_leverage,
         }
         return results, summary
 
@@ -178,14 +225,16 @@ def run_cli_simulation() -> None:
         initial_cash=args.initial_cash,
     )
     results, summary = simulator.run(start_date=args.start_date, days=args.days)
-    print(f"{'Date':<15} {'Equity':>12} {'Cash':>12} {'Return':>10}")
+    print(f"{'Date':<15} {'Equity':>12} {'Cash':>12} {'Return':>10} {'Leverage':>10} {'LevCost':>10}")
     for entry in results:
         date_str = entry.date.strftime("%Y-%m-%d")
-        print(f"{date_str:<15} {entry.equity:>12.4f} {entry.cash:>12.4f} {entry.daily_return:>10.4f}")
+        print(f"{date_str:<15} {entry.equity:>12.4f} {entry.cash:>12.4f} {entry.daily_return:>10.4f} {entry.leverage:>10.2f}x {entry.leverage_cost:>10.6f}")
     print("\nSimulation Summary")
-    print(f"Final Equity : {summary['final_equity']:.4f}")
-    print(f"Net PnL      : {summary['pnl']:.4f}")
-    print(f"Sortino Ratio: {summary['sortino']:.4f}")
+    print(f"Final Equity      : {summary['final_equity']:.4f}")
+    print(f"Net PnL           : {summary['pnl']:.4f}")
+    print(f"Sortino Ratio     : {summary['sortino']:.4f}")
+    print(f"Max Leverage      : {summary['max_leverage']:.2f}x")
+    print(f"Total Lev. Costs  : {summary['total_leverage_costs']:.6f}")
 
 
 if __name__ == "__main__":

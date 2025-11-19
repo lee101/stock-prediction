@@ -343,6 +343,8 @@ def _simulate(actions: pd.DataFrame, data_module: HourlyCryptoDataModule, window
         cutoff = merged_bars["timestamp"].max() - pd.Timedelta(hours=window_hours)
         merged_bars = merged_bars[merged_bars["timestamp"] >= cutoff]
         actions = actions[actions["timestamp"] >= cutoff]
+
+    # Run normal simulation
     simulator = HourlyCryptoMarketSimulator(
         SimulationConfig(symbol=data_module.config.symbol.upper())
     )
@@ -354,6 +356,34 @@ def _simulate(actions: pd.DataFrame, data_module: HourlyCryptoDataModule, window
         result.final_cash,
         result.final_inventory,
     )
+
+    # Run daily PnL-based probe trading simulation
+    try:
+        from hourlycryptomarketsimulator import DailyPnlProbeSimulator, DailyPnlProbeConfig
+        daily_probe_sim = DailyPnlProbeSimulator(
+            SimulationConfig(symbol=data_module.config.symbol.upper()),
+            DailyPnlProbeConfig(
+                probe_trade_amount=0.01,  # 1% trades in probe mode
+                min_daily_pnl_to_exit_probe=0.0,  # Exit probe when daily PnL >= $0
+            ),
+        )
+        daily_probe_result = daily_probe_sim.run(merged_bars, actions)
+        logger.info(
+            "Daily PnL Probe: total_return=%.2f%% sortino=%.2f final_cash=%.2f inventory=%.4f (%.1f%% time in probe, %d switches)",
+            daily_probe_result.metrics.get("total_return", 0.0) * 100,
+            daily_probe_result.metrics.get("sortino", 0.0),
+            daily_probe_result.final_cash,
+            daily_probe_result.final_inventory,
+            daily_probe_result.metrics.get("probe_mode_pct", 0.0),
+            daily_probe_result.metrics.get("probe_mode_switches", 0),
+        )
+        daily_improvement = (daily_probe_result.metrics.get("total_return", 0.0) - result.metrics.get("total_return", 0.0)) * 100
+        logger.info(
+            "Daily PnL Probe Improvement: %+.2f%% return",
+            daily_improvement,
+        )
+    except Exception as e:
+        logger.warning("Daily PnL probe trading simulation failed: %s", e)
 
 
 def _build_trading_plan(actions: pd.DataFrame) -> Optional[TradingPlan]:
@@ -390,11 +420,18 @@ def _available_cash() -> float:
         return 0.0
 
 
+def _normalize_symbol(symbol: str) -> str:
+    """Normalize crypto symbol format (remove slashes)."""
+    return symbol.replace("/", "").upper()
+
+
 def _cancel_existing_orders(symbol: str) -> None:
     """Cancel all open orders for the given symbol."""
     try:
         open_orders = alpaca_wrapper.get_open_orders()
-        symbol_orders = [o for o in open_orders if o.symbol == symbol]
+        # Normalize both symbols for comparison (handles BTCUSD vs BTC/USD)
+        normalized_symbol = _normalize_symbol(symbol)
+        symbol_orders = [o for o in open_orders if _normalize_symbol(o.symbol) == normalized_symbol]
         if not symbol_orders:
             logger.info(f"No existing open orders for {symbol}")
             return
@@ -491,8 +528,17 @@ def _run_trading_cycle(args: argparse.Namespace, config: TrainingConfig) -> None
     """Execute one trading cycle: load/train policy, infer, simulate, trade."""
     # Use cache-only mode during training to avoid loading Chronos2 on GPU
     cache_only = args.mode == "train"
+
+    # Ensure fresh forecasts for the latest data
     _ensure_forecasts(config, cache_only=cache_only)
+
+    # Force reload data module to get latest bars
     loaded = None if config.force_retrain else _load_pretrained_policy(config, price_offset_override=args.price_offset_pct)
+
+    # Log the latest timestamp in the data to verify fresh data
+    if loaded:
+        latest_ts = loaded[0].frame["timestamp"].max()
+        logger.info(f"Latest data timestamp: {latest_ts}")
     if loaded is None:
         data_module, policy, checkpoint_path = _train_policy(config, training_symbols=args.training_symbols)
     else:
@@ -506,6 +552,12 @@ def _run_trading_cycle(args: argparse.Namespace, config: TrainingConfig) -> None
         max_pct=max_pct,
     )
     actions = _infer_actions(policy, data_module, config, offset_params=offset_params)
+
+    # Log the latest action timestamp to verify we're using fresh data
+    if not actions.empty:
+        logger.info(f"Generated {len(actions)} actions, latest action timestamp: {actions.iloc[-1]['timestamp']}")
+        logger.info(f"Latest action prices: buy={actions.iloc[-1]['buy_price']:.2f}, sell={actions.iloc[-1]['sell_price']:.2f}")
+
     _simulate(actions, data_module, args.window_hours)
     if args.mode in {"simulate", "train"}:
         return

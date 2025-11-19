@@ -356,6 +356,15 @@ class DailyDataModule:
 
     def _split_frame(self, frame: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         total = len(frame)
+
+        # Special case: validation_days=0 means use ALL data for training
+        if self.config.validation_days == 0:
+            # Use full frame for training, create minimal validation set from end
+            train = frame.reset_index(drop=True)
+            # Validation set is just the last sequence (needed to keep trainer happy)
+            val = frame.iloc[-(self.sequence_length + 1):].reset_index(drop=True)
+            return train, val
+
         min_tail = max(self.sequence_length + 1, self.config.validation_days)
         dyn_tail = int(total * self.config.val_fraction)
         tail = max(min_tail, dyn_tail)

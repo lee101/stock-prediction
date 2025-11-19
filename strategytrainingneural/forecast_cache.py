@@ -4,12 +4,13 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 
 from strategytraining.collect_strategy_pnl_dataset import StrategyPnLCollector
+from src.chronos2_params import resolve_chronos2_params
 
 try:  # pragma: no cover - optional dependency in tests
     from src.models.chronos2_wrapper import (
@@ -31,12 +32,38 @@ ForecastRow = Dict[str, object]
 WrapperFactory = Callable[[], object]
 
 
+REQUIRED_QUANTILES: Tuple[float, ...] = (0.1, 0.5, 0.9)
+
+
 @dataclass
 class ForecastGenerationConfig:
     context_length: int = 512
     prediction_length: int = 1
     quantile_levels: Sequence[float] = DEFAULT_QUANTILE_LEVELS
     batch_size: int = 256
+    frequency: str = "daily"
+    use_symbol_hyperparams: bool = True
+
+    def __post_init__(self) -> None:  # pragma: no cover - trivial normalization
+        quantiles = tuple(float(level) for level in self.quantile_levels)
+        deduped = sorted({round(level, 8) for level in (*quantiles, *REQUIRED_QUANTILES)})
+        self.quantile_levels = tuple(deduped)
+        freq = (self.frequency or "daily").strip().lower()
+        if freq not in {"daily", "hourly"}:
+            freq = "daily"
+        self.frequency = freq
+
+
+@dataclass(frozen=True)
+class SymbolChronosSpec:
+    symbol: str
+    context_length: int
+    prediction_length: int
+    quantile_levels: Tuple[float, ...]
+    batch_size: int
+    predict_kwargs: Mapping[str, Any]
+    config_name: str = ""
+    config_path: Optional[str] = None
 
 
 class ForecastCache:
@@ -81,7 +108,8 @@ class ChronosForecastGenerator:
         self.wrapper_kwargs = dict(wrapper_kwargs or {})
         self._wrapper_factory = wrapper_factory
         self._wrapper: Optional[object] = None
-        self._quantile_levels = tuple(config.quantile_levels)
+        self._base_quantile_levels = tuple(float(level) for level in config.quantile_levels)
+        self._symbol_specs: Dict[str, SymbolChronosSpec] = {}
 
     def _ensure_wrapper(self) -> object:
         if self._wrapper is not None:
@@ -96,9 +124,74 @@ class ChronosForecastGenerator:
         kwargs.setdefault("device_map", "cuda")
         kwargs.setdefault("default_context_length", self.config.context_length)
         kwargs.setdefault("default_batch_size", self.config.batch_size)
-        kwargs.setdefault("quantile_levels", self._quantile_levels)
+        kwargs.setdefault("quantile_levels", self._base_quantile_levels)
         self._wrapper = Chronos2OHLCWrapper.from_pretrained(**kwargs)
         return self._wrapper
+
+    def _normalize_quantiles(self, levels: Optional[Sequence[float]]) -> Tuple[float, ...]:
+        raw = tuple(float(level) for level in (levels or self._base_quantile_levels))
+        merged = (*raw, *REQUIRED_QUANTILES)
+        deduped = sorted({round(level, 8) for level in merged})
+        return tuple(deduped)
+
+    def _spec_from_config(self, symbol: str) -> SymbolChronosSpec:
+        return SymbolChronosSpec(
+            symbol=symbol,
+            context_length=int(self.config.context_length),
+            prediction_length=int(self.config.prediction_length),
+            quantile_levels=self._normalize_quantiles(self._base_quantile_levels),
+            batch_size=int(self.config.batch_size),
+            predict_kwargs={},
+        )
+
+    def _resolve_symbol_spec(self, symbol: str) -> SymbolChronosSpec:
+        key = symbol.upper()
+        cached = self._symbol_specs.get(key)
+        if cached is not None:
+            return cached
+
+        if not self.config.use_symbol_hyperparams:
+            spec = self._spec_from_config(key)
+            self._symbol_specs[key] = spec
+            return spec
+
+        try:
+            params = resolve_chronos2_params(
+                key,
+                frequency=self.config.frequency,
+                default_prediction_length=self.config.prediction_length,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Chronos2 hyperparameter lookup failed for %s (%s); falling back to defaults.",
+                key,
+                exc,
+            )
+            spec = self._spec_from_config(key)
+        else:
+            quantiles = self._normalize_quantiles(params.get("quantile_levels"))
+            spec = SymbolChronosSpec(
+                symbol=key,
+                context_length=int(params.get("context_length", self.config.context_length)),
+                prediction_length=int(params.get("prediction_length", self.config.prediction_length)),
+                quantile_levels=quantiles,
+                batch_size=int(params.get("batch_size", self.config.batch_size)),
+                predict_kwargs=dict(params.get("predict_kwargs") or {}),
+                config_name=str(params.get("_config_name") or ""),
+                config_path=params.get("_config_path"),
+            )
+            if spec.config_path:
+                logger.info(
+                    "Using Chronos2 hyperparams for %s from %s (ctx=%d, batch=%d, q=%s).",
+                    key,
+                    spec.config_path,
+                    spec.context_length,
+                    spec.batch_size,
+                    ",".join(f"{level:.2f}" for level in spec.quantile_levels),
+                )
+
+        self._symbol_specs[key] = spec
+        return spec
 
     def _load_symbol_history(self, symbol: str) -> pd.DataFrame:
         df = self.collector.load_symbol_data(symbol)
@@ -151,6 +244,8 @@ class ChronosForecastGenerator:
                 logger.info("Skipping %s – not enough rows for forecast generation.", symbol)
                 continue
 
+            spec = self._resolve_symbol_spec(symbol)
+
             existing = self.cache.load(symbol)
             existing_timestamps = set()
             if not existing.empty and "timestamp" in existing.columns:
@@ -167,7 +262,7 @@ class ChronosForecastGenerator:
                     break
                 if target_ts in existing_timestamps:
                     continue
-                start_idx = max(0, target_idx - self.config.context_length)
+                start_idx = max(0, target_idx - spec.context_length)
                 context_slice = history.iloc[start_idx:target_idx].copy()
                 if context_slice.empty:
                     continue
@@ -179,7 +274,17 @@ class ChronosForecastGenerator:
                     continue
                 wrapper = wrapper or self._ensure_wrapper()
                 try:
-                    row = self._predict_row(wrapper, symbol, context_slice, target_ts)
+                    row = self._predict_row(
+                        wrapper,
+                        symbol,
+                        context_slice,
+                        target_ts,
+                        quantile_levels=spec.quantile_levels,
+                        prediction_length=spec.prediction_length,
+                        batch_size=spec.batch_size,
+                        context_length=spec.context_length,
+                        predict_kwargs=spec.predict_kwargs,
+                    )
                 except Exception as exc:
                     logger.warning("Chronos forecast failed for %s at %s: %s", symbol, target_ts, exc)
                     continue
@@ -205,13 +310,21 @@ class ChronosForecastGenerator:
         symbol: str,
         context_slice: pd.DataFrame,
         target_ts: pd.Timestamp,
+        *,
+        quantile_levels: Sequence[float],
+        prediction_length: int,
+        batch_size: int,
+        context_length: int,
+        predict_kwargs: Mapping[str, Any],
     ) -> ForecastRow:
         prediction = wrapper.predict_ohlc(
             context_slice,
             symbol=symbol,
-            prediction_length=self.config.prediction_length,
-            context_length=self.config.context_length,
-            batch_size=self.config.batch_size,
+            prediction_length=prediction_length,
+            context_length=context_length,
+            batch_size=batch_size,
+            quantile_levels=quantile_levels,
+            predict_kwargs=predict_kwargs,
         )
         quantile_frames: Mapping[float, pd.DataFrame] = prediction.quantile_frames
 
@@ -254,7 +367,7 @@ class ChronosForecastGenerator:
             "forecast_move_pct": move_pct,
             "forecast_volatility_pct": volatility_pct,
             "context_close": last_close,
-            "quantile_levels": json.dumps(self._quantile_levels),
+            "quantile_levels": json.dumps(tuple(float(q) for q in quantile_levels)),
         }
         return row
 
