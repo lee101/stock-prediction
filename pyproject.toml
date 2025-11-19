@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "stock-trading-suite"
 version = "0.1.0"
 description = "Production trading bot and research environment."
-readme = "readme.md"
+readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
     "numpy>=1.26,<2",
