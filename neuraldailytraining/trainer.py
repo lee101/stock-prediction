@@ -233,7 +233,21 @@ class NeuralDailyTrainer:
             batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
             use_amp = scaler is not None
             with torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype):
-                outputs = model(batch["features"])
+                # Create group_mask for cross-symbol attention if group_ids available
+                group_mask = None
+                if "group_id" in batch:
+                    group_ids = batch["group_id"]
+                    # Items with same group_id can attend to each other
+                    group_mask = group_ids.unsqueeze(0) == group_ids.unsqueeze(1)
+
+                # Call model with group_mask if it supports it
+                if hasattr(model, 'blocks') and group_mask is not None:
+                    # MultiSymbolDailyPolicy with cross-attention
+                    outputs = model(batch["features"], group_mask=group_mask)
+                else:
+                    # Legacy DailyMultiAssetPolicy
+                    outputs = model(batch["features"])
+
                 asset_class_flag = batch["asset_class"].view(-1)
                 actions = model.decode_actions(
                     outputs,
@@ -259,17 +273,27 @@ class NeuralDailyTrainer:
                 )
                 loss = -score.mean()
                 inventory_path = sim.inventory_path
+
+                # Calculate leverage cost: charge for any position > 1x (stocks only)
+                # Crypto is already capped at 1x so won't have leverage
+                leveraged_amount = torch.relu(inventory_path - 1.0)
+
+                # Only stocks pay leverage fee (asset_class_flag <= 0.5 means stock)
+                stock_mask = (asset_class_flag <= 0.5).float().unsqueeze(-1)
+                stock_leverage = leveraged_amount * stock_mask
+
+                fee_per_step = self.config.leverage_fee_rate / max(1, self.config.steps_per_year)
+                if fee_per_step > 0:
+                    loss = loss + fee_per_step * stock_leverage.mean()
+
+                # Also track excess above hard limits for monitoring
                 limits = torch.where(
                     asset_class_flag > 0.5,
                     torch.as_tensor(self.config.crypto_max_leverage, device=inventory_path.device, dtype=inventory_path.dtype),
                     torch.as_tensor(self.config.equity_max_leverage, device=inventory_path.device, dtype=inventory_path.dtype),
                 )
                 excess = torch.relu(inventory_path - limits.unsqueeze(-1))
-                avg_excess = excess.mean()
-                fee_per_step = self.config.leverage_fee_rate / max(1, self.config.steps_per_year)
-                if fee_per_step > 0:
-                    loss = loss + fee_per_step * avg_excess
-                over_leverage_value = avg_excess.detach()
+                over_leverage_value = excess.mean().detach()
                 if self.config.exposure_penalty > 0:
                     avg_amount = actions["trade_amount"].mean()
                     risk_cap = torch.as_tensor(self.config.risk_threshold, dtype=avg_amount.dtype, device=avg_amount.device)

@@ -41,11 +41,12 @@ def _storage_symbol(symbol: str) -> str:
 
 
 def _stem_to_symbol(stem: str) -> str:
-    """Infer the logical symbol name from a training CSV filename stem."""
-    upper = stem.upper()
-    if upper.endswith("-USD"):
-        return upper.replace("-", "/")
-    return upper
+    """Infer the logical symbol name from a training CSV filename stem.
+
+    Keep symbols as-is without slash conversion since Alpaca stock API
+    doesn't support slash format for crypto.
+    """
+    return stem.upper()
 
 
 def _normalize_columns(frame: pd.DataFrame) -> pd.DataFrame:
