@@ -88,6 +88,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--use-amp", action="store_true", help="Enable automatic mixed precision training")
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16"], default="bfloat16", help="AMP dtype (bfloat16 or float16)")
     parser.add_argument("--training-symbols", type=str, nargs="+", default=None, help="Train on multiple symbols (e.g., BTCUSD ETHUSD UNIUSD LINKUSD)")
+    parser.add_argument("--preload-checkpoint", type=str, default=None, help="Preload weights from checkpoint for fine-tuning")
     parser.add_argument("--dropout", type=float, default=None, help="Override transformer dropout rate")
     parser.add_argument("--symbol", type=str, default="LINKUSD", help="Primary trading symbol (e.g., UNIUSD)")
     parser.add_argument(
@@ -141,6 +142,9 @@ def _build_training_config(args: argparse.Namespace) -> TrainingConfig:
         cfg.checkpoint_root = Path(args.checkpoint_root)
     if args.checkpoint_path:
         cfg.preload_checkpoint_path = Path(args.checkpoint_path)
+    # Use --preload-checkpoint for explicit fine-tuning (takes precedence over checkpoint-path)
+    if hasattr(args, 'preload_checkpoint') and args.preload_checkpoint:
+        cfg.preload_checkpoint_path = Path(args.preload_checkpoint)
     cfg.force_retrain = bool(args.force_retrain)
     cfg.dry_train_steps = args.dry_train_steps
     if args.ema_decay is not None:
@@ -459,6 +463,11 @@ def _spawn_watchers(plan: TradingPlan, dry_run: bool, symbol: str) -> None:
     max_buy_qty = cash / plan.buy_price if plan.buy_price > 0 else 0.0
     buy_qty = trade_amt * max(0.0, max_buy_qty)
     sell_qty = trade_amt * max(0.0, inventory)
+
+    # If selling most of the position (>95%), sell ALL to avoid tiny residuals
+    # that can block future buy orders
+    if inventory > 0 and sell_qty >= inventory * 0.95:
+        sell_qty = inventory
 
     logger.info(
         "Trading plan %s amt=%.4f (raw=%.4f) buy=%.4f@%.4f sell=%.4f@%.4f cash=%.2f inv=%.4f",
