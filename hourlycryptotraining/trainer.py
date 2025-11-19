@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import time
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 import torch
 from torch.nn.utils import clip_grad_norm_
@@ -16,7 +19,7 @@ from .config import TrainingConfig
 from .data import FeatureNormalizer, HourlyCryptoDataModule, MultiSymbolDataModule
 from .model import HourlyCryptoPolicy, PolicyHeadConfig
 from .optimizers import Muon
-from .checkpoints import CheckpointRecord, save_checkpoint, write_manifest
+from .checkpoints import CheckpointRecord, save_checkpoint, write_manifest, load_checkpoint
 
 
 @dataclass
@@ -73,6 +76,23 @@ class HourlyCryptoTrainer:
                 num_layers=self.config.transformer_layers,
             )
         ).to(self.device)
+
+        # Preload weights from a previous checkpoint for fine-tuning
+        if self.config.preload_checkpoint_path:
+            preload_path = Path(self.config.preload_checkpoint_path)
+            if preload_path.exists():
+                logger.info(f"Preloading weights from {preload_path} for fine-tuning")
+                ckpt = load_checkpoint(preload_path)
+                # Load state dict with strict=False to allow architecture differences
+                missing, unexpected = model.load_state_dict(ckpt["state_dict"], strict=False)
+                if missing:
+                    logger.warning(f"Missing keys during preload: {missing}")
+                if unexpected:
+                    logger.warning(f"Unexpected keys during preload: {unexpected}")
+                logger.info(f"Successfully preloaded weights from epoch {ckpt.get('metrics', {}).get('epoch', '?')}")
+            else:
+                logger.warning(f"Preload checkpoint not found: {preload_path}")
+
         # Compile model for 2x speedup (disabled for long sequences due to CUDA RNG overflow)
         if self.config.use_compile:
             model = torch.compile(model, mode="max-autotune")
