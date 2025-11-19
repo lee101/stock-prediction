@@ -12,6 +12,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .config import DailyDatasetConfig
+from .symbol_groups import get_group_id
 
 LOGGER = logging.getLogger(__name__)
 
@@ -220,6 +221,8 @@ class DailySymbolDataset(Dataset):
         sequence_length: int,
         *,
         asset_flag: float,
+        symbol: str = "",
+        symbol_id: int = 0,
     ) -> None:
         if len(frame) != len(features):
             raise ValueError("Feature matrix must align with base frame length.")
@@ -229,6 +232,9 @@ class DailySymbolDataset(Dataset):
         self.features = features.astype(np.float32)
         self.seq_len = int(sequence_length)
         self.asset_flag = float(asset_flag)
+        self.symbol = symbol
+        self.symbol_id = symbol_id
+        self.group_id = get_group_id(symbol) if symbol else 0
         self.high = frame["high"].to_numpy(dtype=np.float32)
         self.low = frame["low"].to_numpy(dtype=np.float32)
         self.close = frame["close"].to_numpy(dtype=np.float32)
@@ -251,6 +257,8 @@ class DailySymbolDataset(Dataset):
             "chronos_high": torch.from_numpy(self.chronos_high[start:end]),
             "chronos_low": torch.from_numpy(self.chronos_low[start:end]),
             "asset_class": torch.tensor(self.asset_flag, dtype=torch.float32),
+            "group_id": torch.tensor(self.group_id, dtype=torch.long),
+            "symbol_id": torch.tensor(self.symbol_id, dtype=torch.long),
         }
 
 
@@ -285,6 +293,9 @@ class DailyDataModule:
         self.symbols = [symbol.upper() for symbol in config.symbols]
         if not self.symbols:
             raise ValueError("No symbols configured for daily training.")
+        # Create symbol to ID mapping for per-symbol tracking
+        self.symbol_to_id = {sym: i for i, sym in enumerate(sorted(self.symbols))}
+        self.id_to_symbol = {i: sym for sym, i in self.symbol_to_id.items()}
         self._builder = SymbolFrameBuilder(config, self.feature_columns)
         self._symbol_frames: Dict[str, pd.DataFrame] = {}
         self.train_dataset: Optional[MultiSymbolDataset] = None
@@ -328,16 +339,43 @@ class DailyDataModule:
         train_datasets: List[DailySymbolDataset] = []
         val_datasets: List[DailySymbolDataset] = []
 
+        skipped_symbols = []
+        valid_symbols = []
         for symbol in self.symbols:
-            frame = self._build_symbol_frame(symbol)
-            if len(frame) < max(self.config.min_history_days, self.sequence_length + 5):
-                raise ValueError(f"{symbol} only has {len(frame)} rows; need >= {self.config.min_history_days}.")
+            try:
+                frame = self._build_symbol_frame(symbol)
+            except Exception as e:
+                skipped_symbols.append((symbol, 0, f"Error: {e}"))
+                continue
+            min_rows = max(self.config.min_history_days, self.sequence_length + 5)
+            if len(frame) < min_rows:
+                skipped_symbols.append((symbol, len(frame), min_rows))
+                continue
+            valid_symbols.append(symbol)
             self._symbol_frames[symbol] = frame
             train_frame, val_frame = self._split_frame(frame)
             train_features = train_frame[list(self.feature_columns)].to_numpy(dtype=np.float32)
             asset_flag = float(frame["asset_class"].iloc[0]) if not frame.empty else 0.0
             symbol_data[symbol] = {"train": train_frame, "val": val_frame, "asset_flag": asset_flag}
             train_matrices.append(train_features)
+
+        if skipped_symbols:
+            print(f"Skipped {len(skipped_symbols)} symbols with insufficient data:")
+            for sym, rows, reason in skipped_symbols[:10]:  # Show first 10
+                if isinstance(reason, str):
+                    print(f"  {sym}: {reason}")
+                else:
+                    print(f"  {sym}: {rows} rows (need {reason})")
+            if len(skipped_symbols) > 10:
+                print(f"  ... and {len(skipped_symbols) - 10} more")
+
+        if not valid_symbols:
+            raise ValueError("No symbols have sufficient data for training.")
+
+        # Update symbol mappings to only include valid symbols
+        self.symbols = valid_symbols
+        self.symbol_to_id = {sym: i for i, sym in enumerate(sorted(valid_symbols))}
+        self.id_to_symbol = {i: sym for sym, i in self.symbol_to_id.items()}
 
         stacked = np.concatenate(train_matrices, axis=0)
         self.normalizer = FeatureNormalizer.fit(stacked)
@@ -348,8 +386,9 @@ class DailyDataModule:
             train_norm = self.normalizer.transform(train_frame[list(self.feature_columns)].to_numpy(dtype=np.float32))
             val_norm = self.normalizer.transform(val_frame[list(self.feature_columns)].to_numpy(dtype=np.float32))
             asset_flag = frames.get("asset_flag", 0.0)
-            train_datasets.append(DailySymbolDataset(train_frame, train_norm, self.sequence_length, asset_flag=asset_flag))
-            val_datasets.append(DailySymbolDataset(val_frame, val_norm, self.sequence_length, asset_flag=asset_flag))
+            symbol_id = self.symbol_to_id.get(symbol, 0)
+            train_datasets.append(DailySymbolDataset(train_frame, train_norm, self.sequence_length, asset_flag=asset_flag, symbol=symbol, symbol_id=symbol_id))
+            val_datasets.append(DailySymbolDataset(val_frame, val_norm, self.sequence_length, asset_flag=asset_flag, symbol=symbol, symbol_id=symbol_id))
 
         self.train_dataset = MultiSymbolDataset(train_datasets)
         self.val_dataset = MultiSymbolDataset(val_datasets)
