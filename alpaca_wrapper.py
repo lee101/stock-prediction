@@ -420,7 +420,10 @@ def has_current_open_position(symbol: str, side: str) -> bool:
     current_positions = filter_to_realistic_positions(current_positions)
     for position in current_positions:
         # if market value is significant
-        if float(position.market_value) < 4:
+        # Use higher threshold for crypto (BTC can have tiny leftover positions worth $100+)
+        min_significant_value = 200 if symbol.upper().endswith("USD") and not symbol.upper().startswith("USD") else 4
+        if float(position.market_value) < min_significant_value:
+            logger.debug(f"Ignoring insignificant position {symbol}: ${float(position.market_value):.2f} < ${min_significant_value}")
             continue
         if pairs_equal(position.symbol, symbol):
             if is_buy_side(position.side) and is_buy_side(side):
@@ -485,11 +488,36 @@ def open_order_at_price_or_all(symbol, qty, side, price):
         if pairs_equal(order.symbol, symbol):
             cancel_order(order)
 
-    # Check for existing position
-    has_current_position = has_current_open_position(symbol, side)
-    if has_current_position:
-        logger.info(f"position {symbol} already open")
+    # Check for existing position and calculate remaining qty needed
+    current_positions = get_all_positions()
+    current_positions = filter_to_realistic_positions(current_positions)
+    current_qty = 0.0
+
+    for position in current_positions:
+        if pairs_equal(position.symbol, symbol):
+            pos_side = position.side
+            # Only count position if it's on the same side
+            if (is_buy_side(pos_side) and is_buy_side(side)) or (is_sell_side(pos_side) and is_sell_side(side)):
+                current_qty = float(position.qty)
+                break
+
+    # Calculate remaining qty needed
+    target_qty = float(qty)
+    remaining_qty = target_qty - current_qty
+
+    # Check if we've essentially reached target (within 1% tolerance)
+    if current_qty > 0 and remaining_qty <= target_qty * 0.01:
+        logger.info(f"Position {symbol} already at target: {current_qty:.6f} / {target_qty:.6f}")
         logger.error(f"RETURNING None - Position already open for {symbol} {side}")
+        return None
+
+    # If there's a partial position, adjust qty to remaining amount
+    if current_qty > 0 and remaining_qty > 0:
+        logger.info(f"Partial position for {symbol}: {current_qty:.6f} / {target_qty:.6f} ({(current_qty/target_qty)*100:.1f}%) - buying {remaining_qty:.6f} more")
+        qty = remaining_qty
+    elif remaining_qty <= 0:
+        logger.info(f"Position {symbol} exceeds target: {current_qty:.6f} > {target_qty:.6f}")
+        logger.error(f"RETURNING None - Position already exceeds target for {symbol} {side}")
         return None
 
     max_retries = 3

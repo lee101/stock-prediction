@@ -342,10 +342,6 @@ def download_stock_data_between_times(api, end, start, symbol):
         return daily_df
     else:
         daily_df = get_bars(api, end, start, symbol)
-        try:
-            daily_df.drop(['volume', 'trade_count', 'vwap'], axis=1, inplace=True)
-        except KeyError:
-            logger.info(f"{symbol} has no volume or something")
         return daily_df
 
 

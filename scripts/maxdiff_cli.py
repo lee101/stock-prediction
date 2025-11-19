@@ -413,19 +413,48 @@ def open_position_at_maxdiff_takeprofit(
 
                 position = _position_for_symbol(symbol, side)
                 active_orders = list(_orders_for_symbol(symbol, side=side))
+                current_qty = float(getattr(position, "qty", 0.0) or 0.0) if position else 0.0
                 status = _update_status(
                     config_path,
                     status,
                     active=True,
-                    position_qty=float(getattr(position, "qty", 0.0) or 0.0) if position else 0.0,
+                    position_qty=current_qty,
                     open_order_count=len(active_orders),
                 )
 
-                if position is not None:
-                    status = _update_status(config_path, status, state="position_open")
-                    time.sleep(poll_seconds)
-                    consecutive_errors = 0
-                    continue
+                # Check if position is significant enough to consider "full"
+                # Ignore tiny positions (< 0.5% of target or absolute minimum)
+                min_significant_qty = max(0.003, target_qty * 0.005)  # 0.5% of target or 0.003 minimum
+                remaining_qty = target_qty - current_qty
+
+                if position is not None and current_qty >= min_significant_qty:
+                    # Check if we've reached target (within 1% tolerance)
+                    if current_qty >= target_qty * 0.99:
+                        status = _update_status(config_path, status, state="position_open")
+                        time.sleep(poll_seconds)
+                        consecutive_errors = 0
+                        continue
+                    else:
+                        # Partial fill - need to buy more to reach target
+                        watcher_logger.info(
+                            "Partial position for %s: %.6f / %.6f (%.1f%%) - need %.6f more",
+                            symbol,
+                            current_qty,
+                            target_qty,
+                            (current_qty / target_qty) * 100,
+                            remaining_qty,
+                        )
+                        # Update target_qty to remaining amount for this iteration
+                        target_qty = remaining_qty
+                elif position is not None and current_qty > 0 and current_qty < min_significant_qty:
+                    # Tiny leftover position - ignore it and buy full target
+                    watcher_logger.info(
+                        "Ignoring insignificant position for %s: %.6f (< %.6f threshold) - buying full %.6f",
+                        symbol,
+                        current_qty,
+                        min_significant_qty,
+                        target_qty,
+                    )
 
                 if active_orders:
                     # Cancel orders older than 1 day (24 hours)

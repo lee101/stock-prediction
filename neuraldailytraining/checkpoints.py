@@ -100,6 +100,7 @@ def find_best_checkpoint(root: Path) -> Optional[Path]:
             candidate = manifest_path.parent / rel
             if not candidate.exists():
                 continue
+            # val_loss < best_loss correctly selects most negative (best) since loss = -score
             if val_loss < best_loss:
                 best_loss = val_loss
                 best_path = candidate
