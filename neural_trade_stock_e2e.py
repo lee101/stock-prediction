@@ -53,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--forecast-cache-writeback", action=argparse.BooleanOptionalAction, default=True, help="Persist filled forecasts to cache.")
     parser.add_argument("--use-amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--use-compile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--compile-mode", choices=("default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"), default="max-autotune")
+    parser.add_argument("--num-workers", type=int, default=0, help="Number of DataLoader workers for train/val loaders.")
     parser.add_argument("--output-json", help="Optional output path for plan mode results.")
     parser.add_argument(
         "--risk-threshold",
@@ -98,6 +100,8 @@ def run_training(args: argparse.Namespace) -> None:
         dry_train_steps=args.dry_train_steps,
         use_amp=args.use_amp,
         use_compile=args.use_compile,
+        compile_mode=args.compile_mode,
+        num_workers=args.num_workers,
         dataset=dataset_cfg,
     )
     module = DailyDataModule(dataset_cfg)
