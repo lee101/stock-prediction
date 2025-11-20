@@ -93,6 +93,7 @@ class DailyTrainingConfig:
     seed: int = 1337
     num_workers: int = 0
     use_compile: bool = True
+    compile_mode: str = "max-autotune"
     use_amp: bool = True
     amp_dtype: str = "bfloat16"
     use_tf32: bool = True

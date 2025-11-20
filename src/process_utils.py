@@ -753,8 +753,8 @@ def spawn_open_position_at_maxdiff_takeprofit(
             command,
             shell=True,
             env=_get_inherited_env(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
     except Exception as exc:

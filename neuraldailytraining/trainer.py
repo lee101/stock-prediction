@@ -111,7 +111,8 @@ class NeuralDailyTrainer:
         else:
             policy = DailyMultiAssetPolicy(policy_cfg).to(self.device)
         if self.config.use_compile:
-            policy = torch.compile(policy, mode="max-autotune")  # type: ignore[attr-defined]
+            compile_mode = getattr(self.config, "compile_mode", "max-autotune")
+            policy = torch.compile(policy, mode=compile_mode)  # type: ignore[attr-defined]
         optimizer = self._build_optimizer(policy)
         train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
         val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
