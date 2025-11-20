@@ -121,21 +121,30 @@ def simulate_hourly_trades(
     buy_prices: torch.Tensor,
     sell_prices: torch.Tensor,
     trade_intensity: torch.Tensor,
+    buy_trade_intensity: torch.Tensor | None = None,
+    sell_trade_intensity: torch.Tensor | None = None,
     maker_fee: float = DEFAULT_MAKER_FEE_RATE,
     initial_cash: float = 1.0,
     initial_inventory: float = 0.0,
     temperature: float = 5e-4,
+    max_leverage: float | torch.Tensor = 1.0,
 ) -> HourlySimulationResult:
     """Simulate hourly fills with differentiable maker execution logic.
 
     All tensors must share shape ``(..., T)`` where ``T`` is the number of
-    hours. The simulation enforces 1x leverage by reducing buy sizes when cash
-    is insufficient and sell sizes when inventory is depleted.
+    hours. ``max_leverage`` can be a scalar or tensor broadcastable to the same
+    shape and controls the per-asset leverage cap. When greater than 1 it
+    allows borrowing up to the specified multiple of equity; when less than 1
+    it throttles position sizes.
     """
 
     _check_shapes(highs, lows, closes, buy_prices, sell_prices, trade_intensity)
     if closes.ndim == 0:
         raise ValueError("Input tensors must include a time dimension")
+
+    buy_intensity = buy_trade_intensity if buy_trade_intensity is not None else trade_intensity
+    sell_intensity = sell_trade_intensity if sell_trade_intensity is not None else trade_intensity
+    _check_shapes(highs, buy_intensity, sell_intensity)
 
     batch_shape = closes.shape[:-1]
     steps = closes.shape[-1]
@@ -143,6 +152,7 @@ def simulate_hourly_trades(
     dtype = closes.dtype
     temperature_tensor = torch.as_tensor(temperature, dtype=dtype, device=device)
     fee = torch.as_tensor(maker_fee, dtype=dtype, device=device)
+    max_leverage_tensor = torch.broadcast_to(_as_tensor(max_leverage, closes), closes.shape)
     cash = torch.full(batch_shape, initial_cash, dtype=dtype, device=device)
     inventory = torch.full(batch_shape, initial_inventory, dtype=dtype, device=device)
     prev_value = cash + inventory * closes[..., 0]
@@ -163,18 +173,34 @@ def simulate_hourly_trades(
         low = lows[..., idx]
         b_price = torch.clamp(buy_prices[..., idx], min=_EPS)
         s_price = torch.clamp(sell_prices[..., idx], min=_EPS)
-        intensity = torch.clamp(trade_intensity[..., idx], min=0.0, max=1.0)
+        step_limit = torch.clamp(max_leverage_tensor[..., idx], min=_EPS)
+        b_intensity = torch.minimum(torch.clamp(buy_intensity[..., idx], min=0.0), step_limit)
+        s_intensity = torch.minimum(torch.clamp(sell_intensity[..., idx], min=0.0), step_limit)
+        b_frac_limit = b_intensity / torch.clamp(step_limit, min=_EPS)
+        s_frac_limit = s_intensity / torch.clamp(step_limit, min=_EPS)
 
         buy_prob = approx_buy_fill_probability(b_price, low, close, temperature=float(temperature_tensor))
         sell_prob = approx_sell_fill_probability(s_price, high, close, temperature=float(temperature_tensor))
 
-        max_buy = torch.where(
+        equity = cash + inventory * close
+        # Allow borrowing up to ``step_limit`` * equity; translated to units
+        max_buy_cash = torch.where(
             b_price > 0,
             cash / _safe_denominator(b_price * (1.0 + fee)),
             torch.zeros_like(cash),
         )
-        buy_qty = intensity * torch.clamp(max_buy, min=0.0)
-        sell_qty = intensity * torch.clamp(inventory, min=0.0)
+
+        target_notional = step_limit * torch.clamp(equity, min=_EPS)
+        current_notional = inventory * b_price
+        leveraged_capacity = torch.where(
+            b_price > 0,
+            torch.clamp(target_notional - current_notional, min=0.0) / _safe_denominator(b_price * (1.0 + fee)),
+            torch.zeros_like(cash),
+        )
+
+        buy_capacity = torch.where(step_limit <= 1.0 + 1e-6, torch.clamp(max_buy_cash, min=0.0), leveraged_capacity)
+        buy_qty = b_frac_limit * buy_capacity
+        sell_qty = s_frac_limit * torch.clamp(inventory, min=0.0)
 
         executed_buys = buy_qty * buy_prob
         executed_sells = sell_qty * sell_prob
@@ -229,9 +255,12 @@ def simulate_hourly_trades_binary(
     buy_prices: torch.Tensor,
     sell_prices: torch.Tensor,
     trade_intensity: torch.Tensor,
+    buy_trade_intensity: torch.Tensor | None = None,
+    sell_trade_intensity: torch.Tensor | None = None,
     maker_fee: float = DEFAULT_MAKER_FEE_RATE,
     initial_cash: float = 1.0,
     initial_inventory: float = 0.0,
+    max_leverage: float | torch.Tensor = 1.0,
 ) -> HourlySimulationResult:
     """Binary fill simulation (100% or 0%) for realistic backtesting.
 
@@ -243,6 +272,10 @@ def simulate_hourly_trades_binary(
     if closes.ndim == 0:
         raise ValueError("Input tensors must include a time dimension")
 
+    buy_intensity = buy_trade_intensity if buy_trade_intensity is not None else trade_intensity
+    sell_intensity = sell_trade_intensity if sell_trade_intensity is not None else trade_intensity
+    _check_shapes(highs, buy_intensity, sell_intensity)
+
     batch_shape = closes.shape[:-1]
     steps = closes.shape[-1]
     device = closes.device
@@ -250,6 +283,7 @@ def simulate_hourly_trades_binary(
     fee = torch.as_tensor(maker_fee, dtype=dtype, device=device)
     cash = torch.full(batch_shape, initial_cash, dtype=dtype, device=device)
     inventory = torch.full(batch_shape, initial_inventory, dtype=dtype, device=device)
+    max_leverage_tensor = torch.broadcast_to(_as_tensor(max_leverage, closes), closes.shape)
     prev_value = cash + inventory * closes[..., 0]
 
     pnl_list = []
@@ -267,21 +301,34 @@ def simulate_hourly_trades_binary(
         low = lows[..., idx]
         b_price = torch.clamp(buy_prices[..., idx], min=_EPS)
         s_price = torch.clamp(sell_prices[..., idx], min=_EPS)
-        intensity = torch.clamp(trade_intensity[..., idx], min=0.0, max=1.0)
+        step_limit = torch.clamp(max_leverage_tensor[..., idx], min=_EPS)
+        b_intensity = torch.minimum(torch.clamp(buy_intensity[..., idx], min=0.0), step_limit)
+        s_intensity = torch.minimum(torch.clamp(sell_intensity[..., idx], min=0.0), step_limit)
+        b_frac_limit = b_intensity / torch.clamp(step_limit, min=_EPS)
+        s_frac_limit = s_intensity / torch.clamp(step_limit, min=_EPS)
 
         # Binary fills: 100% if price touches limit, 0% otherwise
-        buy_fill = (low <= b_price) & (intensity > 0)
-        sell_fill = (high >= s_price) & (intensity > 0)
+        buy_fill = (low <= b_price) & (b_intensity > 0)
+        sell_fill = (high >= s_price) & (s_intensity > 0)
 
-        max_buy = torch.where(
+        equity = cash + inventory * close
+        max_buy_cash = torch.where(
             b_price > 0,
             cash / _safe_denominator(b_price * (1.0 + fee)),
             torch.zeros_like(cash),
         )
+        target_notional = step_limit * torch.clamp(equity, min=_EPS)
+        current_notional = inventory * b_price
+        leveraged_capacity = torch.where(
+            b_price > 0,
+            torch.clamp(target_notional - current_notional, min=0.0) / _safe_denominator(b_price * (1.0 + fee)),
+            torch.zeros_like(cash),
+        )
+        buy_capacity = torch.where(step_limit <= 1.0 + 1e-6, torch.clamp(max_buy_cash, min=0.0), leveraged_capacity)
 
-        # Execute full intensity amount if filled, 0 otherwise
-        executed_buys = torch.where(buy_fill, intensity * torch.clamp(max_buy, min=0.0), torch.zeros_like(cash))
-        executed_sells = torch.where(sell_fill, intensity * torch.clamp(inventory, min=0.0), torch.zeros_like(cash))
+        # Execute full intensity fraction of available capacity if filled, 0 otherwise
+        executed_buys = torch.where(buy_fill, b_frac_limit * buy_capacity, torch.zeros_like(cash))
+        executed_sells = torch.where(sell_fill, s_frac_limit * torch.clamp(inventory, min=0.0), torch.zeros_like(cash))
 
         cash = cash - executed_buys * b_price * (1.0 + fee) + executed_sells * s_price * (1.0 - fee)
         inventory = inventory + executed_buys - executed_sells

@@ -36,9 +36,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-root", default="neuraldailytraining/checkpoints")
     parser.add_argument("--checkpoint", help="Checkpoint path for --mode plan.")
     parser.add_argument("--run-name", help="Optional run name override.")
+    parser.add_argument("--dry-train-steps", type=int, help="Optional early stop after N optimizer steps.")
     parser.add_argument("--device", help="Torch device override (cpu, cuda, cuda:0, ...).")
     parser.add_argument("--val-fraction", type=float, default=0.2, help="Validation fraction for training splits.")
     parser.add_argument("--validation-days", type=int, default=90, help="Minimum validation tail length.")
+    parser.add_argument("--grouping-strategy", choices=("static", "correlation"), default="correlation")
+    parser.add_argument("--symbol-dropout-rate", type=float, default=0.1)
+    parser.add_argument("--exclude-symbols-file", help="Optional newline-delimited list of symbols to drop from training.")
+    parser.add_argument("--exclude-symbol", nargs="*", help="Inline symbols to drop from training.")
+    parser.add_argument("--corr-min", type=float, default=0.6, help="Correlation threshold for grouping.")
+    parser.add_argument("--corr-max-group", type=int, default=12, help="Max symbols per correlation cluster.")
+    parser.add_argument("--corr-window-days", type=int, default=252)
+    parser.add_argument("--corr-min-overlap", type=int, default=60)
+    parser.add_argument("--require-forecasts", action=argparse.BooleanOptionalAction, default=False, help="Fail if forecast cache missing rows.")
+    parser.add_argument("--forecast-fill-strategy", choices=("persistence", "fail"), default="persistence")
+    parser.add_argument("--forecast-cache-writeback", action=argparse.BooleanOptionalAction, default=True, help="Persist filled forecasts to cache.")
+    parser.add_argument("--use-amp", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use-compile", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--output-json", help="Optional output path for plan mode results.")
     parser.add_argument(
         "--risk-threshold",
@@ -57,6 +71,17 @@ def _build_dataset_config(args: argparse.Namespace) -> DailyDatasetConfig:
         sequence_length=args.sequence_length,
         val_fraction=args.val_fraction,
         validation_days=args.validation_days,
+        require_forecasts=args.require_forecasts,
+        forecast_fill_strategy=args.forecast_fill_strategy,
+        forecast_cache_writeback=args.forecast_cache_writeback,
+        grouping_strategy=args.grouping_strategy,
+        symbol_dropout_rate=args.symbol_dropout_rate,
+        exclude_symbols=args.exclude_symbol,
+        exclude_symbols_file=Path(args.exclude_symbols_file) if args.exclude_symbols_file else None,
+        correlation_min_corr=args.corr_min,
+        correlation_max_group_size=args.corr_max_group,
+        correlation_window_days=args.corr_window_days,
+        correlation_min_overlap=args.corr_min_overlap,
     )
 
 
@@ -70,6 +95,9 @@ def run_training(args: argparse.Namespace) -> None:
         checkpoint_root=Path(args.checkpoint_root),
         run_name=args.run_name,
         device=args.device,
+        dry_train_steps=args.dry_train_steps,
+        use_amp=args.use_amp,
+        use_compile=args.use_compile,
         dataset=dataset_cfg,
     )
     module = DailyDataModule(dataset_cfg)

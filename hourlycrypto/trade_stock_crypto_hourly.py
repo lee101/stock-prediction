@@ -41,7 +41,8 @@ class TradingPlan:
     timestamp: pd.Timestamp
     buy_price: float
     sell_price: float
-    trade_amount: float
+    buy_amount: float
+    sell_amount: float
 
 
 @dataclass
@@ -74,6 +75,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=["train", "simulate", "trade"], default="trade")
     parser.add_argument("--daemon", action="store_true", help="Run continuously, waking every hour aligned to UTC")
     parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--learning-rate", type=float, default=None, help="Override learning rate (e.g., 1e-4 for fine-tuning)")
     parser.add_argument("--sequence-length", type=int, default=72)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--dry-run", action="store_true", help="Skip watcher spawning")
@@ -135,6 +137,8 @@ def _build_training_config(args: argparse.Namespace) -> TrainingConfig:
     cfg.epochs = args.epochs
     cfg.batch_size = args.batch_size
     cfg.sequence_length = args.sequence_length
+    if hasattr(args, 'learning_rate') and args.learning_rate is not None:
+        cfg.learning_rate = args.learning_rate
     cfg.dataset.sequence_length = args.sequence_length
     cfg.dataset.forecast_cache_dir = cfg.forecast_config.cache_dir
     cfg.run_name = cfg.run_name or f"hourlycrypto_{pd.Timestamp.utcnow().strftime('%Y%m%d_%H%M%S')}"
@@ -272,7 +276,8 @@ def _load_pretrained_policy(
         )
     )
 
-    missing_keys, unexpected_keys = policy.load_state_dict(state_dict, strict=False)
+    upgraded_state = HourlyCryptoPolicy.upgrade_legacy_state_dict(dict(state_dict))
+    missing_keys, unexpected_keys = policy.load_state_dict(upgraded_state, strict=False)
 
     # Log any compatibility issues
     if missing_keys:
@@ -331,6 +336,8 @@ def _infer_actions(
                     "buy_price": float(decoded["buy_price"][0, -1].item()),
                     "sell_price": float(decoded["sell_price"][0, -1].item()),
                     "trade_amount": float(decoded["trade_amount"][0, -1].item()),
+                    "buy_amount": float(decoded["buy_amount"][0, -1].item()),
+                    "sell_amount": float(decoded["sell_amount"][0, -1].item()),
                     "offset_pct": float(offset_tensor[0, -1].item()) if offset_tensor is not None else float(config.price_offset_pct),
                 }
             )
@@ -398,7 +405,8 @@ def _build_trading_plan(actions: pd.DataFrame) -> Optional[TradingPlan]:
         timestamp=pd.Timestamp(latest["timestamp"]),
         buy_price=float(latest["buy_price"]),
         sell_price=float(latest["sell_price"]),
-        trade_amount=float(latest.get("trade_amount", 0.0)),
+        buy_amount=float(latest.get("buy_amount", latest.get("trade_amount", 0.0))),
+        sell_amount=float(latest.get("sell_amount", latest.get("trade_amount", 0.0))),
     )
 
 
@@ -459,34 +467,55 @@ def _spawn_watchers(plan: TradingPlan, dry_run: bool, symbol: str) -> None:
 
     cash = _available_cash()
     inventory = _current_inventory(symbol)
-    trade_amt = max(0.0, min(1.0, plan.trade_amount))
+    buy_amt = max(0.0, min(1.0, plan.buy_amount))
+    sell_amt = max(0.0, min(1.0, plan.sell_amount))
     max_buy_qty = cash / plan.buy_price if plan.buy_price > 0 else 0.0
-    buy_qty = trade_amt * max(0.0, max_buy_qty)
-    sell_qty = trade_amt * max(0.0, inventory)
+    buy_qty = buy_amt * max(0.0, max_buy_qty)
+    sell_qty = sell_amt * max(0.0, inventory)
 
     # If selling most of the position (>95%), sell ALL to avoid tiny residuals
     # that can block future buy orders
     if inventory > 0 and sell_qty >= inventory * 0.95:
         sell_qty = inventory
 
+    # SAFETY CHECK: Ensure sell_price > buy_price with minimum 3 basis points spread
+    # This prevents inverted prices and unprofitable trading
+    MIN_SPREAD_PCT = 0.0003  # 3 basis points = 0.03%
+    required_min_sell = plan.buy_price * (1.0 + MIN_SPREAD_PCT)
+    actual_spread_pct = ((plan.sell_price - plan.buy_price) / plan.buy_price * 100) if plan.buy_price > 0 else 0
+
+    if plan.sell_price <= plan.buy_price or plan.sell_price < required_min_sell:
+        logger.error(
+            "INVALID PRICE SPREAD for %s: buy=%.2f sell=%.2f (spread=%.4f%%). "
+            "Required min spread: %.4f%% (3bp). BLOCKING ALL TRADES!",
+            symbol,
+            plan.buy_price,
+            plan.sell_price,
+            actual_spread_pct,
+            MIN_SPREAD_PCT * 100,
+        )
+        return  # Exit immediately - do not place any orders
+
     logger.info(
-        "Trading plan %s amt=%.4f (raw=%.4f) buy=%.4f@%.4f sell=%.4f@%.4f cash=%.2f inv=%.4f",
+        "Trading plan %s amt=%.4f (raw=%.4f) buy=%.4f@%.2f sell=%.4f@%.2f spread=%.4f%% cash=%.2f inv=%.4f",
         plan.timestamp,
-        trade_amt,
-        plan.trade_amount,  # Log raw value from model
+        max(buy_amt, sell_amt),
+        max(buy_amt, sell_amt),  # Log raw value from model
         buy_qty,
         plan.buy_price,
         sell_qty,
         plan.sell_price,
+        actual_spread_pct,
         cash,
         inventory,
     )
 
     # Warn if model is outputting very low trade intensity
-    if trade_amt < 0.01:
+    if max(buy_amt, sell_amt) < 0.01:
         logger.warning(
-            "Model output very low trade_amount=%.6f → buy_qty=%.6f, sell_qty=%.6f (skipping trades)",
-            plan.trade_amount,
+            "Model output very low trade_amount=%.6f/%.6f → buy_qty=%.6f, sell_qty=%.6f (skipping trades)",
+            plan.buy_amount,
+            plan.sell_amount,
             buy_qty,
             sell_qty,
         )
@@ -514,7 +543,7 @@ def _spawn_watchers(plan: TradingPlan, dry_run: bool, symbol: str) -> None:
         try:
             spawn_close_position_at_maxdiff_takeprofit(
                 symbol,
-                "buy",
+                "sell",
                 plan.sell_price,
                 target_qty=sell_qty,
                 entry_strategy="hourlycrypto",
