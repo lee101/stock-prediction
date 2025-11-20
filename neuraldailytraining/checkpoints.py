@@ -28,6 +28,7 @@ def save_checkpoint(
     feature_columns: List[str],
     metrics: Dict[str, float],
     config: DailyTrainingConfig,
+    symbol_to_group_id: Optional[Dict[str, int]] = None,
 ) -> Path:
     payload = {
         "state_dict": {k: v.detach().cpu() for k, v in state_dict.items()},
@@ -35,6 +36,7 @@ def save_checkpoint(
         "feature_columns": list(feature_columns),
         "metrics": dict(metrics),
         "config": asdict(config),
+        "symbol_to_group_id": dict(symbol_to_group_id) if symbol_to_group_id else {},
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)
@@ -79,6 +81,7 @@ def load_checkpoint(path: Path) -> Dict[str, object]:
         "feature_columns": payload.get("feature_columns", []),
         "metrics": payload.get("metrics", {}),
         "config": payload.get("config"),
+        "symbol_to_group_id": payload.get("symbol_to_group_id", {}),
     }
 
 

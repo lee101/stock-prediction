@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch.nn.utils import clip_grad_norm_
@@ -21,7 +22,30 @@ from wandboard import WandBoardLogger
 from .checkpoints import CheckpointRecord, save_checkpoint, write_manifest
 from .config import DailyTrainingConfig
 from .data import DailyDataModule, FeatureNormalizer
-from .model import DailyMultiAssetPolicy, DailyPolicyConfig
+from .model import DailyMultiAssetPolicy, DailyPolicyConfig, MultiSymbolDailyPolicy
+
+
+def apply_symbol_dropout(
+    features: torch.Tensor,
+    group_mask: Optional[torch.Tensor],
+    dropout_rate: float,
+    *,
+    training: bool,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+    """Randomly drop symbols to make cross-attention robust to missing members."""
+
+    if dropout_rate <= 0 or not training:
+        zero_mask = torch.zeros(features.shape[0], device=features.device, dtype=torch.bool)
+        return features, group_mask, zero_mask
+
+    drop_mask = torch.rand(features.shape[0], device=features.device) < dropout_rate
+    if drop_mask.any():
+        keep_mask = (~drop_mask).view(-1, 1, 1)
+        features = features * keep_mask
+        if group_mask is not None:
+            keep_vec = (~drop_mask).view(-1, 1)
+            group_mask = group_mask & keep_vec & keep_vec.transpose(0, 1)
+    return features, group_mask, drop_mask
 
 
 @dataclass
@@ -71,18 +95,21 @@ class NeuralDailyTrainer:
         if self.config.use_tf32 and torch.cuda.is_available():
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
-        policy = DailyMultiAssetPolicy(
-            DailyPolicyConfig(
-                input_dim=len(self.data.feature_columns),
-                hidden_dim=self.config.transformer_dim,
-                dropout=self.config.transformer_dropout,
-                price_offset_pct=self.config.price_offset_pct,
-                max_trade_qty=self.config.max_trade_qty,
-                min_price_gap_pct=self.config.min_price_gap_pct,
-                num_heads=self.config.transformer_heads,
-                num_layers=self.config.transformer_layers,
-            )
-        ).to(self.device)
+        policy_cfg = DailyPolicyConfig(
+            input_dim=len(self.data.feature_columns),
+            hidden_dim=self.config.transformer_dim,
+            dropout=self.config.transformer_dropout,
+            price_offset_pct=self.config.price_offset_pct,
+            max_trade_qty=self.config.max_trade_qty,
+            min_price_gap_pct=self.config.min_price_gap_pct,
+            num_heads=self.config.transformer_heads,
+            num_layers=self.config.transformer_layers,
+            use_cross_attention=self.config.use_cross_attention,
+        )
+        if self.config.use_cross_attention:
+            policy = MultiSymbolDailyPolicy(policy_cfg).to(self.device)
+        else:
+            policy = DailyMultiAssetPolicy(policy_cfg).to(self.device)
         if self.config.use_compile:
             policy = torch.compile(policy, mode="max-autotune")  # type: ignore[attr-defined]
         optimizer = self._build_optimizer(policy)
@@ -107,8 +134,9 @@ class NeuralDailyTrainer:
         with WandBoardLogger(**wandb_kwargs) as tracker:
             tracker.watch(policy)
             global_step = 0
+            best_symbol_stats: Dict[int, Dict[str, float]] = {}
             for epoch in range(1, self.config.epochs + 1):
-                train_metrics, global_step = self._run_epoch(
+                train_metrics, global_step, train_symbol_stats = self._run_epoch(
                     policy,
                     train_loader,
                     optimizer,
@@ -118,7 +146,7 @@ class NeuralDailyTrainer:
                     ema_state=ema_state,
                     scaler=scaler,
                 )
-                val_metrics, _ = self._run_epoch(
+                val_metrics, _, val_symbol_stats = self._run_epoch(
                     policy,
                     val_loader,
                     optimizer=None,
@@ -183,10 +211,23 @@ class NeuralDailyTrainer:
                     log_dict["binary/buy_fill"] = val_metrics["binary_buy_fill"]
                     log_dict["binary/sell_fill"] = val_metrics["binary_sell_fill"]
 
+                # Per-symbol logging for quick triage
+                def _symbol_logs(stats: Dict[int, Dict[str, float]], prefix: str) -> Dict[str, float]:
+                    logs: Dict[str, float] = {}
+                    for sid, payload in stats.items():
+                        symbol = self.data.id_to_symbol.get(int(sid), f"id_{sid}")
+                        for key, value in payload.items():
+                            logs[f"{prefix}/{symbol}/{key}"] = float(value)
+                    return logs
+
+                log_dict.update(_symbol_logs(train_symbol_stats, "symbol/train"))
+                log_dict.update(_symbol_logs(val_symbol_stats, "symbol/val"))
+
                 tracker.log(log_dict, step=epoch)
                 if val_metrics["score"] > best_score:
                     best_score = val_metrics["score"]
                     best_state = {k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
+                    best_symbol_stats = val_symbol_stats
                 if self.config.dry_train_steps and global_step >= self.config.dry_train_steps:
                     break
 
@@ -203,6 +244,7 @@ class NeuralDailyTrainer:
             checkpoint_paths=[record.path for record in self._checkpoint_records],
             best_checkpoint=self.best_checkpoint_path,
         )
+        self._write_non_tradable(best_symbol_stats)
         return artifacts
 
     # ------------------------------------------------------------------
@@ -217,7 +259,7 @@ class NeuralDailyTrainer:
         global_step: int,
         ema_state: Optional[Dict[str, torch.Tensor]] = None,
         scaler: Optional[torch.cuda.amp.GradScaler] = None,
-    ) -> (Dict[str, float], int):
+    ) -> (Dict[str, float], int, Dict[int, Dict[str, float]]):
         if train:
             model.train()
         else:
@@ -228,11 +270,21 @@ class NeuralDailyTrainer:
         b_totals = {key: 0.0 for key in ("score", "return", "buy_fill", "sell_fill")}
         batches = 0
         amp_dtype = torch.bfloat16 if self.config.amp_dtype == "bfloat16" else torch.float16
+        symbol_totals: Dict[int, Dict[str, float]] = {}
+
+        def _accumulate_symbol(metric: torch.Tensor, name: str, symbol_ids: torch.Tensor) -> None:
+            flat_ids = symbol_ids.detach().cpu().view(-1).tolist()
+            flat_vals = metric.detach().cpu().view(-1).tolist()
+            for sid, val in zip(flat_ids, flat_vals):
+                slot = symbol_totals.setdefault(int(sid), {"count": 0})
+                slot[name] = slot.get(name, 0.0) + float(val)
+                slot["count"] += 1
 
         for batch in loader:
             batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
             use_amp = scaler is not None
             with torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype):
+                features = batch["features"]
                 # Create group_mask for cross-symbol attention if group_ids available
                 group_mask = None
                 if "group_id" in batch:
@@ -240,15 +292,28 @@ class NeuralDailyTrainer:
                     # Items with same group_id can attend to each other
                     group_mask = group_ids.unsqueeze(0) == group_ids.unsqueeze(1)
 
+                # Drop random symbols to make model robust to missing members
+                features, group_mask, drop_mask = apply_symbol_dropout(
+                    features,
+                    group_mask,
+                    getattr(self.config.dataset, "symbol_dropout_rate", 0.0),
+                    training=train,
+                )
+
                 # Call model with group_mask if it supports it
                 if hasattr(model, 'blocks') and group_mask is not None:
                     # MultiSymbolDailyPolicy with cross-attention
-                    outputs = model(batch["features"], group_mask=group_mask)
+                    outputs = model(features, group_mask=group_mask)
                 else:
                     # Legacy DailyMultiAssetPolicy
-                    outputs = model(batch["features"])
+                    outputs = model(features)
 
                 asset_class_flag = batch["asset_class"].view(-1)
+                leverage_limits = torch.where(
+                    asset_class_flag > 0.5,
+                    torch.as_tensor(self.config.crypto_max_leverage, device=batch["high"].device, dtype=batch["high"].dtype),
+                    torch.as_tensor(self.config.equity_max_leverage, device=batch["high"].device, dtype=batch["high"].dtype),
+                )
                 actions = model.decode_actions(
                     outputs,
                     reference_close=batch["reference_close"],
@@ -256,6 +321,9 @@ class NeuralDailyTrainer:
                     chronos_low=batch["chronos_low"],
                     asset_class=asset_class_flag,
                 )
+                if drop_mask.any():
+                    keep = (~drop_mask).view(-1, 1)
+                    actions["trade_amount"] = actions["trade_amount"] * keep
                 sim = simulate_hourly_trades(
                     highs=batch["high"],
                     lows=batch["low"],
@@ -263,6 +331,7 @@ class NeuralDailyTrainer:
                     buy_prices=actions["buy_price"],
                     sell_prices=actions["sell_price"],
                     trade_intensity=actions["trade_amount"],
+                    max_leverage=leverage_limits.unsqueeze(-1),
                     maker_fee=self.config.maker_fee,
                     initial_cash=self.config.initial_cash,
                 )
@@ -271,7 +340,14 @@ class NeuralDailyTrainer:
                     return_weight=self.config.return_weight,
                     periods_per_year=self.periods_per_year,
                 )
+                symbol_ids = batch.get("symbol_id")
+                if symbol_ids is not None:
+                    _accumulate_symbol(score, "score", symbol_ids)
+                    _accumulate_symbol(ann_return, "return", symbol_ids)
+
                 loss = -score.mean()
+                if torch.isnan(loss) or torch.isinf(loss) or torch.isnan(score).any():
+                    raise RuntimeError("Non-finite loss/score detected; aborting training to prevent corrupt checkpoints.")
                 inventory_path = sim.inventory_path
 
                 # Calculate leverage cost: charge for any position > 1x (stocks only)
@@ -334,22 +410,23 @@ class NeuralDailyTrainer:
             totals["avg_over_leverage"] += float(over_leverage_value.item()) * batch_size
 
             if not train:
-                with torch.no_grad():
-                    binary = simulate_hourly_trades_binary(
-                        highs=batch["high"],
-                        lows=batch["low"],
-                        closes=batch["close"],
-                        buy_prices=actions["buy_price"],
-                        sell_prices=actions["sell_price"],
-                        trade_intensity=actions["trade_amount"],
-                        maker_fee=self.config.maker_fee,
-                        initial_cash=self.config.initial_cash,
-                    )
+                    with torch.no_grad():
+                        binary = simulate_hourly_trades_binary(
+                            highs=batch["high"],
+                            lows=batch["low"],
+                            closes=batch["close"],
+                            buy_prices=actions["buy_price"],
+                            sell_prices=actions["sell_price"],
+                            trade_intensity=actions["trade_amount"],
+                            max_leverage=leverage_limits.unsqueeze(-1),
+                            maker_fee=self.config.maker_fee,
+                            initial_cash=self.config.initial_cash,
+                        )
                     _, b_sortino, b_return = compute_hourly_objective(
                         binary.returns,
                         return_weight=self.config.return_weight,
                         periods_per_year=self.periods_per_year,
-                    )
+                        )
                     b_totals["score"] += float(b_sortino.mean().item()) * batch_size
                     b_totals["return"] += float(b_return.mean().item()) * batch_size
                     b_totals["buy_fill"] += float(binary.buy_fill_probability.mean().item()) * batch_size
@@ -370,7 +447,11 @@ class NeuralDailyTrainer:
             metrics["binary_return"] = b_totals["return"] / max(1, batches)
             metrics["binary_buy_fill"] = b_totals["buy_fill"] / max(1, batches)
             metrics["binary_sell_fill"] = b_totals["sell_fill"] / max(1, batches)
-        return metrics, global_step
+        averaged_symbol_stats: Dict[int, Dict[str, float]] = {}
+        for sid, payload in symbol_totals.items():
+            count = max(1, payload.pop("count", 1))
+            averaged_symbol_stats[sid] = {k: v / count for k, v in payload.items()}
+        return metrics, global_step, averaged_symbol_stats
 
     def _build_optimizer(self, model: DailyMultiAssetPolicy) -> torch.optim.Optimizer:
         name = (self.config.optimizer_name or "adamw").lower()
@@ -402,6 +483,7 @@ class NeuralDailyTrainer:
             feature_columns=list(self.data.feature_columns),
             metrics=val_metrics,
             config=self.config,
+            symbol_to_group_id=self.data.symbol_to_group_id,
         )
         record = CheckpointRecord(path=ckpt_path, val_loss=val_loss, epoch=epoch, timestamp=time.time())
         self._checkpoint_records.append(record)
@@ -415,6 +497,27 @@ class NeuralDailyTrainer:
                 pass
         write_manifest(self.checkpoint_dir, self._checkpoint_records, self.config, list(self.data.feature_columns))
         self.best_checkpoint_path = self._checkpoint_records[0].path if self._checkpoint_records else ckpt_path
+
+    def _write_non_tradable(self, val_symbol_stats: Dict[int, Dict[str, float]], *, return_threshold: float = 0.0) -> Optional[Path]:
+        if not val_symbol_stats:
+            return None
+        non_tradable: List[Dict[str, float | str]] = []
+        for sid, metrics in val_symbol_stats.items():
+            symbol = self.data.id_to_symbol.get(int(sid), f"id_{sid}")
+            ann_return = float(metrics.get("return", 0.0))
+            score = float(metrics.get("score", 0.0))
+            if ann_return <= return_threshold:
+                non_tradable.append({"symbol": symbol, "return": ann_return, "score": score})
+        if not non_tradable:
+            return None
+        payload = {
+            "return_threshold": return_threshold,
+            "non_tradable": sorted(non_tradable, key=lambda row: row["return"]),
+            "best_checkpoint": str(self.best_checkpoint_path) if self.best_checkpoint_path else None,
+        }
+        path = self.checkpoint_dir / "non_tradable.json"
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return path
 
 
 __all__ = ["NeuralDailyTrainer", "TrainingArtifacts", "TrainingHistoryEntry"]

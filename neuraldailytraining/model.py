@@ -79,7 +79,8 @@ class GroupSelfAttention(nn.Module):
         # Apply group mask if provided
         if group_mask is not None:
             # Expand mask: (batch, batch) -> (1, 1, batch, batch)
-            mask = group_mask.unsqueeze(0).unsqueeze(0)
+            base = group_mask | torch.eye(group_mask.size(0), device=group_mask.device, dtype=group_mask.dtype)
+            mask = base.unsqueeze(0).unsqueeze(0)
             attn_scores = attn_scores.masked_fill(~mask, float('-inf'))
 
         attn_probs = torch.softmax(attn_scores, dim=-1)

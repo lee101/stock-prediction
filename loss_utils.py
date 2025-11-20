@@ -2,7 +2,7 @@ import numpy as np
 
 # TRADING_FEE = 0.0007 # fee actually changes for small trades - this is for 100k
 # TRADING_FEE = 0.003  # fee actually changes for small trades
-CRYPTO_TRADING_FEE = 0.001  # maker fee taker is .0025
+CRYPTO_TRADING_FEE = 0.008  # 80 bps crypto fee (maker/taker normalized)
 # from pytorch_forecasting import MultiHorizonMetric
 
 TRADING_FEE = 0.0005

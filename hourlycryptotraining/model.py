@@ -61,7 +61,28 @@ class HourlyCryptoPolicy(nn.Module):
             )
             self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=config.num_layers)
         self.norm = nn.LayerNorm(config.hidden_dim)
-        self.head = nn.Linear(config.hidden_dim, 3)
+        # Output heads: buy price, sell price, buy intensity, sell intensity
+        self.head = nn.Linear(config.hidden_dim, 4)
+
+    @staticmethod
+    def upgrade_legacy_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Expand legacy 3-channel heads (buy/sell/amount) to 4-channel buy/sell/buy_amt/sell_amt."""
+        weight_key = "head.weight"
+        bias_key = "head.bias"
+        if weight_key in state_dict and state_dict[weight_key].shape[0] == 3:
+            old_w = state_dict[weight_key]
+            new_w = torch.zeros((4, old_w.shape[1]), dtype=old_w.dtype)
+            new_w[:3] = old_w
+            # Use old trade_amount weights for both buy/sell intensity to preserve prior behaviour
+            new_w[3] = old_w[2]
+            state_dict[weight_key] = new_w
+        if bias_key in state_dict and state_dict[bias_key].shape[0] == 3:
+            old_b = state_dict[bias_key]
+            new_b = torch.zeros((4,), dtype=old_b.dtype)
+            new_b[:3] = old_b
+            new_b[3] = old_b[2]
+            state_dict[bias_key] = new_b
+        return state_dict
 
     def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:
         h = self.embed(features)
@@ -72,7 +93,8 @@ class HourlyCryptoPolicy(nn.Module):
         return {
             "buy_price_logits": logits[..., 0:1],
             "sell_price_logits": logits[..., 1:2],
-            "trade_amount_logits": logits[..., 2:3],
+            "buy_amount_logits": logits[..., 2:3],
+            "sell_amount_logits": logits[..., 3:4],
         }
 
     def decode_actions(
@@ -98,9 +120,14 @@ class HourlyCryptoPolicy(nn.Module):
         sell_price = torch.minimum(max_sell, torch.maximum(chronos_high + price_scale * sell_raw, reference_close))
         gap = reference_close * self.min_gap_pct
         sell_price = torch.maximum(sell_price, buy_price + gap)
-        trade_amount = torch.sigmoid(outputs["trade_amount_logits"]).squeeze(-1)
+        buy_amount = torch.sigmoid(outputs["buy_amount_logits"]).squeeze(-1)
+        sell_amount = torch.sigmoid(outputs["sell_amount_logits"]).squeeze(-1)
+        # Backward compatibility: trade_amount retains the larger side for simulators
+        trade_amount = torch.maximum(buy_amount, sell_amount)
         return {
             "buy_price": buy_price,
             "sell_price": sell_price,
             "trade_amount": trade_amount,
+            "buy_amount": buy_amount,
+            "sell_amount": sell_amount,
         }

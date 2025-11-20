@@ -12,7 +12,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .config import DailyDatasetConfig
-from .symbol_groups import get_group_id
+from .symbol_groups import build_correlation_groups, get_group_id, group_ids_from_clusters
 
 LOGGER = logging.getLogger(__name__)
 
@@ -82,21 +82,39 @@ class SymbolFrameBuilder:
 
     def build(self, symbol: str) -> pd.DataFrame:
         prices = self._load_price_history(symbol)
-        forecasts = self._load_forecasts(symbol)
+        forecasts, forecast_path = self._load_forecasts(symbol)
         merged = prices.merge(forecasts, on=["symbol", "date"], how="left")
         for column in FORECAST_COLUMNS:
             if column not in merged:
                 merged[column] = np.nan
         merged.sort_values("date", inplace=True)
-        merged = merged.fillna(method="ffill")
-        merged[["predicted_high", "predicted_low", "predicted_close"]] = merged[
-            ["predicted_high", "predicted_low", "predicted_close"]
-        ].fillna(merged["close"], axis=0)
+        forecast_cols = ["predicted_high", "predicted_low", "predicted_close", "predicted_close_p10", "predicted_close_p90"]
+        non_forecast_cols = [col for col in merged.columns if col not in forecast_cols]
+        merged[non_forecast_cols] = merged[non_forecast_cols].ffill()
+
+        missing_mask = merged["predicted_close"].isna()
+        missing_count = int(missing_mask.sum())
+        if missing_count and self.config.require_forecasts and self.config.forecast_fill_strategy == "fail":
+            raise ValueError(f"Missing forecasts for {symbol}: {missing_count} rows")
+
+        # Persistence fill: set forecasts equal to close where absent
+        merged.loc[missing_mask, ["predicted_high", "predicted_low", "predicted_close"]] = merged.loc[
+            missing_mask, ["close", "close", "close"]
+        ].to_numpy()
+
         merged["forecast_move_pct"] = merged["forecast_move_pct"].fillna(0.0)
         merged["forecast_volatility_pct"] = merged["forecast_volatility_pct"].fillna(0.0)
+        merged["predicted_close_p10"] = merged["predicted_close_p10"].fillna(merged["predicted_close"])
+        merged["predicted_close_p90"] = merged["predicted_close_p90"].fillna(merged["predicted_close"])
+
+        if missing_count and self.config.forecast_cache_writeback and forecast_path is not None:
+            # Persist the filled forecasts so future runs avoid recompute
+            out_cols = ["timestamp", "date", "symbol", *FORECAST_COLUMNS]
+            merged[out_cols].to_parquet(forecast_path, index=False)
         asset_flag = 1.0 if symbol.upper().endswith("-USD") else 0.0
         enriched = self._add_features(merged, asset_flag=asset_flag)
-        enriched = enriched.dropna(subset=list(self.feature_columns))
+        required_cols = set(self.feature_columns) | {"high", "low", "close", "reference_close", "chronos_high", "chronos_low"}
+        enriched = enriched.dropna(subset=list(required_cols))
         return enriched.reset_index(drop=True)
 
     def _load_price_history(self, symbol: str) -> pd.DataFrame:
@@ -119,7 +137,7 @@ class SymbolFrameBuilder:
         keep = ["timestamp", "date", "symbol", "open", "high", "low", "close", "volume"]
         return frame[keep].sort_values("date").reset_index(drop=True)
 
-    def _load_forecasts(self, symbol: str) -> pd.DataFrame:
+    def _load_forecasts(self, symbol: str) -> tuple[pd.DataFrame, Optional[Path]]:
         candidates = [
             f"{symbol}.parquet",
             f"{symbol.replace('/', '_')}.parquet",
@@ -133,13 +151,12 @@ class SymbolFrameBuilder:
                 path = candidate
                 break
         if path is None:
-            LOGGER.warning(
-                "No forecast cache for %s under %s; using fallback zeros.",
-                symbol,
-                self.config.forecast_cache_dir,
-            )
+            msg = f"No forecast cache for {symbol} under {self.config.forecast_cache_dir}"
+            if self.config.require_forecasts and self.config.forecast_fill_strategy == "fail":
+                raise FileNotFoundError(msg)
+            LOGGER.warning("%s; using fallback zeros.", msg)
             fallback_date = pd.Timestamp("1970-01-01", tz="UTC")
-            return pd.DataFrame({"symbol": [symbol], "date": [fallback_date]})
+            return pd.DataFrame({"symbol": [symbol], "date": [fallback_date]}), None
         frame = pd.read_parquet(path)
         norm = {col: col.lower() for col in frame.columns}
         frame.rename(columns=norm, inplace=True)
@@ -147,7 +164,7 @@ class SymbolFrameBuilder:
         frame["date"] = frame["timestamp"].dt.floor("D")
         frame["symbol"] = symbol
         cols = ["symbol", "date", *[col for col in FORECAST_COLUMNS if col in frame.columns]]
-        return frame[cols].sort_values("date").reset_index(drop=True)
+        return frame[cols].sort_values("date").reset_index(drop=True), path
 
     def _add_features(self, frame: pd.DataFrame, *, asset_flag: float) -> pd.DataFrame:
         work = frame.copy()
@@ -223,6 +240,7 @@ class DailySymbolDataset(Dataset):
         asset_flag: float,
         symbol: str = "",
         symbol_id: int = 0,
+        group_id: Optional[int] = None,
     ) -> None:
         if len(frame) != len(features):
             raise ValueError("Feature matrix must align with base frame length.")
@@ -234,7 +252,7 @@ class DailySymbolDataset(Dataset):
         self.asset_flag = float(asset_flag)
         self.symbol = symbol
         self.symbol_id = symbol_id
-        self.group_id = get_group_id(symbol) if symbol else 0
+        self.group_id = int(group_id) if group_id is not None else (get_group_id(symbol) if symbol else 0)
         self.high = frame["high"].to_numpy(dtype=np.float32)
         self.low = frame["low"].to_numpy(dtype=np.float32)
         self.close = frame["close"].to_numpy(dtype=np.float32)
@@ -291,11 +309,13 @@ class DailyDataModule:
         self.sequence_length = config.sequence_length
         self.feature_columns = tuple(config.feature_columns or DEFAULT_FEATURES)
         self.symbols = [symbol.upper() for symbol in config.symbols]
+        self._apply_exclusions()
         if not self.symbols:
             raise ValueError("No symbols configured for daily training.")
         # Create symbol to ID mapping for per-symbol tracking
         self.symbol_to_id = {sym: i for i, sym in enumerate(sorted(self.symbols))}
         self.id_to_symbol = {i: sym for sym, i in self.symbol_to_id.items()}
+        self.symbol_to_group_id: Dict[str, int] = {}
         self._builder = SymbolFrameBuilder(config, self.feature_columns)
         self._symbol_frames: Dict[str, pd.DataFrame] = {}
         self.train_dataset: Optional[MultiSymbolDataset] = None
@@ -333,6 +353,21 @@ class DailyDataModule:
         )
 
     # ------------------------------------------------------------------
+    def _apply_exclusions(self) -> None:
+        """Remove symbols listed in config exclude lists/files."""
+
+        excludes = set(sym.upper() for sym in (self.config.exclude_symbols or []))
+        if self.config.exclude_symbols_file:
+            path = Path(self.config.exclude_symbols_file)
+            if path.exists():
+                with path.open() as f:
+                    for line in f:
+                        cleaned = line.strip().upper()
+                        if cleaned:
+                            excludes.add(cleaned)
+        if excludes:
+            self.symbols = [sym for sym in self.symbols if sym not in excludes]
+
     def _prepare(self) -> None:
         symbol_data: Dict[str, Dict[str, pd.DataFrame]] = {}
         train_matrices: List[np.ndarray] = []
@@ -376,6 +411,7 @@ class DailyDataModule:
         self.symbols = valid_symbols
         self.symbol_to_id = {sym: i for i, sym in enumerate(sorted(valid_symbols))}
         self.id_to_symbol = {i: sym for sym, i in self.symbol_to_id.items()}
+        self.symbol_to_group_id = self._derive_group_ids(symbol_data)
 
         stacked = np.concatenate(train_matrices, axis=0)
         self.normalizer = FeatureNormalizer.fit(stacked)
@@ -387,11 +423,55 @@ class DailyDataModule:
             val_norm = self.normalizer.transform(val_frame[list(self.feature_columns)].to_numpy(dtype=np.float32))
             asset_flag = frames.get("asset_flag", 0.0)
             symbol_id = self.symbol_to_id.get(symbol, 0)
-            train_datasets.append(DailySymbolDataset(train_frame, train_norm, self.sequence_length, asset_flag=asset_flag, symbol=symbol, symbol_id=symbol_id))
-            val_datasets.append(DailySymbolDataset(val_frame, val_norm, self.sequence_length, asset_flag=asset_flag, symbol=symbol, symbol_id=symbol_id))
+            group_id = self.symbol_to_group_id.get(symbol)
+            train_datasets.append(
+                DailySymbolDataset(
+                    train_frame,
+                    train_norm,
+                    self.sequence_length,
+                    asset_flag=asset_flag,
+                    symbol=symbol,
+                    symbol_id=symbol_id,
+                    group_id=group_id,
+                )
+            )
+            val_datasets.append(
+                DailySymbolDataset(
+                    val_frame,
+                    val_norm,
+                    self.sequence_length,
+                    asset_flag=asset_flag,
+                    symbol=symbol,
+                    symbol_id=symbol_id,
+                    group_id=group_id,
+                )
+            )
 
         self.train_dataset = MultiSymbolDataset(train_datasets)
         self.val_dataset = MultiSymbolDataset(val_datasets)
+
+    def _derive_group_ids(self, symbol_frames: Dict[str, Dict[str, pd.DataFrame]]) -> Dict[str, int]:
+        """Return per-symbol group ids using configured strategy."""
+
+        strategy = getattr(self.config, "grouping_strategy", "static")
+        if strategy == "correlation":
+            train_frames = {sym: payload["train"] for sym, payload in symbol_frames.items() if "train" in payload}
+            clusters = build_correlation_groups(
+                train_frames,
+                min_corr=self.config.correlation_min_corr,
+                max_group_size=self.config.correlation_max_group_size,
+                window_days=self.config.correlation_window_days,
+                min_overlap=self.config.correlation_min_overlap,
+                split_crypto=self.config.split_crypto_groups,
+            )
+            mapping = group_ids_from_clusters(clusters)
+            # Ensure every symbol has a group; assign residuals to a catch-all id
+            next_id = (max(mapping.values()) + 1) if mapping else 0
+            for sym in train_frames.keys():
+                mapping.setdefault(sym, next_id)
+            return mapping
+
+        return {sym: get_group_id(sym) for sym in symbol_frames.keys()}
 
     def _split_frame(self, frame: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         total = len(frame)
