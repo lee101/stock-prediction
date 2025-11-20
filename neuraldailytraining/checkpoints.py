@@ -90,7 +90,12 @@ def find_best_checkpoint(root: Path) -> Optional[Path]:
         return None
     best_loss = float("inf")
     best_path: Optional[Path] = None
-    for manifest_path in root.glob("*/manifest.json"):
+    manifest_paths = []
+    direct_manifest = root / "manifest.json"
+    if direct_manifest.exists():
+        manifest_paths.append(direct_manifest)
+    manifest_paths.extend(root.glob("*/manifest.json"))
+    for manifest_path in manifest_paths:
         try:
             data = json.loads(manifest_path.read_text())
         except Exception:
