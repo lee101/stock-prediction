@@ -83,8 +83,9 @@ class HourlyCryptoTrainer:
             if preload_path.exists():
                 logger.info(f"Preloading weights from {preload_path} for fine-tuning")
                 ckpt = load_checkpoint(preload_path)
+                ckpt_state = HourlyCryptoPolicy.upgrade_legacy_state_dict(dict(ckpt["state_dict"]))
                 # Load state dict with strict=False to allow architecture differences
-                missing, unexpected = model.load_state_dict(ckpt["state_dict"], strict=False)
+                missing, unexpected = model.load_state_dict(ckpt_state, strict=False)
                 if missing:
                     logger.warning(f"Missing keys during preload: {missing}")
                 if unexpected:
@@ -305,6 +306,8 @@ class HourlyCryptoTrainer:
                     buy_prices=actions["buy_price"],
                     sell_prices=actions["sell_price"],
                     trade_intensity=actions["trade_amount"],
+                    buy_trade_intensity=actions.get("buy_amount", None),
+                    sell_trade_intensity=actions.get("sell_amount", None),
                     maker_fee=self.config.maker_fee,
                     initial_cash=self.config.initial_cash,
                 )
@@ -324,6 +327,8 @@ class HourlyCryptoTrainer:
                             buy_prices=actions["buy_price"],
                             sell_prices=actions["sell_price"],
                             trade_intensity=actions["trade_amount"],
+                            buy_trade_intensity=actions.get("buy_amount", None),
+                            sell_trade_intensity=actions.get("sell_amount", None),
                             maker_fee=self.config.maker_fee,
                             initial_cash=self.config.initial_cash,
                         )
@@ -331,6 +336,15 @@ class HourlyCryptoTrainer:
                             binary_sim.returns,
                             return_weight=self.config.return_weight,
                         )
+                # Encourage smoother position changes
+                step_delta = sim.executed_buys - sim.executed_sells
+                pos_change_penalty = self.config.position_change_penalty * torch.mean(step_delta**2)
+                inv_path = torch.cumsum(step_delta, dim=-1)
+                flip_mask = (inv_path[..., 1:] * inv_path[..., :-1] < 0).float()
+                sign_flip_penalty = self.config.sign_flip_penalty * torch.mean(
+                    flip_mask * step_delta[..., 1:].abs()
+                )
+                loss = loss + pos_change_penalty + sign_flip_penalty
 
             # Backward pass with optional AMP
             if train and optimizer is not None:
@@ -370,6 +384,8 @@ class HourlyCryptoTrainer:
                 binary_sell_fill += float(binary_sim.sell_fill_probability.mean().item()) * batch_size
 
             batches += batch_size
+            if self.config.dry_train_steps and global_step >= self.config.dry_train_steps:
+                break
         metrics = {
             "loss": total_loss / max(1, batches),
             "score": total_score / max(1, batches),

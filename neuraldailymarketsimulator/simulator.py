@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,20 +31,26 @@ class NeuralDailyMarketSimulator:
         runtime: DailyTradingRuntime,
         symbols: Sequence[str],
         *,
-        maker_fee: float = 0.0008,
+        stock_fee: float = 0.0005,
+        crypto_fee: float = 0.008,
         initial_cash: float = 1.0,
         leverage_fee_rate: float = 0.065,
         equity_max_leverage: float = 2.0,
         crypto_max_leverage: float = 1.0,
+        stocks_closed: bool = False,
+        auto_weekend_hold: bool = True,
     ) -> None:
         self.runtime = runtime
         self.symbols = [symbol.upper() for symbol in symbols]
-        self.maker_fee = maker_fee
+        self.stock_fee = stock_fee
+        self.crypto_fee = crypto_fee
         self.initial_cash = initial_cash
         self.leverage_fee_rate = leverage_fee_rate
         self.daily_leverage_rate = leverage_fee_rate / 365.0
         self.equity_max_leverage = equity_max_leverage
         self.crypto_max_leverage = crypto_max_leverage
+        self.stocks_closed = stocks_closed
+        self.auto_weekend_hold = auto_weekend_hold
         self.frames: Dict[str, pd.DataFrame] = {}
         self.crypto_symbols: set[str] = set()
 
@@ -120,26 +127,36 @@ class NeuralDailyMarketSimulator:
                 rows = frame[frame["date"] == date]
                 if not rows.empty:
                     symbol_rows[symbol] = rows.iloc[0]
+            # Determine which symbols are tradable today
+            non_tradable_today = set(self.runtime.non_tradable)
+            if self.stocks_closed:
+                non_tradable_today.update(sym for sym in self.symbols if sym not in self.crypto_symbols)
+            if self.auto_weekend_hold and date.weekday() >= 5:
+                non_tradable_today.update(sym for sym in self.symbols if sym not in self.crypto_symbols)
+
+            plans = self.runtime.plan_batch(list(symbol_rows.keys()), as_of=date, non_tradable_override=non_tradable_today)
+            plan_lookup = {plan.symbol.upper(): plan for plan in plans}
             for symbol, row in symbol_rows.items():
                 last_close[symbol] = float(row["close"])
-                plan = self.runtime.plan_for_symbol(symbol, as_of=date)
+                plan = plan_lookup.get(symbol.upper())
                 if plan is None:
                     continue
                 buy_price = max(plan.buy_price, 1e-6)
                 sell_price = max(plan.sell_price, 1e-6)
                 target_amount = float(plan.trade_amount)
+                fee_rate = self.crypto_fee if symbol in self.crypto_symbols else self.stock_fee
                 high = float(row["high"])
                 low = float(row["low"])
                 # Buy leg
-                max_affordable = cash / (buy_price * (1.0 + self.maker_fee))
+                max_affordable = cash / (buy_price * (1.0 + fee_rate))
                 buy_qty = min(target_amount, max_affordable)
                 if low <= buy_price and buy_qty > 0:
-                    cash -= buy_qty * buy_price * (1.0 + self.maker_fee)
+                    cash -= buy_qty * buy_price * (1.0 + fee_rate)
                     inventory[symbol] += buy_qty
                 # Sell leg
                 sellable = min(target_amount, inventory[symbol])
                 if high >= sell_price and sellable > 0:
-                    cash += sellable * sell_price * (1.0 - self.maker_fee)
+                    cash += sellable * sell_price * (1.0 - fee_rate)
                     inventory[symbol] -= sellable
             portfolio_value = cash
             for symbol, qty in inventory.items():
@@ -189,11 +206,32 @@ class NeuralDailyMarketSimulator:
         return mean_return / downside_std
 
 
+def _load_non_tradable_file(path: Path) -> List[str]:
+    if not path.exists():
+        return []
+    try:
+        payload = path.read_text()
+        # Support json with {"non_tradable": [...]} or newline separated
+        if payload.strip().startswith("{"):
+            data = json.loads(payload)
+            if isinstance(data, dict) and "non_tradable" in data:
+                entries = data["non_tradable"]
+                if isinstance(entries, list):
+                    return [str(item["symbol"] if isinstance(item, dict) else item) for item in entries]
+        return [line.strip() for line in payload.splitlines() if line.strip()]
+    except Exception:
+        return []
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Simulate neural daily trading over recent days.")
     parser.add_argument("--checkpoint", required=True, help="Path to the neuraldaily checkpoint to evaluate.")
     parser.add_argument("--mode", choices=("plan", "simulate"), default="simulate")
     parser.add_argument("--symbols", nargs="*", help="Optional subset of symbols.")
+    parser.add_argument("--non-tradable", nargs="*", help="Symbols to feed as context but never trade.")
+    parser.add_argument("--non-tradable-file", help="Path to JSON/list of non-tradable symbols; defaults to checkpoint dir non_tradable.json if present.")
+    parser.add_argument("--stocks-closed", action="store_true", help="Disable all equity trading for the run (crypto-only).")
+    parser.add_argument("--no-weekend-auto-hold", action="store_false", dest="auto_weekend_hold", help="Disable automatic equity freeze on weekends.")
     parser.add_argument("--data-root", default="trainingdata/train")
     parser.add_argument("--forecast-cache", default="strategytraining/forecast_cache")
     parser.add_argument("--sequence-length", type=int, default=256)
@@ -203,6 +241,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-date", help="Optional ISO start date for the simulation window.")
     parser.add_argument("--days", type=int, default=5)
     parser.add_argument("--initial-cash", type=float, default=1.0)
+    parser.add_argument("--stock-fee", type=float, default=0.0005, help="Per-leg fee rate for stocks (fractional).")
+    parser.add_argument("--crypto-fee", type=float, default=0.008, help="Per-leg fee rate for crypto (fractional).")
     parser.add_argument("--maker-fee", type=float, default=0.0008)
     parser.add_argument("--risk-threshold", type=float, help="Optional override for the runtime risk threshold.")
     return parser.parse_args()
@@ -211,17 +251,27 @@ def parse_args() -> argparse.Namespace:
 def run_cli_simulation() -> None:
     args = parse_args()
     dataset_cfg = _build_dataset_config(args)
+    checkpoint_path = Path(args.checkpoint)
+    non_tradable: set[str] = set(sym.upper() for sym in (args.non_tradable or []))
+    if args.non_tradable_file:
+        non_tradable.update(sym.upper() for sym in _load_non_tradable_file(Path(args.non_tradable_file)))
+    else:
+        default_nt = checkpoint_path.parent / "non_tradable.json"
+        non_tradable.update(sym.upper() for sym in _load_non_tradable_file(default_nt))
+
     runtime = DailyTradingRuntime(
-        args.checkpoint,
+        checkpoint_path,
         dataset_config=dataset_cfg,
         device=args.device,
         risk_threshold=args.risk_threshold,
+        non_tradable=non_tradable,
     )
     symbols = args.symbols or list(dataset_cfg.symbols)
     simulator = NeuralDailyMarketSimulator(
         runtime,
         symbols,
-        maker_fee=args.maker_fee,
+        stock_fee=args.stock_fee,
+        crypto_fee=args.crypto_fee,
         initial_cash=args.initial_cash,
     )
     results, summary = simulator.run(start_date=args.start_date, days=args.days)

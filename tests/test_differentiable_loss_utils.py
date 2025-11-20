@@ -56,3 +56,53 @@ def test_combined_sortino_prefers_positive_returns() -> None:
     good_loss = combined_sortino_pnl_loss(good_returns)
     bad_loss = combined_sortino_pnl_loss(bad_returns)
     assert good_loss < bad_loss
+
+
+def test_simulation_respects_max_leverage_above_one() -> None:
+    highs = torch.tensor([1.0, 1.0])
+    lows = torch.tensor([0.5, 0.5])
+    closes = torch.tensor([1.0, 1.0])
+    buy_prices = torch.tensor([1.0, 1.0])
+    sell_prices = torch.tensor([1.2, 1.1])
+
+    # Request 1.8x notional with a 2x cap; should exceed 1.0 inventory
+    trade_intensity = torch.tensor([1.8, 0.0])
+
+    result = simulate_hourly_trades(
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        buy_prices=buy_prices,
+        sell_prices=sell_prices,
+        trade_intensity=trade_intensity,
+        max_leverage=2.0,
+        initial_cash=1.0,
+        maker_fee=DEFAULT_MAKER_FEE_RATE,
+    )
+
+    first_inventory = float(result.inventory_path[..., 0])
+    assert first_inventory > 1.2  # should exceed the old 1x cap
+
+
+def test_simulation_caps_extreme_trade_intensity_by_leverage_limit() -> None:
+    highs = torch.tensor([1.0])
+    lows = torch.tensor([0.5])
+    closes = torch.tensor([1.0])
+    buy_prices = torch.tensor([1.0])
+    sell_prices = torch.tensor([1.0])
+
+    trade_intensity = torch.tensor([10.0])
+    result = simulate_hourly_trades(
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        buy_prices=buy_prices,
+        sell_prices=sell_prices,
+        trade_intensity=trade_intensity,
+        max_leverage=1.2,
+        initial_cash=1.0,
+        maker_fee=DEFAULT_MAKER_FEE_RATE,
+    )
+
+    # 1.2x of equity at price 1 should keep position close to 1.2 units
+    assert result.inventory <= 1.25

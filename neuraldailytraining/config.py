@@ -39,10 +39,22 @@ class DailyDatasetConfig:
     sequence_length: int = 256
     val_fraction: float = 0.2
     min_history_days: int = 300
+    require_forecasts: bool = True
+    forecast_fill_strategy: str = "persistence"  # "persistence" or "fail"
+    forecast_cache_writeback: bool = True
     feature_columns: Optional[Sequence[str]] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     validation_days: int = 90
+    symbol_dropout_rate: float = 0.1
+    exclude_symbols: Optional[Sequence[str]] = None
+    exclude_symbols_file: Optional[Path] = None
+    grouping_strategy: str = "static"  # "static" or "correlation"
+    correlation_min_corr: float = 0.6
+    correlation_max_group_size: int = 12
+    correlation_window_days: int = 252
+    correlation_min_overlap: int = 60
+    split_crypto_groups: bool = True
 
 
 @dataclass
@@ -84,6 +96,7 @@ class DailyTrainingConfig:
     use_amp: bool = True
     amp_dtype: str = "bfloat16"
     use_tf32: bool = True
+    use_cross_attention: bool = True
     risk_threshold: float = 1.0
     exposure_penalty: float = 0.0
     equity_max_leverage: float = 2.0

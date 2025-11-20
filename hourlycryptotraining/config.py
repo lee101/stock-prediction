@@ -76,6 +76,9 @@ class TrainingConfig:
     use_compile: bool = True
     use_amp: bool = False
     amp_dtype: str = "bfloat16"
+    # Penalise abrupt position changes to encourage gradual scaling
+    position_change_penalty: float = 0.05
+    sign_flip_penalty: float = 0.02
     use_tf32: bool = True
     forecast_config: ForecastConfig = field(default_factory=ForecastConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)

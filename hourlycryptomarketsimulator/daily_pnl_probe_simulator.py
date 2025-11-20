@@ -89,28 +89,31 @@ class DailyPnlProbeSimulator(HourlyCryptoMarketSimulator):
                 probe_mode_switches += 1
 
             # Get base trade intensity from model
-            base_intensity = float(np.clip(getattr(row, "trade_amount", 0.0), 0.0, 1.0))
+            base_buy_intensity = float(np.clip(getattr(row, "buy_amount", getattr(row, "trade_amount", 0.0)), 0.0, 1.0))
+            base_sell_intensity = float(np.clip(getattr(row, "sell_amount", getattr(row, "trade_amount", 0.0)), 0.0, 1.0))
 
             # Apply probe mode filter
-            if in_probe_mode and base_intensity > 0:
-                adjusted_intensity = self.probe_config.probe_trade_amount
+            if in_probe_mode and (base_buy_intensity > 0 or base_sell_intensity > 0):
+                adjusted_buy = self.probe_config.probe_trade_amount
+                adjusted_sell = self.probe_config.probe_trade_amount
                 hours_in_probe += 1
             else:
-                adjusted_intensity = base_intensity
+                adjusted_buy = base_buy_intensity
+                adjusted_sell = base_sell_intensity
                 hours_in_full += 1
 
-            buy_fill = bool(row.low <= row.buy_price and adjusted_intensity > 0)
-            sell_fill = bool(row.high >= row.sell_price and adjusted_intensity > 0)
+            buy_fill = bool(row.low <= row.buy_price and adjusted_buy > 0)
+            sell_fill = bool(row.high >= row.sell_price and adjusted_sell > 0)
 
             executed_buy = 0.0
             executed_sell = 0.0
 
             if buy_fill:
                 max_buy = cash / (row.buy_price * (1 + self.config.maker_fee)) if row.buy_price > 0 else 0.0
-                executed_buy = adjusted_intensity * max_buy
+                executed_buy = adjusted_buy * max_buy
 
             if sell_fill:
-                executed_sell = adjusted_intensity * max(0.0, inventory)
+                executed_sell = adjusted_sell * max(0.0, inventory)
 
             # Execute buy
             if executed_buy > 0:
@@ -154,8 +157,10 @@ class DailyPnlProbeSimulator(HourlyCryptoMarketSimulator):
                     "inventory": inventory,
                     "buy_filled": float(executed_buy > 0),
                     "sell_filled": float(executed_sell > 0),
-                    "trade_intensity": adjusted_intensity,
-                    "base_intensity": base_intensity,
+                    "buy_intensity": adjusted_buy,
+                    "sell_intensity": adjusted_sell,
+                    "base_buy_intensity": base_buy_intensity,
+                    "base_sell_intensity": base_sell_intensity,
                     "in_probe_mode": float(in_probe_mode),
                     "daily_pnl": daily_pnl,
                 }
