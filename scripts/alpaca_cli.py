@@ -91,7 +91,7 @@ def _calculate_total_exposure_value(positions) -> float:
 
 def main(
     command: str,
-    pair: Optional[str],
+    pair: Optional[str] = typer.Argument(None, help="Target symbol for single-symbol commands"),
     side: Optional[str] = typer.Option("buy", "--side", help="Order side for ramp/entry commands."),
     target_qty: Optional[float] = typer.Option(
         None, "--target-qty", help="Target quantity for ramp_into_position."
@@ -157,6 +157,10 @@ def main(
     backout_near_market BTCUSD - gradually backout of position, uses market orders only
                                   during market hours and when spread <= 1%
 
+    backout_whole_account_near_market - iterate all open positions and run
+                                        backout_near_market for each to flatten
+                                        the account
+
     ramp_into_position BTCUSD buy - ramp into a position over time (works out-of-hours)
 
     show_account - display account summary, positions, and orders
@@ -182,6 +186,23 @@ def main(
         violently_close_all_positions()
     elif command == 'cancel_all_orders':
         alpaca_wrapper.cancel_all_orders()
+    elif command == "backout_whole_account_near_market":
+        backout_whole_account_near_market(
+            ramp_minutes=ramp_minutes or BACKOUT_RAMP_MINUTES_DEFAULT,
+            market_after=market_after_minutes or BACKOUT_MARKET_AFTER_MINUTES_DEFAULT,
+            sleep_interval=sleep_seconds,
+            start_offset_minutes=start_offset_minutes,
+            market_close_buffer_minutes=(
+                market_close_buffer_minutes
+                if market_close_buffer_minutes is not None
+                else BACKOUT_MARKET_CLOSE_BUFFER_MINUTES_DEFAULT
+            ),
+            market_close_force_minutes=(
+                market_close_force_minutes
+                if market_close_force_minutes is not None
+                else BACKOUT_MARKET_CLOSE_FORCE_MINUTES_DEFAULT
+            ),
+        )
     elif command == "backout_near_market":
         # loop around until the order is closed at market
         if not pair:
@@ -314,6 +335,71 @@ def _resolve_offset_profile(is_long: bool, minutes_to_close: Optional[float], ma
     ratio = max(0.0, min(ratio, 1.0))
     dynamic_target = soft_cross + (final_cross - soft_cross) * ratio
     return initial, dynamic_target
+
+
+def backout_whole_account_near_market(
+    *,
+    ramp_minutes: int = BACKOUT_RAMP_MINUTES_DEFAULT,
+    market_after: int = BACKOUT_MARKET_AFTER_MINUTES_DEFAULT,
+    sleep_interval: Optional[int] = None,
+    start_offset_minutes: int = 0,
+    market_close_buffer_minutes: int = BACKOUT_MARKET_CLOSE_BUFFER_MINUTES_DEFAULT,
+    market_close_force_minutes: int = BACKOUT_MARKET_CLOSE_FORCE_MINUTES_DEFAULT,
+) -> bool:
+    """Sequentially back out every open position using backout_near_market.
+
+    Intended for fast paper clean-ups: gathers open positions, deduplicates
+    symbols, and applies the same ramp/market parameters to each. Returns True
+    if all symbols completed without errors.
+    """
+
+    try:
+        positions = filter_to_realistic_positions(alpaca_wrapper.get_all_positions())
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.error("Unable to load positions for backout_whole_account_near_market: %s", exc)
+        return False
+
+    symbols = []
+    seen = set()
+    for pos in positions:
+        sym = getattr(pos, "symbol", None)
+        if not sym:
+            continue
+        if sym in seen:
+            continue
+        seen.add(sym)
+        symbols.append(sym)
+
+    if not symbols:
+        logger.info("No open positions to back out; account already flat.")
+        return True
+
+    logger.info(
+        "Starting backout_whole_account_near_market for %d symbols: %s",
+        len(symbols),
+        ", ".join(symbols),
+    )
+
+    overall_success = True
+    for sym in symbols:
+        logger.info("Initiating backout_near_market for %s", sym)
+        try:
+            result = backout_near_market(
+                sym,
+                start_time=datetime.now(),
+                ramp_minutes=ramp_minutes,
+                market_after=market_after,
+                sleep_interval=sleep_interval,
+                start_offset_minutes=start_offset_minutes,
+                market_close_buffer_minutes=market_close_buffer_minutes,
+                market_close_force_minutes=market_close_force_minutes,
+            )
+            if result is False:
+                overall_success = False
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception("backout_near_market failed for %s: %s", sym, exc)
+            overall_success = False
+    return overall_success
 
 
 def backout_near_market(
