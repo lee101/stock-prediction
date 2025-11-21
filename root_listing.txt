@@ -237,7 +237,7 @@ predict_stock_e2e.log
 test_gpt5_plus_chronos.py
 llm_utils.py
 toto_exploit_strategies.py
-readme.md
+README.md
 test_gpt_queries.py
 analysis_runner_funcs
 reports

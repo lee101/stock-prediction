@@ -12,6 +12,8 @@ from data_curate_daily import download_exchange_latest_data, get_ask, get_bid
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from scripts.alpaca_cli import get_strategy_for_symbol, set_strategy_for_symbol
 from src.forecast_utils import extract_forecasted_pnl, load_latest_forecast_snapshot
+from src.maxdiff_entry_guard import _effective_entry_quantities, _sum_order_qty
+from src.maxdiff_exit_tracker import ExitTargetTracker
 from src.logging_utils import setup_logging
 from src.stock_utils import pairs_equal
 from src.trading_obj_utils import filter_to_realistic_positions
@@ -376,6 +378,7 @@ def open_position_at_maxdiff_takeprofit(
             status["priority_rank"] = int(priority_rank)
         except (TypeError, ValueError):
             status["priority_rank"] = priority_rank
+    status.setdefault("pending_qty", 0.0)
     status = _update_status(config_path, status, state="initializing")
 
     fallback_client = None
@@ -391,6 +394,8 @@ def open_position_at_maxdiff_takeprofit(
     is_crypto = asset_class.lower() == "crypto"
     max_consecutive_errors = None if is_crypto else 10  # None = unlimited retries for crypto
     error_sleep_seconds = 60  # Sleep 1 minute on errors before retrying
+    # Keep pending reservations alive for a few polling intervals to absorb API lag
+    pending_ttl_seconds = max(120, poll_seconds * 3)
 
     try:
         while True:
@@ -412,19 +417,46 @@ def open_position_at_maxdiff_takeprofit(
 
                 position = _position_for_symbol(symbol, side)
                 active_orders = list(_orders_for_symbol(symbol, side=side))
+                current_qty = float(getattr(position, "qty", 0.0) or 0.0) if position else 0.0
+                open_order_qty = _sum_order_qty(active_orders)
+                effective_qty, remaining_qty, pending_qty, target_reached = _effective_entry_quantities(
+                    status=status,
+                    current_qty=current_qty,
+                    open_order_qty=open_order_qty,
+                    target_qty=target_qty,
+                    now=now,
+                    pending_ttl_seconds=pending_ttl_seconds,
+                )
+
                 status = _update_status(
                     config_path,
                     status,
                     active=True,
-                    position_qty=float(getattr(position, "qty", 0.0) or 0.0) if position else 0.0,
+                    position_qty=current_qty,
                     open_order_count=len(active_orders),
+                    open_order_qty=open_order_qty,
+                    effective_qty=effective_qty,
+                    remaining_qty=remaining_qty,
+                    pending_qty=pending_qty,
                 )
 
-                if position is not None:
+                # If we're effectively at target (including pending + open orders), do nothing.
+                if target_reached:
                     status = _update_status(config_path, status, state="position_open")
                     time.sleep(poll_seconds)
                     consecutive_errors = 0
                     continue
+
+                # Ignore tiny leftover positions to avoid thrashing
+                min_significant_qty = max(0.003, target_qty * 0.005)  # 0.5% of target or 0.003 minimum
+                if 0 < current_qty < min_significant_qty and remaining_qty > 0:
+                    watcher_logger.info(
+                        "Ignoring insignificant position for %s: %.6f (< %.6f threshold) - targeting full %.6f",
+                        symbol,
+                        current_qty,
+                        min_significant_qty,
+                        target_qty,
+                    )
 
                 if active_orders:
                     # Cancel orders older than 1 day (24 hours)
@@ -438,11 +470,13 @@ def open_position_at_maxdiff_takeprofit(
                         )
                         # Refresh order list after canceling
                         active_orders = list(_orders_for_symbol(symbol, side=side))
+                        open_order_qty = _sum_order_qty(active_orders)
                         status = _update_status(
                             config_path,
                             status,
                             state="old_orders_canceled",
                             open_order_count=len(active_orders),
+                            open_order_qty=open_order_qty,
                         )
                         time.sleep(poll_seconds)
                         consecutive_errors = 0
@@ -516,7 +550,8 @@ def open_position_at_maxdiff_takeprofit(
 
                 status = _update_status(config_path, status, state="submitting_order")
                 try:
-                    result = alpaca_wrapper.open_order_at_price_or_all(symbol, target_qty, side, limit_price)
+                    order_qty = remaining_qty if remaining_qty > 0 else target_qty
+                    result = alpaca_wrapper.open_order_at_price_or_all(symbol, order_qty, side, limit_price)
                 except Exception as exc:
                     watcher_logger.error("Failed to submit staged entry order for %s: %s", symbol, exc)
                     status = _update_status(
@@ -527,11 +562,16 @@ def open_position_at_maxdiff_takeprofit(
                     )
                 else:
                     outcome = "accepted" if result is not None else "queued"
+                    # Reserve the submitted quantity to prevent immediate re-ordering if fills aren't reflected yet
+                    pending_qty += order_qty
+                    pending_expiry = now + timedelta(seconds=pending_ttl_seconds)
                     status = _update_status(
                         config_path,
                         status,
                         state="order_submitted",
                         order_submission=outcome,
+                        pending_qty=pending_qty,
+                        pending_expires_at=pending_expiry.isoformat(),
                     )
                     consecutive_errors = 0  # Reset error counter on success
                 time.sleep(poll_seconds)
@@ -633,6 +673,11 @@ def close_position_at_maxdiff_takeprofit(
         "--config-path",
         help="Path to persist watcher status updates.",
     ),
+    target_qty: Optional[float] = typer.Option(
+        None,
+        "--target-qty",
+        help="Optional maximum quantity to close; defaults to unwinding the entire position.",
+    ),
 ) -> None:
     side = _normalize_side(side)
     exit_side = "sell" if side == "buy" else "buy"
@@ -675,6 +720,15 @@ def close_position_at_maxdiff_takeprofit(
         },
     )
     status = _update_status(config_path, status, state="initializing")
+    tracker = ExitTargetTracker(target_qty)
+    if tracker.is_partial():
+        status = _update_status(
+            config_path,
+            status,
+            target_qty=tracker.target_qty,
+            target_remaining=tracker.remaining(),
+            target_filled=tracker.filled_qty,
+        )
 
     consecutive_errors = 0
     # Crypto watchers run 24/7 - retry indefinitely
@@ -703,18 +757,57 @@ def close_position_at_maxdiff_takeprofit(
 
                 position = _position_for_symbol(symbol, side)
                 qty = abs(float(getattr(position, "qty", 0.0) or 0.0)) if position else 0.0
-                status = _update_status(
-                    config_path,
-                    status,
-                    active=True,
-                    position_qty=qty,
-                )
+                base_updates = {
+                    "active": True,
+                    "position_qty": qty,
+                }
+                if tracker.is_partial():
+                    base_updates.update(
+                        target_qty=tracker.target_qty,
+                        target_remaining=tracker.remaining(),
+                        target_filled=tracker.filled_qty,
+                    )
+                status = _update_status(config_path, status, **base_updates)
 
                 if position is None or qty <= 0:
                     status = _update_status(config_path, status, state="awaiting_position")
                     _cancel_orders(symbol, side=exit_side)
                     time.sleep(poll_seconds)
                     consecutive_errors = 0  # Reset error counter on success
+                    continue
+
+                order_qty, remaining_target, target_reached = tracker.plan_order(qty)
+                if tracker.is_partial():
+                    status = _update_status(
+                        config_path,
+                        status,
+                        target_qty=tracker.target_qty,
+                        target_remaining=remaining_target,
+                        target_filled=tracker.filled_qty,
+                    )
+
+                if target_reached:
+                    watcher_logger.info(
+                        "Target exit quantity filled for %s; shutting down watcher.",
+                        symbol,
+                    )
+                    _cancel_orders(symbol, side=exit_side)
+                    if asset_class.lower() == "crypto":
+                        _cancel_orders(symbol)
+                    status = _update_status(
+                        config_path,
+                        status,
+                        state="target_filled",
+                        active=False,
+                        target_remaining=0.0,
+                        target_filled=tracker.filled_qty,
+                    )
+                    break
+
+                if order_qty <= 0:
+                    status = _update_status(config_path, status, state="awaiting_target_qty")
+                    time.sleep(poll_seconds)
+                    consecutive_errors = 0
                     continue
 
                 if _has_takeprofit_order(symbol, exit_side, takeprofit_price, tolerance=price_tolerance):
@@ -740,7 +833,7 @@ def close_position_at_maxdiff_takeprofit(
                 _cancel_orders(symbol, side=exit_side)
                 status = _update_status(config_path, status, state="submitting_exit")
                 try:
-                    alpaca_wrapper.open_order_at_price(symbol, qty, exit_side, takeprofit_price)
+                    alpaca_wrapper.open_order_at_price(symbol, order_qty, exit_side, takeprofit_price)
                 except Exception as exc:
                     watcher_logger.error("Failed to submit takeprofit order for %s: %s", symbol, exc)
                     status = _update_status(

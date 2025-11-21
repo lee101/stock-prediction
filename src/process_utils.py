@@ -753,8 +753,8 @@ def spawn_open_position_at_maxdiff_takeprofit(
             command,
             shell=True,
             env=_get_inherited_env(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
     except Exception as exc:
@@ -779,8 +779,9 @@ def spawn_open_position_at_maxdiff_takeprofit(
     expiry_minutes=1440,
     poll_seconds=MAXDIFF_EXIT_DEFAULT_POLL_SECONDS,
     price_tolerance=MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE,
-    entry_strategy=None: (
-        f"{symbol}_{side}_{takeprofit_price}_{expiry_minutes}_{poll_seconds}_{price_tolerance}_{entry_strategy or ''}"
+    entry_strategy=None,
+    target_qty=None: (
+        f"{symbol}_{side}_{takeprofit_price}_{expiry_minutes}_{poll_seconds}_{price_tolerance}_{entry_strategy or ''}_{target_qty if target_qty is not None else 'full'}"
     ),
 )
 def spawn_close_position_at_maxdiff_takeprofit(
@@ -791,6 +792,7 @@ def spawn_close_position_at_maxdiff_takeprofit(
     poll_seconds: int = MAXDIFF_EXIT_DEFAULT_POLL_SECONDS,
     price_tolerance: float = MAXDIFF_EXIT_DEFAULT_PRICE_TOLERANCE,
     entry_strategy: Optional[str] = None,
+    target_qty: Optional[float] = None,
 ):
     """
     Spawn a watchdog process that continually re-arms maxdiff take-profit exits over ``expiry_minutes``.
@@ -798,6 +800,12 @@ def spawn_close_position_at_maxdiff_takeprofit(
     precision = 8 if symbol in crypto_symbols else 4
     poll_seconds_int = max(1, int(poll_seconds))
     price_tolerance_val = float(price_tolerance)
+    try:
+        target_qty_val = float(target_qty) if target_qty is not None else None
+    except (TypeError, ValueError):
+        target_qty_val = None
+    if target_qty_val is not None and target_qty_val <= 0:
+        target_qty_val = None
     started_at = datetime.now(timezone.utc)
 
     # Use market-aware expiry if no explicit duration provided
@@ -834,6 +842,7 @@ def spawn_close_position_at_maxdiff_takeprofit(
         takeprofit_price=float(takeprofit_price),
         price_tolerance=price_tolerance_val,
         entry_strategy=entry_strategy,
+        target_qty=target_qty_val,
     ):
         logger.debug(
             "Skipping spawn for %s %s exit watcher @ %.4f - existing watcher matches parameters",
@@ -866,6 +875,8 @@ def spawn_close_position_at_maxdiff_takeprofit(
         "poll_seconds": poll_seconds_int,
         "entry_strategy": entry_strategy,
     }
+    if target_qty_val is not None:
+        metadata["target_qty"] = target_qty_val
     _persist_watcher_metadata(config_path, metadata)
     command = (
         f"python scripts/maxdiff_cli.py close-position {symbol}"
@@ -876,6 +887,8 @@ def spawn_close_position_at_maxdiff_takeprofit(
         f" --poll-seconds={poll_seconds_int}"
         f" --price-tolerance={_format_float(price_tolerance_val, 6)}"
     )
+    if target_qty_val is not None:
+        command += f" --target-qty={_format_float(target_qty_val, 8)}"
     if symbol in crypto_symbols:
         command += " --asset-class=crypto"
     logger.info(f"Running command {command}")

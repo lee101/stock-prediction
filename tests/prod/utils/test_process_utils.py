@@ -720,6 +720,36 @@ def test_spawn_close_stores_strategy_in_metadata(tmp_watchers_dir, monkeypatch):
     assert metadata["takeprofit_price"] == takeprofit_price
 
 
+def test_spawn_close_includes_target_qty(tmp_watchers_dir, monkeypatch):
+    symbol = "COIN"
+    side = "buy"
+    takeprofit_price = 132.0
+    target_qty = 1.25
+
+    monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(process_utils, "_is_data_bar_fresh", lambda symbol, current_time=None: True)
+    commands = []
+
+    def fake_popen(command, *args, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(pid=24680)
+
+    monkeypatch.setattr(process_utils.subprocess, "Popen", fake_popen)
+
+    process_utils.spawn_close_position_at_maxdiff_takeprofit(
+        symbol,
+        side,
+        takeprofit_price,
+        target_qty=target_qty,
+    )
+
+    suffix = process_utils._format_float(takeprofit_price, 4)
+    config_path = process_utils._watcher_config_path(symbol, side, "exit", suffix=suffix)
+    metadata = json.loads(config_path.read_text())
+    assert metadata["target_qty"] == pytest.approx(target_qty)
+    assert any("--target-qty=1.25000000" in cmd for cmd in commands)
+
+
 # Market timing tests
 
 

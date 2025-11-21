@@ -17,7 +17,7 @@ import os
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple, TypeVar, List
 
 import numpy as np
 import pandas as pd
@@ -890,6 +890,80 @@ class Chronos2OHLCWrapper:
             target_columns=tuple(target_columns),
         )
 
+    def _prepare_panel_for_prediction(
+        self,
+        context_df: pd.DataFrame,
+        *,
+        symbol: Optional[str],
+        prediction_length: int,
+        context_length: Optional[int],
+        known_future_covariates: Optional[Sequence[str]],
+        evaluation_df: Optional[pd.DataFrame],
+        future_covariates: Optional[pd.DataFrame],
+    ) -> tuple[Chronos2PreparedPanel, Optional[AppliedAugmentation]]:
+        resolved_symbol = _normalize_symbol(symbol, context_df, self.id_column)
+        context_for_model = context_df
+        applied_aug: Optional[AppliedAugmentation] = None
+        if self._preaug_selector is not None:
+            context_for_model, applied_aug = self._maybe_apply_preaugmentation(resolved_symbol, context_df)
+
+        actual_context_length = context_length or self.default_context_length
+        panel = self.build_panel(
+            context_for_model,
+            holdout_df=evaluation_df,
+            future_covariates=future_covariates,
+            symbol=resolved_symbol,
+            id_column=self.id_column,
+            timestamp_column=self.timestamp_column,
+            target_columns=self.target_columns,
+            prediction_length=prediction_length,
+            context_length=actual_context_length,
+            known_future_covariates=known_future_covariates,
+        )
+        return panel, applied_aug
+
+    def _build_prediction_batch_from_df(
+        self,
+        *,
+        panel: Chronos2PreparedPanel,
+        raw_predictions: pd.DataFrame,
+        quantiles: Tuple[float, ...],
+        quantile_columns: Sequence[str],
+        applied_aug: Optional[AppliedAugmentation],
+    ) -> Chronos2PredictionBatch:
+        if "target_name" not in raw_predictions.columns:
+            raise RuntimeError("Chronos2 predict_df output is missing the 'target_name' column.")
+
+        quantile_frames: QuantileFrameMap = {}
+        for level, column_name in zip(quantiles, quantile_columns):
+            if column_name not in raw_predictions.columns:
+                raise RuntimeError(f"Chronos2 output missing '{column_name}' column for quantile={level}.")
+            pivot = raw_predictions.pivot(
+                index=self.timestamp_column,
+                columns="target_name",
+                values=column_name,
+            ).sort_index()
+            quantile_frames[level] = pivot.astype("float32")
+
+        raw_dataframe = raw_predictions.copy(deep=True)
+        if applied_aug is not None:
+            quantile_frames, raw_dataframe = self._apply_inverse_augmentation(
+                panel,
+                quantile_frames,
+                raw_dataframe,
+                quantiles,
+                list(quantile_columns),
+                applied_aug,
+            )
+
+        return Chronos2PredictionBatch(
+            panel=panel,
+            raw_dataframe=raw_dataframe,
+            quantile_frames=quantile_frames,
+            applied_augmentation=applied_aug.choice.strategy if applied_aug else None,
+            applied_choice=applied_aug.choice if applied_aug else None,
+        )
+
     def predict_ohlc(
         self,
         context_df: pd.DataFrame,
@@ -911,24 +985,14 @@ class Chronos2OHLCWrapper:
         if self.pipeline is None:
             raise RuntimeError("Chronos2 pipeline has been unloaded.")
 
-        resolved_symbol = _normalize_symbol(symbol, context_df, self.id_column)
-        context_for_model = context_df
-        applied_aug: Optional[AppliedAugmentation] = None
-        if self._preaug_selector is not None:
-            context_for_model, applied_aug = self._maybe_apply_preaugmentation(resolved_symbol, context_df)
-
-        actual_context_length = context_length or self.default_context_length
-        panel = self.build_panel(
-            context_for_model,
-            holdout_df=evaluation_df,
-            future_covariates=future_covariates,
+        panel, applied_aug = self._prepare_panel_for_prediction(
+            context_df,
             symbol=symbol,
-            id_column=self.id_column,
-            timestamp_column=self.timestamp_column,
-            target_columns=self.target_columns,
             prediction_length=prediction_length,
-            context_length=actual_context_length,
+            context_length=context_length,
             known_future_covariates=known_future_covariates,
+            evaluation_df=evaluation_df,
+            future_covariates=future_covariates,
         )
 
         quantiles = tuple(quantile_levels or self.quantile_levels)
@@ -944,7 +1008,7 @@ class Chronos2OHLCWrapper:
             cache_key = self._build_prediction_cache_key(
                 context_df=panel.context_df,
                 future_df=panel.future_df,
-                symbol=resolved_symbol,
+                symbol=panel.symbol,
                 quantiles=quantiles,
                 prediction_length=panel.prediction_length,
                 predict_options=predict_options,
@@ -968,40 +1032,140 @@ class Chronos2OHLCWrapper:
 
         raw_predictions = self._call_with_compile_fallback(_predict_call, "predict_df")
 
-        if "target_name" not in raw_predictions.columns:
-            raise RuntimeError("Chronos2 predict_df output is missing the 'target_name' column.")
-
-        quantile_frames: QuantileFrameMap = {}
-        for level, column_name in zip(quantiles, quantile_columns):
-            if column_name not in raw_predictions.columns:
-                raise RuntimeError(f"Chronos2 output missing '{column_name}' column for quantile={level}.")
-            pivot = raw_predictions.pivot(
-                index=self.timestamp_column,
-                columns="target_name",
-                values=column_name,
-            ).sort_index()
-            quantile_frames[level] = pivot.astype("float32")
-
-        if applied_aug is not None:
-            quantile_frames, raw_predictions = self._apply_inverse_augmentation(
-                panel,
-                quantile_frames,
-                raw_predictions,
-                quantiles,
-                quantile_columns,
-                applied_aug,
-            )
-
-        batch_result = Chronos2PredictionBatch(
+        batch_result = self._build_prediction_batch_from_df(
             panel=panel,
-            raw_dataframe=raw_predictions,
-            quantile_frames=quantile_frames,
-            applied_augmentation=applied_aug.choice.strategy if applied_aug else None,
-            applied_choice=applied_aug.choice if applied_aug else None,
+            raw_predictions=raw_predictions,
+            quantiles=quantiles,
+            quantile_columns=quantile_columns,
+            applied_aug=applied_aug,
         )
         if cache_key is not None:
             self._prediction_cache_store(cache_key, batch_result)
         return batch_result
+
+    def predict_ohlc_batch(
+        self,
+        contexts: Sequence[pd.DataFrame],
+        *,
+        symbols: Optional[Sequence[Optional[str]]] = None,
+        prediction_length: int,
+        context_length: Optional[int] = None,
+        quantile_levels: Optional[Sequence[float]] = None,
+        known_future_covariates: Optional[Sequence[str]] = None,
+        evaluation_dfs: Optional[Sequence[Optional[pd.DataFrame]]] = None,
+        future_covariates: Optional[Sequence[Optional[pd.DataFrame]]] = None,
+        batch_size: Optional[int] = None,
+        predict_kwargs: Optional[Mapping[str, Any]] = None,
+    ) -> List[Chronos2PredictionBatch]:
+        """
+        Generate Chronos2 forecasts for multiple contexts in a single pipeline invocation.
+        """
+
+        if self.pipeline is None:
+            raise RuntimeError("Chronos2 pipeline has been unloaded.")
+        if not contexts:
+            return []
+        if symbols is not None and len(symbols) != len(contexts):
+            raise ValueError("symbols length must match contexts length.")
+        if evaluation_dfs is not None and len(evaluation_dfs) != len(contexts):
+            raise ValueError("evaluation_dfs length must match contexts length.")
+        if future_covariates is not None and len(future_covariates) != len(contexts):
+            raise ValueError("future_covariates length must match contexts length.")
+
+        quantiles = tuple(quantile_levels or self.quantile_levels)
+        if 0.5 not in quantiles:
+            quantiles = tuple(sorted((*quantiles, 0.5)))
+        quantile_columns = [_quantile_column(level) for level in quantiles]
+        predict_options: Dict[str, Any] = dict(predict_kwargs or {})
+        effective_batch_size = int(batch_size or self.default_batch_size)
+
+        results: Dict[int, Chronos2PredictionBatch] = {}
+        pending: List[tuple[int, Chronos2PreparedPanel, Optional[AppliedAugmentation], Optional[str]]] = []
+        used_symbols: Dict[str, int] = {}
+
+        def _unique_symbol(candidate: Optional[str], idx: int) -> str:
+            base = str(candidate or f"series_{idx}")
+            count = used_symbols.get(base, 0)
+            used_symbols[base] = count + 1
+            if count == 0:
+                return base
+            return f"{base}__{count}"
+
+        for idx, context in enumerate(contexts):
+            symbol_hint = symbols[idx] if symbols is not None else None
+            eval_df = evaluation_dfs[idx] if evaluation_dfs is not None else None
+            future_df = future_covariates[idx] if future_covariates is not None else None
+            unique_symbol = _unique_symbol(symbol_hint, idx)
+            panel, applied_aug = self._prepare_panel_for_prediction(
+                context,
+                symbol=unique_symbol,
+                prediction_length=prediction_length,
+                context_length=context_length,
+                known_future_covariates=known_future_covariates,
+                evaluation_df=eval_df,
+                future_covariates=future_df,
+            )
+
+            cache_key = None
+            cached_batch: Optional[Chronos2PredictionBatch] = None
+            if self._prediction_cache_enabled and self._prediction_cache_capacity > 0:
+                cache_key = self._build_prediction_cache_key(
+                    context_df=panel.context_df,
+                    future_df=panel.future_df,
+                    symbol=panel.symbol,
+                    quantiles=quantiles,
+                    prediction_length=panel.prediction_length,
+                    predict_options=predict_options,
+                )
+                cached_batch = self._prediction_cache_lookup(cache_key)
+            if cached_batch is not None:
+                results[idx] = cached_batch
+                continue
+            pending.append((idx, panel, applied_aug, cache_key))
+
+        if pending:
+            context_frames = [item[1].context_df for item in pending]
+            future_frames = [item[1].future_df for item in pending if item[1].future_df is not None]
+            combined_context = pd.concat(context_frames, ignore_index=True)
+            combined_future = pd.concat(future_frames, ignore_index=True) if future_frames else None
+            prediction_length = pending[0][1].prediction_length
+
+            def _batched_call() -> pd.DataFrame:
+                return self.pipeline.predict_df(
+                    combined_context,
+                    future_df=combined_future,
+                    id_column=self.id_column,
+                    timestamp_column=self.timestamp_column,
+                    target=list(self.target_columns),
+                    prediction_length=prediction_length,
+                    quantile_levels=list(quantiles),
+                    batch_size=effective_batch_size,
+                    **predict_options,
+                )
+
+            raw_predictions = self._call_with_compile_fallback(_batched_call, "predict_df")
+            grouped = {symbol: frame.copy(deep=True) for symbol, frame in raw_predictions.groupby(self.id_column)}
+
+            for idx, panel, applied_aug, cache_key in pending:
+                symbol_df = grouped.get(panel.symbol)
+                if symbol_df is None:
+                    raise RuntimeError(f"Chronos2 output missing predictions for symbol {panel.symbol}")
+                batch = self._build_prediction_batch_from_df(
+                    panel=panel,
+                    raw_predictions=symbol_df,
+                    quantiles=quantiles,
+                    quantile_columns=quantile_columns,
+                    applied_aug=applied_aug,
+                )
+                results[idx] = batch
+                if cache_key is not None:
+                    self._prediction_cache_store(cache_key, batch)
+
+        missing = [idx for idx in range(len(contexts)) if idx not in results]
+        if missing:
+            raise RuntimeError(f"Missing Chronos2 predictions for batch indices: {missing}")
+        ordered = [results[idx] for idx in range(len(contexts))]
+        return ordered
 
     # ------------------------------------------------------------------ #
     # Prediction cache helpers
