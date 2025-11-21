@@ -258,6 +258,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--maker-fee", type=float, default=0.0008)
     parser.add_argument("--risk-threshold", type=float, help="Optional override for the runtime risk threshold.")
+    # Dataset / grouping flags (kept consistent with neural_trade_stock_e2e)
+    parser.add_argument("--require-forecasts", action=argparse.BooleanOptionalAction, default=False, help="Fail if forecast cache missing rows.")
+    parser.add_argument("--forecast-fill-strategy", choices=("persistence", "fail"), default="persistence")
+    parser.add_argument("--forecast-cache-writeback", action=argparse.BooleanOptionalAction, default=True, help="Persist filled forecasts to cache.")
+    parser.add_argument("--grouping-strategy", choices=("static", "correlation"), default="correlation")
+    parser.add_argument("--symbol-dropout-rate", type=float, default=0.1)
+    parser.add_argument("--exclude-symbols-file", help="Optional newline-delimited list of symbols to drop from training.")
+    parser.add_argument("--exclude-symbol", nargs="*", help="Inline symbols to drop from training.")
+    parser.add_argument("--corr-min", type=float, default=0.6, help="Correlation threshold for grouping.")
+    parser.add_argument("--corr-max-group", type=int, default=12, help="Max symbols per correlation cluster.")
+    parser.add_argument("--corr-window-days", type=int, default=252)
+    parser.add_argument("--corr-min-overlap", type=int, default=60)
     return parser.parse_args()
 
 
