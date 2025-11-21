@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import argparse
 import signal
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time as dtime
 import sys
 import time
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence, Set, Tuple
+from zoneinfo import ZoneInfo
 
 import alpaca_wrapper
 from loguru import logger
@@ -18,7 +19,12 @@ from neuraldailytraining import DailyTradingRuntime
 from neuraldailytraining.config import DailyDatasetConfig
 from neuraldailytraining.runtime import TradingPlan
 from src.logging_utils import setup_logging, get_log_filename
-from src.process_utils import spawn_open_position_at_maxdiff_takeprofit
+from src.process_utils import (
+    spawn_open_position_at_maxdiff_takeprofit,
+    spawn_close_position_at_maxdiff_takeprofit,
+    stop_all_entry_watchers,
+    enforce_min_spread,
+)
 from src.symbol_utils import is_crypto_symbol
 
 
@@ -27,6 +33,11 @@ DEFAULT_ACCOUNT_FRACTION = 0.15
 ENTRY_STRATEGY = "neuraldaily"
 MIN_STOCK_QTY = 1.0
 MIN_CRYPTO_QTY = 0.001
+# Run windows (Eastern time) to avoid spamming daily logic.
+WINDOW_OPEN = (dtime(9, 30), dtime(10, 0))       # US equities open
+WINDOW_CLOSE = (dtime(15, 30), dtime(16, 0))     # US equities close
+# Crypto daily bar alignment (UTC)
+WINDOW_CRYPTO = (dtime(0, 0), dtime(0, 30))      # 00:00–00:30 UTC
 
 
 def _load_account_equity() -> float:
@@ -72,6 +83,7 @@ class NeuralTradingLoop:
         max_plans: int = 2,
         force_immediate: bool = False,
         skip_equity_weekends: bool = True,
+        log_windows: bool = False,
     ) -> None:
         self.runtime = runtime
         self.symbols = [symbol.upper() for symbol in symbols]
@@ -81,7 +93,11 @@ class NeuralTradingLoop:
         self.max_plans = max(1, int(max_plans))
         self.force_immediate = bool(force_immediate)
         self.skip_equity_weekends = bool(skip_equity_weekends)
+        self.log_windows = bool(log_windows)
         self._stop_requested = False
+        self._last_windows_run: Set[Tuple[datetime.date, str]] = set()
+        self._last_crypto_anytime: Optional[datetime.date] = None
+        self._bootstrapped = False
 
     def run(self, *, once: bool = False) -> None:
         while not self._stop_requested:
@@ -94,6 +110,26 @@ class NeuralTradingLoop:
             time.sleep(self.interval_seconds)
 
     def _tick(self) -> None:
+        window = self._current_window()
+        if window is None:
+            today = datetime.now(timezone.utc).date()
+            has_crypto = any(sym.endswith("USD") for sym in self.symbols)
+            if has_crypto and self._last_crypto_anytime != today:
+                window = "crypto_anytime"
+                self._last_crypto_anytime = today
+            elif not self._bootstrapped:
+                window = "bootstrap"
+            else:
+                (logger.info if self.log_windows else logger.debug)("Outside trading windows; skipping tick.")
+                return
+        today = datetime.now(timezone.utc).date()
+        key = (today, window)
+        if key in self._last_windows_run:
+            (logger.info if self.log_windows else logger.debug)(
+                "Window %s already processed today; skipping repeat tick.", window
+            )
+            return
+
         account_equity = _load_account_equity()
         plans = self._generate_plans()
         if not plans:
@@ -103,6 +139,88 @@ class NeuralTradingLoop:
         logger.info(f"Generated {len(plans)} plans (aggregate weight {total_weight:.3f})")
         for neural_plan in plans:
             self._dispatch_plan(neural_plan, account_equity)
+        self._last_windows_run.add(key)
+        self._bootstrapped = True
+        self._close_orphan_positions()
+
+    def _current_window(self) -> Optional[str]:
+        now_utc = datetime.now(timezone.utc)
+        now_et = now_utc.astimezone(ZoneInfo("US/Eastern"))
+
+        def _in_window(window: Tuple[dtime, dtime], clock: dtime) -> bool:
+            return window[0] <= clock < window[1]
+
+        if _in_window(WINDOW_OPEN, now_et.time()):
+            return "open"
+        if _in_window(WINDOW_CLOSE, now_et.time()):
+            return "close"
+        if _in_window(WINDOW_CRYPTO, now_utc.time()):
+            return "crypto"
+        return None
+
+    def _close_orphan_positions(self) -> None:
+        """Close positions that are not in the current tradable symbol set."""
+        try:
+            positions = alpaca_wrapper.get_all_positions()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Unable to load positions for orphan close: {exc}")
+            return
+
+        tradable = set(self.symbols)
+        orphans = []
+        for pos in positions:
+            sym = getattr(pos, "symbol", "").upper()
+            if sym and sym not in tradable:
+                try:
+                    qty = float(getattr(pos, "qty", 0.0))
+                except Exception:
+                    qty = 0.0
+                if qty == 0.0:
+                    continue
+                side = "sell" if qty > 0 else "buy"
+                orphans.append((sym, side, abs(qty)))
+
+        if not orphans:
+            return
+
+        for sym, exit_side, qty in orphans:
+            # Try to get a model-informed price; fall back to current_quote if unavailable
+            takeprofit_price = None
+            try:
+                plan = self.runtime.plan_for_symbol(sym)
+                if plan:
+                    takeprofit_price = plan.sell_price if exit_side == "sell" else plan.buy_price
+            except Exception:
+                plan = None
+            if takeprofit_price is None:
+                try:
+                    quote = alpaca_wrapper.get_latest_quote(sym)
+                    takeprofit_price = float(quote.ask_price if exit_side == "sell" else quote.bid_price)
+                except Exception:
+                    takeprofit_price = None
+            if takeprofit_price is None:
+                logger.warning("Skipping orphan close for %s; no price available.", sym)
+                continue
+
+            tolerance = 0.0066  # reuse entry tolerance
+            expiry_min = 60  # 1 hour re-arm window
+            spawn_close_position_at_maxdiff_takeprofit(
+                sym,
+                exit_side,
+                takeprofit_price,
+                expiry_minutes=expiry_min,
+                price_tolerance=tolerance,
+                target_qty=qty,
+                entry_strategy=ENTRY_STRATEGY,
+            )
+            logger.info(
+                "Spawned orphan closer for %s side=%s qty=%.4f tp=%.4f (strategy=%s)",
+                sym,
+                exit_side,
+                qty,
+                takeprofit_price,
+                ENTRY_STRATEGY,
+            )
 
     def _generate_plans(self) -> List[NeuralPlan]:
         raw_plans = self.runtime.generate_plans(self.symbols)
@@ -141,7 +259,23 @@ class NeuralTradingLoop:
         if self.skip_equity_weekends and not asset_is_crypto and datetime.now(timezone.utc).weekday() >= 5:
             logger.info(f"Weekend skip for {symbol} (equity); not dispatching new entries.")
             return
-        limit_price = max(plan.buy_price, 1e-6)
+        # Skip equities outside market hours
+        if not asset_is_crypto:
+            try:
+                if not alpaca_wrapper.alpaca_api.get_clock().is_open:
+                    logger.info("Market closed; skipping equity plan for %s", symbol)
+                    return
+            except Exception as exc:
+                logger.warning("Clock lookup failed (%s); proceeding cautiously for %s", exc, symbol)
+        buy_price, sell_price = enforce_min_spread(plan.buy_price, plan.sell_price, min_spread_pct=0.0003)
+        if sell_price > plan.sell_price + 1e-12:
+            logger.warning(
+                "Adjusted sell_price for %s to enforce min spread (%.4f -> %.4f)",
+                symbol,
+                plan.sell_price,
+                sell_price,
+            )
+        limit_price = buy_price
         allocation = min(plan.trade_amount, self.runtime.risk_threshold)
         notional_cap = account_equity * self.account_fraction
         target_notional = max(notional_cap * allocation, 0.0)
@@ -151,18 +285,21 @@ class NeuralTradingLoop:
         if qty <= 0:
             logger.debug(f"Skipping {symbol} plan due to zero qty (notional {target_notional:.2f}).")
             return
+        # Clear existing entry watchers to avoid overlapping prices from older strategies
+        stop_all_entry_watchers(symbol, reason="neuraldaily_reset")
         logger.info(
-            f"Dispatching {symbol} plan | buy @ {plan.buy_price:.4f} qty={qty:.4f} "
+            f"Dispatching {symbol} plan | buy @ {buy_price:.4f} sell @ {sell_price:.4f} qty={qty:.4f} "
             f"weight={plan.trade_amount:.3f} priority={neural_plan.priority}"
         )
-        self._spawn_entry(symbol, "buy", plan.buy_price, qty, neural_plan)
-        self._spawn_entry(symbol, "sell", plan.sell_price, qty, neural_plan)
+        self._spawn_entry(symbol, "buy", buy_price, qty, neural_plan)
+        self._spawn_entry(symbol, "sell", sell_price, qty, neural_plan)
 
     def _spawn_entry(self, symbol: str, side: str, limit_price: float, qty: float, plan: NeuralPlan) -> None:
         tolerance_pct = None  # let the watcher decide
-        force_immediate = self.force_immediate
+        asset_is_crypto = (plan.asset_flag > 0.5) or is_crypto_symbol(symbol)
+        force_immediate = True if asset_is_crypto else self.force_immediate
         priority_rank = plan.priority
-        crypto_rank = plan.priority if plan.asset_flag > 0.5 else None
+        crypto_rank = 1 if asset_is_crypto else None
         spawn_open_position_at_maxdiff_takeprofit(
             symbol=symbol,
             side=side,
@@ -195,6 +332,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-immediate", action="store_true", help="Force immediate execution on spawned entries.")
     parser.add_argument("--no-weekend-skip", action="store_true", help="Allow equity entries on weekends (default skips).")
     parser.add_argument("--once", action="store_true", help="Run a single tick instead of looping.")
+    parser.add_argument("--log-windows", action="store_true", help="Log window-skips at info level (otherwise debug).")
     return parser.parse_args()
 
 
@@ -257,6 +395,7 @@ def main() -> None:
         max_plans=args.max_plans,
         force_immediate=args.force_immediate,
         skip_equity_weekends=not args.no_weekend_skip,
+        log_windows=args.log_windows,
     )
 
     def _handle_signal(signum, _frame):  # pragma: no cover - signal handling

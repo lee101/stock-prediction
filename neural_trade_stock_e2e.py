@@ -61,6 +61,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         help="Optional cap for neural trade amounts (defaults to the value baked into the checkpoint).",
     )
+    parser.add_argument("--fit-all-data", action="store_true", help="Train on 100% of data (validation_days=0).")
     return parser.parse_args()
 
 
@@ -88,6 +89,11 @@ def _build_dataset_config(args: argparse.Namespace) -> DailyDatasetConfig:
 
 
 def run_training(args: argparse.Namespace) -> None:
+    # When fitting all data, disable validation tail
+    if getattr(args, "fit_all_data", False):
+        args.validation_days = 0
+        args.val_fraction = 0.0
+
     dataset_cfg = _build_dataset_config(args)
     train_cfg = DailyTrainingConfig(
         epochs=args.epochs,
