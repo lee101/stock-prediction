@@ -178,6 +178,24 @@ def _watcher_config_path(symbol: str, side: str, mode: str, *, suffix: Optional[
     return MAXDIFF_WATCHERS_DIR / f"{base_name}.json"
 
 
+def stop_all_entry_watchers(symbol: str, *, reason: str = "reset") -> None:
+    """Stop all entry watchers (buy and sell) for a symbol."""
+    pattern = f"{_sanitize(symbol)}_*_entry_*.json"
+    for path in MAXDIFF_WATCHERS_DIR.glob(pattern):
+        try:
+            _stop_existing_watcher(path, reason=reason)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed stopping watcher %s: %s", path.name, exc)
+
+
+def enforce_min_spread(buy_price: float, sell_price: float, min_spread_pct: float = 0.0003) -> tuple[float, float]:
+    """Return (buy, sell) with at least min_spread_pct between them."""
+    buy = max(buy_price, 1e-6)
+    min_sell = buy * (1.0 + min_spread_pct)
+    sell = max(sell_price, min_sell)
+    return buy, sell
+
+
 def _persist_watcher_metadata(path: Path, payload: dict) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

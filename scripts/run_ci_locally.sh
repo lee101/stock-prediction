@@ -13,7 +13,17 @@ NC='\033[0m' # No Color
 
 # Configuration
 VENV_DIR=".venvci"
-PYTHON_VERSION="3.13"
+# Auto-detect Python version (prefer 3.13, fall back to 3.12, 3.11, or just python3)
+if command -v python3.13 &> /dev/null; then
+    PYTHON_CMD="python3.13"
+elif command -v python3.12 &> /dev/null; then
+    PYTHON_CMD="python3.12"
+elif command -v python3.11 &> /dev/null; then
+    PYTHON_CMD="python3.11"
+else
+    PYTHON_CMD="python3"
+fi
+PYTHON_VERSION=$($PYTHON_CMD --version | awk '{print $2}')
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
@@ -54,7 +64,7 @@ fi
 # Create virtual environment if it doesn't exist
 if [[ ! -d "$VENV_DIR" ]]; then
     step "Creating virtual environment"
-    python$PYTHON_VERSION -m venv "$VENV_DIR"
+    $PYTHON_CMD -m venv "$VENV_DIR"
     success "Created virtual environment"
 fi
 
