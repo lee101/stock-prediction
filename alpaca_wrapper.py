@@ -1747,16 +1747,20 @@ def close_position_near_market(position, pct_above_market=0.0):
 
     result = None
     try:
+        qty = abs(float(position.qty))
+        is_fractional = qty != int(qty)
+        tif = "day" if is_fractional else "gtc"
+
         if position.side == "long":
             sell_price = price * (1 + pct_above_market)
             sell_price = round(sell_price, 2)
             logger.info(f"selling {position.symbol} at {sell_price}")
             request = LimitOrderRequest(
                 symbol=remap_symbols(position.symbol),
-                qty=abs(float(position.qty)),
+                qty=qty,
                 side=OrderSide.SELL,
                 type=OrderType.LIMIT,
-                time_in_force="gtc",
+                time_in_force=tif,
                 limit_price=sell_price,
             )
         else:
@@ -1765,10 +1769,10 @@ def close_position_near_market(position, pct_above_market=0.0):
             logger.info(f"buying {position.symbol} at {buy_price}")
             request = LimitOrderRequest(
                 symbol=remap_symbols(position.symbol),
-                qty=abs(float(position.qty)),
+                qty=qty,
                 side=OrderSide.BUY,
                 type=OrderType.LIMIT,
-                time_in_force="gtc",
+                time_in_force=tif,
                 limit_price=buy_price,
             )
 
