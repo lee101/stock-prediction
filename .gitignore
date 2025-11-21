@@ -1,5 +1,6 @@
 .env
 .venv
+.venvci
 .venv314a
 .venv313
 .venv314

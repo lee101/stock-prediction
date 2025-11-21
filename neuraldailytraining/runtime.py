@@ -2,24 +2,25 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import torch
 
 from .checkpoints import load_checkpoint
 from .config import DailyDatasetConfig, DailyTrainingConfig
 from .data import FeatureNormalizer, SymbolFrameBuilder
-from .symbol_groups import get_group_id
 from .model import DailyMultiAssetPolicy, DailyPolicyConfig, MultiSymbolDailyPolicy
+from .symbol_groups import get_group_id
+
 
 LOGGER = logging.getLogger(__name__)
 
 
-def _reconstruct_training_config(payload: Optional[Dict]) -> Optional[DailyTrainingConfig]:
+def _reconstruct_training_config(payload: dict | None) -> DailyTrainingConfig | None:
     if not payload:
         return None
     data = dict(payload)
@@ -45,10 +46,10 @@ class DailyTradingRuntime:
         self,
         checkpoint_path: str | Path,
         *,
-        dataset_config: Optional[DailyDatasetConfig] = None,
-        device: Optional[str] = None,
-        risk_threshold: Optional[float] = None,
-        non_tradable: Optional[Iterable[str]] = None,
+        dataset_config: DailyDatasetConfig | None = None,
+        device: str | None = None,
+        risk_threshold: float | None = None,
+        non_tradable: Iterable[str] | None = None,
     ) -> None:
         path = Path(checkpoint_path)
         if not path.exists():
@@ -97,21 +98,21 @@ class DailyTradingRuntime:
         self,
         symbol: str,
         *,
-        as_of: Optional[str | pd.Timestamp] = None,
-    ) -> Optional[TradingPlan]:
+        as_of: str | pd.Timestamp | None = None,
+    ) -> TradingPlan | None:
         plans = self.plan_batch([symbol], as_of=as_of)
         return plans[0] if plans else None
 
-    def generate_plans(self, symbols: Iterable[str]) -> List[TradingPlan]:
+    def generate_plans(self, symbols: Iterable[str]) -> list[TradingPlan]:
         return self.plan_batch(list(symbols))
 
     def plan_batch(
         self,
         symbols: Sequence[str],
         *,
-        as_of: Optional[str | pd.Timestamp] = None,
-        non_tradable_override: Optional[Iterable[str]] = None,
-    ) -> List[TradingPlan]:
+        as_of: str | pd.Timestamp | None = None,
+        non_tradable_override: Iterable[str] | None = None,
+    ) -> list[TradingPlan]:
         prepared = [self._prepare_symbol_window(sym, as_of=as_of) for sym in symbols]
         prepared = [item for item in prepared if item is not None]
         if not prepared:
@@ -123,7 +124,9 @@ class DailyTradingRuntime:
         reference = torch.stack([item["reference"] for item in prepared], dim=0).to(self.device)
         c_high = torch.stack([item["c_high"] for item in prepared], dim=0).to(self.device)
         c_low = torch.stack([item["c_low"] for item in prepared], dim=0).to(self.device)
-        asset_class = torch.as_tensor([item["asset_flag"] for item in prepared], dtype=batch_feats.dtype, device=self.device)
+        asset_class = torch.as_tensor(
+            [item["asset_flag"] for item in prepared], dtype=batch_feats.dtype, device=self.device
+        )
         group_ids = torch.as_tensor([item["group_id"] for item in prepared], dtype=torch.long, device=self.device)
 
         group_mask = None
@@ -142,8 +145,11 @@ class DailyTradingRuntime:
                 chronos_low=c_low,
                 asset_class=asset_class,
             )
+            confidence = actions.get("confidence")
+            if confidence is not None:
+                actions["trade_amount"] = actions["trade_amount"] * confidence
 
-        plans: List[TradingPlan] = []
+        plans: list[TradingPlan] = []
         for idx, item in enumerate(prepared):
             trade_amount = float(actions["trade_amount"][idx, -1].item())
             trade_amount = min(trade_amount, self.risk_threshold)
@@ -187,8 +193,8 @@ class DailyTradingRuntime:
         self,
         symbol: str,
         *,
-        as_of: Optional[str | pd.Timestamp] = None,
-    ) -> Optional[Dict[str, object]]:
+        as_of: str | pd.Timestamp | None = None,
+    ) -> dict[str, object] | None:
         frame = self._builder.build(symbol)
         if as_of is not None:
             cutoff = pd.to_datetime(as_of, utc=True)
@@ -202,8 +208,10 @@ class DailyTradingRuntime:
         reference = torch.from_numpy(window["reference_close"].to_numpy(dtype=np.float32))
         c_high = torch.from_numpy(window["chronos_high"].to_numpy(dtype=np.float32))
         c_low = torch.from_numpy(window["chronos_low"].to_numpy(dtype=np.float32))
-        asset_flag = float(window["asset_class"].iloc[-1]) if "asset_class" in window.columns else (
-            1.0 if symbol.upper().endswith("-USD") else 0.0
+        asset_flag = (
+            float(window["asset_class"].iloc[-1])
+            if "asset_class" in window.columns
+            else (1.0 if symbol.upper().endswith("-USD") else 0.0)
         )
         if self.symbol_to_group_id:
             group_id = int(self.symbol_to_group_id.get(symbol.upper(), 0))
@@ -224,7 +232,7 @@ class DailyTradingRuntime:
 
     @staticmethod
     def _load_non_tradable(
-        external: Optional[Iterable[str]],
+        external: Iterable[str] | None,
         *,
         default_path: Path,
     ) -> set[str]:

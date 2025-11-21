@@ -1,5 +1,4 @@
 import torch
-
 from neuraldailytraining.trainer import apply_symbol_dropout
 
 
@@ -21,8 +20,8 @@ def test_apply_symbol_dropout_masks_features_and_group():
         assert torch.all(out_feats[drop_mask] == 0)
         keep = ~drop_mask
         # Ensure no connections to dropped indices
-        assert torch.all(out_group[drop_mask] == False)
-        assert torch.all(out_group[:, drop_mask] == False)
+        assert torch.all(~out_group[drop_mask])
+        assert torch.all(~out_group[:, drop_mask])
         # At least one kept entry should retain membership with itself
         kept_idx = int(torch.nonzero(keep, as_tuple=False)[0])
         assert out_group[kept_idx, kept_idx]

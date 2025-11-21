@@ -94,6 +94,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=None, help="Override transformer dropout rate")
     parser.add_argument("--symbol", type=str, default="LINKUSD", help="Primary trading symbol (e.g., UNIUSD)")
     parser.add_argument(
+        "--cache-only-forecasts",
+        action="store_true",
+        help="Use existing Chronos forecast cache without regenerating missing rows (saves GPU; default regenerates)",
+    )
+    parser.add_argument(
         "--price-offset-pct",
         type=float,
         default=None,
@@ -564,8 +569,8 @@ def _seconds_until_next_hour() -> float:
 
 def _run_trading_cycle(args: argparse.Namespace, config: TrainingConfig) -> None:
     """Execute one trading cycle: load/train policy, infer, simulate, trade."""
-    # Use cache-only mode during training to avoid loading Chronos2 on GPU
-    cache_only = args.mode == "train"
+    # Default: regenerate missing Chronos forecasts so train/infer use identical inputs
+    cache_only = bool(args.cache_only_forecasts)
 
     # Ensure fresh forecasts for the latest data
     _ensure_forecasts(config, cache_only=cache_only)
