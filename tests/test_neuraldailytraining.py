@@ -1,7 +1,8 @@
 import math
+
 import numpy as np
 import pandas as pd
-
+from neuraldailymarketsimulator.simulator import NeuralDailyMarketSimulator
 from neuraldailytraining import (
     DailyDataModule,
     DailyDatasetConfig,
@@ -10,7 +11,6 @@ from neuraldailytraining import (
     NeuralDailyTrainer,
 )
 from neuraldailytraining.checkpoints import save_checkpoint
-from neuraldailymarketsimulator.simulator import NeuralDailyMarketSimulator
 
 
 def _write_symbol_data(root, forecast_root, symbol: str, days: int = 360) -> None:

@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Dict
 import math
+from dataclasses import dataclass
 
 import torch
-from torch import nn
 from einops import rearrange
-
 from hourlycryptotraining.model import HourlyCryptoPolicy, PolicyHeadConfig
+from torch import nn
 
 
 # =============================================================================
 # Cross-Symbol Attention Layers (inspired by Chronos2)
 # =============================================================================
+
 
 class GroupSelfAttention(nn.Module):
     """Self-attention applied along the batch axis to learn cross-symbol patterns.
@@ -38,7 +37,7 @@ class GroupSelfAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        group_mask: Optional[torch.Tensor] = None,
+        group_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -81,7 +80,7 @@ class GroupSelfAttention(nn.Module):
             # Expand mask: (batch, batch) -> (1, 1, batch, batch)
             base = group_mask | torch.eye(group_mask.size(0), device=group_mask.device, dtype=group_mask.dtype)
             mask = base.unsqueeze(0).unsqueeze(0)
-            attn_scores = attn_scores.masked_fill(~mask, float('-inf'))
+            attn_scores = attn_scores.masked_fill(~mask, float("-inf"))
 
         attn_probs = torch.softmax(attn_scores, dim=-1)
         attn_probs = self.dropout(attn_probs)
@@ -139,7 +138,7 @@ class MultiSymbolEncoderBlock(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        group_mask: Optional[torch.Tensor] = None,
+        group_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # Time self-attention
         hidden_states = self.time_attn(hidden_states)
@@ -181,6 +180,7 @@ class DailyPolicyConfig(PolicyHeadConfig):
     crypto_max_leverage: float = 1.0
     use_cross_attention: bool = True  # Enable cross-symbol learning
     symbol_dropout_rate: float = 0.1  # Dropout rate for symbol masking
+    output_confidence: bool = True  # Optional gating head to learn when to skip
 
 
 class DailyMultiAssetPolicy(HourlyCryptoPolicy):
@@ -198,7 +198,7 @@ class DailyMultiAssetPolicy(HourlyCryptoPolicy):
         reference_close,
         chronos_high,
         chronos_low,
-        asset_class: Optional[torch.Tensor] = None,
+        asset_class: torch.Tensor | None = None,
     ):
         decoded = super().decode_actions(
             outputs,
@@ -211,8 +211,12 @@ class DailyMultiAssetPolicy(HourlyCryptoPolicy):
             mask = mask.view(-1)
             limits = torch.where(
                 mask > 0.5,
-                torch.as_tensor(self.crypto_max_leverage, device=decoded["trade_amount"].device, dtype=decoded["trade_amount"].dtype),
-                torch.as_tensor(self.equity_max_leverage, device=decoded["trade_amount"].device, dtype=decoded["trade_amount"].dtype),
+                torch.as_tensor(
+                    self.crypto_max_leverage, device=decoded["trade_amount"].device, dtype=decoded["trade_amount"].dtype
+                ),
+                torch.as_tensor(
+                    self.equity_max_leverage, device=decoded["trade_amount"].device, dtype=decoded["trade_amount"].dtype
+                ),
             )
             # Scale sigmoid output (0-1) by asset-specific max leverage
             # Stocks: 0-2x, Crypto: 0-1x
@@ -238,31 +242,31 @@ class MultiSymbolDailyPolicy(nn.Module):
 
         # Input embedding
         self.embed = nn.Linear(config.input_dim, config.hidden_dim)
-        self.pos_encoding = PositionalEncoding(
-            config.hidden_dim,
-            dropout=config.dropout,
-            max_len=config.max_len
-        )
+        self.pos_encoding = PositionalEncoding(config.hidden_dim, dropout=config.dropout, max_len=config.max_len)
 
         # Encoder blocks with optional cross-attention
-        self.blocks = nn.ModuleList([
-            MultiSymbolEncoderBlock(
-                hidden_dim=config.hidden_dim,
-                num_heads=config.num_heads,
-                dropout=config.dropout,
-                use_cross_attention=config.use_cross_attention,
-            )
-            for _ in range(config.num_layers)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                MultiSymbolEncoderBlock(
+                    hidden_dim=config.hidden_dim,
+                    num_heads=config.num_heads,
+                    dropout=config.dropout,
+                    use_cross_attention=config.use_cross_attention,
+                )
+                for _ in range(config.num_layers)
+            ]
+        )
 
         self.norm = nn.LayerNorm(config.hidden_dim)
-        self.head = nn.Linear(config.hidden_dim, 3)
+        # buy, sell, trade_amount, optional confidence
+        out_dims = 4 if config.output_confidence else 3
+        self.head = nn.Linear(config.hidden_dim, out_dims)
 
     def forward(
         self,
         features: torch.Tensor,
-        group_mask: Optional[torch.Tensor] = None,
-    ) -> Dict[str, torch.Tensor]:
+        group_mask: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
         """
         Args:
             features: (batch, seq_len, input_dim)
@@ -281,22 +285,25 @@ class MultiSymbolDailyPolicy(nn.Module):
         h = self.norm(h)
         logits = self.head(h)
 
-        return {
+        out = {
             "buy_price_logits": logits[..., 0:1],
             "sell_price_logits": logits[..., 1:2],
             "trade_amount_logits": logits[..., 2:3],
         }
+        if logits.shape[-1] > 3:
+            out["confidence_logits"] = logits[..., 3:4]
+        return out
 
     def decode_actions(
         self,
-        outputs: Dict[str, torch.Tensor],
+        outputs: dict[str, torch.Tensor],
         *,
         reference_close: torch.Tensor,
         chronos_high: torch.Tensor,
         chronos_low: torch.Tensor,
-        asset_class: Optional[torch.Tensor] = None,
-        dynamic_offset_pct: Optional[torch.Tensor] = None,
-    ) -> Dict[str, torch.Tensor]:
+        asset_class: torch.Tensor | None = None,
+        dynamic_offset_pct: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
         """Decode model outputs into trading actions."""
         if dynamic_offset_pct is None:
             offset_pct = torch.full_like(reference_close, self.price_offset_pct)
@@ -333,11 +340,18 @@ class MultiSymbolDailyPolicy(nn.Module):
             # Stocks: 0-2x, Crypto: 0-1x
             trade_amount = trade_amount * limits.unsqueeze(-1)
 
-        return {
+        confidence = None
+        if "confidence_logits" in outputs:
+            confidence = torch.sigmoid(outputs["confidence_logits"]).squeeze(-1)
+
+        actions = {
             "buy_price": buy_price,
             "sell_price": sell_price,
             "trade_amount": trade_amount,
         }
+        if confidence is not None:
+            actions["confidence"] = confidence
+        return actions
 
 
 def create_group_mask(group_ids: torch.Tensor) -> torch.Tensor:
@@ -354,10 +368,10 @@ def create_group_mask(group_ids: torch.Tensor) -> torch.Tensor:
 
 
 __all__ = [
-    "DailyPolicyConfig",
     "DailyMultiAssetPolicy",
-    "MultiSymbolDailyPolicy",
+    "DailyPolicyConfig",
     "GroupSelfAttention",
+    "MultiSymbolDailyPolicy",
     "MultiSymbolEncoderBlock",
     "create_group_mask",
 ]

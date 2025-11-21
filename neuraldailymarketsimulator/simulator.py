@@ -2,17 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-
-from neuraldailytraining import DailyTradingRuntime
-from neuraldailytraining.config import DailyDatasetConfig
 from neural_trade_stock_e2e import _build_dataset_config
+from neuraldailytraining import DailyTradingRuntime
 
 
 @dataclass
@@ -32,7 +29,7 @@ class NeuralDailyMarketSimulator:
         symbols: Sequence[str],
         *,
         stock_fee: float = 0.0005,
-        crypto_fee: float = 0.008,
+        crypto_fee: float = 0.0008,
         initial_cash: float = 1.0,
         leverage_fee_rate: float = 0.065,
         equity_max_leverage: float = 2.0,
@@ -51,7 +48,7 @@ class NeuralDailyMarketSimulator:
         self.crypto_max_leverage = crypto_max_leverage
         self.stocks_closed = stocks_closed
         self.auto_weekend_hold = auto_weekend_hold
-        self.frames: Dict[str, pd.DataFrame] = {}
+        self.frames: dict[str, pd.DataFrame] = {}
         self.crypto_symbols: set[str] = set()
 
         for symbol in self.symbols:
@@ -69,14 +66,14 @@ class NeuralDailyMarketSimulator:
         if not self.frames:
             raise ValueError("No symbols have usable historical data for simulation.")
 
-    def _available_dates(self) -> List[pd.Timestamp]:
+    def _available_dates(self) -> list[pd.Timestamp]:
         union: set[pd.Timestamp] = set()
         for frame in self.frames.values():
             union.update(frame["date"])
         ordered = sorted(union)
         return ordered
 
-    def _select_dates(self, start_date: Optional[str], days: int) -> List[pd.Timestamp]:
+    def _select_dates(self, start_date: str | None, days: int) -> list[pd.Timestamp]:
         ordered = self._available_dates()
         if not ordered:
             raise ValueError("No historical dates available for simulation.")
@@ -87,25 +84,27 @@ class NeuralDailyMarketSimulator:
             raise ValueError(f"Requested {days} simulation days but only {len(ordered)} available.")
         return ordered[:days]
 
-    def run(self, *, start_date: Optional[str] = None, days: int = 5) -> Tuple[List[SimulationResult], Dict[str, float]]:
+    def run(self, *, start_date: str | None = None, days: int = 5) -> tuple[list[SimulationResult], dict[str, float]]:
         dates = self._select_dates(start_date, days)
         cash = self.initial_cash
         prev_value = cash
-        inventory: Dict[str, float] = {symbol: 0.0 for symbol in self.symbols}
-        last_close: Dict[str, float] = {symbol: float(frame["close"].iloc[-1]) for symbol, frame in self.frames.items()}
-        results: List[SimulationResult] = []
-        daily_returns: List[float] = []
+        inventory: dict[str, float] = dict.fromkeys(self.symbols, 0.0)
+        last_close: dict[str, float] = {symbol: float(frame["close"].iloc[-1]) for symbol, frame in self.frames.items()}
+        results: list[SimulationResult] = []
+        daily_returns: list[float] = []
 
         for date in dates:
             # Calculate leverage cost at start of day
             # Separate stock and crypto positions
             stock_value = sum(
                 inventory.get(symbol, 0.0) * last_close.get(symbol, 0.0)
-                for symbol in self.symbols if symbol not in self.crypto_symbols
+                for symbol in self.symbols
+                if symbol not in self.crypto_symbols
             )
             crypto_value = sum(
                 inventory.get(symbol, 0.0) * last_close.get(symbol, 0.0)
-                for symbol in self.symbols if symbol in self.crypto_symbols
+                for symbol in self.symbols
+                if symbol in self.crypto_symbols
             )
             positions_value = stock_value + crypto_value
             current_equity = cash + positions_value
@@ -122,7 +121,7 @@ class NeuralDailyMarketSimulator:
                 leverage_cost = leveraged_amount * self.daily_leverage_rate
                 cash -= leverage_cost
 
-            symbol_rows: Dict[str, pd.Series] = {}
+            symbol_rows: dict[str, pd.Series] = {}
             for symbol, frame in self.frames.items():
                 rows = frame[frame["date"] == date]
                 if not rows.empty:
@@ -134,7 +133,9 @@ class NeuralDailyMarketSimulator:
             if self.auto_weekend_hold and date.weekday() >= 5:
                 non_tradable_today.update(sym for sym in self.symbols if sym not in self.crypto_symbols)
 
-            plans = self.runtime.plan_batch(list(symbol_rows.keys()), as_of=date, non_tradable_override=non_tradable_today)
+            plans = self.runtime.plan_batch(
+                list(symbol_rows.keys()), as_of=date, non_tradable_override=non_tradable_today
+            )
             plan_lookup = {plan.symbol.upper(): plan for plan in plans}
             for symbol, row in symbol_rows.items():
                 last_close[symbol] = float(row["close"])
@@ -206,7 +207,7 @@ class NeuralDailyMarketSimulator:
         return mean_return / downside_std
 
 
-def _load_non_tradable_file(path: Path) -> List[str]:
+def _load_non_tradable_file(path: Path) -> list[str]:
     if not path.exists():
         return []
     try:
@@ -229,9 +230,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=("plan", "simulate"), default="simulate")
     parser.add_argument("--symbols", nargs="*", help="Optional subset of symbols.")
     parser.add_argument("--non-tradable", nargs="*", help="Symbols to feed as context but never trade.")
-    parser.add_argument("--non-tradable-file", help="Path to JSON/list of non-tradable symbols; defaults to checkpoint dir non_tradable.json if present.")
-    parser.add_argument("--stocks-closed", action="store_true", help="Disable all equity trading for the run (crypto-only).")
-    parser.add_argument("--no-weekend-auto-hold", action="store_false", dest="auto_weekend_hold", help="Disable automatic equity freeze on weekends.")
+    parser.add_argument(
+        "--non-tradable-file",
+        help="Path to JSON/list of non-tradable symbols; defaults to checkpoint dir non_tradable.json if present.",
+    )
+    parser.add_argument(
+        "--stocks-closed", action="store_true", help="Disable all equity trading for the run (crypto-only)."
+    )
+    parser.add_argument(
+        "--no-weekend-auto-hold",
+        action="store_false",
+        dest="auto_weekend_hold",
+        help="Disable automatic equity freeze on weekends.",
+    )
     parser.add_argument("--data-root", default="trainingdata/train")
     parser.add_argument("--forecast-cache", default="strategytraining/forecast_cache")
     parser.add_argument("--sequence-length", type=int, default=256)
@@ -242,7 +253,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--days", type=int, default=5)
     parser.add_argument("--initial-cash", type=float, default=1.0)
     parser.add_argument("--stock-fee", type=float, default=0.0005, help="Per-leg fee rate for stocks (fractional).")
-    parser.add_argument("--crypto-fee", type=float, default=0.008, help="Per-leg fee rate for crypto (fractional).")
+    parser.add_argument(
+        "--crypto-fee", type=float, default=0.0008, help="Per-leg fee rate for crypto (fractional, 8 bps)."
+    )
     parser.add_argument("--maker-fee", type=float, default=0.0008)
     parser.add_argument("--risk-threshold", type=float, help="Optional override for the runtime risk threshold.")
     return parser.parse_args()
@@ -252,7 +265,7 @@ def run_cli_simulation() -> None:
     args = parse_args()
     dataset_cfg = _build_dataset_config(args)
     checkpoint_path = Path(args.checkpoint)
-    non_tradable: set[str] = set(sym.upper() for sym in (args.non_tradable or []))
+    non_tradable: set[str] = {sym.upper() for sym in (args.non_tradable or [])}
     if args.non_tradable_file:
         non_tradable.update(sym.upper() for sym in _load_non_tradable_file(Path(args.non_tradable_file)))
     else:
@@ -278,7 +291,9 @@ def run_cli_simulation() -> None:
     print(f"{'Date':<15} {'Equity':>12} {'Cash':>12} {'Return':>10} {'Leverage':>10} {'LevCost':>10}")
     for entry in results:
         date_str = entry.date.strftime("%Y-%m-%d")
-        print(f"{date_str:<15} {entry.equity:>12.4f} {entry.cash:>12.4f} {entry.daily_return:>10.4f} {entry.leverage:>10.2f}x {entry.leverage_cost:>10.6f}")
+        print(
+            f"{date_str:<15} {entry.equity:>12.4f} {entry.cash:>12.4f} {entry.daily_return:>10.4f} {entry.leverage:>10.2f}x {entry.leverage_cost:>10.6f}"
+        )
     print("\nSimulation Summary")
     print(f"Final Equity      : {summary['final_equity']:.4f}")
     print(f"Net PnL           : {summary['pnl']:.4f}")

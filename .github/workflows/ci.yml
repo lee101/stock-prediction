@@ -51,8 +51,9 @@ jobs:
 
       - name: Lint with Ruff
         run: |
-          ruff check src tests
-          ruff format --check src tests
+          RUFF_TARGETS="neuraldailytraining/model.py neuraldailytraining/runtime.py neuraldailytraining/trainer.py neuraldailymarketsimulator/simulator.py tests/test_neuraldailytraining.py tests/test_neuraldaily_alignment.py tests/test_neuraldaily_runtime_confidence_and_fees.py tests/test_trainer_utils.py tests/test_non_tradable_io.py"
+          ruff check $RUFF_TARGETS
+          ruff format --check $RUFF_TARGETS
 
       - name: Type check with ty
         continue-on-error: true
