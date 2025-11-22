@@ -65,7 +65,7 @@ def _get_time_in_force_for_qty(qty: float, symbol: str = None) -> str:
         'gtc' for crypto or whole numbers, 'day' for fractional stocks
     """
     # Crypto symbols always use 'gtc' (24/7 markets don't support 'day')
-    if symbol and ('USD' in symbol or 'BTC' in symbol or 'ETH' in symbol or 'USDT' in symbol):
+    if symbol and (is_crypto_symbol(symbol) or symbol.upper() in crypto_symbols):
         return "gtc"
 
     try:
@@ -75,6 +75,46 @@ def _get_time_in_force_for_qty(qty: float, symbol: str = None) -> str:
         # If we can't determine, default to 'gtc' (works for both stocks and crypto)
         logger.warning(f"Could not determine if qty={qty} is fractional, defaulting to gtc order")
         return "gtc"
+
+
+def _get_min_order_notional(symbol: str) -> float:
+    """Return broker-enforced minimum notional for a symbol."""
+    env_key = f"ALP_MIN_NOTIONAL_{symbol.upper()}"
+    raw_value = os.getenv(env_key, os.getenv("ALP_MIN_NOTIONAL_DEFAULT", "1.0"))
+    try:
+        return max(float(raw_value), 0.0)
+    except Exception:
+        logger.warning(f"Invalid min notional override for %s=%r; defaulting to $1.00", symbol, raw_value)
+        return 1.0
+
+
+def _enforce_min_notional(symbol: str, qty: float, price: float) -> float:
+    """Bump quantity so order notional meets broker minimum."""
+    try:
+        price = float(price or 0)
+    except Exception:
+        price = 0.0
+
+    if price <= 0:
+        return qty
+
+    min_notional = _get_min_order_notional(symbol)
+    if min_notional <= 0:
+        return qty
+
+    current_notional = qty * price
+    if current_notional >= min_notional:
+        return qty
+
+    min_qty = min_notional / price
+    logger.info(
+        "Raising qty for %s to satisfy min notional %.2f -> qty %.6f @ %.4f",
+        symbol,
+        min_notional,
+        min_qty,
+        price,
+    )
+    return min_qty
 
 
 _MARKET_ORDER_SPREAD_CAP_RAW = os.getenv("MARKET_ORDER_MAX_SPREAD_PCT", "0.01")
@@ -299,6 +339,29 @@ def _can_use_market_order(symbol: str, is_closing_position: bool = False) -> Tup
     return True, ""
 
 
+def _reference_price_for_notional(symbol: str, fallback_price: float = 0.0) -> float:
+    """Get a defensible price estimate for sizing notional checks."""
+    try:
+        fallback_price = float(fallback_price or 0.0)
+    except Exception:
+        fallback_price = 0.0
+
+    if fallback_price > 0:
+        return fallback_price
+
+    try:
+        quote = latest_data(symbol)
+        ask_price = float(getattr(quote, "ask_price", 0) or 0)
+        bid_price = float(getattr(quote, "bid_price", 0) or 0)
+
+        if ask_price > 0 and bid_price > 0:
+            return (ask_price + bid_price) / 2.0
+        return ask_price or bid_price or 0.0
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Failed to fetch reference price for {symbol}: {exc}")
+        return 0.0
+
+
 def get_all_positions(retries=3):
     try:
         return alpaca_api.get_all_positions()
@@ -353,6 +416,10 @@ def open_market_order_violently(symbol, qty, side, retries=3):
         logger.error(f"Market order blocked for {symbol}: {reason}")
         logger.error(f"RETURNING None - Use limit orders instead for out-of-hours trading")
         return None
+
+    # Enforce broker min notional (~$1) using latest quote as reference
+    reference_price = _reference_price_for_notional(symbol)
+    qty = _enforce_min_notional(symbol, qty, reference_price)
 
     result = None
     try:
@@ -437,6 +504,7 @@ def has_current_open_position(symbol: str, side: str) -> bool:
 
 def open_order_at_price(symbol, qty, side, price):
     result = None
+    qty = _enforce_min_notional(symbol, qty, price)
     # todo: check if order is already open
     # cancel all other orders on this symbol
     current_open_orders = get_orders()
@@ -482,6 +550,8 @@ def open_order_at_price(symbol, qty, side, price):
 
 def open_order_at_price_or_all(symbol, qty, side, price):
     result = None
+    qty = _enforce_min_notional(symbol, qty, price)
+
     # Cancel existing orders for this symbol
     current_open_orders = get_orders()
     for order in current_open_orders:
@@ -602,6 +672,7 @@ def open_order_at_price_allow_add_to_position(symbol, qty, side, price):
     """
     logger.info(f"Starting order placement for {symbol} {side} {qty} @ {price}")
     result = None
+    qty = _enforce_min_notional(symbol, qty, price)
     # Cancel existing orders for this symbol
     current_open_orders = get_orders()
     for order in current_open_orders:

@@ -126,3 +126,116 @@ def test_status_cli_live_portfolio_value(monkeypatch):
     assert result.exit_code == 0
     assert "Live Portfolio Value=$97,659.92" in result.stdout
     assert "Last Recorded Portfolio Value=$0.00" in result.stdout
+
+
+def test_status_cli_symbol_filter(monkeypatch):
+    runner = CliRunner()
+
+    account = SimpleNamespace(
+        equity="5000",
+        last_equity="5000",
+        cash="1000",
+        buying_power="2000",
+        multiplier="1",
+        status="ACTIVE",
+    )
+
+    positions = [
+        SimpleNamespace(
+            symbol="AAPL",
+            side="long",
+            qty="1",
+            market_value="100",
+            unrealized_pl="0",
+            current_price="100",
+            last_trade_at=None,
+        ),
+        SimpleNamespace(
+            symbol="UNIUSD",
+            side="long",
+            qty="10",
+            market_value="50",
+            unrealized_pl="5",
+            current_price="5",
+            last_trade_at=None,
+        ),
+    ]
+
+    orders = [
+        SimpleNamespace(symbol="AAPL", side="buy", qty="1", limit_price="1.0", status="new", type="limit", submitted_at=None),
+        SimpleNamespace(symbol="UNIUSD", side="buy", qty="2", limit_price="5.0", status="new", type="limit", submitted_at=None),
+    ]
+
+    trading_plan = [
+        {"symbol": "AAPL", "side": "buy", "entry_strategy": "maxdiff", "mode": "live", "qty": 1, "opened_at": None},
+        {"symbol": "UNIUSD", "side": "buy", "entry_strategy": "maxdiff", "mode": "live", "qty": 2, "opened_at": None},
+    ]
+
+    snapshot = PortfolioSnapshotRecord(
+        observed_at=datetime(2025, 10, 21, 20, 58, 17, tzinfo=timezone.utc),
+        portfolio_value=0.0,
+        risk_threshold=1.5,
+    )
+
+    monkeypatch.setattr(stock_cli, "get_leverage_settings", lambda: SimpleNamespace(max_gross_leverage=1.5))
+    monkeypatch.setattr(stock_cli, "get_global_risk_threshold", lambda: 1.5)
+    monkeypatch.setattr(stock_cli, "get_configured_max_risk_threshold", lambda: 1.5)
+    monkeypatch.setattr(stock_cli, "fetch_latest_snapshot", lambda: snapshot)
+    monkeypatch.setattr(stock_cli.alpaca_wrapper, "get_account", lambda: account)
+    monkeypatch.setattr(stock_cli.alpaca_wrapper, "get_all_positions", lambda: positions)
+    monkeypatch.setattr(stock_cli, "filter_to_realistic_positions", lambda items: list(items))
+    monkeypatch.setattr(stock_cli.alpaca_wrapper, "get_orders", lambda: orders)
+    monkeypatch.setattr(stock_cli, "_load_active_trading_plan", lambda: trading_plan)
+    monkeypatch.setattr(stock_cli, "_fetch_forecast_snapshot", lambda: ({}, None))
+    monkeypatch.setattr(stock_cli, "_load_maxdiff_watchers", lambda: [])
+
+    result = runner.invoke(stock_cli.app, ["status", "--tz", "UTC", "--symbols", "UNIUSD", "--positions"])
+    assert result.exit_code == 0
+    assert "Filtering to symbols: UNIUSD" in result.stdout
+    assert "UNIUSD" in result.stdout
+    assert "AAPL" not in result.stdout
+    assert ":: Trading Plan" not in result.stdout
+
+
+def test_status_cli_maxdiff_filter(monkeypatch):
+    runner = CliRunner()
+
+    account = SimpleNamespace(
+        equity="1000",
+        last_equity="1000",
+        cash="500",
+        buying_power="1500",
+        multiplier="1",
+        status="ACTIVE",
+    )
+
+    positions: list[SimpleNamespace] = []
+    orders: list[SimpleNamespace] = []
+
+    trading_plan = [
+        {"symbol": "AAPL", "side": "buy", "entry_strategy": "entry_takeprofit", "mode": "live", "qty": 1, "opened_at": None},
+        {"symbol": "MSFT", "side": "buy", "entry_strategy": "maxdiffprofit", "mode": "live", "qty": 2, "opened_at": None},
+    ]
+
+    snapshot = PortfolioSnapshotRecord(
+        observed_at=datetime(2025, 10, 21, 20, 58, 17, tzinfo=timezone.utc),
+        portfolio_value=0.0,
+        risk_threshold=1.5,
+    )
+
+    monkeypatch.setattr(stock_cli, "get_leverage_settings", lambda: SimpleNamespace(max_gross_leverage=1.5))
+    monkeypatch.setattr(stock_cli, "get_global_risk_threshold", lambda: 1.5)
+    monkeypatch.setattr(stock_cli, "get_configured_max_risk_threshold", lambda: 1.5)
+    monkeypatch.setattr(stock_cli, "fetch_latest_snapshot", lambda: snapshot)
+    monkeypatch.setattr(stock_cli.alpaca_wrapper, "get_account", lambda: account)
+    monkeypatch.setattr(stock_cli.alpaca_wrapper, "get_all_positions", lambda: positions)
+    monkeypatch.setattr(stock_cli, "filter_to_realistic_positions", lambda items: list(items))
+    monkeypatch.setattr(stock_cli.alpaca_wrapper, "get_orders", lambda: orders)
+    monkeypatch.setattr(stock_cli, "_load_active_trading_plan", lambda: trading_plan)
+    monkeypatch.setattr(stock_cli, "_fetch_forecast_snapshot", lambda: ({}, None))
+    monkeypatch.setattr(stock_cli, "_load_maxdiff_watchers", lambda: [])
+
+    result = runner.invoke(stock_cli.app, ["status", "--tz", "UTC", "--maxdiff"])
+    assert result.exit_code == 0
+    assert "MSFT" in result.stdout
+    assert "AAPL" not in result.stdout
