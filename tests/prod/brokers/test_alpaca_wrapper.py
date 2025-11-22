@@ -1,3 +1,4 @@
+import math
 import sys
 import types
 import pytest
@@ -102,6 +103,7 @@ from alpaca_wrapper import (
     latest_data,
     has_current_open_position,
     execute_portfolio_orders,
+    open_order_at_price,
     open_order_at_price_or_all,
     open_market_order_violently,
     close_position_violently,
@@ -213,6 +215,29 @@ def test_market_order_allowed_when_market_open():
         assert submit.call_count == 1
 
 
+def test_market_order_qty_bumped_to_min_notional():
+    """Market orders below $1 should scale qty up to satisfy broker min notional."""
+    mock_clock = MagicMock()
+    mock_clock.is_open = True
+
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 0.20
+    mock_quote.bid_price = 0.20
+
+    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
+         patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
+
+        result = open_market_order_violently("AAPL", 1, "buy")
+
+        assert result == "order_ok"
+        assert submit.call_count == 1
+        qty_used = submit.call_args.kwargs["order_data"]["qty"]
+        # Price $0.20 => need $1 notional -> qty 5.0
+        assert math.isclose(qty_used, 5.0)
+
+
 def test_market_order_blocked_when_spread_too_high():
     """Market orders should be blocked when spread > 1%, but fallback to limit order at midpoint."""
     # Create a mock position
@@ -291,6 +316,21 @@ def test_limit_order_allowed_when_market_closed():
         # Should succeed - limit orders work out of hours
         assert result == "order_ok"
         assert submit.call_count == 1
+
+
+def test_limit_order_qty_bumped_to_min_notional():
+    """Limit orders should raise tiny qty to meet $1 notional."""
+    with patch("alpaca_wrapper.get_orders", return_value=[]), \
+         patch("alpaca_wrapper.has_current_open_position", return_value=False), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw) as req, \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="ok") as submit:
+
+        result = open_order_at_price("AAPL", 1, "buy", 0.2)
+
+    assert result == "ok"
+    assert submit.call_count == 1
+    qty_used = submit.call_args.kwargs["order_data"]["qty"]
+    assert math.isclose(qty_used, 5.0)
 
 
 def test_crypto_position_closes_with_limit_order():
