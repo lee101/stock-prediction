@@ -7,7 +7,7 @@ import numpy as np
 
 # Current fee structure (aligned with production/Alpaca):
 CRYPTO_TRADING_FEE = 0.008  # 80 bps crypto fee (maker/taker normalized)
-TRADING_FEE = 0.000027      # Equity trading fees (0.27 bps, includes SEC/exchange fees)
+TRADING_FEE = 0.0000278     # Equity trading fees (0.278 bps, includes SEC/exchange fees)
                              # Note: Alpaca is commission-free, but has regulatory fees
 
 # Leverage financing costs (aligned with marketsimulator/state.py and src/leverage_settings.py):
