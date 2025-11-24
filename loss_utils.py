@@ -1,12 +1,19 @@
 import numpy as np
 
-# TRADING_FEE = 0.0007 # fee actually changes for small trades - this is for 100k
-# TRADING_FEE = 0.003  # fee actually changes for small trades
-CRYPTO_TRADING_FEE = 0.008  # 80 bps crypto fee (maker/taker normalized)
-# from pytorch_forecasting import MultiHorizonMetric
+# Historical fee values (kept for reference):
+# TRADING_FEE = 0.0007  # fee for ~100k trades (legacy)
+# TRADING_FEE = 0.003   # fee for small trades (legacy)
+# TRADING_FEE = 0.0005  # previous value (18x too high - INCORRECT)
 
-TRADING_FEE = 0.0005
-# equities .0000278
+# Current fee structure (aligned with production/Alpaca):
+CRYPTO_TRADING_FEE = 0.008  # 80 bps crypto fee (maker/taker normalized)
+TRADING_FEE = 0.0000278     # Equity trading fees (~0.278 bps, includes SEC/exchange fees)
+                             # Note: Alpaca is commission-free, but has regulatory fees
+
+# Leverage financing costs (aligned with marketsimulator/state.py and src/leverage_settings.py):
+DEFAULT_ANNUAL_LEVERAGE_COST = 0.065  # 6.5% annual financing rate
+DEFAULT_TRADING_DAYS = 252
+DAILY_LEVERAGE_COST = DEFAULT_ANNUAL_LEVERAGE_COST / DEFAULT_TRADING_DAYS  # ~0.000257936
 
 # Try to import torch, but allow graceful fallback for testing
 try:
@@ -103,45 +110,55 @@ def torch_inverse_transform(scaler, values):
 #     return current_profi
 
 
-def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred, trading_fee=None):
+def calculate_trading_profit_torch(scaler, last_values, y_test, y_test_pred, trading_fee=None, leverage_cost_daily=None, position_duration_days=1.0):
     """
-    Calculate trading profits
-    :param last_values:
-    :param y_test:
-    :param y_test_pred:
-    :param trading_fee: Fee per trade (default: TRADING_FEE)
-    :return:
+    Calculate trading profits with fees and leverage financing costs.
+
+    Args:
+        scaler: Deprecated, kept for compatibility
+        last_values: Deprecated, kept for compatibility
+        y_test: Actual returns (e.g., 0.02 = 2% gain)
+        y_test_pred: Position sizes (-10 to +10, where abs() > 1.0 uses leverage)
+        trading_fee: Fee per trade as fraction of notional (default: TRADING_FEE)
+        leverage_cost_daily: Daily financing cost rate (default: DAILY_LEVERAGE_COST = 0.065/252)
+        position_duration_days: Number of days position is held (default: 1.0)
+
+    Returns:
+        Average profit per position, accounting for P&L, fees, and leverage costs
+
+    Note:
+        This function now matches MarketSimulator behavior by charging financing
+        costs on borrowed capital (position size > 1.0).
     """
     if trading_fee is None:
         trading_fee = TRADING_FEE
+    if leverage_cost_daily is None:
+        leverage_cost_daily = DAILY_LEVERAGE_COST
 
-    # percent_movements = ((y_test - last_values) / last_values) + 1
-
-    # last_values_scaled = last_values # no scaling
-    # y_test_rescaled = y_test # no scaling
+    # Calculate P&L from price movements
     percent_movements_scaled = y_test  # not scientific
     detached_y_test_pred = y_test_pred
     bought_profits = torch.clip(detached_y_test_pred, 0, 10) * percent_movements_scaled
     sold_profits = torch.clip(y_test_pred, -10, 0) * percent_movements_scaled
-    # saved_money = torch.clamp(
-    #             1 - torch.abs(y_test_pred), 0, 500
-    #         )
+
+    # Calculate leverage financing cost (aligns with marketsimulator/state.py:248-270)
+    # Only charge on borrowed capital (position size > 1.0)
+    position_size = torch.abs(detached_y_test_pred)
+    leverage_amount = torch.clamp(position_size - 1.0, min=0.0)  # Borrowed capital only
+    leverage_penalty = leverage_amount * leverage_cost_daily * position_duration_days
+
     current_profit = (
         torch.sum(
-            # saved money
-            # saved_money
-            # +
-            # bought
+            # P&L from price movements
             bought_profits
-            +
-            # sold
-            sold_profits
-            # fee
+            + sold_profits
+            # Trading fees
             - (torch.abs(detached_y_test_pred) * trading_fee)
+            # Leverage financing costs
+            - leverage_penalty
         )
         / detached_y_test_pred.numel()
     )
-    # todo random deprecation?
     return current_profit
 
 
@@ -217,8 +234,20 @@ def calculate_trading_profit_torch_with_buysell(
 
 
 def calculate_trading_profit_torch_with_buysell_profit_values(
-    y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred
+    y_test, y_test_high, y_test_high_pred, y_test_low, y_test_low_pred, y_test_pred, trading_fee=None
 ):
+    """
+    Calculate trading profits with entry/exit at high/low points.
+
+    Args:
+        trading_fee: Fee per trade (default: TRADING_FEE)
+
+    Returns:
+        Per-position profit values
+    """
+    if trading_fee is None:
+        trading_fee = TRADING_FEE
+
     # reshape all args to 1d
     y_test = y_test.view(-1)
     y_test_pred = y_test_pred.view(-1)
@@ -262,7 +291,7 @@ def calculate_trading_profit_torch_with_buysell_profit_values(
         # sold
         adjusted_profits
         # fee
-        - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+        - (torch.abs(detached_y_test_pred) * trading_fee)
     )
     return calculated_profit_values
 
@@ -477,37 +506,47 @@ def calculate_trading_profit_no_scale(last_values, y_test, y_test_pred):
     # return current_profit
 
 
-def get_trading_profits_list(scaler, last_values, y_test, y_test_pred):
+def get_trading_profits_list(scaler, last_values, y_test, y_test_pred, trading_fee=None, leverage_cost_daily=None, position_duration_days=1.0):
     """
-    Calculate trading profits
-    :param last_values:
-    :param y_test:
-    :param y_test_pred:
-    :return:
+    Calculate per-position profit list (not averaged).
+
+    Args:
+        scaler: Deprecated, kept for compatibility
+        last_values: Deprecated, kept for compatibility
+        y_test: Actual returns
+        y_test_pred: Position sizes
+        trading_fee: Fee per trade (default: TRADING_FEE)
+        leverage_cost_daily: Daily financing cost rate (default: DAILY_LEVERAGE_COST)
+        position_duration_days: Number of days position is held (default: 1.0)
+
+    Returns:
+        Tensor of per-position profits (same shape as inputs)
     """
-    # percent_movements = ((y_test - last_values) / last_values) + 1
+    if trading_fee is None:
+        trading_fee = TRADING_FEE
+    if leverage_cost_daily is None:
+        leverage_cost_daily = DAILY_LEVERAGE_COST
 
     percent_movements_scaled = y_test  # not scientific
     detached_y_test_pred = y_test_pred
     bought_profits = torch.clip(detached_y_test_pred, 0, 10) * percent_movements_scaled
     sold_profits = torch.clip(y_test_pred, -10, 0) * percent_movements_scaled
-    # saved_money = torch.clamp(
-    #             1 - torch.abs(y_test_pred), 0, 500
-    #         )
+
+    # Calculate leverage financing cost
+    position_size = torch.abs(detached_y_test_pred)
+    leverage_amount = torch.clamp(position_size - 1.0, min=0.0)
+    leverage_penalty = leverage_amount * leverage_cost_daily * position_duration_days
+
     current_profits = (
-        # saved money
-        # saved_money
-        # +
-        # bought
+        # P&L
         bought_profits
-        +
-        # sold
-        sold_profits
-        # fee
-        - (torch.abs(detached_y_test_pred) * TRADING_FEE)
+        + sold_profits
+        # Trading fees
+        - (torch.abs(detached_y_test_pred) * trading_fee)
+        # Leverage financing costs
+        - leverage_penalty
     )
 
-    # todo random deprecation?
     return current_profits
 
 
