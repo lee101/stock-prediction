@@ -24,6 +24,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
 
       - name: Install linting dependencies
         run: |
@@ -76,10 +78,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: 'pip'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements.txt
+            requirements-ci.txt
 
       - name: Install CPU-only dependencies
         run: |
@@ -119,6 +125,9 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements-ci.txt
 
       - name: Install dependencies
         run: |
