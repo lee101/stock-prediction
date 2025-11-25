@@ -2,6 +2,9 @@ import torch
 import pytest
 from loss_utils import (
     CRYPTO_TRADING_FEE,
+    DAILY_LEVERAGE_COST,
+    DEFAULT_ANNUAL_LEVERAGE_COST,
+    DEFAULT_TRADING_DAYS,
     TRADING_FEE,
     calculate_profit_torch_with_entry_buysell_profit_values,
     calculate_trading_profit_torch,
@@ -96,7 +99,7 @@ def test_multi_trade_portfolio_loss_mix():
     ],
 )
 def test_trading_profit_multi_day_sequences(positions, returns, trading_fee):
-    """Validate averaged PnL across 1/2/3-day mixes of longs/shorts and fees."""
+    """Validate averaged PnL across 1/2/3-day mixes of longs/shorts and fees, including leverage costs."""
     y_test_pred = torch.tensor(positions, dtype=torch.float32)
     y_test = torch.tensor(returns, dtype=torch.float32)
 
@@ -108,7 +111,14 @@ def test_trading_profit_multi_day_sequences(positions, returns, trading_fee):
         trading_fee=trading_fee,
     )
 
-    expected = sum(pos * ret - abs(pos) * trading_fee for pos, ret in zip(positions, returns)) / len(positions)
+    # Expected calculation now includes leverage cost for positions > 1.0
+    def calc_trade_profit(pos, ret, fee):
+        pnl = pos * ret - abs(pos) * fee
+        leverage_amount = max(abs(pos) - 1.0, 0.0)
+        pnl -= leverage_amount * DAILY_LEVERAGE_COST
+        return pnl
+
+    expected = sum(calc_trade_profit(pos, ret, trading_fee) for pos, ret in zip(positions, returns)) / len(positions)
     assert torch.isclose(profit, torch.tensor(expected, dtype=profit.dtype), atol=1e-7)
 
 
@@ -521,6 +531,260 @@ def test_zero_fee_scenario():
     expected = 1.0 * 0.02  # no fee deduction
     assert torch.isclose(profit, torch.tensor(expected), atol=1e-6)
     print(f"✓ Zero fee profit: {profit.item():.6f}")
+
+
+# ==============================================================================
+# LEVERAGE COST TESTS (6.5% annual rate on borrowed capital)
+# ==============================================================================
+
+
+def test_leverage_constants():
+    """Verify leverage cost constants are set correctly."""
+    assert DEFAULT_ANNUAL_LEVERAGE_COST == 0.065, "Annual rate should be 6.5%"
+    assert DEFAULT_TRADING_DAYS == 252, "Should use 252 trading days"
+    expected_daily = 0.065 / 252
+    assert abs(DAILY_LEVERAGE_COST - expected_daily) < 1e-10, f"Daily cost should be {expected_daily}"
+
+
+def test_no_leverage_cost_at_1x():
+    """Position size of 1.0 should incur NO leverage cost (no borrowed capital)."""
+    y_test_pred = torch.tensor([1.0])
+    y_test = torch.tensor([0.02])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred)
+
+    # Only trading fee, no leverage cost
+    expected = 1.0 * 0.02 - TRADING_FEE
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7), f"Expected {expected}, got {profit.item()}"
+
+
+def test_no_leverage_cost_under_1x():
+    """Position size under 1.0 should incur NO leverage cost."""
+    y_test_pred = torch.tensor([0.5])
+    y_test = torch.tensor([0.02])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred)
+
+    # Only trading fee, no leverage cost
+    expected = 0.5 * 0.02 - (0.5 * TRADING_FEE)
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+
+
+def test_leverage_cost_at_2x_long():
+    """2x leverage should charge daily financing on 1.0 borrowed capital."""
+    y_test_pred = torch.tensor([2.0])
+    y_test = torch.tensor([0.02])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred)
+
+    # P&L: 2x * 2% = 4%, minus fee on 2x, minus leverage cost on 1.0 borrowed
+    leverage_amount = 2.0 - 1.0  # 1.0 borrowed
+    leverage_penalty = leverage_amount * DAILY_LEVERAGE_COST * 1.0  # 1 day
+    expected = 2.0 * 0.02 - (2.0 * TRADING_FEE) - leverage_penalty
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7), f"Expected {expected}, got {profit.item()}"
+
+
+def test_leverage_cost_at_2x_short():
+    """2x short should also charge leverage on borrowed capital."""
+    y_test_pred = torch.tensor([-2.0])
+    y_test = torch.tensor([-0.02])  # Price drops 2%
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred)
+
+    # Short profit: -2x * -2% = 4%
+    leverage_amount = abs(-2.0) - 1.0  # 1.0 borrowed
+    leverage_penalty = leverage_amount * DAILY_LEVERAGE_COST * 1.0
+    expected = (-2.0) * (-0.02) - (2.0 * TRADING_FEE) - leverage_penalty
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+    assert profit > 0, "Short should profit when price drops"
+
+
+def test_leverage_cost_at_5x():
+    """5x leverage should charge on 4.0 borrowed capital."""
+    y_test_pred = torch.tensor([5.0])
+    y_test = torch.tensor([0.01])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred)
+
+    leverage_amount = 5.0 - 1.0  # 4.0 borrowed
+    leverage_penalty = leverage_amount * DAILY_LEVERAGE_COST
+    expected = 5.0 * 0.01 - (5.0 * TRADING_FEE) - leverage_penalty
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+
+
+def test_leverage_cost_at_10x():
+    """10x leverage (max) should charge on 9.0 borrowed capital."""
+    y_test_pred = torch.tensor([10.0])
+    y_test = torch.tensor([0.01])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred)
+
+    leverage_amount = 10.0 - 1.0  # 9.0 borrowed
+    leverage_penalty = leverage_amount * DAILY_LEVERAGE_COST
+    expected = 10.0 * 0.01 - (10.0 * TRADING_FEE) - leverage_penalty
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+
+
+def test_leverage_cost_fractional_above_1x():
+    """1.5x leverage should charge on 0.5 borrowed capital."""
+    y_test_pred = torch.tensor([1.5])
+    y_test = torch.tensor([0.02])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred)
+
+    leverage_amount = 1.5 - 1.0  # 0.5 borrowed
+    leverage_penalty = leverage_amount * DAILY_LEVERAGE_COST
+    expected = 1.5 * 0.02 - (1.5 * TRADING_FEE) - leverage_penalty
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+
+
+def test_leverage_cost_custom_daily_rate():
+    """Custom daily leverage cost parameter should override default."""
+    y_test_pred = torch.tensor([2.0])
+    y_test = torch.tensor([0.02])
+    custom_daily_cost = 0.001  # 0.1% per day
+
+    profit = calculate_trading_profit_torch(
+        None, None, y_test, y_test_pred, leverage_cost_daily=custom_daily_cost
+    )
+
+    leverage_penalty = 1.0 * custom_daily_cost  # 1.0 borrowed * custom rate
+    expected = 2.0 * 0.02 - (2.0 * TRADING_FEE) - leverage_penalty
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+
+
+def test_leverage_cost_multi_day_position():
+    """Multi-day position should multiply leverage cost by days held."""
+    y_test_pred = torch.tensor([2.0])
+    y_test = torch.tensor([0.05])  # 5% return over 5 days
+    position_days = 5.0
+
+    profit = calculate_trading_profit_torch(
+        None, None, y_test, y_test_pred, position_duration_days=position_days
+    )
+
+    leverage_penalty = 1.0 * DAILY_LEVERAGE_COST * position_days  # 5 days of financing
+    expected = 2.0 * 0.05 - (2.0 * TRADING_FEE) - leverage_penalty
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+
+
+def test_leverage_cost_zero_when_explicitly_disabled():
+    """Zero leverage cost should allow bypassing the feature."""
+    y_test_pred = torch.tensor([5.0])
+    y_test = torch.tensor([0.01])
+
+    profit = calculate_trading_profit_torch(
+        None, None, y_test, y_test_pred, leverage_cost_daily=0.0
+    )
+
+    # No leverage penalty
+    expected = 5.0 * 0.01 - (5.0 * TRADING_FEE)
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
+
+
+def test_leverage_cost_multi_trade_mixed_leverage():
+    """Multiple trades with different leverage levels."""
+    y_test_pred = torch.tensor([1.0, 2.0, 0.5, 3.0])
+    y_test = torch.tensor([0.01, 0.02, -0.01, 0.015])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred)
+
+    # Calculate expected for each trade
+    expected_profits = []
+    for pos, ret in zip(y_test_pred.tolist(), y_test.tolist()):
+        pnl = pos * ret - abs(pos) * TRADING_FEE
+        leverage_amount = max(abs(pos) - 1.0, 0.0)
+        pnl -= leverage_amount * DAILY_LEVERAGE_COST
+        expected_profits.append(pnl)
+
+    expected_avg = sum(expected_profits) / len(expected_profits)
+    assert torch.isclose(profit, torch.tensor(expected_avg), atol=1e-7)
+
+
+def test_get_trading_profits_list_includes_leverage_cost():
+    """Per-trade profit list should include leverage costs."""
+    y_test_pred = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    y_test = torch.tensor([0.02, 0.02, 0.02], dtype=torch.float32)
+
+    profits = get_trading_profits_list(None, None, y_test, y_test_pred)
+
+    expected = []
+    for pos, ret in zip(y_test_pred.tolist(), y_test.tolist()):
+        pnl = pos * ret - abs(pos) * TRADING_FEE
+        leverage_amount = max(abs(pos) - 1.0, 0.0)
+        pnl -= leverage_amount * DAILY_LEVERAGE_COST
+        expected.append(pnl)
+
+    expected_tensor = torch.tensor(expected, dtype=profits.dtype)
+    assert torch.allclose(profits, expected_tensor, atol=1e-7)
+
+
+def test_leverage_cost_makes_high_leverage_less_profitable():
+    """Higher leverage should reduce profit due to financing costs, even with same return."""
+    y_test = torch.tensor([0.01])  # 1% return
+
+    profit_1x = calculate_trading_profit_torch(None, None, y_test, torch.tensor([1.0]))
+    profit_2x = calculate_trading_profit_torch(None, None, y_test, torch.tensor([2.0]))
+    profit_5x = calculate_trading_profit_torch(None, None, y_test, torch.tensor([5.0]))
+
+    # Raw P&L scales with leverage, but leverage costs offset some gains
+    # For 1% return: 1x=1%, 2x=2%, 5x=5% raw P&L
+    # After leverage costs: 2x loses ~0.026%/day, 5x loses ~0.10%/day
+    # So per-unit return decreases with higher leverage
+    per_unit_1x = profit_1x.item() / 1.0
+    per_unit_2x = profit_2x.item() / 2.0
+    per_unit_5x = profit_5x.item() / 5.0
+
+    # Higher leverage = lower per-unit efficiency due to financing costs
+    assert per_unit_1x > per_unit_2x, "1x should be more efficient than 2x"
+    assert per_unit_2x > per_unit_5x, "2x should be more efficient than 5x"
+
+
+def test_leverage_cost_annual_rate_sanity_check():
+    """
+    Sanity check: holding 2x leverage for 252 days should cost ~6.5% of borrowed.
+    """
+    y_test_pred = torch.tensor([2.0])
+    y_test = torch.tensor([0.0])  # No price movement
+    position_days = 252.0  # Full year
+
+    profit = calculate_trading_profit_torch(
+        None, None, y_test, y_test_pred, position_duration_days=position_days
+    )
+
+    # With no price movement, we only pay fees and leverage cost
+    leverage_penalty = 1.0 * DAILY_LEVERAGE_COST * 252  # Should be ~6.5%
+    trading_fee_cost = 2.0 * TRADING_FEE
+
+    expected = -trading_fee_cost - leverage_penalty
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-6)
+
+    # Verify annual leverage cost is approximately 6.5%
+    assert abs(leverage_penalty - 0.065) < 0.001, f"Annual cost should be ~6.5%, got {leverage_penalty}"
+
+
+@pytest.mark.parametrize(
+    "position,returns,expected_leverage_amount",
+    [
+        pytest.param(1.0, 0.02, 0.0, id="1x_no_leverage"),
+        pytest.param(0.5, 0.02, 0.0, id="0.5x_no_leverage"),
+        pytest.param(2.0, 0.02, 1.0, id="2x_1_borrowed"),
+        pytest.param(3.0, 0.02, 2.0, id="3x_2_borrowed"),
+        pytest.param(-1.0, -0.02, 0.0, id="short_1x_no_leverage"),
+        pytest.param(-2.0, -0.02, 1.0, id="short_2x_1_borrowed"),
+        pytest.param(1.5, 0.02, 0.5, id="1.5x_0.5_borrowed"),
+    ],
+)
+def test_leverage_amount_calculation(position, returns, expected_leverage_amount):
+    """Parametrized test for leverage amount calculation."""
+    y_test_pred = torch.tensor([position])
+    y_test = torch.tensor([returns])
+
+    profit = calculate_trading_profit_torch(None, None, y_test, y_test_pred)
+
+    leverage_penalty = expected_leverage_amount * DAILY_LEVERAGE_COST
+    expected = position * returns - abs(position) * TRADING_FEE - leverage_penalty
+    assert torch.isclose(profit, torch.tensor(expected), atol=1e-7)
 
 
 if __name__ == "__main__":
