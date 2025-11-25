@@ -3,7 +3,7 @@
 from .config import DailyDatasetConfig, DailyTrainingConfig
 from .data import DailyDataModule, FeatureNormalizer
 from .model import DailyMultiAssetPolicy, DailyPolicyConfig
-from .trainer import NeuralDailyTrainer, TrainingArtifacts
+from .trainer import NeuralDailyTrainer, TrainingArtifacts, TrainingSummary
 from .runtime import DailyTradingRuntime, TradingPlan
 from .checkpoints import CheckpointRecord, load_checkpoint, save_checkpoint, write_manifest
 
@@ -16,6 +16,7 @@ __all__ = [
     "DailyPolicyConfig",
     "NeuralDailyTrainer",
     "TrainingArtifacts",
+    "TrainingSummary",
     "DailyTradingRuntime",
     "TradingPlan",
     "CheckpointRecord",

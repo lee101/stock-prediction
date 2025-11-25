@@ -57,6 +57,11 @@ def _effective_entry_quantities(
     if pending_expiry and now >= pending_expiry:
         pending_qty = 0.0
 
+    # If no open orders but we have pending_qty, the order was likely canceled externally
+    # Clear pending to allow re-ordering
+    if open_order_qty == 0 and pending_qty > 0:
+        pending_qty = 0.0
+
     # Reconcile pending with newly observed fills
     prev_position = max(float(status.get("position_qty", 0.0) or 0.0), 0.0)
     filled_delta = max(position_qty - prev_position, 0.0)

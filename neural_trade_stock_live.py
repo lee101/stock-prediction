@@ -322,9 +322,11 @@ class NeuralTradingLoop:
                 sell_price,
             )
         limit_price = buy_price
-        allocation = min(plan.trade_amount, self.runtime.risk_threshold)
-        notional_cap = account_equity * self.account_fraction
-        target_notional = max(notional_cap * allocation, 0.0)
+        # Model outputs allocation directly (0-2x for stocks, 0-1x for crypto)
+        # Respect broker leverage limits: crypto=1x, stocks=2x
+        max_leverage = 1.0 if asset_is_crypto else 2.0
+        allocation = min(plan.trade_amount, self.runtime.risk_threshold, max_leverage)
+        target_notional = max(account_equity * allocation, 0.0)
         min_qty = MIN_CRYPTO_QTY if asset_is_crypto else MIN_STOCK_QTY
         qty = target_notional / limit_price
         # Enforce broker min notional to avoid 403 "cost basis must be >= 1"
@@ -337,7 +339,7 @@ class NeuralTradingLoop:
         stop_all_entry_watchers(symbol, reason="neuraldaily_reset")
         logger.info(
             f"Dispatching {symbol} plan | buy @ {buy_price:.4f} sell @ {sell_price:.4f} qty={qty:.4f} "
-            f"weight={plan.trade_amount:.3f} priority={neural_plan.priority}"
+            f"weight={plan.trade_amount:.3f} alloc={allocation:.3f} notional=${target_notional:.0f} priority={neural_plan.priority}"
         )
         self._spawn_entry(symbol, "buy", buy_price, qty, neural_plan)
         self._spawn_entry(symbol, "sell", sell_price, qty, neural_plan)

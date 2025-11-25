@@ -8,6 +8,16 @@ from typing import Dict
 STATE_DIRNAME = "strategy_state"
 
 
+def is_paper_mode() -> bool:
+    """Check if running in paper trading mode based on PAPER env var."""
+    return os.getenv("PAPER", "1") not in {"0", "false", "FALSE"}
+
+
+def get_paper_suffix() -> str:
+    """Return '_paper' or '_live' suffix based on PAPER mode."""
+    return "_paper" if is_paper_mode() else "_live"
+
+
 @lru_cache(maxsize=1)
 def get_state_dir() -> Path:
     """Location for persistent trading state artifacts."""

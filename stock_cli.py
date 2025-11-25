@@ -24,13 +24,14 @@ from src.portfolio_risk import (
 from src.leverage_settings import get_leverage_settings
 from src.symbol_utils import is_crypto_symbol
 from src.trading_obj_utils import filter_to_realistic_positions
-from stock.state import get_state_dir, get_state_file, resolve_state_suffix
+from stock.state import get_state_dir, get_state_file, resolve_state_suffix, get_paper_suffix
 from stock.state_utils import StateLoadError, collect_probe_statuses, render_ascii_line
 
 MAX_RISK_AXIS_LIMIT = 1.6
 STATE_SUFFIX = resolve_state_suffix()
+PAPER_SUFFIX = get_paper_suffix()
 ACTIVE_TRADES_PATH = get_state_file("active_trades", STATE_SUFFIX)
-MAXDIFF_WATCHERS_DIR = get_state_dir() / f"maxdiff_watchers{STATE_SUFFIX or ''}"
+MAXDIFF_WATCHERS_DIR = get_state_dir() / f"maxdiff_watchers{PAPER_SUFFIX}{STATE_SUFFIX or ''}"
 
 app = typer.Typer(help="Portfolio analytics CLI utilities.")
 

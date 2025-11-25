@@ -106,6 +106,14 @@ class DailyTrainingConfig:
     crypto_max_leverage: float = 1.0
     leverage_fee_rate: float = 0.065
     steps_per_year: int = 252
+    # Augmentation parameters
+    permutation_rate: float = 0.5  # Probability of shuffling batch order
+    price_scale_range: tuple = (0.9, 1.1)  # Range for price scaling augmentation
+    price_scale_probability: float = 0.2  # Probability of applying price scaling
+    # Account fraction for live trading consistency
+    # Live trading uses: notional = account_equity * account_fraction * trade_amount
+    # Set this to match live inference to ensure training and live are consistent
+    account_fraction_for_training: float = 1.0  # 1.0 = training uses full trade_amount as-is
     dataset: DailyDatasetConfig = field(default_factory=DailyDatasetConfig)
 
     def __post_init__(self) -> None:
