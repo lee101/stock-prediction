@@ -18,6 +18,7 @@ import pandas as pd
 from neuraldailytraining import DailyTradingRuntime
 from neuraldailytraining.config import DailyDatasetConfig
 from neural_trade_stock_e2e import _build_dataset_config
+from src.fixtures import all_crypto_symbols
 
 
 PROBE_NOTIONAL_LIMIT = 300.0  # Max position size in probe mode
@@ -83,7 +84,7 @@ class DualModeSimulator:
             self.frames[symbol] = frame
 
             # Track which symbols are crypto
-            if symbol.upper().endswith("USD") or symbol.upper().endswith("-USD"):
+            if symbol.upper() in all_crypto_symbols:
                 self.crypto_symbols.add(symbol)
 
         if not self.frames:

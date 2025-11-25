@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .data import augment_metrics
+from src.fixtures import all_crypto_symbols
 
 
 SECONDS_PER_DAY = 86_400
@@ -27,7 +28,7 @@ def _normalize_paths(parquet_paths: Sequence[str]) -> List[Path]:
 
 
 def _is_crypto(symbol: str) -> bool:
-    return symbol.upper().endswith("-USD")
+    return symbol.upper() in all_crypto_symbols
 
 
 def _compute_roll_metric(series: pd.Series, window: int, func, default: float = 0.0) -> pd.Series:

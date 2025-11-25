@@ -5,7 +5,7 @@ from typing import Dict
 
 from loguru import logger
 
-from src.trade_stock_forecast_snapshot import load_latest_forecast_snapshot
+from src.trade_stock_forecast_snapshot import load_latest_forecast_snapshot as _load_latest_forecast_snapshot
 from src.trade_stock_utils import coerce_optional_float, parse_float_list
 
 
@@ -18,7 +18,7 @@ def get_results_dir() -> Path:
 
 def load_latest_forecast_snapshot() -> Dict[str, Dict[str, object]]:
     """Load the most recent forecast snapshot."""
-    return load_latest_forecast_snapshot(
+    return _load_latest_forecast_snapshot(
         get_results_dir(),
         logger=logger,
         parse_float_list=parse_float_list,

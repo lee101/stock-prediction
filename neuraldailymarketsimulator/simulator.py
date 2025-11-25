@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from neural_trade_stock_e2e import _build_dataset_config
 from neuraldailytraining import DailyTradingRuntime
+from src.fixtures import all_crypto_symbols
 
 
 @dataclass
@@ -59,8 +60,8 @@ class NeuralDailyMarketSimulator:
             frame["date"] = pd.to_datetime(frame["date"], utc=True)
             self.frames[symbol] = frame
 
-            # Track which symbols are crypto (end with USD or -USD)
-            if symbol.upper().endswith("USD") or symbol.upper().endswith("-USD"):
+            # Track which symbols are crypto
+            if symbol.upper() in all_crypto_symbols:
                 self.crypto_symbols.add(symbol)
 
         if not self.frames:
@@ -249,6 +250,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--validation-days", type=int, default=40)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--crypto-only", action="store_true", help="Restrict dataset/simulation to crypto symbols only.")
     parser.add_argument("--start-date", help="Optional ISO start date for the simulation window.")
     parser.add_argument("--days", type=int, default=5)
     parser.add_argument("--initial-cash", type=float, default=1.0)
@@ -258,6 +260,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--maker-fee", type=float, default=0.0008)
     parser.add_argument("--risk-threshold", type=float, help="Optional override for the runtime risk threshold.")
+    parser.add_argument("--confidence-threshold", type=float, default=None, help="Minimum confidence required to trade.")
+    parser.add_argument(
+        "--ignore-non-tradable",
+        action="store_true",
+        help="Ignore checkpoint non_tradable file and allow all symbols.",
+    )
     # Dataset / grouping flags (kept consistent with neural_trade_stock_e2e)
     parser.add_argument("--require-forecasts", action=argparse.BooleanOptionalAction, default=False, help="Fail if forecast cache missing rows.")
     parser.add_argument("--forecast-fill-strategy", choices=("persistence", "fail"), default="persistence")
@@ -289,7 +297,8 @@ def run_cli_simulation() -> None:
         dataset_config=dataset_cfg,
         device=args.device,
         risk_threshold=args.risk_threshold,
-        non_tradable=non_tradable,
+        non_tradable=() if args.ignore_non_tradable else non_tradable,
+        confidence_threshold=args.confidence_threshold,
     )
     symbols = args.symbols or list(dataset_cfg.symbols)
     simulator = NeuralDailyMarketSimulator(

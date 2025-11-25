@@ -144,8 +144,13 @@ def test_execute_portfolio_orders_handles_errors():
 
 
 def test_open_order_at_price_or_all_adjusts_on_insufficient_balance():
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 10.0
+    mock_quote.bid_price = 10.0
+
     with patch("alpaca_wrapper.get_orders", return_value=[]), \
          patch("alpaca_wrapper.has_current_open_position", return_value=False), \
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
          patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw) as req, \
          patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
 
@@ -180,22 +185,70 @@ def test_market_order_blocked_when_market_closed():
         assert submit.call_count == 0
 
 
-def test_crypto_market_order_always_blocked():
-    """Market orders should NEVER be allowed for crypto (Alpaca executes at bid/ask midpoint, not market price)."""
+def test_crypto_market_order_falls_back_to_passive_limit():
+    """Crypto market orders should fall back to passive midpoint/bid limit IOC to avoid taker fills."""
     # Create a mock clock that says market is open
     mock_clock = MagicMock()
     mock_clock.is_open = True
 
-    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
-         patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 50000.0
+    mock_quote.bid_price = 49900.0
 
-        # Even with market open, crypto market orders should be blocked
-        # because Alpaca will execute them at the bid/ask midpoint instead of market price
+    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="midpoint_limit_ok") as submit:
+
         result = open_market_order_violently("BTCUSD", 0.01, "buy")
 
-        # Should return None and not call submit_order
-        assert result is None
-        assert submit.call_count == 0
+        # Should place a single limit order at midpoint with IOC
+        assert result == "midpoint_limit_ok"
+        assert submit.call_count == 1
+        order_data = submit.call_args.kwargs["order_data"]
+        assert order_data["time_in_force"] == "ioc"
+        # Passive clamp should cap buy price at bid (49900)
+        assert order_data["limit_price"] == str(round(49900.0, 6))
+
+
+def test_passivize_limit_buy_uses_bid():
+    """Limit buys should clamp to the current bid to avoid taking liquidity."""
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 101.0
+    mock_quote.bid_price = 100.0
+
+    with patch("alpaca_wrapper.get_orders", return_value=[]), \
+         patch("alpaca_wrapper.has_current_open_position", return_value=False), \
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="ok") as submit:
+
+        result = open_order_at_price("AAPL", 1, "buy", 102.0)
+
+        assert result == "ok"
+        assert submit.call_count == 1
+        limit_price_used = submit.call_args.kwargs["order_data"]["limit_price"]
+        assert limit_price_used == str(round(100.0, 2))
+
+
+def test_passivize_limit_sell_uses_ask():
+    """Limit sells should clamp to the current ask to avoid taking liquidity."""
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 101.5
+    mock_quote.bid_price = 100.5
+
+    with patch("alpaca_wrapper.get_orders", return_value=[]), \
+         patch("alpaca_wrapper.has_current_open_position", return_value=False), \
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="ok") as submit:
+
+        result = open_order_at_price("AAPL", 1, "sell", 99.0)
+
+        assert result == "ok"
+        assert submit.call_count == 1
+        limit_price_used = submit.call_args.kwargs["order_data"]["limit_price"]
+        assert limit_price_used == str(round(101.5, 2))
 
 
 def test_market_order_allowed_when_market_open():
