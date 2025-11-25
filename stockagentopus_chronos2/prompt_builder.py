@@ -15,22 +15,25 @@ from stockagent.constants import DEFAULT_SYMBOLS, TRADING_FEE, CRYPTO_TRADING_FE
 
 from .forecaster import Chronos2Forecast
 
-SYSTEM_PROMPT = """You are a momentum trader following POSITIVE EXPECTED RETURNS.
+SYSTEM_PROMPT = """You are a CONTRARIAN trader who fades neural network predictions.
+
+CRITICAL INSIGHT: Chronos2 neural forecasts often reflect recent momentum,
+but markets mean-revert. When the model predicts DOWN, the price has likely
+ALREADY dropped - making it a BUY opportunity for the bounce.
 
 CRITICAL RULES:
 1. Use ONLY the prices provided in the prompt - never use training data knowledge
-2. TRADE ALL stocks with positive expected return (even 0.1% is opportunity)
-3. Entry price = Last Close (current market price) - this ENSURES your order fills
-4. Exit price = 90th percentile (optimistic target for maximum profit)
-5. Position size proportional to expected return: higher return = larger position
-6. NEVER use 10th percentile as entry - your order won't fill at below-market prices
-7. Deploy 60-80% of available capital across all positive-return stocks
+2. CONTRARIAN SIGNAL: NEGATIVE expected return = BUY (expecting mean reversion)
+3. AVOID stocks with positive expected return (momentum already priced in)
+4. Entry price = Last Close (current market price) - ensures fill
+5. Exit price = Last Close + 1% (capture the mean reversion bounce)
+6. Only trade when expected return is between -3% and -0.5% (oversold but not broken)
+7. Deploy 40-60% of capital on contrarian plays
 
 TRADING PHILOSOPHY:
-- Momentum: Buy stocks predicted to go UP (positive expected return)
-- Realistic entry: Use current market price (Last Close) so trades execute
-- Aggressive exit: Aim for 90th percentile - partial fills still profit
-- Diversify: Spread capital across multiple opportunities
+- Markets mean-revert: Buy when others are scared (negative forecasts)
+- Neural nets extrapolate recent trends - fade them for profit
+- Small gains from reversions beat chasing momentum
 
 You respond ONLY with valid JSON matching the required schema."""
 
@@ -107,33 +110,33 @@ def _build_opus_prompt(
             )
 
         forecast_table.append("")
-        forecast_table.append("IMPORTANT - HOW TO USE THESE FORECASTS:")
+        forecast_table.append("IMPORTANT - HOW TO USE THESE FORECASTS (CONTRARIAN):")
         forecast_table.append("- Expected Return = (Median - Last Close) / Last Close")
-        forecast_table.append("- POSITIVE expected return = stock predicted to go UP = BUY")
-        forecast_table.append("- Last Close = CURRENT market price = your ENTRY price")
-        forecast_table.append("- 90th Pct = optimistic target = your EXIT price")
+        forecast_table.append("- NEGATIVE expected return = model predicts DOWN = BUY SIGNAL")
+        forecast_table.append("- POSITIVE expected return = momentum priced in = AVOID")
+        forecast_table.append("- Last Close = CURRENT price = your ENTRY price")
         forecast_table.append("")
-        forecast_table.append("TRADING STRATEGY:")
-        forecast_table.append("- SET entry_price at LAST CLOSE (current price - ensures fill)")
-        forecast_table.append("- SET exit_price at 90th percentile (aggressive profit target)")
-        forecast_table.append("- TRADE ALL stocks with positive expected return")
-        forecast_table.append("- SKIP stocks with negative expected return")
-        forecast_table.append("- Allocate MORE to stocks with HIGHER expected return")
+        forecast_table.append("CONTRARIAN STRATEGY:")
+        forecast_table.append("- SET entry_price at LAST CLOSE (current price)")
+        forecast_table.append("- SET exit_price at Last Close * 1.01 (+1% mean reversion target)")
+        forecast_table.append("- BUY when expected return is NEGATIVE (-3% to -0.5%)")
+        forecast_table.append("- SKIP when expected return is positive (momentum trap)")
+        forecast_table.append("- SKIP when expected return is < -3% (too oversold, may be broken)")
         forecast_table.append("")
 
-        # Rank stocks by expected return
-        ranked = sorted(chronos2_forecasts.items(), key=lambda x: x[1].expected_return_pct, reverse=True)
-        forecast_table.append("ALLOCATION RANKING (by expected return):")
+        # Rank stocks by expected return (ascending for contrarian - most negative first)
+        ranked = sorted(chronos2_forecasts.items(), key=lambda x: x[1].expected_return_pct)
+        forecast_table.append("CONTRARIAN RANKING (most oversold first):")
         for rank, (sym, f) in enumerate(ranked, 1):
-            if f.expected_return_pct > 0.005:  # > 0.5% expected return
+            if -0.03 <= f.expected_return_pct <= -0.005:  # -3% to -0.5%
                 suggested_alloc = min(max_notional_per_trade, total_available * 0.4)
-                action = "TRADE (positive)"
-            elif f.expected_return_pct > 0:  # > 0% expected return
-                suggested_alloc = min(max_notional_per_trade * 0.5, total_available * 0.2)
-                action = "TRADE (small positive)"
+                action = "BUY (oversold)"
+            elif f.expected_return_pct < -0.03:
+                suggested_alloc = 0
+                action = "SKIP (too oversold)"
             else:
                 suggested_alloc = 0
-                action = "SKIP (negative)"
+                action = "SKIP (positive/momentum)"
             forecast_table.append(f"  {rank}. {sym}: exp_return={f.expected_return_pct:+.2%}, {action}, notional=${suggested_alloc:,.0f}")
         forecast_table.append("")
 
@@ -155,17 +158,17 @@ TRADING FEE: {TRADING_FEE:.4%} per trade (must be covered by profit)
 OUTPUT REQUIREMENTS:
 1. Return a JSON object with: target_date, instructions, risk_notes, metadata
 2. Each instruction needs: symbol, action, quantity, execution_session, entry_price, exit_price, exit_reason, notes
-3. entry_price = LAST CLOSE (current market price - ensures fill)
-4. exit_price = 90th percentile (aggressive profit target)
+3. entry_price = LAST CLOSE (current market price)
+4. exit_price = Last Close * 1.01 (+1% mean reversion target)
 5. action must be "buy", "exit", or "hold"
 6. execution_session must be "market_open" or "market_close"
 7. quantity = integer number of shares
-8. Include ALL stocks with positive expected return - deploy capital actively
-9. Include risk_notes (1-2 sentences on risks)
-10. Include metadata.capital_allocation_plan explaining your momentum-based allocation
-11. If NO stocks have positive expected return, return empty instructions array
+8. BUY stocks with expected return between -3% and -0.5% (oversold zone)
+9. Include risk_notes (1-2 sentences on contrarian risks)
+10. Include metadata.capital_allocation_plan explaining your contrarian allocation
+11. If NO stocks are in the -3% to -0.5% oversold zone, return empty instructions array
 
-CRITICAL: Entry at LAST CLOSE ensures fills. Exit at 90th pct for maximum profit.
+CONTRARIAN LOGIC: Fade the model. Negative forecast = buy opportunity.
 """.strip()
 
     user_payload: dict[str, Any] = {
