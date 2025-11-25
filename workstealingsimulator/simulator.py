@@ -14,6 +14,8 @@ import pandas as pd
 import pytz
 from scipy.optimize import differential_evolution
 
+from src.fixtures import all_crypto_symbols
+
 EST = pytz.timezone("US/Eastern")
 
 
@@ -102,7 +104,7 @@ class WorkStealingSimulator:
         return self.config.crypto_normal_tolerance_pct
 
     def check_capacity(self, symbol: str, notional: float) -> bool:
-        is_crypto = symbol.endswith("USD")
+        is_crypto = symbol.upper() in all_crypto_symbols
         if is_crypto:
             max_crypto_capital = self.config.capital * self.config.crypto_max_leverage
             return self.crypto_capital_used + notional <= max_crypto_capital
@@ -134,7 +136,7 @@ class WorkStealingSimulator:
                     continue
 
             self.active_orders.remove(candidate)
-            is_crypto = candidate.symbol.endswith("USD")
+            is_crypto = candidate.symbol.upper() in all_crypto_symbols
             if is_crypto:
                 self.crypto_capital_used -= candidate.notional
             else:
@@ -158,7 +160,7 @@ class WorkStealingSimulator:
 
         if self.check_capacity(order.symbol, order.notional):
             self.active_orders.append(order)
-            is_crypto = order.symbol.endswith("USD")
+            is_crypto = order.symbol.upper() in all_crypto_symbols
             if is_crypto:
                 self.crypto_capital_used += order.notional
             else:
@@ -168,7 +170,7 @@ class WorkStealingSimulator:
         stolen_from = self.attempt_steal(order, timestamp)
         if stolen_from:
             self.active_orders.append(order)
-            is_crypto = order.symbol.endswith("USD")
+            is_crypto = order.symbol.upper() in all_crypto_symbols
             if is_crypto:
                 self.crypto_capital_used += order.notional
             else:
@@ -185,7 +187,7 @@ class WorkStealingSimulator:
             pnl = (order.limit_price - exit_price) * order.qty
 
         self.active_orders.remove(order)
-        is_crypto = order.symbol.endswith("USD")
+        is_crypto = order.symbol.upper() in all_crypto_symbols
         if is_crypto:
             self.crypto_capital_used -= order.notional
         else:

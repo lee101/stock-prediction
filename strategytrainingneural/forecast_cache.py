@@ -86,6 +86,12 @@ class ForecastCache:
     def write(self, symbol: str, frame: pd.DataFrame) -> None:
         path = self._symbol_path(symbol)
         frame.sort_values("timestamp", inplace=True)
+        # Validate and repair NaNs in forecast columns
+        forecast_cols = [col for col in frame.columns if col.startswith("predicted_") or col.startswith("forecast_")]
+        if frame[forecast_cols].isna().any().any():
+            frame[forecast_cols] = frame[forecast_cols].ffill()
+        if frame[forecast_cols].isna().any().any():
+            raise ValueError(f"Chronos forecast contains NaNs for {symbol}; aborting write.")
         path.parent.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(path, index=False)
 

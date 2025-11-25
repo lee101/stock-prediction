@@ -37,6 +37,7 @@ class TradingPlan:
     sell_price: float
     trade_amount: float
     reference_close: float
+    confidence: float = 1.0
 
 
 class DailyTradingRuntime:
@@ -50,6 +51,7 @@ class DailyTradingRuntime:
         device: str | None = None,
         risk_threshold: float | None = None,
         non_tradable: Iterable[str] | None = None,
+        confidence_threshold: float | None = None,
     ) -> None:
         path = Path(checkpoint_path)
         if not path.exists():
@@ -74,6 +76,7 @@ class DailyTradingRuntime:
             self.risk_threshold = float(max(0.0, inferred))
         else:
             self.risk_threshold = float(max(0.0, risk_threshold))
+        self.confidence_threshold = confidence_threshold if confidence_threshold is None else float(confidence_threshold)
         policy_config = DailyPolicyConfig(
             input_dim=len(self.feature_columns),
             hidden_dim=(ckpt_config.transformer_dim if ckpt_config else 256),
@@ -177,6 +180,18 @@ class DailyTradingRuntime:
                 )
                 trade_amount = 0.0
 
+            confidence_score = 1.0
+            if confidence is not None:
+                confidence_score = float(confidence[idx, -1].item())
+                if self.confidence_threshold is not None and confidence_score < self.confidence_threshold:
+                    LOGGER.info(
+                        "Skipping %s due to low confidence %.3f < %.3f",
+                        item["symbol"],
+                        confidence_score,
+                        self.confidence_threshold,
+                    )
+                    trade_amount = 0.0
+
             plans.append(
                 TradingPlan(
                     symbol=item["symbol"],
@@ -185,6 +200,7 @@ class DailyTradingRuntime:
                     sell_price=sell_price,
                     trade_amount=trade_amount,
                     reference_close=float(item["reference_close"]),
+                    confidence=confidence_score,
                 )
             )
         return plans

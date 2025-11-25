@@ -125,13 +125,23 @@ def _entry_requires_cash(side: str, price: float, qty: float) -> bool:
 
     notional = abs(price * qty)
     cash = float(getattr(alpaca_wrapper, "cash", 0.0) or 0.0)
+    # Fall back to buying power when cash is suppressed (common on margin accounts)
+    buying_power = float(getattr(alpaca_wrapper, "buying_power", cash) or cash)
+    total_bp = float(getattr(alpaca_wrapper, "total_buying_power", buying_power) or buying_power)
+    available = max(cash, buying_power, total_bp)
     if side == "buy":
-        if notional > cash:
-            logger.info("Skipping order to avoid leverage: notional=%.2f, cash=%.2f", notional, cash)
+        if notional > available:
+            logger.info(
+                "Skipping order to avoid leverage: notional=%.2f, available=%.2f (cash=%.2f bp=%.2f tbp=%.2f)",
+                notional,
+                available,
+                cash,
+                buying_power,
+                total_bp,
+            )
             return False
         return True
     # For shorts, require enough cash buffer to avoid immediate leverage swings.
-    total_bp = float(getattr(alpaca_wrapper, "total_buying_power", 0.0) or 0.0)
     equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
     if total_bp > equity * 1.05:
         logger.info(
@@ -323,6 +333,18 @@ def open_position_at_maxdiff_takeprofit(
             target_qty,
         )
         return
+
+    # Enforce broker min cost basis ($1) to avoid 403 cost basis errors
+    min_notional_qty = 1.0 / max(limit_price, 1e-9)
+    if target_qty < min_notional_qty:
+        watcher_logger.info(
+            "Raising target_qty for %s to meet $1 min notional (%.6f -> %.6f @ %.4f)",
+            symbol,
+            target_qty,
+            min_notional_qty,
+            limit_price,
+        )
+        target_qty = min_notional_qty
 
     _ensure_strategy_tag(symbol)
     config_path = _normalize_config_path(config_path)

@@ -15,13 +15,15 @@ import pandas as pd
 from scipy.optimize import differential_evolution
 from simulator import SimConfig, WorkStealingSimulator
 
+from src.fixtures import all_crypto_symbols
+
 
 class NoFightSimulator(WorkStealingSimulator):
     """Simulator that disables fighting for crypto-crypto steals."""
 
     def would_cause_fight(self, new_symbol: str, steal_from_symbol: str, timestamp) -> bool:
         # Never fight for crypto-crypto steals
-        if new_symbol.endswith("USD") and steal_from_symbol.endswith("USD"):
+        if new_symbol.upper() in all_crypto_symbols and steal_from_symbol.upper() in all_crypto_symbols:
             return False
         # Normal fighting logic for stocks
         return super().would_cause_fight(new_symbol, steal_from_symbol, timestamp)

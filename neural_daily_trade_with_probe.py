@@ -254,7 +254,7 @@ class NeuralTradingLoop:
             if plan.trade_amount <= self.min_trade_amount:
                 continue
 
-            asset_flag = 1.0 if plan.symbol.upper().endswith("-USD") else 0.0
+            asset_flag = 1.0 if is_crypto_symbol(plan.symbol.upper()) else 0.0
 
             # Determine if probe mode should be used
             is_probe = False

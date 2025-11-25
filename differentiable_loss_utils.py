@@ -15,6 +15,8 @@ from typing import Iterable, Tuple
 
 import torch
 
+from src.fixtures import all_crypto_symbols
+
 DEFAULT_MAKER_FEE_RATE = 0.0008  # 8 bps maker fee
 HOURLY_PERIODS_PER_YEAR = 24 * 365  # 8760 hours
 DAILY_PERIODS_PER_YEAR_CRYPTO = 365  # Crypto trades 24/7
@@ -35,9 +37,7 @@ def get_periods_per_year(frequency: str = "hourly", symbol: str = "") -> float:
     if frequency == "hourly":
         return HOURLY_PERIODS_PER_YEAR
     elif frequency == "daily":
-        # Crypto symbols typically end in USD (BTCUSD, ETHUSD)
-        # Stock symbols are typically 1-5 letters (AAPL, TSLA)
-        is_crypto = symbol.endswith("USD") and len(symbol) > 5
+        is_crypto = symbol.upper() in all_crypto_symbols
         return DAILY_PERIODS_PER_YEAR_CRYPTO if is_crypto else DAILY_PERIODS_PER_YEAR_STOCK
     else:
         raise ValueError(f"Unknown frequency: {frequency}")

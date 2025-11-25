@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import argparse
 import signal
-from datetime import datetime, timezone, time as dtime
+from datetime import datetime, timezone, time as dtime, timedelta
 import sys
 import time
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
+import subprocess
 
 import alpaca_wrapper
 from loguru import logger
@@ -25,6 +26,7 @@ from src.process_utils import (
     stop_all_entry_watchers,
     enforce_min_spread,
 )
+from src.fixtures import active_crypto_symbols
 from src.symbol_utils import is_crypto_symbol
 
 
@@ -33,6 +35,7 @@ DEFAULT_ACCOUNT_FRACTION = 0.15
 ENTRY_STRATEGY = "neuraldaily"
 MIN_STOCK_QTY = 1.0
 MIN_CRYPTO_QTY = 0.001
+MIN_ORDER_NOTIONAL = 1.0  # Alpaca enforces >= $1 cost basis per order
 # Run windows (Eastern time) to avoid spamming daily logic.
 WINDOW_OPEN = (dtime(9, 30), dtime(10, 0))       # US equities open
 WINDOW_CLOSE = (dtime(15, 30), dtime(16, 0))     # US equities close
@@ -58,9 +61,17 @@ def _load_account_equity() -> float:
 
 def _resolve_symbols(args: argparse.Namespace) -> Sequence[str]:
     if args.symbols:
-        return tuple(symbol.upper() for symbol in args.symbols)
-    dataset = DailyDatasetConfig()
-    return dataset.symbols
+        raw = tuple(symbol.upper() for symbol in args.symbols)
+    else:
+        raw = DailyDatasetConfig().symbols
+    active_crypto = {sym.upper() for sym in active_crypto_symbols}
+    filtered = []
+    for sym in raw:
+        up = sym.upper()
+        if is_crypto_symbol(up) and up not in active_crypto:
+            continue
+        filtered.append(up)
+    return tuple(filtered)
 
 
 @dataclass
@@ -95,9 +106,8 @@ class NeuralTradingLoop:
         self.skip_equity_weekends = bool(skip_equity_weekends)
         self.log_windows = bool(log_windows)
         self._stop_requested = False
-        self._last_windows_run: Set[Tuple[datetime.date, str]] = set()
-        self._last_crypto_anytime: Optional[datetime.date] = None
         self._bootstrapped = False
+        self._last_forecast_refresh: Optional[datetime.date] = None
 
     def run(self, *, once: bool = False) -> None:
         while not self._stop_requested:
@@ -111,24 +121,18 @@ class NeuralTradingLoop:
 
     def _tick(self) -> None:
         window = self._current_window()
+        has_crypto = any(is_crypto_symbol(sym.upper()) for sym in self.symbols)
         if window is None:
-            today = datetime.now(timezone.utc).date()
-            has_crypto = any(sym.endswith("USD") for sym in self.symbols)
-            if has_crypto and self._last_crypto_anytime != today:
+            if has_crypto:
                 window = "crypto_anytime"
-                self._last_crypto_anytime = today
             elif not self._bootstrapped:
                 window = "bootstrap"
             else:
                 (logger.info if self.log_windows else logger.debug)("Outside trading windows; skipping tick.")
                 return
-        today = datetime.now(timezone.utc).date()
-        key = (today, window)
-        if key in self._last_windows_run:
-            (logger.info if self.log_windows else logger.debug)(
-                "Window %s already processed today; skipping repeat tick.", window
-            )
-            return
+
+        # Refresh forecasts once per day before planning
+        self._refresh_forecasts_if_needed()
 
         account_equity = _load_account_equity()
         plans = self._generate_plans()
@@ -139,7 +143,6 @@ class NeuralTradingLoop:
         logger.info(f"Generated {len(plans)} plans (aggregate weight {total_weight:.3f})")
         for neural_plan in plans:
             self._dispatch_plan(neural_plan, account_equity)
-        self._last_windows_run.add(key)
         self._bootstrapped = True
         self._close_orphan_positions()
 
@@ -157,6 +160,39 @@ class NeuralTradingLoop:
         if _in_window(WINDOW_CRYPTO, now_utc.time()):
             return "crypto"
         return None
+
+    def _refresh_forecasts_if_needed(self) -> None:
+        today = datetime.now(timezone.utc).date()
+        if self._last_forecast_refresh == today:
+            return
+        logger.info("Refreshing Chronos forecasts for all symbols (daily).")
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "update_chronos_forecasts.py",
+                ],
+                cwd=Path.cwd(),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logger.info("Forecast refresh completed: %s", completed.stdout.strip()[:200])
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.warning("Forecast refresh failed: %s", exc)
+        self._last_forecast_refresh = today
+
+    def _cancel_equity_entries_if_closed(self) -> None:
+        try:
+            clock = alpaca_wrapper.alpaca_api.get_clock()
+            is_open = getattr(clock, "is_open", False)
+        except Exception:
+            is_open = False
+        if is_open:
+            return
+        for sym in self.symbols:
+            if not is_crypto_symbol(sym):
+                stop_all_entry_watchers(sym, reason="market_closed_equity")
 
     def _close_orphan_positions(self) -> None:
         """Close positions that are not in the current tradable symbol set."""
@@ -228,7 +264,7 @@ class NeuralTradingLoop:
         for plan in raw_plans:
             if plan.trade_amount <= self.min_trade_amount:
                 continue
-            asset_flag = 1.0 if plan.symbol.upper().endswith("-USD") else 0.0
+            asset_flag = 1.0 if is_crypto_symbol(plan.symbol.upper()) else 0.0
             edge = max(plan.sell_price - plan.buy_price, 0.0) / max(plan.buy_price, 1e-9)
             score = plan.trade_amount * edge
             enriched.append(
@@ -245,7 +281,16 @@ class NeuralTradingLoop:
         enriched.sort(key=lambda item: (item.plan.trade_amount * max(item.plan.sell_price - item.plan.buy_price, 0.0) / max(item.plan.buy_price, 1e-9),
                                         item.plan.trade_amount),
                       reverse=True)
-        enriched = enriched[: self.max_plans]
+        crypto_candidates = [p for p in enriched if (p.asset_flag > 0.5) or is_crypto_symbol(p.symbol)]
+        non_crypto = [p for p in enriched if p not in crypto_candidates]
+
+        selected: List[NeuralPlan] = []
+        if crypto_candidates:
+            selected.extend(crypto_candidates[:2])  # keep top 2 crypto opportunities
+        remaining = self.max_plans - len(selected)
+        if remaining > 0:
+            selected.extend(non_crypto[:remaining])
+        enriched = selected
         for idx, item in enumerate(enriched, start=1):
             item.priority = idx
         return enriched
@@ -264,6 +309,7 @@ class NeuralTradingLoop:
             try:
                 if not alpaca_wrapper.alpaca_api.get_clock().is_open:
                     logger.info("Market closed; skipping equity plan for %s", symbol)
+                    self._cancel_equity_entries_if_closed()
                     return
             except Exception as exc:
                 logger.warning("Clock lookup failed (%s); proceeding cautiously for %s", exc, symbol)
@@ -281,7 +327,9 @@ class NeuralTradingLoop:
         target_notional = max(notional_cap * allocation, 0.0)
         min_qty = MIN_CRYPTO_QTY if asset_is_crypto else MIN_STOCK_QTY
         qty = target_notional / limit_price
-        qty = max(qty, min_qty)
+        # Enforce broker min notional to avoid 403 "cost basis must be >= 1"
+        min_notional_qty = MIN_ORDER_NOTIONAL / max(limit_price, 1e-9)
+        qty = max(qty, min_qty, min_notional_qty)
         if qty <= 0:
             logger.debug(f"Skipping {symbol} plan due to zero qty (notional {target_notional:.2f}).")
             return
@@ -297,9 +345,12 @@ class NeuralTradingLoop:
     def _spawn_entry(self, symbol: str, side: str, limit_price: float, qty: float, plan: NeuralPlan) -> None:
         tolerance_pct = None  # let the watcher decide
         asset_is_crypto = (plan.asset_flag > 0.5) or is_crypto_symbol(symbol)
+        # Crypto: always force immediate to post orders even out of hours
         force_immediate = True if asset_is_crypto else self.force_immediate
+        if asset_is_crypto:
+            tolerance_pct = 0.001  # 10 bps for faster posting
         priority_rank = plan.priority
-        crypto_rank = 1 if asset_is_crypto else None
+        crypto_rank = priority_rank if asset_is_crypto else None
         spawn_open_position_at_maxdiff_takeprofit(
             symbol=symbol,
             side=side,
@@ -331,6 +382,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-plans", type=int, default=2, help="Max number of plans to dispatch per tick.")
     parser.add_argument("--force-immediate", action="store_true", help="Force immediate execution on spawned entries.")
     parser.add_argument("--no-weekend-skip", action="store_true", help="Allow equity entries on weekends (default skips).")
+    parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.2,
+        help="Minimum neural confidence required to dispatch a plan (0-1).",
+    )
+    parser.add_argument(
+        "--ignore-non-tradable",
+        action="store_true",
+        help="Ignore checkpoint non_tradable file and allow all symbols.",
+    )
     parser.add_argument("--once", action="store_true", help="Run a single tick instead of looping.")
     parser.add_argument("--log-windows", action="store_true", help="Log window-skips at info level (otherwise debug).")
     return parser.parse_args()
@@ -385,6 +447,8 @@ def main() -> None:
         dataset_config=dataset_cfg,
         device=args.device,
         risk_threshold=args.risk_threshold,
+        confidence_threshold=args.confidence_threshold,
+        non_tradable=() if args.ignore_non_tradable else None,
     )
     loop = NeuralTradingLoop(
         runtime,
