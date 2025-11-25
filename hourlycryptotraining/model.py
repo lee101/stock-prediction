@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Tuple
 
 import math
 import torch
@@ -20,6 +20,7 @@ class PolicyHeadConfig:
     num_heads: int = 8
     num_layers: int = 4
     max_len: int = 2048  # Positional encoding max sequence length
+    use_midpoint_offsets: bool = True  # ensure buy<=mid<=sell by predicting offsets from reference_close
 
 
 class PositionalEncoding(nn.Module):
@@ -104,20 +105,38 @@ class HourlyCryptoPolicy(nn.Module):
         reference_close: torch.Tensor,
         chronos_high: torch.Tensor,
         chronos_low: torch.Tensor,
-        dynamic_offset_pct: torch.Tensor | None = None,
+        dynamic_offset_pct: torch.Tensor | Tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> Dict[str, torch.Tensor]:
         if dynamic_offset_pct is None:
-            offset_pct = torch.full_like(reference_close, self.price_offset_pct)
+            buy_offset_pct = sell_offset_pct = torch.full_like(reference_close, self.price_offset_pct)
+        elif isinstance(dynamic_offset_pct, (tuple, list)) and len(dynamic_offset_pct) == 2:
+            buy_offset_pct, sell_offset_pct = dynamic_offset_pct
+            buy_offset_pct = buy_offset_pct.to(reference_close.device, reference_close.dtype)
+            sell_offset_pct = sell_offset_pct.to(reference_close.device, reference_close.dtype)
         else:
-            offset_pct = dynamic_offset_pct.to(reference_close.device, reference_close.dtype)
-        offset_pct = torch.clamp(offset_pct, min=1e-6)
-        price_scale = reference_close * offset_pct
-        buy_raw = torch.tanh(outputs["buy_price_logits"]).squeeze(-1)
-        sell_raw = torch.tanh(outputs["sell_price_logits"]).squeeze(-1)
-        min_buy = reference_close * (1.0 - 2 * offset_pct)
-        max_sell = reference_close * (1.0 + 2 * offset_pct)
-        buy_price = torch.maximum(min_buy, torch.minimum(chronos_low + price_scale * buy_raw, reference_close))
-        sell_price = torch.minimum(max_sell, torch.maximum(chronos_high + price_scale * sell_raw, reference_close))
+            offset_pct = dynamic_offset_pct.to(reference_close.device, reference_close.dtype)  # type: ignore
+            buy_offset_pct = sell_offset_pct = offset_pct
+
+        buy_offset_pct = torch.clamp(buy_offset_pct, min=1e-6)
+        sell_offset_pct = torch.clamp(sell_offset_pct, min=1e-6)
+
+        if getattr(self, "use_midpoint_offsets", True):
+            # Constrain prices symmetrically around reference_close; sigmoid in [0,1]
+            buy_offset = buy_offset_pct * torch.sigmoid(outputs["buy_price_logits"]).squeeze(-1)
+            sell_offset = sell_offset_pct * torch.sigmoid(outputs["sell_price_logits"]).squeeze(-1)
+            buy_price = reference_close * (1.0 - buy_offset)
+            sell_price = reference_close * (1.0 + sell_offset)
+        else:
+            # Legacy behavior (tanh, chronos anchors)
+            buy_scale = reference_close * buy_offset_pct
+            sell_scale = reference_close * sell_offset_pct
+            buy_raw = torch.tanh(outputs["buy_price_logits"]).squeeze(-1)
+            sell_raw = torch.tanh(outputs["sell_price_logits"]).squeeze(-1)
+            min_buy = reference_close * (1.0 - 2 * buy_offset_pct)
+            max_sell = reference_close * (1.0 + 2 * sell_offset_pct)
+            buy_price = torch.maximum(min_buy, torch.minimum(chronos_low + buy_scale * buy_raw, reference_close))
+            sell_price = torch.minimum(max_sell, torch.maximum(chronos_high + sell_scale * sell_raw, reference_close))
+
         gap = reference_close * self.min_gap_pct
         sell_price = torch.maximum(sell_price, buy_price + gap)
         buy_amount = torch.sigmoid(outputs["buy_amount_logits"]).squeeze(-1)

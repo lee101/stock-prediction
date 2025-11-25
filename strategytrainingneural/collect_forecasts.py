@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import List, Sequence
 
+import torch
+
 from .current_symbols import load_current_symbols
 from .forecast_cache import ChronosForecastGenerator, ForecastGenerationConfig
 
@@ -84,6 +86,28 @@ def parse_args() -> argparse.Namespace:
         help="Cadence for hyperparam/pre-augmentation selection.",
     )
     parser.add_argument(
+        "--torch-dtype",
+        default="float32",
+        choices=("float32", "bfloat16", "float16"),
+        help="Torch dtype to use inside Chronos2 pipeline.",
+    )
+    parser.add_argument(
+        "--no-torch-compile",
+        action="store_true",
+        help="Disable torch.compile for Chronos2 (safer for debug/NaN issues).",
+    )
+    parser.add_argument(
+        "--compile-mode",
+        default=None,
+        help="Optional torch.compile mode; ignored when --no-torch-compile is set.",
+    )
+    parser.add_argument(
+        "--prediction-cache-policy",
+        choices=("prefer", "never", "only"),
+        default="prefer",
+        help="Whether to reuse compiled Chronos2 cache.",
+    )
+    parser.add_argument(
         "--no-symbol-hyperparams",
         action="store_true",
         help="Use CLI fallback context/batch settings instead of per-symbol configs.",
@@ -134,6 +158,10 @@ def main() -> None:
         "default_context_length": config.context_length,
         "default_batch_size": config.batch_size,
         "quantile_levels": config.quantile_levels,
+        "torch_dtype": getattr(torch, args.torch_dtype) if "torch" in globals() else args.torch_dtype,
+        "torch_compile": False if args.no_torch_compile else None,
+        "compile_mode": None if args.no_torch_compile else args.compile_mode,
+        "cache_policy": args.prediction_cache_policy,
     }
     generator = ChronosForecastGenerator(
         data_dir=Path(args.data_dir),

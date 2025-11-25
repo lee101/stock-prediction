@@ -29,6 +29,8 @@ DEFAULT_FEATURES: Tuple[str, ...] = (
     "atr_pct_14",
     "range_pct",
     "volume_z",
+    "weekly_return_5",
+    "weekly_range_pct_5",
     "day_sin",
     "day_cos",
     "chronos_close_delta",
@@ -171,6 +173,11 @@ class SymbolFrameBuilder:
         work["return_1d"] = work["close"].pct_change().shift(1)
         work["return_5d"] = work["close"].pct_change(5).shift(1)
         work["return_21d"] = work["close"].pct_change(21).shift(1)
+        if self.config.include_weekly_features:
+            work["weekly_return_5"] = work["close"].pct_change(5).shift(1)
+            work["weekly_range_pct_5"] = (
+                (work["high"].rolling(5).max() - work["low"].rolling(5).min()) / work["close"].clip(lower=1e-6)
+            ).shift(1)
         work["volatility_5d"] = work["close"].pct_change().rolling(5).std().shift(1)
         work["volatility_21d"] = work["close"].pct_change().rolling(21).std().shift(1)
         work["range_pct"] = ((work["high"] - work["low"]) / work["close"].clip(lower=1e-6)).shift(1)
@@ -310,6 +317,8 @@ class DailyDataModule:
         self.feature_columns = tuple(config.feature_columns or DEFAULT_FEATURES)
         self.symbols = [symbol.upper() for symbol in config.symbols]
         self._apply_exclusions()
+        if self.config.crypto_only:
+            self.symbols = [sym for sym in self.symbols if sym.endswith("USD") or sym.endswith("-USD")]
         if not self.symbols:
             raise ValueError("No symbols configured for daily training.")
         # Create symbol to ID mapping for per-symbol tracking

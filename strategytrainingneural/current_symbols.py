@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 from strategytraining.symbol_sources import load_trade_stock_symbols
+from src.fixtures import all_crypto_symbols
 
 
 def load_current_symbols(script_path: str | Path = "trade_stock_e2e.py") -> List[str]:
@@ -37,7 +38,7 @@ def split_by_asset_class(symbols: Sequence[str]) -> Tuple[List[str], List[str]]:
     crypto: List[str] = []
     for symbol in symbols:
         normalized = symbol.upper()
-        if normalized.endswith("-USD"):
+        if normalized in all_crypto_symbols:
             crypto.append(symbol)
         else:
             stock.append(symbol)
@@ -61,7 +62,7 @@ def filter_symbols(
         upper = symbol.upper()
         if include_set is not None and upper not in include_set:
             continue
-        is_crypto = upper.endswith("-USD")
+        is_crypto = upper in all_crypto_symbols
         if exclude_crypto and is_crypto:
             continue
         if exclude_stocks and not is_crypto:

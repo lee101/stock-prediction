@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import signal
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -749,8 +750,9 @@ def spawn_open_position_at_maxdiff_takeprofit(
     if priority_value is not None:
         metadata["priority_rank"] = priority_value
     _persist_watcher_metadata(config_path, metadata)
+    python_bin = sys.executable or "python"
     command = (
-        f"python scripts/maxdiff_cli.py open-position {symbol}"
+        f"{python_bin} scripts/maxdiff_cli.py open-position {symbol}"
         f" --side={side}"
         f" --limit-price={_format_float(limit_price, precision)}"
         f" --target-qty={_format_float(target_qty, 8)}"
@@ -763,7 +765,7 @@ def spawn_open_position_at_maxdiff_takeprofit(
         command += " --force-immediate"
     if priority_value is not None:
         command += f" --priority-rank={priority_value}"
-    if symbol in crypto_symbols:
+    if symbol in crypto_symbols or symbol.upper().endswith("USD"):
         command += " --asset-class=crypto"
     logger.info(f"Running command {command}")
     try:
@@ -896,8 +898,9 @@ def spawn_close_position_at_maxdiff_takeprofit(
     if target_qty_val is not None:
         metadata["target_qty"] = target_qty_val
     _persist_watcher_metadata(config_path, metadata)
+    python_bin = sys.executable or "python"
     command = (
-        f"python scripts/maxdiff_cli.py close-position {symbol}"
+        f"{python_bin} scripts/maxdiff_cli.py close-position {symbol}"
         f" --side={side}"
         f" --takeprofit-price={_format_float(takeprofit_price, precision)}"
         f" --expiry-minutes={expiry_minutes_int}"

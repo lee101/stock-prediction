@@ -4,6 +4,7 @@ import argparse
 import logging
 import sys
 import time
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,10 +29,13 @@ from hourlycryptotraining import (
 from hourlycryptotraining.data import MultiSymbolDataModule
 from hourlycryptotraining.checkpoints import find_best_checkpoint, load_checkpoint
 from hourlycryptotraining.model import HourlyCryptoPolicy
+from alpaca_data_wrapper import append_recent_crypto_data
+from alpaca_wrapper import _get_min_order_notional
 from src.process_utils import (
     spawn_close_position_at_maxdiff_takeprofit,
     spawn_open_position_at_maxdiff_takeprofit,
 )
+from src.price_guard import enforce_gap, record_buy, record_sell
 
 logger = logging.getLogger("hourlycrypto")
 
@@ -47,27 +51,40 @@ class TradingPlan:
 
 @dataclass
 class PriceOffsetParams:
-    base_pct: float
-    span_multiplier: float = 0.0
-    max_pct: Optional[float] = None
+    buy_base_pct: float
+    sell_base_pct: float
+    buy_span_multiplier: float = 0.0
+    sell_span_multiplier: float = 0.0
+    buy_max_pct: Optional[float] = None
+    sell_max_pct: Optional[float] = None
 
     def build_tensor(
         self,
         reference_close: torch.Tensor,
         chronos_high: torch.Tensor,
         chronos_low: torch.Tensor,
-    ) -> torch.Tensor:
-        offsets = torch.full_like(reference_close, self.base_pct)
-        if self.span_multiplier:
-            span = torch.clamp(
-                (chronos_high - chronos_low)
-                / reference_close.clamp(min=1e-6),
-                min=0.0,
-            )
-            offsets = offsets + self.span_multiplier * span
-        if self.max_pct is not None:
-            offsets = torch.clamp(offsets, max=self.max_pct)
-        return torch.clamp(offsets, min=1e-6)
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        span = torch.clamp(
+            (chronos_high - chronos_low) / reference_close.clamp(min=1e-6),
+            min=0.0,
+        )
+
+        buy_offsets = torch.full_like(reference_close, self.buy_base_pct)
+        sell_offsets = torch.full_like(reference_close, self.sell_base_pct)
+
+        if self.buy_span_multiplier:
+            buy_offsets = buy_offsets + self.buy_span_multiplier * span
+        if self.sell_span_multiplier:
+            sell_offsets = sell_offsets + self.sell_span_multiplier * span
+
+        if self.buy_max_pct is not None:
+            buy_offsets = torch.clamp(buy_offsets, max=self.buy_max_pct)
+        if self.sell_max_pct is not None:
+            sell_offsets = torch.clamp(sell_offsets, max=self.sell_max_pct)
+
+        buy_offsets = torch.clamp(buy_offsets, min=1e-6)
+        sell_offsets = torch.clamp(sell_offsets, min=1e-6)
+        return buy_offsets, sell_offsets
 
 
 def _parse_args() -> argparse.Namespace:
@@ -86,7 +103,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--force-retrain", action="store_true")
     parser.add_argument("--dry-train-steps", type=int, default=None)
     parser.add_argument("--ema-decay", type=float, default=None, help="EMA decay rate (e.g., 0.999)")
-    parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile (required for long sequences)")
+    parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile (legacy flag; default is already off)")
+    parser.add_argument("--enable-compile", action="store_true", help="Enable torch.compile (default: disabled)")
     parser.add_argument("--use-amp", action="store_true", help="Enable automatic mixed precision training")
     parser.add_argument("--amp-dtype", choices=["bfloat16", "float16"], default="bfloat16", help="AMP dtype (bfloat16 or float16)")
     parser.add_argument("--training-symbols", type=str, nargs="+", default=None, help="Train on multiple symbols (e.g., BTCUSD ETHUSD UNIUSD LINKUSD)")
@@ -105,10 +123,34 @@ def _parse_args() -> argparse.Namespace:
         help="Base limit offset as a decimal fraction (0.0003 = 0.03%%)",
     )
     parser.add_argument(
+        "--buy-price-offset-pct",
+        type=float,
+        default=None,
+        help="Override buy-side base limit offset (defaults to price-offset-pct)",
+    )
+    parser.add_argument(
+        "--sell-price-offset-pct",
+        type=float,
+        default=None,
+        help="Override sell-side base limit offset (defaults to 1.2x price-offset-pct)",
+    )
+    parser.add_argument(
         "--price-offset-span-multiplier",
         type=float,
         default=0.15,
         help="Linear multiplier on (Chronos_high - Chronos_low)/reference_close to widen offsets",
+    )
+    parser.add_argument(
+        "--buy-price-offset-span-multiplier",
+        type=float,
+        default=None,
+        help="Override buy-side span multiplier (defaults to price-offset-span-multiplier)",
+    )
+    parser.add_argument(
+        "--sell-price-offset-span-multiplier",
+        type=float,
+        default=None,
+        help="Override sell-side span multiplier (defaults to price-offset-span-multiplier)",
     )
     parser.add_argument(
         "--price-offset-max-pct",
@@ -116,7 +158,48 @@ def _parse_args() -> argparse.Namespace:
         default=0.003,
         help="Upper clamp for the effective offset (0.003 = 0.3%%). Use 0 to disable",
     )
+    parser.add_argument(
+        "--enable-probe-sim",
+        action="store_true",
+        help="Run the daily PnL probe variant in simulation (default: off)",
+    )
+    parser.add_argument(
+        "--buy-price-offset-max-pct",
+        type=float,
+        default=None,
+        help="Override buy-side offset cap (defaults to price-offset-max-pct)",
+    )
+    parser.add_argument(
+        "--sell-price-offset-max-pct",
+        type=float,
+        default=None,
+        help="Override sell-side offset cap (defaults to price-offset-max-pct)",
+    )
+    parser.add_argument(
+        "--retrain-to-keep-up-to-date",
+        action="store_true",
+        help="Refresh latest hourly data, quick full-data retrain, eval vs baseline, promote best, then trade",
+    )
+    parser.add_argument(
+        "--refresh-days",
+        type=int,
+        default=10,
+        help="Days of most recent hourly data to append before retrain (default 10)",
+    )
+    parser.add_argument(
+        "--retrain-epochs",
+        type=int,
+        default=1,
+        help="Epochs for quick catch-up retrain (default 1)",
+    )
+    parser.add_argument(
+        "--retrain-eval-window-hours",
+        type=int,
+        default=72,
+        help="Window (hours) for simulator comparison between old/new checkpoint (default 72)",
+    )
     return parser.parse_args()
+
 
 
 def _configure_logging(level: str) -> None:
@@ -158,6 +241,10 @@ def _build_training_config(args: argparse.Namespace) -> TrainingConfig:
     cfg.dry_train_steps = args.dry_train_steps
     if args.ema_decay is not None:
         cfg.ema_decay = args.ema_decay
+    # Default: no torch.compile for stability; enable only if requested
+    cfg.use_compile = False
+    if args.enable_compile:
+        cfg.use_compile = True
     if args.no_compile:
         cfg.use_compile = False
     if args.use_amp:
@@ -172,6 +259,59 @@ def _build_training_config(args: argparse.Namespace) -> TrainingConfig:
     cfg.forecast_config.symbol = symbol
     return cfg
 
+
+def _eval_checkpoint_total_return(ckpt_path: Path, base_config: TrainingConfig, window_hours: int) -> float:
+    """Load checkpoint and compute total_return over given window (using current data)."""
+    cfg = replace(base_config)
+    cfg.preload_checkpoint_path = ckpt_path
+    cfg.force_retrain = False
+    data_module = HourlyCryptoDataModule(cfg.dataset)
+    loaded = _load_pretrained_policy(cfg, price_offset_override=cfg.price_offset_pct)
+    if loaded is None:
+        raise RuntimeError(f"Could not load checkpoint {ckpt_path}")
+    data_module, policy, _ = loaded
+    actions = _infer_actions(policy, data_module, cfg)
+    result, _ = _simulate(actions, data_module, window_hours)
+    if result is None:
+        return float("-inf")
+    return float(result.metrics.get("total_return", float("-inf")))
+
+
+def _quick_retrain_latest(config: TrainingConfig, args: argparse.Namespace, eval_window_hours: int) -> tuple[Optional[Path], float]:
+    """Refresh model on full data (no val) for one/few epochs and evaluate."""
+    cfg = deepcopy(config)
+    cfg.epochs = max(1, int(getattr(args, "retrain_epochs", 1)))
+    cfg.dataset.val_fraction = 0.0
+    cfg.dataset.validation_days = 0
+    cfg.force_retrain = True
+    if args.checkpoint_path:
+        cfg.preload_checkpoint_path = Path(args.checkpoint_path)
+    cfg.run_name = cfg.run_name or f"hourlycrypto_{pd.Timestamp.utcnow().strftime('%Y%m%d_%H%M%S')}"
+    cfg.checkpoint_root = Path("hourlycryptotraining") / "checkpoints_256ctx_autorefresh"
+
+    data_module = HourlyCryptoDataModule(cfg.dataset)
+    trainer = HourlyCryptoTrainer(cfg, data_module)
+    artifacts = trainer.train()
+    best_ckpt = artifacts.best_checkpoint or (Path(cfg.checkpoint_root) / cfg.run_name / "epoch0001_valloss-autorefresh.pt")
+
+    # Evaluate
+    policy = HourlyCryptoPolicy(
+        PolicyHeadConfig(
+            input_dim=len(data_module.feature_columns),
+            hidden_dim=cfg.transformer_dim,
+            dropout=cfg.transformer_dropout,
+            price_offset_pct=cfg.price_offset_pct,
+            max_trade_qty=cfg.max_trade_qty,
+            min_price_gap_pct=cfg.min_price_gap_pct,
+            num_heads=cfg.transformer_heads,
+            num_layers=cfg.transformer_layers,
+        )
+    )
+    policy.load_state_dict(artifacts.state_dict, strict=False)
+    actions = _infer_actions(policy, data_module, cfg)
+    result, _ = _simulate(actions, data_module, eval_window_hours)
+    score = float(result.metrics.get("total_return", float("-inf"))) if result else float("-inf")
+    return best_ckpt, score
 
 def _train_policy(config: TrainingConfig, training_symbols: Optional[list[str]] = None) -> tuple[HourlyCryptoDataModule | MultiSymbolDataModule, HourlyCryptoPolicy, Optional[Path]]:
     # Use multi-symbol training if symbols are provided
@@ -323,9 +463,7 @@ def _infer_actions(
             low_tensor = torch.from_numpy(chronos_low[window]).unsqueeze(0).to(device)
             outputs = policy(feat)
             offset_tensor = (
-                offset_params.build_tensor(ref_tensor, high_tensor, low_tensor)
-                if offset_params
-                else None
+                offset_params.build_tensor(ref_tensor, high_tensor, low_tensor) if offset_params else None
             )
             decoded = policy.decode_actions(
                 outputs,
@@ -335,6 +473,11 @@ def _infer_actions(
                 dynamic_offset_pct=offset_tensor,
             )
             ts = pd.Timestamp(timestamps[idx - 1])
+            if offset_tensor is None:
+                buy_off = sell_off = float(config.price_offset_pct)
+            else:
+                buy_off = float(offset_tensor[0][0, -1].item())
+                sell_off = float(offset_tensor[1][0, -1].item())
             rows.append(
                 {
                     "timestamp": ts,
@@ -343,13 +486,14 @@ def _infer_actions(
                     "trade_amount": float(decoded["trade_amount"][0, -1].item()),
                     "buy_amount": float(decoded["buy_amount"][0, -1].item()),
                     "sell_amount": float(decoded["sell_amount"][0, -1].item()),
-                    "offset_pct": float(offset_tensor[0, -1].item()) if offset_tensor is not None else float(config.price_offset_pct),
+                    "buy_offset_pct": buy_off,
+                    "sell_offset_pct": sell_off,
                 }
             )
     return pd.DataFrame(rows)
 
 
-def _simulate(actions: pd.DataFrame, data_module: HourlyCryptoDataModule, window_hours: int) -> None:
+def _simulate(actions: pd.DataFrame, data_module: HourlyCryptoDataModule, window_hours: int, args=None) -> None:
     if actions.empty:
         logger.warning("No actions inferred; skipping simulation")
         return
@@ -373,33 +517,34 @@ def _simulate(actions: pd.DataFrame, data_module: HourlyCryptoDataModule, window
         result.final_inventory,
     )
 
-    # Run daily PnL-based probe trading simulation
-    try:
-        from hourlycryptomarketsimulator import DailyPnlProbeSimulator, DailyPnlProbeConfig
-        daily_probe_sim = DailyPnlProbeSimulator(
-            SimulationConfig(symbol=data_module.config.symbol.upper()),
-            DailyPnlProbeConfig(
-                probe_trade_amount=0.01,  # 1% trades in probe mode
-                min_daily_pnl_to_exit_probe=0.0,  # Exit probe when daily PnL >= $0
-            ),
-        )
-        daily_probe_result = daily_probe_sim.run(merged_bars, actions)
-        logger.info(
-            "Daily PnL Probe: total_return=%.2f%% sortino=%.2f final_cash=%.2f inventory=%.4f (%.1f%% time in probe, %d switches)",
-            daily_probe_result.metrics.get("total_return", 0.0) * 100,
-            daily_probe_result.metrics.get("sortino", 0.0),
-            daily_probe_result.final_cash,
-            daily_probe_result.final_inventory,
-            daily_probe_result.metrics.get("probe_mode_pct", 0.0),
-            daily_probe_result.metrics.get("probe_mode_switches", 0),
-        )
-        daily_improvement = (daily_probe_result.metrics.get("total_return", 0.0) - result.metrics.get("total_return", 0.0)) * 100
-        logger.info(
-            "Daily PnL Probe Improvement: %+.2f%% return",
-            daily_improvement,
-        )
-    except Exception as e:
-        logger.warning("Daily PnL probe trading simulation failed: %s", e)
+    # Optional daily PnL-based probe trading simulation (disabled by default)
+    if args is not None and getattr(args, "enable_probe_sim", False):
+        try:
+            from hourlycryptomarketsimulator import DailyPnlProbeSimulator, DailyPnlProbeConfig
+            daily_probe_sim = DailyPnlProbeSimulator(
+                SimulationConfig(symbol=data_module.config.symbol.upper()),
+                DailyPnlProbeConfig(
+                    probe_trade_amount=0.01,  # 1% trades in probe mode
+                    min_daily_pnl_to_exit_probe=0.0,  # Exit probe when daily PnL >= $0
+                ),
+            )
+            daily_probe_result = daily_probe_sim.run(merged_bars, actions)
+            logger.info(
+                "Daily PnL Probe: total_return=%.2f%% sortino=%.2f final_cash=%.2f inventory=%.4f (%.1f%% time in probe, %d switches)",
+                daily_probe_result.metrics.get("total_return", 0.0) * 100,
+                daily_probe_result.metrics.get("sortino", 0.0),
+                daily_probe_result.final_cash,
+                daily_probe_result.final_inventory,
+                daily_probe_result.metrics.get("probe_mode_pct", 0.0),
+                daily_probe_result.metrics.get("probe_mode_switches", 0),
+            )
+            daily_improvement = (daily_probe_result.metrics.get("total_return", 0.0) - result.metrics.get("total_return", 0.0)) * 100
+            logger.info(
+                "Daily PnL Probe Improvement: %+.2f%% return",
+                daily_improvement,
+            )
+        except Exception as e:
+            logger.warning("Daily PnL probe trading simulation failed: %s", e)
 
 
 def _build_trading_plan(actions: pd.DataFrame) -> Optional[TradingPlan]:
@@ -429,6 +574,21 @@ def _current_inventory(symbol: str) -> float:
     return 0.0
 
 
+def _current_avg_price(symbol: str) -> float:
+    """Return average entry price for current position, or 0 if none/error."""
+    try:
+        positions = alpaca_wrapper.get_all_positions()
+    except Exception:
+        return 0.0
+    for position in positions:
+        if position.symbol.upper() == symbol.upper():
+            try:
+                return float(getattr(position, "avg_entry_price", 0.0) or 0.0)
+            except Exception:
+                return 0.0
+    return 0.0
+
+
 def _available_cash() -> float:
     try:
         account = alpaca_wrapper.get_account()
@@ -440,6 +600,76 @@ def _available_cash() -> float:
 def _normalize_symbol(symbol: str) -> str:
     """Normalize crypto symbol format (remove slashes)."""
     return symbol.replace("/", "").upper()
+
+
+def _latest_quote(symbol: str) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[pd.Timestamp]]:
+    """Fetch the freshest bid/ask for a symbol and derive midpoint.
+
+    Returns (bid, ask, midpoint, timestamp). Midpoint is only computed when
+    both bid and ask are positive to avoid treating single-sided books as
+    tradable midpoints.
+    """
+
+    try:
+        quote = alpaca_wrapper.latest_data(symbol)
+    except Exception as exc:  # pragma: no cover - network/API issues
+        logger.warning("Failed to fetch latest quote for %s: %s", symbol, exc)
+        return None, None, None, None
+
+    bid = getattr(quote, "bid_price", None) or 0.0
+    ask = getattr(quote, "ask_price", None) or 0.0
+    ts_attr = getattr(quote, "timestamp", None) or getattr(quote, "time", None)
+    ts = pd.to_datetime(ts_attr, utc=True, errors="coerce") if ts_attr is not None else None
+
+    bid_val = float(bid) if bid and bid > 0 else None
+    ask_val = float(ask) if ask and ask > 0 else None
+    midpoint = (bid_val + ask_val) / 2.0 if bid_val is not None and ask_val is not None else None
+    return bid_val, ask_val, midpoint, ts
+
+
+def _adjust_for_maker_liquidity(
+    plan: TradingPlan,
+    bid: Optional[float],
+    ask: Optional[float],
+    midpoint: Optional[float],
+) -> TradingPlan:
+    """Clamp limits to the live top-of-book to avoid taker executions.
+
+    * Buy price -> latest bid (if available)
+    * Sell price -> latest ask (if available)
+
+    This keeps orders resting on the book (maker) instead of crossing.
+    """
+
+    if bid is None and ask is None and midpoint is None:
+        return plan
+
+    buy_price = plan.buy_price
+    sell_price = plan.sell_price
+
+    if bid is not None and bid > 0:
+        buy_price = min(plan.buy_price, bid)
+    elif midpoint is not None and midpoint > 0:
+        buy_price = min(plan.buy_price, midpoint)
+
+    if ask is not None and ask > 0:
+        sell_price = ask  # hit top-of-book for maker posting
+    elif midpoint is not None and midpoint > 0:
+        sell_price = min(plan.sell_price, midpoint)
+
+    if buy_price != plan.buy_price or sell_price != plan.sell_price:
+        logger.info(
+            "Maker guard adjusted plan: buy %.4f->%.4f sell %.4f->%.4f (bid=%s ask=%s mid=%s)",
+            plan.buy_price,
+            buy_price,
+            plan.sell_price,
+            sell_price,
+            f"{bid:.4f}" if bid is not None else "n/a",
+            f"{ask:.4f}" if ask is not None else "n/a",
+            f"{midpoint:.4f}" if midpoint is not None else "n/a",
+        )
+
+    return replace(plan, buy_price=buy_price, sell_price=sell_price)
 
 
 def _cancel_existing_orders(symbol: str) -> None:
@@ -463,6 +693,44 @@ def _cancel_existing_orders(symbol: str) -> None:
         logger.error(f"Error fetching/cancelling orders for {symbol}: {exc}")
 
 
+def _current_avg_price(symbol: str) -> float:
+    """Return average entry price for current position, or 0 if none/error."""
+    try:
+        positions = alpaca_wrapper.get_all_positions()
+    except Exception:
+        return 0.0
+    for position in positions:
+        if _normalize_symbol(position.symbol) == _normalize_symbol(symbol):
+            try:
+                return float(getattr(position, "avg_entry_price", 0.0) or 0.0)
+            except Exception:
+                return 0.0
+    return 0.0
+
+
+def _current_max_takeprofit(symbol: str) -> float:
+    """Max existing TP (sell) limit price for the symbol."""
+    try:
+        open_orders = alpaca_wrapper.get_open_orders()
+    except Exception:
+        return 0.0
+    norm = _normalize_symbol(symbol)
+    tps = []
+    for o in open_orders:
+        try:
+            if _normalize_symbol(o.symbol) != norm:
+                continue
+            if getattr(o, "side", "").lower() != "sell":
+                continue
+            lp = getattr(o, "limit_price", None)
+            if lp is None:
+                continue
+            tps.append(float(lp))
+        except Exception:
+            continue
+    return max(tps) if tps else 0.0
+
+
 def _spawn_watchers(plan: TradingPlan, dry_run: bool, symbol: str) -> None:
     symbol = symbol.upper()
 
@@ -471,12 +739,53 @@ def _spawn_watchers(plan: TradingPlan, dry_run: bool, symbol: str) -> None:
         _cancel_existing_orders(symbol)
 
     cash = _available_cash()
+    min_notional = _get_min_order_notional(symbol)
     inventory = _current_inventory(symbol)
+    avg_price = _current_avg_price(symbol)
+    existing_tp = _current_max_takeprofit(symbol)
+
+    # Pull freshest quote to bias limits away from taker execution
+    bid, ask, midpoint, quote_ts = _latest_quote(symbol)
+    if bid is not None or ask is not None or midpoint is not None:
+        ts_str = quote_ts.isoformat() if quote_ts is not None else "n/a"
+        logger.info(
+            "Latest live quote %s bid=%s ask=%s mid=%s",
+            ts_str,
+            f"{bid:.4f}" if bid is not None else "n/a",
+            f"{ask:.4f}" if ask is not None else "n/a",
+            f"{midpoint:.4f}" if midpoint is not None else "n/a",
+        )
+    plan = _adjust_for_maker_liquidity(plan, bid, ask, midpoint)
+
     buy_amt = max(0.0, min(1.0, plan.buy_amount))
     sell_amt = max(0.0, min(1.0, plan.sell_amount))
     max_buy_qty = cash / plan.buy_price if plan.buy_price > 0 else 0.0
     buy_qty = buy_amt * max(0.0, max_buy_qty)
     sell_qty = sell_amt * max(0.0, inventory)
+
+    # Enforce broker minimum notional (crypto ~$10 on Alpaca) to avoid rejected orders
+    if buy_qty > 0 and plan.buy_price > 0:
+        min_buy_qty = min_notional / plan.buy_price
+        if buy_qty < min_buy_qty:
+            logger.info(
+                "Raising buy_qty to meet $%.2f min notional (%.8f -> %.8f @ %.4f)",
+                min_notional,
+                buy_qty,
+                min_buy_qty,
+                plan.buy_price,
+            )
+            buy_qty = min_buy_qty
+    if sell_qty > 0 and plan.sell_price > 0:
+        min_sell_qty = min_notional / plan.sell_price
+        if sell_qty < min_sell_qty:
+            logger.info(
+                "Raising sell_qty to meet $%.2f min notional (%.8f -> %.8f @ %.4f)",
+                min_notional,
+                sell_qty,
+                min_sell_qty,
+                plan.sell_price,
+            )
+            sell_qty = min_sell_qty
 
     # If selling most of the position (>95%), sell ALL to avoid tiny residuals
     # that can block future buy orders
@@ -488,6 +797,54 @@ def _spawn_watchers(plan: TradingPlan, dry_run: bool, symbol: str) -> None:
     MIN_SPREAD_PCT = 0.0003  # 3 basis points = 0.03%
     required_min_sell = plan.buy_price * (1.0 + MIN_SPREAD_PCT)
     actual_spread_pct = ((plan.sell_price - plan.buy_price) / plan.buy_price * 100) if plan.buy_price > 0 else 0
+
+    # Extra guards:
+    # 1) do not set take-profit below avg entry + small profit
+    # 2) do not regress below any existing TP order
+    # 3) if buy price is at/above TP, lift TP to maintain a 10bp gap above buy
+    PROFIT_FLOOR_PCT = max(MIN_SPREAD_PCT, 0.001)  # at least 0.1% above avg entry
+    if inventory > 0 and avg_price > 0:
+        min_exit_price = avg_price * (1.0 + PROFIT_FLOOR_PCT)
+        min_exit_price = max(min_exit_price, existing_tp)
+        if plan.sell_price < min_exit_price:
+            logger.warning(
+                "Adjusting sell_price up to avoid loss or TP regression: requested=%.4f min_exit=%.4f avg=%.4f inv=%.6f existing_tp=%.4f",
+                plan.sell_price,
+                min_exit_price,
+                avg_price,
+                inventory,
+                existing_tp,
+            )
+            plan = replace(plan, sell_price=min_exit_price)
+            actual_spread_pct = ((plan.sell_price - plan.buy_price) / plan.buy_price * 100) if plan.buy_price > 0 else 0
+            required_min_sell = max(required_min_sell, min_exit_price)
+
+    if existing_tp > 0 and buy_qty > 0 and plan.buy_price >= existing_tp * (1 - 0.0005):
+        adjusted_tp = max(plan.sell_price, plan.buy_price * 1.001, existing_tp * 1.001)
+        logger.warning(
+            "Adjusting TP to maintain 10bp gap above buy: buy=%.4f prev_tp=%.4f -> new_tp=%.4f",
+            plan.buy_price,
+            existing_tp,
+            adjusted_tp,
+        )
+        plan = replace(plan, sell_price=adjusted_tp)
+        actual_spread_pct = ((plan.sell_price - plan.buy_price) / plan.buy_price * 100) if plan.buy_price > 0 else 0
+        required_min_sell = max(required_min_sell, adjusted_tp)
+
+    # Guard 4: one-hour anti-inversion window based on recent trades
+    adj_buy_price, adj_sell_price = enforce_gap(symbol, plan.buy_price, plan.sell_price, min_gap_pct=0.001)
+    if adj_buy_price != plan.buy_price or adj_sell_price != plan.sell_price:
+        logger.warning(
+            "Price guard adjusted plan for %s: buy %.4f->%.4f sell %.4f->%.4f (1h window)",
+            symbol,
+            plan.buy_price,
+            adj_buy_price,
+            plan.sell_price,
+            adj_sell_price,
+        )
+        plan = replace(plan, buy_price=adj_buy_price, sell_price=adj_sell_price)
+        actual_spread_pct = ((plan.sell_price - plan.buy_price) / plan.buy_price * 100) if plan.buy_price > 0 else 0
+        required_min_sell = max(required_min_sell, plan.buy_price * (1.0 + MIN_SPREAD_PCT), plan.sell_price)
 
     if plan.sell_price <= plan.buy_price or plan.sell_price < required_min_sell:
         logger.error(
@@ -515,40 +872,87 @@ def _spawn_watchers(plan: TradingPlan, dry_run: bool, symbol: str) -> None:
         inventory,
     )
 
-    # Warn if model is outputting very low trade intensity
+    # Enforce broker min notional (Alpaca crypto ~$10)
+    if buy_qty * plan.buy_price < min_notional:
+        needed_qty = min_notional / plan.buy_price
+        logger.info(
+            "Raising buy_qty to meet $%.2f min notional (%.8f -> %.8f @ %.4f)",
+            min_notional,
+            buy_qty,
+            needed_qty,
+            plan.buy_price,
+        )
+        buy_qty = needed_qty
+    if sell_qty * plan.sell_price < min_notional and sell_qty > 0:
+        needed_qty = min_notional / plan.sell_price
+        logger.info(
+            "Raising sell_qty to meet $%.2f min notional (%.8f -> %.8f @ %.4f)",
+            min_notional,
+            sell_qty,
+            needed_qty,
+            plan.sell_price,
+        )
+        sell_qty = min(sell_qty + (needed_qty - sell_qty), inventory)
+
+    # Warn if model is outputting very low trade intensity; still proceed if we have non‑zero qty after safeguards
     if max(buy_amt, sell_amt) < 0.01:
         logger.warning(
-            "Model output very low trade_amount=%.6f/%.6f → buy_qty=%.6f, sell_qty=%.6f (skipping trades)",
+            "Model output very low trade_amount=%.6f/%.6f → buy_qty=%.6f, sell_qty=%.6f",
             plan.buy_amount,
             plan.sell_amount,
             buy_qty,
             sell_qty,
         )
-        if not dry_run:
-            logger.info("No trades will be placed due to low trade intensity")
+        if not dry_run and max(buy_qty, sell_qty) <= 0:
+            logger.info("No trades will be placed because effective qty is zero")
             return
+
+    logger.info(
+        "Spawning watchers: inv=%.6f buy_qty=%.6f sell_qty=%.6f buy_price=%.4f sell_price=%.4f",
+        inventory,
+        buy_qty,
+        sell_qty,
+        plan.buy_price,
+        plan.sell_price,
+    )
     if dry_run:
         logger.info("Dry-run: skipping watcher spawn")
         return
     if buy_qty > 0:
         try:
+            target_buy_qty = buy_qty + inventory  # aim for current + new so remaining_qty equals desired add-on
+            logger.info(
+                "Launching entry watcher: target_total=%.6f (add=%.6f, inv=%.6f) @ %.4f",
+                target_buy_qty,
+                buy_qty,
+                inventory,
+                plan.buy_price,
+            )
+            record_buy(symbol, plan.buy_price)
             spawn_open_position_at_maxdiff_takeprofit(
                 symbol,
                 "buy",
                 plan.buy_price,
-                buy_qty,
+                target_buy_qty,
                 tolerance_pct=0.0008,
                 expiry_minutes=90,
                 entry_strategy="hourlycrypto",
-                force_immediate=True,  # Place order immediately, don't wait
+                force_immediate=False,  # Wait for price to reach limit to stay maker
             )
         except Exception as exc:
             logger.error("Failed to spawn entry watcher: %s", exc)
     if sell_qty > 0:
         try:
+            logger.info(
+                "Launching exit watcher: target_qty=%.6f @ %.4f (position %.6f)",
+                sell_qty,
+                plan.sell_price,
+                inventory,
+            )
+            record_sell(symbol, plan.sell_price)
             spawn_close_position_at_maxdiff_takeprofit(
                 symbol,
-                "sell",
+                "buy",  # entry side was buy (long); exit watcher expects entry side
                 plan.sell_price,
                 target_qty=sell_qty,
                 entry_strategy="hourlycrypto",
@@ -586,13 +990,39 @@ def _run_trading_cycle(args: argparse.Namespace, config: TrainingConfig) -> None
         data_module, policy, checkpoint_path = _train_policy(config, training_symbols=args.training_symbols)
     else:
         data_module, policy, checkpoint_path = loaded
-    max_pct = None
-    if args.price_offset_max_pct is not None and args.price_offset_max_pct > 0:
-        max_pct = args.price_offset_max_pct
+    # Build asymmetric offset parameters (enabled by default; sell side slightly wider)
+    buy_base = args.buy_price_offset_pct if args.buy_price_offset_pct is not None else config.price_offset_pct
+    sell_base_default = config.price_offset_pct * 1.2
+    sell_base = args.sell_price_offset_pct if args.sell_price_offset_pct is not None else sell_base_default
+
+    buy_span = (
+        args.buy_price_offset_span_multiplier
+        if args.buy_price_offset_span_multiplier is not None
+        else args.price_offset_span_multiplier or 0.0
+    )
+    sell_span = (
+        args.sell_price_offset_span_multiplier
+        if args.sell_price_offset_span_multiplier is not None
+        else args.price_offset_span_multiplier or 0.0
+    )
+
+    def _cap(val_override, shared):
+        if val_override is not None:
+            return val_override if val_override > 0 else None
+        if shared is not None and shared > 0:
+            return shared
+        return None
+
+    buy_max = _cap(args.buy_price_offset_max_pct, args.price_offset_max_pct)
+    sell_max = _cap(args.sell_price_offset_max_pct, args.price_offset_max_pct)
+
     offset_params = PriceOffsetParams(
-        base_pct=config.price_offset_pct,
-        span_multiplier=max(0.0, args.price_offset_span_multiplier or 0.0),
-        max_pct=max_pct,
+        buy_base_pct=buy_base,
+        sell_base_pct=sell_base,
+        buy_span_multiplier=max(0.0, buy_span),
+        sell_span_multiplier=max(0.0, sell_span),
+        buy_max_pct=buy_max,
+        sell_max_pct=sell_max,
     )
     actions = _infer_actions(policy, data_module, config, offset_params=offset_params)
 
@@ -615,6 +1045,23 @@ def main() -> None:
     args = _parse_args()
     _configure_logging(args.log_level)
     config = _build_training_config(args)
+
+    if args.retrain_to_keep_up_to_date and args.mode == "trade":
+        symbols = list({(args.symbol or config.dataset.symbol).upper(), *[s.upper() for s in (args.training_symbols or [])]})
+        append_recent_crypto_data(symbols, days=args.refresh_days)
+        new_ckpt, new_return = _quick_retrain_latest(config, args, eval_window_hours=args.retrain_eval_window_hours)
+        baseline_return = float("-inf")
+        if args.checkpoint_path:
+            try:
+                baseline_return = _eval_checkpoint_total_return(Path(args.checkpoint_path), config, args.retrain_eval_window_hours)
+            except Exception as exc:
+                logger.warning("Baseline checkpoint evaluation failed: %s", exc)
+        if new_ckpt and new_return >= baseline_return:
+            logger.info("Promoting refreshed checkpoint %s (return=%.4f) over baseline (%.4f)", new_ckpt, new_return, baseline_return)
+            args.checkpoint_path = str(new_ckpt)
+            config.preload_checkpoint_path = Path(new_ckpt)
+        else:
+            logger.info("Keeping baseline checkpoint (%.4f) over refreshed (%.4f); latest refreshed: %s", baseline_return, new_return, new_ckpt)
 
     if not args.daemon:
         # Single run mode

@@ -78,9 +78,14 @@ def _get_time_in_force_for_qty(qty: float, symbol: str = None) -> str:
 
 
 def _get_min_order_notional(symbol: str) -> float:
-    """Return broker-enforced minimum notional for a symbol."""
+    """Return broker-enforced minimum notional for a symbol.
+
+    Alpaca crypto orders require >= $10 notional; keep $1 default for equities unless overridden.
+    """
     env_key = f"ALP_MIN_NOTIONAL_{symbol.upper()}"
-    raw_value = os.getenv(env_key, os.getenv("ALP_MIN_NOTIONAL_DEFAULT", "1.0"))
+    is_crypto = is_crypto_symbol(symbol) or symbol.upper() in crypto_symbols
+    default_raw = "10.0" if is_crypto else "1.0"
+    raw_value = os.getenv(env_key, os.getenv("ALP_MIN_NOTIONAL_DEFAULT", default_raw))
     try:
         return max(float(raw_value), 0.0)
     except Exception:
@@ -362,6 +367,33 @@ def _reference_price_for_notional(symbol: str, fallback_price: float = 0.0) -> f
         return 0.0
 
 
+def _passivize_limit_price(symbol: str, side: str, price: float) -> float:
+    """
+    Clamp a limit price so we post liquidity instead of crossing the spread.
+
+    - Buys are capped at the current bid.
+    - Sells are floored at the current ask.
+    If no quote is available, the original price is returned.
+    """
+    try:
+        quote = latest_data(symbol)
+        bid_price = float(getattr(quote, "bid_price", 0) or 0)
+        ask_price = float(getattr(quote, "ask_price", 0) or 0)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(f"Passive clamp skipped for {symbol}: {exc}")
+        return price
+
+    if bid_price <= 0 or ask_price <= 0:
+        return price
+
+    side_norm = side.lower()
+    if is_buy_side(side_norm):
+        return min(price, bid_price)
+    if is_sell_side(side_norm):
+        return max(price, ask_price)
+    return price
+
+
 def get_all_positions(retries=3):
     try:
         return alpaca_api.get_all_positions()
@@ -396,10 +428,11 @@ def cancel_all_orders(retries=3):
 
 
 def open_market_order_violently(symbol, qty, side, retries=3):
-    """Submit a market order.
+    """Submit a market order, with crypto fallback to midpoint limit.
 
-    Market orders are only allowed when the market is open. During pre-market
-    or after-hours, this function will return None and log an error.
+    Market orders are only allowed when the market is open. For crypto (or other
+    disallowed cases), we fall back to an immediate-or-cancel limit order at the
+    bid/ask midpoint to avoid paying taker fees at the far side of the spread.
 
     Args:
         symbol: Trading symbol
@@ -414,7 +447,48 @@ def open_market_order_violently(symbol, qty, side, retries=3):
     can_use, reason = _can_use_market_order(symbol, is_closing_position=False)
     if not can_use:
         logger.error(f"Market order blocked for {symbol}: {reason}")
-        logger.error(f"RETURNING None - Use limit orders instead for out-of-hours trading")
+        if is_crypto_symbol(symbol):
+            # Crypto: fall back to midpoint limit IOC to avoid paying taker at worst side
+            try:
+                quote = latest_data(symbol)
+                ask_price = float(getattr(quote, "ask_price", 0) or 0)
+                bid_price = float(getattr(quote, "bid_price", 0) or 0)
+                if ask_price <= 0 or bid_price <= 0:
+                    logger.error(f"Cannot derive midpoint for {symbol}; ask={ask_price} bid={bid_price}")
+                    return None
+                midpoint = (ask_price + bid_price) / 2.0
+                midpoint = _passivize_limit_price(symbol, side, midpoint)
+                price_precision = 6
+                limit_price = round(midpoint, price_precision)
+                logger.info(
+                    "Falling back to crypto midpoint limit order for %s @ %.6f (bid=%.6f ask=%.6f)",
+                    symbol,
+                    limit_price,
+                    bid_price,
+                    ask_price,
+                )
+                # Enforce broker min notional using midpoint as reference
+                qty_for_notional = _enforce_min_notional(symbol, qty, limit_price)
+                result = alpaca_api.submit_order(
+                    order_data=LimitOrderRequest(
+                        symbol=remap_symbols(symbol),
+                        qty=qty_for_notional,
+                        side=side,
+                        type=OrderType.LIMIT,
+                        time_in_force="ioc",
+                        limit_price=str(limit_price),
+                    )
+                )
+                print(result)
+                return result
+            except Exception as exc:
+                logger.error(f"Midpoint limit fallback failed for {symbol}: {exc}")
+                if retries > 0:
+                    logger.info(f"Retrying midpoint limit for {symbol}, {retries} attempts left")
+                    return open_market_order_violently(symbol, qty, side, retries - 1)
+                return None
+
+        logger.error("RETURNING None - Use limit orders instead for out-of-hours trading")
         return None
 
     # Enforce broker min notional (~$1) using latest quote as reference
@@ -505,6 +579,7 @@ def has_current_open_position(symbol: str, side: str) -> bool:
 def open_order_at_price(symbol, qty, side, price):
     result = None
     qty = _enforce_min_notional(symbol, qty, price)
+    price = _passivize_limit_price(symbol, side, price)
     # todo: check if order is already open
     # cancel all other orders on this symbol
     current_open_orders = get_orders()
@@ -551,6 +626,7 @@ def open_order_at_price(symbol, qty, side, price):
 def open_order_at_price_or_all(symbol, qty, side, price):
     result = None
     qty = _enforce_min_notional(symbol, qty, price)
+    price = _passivize_limit_price(symbol, side, price)
 
     # Cancel existing orders for this symbol
     current_open_orders = get_orders()
@@ -673,6 +749,7 @@ def open_order_at_price_allow_add_to_position(symbol, qty, side, price):
     logger.info(f"Starting order placement for {symbol} {side} {qty} @ {price}")
     result = None
     qty = _enforce_min_notional(symbol, qty, price)
+    price = _passivize_limit_price(symbol, side, price)
     # Cancel existing orders for this symbol
     current_open_orders = get_orders()
     for order in current_open_orders:

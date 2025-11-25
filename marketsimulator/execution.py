@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Tuple
 
+from src.fixtures import all_crypto_symbols
+
 MEGA_SYMBOLS = {
     "AAPL",
     "MSFT",
@@ -19,7 +21,7 @@ def classify_liquidity(symbol: str) -> str:
     upper = symbol.upper()
     if upper in MEGA_SYMBOLS or upper.startswith("BTC") or upper.startswith("ETH"):
         return "mega"
-    if upper.endswith("USD"):
+    if upper in all_crypto_symbols:
         return "large"
     return "small"
 

@@ -21,6 +21,9 @@ args = [
     "--context-length", "512",
     "--batch-size", "64",
     "--device-map", "cuda",
+    "--torch-dtype", "float32",
+    "--no-torch-compile",
+    "--prediction-cache-policy", "prefer",
 ]
 
 # Add all symbols

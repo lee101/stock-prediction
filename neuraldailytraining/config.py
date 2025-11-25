@@ -49,6 +49,8 @@ class DailyDatasetConfig:
     symbol_dropout_rate: float = 0.1
     exclude_symbols: Optional[Sequence[str]] = None
     exclude_symbols_file: Optional[Path] = None
+    crypto_only: bool = False
+    include_weekly_features: bool = True
     grouping_strategy: str = "static"  # "static" or "correlation"
     correlation_min_corr: float = 0.6
     correlation_max_group_size: int = 12

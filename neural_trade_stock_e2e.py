@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import List, Sequence
 
@@ -44,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbol-dropout-rate", type=float, default=0.1)
     parser.add_argument("--exclude-symbols-file", help="Optional newline-delimited list of symbols to drop from training.")
     parser.add_argument("--exclude-symbol", nargs="*", help="Inline symbols to drop from training.")
+    parser.add_argument("--crypto-only", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--corr-min", type=float, default=0.6, help="Correlation threshold for grouping.")
     parser.add_argument("--corr-max-group", type=int, default=12, help="Max symbols per correlation cluster.")
     parser.add_argument("--corr-window-days", type=int, default=252)
@@ -62,6 +65,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional cap for neural trade amounts (defaults to the value baked into the checkpoint).",
     )
     parser.add_argument("--fit-all-data", action="store_true", help="Train on 100% of data (validation_days=0).")
+    parser.add_argument("--refresh-forecasts", action="store_true", help="Regenerate Chronos forecasts before training.")
     return parser.parse_args()
 
 
@@ -81,6 +85,7 @@ def _build_dataset_config(args: argparse.Namespace) -> DailyDatasetConfig:
         symbol_dropout_rate=args.symbol_dropout_rate,
         exclude_symbols=args.exclude_symbol,
         exclude_symbols_file=Path(args.exclude_symbols_file) if args.exclude_symbols_file else None,
+        crypto_only=args.crypto_only,
         correlation_min_corr=args.corr_min,
         correlation_max_group_size=args.corr_max_group,
         correlation_window_days=args.corr_window_days,
@@ -93,6 +98,19 @@ def run_training(args: argparse.Namespace) -> None:
     if getattr(args, "fit_all_data", False):
         args.validation_days = 0
         args.val_fraction = 0.0
+
+    if getattr(args, "refresh_forecasts", False):
+        cmd = [
+            sys.executable,
+            "update_chronos_forecasts.py",
+            "--data-dir", args.data_root,
+            "--cache-dir", args.forecast_cache,
+            "--device-map", args.device or "cuda",
+            "--torch-dtype", "float32",
+            "--no-torch-compile",
+        ]
+        print(f"[train] refreshing forecasts: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
 
     dataset_cfg = _build_dataset_config(args)
     train_cfg = DailyTrainingConfig(
