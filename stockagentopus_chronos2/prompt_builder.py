@@ -15,25 +15,25 @@ from stockagent.constants import DEFAULT_SYMBOLS, TRADING_FEE, CRYPTO_TRADING_FE
 
 from .forecaster import Chronos2Forecast
 
-SYSTEM_PROMPT = """You are a CONTRARIAN trader who fades neural network predictions.
+SYSTEM_PROMPT = """You are an ULTRA-SELECTIVE trader who only takes EXCEPTIONAL opportunities.
 
-CRITICAL INSIGHT: Chronos2 neural forecasts often reflect recent momentum,
-but markets mean-revert. When the model predicts DOWN, the price has likely
-ALREADY dropped - making it a BUY opportunity for the bounce.
+CRITICAL INSIGHT: Most trades lose money to fees. The only winning strategy
+is extreme selectivity - only trade when the forecast is EXTREMELY strong.
 
 CRITICAL RULES:
 1. Use ONLY the prices provided in the prompt - never use training data knowledge
-2. CONTRARIAN SIGNAL: NEGATIVE expected return = BUY (expecting mean reversion)
-3. AVOID stocks with positive expected return (momentum already priced in)
-4. Entry price = Last Close (current market price) - ensures fill
-5. Exit price = Last Close + 1% (capture the mean reversion bounce)
-6. Only trade when expected return is between -3% and -0.5% (oversold but not broken)
-7. Deploy 40-60% of capital on contrarian plays
+2. ONLY TRADE when expected return >= 2% (exceptional opportunity)
+3. Most days you should NOT trade at all - that's correct behavior
+4. Entry price = Last Close (current market price)
+5. Exit price = 90th percentile forecast
+6. If no stock has expected return >= 2%, return EMPTY instructions array
+7. When you DO trade, use large position sizes (50%+ of capital)
 
 TRADING PHILOSOPHY:
-- Markets mean-revert: Buy when others are scared (negative forecasts)
-- Neural nets extrapolate recent trends - fade them for profit
-- Small gains from reversions beat chasing momentum
+- Patience pays: Wait for exceptional opportunities
+- Most days have no good trades - accepting this preserves capital
+- One great trade beats ten mediocre ones
+- Trading costs kill profits - avoid unnecessary trades
 
 You respond ONLY with valid JSON matching the required schema."""
 
@@ -110,33 +110,30 @@ def _build_opus_prompt(
             )
 
         forecast_table.append("")
-        forecast_table.append("IMPORTANT - HOW TO USE THESE FORECASTS (CONTRARIAN):")
+        forecast_table.append("IMPORTANT - HOW TO USE THESE FORECASTS (ULTRA-SELECTIVE):")
         forecast_table.append("- Expected Return = (Median - Last Close) / Last Close")
-        forecast_table.append("- NEGATIVE expected return = model predicts DOWN = BUY SIGNAL")
-        forecast_table.append("- POSITIVE expected return = momentum priced in = AVOID")
+        forecast_table.append("- ONLY expected return >= 2% is worth trading")
+        forecast_table.append("- Most days NO stocks meet this threshold - that's OK")
         forecast_table.append("- Last Close = CURRENT price = your ENTRY price")
         forecast_table.append("")
-        forecast_table.append("CONTRARIAN STRATEGY:")
+        forecast_table.append("ULTRA-SELECTIVE STRATEGY:")
         forecast_table.append("- SET entry_price at LAST CLOSE (current price)")
-        forecast_table.append("- SET exit_price at Last Close * 1.01 (+1% mean reversion target)")
-        forecast_table.append("- BUY when expected return is NEGATIVE (-3% to -0.5%)")
-        forecast_table.append("- SKIP when expected return is positive (momentum trap)")
-        forecast_table.append("- SKIP when expected return is < -3% (too oversold, may be broken)")
+        forecast_table.append("- SET exit_price at 90th percentile (optimistic target)")
+        forecast_table.append("- ONLY BUY when expected return >= 2%")
+        forecast_table.append("- SKIP ALL stocks with expected return < 2%")
+        forecast_table.append("- NO TRADE is often the best trade")
         forecast_table.append("")
 
-        # Rank stocks by expected return (ascending for contrarian - most negative first)
-        ranked = sorted(chronos2_forecasts.items(), key=lambda x: x[1].expected_return_pct)
-        forecast_table.append("CONTRARIAN RANKING (most oversold first):")
+        # Rank stocks by expected return (descending - highest first)
+        ranked = sorted(chronos2_forecasts.items(), key=lambda x: x[1].expected_return_pct, reverse=True)
+        forecast_table.append("OPPORTUNITY RANKING (highest expected return first):")
         for rank, (sym, f) in enumerate(ranked, 1):
-            if -0.03 <= f.expected_return_pct <= -0.005:  # -3% to -0.5%
-                suggested_alloc = min(max_notional_per_trade, total_available * 0.4)
-                action = "BUY (oversold)"
-            elif f.expected_return_pct < -0.03:
-                suggested_alloc = 0
-                action = "SKIP (too oversold)"
+            if f.expected_return_pct >= 0.02:  # >= 2% expected return
+                suggested_alloc = min(max_notional_per_trade, total_available * 0.5)
+                action = "TRADE (exceptional)"
             else:
                 suggested_alloc = 0
-                action = "SKIP (positive/momentum)"
+                action = "SKIP (< 2%)"
             forecast_table.append(f"  {rank}. {sym}: exp_return={f.expected_return_pct:+.2%}, {action}, notional=${suggested_alloc:,.0f}")
         forecast_table.append("")
 
@@ -159,16 +156,16 @@ OUTPUT REQUIREMENTS:
 1. Return a JSON object with: target_date, instructions, risk_notes, metadata
 2. Each instruction needs: symbol, action, quantity, execution_session, entry_price, exit_price, exit_reason, notes
 3. entry_price = LAST CLOSE (current market price)
-4. exit_price = Last Close * 1.01 (+1% mean reversion target)
+4. exit_price = 90th percentile (optimistic target)
 5. action must be "buy", "exit", or "hold"
 6. execution_session must be "market_open" or "market_close"
 7. quantity = integer number of shares
-8. BUY stocks with expected return between -3% and -0.5% (oversold zone)
-9. Include risk_notes (1-2 sentences on contrarian risks)
-10. Include metadata.capital_allocation_plan explaining your contrarian allocation
-11. If NO stocks are in the -3% to -0.5% oversold zone, return empty instructions array
+8. ONLY include stocks with expected return >= 2% (exceptional opportunity)
+9. Include risk_notes (1-2 sentences on selectivity)
+10. Include metadata.capital_allocation_plan explaining your ultra-selective approach
+11. If NO stocks have expected return >= 2%, return EMPTY instructions array
 
-CONTRARIAN LOGIC: Fade the model. Negative forecast = buy opportunity.
+CRITICAL: No trade is better than a bad trade. Be extremely selective.
 """.strip()
 
     user_payload: dict[str, Any] = {
