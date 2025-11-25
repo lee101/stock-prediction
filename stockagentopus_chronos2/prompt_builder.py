@@ -15,25 +15,24 @@ from stockagent.constants import DEFAULT_SYMBOLS, TRADING_FEE, CRYPTO_TRADING_FE
 
 from .forecaster import Chronos2Forecast
 
-SYSTEM_PROMPT = """You are an ULTRA-SELECTIVE trader who only takes EXCEPTIONAL opportunities.
+SYSTEM_PROMPT = """You are a FOCUSED trader who concentrates on a SINGLE best opportunity.
 
-CRITICAL INSIGHT: Most trades lose money to fees. The only winning strategy
-is extreme selectivity - only trade when the forecast is EXTREMELY strong.
+CRITICAL INSIGHT: Diversification dilutes returns. Focus ALL capital on ONE stock.
 
 CRITICAL RULES:
 1. Use ONLY the prices provided in the prompt - never use training data knowledge
-2. ONLY TRADE when expected return >= 2% (exceptional opportunity)
-3. Most days you should NOT trade at all - that's correct behavior
+2. ONLY TRADE the single BEST stock (highest expected return)
+3. ONLY trade if that best stock has expected return >= 1%
 4. Entry price = Last Close (current market price)
-5. Exit price = 90th percentile forecast
-6. If no stock has expected return >= 2%, return EMPTY instructions array
-7. When you DO trade, use large position sizes (50%+ of capital)
+5. Exit price = 90th percentile forecast (optimistic target)
+6. Use LARGE position size (80% of capital) on that ONE stock
+7. If best stock has expected return < 1%, return EMPTY instructions array
 
 TRADING PHILOSOPHY:
-- Patience pays: Wait for exceptional opportunities
-- Most days have no good trades - accepting this preserves capital
-- One great trade beats ten mediocre ones
-- Trading costs kill profits - avoid unnecessary trades
+- Focus beats diversification
+- One concentrated bet with high conviction
+- Put all eggs in the strongest basket
+- Quality over quantity
 
 You respond ONLY with valid JSON matching the required schema."""
 
@@ -110,30 +109,30 @@ def _build_opus_prompt(
             )
 
         forecast_table.append("")
-        forecast_table.append("IMPORTANT - HOW TO USE THESE FORECASTS (ULTRA-SELECTIVE):")
+        forecast_table.append("IMPORTANT - HOW TO USE THESE FORECASTS (SINGLE-STOCK FOCUS):")
         forecast_table.append("- Expected Return = (Median - Last Close) / Last Close")
-        forecast_table.append("- ONLY expected return >= 2% is worth trading")
-        forecast_table.append("- Most days NO stocks meet this threshold - that's OK")
+        forecast_table.append("- ONLY trade the #1 ranked stock (highest expected return)")
+        forecast_table.append("- ONLY trade if #1 stock has expected return >= 1%")
         forecast_table.append("- Last Close = CURRENT price = your ENTRY price")
         forecast_table.append("")
-        forecast_table.append("ULTRA-SELECTIVE STRATEGY:")
+        forecast_table.append("SINGLE-STOCK FOCUS STRATEGY:")
         forecast_table.append("- SET entry_price at LAST CLOSE (current price)")
         forecast_table.append("- SET exit_price at 90th percentile (optimistic target)")
-        forecast_table.append("- ONLY BUY when expected return >= 2%")
-        forecast_table.append("- SKIP ALL stocks with expected return < 2%")
-        forecast_table.append("- NO TRADE is often the best trade")
+        forecast_table.append("- ONLY trade the SINGLE BEST stock (rank #1)")
+        forecast_table.append("- Use 80% of capital on that ONE stock")
+        forecast_table.append("- IGNORE all other stocks - focus is key")
         forecast_table.append("")
 
         # Rank stocks by expected return (descending - highest first)
         ranked = sorted(chronos2_forecasts.items(), key=lambda x: x[1].expected_return_pct, reverse=True)
-        forecast_table.append("OPPORTUNITY RANKING (highest expected return first):")
+        forecast_table.append("OPPORTUNITY RANKING (ONLY trade #1 if exp_return >= 1%):")
         for rank, (sym, f) in enumerate(ranked, 1):
-            if f.expected_return_pct >= 0.02:  # >= 2% expected return
-                suggested_alloc = min(max_notional_per_trade, total_available * 0.5)
-                action = "TRADE (exceptional)"
+            if rank == 1 and f.expected_return_pct >= 0.01:  # #1 with >= 1% expected return
+                suggested_alloc = total_available * 0.8  # 80% of capital
+                action = ">>> TRADE THIS ONE <<<"
             else:
                 suggested_alloc = 0
-                action = "SKIP (< 2%)"
+                action = "SKIP (not #1 or < 1%)"
             forecast_table.append(f"  {rank}. {sym}: exp_return={f.expected_return_pct:+.2%}, {action}, notional=${suggested_alloc:,.0f}")
         forecast_table.append("")
 
@@ -159,13 +158,13 @@ OUTPUT REQUIREMENTS:
 4. exit_price = 90th percentile (optimistic target)
 5. action must be "buy", "exit", or "hold"
 6. execution_session must be "market_open" or "market_close"
-7. quantity = integer number of shares
-8. ONLY include stocks with expected return >= 2% (exceptional opportunity)
-9. Include risk_notes (1-2 sentences on selectivity)
-10. Include metadata.capital_allocation_plan explaining your ultra-selective approach
-11. If NO stocks have expected return >= 2%, return EMPTY instructions array
+7. quantity = integer number of shares (use 80% of capital for the ONE stock)
+8. ONLY include the #1 ranked stock with expected return >= 1%
+9. Include risk_notes (1-2 sentences on single-stock focus)
+10. Include metadata.capital_allocation_plan explaining concentrated bet
+11. If #1 stock has expected return < 1%, return EMPTY instructions array
 
-CRITICAL: No trade is better than a bad trade. Be extremely selective.
+CRITICAL: Focus on ONE stock only. Ignore all others.
 """.strip()
 
     user_payload: dict[str, Any] = {
