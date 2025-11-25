@@ -15,24 +15,25 @@ from stockagent.constants import DEFAULT_SYMBOLS, TRADING_FEE, CRYPTO_TRADING_FE
 
 from .forecaster import Chronos2Forecast
 
-SYSTEM_PROMPT = """You are a BALANCED trader seeking quality opportunities with reasonable thresholds.
+SYSTEM_PROMPT = """You are a RISK-ADJUSTED trader who uses Sharpe-like ratios to select trades.
 
-CRITICAL INSIGHT: Balance selectivity with activity. 1.5% expected return is the sweet spot.
+CRITICAL INSIGHT: Raw expected return is not enough. Risk-adjusted return = exp_return / volatility.
+Higher ratio = better risk-adjusted opportunity.
 
 CRITICAL RULES:
 1. Use ONLY the prices provided in the prompt - never use training data knowledge
-2. ONLY TRADE when expected return >= 1.5% (balanced threshold)
-3. Entry price = Last Close (current market price)
-4. Exit price = 90th percentile forecast (optimistic target)
-5. If no stock has expected return >= 1.5%, return EMPTY instructions array
-6. When you trade, use moderate position sizes (30-50% of capital per trade)
-7. Can trade multiple stocks if they all meet the 1.5% threshold
+2. Calculate RISK-ADJUSTED RETURN = Expected Return / Volatility Range
+3. ONLY trade when risk-adjusted return >= 0.5 (good risk/reward)
+4. Entry price = Last Close (current market price)
+5. Exit price = 90th percentile forecast (optimistic target)
+6. If no stock has risk-adjusted return >= 0.5, return EMPTY instructions array
+7. Prioritize high risk-adjusted return over high raw return
 
 TRADING PHILOSOPHY:
-- Not too aggressive, not too passive
-- 1.5% threshold balances opportunity capture with quality
-- Moderate position sizes reduce risk
-- Skip clearly weak opportunities
+- Risk-adjusted returns beat raw returns
+- Prefer lower-volatility upside over high-volatility bets
+- Quality of opportunity matters more than magnitude
+- Sharpe-like thinking for smarter selection
 
 You respond ONLY with valid JSON matching the required schema."""
 
@@ -96,44 +97,52 @@ def _build_opus_prompt(
     forecast_table = []
     if chronos2_forecasts:
         forecast_table.append("")
-        forecast_table.append("## CHRONOS2 NEURAL PRICE FORECASTS")
+        forecast_table.append("## CHRONOS2 NEURAL PRICE FORECASTS WITH RISK-ADJUSTED RETURNS")
         forecast_table.append("")
-        forecast_table.append("| Symbol | Last Close (ENTRY) | 10th Pct | Median | 90th Pct (EXIT) | Expected Return |")
-        forecast_table.append("|--------|-------------------|----------|--------|-----------------|-----------------|")
+        forecast_table.append("| Symbol | Last Close | 10th Pct | Median | 90th Pct | Exp Return | Volatility | Risk-Adj |")
+        forecast_table.append("|--------|------------|----------|--------|----------|------------|------------|----------|")
 
         for symbol in sorted(chronos2_forecasts.keys()):
             f = chronos2_forecasts[symbol]
             exp_ret = f"{f.expected_return_pct:+.2%}"
+            vol = f"{f.volatility_range_pct:.2%}"
+            risk_adj = f.expected_return_pct / f.volatility_range_pct if f.volatility_range_pct > 0 else 0
             forecast_table.append(
-                f"| {symbol} | ${f.last_close:.2f} | ${f.low_close:.2f} | ${f.predicted_close:.2f} | ${f.high_close:.2f} | {exp_ret} |"
+                f"| {symbol} | ${f.last_close:.2f} | ${f.low_close:.2f} | ${f.predicted_close:.2f} | ${f.high_close:.2f} | {exp_ret} | {vol} | {risk_adj:.2f} |"
             )
 
         forecast_table.append("")
-        forecast_table.append("IMPORTANT - HOW TO USE THESE FORECASTS (BALANCED 1.5% THRESHOLD):")
+        forecast_table.append("IMPORTANT - HOW TO USE THESE FORECASTS (RISK-ADJUSTED):")
         forecast_table.append("- Expected Return = (Median - Last Close) / Last Close")
-        forecast_table.append("- ONLY trade stocks with expected return >= 1.5%")
-        forecast_table.append("- 1.5% is the balanced threshold - not too strict, not too loose")
+        forecast_table.append("- Volatility Range = (90th - 10th) / Last Close")
+        forecast_table.append("- Risk-Adjusted Return = Expected Return / Volatility Range")
+        forecast_table.append("- ONLY trade when Risk-Adj >= 0.5 (good risk/reward ratio)")
         forecast_table.append("- Last Close = CURRENT price = your ENTRY price")
         forecast_table.append("")
-        forecast_table.append("BALANCED STRATEGY:")
+        forecast_table.append("RISK-ADJUSTED STRATEGY:")
         forecast_table.append("- SET entry_price at LAST CLOSE (current price)")
         forecast_table.append("- SET exit_price at 90th percentile (optimistic target)")
-        forecast_table.append("- Trade ANY stock with expected return >= 1.5%")
-        forecast_table.append("- Use 30-50% of capital per trade (moderate positions)")
-        forecast_table.append("- Can trade multiple stocks if they meet threshold")
+        forecast_table.append("- Trade stocks with risk-adjusted return >= 0.5")
+        forecast_table.append("- Higher risk-adj ratio = better opportunity")
+        forecast_table.append("- Prefer low-volatility upside over high-volatility bets")
         forecast_table.append("")
 
-        # Rank stocks by expected return (descending - highest first)
-        ranked = sorted(chronos2_forecasts.items(), key=lambda x: x[1].expected_return_pct, reverse=True)
-        forecast_table.append("OPPORTUNITY RANKING (trade if exp_return >= 1.5%):")
+        # Rank stocks by risk-adjusted return (descending - highest first)
+        def get_risk_adj(item):
+            f = item[1]
+            return f.expected_return_pct / f.volatility_range_pct if f.volatility_range_pct > 0 else 0
+
+        ranked = sorted(chronos2_forecasts.items(), key=get_risk_adj, reverse=True)
+        forecast_table.append("OPPORTUNITY RANKING (by Risk-Adjusted Return, trade if >= 0.5):")
         for rank, (sym, f) in enumerate(ranked, 1):
-            if f.expected_return_pct >= 0.015:  # >= 1.5% expected return
+            risk_adj = f.expected_return_pct / f.volatility_range_pct if f.volatility_range_pct > 0 else 0
+            if risk_adj >= 0.5:  # >= 0.5 risk-adjusted return
                 suggested_alloc = total_available * 0.4  # 40% of capital per trade
-                action = "TRADE (>= 1.5%)"
+                action = "TRADE (risk-adj >= 0.5)"
             else:
                 suggested_alloc = 0
-                action = "SKIP (< 1.5%)"
-            forecast_table.append(f"  {rank}. {sym}: exp_return={f.expected_return_pct:+.2%}, {action}, notional=${suggested_alloc:,.0f}")
+                action = "SKIP (risk-adj < 0.5)"
+            forecast_table.append(f"  {rank}. {sym}: risk_adj={risk_adj:.2f}, exp_ret={f.expected_return_pct:+.2%}, vol={f.volatility_range_pct:.2%}, {action}, notional=${suggested_alloc:,.0f}")
         forecast_table.append("")
 
     forecast_section = "\n".join(forecast_table)
@@ -158,13 +167,13 @@ OUTPUT REQUIREMENTS:
 4. exit_price = 90th percentile (optimistic target)
 5. action must be "buy", "exit", or "hold"
 6. execution_session must be "market_open" or "market_close"
-7. quantity = integer number of shares (use 30-50% of capital per trade)
-8. Include ALL stocks with expected return >= 1.5%
-9. Include risk_notes (1-2 sentences on balanced approach)
-10. Include metadata.capital_allocation_plan explaining moderate sizing
-11. If NO stocks have expected return >= 1.5%, return EMPTY instructions array
+7. quantity = integer number of shares (use 40% of capital per trade)
+8. Include ALL stocks with risk-adjusted return >= 0.5
+9. Include risk_notes (1-2 sentences on risk-adjusted selection)
+10. Include metadata.capital_allocation_plan explaining Sharpe-like approach
+11. If NO stocks have risk-adjusted return >= 0.5, return EMPTY instructions array
 
-CRITICAL: Balance selectivity with activity. 1.5% is the threshold.
+CRITICAL: Use risk-adjusted returns, not raw returns. Risk-Adj >= 0.5 to trade.
 """.strip()
 
     user_payload: dict[str, Any] = {
