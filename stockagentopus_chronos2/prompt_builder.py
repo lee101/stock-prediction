@@ -15,18 +15,22 @@ from stockagent.constants import DEFAULT_SYMBOLS, TRADING_FEE, CRYPTO_TRADING_FE
 
 from .forecaster import Chronos2Forecast
 
-SYSTEM_PROMPT = """You are an aggressive quantitative trader MAXIMIZING absolute returns.
+SYSTEM_PROMPT = """You are a disciplined quantitative trader focused on HIGH-CONVICTION trades only.
 
 CRITICAL RULES:
 1. Use ONLY the prices provided in the prompt - never use training data knowledge
-2. ALWAYS TRADE: Deploy capital daily - idle cash earns nothing
-3. Entry price = Last Close (current market price) - this ensures order fills
-4. Exit price = 90th percentile forecast (profit target)
-5. Trade ALL stocks with ANY positive expected return (even 0.1%)
-6. For stocks with negative expected returns, still consider small positions if volatility is high
-7. MAXIMIZE position sizes - use 80%+ of available capital
+2. ONLY TRADE when expected return > 1% (to cover round-trip fees + profit margin)
+3. Entry price = Last Close (current market price) - ensures order fills
+4. Exit price = Median forecast (realistic target that actually fills)
+5. SKIP stocks with expected return < 1% - fees will eat the profit
+6. Better to make fewer high-quality trades than many marginal ones
+7. Position size proportional to conviction: higher expected return = larger position
 
-GOAL: Generate maximum PnL through active trading. Being too conservative loses money to fees without gains.
+TRADING PHILOSOPHY:
+- Quality over quantity: Only take trades with clear edge
+- Realistic exits: Median is more achievable than 90th percentile
+- Capital preservation: Avoid trades where fees exceed expected profit
+- Round-trip fees are ~0.006% (0.003% each way) - need 1%+ return to be worthwhile
 
 You respond ONLY with valid JSON matching the required schema."""
 
@@ -92,7 +96,7 @@ def _build_opus_prompt(
         forecast_table.append("")
         forecast_table.append("## CHRONOS2 NEURAL PRICE FORECASTS")
         forecast_table.append("")
-        forecast_table.append("| Symbol | Last Close (ENTRY) | 10th Pct | Median | 90th Pct (EXIT TARGET) | Expected Return |")
+        forecast_table.append("| Symbol | Last Close (ENTRY) | 10th Pct | Median (EXIT TARGET) | 90th Pct | Expected Return |")
         forecast_table.append("|--------|------------|------------------|--------|-----------------|-----------------|")
 
         for symbol in sorted(chronos2_forecasts.keys()):
@@ -109,24 +113,27 @@ def _build_opus_prompt(
         forecast_table.append("- Expected Return = potential profit from current price to median forecast")
         forecast_table.append("")
         forecast_table.append("TRADING STRATEGY:")
-        forecast_table.append("- SET entry_price at or SLIGHTLY BELOW the Last Close (current price)")
-        forecast_table.append("- SET exit_price at or NEAR the 90th percentile (profit target)")
-        forecast_table.append("- TAKE TRADES when Expected Return is positive")
-        forecast_table.append("- Allocate MORE capital to stocks with HIGHER expected returns")
-        forecast_table.append("- For positive expected returns, ALWAYS enter trades to capture profit")
+        forecast_table.append("- SET entry_price at or NEAR the Last Close (current market price)")
+        forecast_table.append("- SET exit_price at the Median forecast (realistic, achievable target)")
+        forecast_table.append("- ONLY TRADE when Expected Return > 1% (to cover fees + profit)")
+        forecast_table.append("- SKIP stocks with Expected Return < 1% - not worth the fees")
+        forecast_table.append("- Quality over quantity: fewer high-conviction trades beat many marginal ones")
         forecast_table.append("")
 
         # Rank stocks by expected return
         ranked = sorted(chronos2_forecasts.items(), key=lambda x: x[1].expected_return_pct, reverse=True)
         forecast_table.append("ALLOCATION RANKING (by expected return):")
         for rank, (sym, f) in enumerate(ranked, 1):
-            if f.expected_return_pct > 0:
-                suggested_alloc = min(max_notional_per_trade, total_available * 0.4)
-            elif f.expected_return_pct > -0.005:
-                suggested_alloc = min(max_notional_per_trade * 0.5, total_available * 0.2)
+            if f.expected_return_pct >= 0.01:  # >= 1% expected return
+                suggested_alloc = min(max_notional_per_trade, total_available * 0.5)
+                action = "TRADE"
+            elif f.expected_return_pct > 0:
+                suggested_alloc = 0
+                action = "SKIP (< 1%)"
             else:
                 suggested_alloc = 0
-            forecast_table.append(f"  {rank}. {sym}: exp_return={f.expected_return_pct:+.2%}, suggested_notional=${suggested_alloc:,.0f}")
+                action = "SKIP (negative)"
+            forecast_table.append(f"  {rank}. {sym}: exp_return={f.expected_return_pct:+.2%}, {action}, notional=${suggested_alloc:,.0f}")
         forecast_table.append("")
 
     forecast_section = "\n".join(forecast_table)
@@ -147,16 +154,17 @@ TRADING FEE: {TRADING_FEE:.4%} per trade (must be covered by profit)
 OUTPUT REQUIREMENTS:
 1. Return a JSON object with: target_date, instructions, risk_notes, metadata
 2. Each instruction needs: symbol, action, quantity, execution_session, entry_price, exit_price, exit_reason, notes
-3. entry_price = limit buy price (should be at/near 10th percentile for best fills)
-4. exit_price = target sell price (should be at/near 90th percentile for max profit)
+3. entry_price = limit buy price (at/near Last Close for fills)
+4. exit_price = target sell price (at Median forecast - realistic target)
 5. action must be "buy", "exit", or "hold"
 6. execution_session must be "market_open" or "market_close"
 7. quantity = integer number of shares
-8. Allocate capital to ALL promising stocks proportionally to expected return
+8. ONLY include stocks with expected return >= 1% - others are not worth the fees
 9. Include risk_notes (1-2 sentences on risks)
 10. Include metadata.capital_allocation_plan explaining your allocation logic
+11. If NO stocks have expected return >= 1%, return empty instructions array (sit out the day)
 
-CRITICAL: Prices MUST be within the ranges shown above. Orders outside these ranges will NOT fill.
+CRITICAL: Entry prices near Last Close will fill. Exit at Median is realistic.
 """.strip()
 
     user_payload: dict[str, Any] = {

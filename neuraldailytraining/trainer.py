@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import torch
@@ -47,6 +48,68 @@ def apply_symbol_dropout(
     return features, group_mask, drop_mask
 
 
+def apply_batch_permutation(
+    batch: dict[str, torch.Tensor],
+    *,
+    training: bool,
+    permutation_rate: float = 0.5,
+) -> dict[str, torch.Tensor]:
+    """Randomly permute batch order to make model permutation-invariant.
+
+    This helps prevent overfitting to specific symbol orderings in cross-attention.
+    The model should learn relationships based on group_mask, not position in batch.
+    """
+    if not training or permutation_rate <= 0 or random.random() > permutation_rate:
+        return batch
+
+    batch_size = batch["features"].shape[0]
+    if batch_size <= 1:
+        return batch
+
+    perm = torch.randperm(batch_size, device=batch["features"].device)
+    permuted = {}
+    for key, tensor in batch.items():
+        if tensor.shape[0] == batch_size:
+            permuted[key] = tensor[perm]
+        else:
+            permuted[key] = tensor
+    return permuted
+
+
+def apply_price_scale_augmentation(
+    batch: dict[str, torch.Tensor],
+    *,
+    training: bool,
+    scale_range: tuple[float, float] = (0.8, 1.2),
+    probability: float = 0.3,
+) -> dict[str, torch.Tensor]:
+    """Randomly scale price-related features to add robustness.
+
+    This simulates different price levels/regimes and helps the model
+    learn from relative changes rather than absolute price levels.
+    The model sees normalized features anyway, but this adds noise that
+    helps with generalization.
+    """
+    if not training or probability <= 0 or random.random() > probability:
+        return batch
+
+    batch_size = batch["features"].shape[0]
+    device = batch["features"].device
+    dtype = batch["features"].dtype
+
+    # Generate random scale per symbol in batch
+    scales = torch.empty(batch_size, 1, 1, device=device, dtype=dtype).uniform_(*scale_range)
+
+    # Price columns to scale: high, low, close, reference_close, chronos_high, chronos_low
+    price_keys = ["high", "low", "close", "reference_close", "chronos_high", "chronos_low"]
+    result = dict(batch)
+    for key in price_keys:
+        if key in result:
+            result[key] = result[key] * scales.squeeze(-1)
+
+    return result
+
+
 @dataclass
 class TrainingHistoryEntry:
     epoch: int
@@ -58,6 +121,58 @@ class TrainingHistoryEntry:
     val_score: float | None = None
     val_sortino: float | None = None
     val_return: float | None = None
+    binary_sortino: float | None = None
+    binary_return: float | None = None
+    avg_confidence: float | None = None
+    avg_trade_amount: float | None = None
+
+
+@dataclass
+class TrainingSummary:
+    """Complete summary of a training run for analysis and reporting."""
+
+    run_name: str
+    start_time: str
+    end_time: str
+    duration_seconds: float
+    # Hyperparameters
+    epochs: int
+    batch_size: int
+    sequence_length: int
+    learning_rate: float
+    weight_decay: float
+    transformer_dim: int
+    transformer_layers: int
+    transformer_heads: int
+    use_cross_attention: bool
+    maker_fee: float
+    leverage_fee_rate: float
+    equity_max_leverage: float
+    crypto_max_leverage: float
+    symbol_dropout_rate: float
+    # Dataset info
+    num_symbols: int
+    symbols: list[str]
+    train_samples: int
+    val_samples: int
+    # Results
+    best_epoch: int
+    best_val_score: float
+    best_val_sortino: float
+    best_val_return: float
+    best_binary_sortino: float | None
+    best_binary_return: float | None
+    final_train_score: float
+    final_train_return: float
+    # Per-epoch history
+    history: list[dict]
+    # Checkpoint info
+    best_checkpoint: str | None
+    checkpoint_dir: str
+
+    def to_json(self, path: Path) -> None:
+        """Write summary to JSON file."""
+        path.write_text(json.dumps(asdict(self), indent=2, default=str), encoding="utf-8")
 
 
 @dataclass
@@ -69,6 +184,7 @@ class TrainingArtifacts:
     config: DailyTrainingConfig | None = None
     checkpoint_paths: list[Path] = field(default_factory=list)
     best_checkpoint: Path | None = None
+    summary: TrainingSummary | None = None
 
 
 class NeuralDailyTrainer:
@@ -90,6 +206,8 @@ class NeuralDailyTrainer:
         self.periods_per_year = get_periods_per_year(frequency="daily", symbol=first_symbol)
 
     def train(self) -> TrainingArtifacts:
+        start_time = time.time()
+        start_time_str = time.strftime("%Y-%m-%d %H:%M:%S")
         torch.manual_seed(self.config.seed)
         if self.config.use_tf32 and torch.cuda.is_available():
             torch.backends.cuda.matmul.allow_tf32 = True
@@ -109,6 +227,18 @@ class NeuralDailyTrainer:
             policy = MultiSymbolDailyPolicy(policy_cfg).to(self.device)
         else:
             policy = DailyMultiAssetPolicy(policy_cfg).to(self.device)
+
+        # Load pretrained weights if specified
+        if self.config.preload_checkpoint_path:
+            from .checkpoints import load_checkpoint
+            preload_path = Path(self.config.preload_checkpoint_path)
+            if preload_path.exists():
+                print(f"Loading pretrained weights from {preload_path}")
+                payload = load_checkpoint(preload_path)
+                policy.load_state_dict(payload["state_dict"], strict=False)
+            else:
+                print(f"Warning: preload_checkpoint_path {preload_path} not found, starting fresh")
+
         if self.config.use_compile:
             compile_mode = getattr(self.config, "compile_mode", "max-autotune")
             policy = torch.compile(policy, mode=compile_mode)  # type: ignore[attr-defined]
@@ -125,6 +255,8 @@ class NeuralDailyTrainer:
         history: list[TrainingHistoryEntry] = []
         best_state = None
         best_score = float("-inf")
+        best_epoch = 0
+        best_val_metrics: dict[str, float] = {}
         wandb_kwargs = {
             "run_name": self.config.run_name,
             "project": self.config.wandb_project,
@@ -167,6 +299,10 @@ class NeuralDailyTrainer:
                     val_score=val_metrics["score"],
                     val_sortino=val_metrics["sortino"],
                     val_return=val_metrics["return"],
+                    binary_sortino=val_metrics.get("binary_sortino"),
+                    binary_return=val_metrics.get("binary_return"),
+                    avg_confidence=val_metrics.get("avg_confidence"),
+                    avg_trade_amount=val_metrics.get("avg_trade_amount"),
                 )
                 history.append(entry)
                 self._maybe_save_checkpoint(policy, val_metrics, epoch)
@@ -230,6 +366,8 @@ class NeuralDailyTrainer:
                 tracker.log(log_dict, step=epoch)
                 if val_metrics["score"] > best_score:
                     best_score = val_metrics["score"]
+                    best_epoch = epoch
+                    best_val_metrics = dict(val_metrics)
                     best_state = {k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
                     best_symbol_stats = val_symbol_stats
                 if self.config.dry_train_steps and global_step >= self.config.dry_train_steps:
@@ -239,6 +377,61 @@ class NeuralDailyTrainer:
             best_state = {k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
         if self.data.normalizer is None:
             raise RuntimeError("DailyDataModule did not expose a fitted normalizer.")
+
+        # Create training summary
+        end_time = time.time()
+        end_time_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        final_entry = history[-1] if history else None
+
+        summary = TrainingSummary(
+            run_name=self.config.run_name or "",
+            start_time=start_time_str,
+            end_time=end_time_str,
+            duration_seconds=end_time - start_time,
+            # Hyperparameters
+            epochs=self.config.epochs,
+            batch_size=self.config.batch_size,
+            sequence_length=self.config.sequence_length,
+            learning_rate=self.config.learning_rate,
+            weight_decay=self.config.weight_decay,
+            transformer_dim=self.config.transformer_dim,
+            transformer_layers=self.config.transformer_layers,
+            transformer_heads=self.config.transformer_heads,
+            use_cross_attention=self.config.use_cross_attention,
+            maker_fee=self.config.maker_fee,
+            leverage_fee_rate=self.config.leverage_fee_rate,
+            equity_max_leverage=self.config.equity_max_leverage,
+            crypto_max_leverage=self.config.crypto_max_leverage,
+            symbol_dropout_rate=getattr(self.config.dataset, "symbol_dropout_rate", 0.0),
+            # Dataset info
+            num_symbols=len(self.data.symbols),
+            symbols=list(self.data.symbols),
+            train_samples=len(self.data.train_dataset) if self.data.train_dataset else 0,
+            val_samples=len(self.data.val_dataset) if self.data.val_dataset else 0,
+            # Results
+            best_epoch=best_epoch,
+            best_val_score=best_val_metrics.get("score", 0.0),
+            best_val_sortino=best_val_metrics.get("sortino", 0.0),
+            best_val_return=best_val_metrics.get("return", 0.0),
+            best_binary_sortino=best_val_metrics.get("binary_sortino"),
+            best_binary_return=best_val_metrics.get("binary_return"),
+            final_train_score=final_entry.train_score if final_entry else 0.0,
+            final_train_return=final_entry.train_return if final_entry else 0.0,
+            # Per-epoch history
+            history=[asdict(entry) for entry in history],
+            # Checkpoint info
+            best_checkpoint=str(self.best_checkpoint_path) if self.best_checkpoint_path else None,
+            checkpoint_dir=str(self.checkpoint_dir),
+        )
+
+        # Write summary to reports directory and checkpoint directory
+        reports_dir = Path("reports")
+        reports_dir.mkdir(exist_ok=True)
+        summary_filename = f"training_summary_{self.config.run_name}.json"
+        summary.to_json(reports_dir / summary_filename)
+        summary.to_json(self.checkpoint_dir / "training_summary.json")
+        print(f"Training summary written to {reports_dir / summary_filename}")
+
         artifacts = TrainingArtifacts(
             state_dict=best_state,
             normalizer=self.data.normalizer,
@@ -247,6 +440,7 @@ class NeuralDailyTrainer:
             config=self.config,
             checkpoint_paths=[record.path for record in self._checkpoint_records],
             best_checkpoint=self.best_checkpoint_path,
+            summary=summary,
         )
         self._write_non_tradable(best_symbol_stats)
         return artifacts
@@ -287,6 +481,21 @@ class NeuralDailyTrainer:
 
         for batch_data in loader:
             batch = {k: v.to(self.device, non_blocking=True) for k, v in batch_data.items()}
+
+            # Apply augmentations during training
+            if train:
+                batch = apply_batch_permutation(
+                    batch,
+                    training=train,
+                    permutation_rate=getattr(self.config, "permutation_rate", 0.5),
+                )
+                batch = apply_price_scale_augmentation(
+                    batch,
+                    training=train,
+                    scale_range=getattr(self.config, "price_scale_range", (0.9, 1.1)),
+                    probability=getattr(self.config, "price_scale_probability", 0.2),
+                )
+
             use_amp = scaler is not None
             with torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype):
                 features = batch["features"]
@@ -563,4 +772,12 @@ class NeuralDailyTrainer:
         return path
 
 
-__all__ = ["NeuralDailyTrainer", "TrainingArtifacts", "TrainingHistoryEntry"]
+__all__ = [
+    "NeuralDailyTrainer",
+    "TrainingArtifacts",
+    "TrainingHistoryEntry",
+    "TrainingSummary",
+    "apply_symbol_dropout",
+    "apply_batch_permutation",
+    "apply_price_scale_augmentation",
+]
