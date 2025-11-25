@@ -101,7 +101,7 @@ from src.trade_stock_utils import (
 from src.trading_obj_utils import filter_to_realistic_positions
 from stock.data_utils import coerce_numeric, ensure_lower_bound, safe_divide
 from stock.state import ensure_state_dir as _shared_ensure_state_dir
-from stock.state import get_state_dir, get_state_file, resolve_state_suffix
+from stock.state import get_state_dir, get_state_file, resolve_state_suffix, get_paper_suffix
 from strategytraining2 import log_strategy_snapshot
 
 _EXPORTED_ENV_HELPERS = (reset_symbol_entry_counters, get_entry_counter_snapshot)
@@ -113,6 +113,7 @@ ensure_huggingface_cache_dir(logger=logger)
 
 STATE_DIR = get_state_dir()
 STATE_SUFFIX = resolve_state_suffix()
+PAPER_SUFFIX = get_paper_suffix()
 TRADE_OUTCOME_FILE = get_state_file("trade_outcomes", STATE_SUFFIX)
 TRADE_LEARNING_FILE = get_state_file("trade_learning", STATE_SUFFIX)
 ACTIVE_TRADES_FILE = get_state_file("active_trades", STATE_SUFFIX)
@@ -3508,7 +3509,7 @@ def manage_positions(
         is_buy = is_buy_side(position.side)
         is_crypto = symbol in all_crypto_symbols
         from pathlib import Path
-        watcher_dir = get_state_dir() / f"maxdiff_watchers{STATE_SUFFIX or ''}"
+        watcher_dir = get_state_dir() / f"maxdiff_watchers{PAPER_SUFFIX}{STATE_SUFFIX or ''}"
 
         from src.watcher_refresh_utils import find_existing_watcher_price, should_spawn_watcher
 

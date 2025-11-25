@@ -29,8 +29,8 @@ class NeuralDailyMarketSimulator:
         runtime: DailyTradingRuntime,
         symbols: Sequence[str],
         *,
-        stock_fee: float = 0.0005,
-        crypto_fee: float = 0.0008,
+        stock_fee: float = 0.0008,  # Match training default (8 bps)
+        crypto_fee: float = 0.0008,  # Match training default (8 bps)
         initial_cash: float = 1.0,
         leverage_fee_rate: float = 0.065,
         equity_max_leverage: float = 2.0,
@@ -145,6 +145,8 @@ class NeuralDailyMarketSimulator:
                     continue
                 buy_price = max(plan.buy_price, 1e-6)
                 sell_price = max(plan.sell_price, 1e-6)
+                # trade_amount is a scaling factor (0-2x for stocks, 0-1x for crypto)
+                # It represents the intensity of the trade, not the actual fraction of equity
                 target_amount = float(plan.trade_amount)
                 fee_rate = self.crypto_fee if symbol in self.crypto_symbols else self.stock_fee
                 high = float(row["high"])
@@ -254,7 +256,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-date", help="Optional ISO start date for the simulation window.")
     parser.add_argument("--days", type=int, default=5)
     parser.add_argument("--initial-cash", type=float, default=1.0)
-    parser.add_argument("--stock-fee", type=float, default=0.0005, help="Per-leg fee rate for stocks (fractional).")
+    parser.add_argument("--stock-fee", type=float, default=0.0008, help="Per-leg fee rate for stocks (fractional, 8 bps to match training).")
     parser.add_argument(
         "--crypto-fee", type=float, default=0.0008, help="Per-leg fee rate for crypto (fractional, 8 bps)."
     )

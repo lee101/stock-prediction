@@ -10,7 +10,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-from stock.state import get_state_dir, resolve_state_suffix
+from stock.state import get_state_dir, resolve_state_suffix, get_paper_suffix
 
 from src.fixtures import crypto_symbols
 from src.utils import debounce
@@ -23,7 +23,8 @@ from src.work_stealing_config import (
 
 cwd = Path.cwd()
 STATE_SUFFIX = resolve_state_suffix()
-MAXDIFF_WATCHERS_DIR = get_state_dir() / f"maxdiff_watchers{STATE_SUFFIX or ''}"
+PAPER_SUFFIX = get_paper_suffix()
+MAXDIFF_WATCHERS_DIR = get_state_dir() / f"maxdiff_watchers{PAPER_SUFFIX}{STATE_SUFFIX or ''}"
 MAXDIFF_WATCHERS_DIR.mkdir(parents=True, exist_ok=True)
 
 _DEFAULT_ENTRY_DEBOUNCE = int(os.getenv("MAXDIFF_ENTRY_SPAWN_DEBOUNCE_SECONDS", "120"))

@@ -20,6 +20,10 @@ import time
 from pathlib import Path
 import argparse
 
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from stock.state import get_state_dir, get_paper_suffix, resolve_state_suffix
+
 def find_watcher_processes():
     """Find all maxdiff_cli.py watcher processes."""
     try:
@@ -175,7 +179,9 @@ def main():
         cancel_watcher_orders(cancel_orders=True)
 
     # Also clear out stale watcher config files with "launched" state
-    config_dir = Path("strategy_state/maxdiff_watchers")
+    paper_suffix = get_paper_suffix()
+    state_suffix = resolve_state_suffix()
+    config_dir = get_state_dir() / f"maxdiff_watchers{paper_suffix}{state_suffix or ''}"
     if config_dir.exists():
         stale_configs = []
         for config_file in config_dir.glob("*.json"):
