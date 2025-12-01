@@ -123,6 +123,17 @@ def resolve_chronos2_params(
     default_multivariate = _get_symbol_multivariate_setting(symbol, global_default)
 
     if record is not None:
+        # Extract skip_rates - new multiscale parameter from hourly tuning
+        raw_skip_rates = config.get("skip_rates", [1])
+        try:
+            skip_rates = tuple(int(r) for r in raw_skip_rates)
+        except (TypeError, ValueError):
+            skip_rates = (1,)
+
+        # Determine if multiscale should be used based on skip_rates
+        has_multiscale = len(skip_rates) > 1
+        aggregation_method = str(config.get("aggregation_method", "single"))
+
         params = {
             "model_id": config.get("model_id", "amazon/chronos-2"),
             "device_map": config.get("device_map", "cuda"),
@@ -139,8 +150,11 @@ def resolve_chronos2_params(
             # Multivariate forecasting parameters
             "use_multivariate": bool(config.get("use_multivariate", default_multivariate)),
             "use_cross_learning": bool(config.get("use_cross_learning", False)),
-            "use_multiscale": bool(config.get("use_multiscale", False)),
-            "multiscale_method": str(config.get("multiscale_method", "single")),
+            # Multiscale skip-rate parameters (from hourly tuning)
+            "skip_rates": skip_rates,
+            "aggregation_method": aggregation_method,
+            "use_multiscale": has_multiscale or bool(config.get("use_multiscale", False)),
+            "multiscale_method": aggregation_method if has_multiscale else str(config.get("multiscale_method", "single")),
         }
     else:
         params = {
@@ -159,6 +173,9 @@ def resolve_chronos2_params(
             # Multivariate forecasting parameters
             "use_multivariate": default_multivariate,
             "use_cross_learning": False,
+            # Multiscale skip-rate parameters (defaults)
+            "skip_rates": (1,),
+            "aggregation_method": "single",
             "use_multiscale": False,
             "multiscale_method": "single",
         }

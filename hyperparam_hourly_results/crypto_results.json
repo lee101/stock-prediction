@@ -1,0 +1,2349 @@
+{
+  "all_results": [
+    {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 4.959193229675293,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.4516427516937256,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.04084610939025879,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.446730375289917,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.12633705139160156,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.3709840774536133,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.12698030471801758,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.357494831085205,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 108.5078125,
+      "price_rmse": 108.5078125,
+      "pct_return_mae": 0.0012490900699049234,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.043079376220703125,
+      "predicted_close": [
+        87135.2890625
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 108.5078125,
+      "price_rmse": 108.5078125,
+      "pct_return_mae": 0.0012490900699049234,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.4613518714904785,
+      "predicted_close": [
+        87135.2890625
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 108.5078125,
+      "price_rmse": 108.5078125,
+      "pct_return_mae": 0.0012490900699049234,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.04007244110107422,
+      "predicted_close": [
+        87135.2890625
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 108.5078125,
+      "price_rmse": 108.5078125,
+      "pct_return_mae": 0.0012490900699049234,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.46237969398498535,
+      "predicted_close": [
+        87135.2890625
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 108.5078125,
+      "price_rmse": 108.5078125,
+      "pct_return_mae": 0.0012490900699049234,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.1278994083404541,
+      "predicted_close": [
+        87135.2890625
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 108.5078125,
+      "price_rmse": 108.5078125,
+      "pct_return_mae": 0.0012490900699049234,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.5691447257995605,
+      "predicted_close": [
+        87135.2890625
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 108.5078125,
+      "price_rmse": 108.5078125,
+      "pct_return_mae": 0.0012490900699049234,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.1305391788482666,
+      "predicted_close": [
+        87135.2890625
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 108.5078125,
+      "price_rmse": 108.5078125,
+      "pct_return_mae": 0.0012490900699049234,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.405897617340088,
+      "predicted_close": [
+        87135.2890625
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 6.186279296875,
+      "price_rmse": 6.186279296875,
+      "pct_return_mae": 0.001937599154189229,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.03974103927612305,
+      "predicted_close": [
+        3190.61376953125
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 6.186279296875,
+      "price_rmse": 6.186279296875,
+      "pct_return_mae": 0.001937599154189229,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.4505925178527832,
+      "predicted_close": [
+        3190.61376953125
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 6.186279296875,
+      "price_rmse": 6.186279296875,
+      "pct_return_mae": 0.001937599154189229,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.040212154388427734,
+      "predicted_close": [
+        3190.61376953125
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 6.186279296875,
+      "price_rmse": 6.186279296875,
+      "pct_return_mae": 0.001937599154189229,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.45371294021606445,
+      "predicted_close": [
+        3190.61376953125
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 6.186279296875,
+      "price_rmse": 6.186279296875,
+      "pct_return_mae": 0.001937599154189229,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.12551498413085938,
+      "predicted_close": [
+        3190.61376953125
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 6.186279296875,
+      "price_rmse": 6.186279296875,
+      "pct_return_mae": 0.001937599154189229,
+      "direction_accuracy": 0.0,
+      "latency_s": 1.367518663406372,
+      "predicted_close": [
+        3190.61376953125
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 3.176513671875,
+      "price_rmse": 3.176513671875,
+      "pct_return_mae": 0.0009949131635949016,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.12762975692749023,
+      "predicted_close": [
+        3193.62353515625
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 3.176513671875,
+      "price_rmse": 3.176513671875,
+      "pct_return_mae": 0.0009949131635949016,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.3699121475219727,
+      "predicted_close": [
+        3193.62353515625
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 1.71533203125,
+      "price_rmse": 1.71533203125,
+      "pct_return_mae": 0.0005372576997615397,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.04119753837585449,
+      "predicted_close": [
+        3195.084716796875
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 1.71533203125,
+      "price_rmse": 1.71533203125,
+      "pct_return_mae": 0.0005372576997615397,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.4654092788696289,
+      "predicted_close": [
+        3195.084716796875
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 1.71533203125,
+      "price_rmse": 1.71533203125,
+      "pct_return_mae": 0.0005372576997615397,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.040437936782836914,
+      "predicted_close": [
+        3195.084716796875
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 1.71533203125,
+      "price_rmse": 1.71533203125,
+      "pct_return_mae": 0.0005372576997615397,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.4681832790374756,
+      "predicted_close": [
+        3195.084716796875
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 1.71533203125,
+      "price_rmse": 1.71533203125,
+      "pct_return_mae": 0.0005372576997615397,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.12963628768920898,
+      "predicted_close": [
+        3195.084716796875
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 1.71533203125,
+      "price_rmse": 1.71533203125,
+      "pct_return_mae": 0.0005372576997615397,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.3996458053588867,
+      "predicted_close": [
+        3195.084716796875
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 2.54052734375,
+      "price_rmse": 2.54052734375,
+      "pct_return_mae": 0.0007957164198160172,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.13083314895629883,
+      "predicted_close": [
+        3194.259521484375
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 2.54052734375,
+      "price_rmse": 2.54052734375,
+      "pct_return_mae": 0.0007957164198160172,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.4043543338775635,
+      "predicted_close": [
+        3194.259521484375
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.0007410049438476562,
+      "price_rmse": 0.0007410049438476562,
+      "pct_return_mae": 5.261693149805069e-05,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.03869438171386719,
+      "predicted_close": [
+        14.109859466552734
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.0007410049438476562,
+      "price_rmse": 0.0007410049438476562,
+      "pct_return_mae": 5.261693149805069e-05,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.4499225616455078,
+      "predicted_close": [
+        14.109859466552734
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.0007410049438476562,
+      "price_rmse": 0.0007410049438476562,
+      "pct_return_mae": 5.261693149805069e-05,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.03950071334838867,
+      "predicted_close": [
+        14.109859466552734
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.0007410049438476562,
+      "price_rmse": 0.0007410049438476562,
+      "pct_return_mae": 5.261693149805069e-05,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.45006537437438965,
+      "predicted_close": [
+        14.109859466552734
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.0007410049438476562,
+      "price_rmse": 0.0007410049438476562,
+      "pct_return_mae": 5.261693149805069e-05,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.12101078033447266,
+      "predicted_close": [
+        14.109859466552734
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.0007410049438476562,
+      "price_rmse": 0.0007410049438476562,
+      "pct_return_mae": 5.261693149805069e-05,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.3526997566223145,
+      "predicted_close": [
+        14.109859466552734
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.0091552734375,
+      "price_rmse": 0.0091552734375,
+      "pct_return_mae": 0.0006500938907265663,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.1245887279510498,
+      "predicted_close": [
+        14.101445198059082
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.0091552734375,
+      "price_rmse": 0.0091552734375,
+      "pct_return_mae": 0.0006500938907265663,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.361961841583252,
+      "predicted_close": [
+        14.101445198059082
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.04754352569580078,
+      "price_rmse": 0.04754352569580078,
+      "pct_return_mae": 0.0033759516663849354,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.03984856605529785,
+      "predicted_close": [
+        14.158143997192383
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.04754352569580078,
+      "price_rmse": 0.04754352569580078,
+      "pct_return_mae": 0.0033759516663849354,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.4693729877471924,
+      "predicted_close": [
+        14.158143997192383
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.04754352569580078,
+      "price_rmse": 0.04754352569580078,
+      "pct_return_mae": 0.0033759516663849354,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.03959798812866211,
+      "predicted_close": [
+        14.158143997192383
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.04754352569580078,
+      "price_rmse": 0.04754352569580078,
+      "pct_return_mae": 0.0033759516663849354,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.4701955318450928,
+      "predicted_close": [
+        14.158143997192383
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.04754352569580078,
+      "price_rmse": 0.04754352569580078,
+      "pct_return_mae": 0.0033759516663849354,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.12489104270935059,
+      "predicted_close": [
+        14.158143997192383
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.04754352569580078,
+      "price_rmse": 0.04754352569580078,
+      "pct_return_mae": 0.0033759516663849354,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.4085543155670166,
+      "predicted_close": [
+        14.158143997192383
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.031421661376953125,
+      "price_rmse": 0.031421661376953125,
+      "pct_return_mae": 0.002231176942586899,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.12714004516601562,
+      "predicted_close": [
+        14.142022132873535
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.031421661376953125,
+      "price_rmse": 0.031421661376953125,
+      "pct_return_mae": 0.002231176942586899,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.4163391590118408,
+      "predicted_close": [
+        14.142022132873535
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.4014892578125,
+      "price_rmse": 10.4014892578125,
+      "pct_return_mae": 0.005417442414909601,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.038985490798950195,
+      "predicted_close": [
+        1920.5985107421875
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.4014892578125,
+      "price_rmse": 10.4014892578125,
+      "pct_return_mae": 0.005417442414909601,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.45368027687072754,
+      "predicted_close": [
+        1920.5985107421875
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.4014892578125,
+      "price_rmse": 10.4014892578125,
+      "pct_return_mae": 0.005417442414909601,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.039205074310302734,
+      "predicted_close": [
+        1920.5985107421875
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.4014892578125,
+      "price_rmse": 10.4014892578125,
+      "pct_return_mae": 0.005417442414909601,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.4532501697540283,
+      "predicted_close": [
+        1920.5985107421875
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.4014892578125,
+      "price_rmse": 10.4014892578125,
+      "pct_return_mae": 0.005417442414909601,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.1228628158569336,
+      "predicted_close": [
+        1920.5985107421875
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.4014892578125,
+      "price_rmse": 10.4014892578125,
+      "pct_return_mae": 0.005417442414909601,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.3683485984802246,
+      "predicted_close": [
+        1920.5985107421875
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 15.971923828125,
+      "price_rmse": 15.971923828125,
+      "pct_return_mae": 0.008318710140883923,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.1250929832458496,
+      "predicted_close": [
+        1915.028076171875
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 15.971923828125,
+      "price_rmse": 15.971923828125,
+      "pct_return_mae": 0.008318710140883923,
+      "direction_accuracy": 0.0,
+      "latency_s": 1.365173578262329,
+      "predicted_close": [
+        1915.028076171875
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.2447509765625,
+      "price_rmse": 10.2447509765625,
+      "pct_return_mae": 0.005335807800292969,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.04101848602294922,
+      "predicted_close": [
+        1920.7552490234375
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.2447509765625,
+      "price_rmse": 10.2447509765625,
+      "pct_return_mae": 0.005335807800292969,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.4691805839538574,
+      "predicted_close": [
+        1920.7552490234375
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.2447509765625,
+      "price_rmse": 10.2447509765625,
+      "pct_return_mae": 0.005335807800292969,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.03943753242492676,
+      "predicted_close": [
+        1920.7552490234375
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.2447509765625,
+      "price_rmse": 10.2447509765625,
+      "pct_return_mae": 0.005335807800292969,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.4651906490325928,
+      "predicted_close": [
+        1920.7552490234375
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.2447509765625,
+      "price_rmse": 10.2447509765625,
+      "pct_return_mae": 0.005335807800292969,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.12431144714355469,
+      "predicted_close": [
+        1920.7552490234375
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 10.2447509765625,
+      "price_rmse": 10.2447509765625,
+      "pct_return_mae": 0.005335807800292969,
+      "direction_accuracy": 1.0,
+      "latency_s": 1.4021451473236084,
+      "predicted_close": [
+        1920.7552490234375
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 16.705322265625,
+      "price_rmse": 16.705322265625,
+      "pct_return_mae": 0.008700689300894737,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.12976598739624023,
+      "predicted_close": [
+        1914.294677734375
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 16.705322265625,
+      "price_rmse": 16.705322265625,
+      "pct_return_mae": 0.008700689300894737,
+      "direction_accuracy": 0.0,
+      "latency_s": 1.4112005233764648,
+      "predicted_close": [
+        1914.294677734375
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.37799072265625,
+      "price_rmse": 0.37799072265625,
+      "pct_return_mae": 0.0026747146621346474,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.03908586502075195,
+      "predicted_close": [
+        141.62799072265625
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.37799072265625,
+      "price_rmse": 0.37799072265625,
+      "pct_return_mae": 0.0026747146621346474,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.4543173313140869,
+      "predicted_close": [
+        141.62799072265625
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.37799072265625,
+      "price_rmse": 0.37799072265625,
+      "pct_return_mae": 0.0026747146621346474,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.03935098648071289,
+      "predicted_close": [
+        141.62799072265625
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.37799072265625,
+      "price_rmse": 0.37799072265625,
+      "pct_return_mae": 0.0026747146621346474,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.4556436538696289,
+      "predicted_close": [
+        141.62799072265625
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.37799072265625,
+      "price_rmse": 0.37799072265625,
+      "pct_return_mae": 0.0026747146621346474,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.1257178783416748,
+      "predicted_close": [
+        141.62799072265625
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.37799072265625,
+      "price_rmse": 0.37799072265625,
+      "pct_return_mae": 0.0026747146621346474,
+      "direction_accuracy": 0.0,
+      "latency_s": 1.3695030212402344,
+      "predicted_close": [
+        141.62799072265625
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.236114501953125,
+      "price_rmse": 0.236114501953125,
+      "pct_return_mae": 0.0016707789618521929,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.12487268447875977,
+      "predicted_close": [
+        141.48611450195312
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.236114501953125,
+      "price_rmse": 0.236114501953125,
+      "pct_return_mae": 0.0016707789618521929,
+      "direction_accuracy": 0.0,
+      "latency_s": 1.3890447616577148,
+      "predicted_close": [
+        141.48611450195312
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.96380615234375,
+      "price_rmse": 0.96380615234375,
+      "pct_return_mae": 0.006820026319473982,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.04122042655944824,
+      "predicted_close": [
+        142.21380615234375
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.96380615234375,
+      "price_rmse": 0.96380615234375,
+      "pct_return_mae": 0.006820026319473982,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.4683828353881836,
+      "predicted_close": [
+        142.21380615234375
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.96380615234375,
+      "price_rmse": 0.96380615234375,
+      "pct_return_mae": 0.006820026319473982,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.04282999038696289,
+      "predicted_close": [
+        142.21380615234375
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.96380615234375,
+      "price_rmse": 0.96380615234375,
+      "pct_return_mae": 0.006820026319473982,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.4693303108215332,
+      "predicted_close": [
+        142.21380615234375
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.96380615234375,
+      "price_rmse": 0.96380615234375,
+      "pct_return_mae": 0.006820026319473982,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.12796664237976074,
+      "predicted_close": [
+        142.21380615234375
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.96380615234375,
+      "price_rmse": 0.96380615234375,
+      "pct_return_mae": 0.006820026319473982,
+      "direction_accuracy": 0.0,
+      "latency_s": 1.41530179977417,
+      "predicted_close": [
+        142.21380615234375
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.5213623046875,
+      "price_rmse": 0.5213623046875,
+      "pct_return_mae": 0.0036892322823405266,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.12762069702148438,
+      "predicted_close": [
+        141.7713623046875
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.5213623046875,
+      "price_rmse": 0.5213623046875,
+      "pct_return_mae": 0.0036892322823405266,
+      "direction_accuracy": 0.0,
+      "latency_s": 1.4244320392608643,
+      "predicted_close": [
+        141.7713623046875
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.05586671829223633,
+      "price_rmse": 0.05586671829223633,
+      "pct_return_mae": 0.008896257728338242,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.04066801071166992,
+      "predicted_close": [
+        6.285151481628418
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.05586671829223633,
+      "price_rmse": 0.05586671829223633,
+      "pct_return_mae": 0.008896257728338242,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.45832157135009766,
+      "predicted_close": [
+        6.285151481628418
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.05586671829223633,
+      "price_rmse": 0.05586671829223633,
+      "pct_return_mae": 0.008896257728338242,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.040950775146484375,
+      "predicted_close": [
+        6.285151481628418
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.05586671829223633,
+      "price_rmse": 0.05586671829223633,
+      "pct_return_mae": 0.008896257728338242,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.45902109146118164,
+      "predicted_close": [
+        6.285151481628418
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.05586671829223633,
+      "price_rmse": 0.05586671829223633,
+      "pct_return_mae": 0.008896257728338242,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.12855219841003418,
+      "predicted_close": [
+        6.285151481628418
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.05586671829223633,
+      "price_rmse": 0.05586671829223633,
+      "pct_return_mae": 0.008896257728338242,
+      "direction_accuracy": 0.0,
+      "latency_s": 1.3818445205688477,
+      "predicted_close": [
+        6.285151481628418
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.05586671829223633,
+      "price_rmse": 0.05586671829223633,
+      "pct_return_mae": 0.008896257728338242,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.13046646118164062,
+      "predicted_close": [
+        6.285151481628418
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.05586671829223633,
+      "price_rmse": 0.05586671829223633,
+      "pct_return_mae": 0.008896257728338242,
+      "direction_accuracy": 0.0,
+      "latency_s": 1.3986225128173828,
+      "predicted_close": [
+        6.285151481628418
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.06829500198364258,
+      "price_rmse": 0.06829500198364258,
+      "pct_return_mae": 0.010875347070395947,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.04197335243225098,
+      "predicted_close": [
+        6.297579765319824
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.06829500198364258,
+      "price_rmse": 0.06829500198364258,
+      "pct_return_mae": 0.010875347070395947,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.4707517623901367,
+      "predicted_close": [
+        6.297579765319824
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.06829500198364258,
+      "price_rmse": 0.06829500198364258,
+      "pct_return_mae": 0.010875347070395947,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.04096198081970215,
+      "predicted_close": [
+        6.297579765319824
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.06829500198364258,
+      "price_rmse": 0.06829500198364258,
+      "pct_return_mae": 0.010875347070395947,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.6410589218139648,
+      "predicted_close": [
+        6.297579765319824
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.06829500198364258,
+      "price_rmse": 0.06829500198364258,
+      "pct_return_mae": 0.010875347070395947,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.13472628593444824,
+      "predicted_close": [
+        6.297579765319824
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.06829500198364258,
+      "price_rmse": 0.06829500198364258,
+      "pct_return_mae": 0.010875347070395947,
+      "direction_accuracy": 0.0,
+      "latency_s": 1.4260764122009277,
+      "predicted_close": [
+        6.297579765319824
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.06829500198364258,
+      "price_rmse": 0.06829500198364258,
+      "pct_return_mae": 0.010875347070395947,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.13391399383544922,
+      "predicted_close": [
+        6.297579765319824
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 0.06829500198364258,
+      "price_rmse": 0.06829500198364258,
+      "pct_return_mae": 0.010875347070395947,
+      "direction_accuracy": 0.0,
+      "latency_s": 1.4427950382232666,
+      "predicted_close": [
+        6.297579765319824
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": true,
+      "scaler": "meanstd"
+    }
+  ],
+  "best_per_symbol": {
+    "BTCUSD": {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 4.959193229675293,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    "ETHUSD": {
+      "status": "success",
+      "price_mae": 1.71533203125,
+      "price_rmse": 1.71533203125,
+      "pct_return_mae": 0.0005372576997615397,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.04119753837585449,
+      "predicted_close": [
+        3195.084716796875
+      ],
+      "actual_close": [
+        3196.800048828125
+      ],
+      "symbol": "ETHUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    "LINKUSD": {
+      "status": "success",
+      "price_mae": 0.0007410049438476562,
+      "price_rmse": 0.0007410049438476562,
+      "pct_return_mae": 5.261693149805069e-05,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.03869438171386719,
+      "predicted_close": [
+        14.109859466552734
+      ],
+      "actual_close": [
+        14.110600471496582
+      ],
+      "symbol": "LINKUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    "PAXGUSD": {
+      "status": "success",
+      "price_mae": 10.2447509765625,
+      "price_rmse": 10.2447509765625,
+      "pct_return_mae": 0.005335807800292969,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.04101848602294922,
+      "predicted_close": [
+        1920.7552490234375
+      ],
+      "actual_close": [
+        1931.0
+      ],
+      "symbol": "PAXGUSD",
+      "context_length": 2048,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    "SOLUSD": {
+      "status": "success",
+      "price_mae": 0.236114501953125,
+      "price_rmse": 0.236114501953125,
+      "pct_return_mae": 0.0016707789618521929,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.12487268447875977,
+      "predicted_close": [
+        141.48611450195312
+      ],
+      "actual_close": [
+        141.25
+      ],
+      "symbol": "SOLUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    "UNIUSD": {
+      "status": "success",
+      "price_mae": 0.05586671829223633,
+      "price_rmse": 0.05586671829223633,
+      "pct_return_mae": 0.008896257728338242,
+      "direction_accuracy": 0.0,
+      "latency_s": 0.04066801071166992,
+      "predicted_close": [
+        6.285151481628418
+      ],
+      "actual_close": [
+        6.229284763336182
+      ],
+      "symbol": "UNIUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    }
+  },
+  "timestamp": "2025-12-01T07:25:16.355048"
+}

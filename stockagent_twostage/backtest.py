@@ -4,12 +4,28 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Mapping, Sequence
 
 import anthropic
 import pandas as pd
 from loguru import logger
+
+
+def _get_api_key() -> str:
+    """Get API key from environment or env_real.py fallback."""
+    key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
+    if not key:
+        # Try importing from env_real.py
+        try:
+            from env_real import CLAUDE_API_KEY
+            if CLAUDE_API_KEY:
+                return CLAUDE_API_KEY
+        except ImportError:
+            pass
+        raise RuntimeError("API key required: set ANTHROPIC_API_KEY or CLAUDE_API_KEY")
+    return key
 
 from stockagent.agentsimulator.market_data import fetch_latest_ohlc, MarketDataBundle
 from stockagent.constants import TRADING_FEE
@@ -602,8 +618,8 @@ async def run_backtest_async(
 
     logger.info(f"Found {len(trading_days)} trading days")
 
-    # Create async client
-    client = anthropic.AsyncAnthropic()
+    # Create async client with API key
+    client = anthropic.AsyncAnthropic(api_key=_get_api_key())
 
     # Process days in batches (to avoid overwhelming the API)
     equity = initial_capital

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -21,6 +22,21 @@ from loguru import logger
 from stockagent_pctline.data_formatter import PctLineData
 from .portfolio_allocator import SymbolAllocation, is_crypto
 from .async_api import async_api_call, parse_json_robust
+
+
+def _get_api_key() -> str:
+    """Get API key from environment or env_real.py fallback."""
+    key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
+    if not key:
+        # Try importing from env_real.py
+        try:
+            from env_real import CLAUDE_API_KEY
+            if CLAUDE_API_KEY:
+                return CLAUDE_API_KEY
+        except ImportError:
+            pass
+        raise RuntimeError("API key required: set ANTHROPIC_API_KEY or CLAUDE_API_KEY")
+    return key
 
 
 MODEL = "claude-sonnet-4-20250514"
@@ -235,7 +251,7 @@ def predict_price_single(
     Returns:
         PricePrediction with entry/exit/stop levels
     """
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=_get_api_key())
 
     user_prompt = _build_price_prompt(
         symbol, pct_data, allocation, chronos_forecast, max_lines

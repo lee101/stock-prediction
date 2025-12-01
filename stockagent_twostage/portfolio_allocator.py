@@ -10,12 +10,28 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 import anthropic
 from loguru import logger
+
+
+def _get_api_key() -> str:
+    """Get API key from environment or env_real.py fallback."""
+    key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
+    if not key:
+        # Try importing from env_real.py
+        try:
+            from env_real import CLAUDE_API_KEY
+            if CLAUDE_API_KEY:
+                return CLAUDE_API_KEY
+        except ImportError:
+            pass
+        raise RuntimeError("API key required: set ANTHROPIC_API_KEY or CLAUDE_API_KEY")
+    return key
 
 from stockagent_pctline.data_formatter import PctLineData
 from .async_api import async_api_call, async_api_call_with_thinking, parse_json_robust
@@ -296,7 +312,7 @@ def allocate_portfolio(
     Returns:
         PortfolioAllocation with decisions for each symbol
     """
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=_get_api_key())
 
     user_prompt, symbol_map, all_crypto = _build_allocation_prompt(
         pct_data, chronos_forecasts, equity, max_lines, debias=debias
@@ -314,8 +330,8 @@ def allocate_portfolio(
                 model=MODEL_OPUS,
                 max_tokens=64000,  # Max for Opus 4.5
                 temperature=1,  # Required for thinking
-                system="think!",  # Enable thinking mode
-                messages=[{"role": "user", "content": user_prompt + "\n\n" + system_prompt}],
+                system=system_prompt,  # Actual system prompt
+                messages=[{"role": "user", "content": user_prompt}],
                 thinking={
                     "type": "enabled",
                     "budget_tokens": THINKING_BUDGET

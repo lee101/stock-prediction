@@ -33,10 +33,12 @@ class HyperparamRecord:
     @classmethod
     def from_payload(cls, payload: Dict[str, Any]) -> "HyperparamRecord":
         metadata = payload.get("metadata", {})
+        # Handle missing 'test' key for hourly configs that only have validation
+        test = payload.get("test", payload.get("validation", {}))
         return cls(
             config=payload["config"],
             validation=payload["validation"],
-            test=payload["test"],
+            test=test,
             metadata=metadata,
         )
 
