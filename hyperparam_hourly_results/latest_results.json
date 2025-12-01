@@ -1,0 +1,121 @@
+{
+  "all_results": [
+    {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 5.0544352531433105,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.04258918762207031,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.12185835838317871,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    },
+    {
+      "status": "success",
+      "price_mae": 193.953125,
+      "price_rmse": 193.953125,
+      "pct_return_mae": 0.0022326954640448093,
+      "direction_accuracy": 1.0,
+      "latency_s": 0.12092852592468262,
+      "predicted_close": [
+        87220.734375
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    }
+  ],
+  "best_per_symbol": {
+    "BTCUSD": {
+      "status": "success",
+      "price_mae": 62.265625,
+      "price_rmse": 62.265625,
+      "pct_return_mae": 0.0007167721632868052,
+      "direction_accuracy": 1.0,
+      "latency_s": 5.0544352531433105,
+      "predicted_close": [
+        87089.046875
+      ],
+      "actual_close": [
+        87026.78125
+      ],
+      "symbol": "BTCUSD",
+      "context_length": 1024,
+      "skip_rates": [
+        1
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": false,
+      "scaler": "meanstd"
+    }
+  },
+  "timestamp": "2025-12-01T07:22:38.861865"
+}

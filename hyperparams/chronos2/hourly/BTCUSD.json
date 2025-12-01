@@ -2,10 +2,10 @@
   "symbol": "BTCUSD",
   "model": "chronos2",
   "config": {
-    "name": "direct_ctx3072_bs32_median_scale_meanstd_eval13",
+    "name": "hourly_ctx1024_skip1_single",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
-    "context_length": 3072,
+    "context_length": 1024,
     "batch_size": 32,
     "quantile_levels": [
       0.1,
@@ -15,17 +15,18 @@
     "aggregation": "median",
     "sample_count": 0,
     "scaler": "meanstd",
-    "predict_kwargs": {}
+    "predict_kwargs": {},
+    "skip_rates": [
+      1
+    ],
+    "aggregation_method": "single",
+    "use_multivariate": false
   },
   "validation": {
-    "price_mae": 401.2534084706957,
-    "pct_return_mae": 0.003760903213112974,
-    "latency_s": 33.562506167043466
-  },
-  "test": {
-    "price_mae": 326.72707902431233,
-    "pct_return_mae": 0.0031606237430333835,
-    "latency_s": 33.49700228101574
+    "price_mae": 62.265625,
+    "pct_return_mae": 0.0007167721632868052,
+    "direction_accuracy": 1.0,
+    "latency_s": 4.959193229675293
   },
   "windows": {
     "val_window": 168,
@@ -33,10 +34,10 @@
     "forecast_horizon": 1
   },
   "metadata": {
-    "source": "chronos2_benchmark",
-    "generated_at": "2025-11-13T11:26:45Z",
+    "source": "hyperparam_chronos_hourly",
+    "generated_at": "2025-12-01T07:25:16.357681Z",
     "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.003760903213112974,
+    "selection_value": 0.0007167721632868052,
     "frequency": "hourly"
   }
 }

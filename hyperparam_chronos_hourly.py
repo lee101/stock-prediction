@@ -113,6 +113,25 @@ class Chronos2HourlyTuner:
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         df = df.sort_values("timestamp").reset_index(drop=True)
 
+        # Ensure regular hourly frequency by reindexing
+        # This handles any gaps in the data
+        timestamps = df["timestamp"]
+        if len(timestamps) > 1:
+            freq_delta = pd.Timedelta(hours=1)
+            full_index = pd.date_range(
+                timestamps.iloc[0],
+                timestamps.iloc[-1],
+                freq=freq_delta,
+                tz="UTC"
+            )
+            df = (
+                df.set_index("timestamp")
+                .reindex(full_index)
+                .ffill()
+                .reset_index()
+                .rename(columns={"index": "timestamp"})
+            )
+
         # Split: train and holdout
         split_idx = len(df) - self.holdout_hours
         train_df = df.iloc[:split_idx].copy()
@@ -139,10 +158,40 @@ class Chronos2HourlyTuner:
             raise RuntimeError(f"Chronos2 not available: {e}")
 
     def _apply_skip_rate(self, df: pd.DataFrame, skip_rate: int) -> pd.DataFrame:
-        """Apply skip rate to data (subsample every Nth row)."""
+        """Apply skip rate to data (subsample every Nth row).
+
+        After subsampling, reindex to maintain regular frequency so Chronos2
+        can infer the frequency properly.
+        """
         if skip_rate <= 1:
             return df
-        return df.iloc[::skip_rate].copy().reset_index(drop=True)
+
+        # Subsample every Nth row
+        subsampled = df.iloc[::skip_rate].copy()
+
+        # Reindex to create regular frequency (skip_rate * original frequency)
+        # This is needed because Chronos2's predict_df requires regular timestamps
+        timestamps = subsampled["timestamp"]
+        if len(timestamps) > 1:
+            # Calculate the new frequency (skip_rate * 1 hour for hourly data)
+            freq_delta = pd.Timedelta(hours=skip_rate)
+            # Create regular date range
+            full_index = pd.date_range(
+                timestamps.iloc[0],
+                timestamps.iloc[-1],
+                freq=freq_delta,
+                tz="UTC"
+            )
+            # Reindex and forward fill
+            subsampled = (
+                subsampled.set_index("timestamp")
+                .reindex(full_index)
+                .ffill()
+                .reset_index()
+                .rename(columns={"index": "timestamp"})
+            )
+
+        return subsampled.reset_index(drop=True)
 
     def _predict_single_scale(
         self,
