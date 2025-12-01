@@ -64,6 +64,7 @@ class SymbolChronosSpec:
     predict_kwargs: Mapping[str, Any]
     config_name: str = ""
     config_path: Optional[str] = None
+    use_multivariate: bool = False  # Use native multivariate OHLC forecasting
 
 
 class ForecastCache:
@@ -176,6 +177,7 @@ class ChronosForecastGenerator:
             spec = self._spec_from_config(key)
         else:
             quantiles = self._normalize_quantiles(params.get("quantile_levels"))
+            use_multivariate = bool(params.get("use_multivariate", False))
             spec = SymbolChronosSpec(
                 symbol=key,
                 context_length=int(params.get("context_length", self.config.context_length)),
@@ -185,15 +187,17 @@ class ChronosForecastGenerator:
                 predict_kwargs=dict(params.get("predict_kwargs") or {}),
                 config_name=str(params.get("_config_name") or ""),
                 config_path=params.get("_config_path"),
+                use_multivariate=use_multivariate,
             )
             if spec.config_path:
                 logger.info(
-                    "Using Chronos2 hyperparams for %s from %s (ctx=%d, batch=%d, q=%s).",
+                    "Using Chronos2 hyperparams for %s from %s (ctx=%d, batch=%d, q=%s, multivariate=%s).",
                     key,
                     spec.config_path,
                     spec.context_length,
                     spec.batch_size,
                     ",".join(f"{level:.2f}" for level in spec.quantile_levels),
+                    use_multivariate,
                 )
 
         self._symbol_specs[key] = spec
@@ -290,6 +294,7 @@ class ChronosForecastGenerator:
                         batch_size=spec.batch_size,
                         context_length=spec.context_length,
                         predict_kwargs=spec.predict_kwargs,
+                        use_multivariate=spec.use_multivariate,
                     )
                 except Exception as exc:
                     logger.warning("Chronos forecast failed for %s at %s: %s", symbol, target_ts, exc)
@@ -322,16 +327,28 @@ class ChronosForecastGenerator:
         batch_size: int,
         context_length: int,
         predict_kwargs: Mapping[str, Any],
+        use_multivariate: bool = False,
     ) -> ForecastRow:
-        prediction = wrapper.predict_ohlc(
-            context_slice,
-            symbol=symbol,
-            prediction_length=prediction_length,
-            context_length=context_length,
-            batch_size=batch_size,
-            quantile_levels=quantile_levels,
-            predict_kwargs=predict_kwargs,
-        )
+        # Use multivariate forecasting when enabled (stocks: ~80% MAE improvement)
+        if use_multivariate and hasattr(wrapper, "predict_ohlc_multivariate"):
+            prediction = wrapper.predict_ohlc_multivariate(
+                context_slice,
+                symbol=symbol,
+                prediction_length=prediction_length,
+                context_length=context_length,
+                batch_size=batch_size,
+                quantile_levels=quantile_levels,
+            )
+        else:
+            prediction = wrapper.predict_ohlc(
+                context_slice,
+                symbol=symbol,
+                prediction_length=prediction_length,
+                context_length=context_length,
+                batch_size=batch_size,
+                quantile_levels=quantile_levels,
+                predict_kwargs=predict_kwargs,
+            )
         quantile_frames: Mapping[float, pd.DataFrame] = prediction.quantile_frames
 
         def _extract(level: float, column: str) -> Optional[float]:
@@ -374,6 +391,7 @@ class ChronosForecastGenerator:
             "forecast_volatility_pct": volatility_pct,
             "context_close": last_close,
             "quantile_levels": json.dumps(tuple(float(q) for q in quantile_levels)),
+            "use_multivariate": use_multivariate,
         }
         return row
 

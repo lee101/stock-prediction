@@ -1,0 +1,323 @@
+{
+  "results": [
+    {
+      "context_length": 128,
+      "prediction_length": 1,
+      "avg_mae_bps": 79.76262283325195,
+      "avg_rmse_bps": 79.76262283325195,
+      "avg_direction_accuracy": 1.0,
+      "num_symbols_tested": 2,
+      "symbol_results": [
+        {
+          "status": "success",
+          "mae_bps": 121.50994873046875,
+          "rmse_bps": 121.50994873046875,
+          "direction_accuracy": 1.0,
+          "correlation": 0.0,
+          "predicted": [
+            38.07004928588867
+          ],
+          "actual": [
+            159.5800018310547
+          ],
+          "symbol": "BTCUSD",
+          "context_length": 128,
+          "prediction_length": 1
+        },
+        {
+          "status": "success",
+          "mae_bps": 38.015296936035156,
+          "rmse_bps": 38.015296936035156,
+          "direction_accuracy": 1.0,
+          "correlation": 0.0,
+          "predicted": [
+            20.404699325561523
+          ],
+          "actual": [
+            58.41999816894531
+          ],
+          "symbol": "ETHUSD",
+          "context_length": 128,
+          "prediction_length": 1
+        }
+      ]
+    },
+    {
+      "context_length": 256,
+      "prediction_length": 1,
+      "avg_mae_bps": 89.02340698242188,
+      "avg_rmse_bps": 89.02340698242188,
+      "avg_direction_accuracy": 1.0,
+      "num_symbols_tested": 2,
+      "symbol_results": [
+        {
+          "status": "success",
+          "mae_bps": 137.4117889404297,
+          "rmse_bps": 137.4117889404297,
+          "direction_accuracy": 1.0,
+          "correlation": 0.0,
+          "predicted": [
+            22.168216705322266
+          ],
+          "actual": [
+            159.5800018310547
+          ],
+          "symbol": "BTCUSD",
+          "context_length": 256,
+          "prediction_length": 1
+        },
+        {
+          "status": "success",
+          "mae_bps": 40.63502502441406,
+          "rmse_bps": 40.63502502441406,
+          "direction_accuracy": 1.0,
+          "correlation": 0.0,
+          "predicted": [
+            17.784975051879883
+          ],
+          "actual": [
+            58.41999816894531
+          ],
+          "symbol": "ETHUSD",
+          "context_length": 256,
+          "prediction_length": 1
+        }
+      ]
+    },
+    {
+      "context_length": 512,
+      "prediction_length": 1,
+      "avg_mae_bps": 101.60685539245605,
+      "avg_rmse_bps": 101.60685539245605,
+      "avg_direction_accuracy": 1.0,
+      "num_symbols_tested": 2,
+      "symbol_results": [
+        {
+          "status": "success",
+          "mae_bps": 148.2715301513672,
+          "rmse_bps": 148.2715301513672,
+          "direction_accuracy": 1.0,
+          "correlation": 0.0,
+          "predicted": [
+            11.308477401733398
+          ],
+          "actual": [
+            159.5800018310547
+          ],
+          "symbol": "BTCUSD",
+          "context_length": 512,
+          "prediction_length": 1
+        },
+        {
+          "status": "success",
+          "mae_bps": 54.94218063354492,
+          "rmse_bps": 54.94218063354492,
+          "direction_accuracy": 1.0,
+          "correlation": 0.0,
+          "predicted": [
+            3.477816581726074
+          ],
+          "actual": [
+            58.41999816894531
+          ],
+          "symbol": "ETHUSD",
+          "context_length": 512,
+          "prediction_length": 1
+        }
+      ]
+    },
+    {
+      "context_length": 128,
+      "prediction_length": 3,
+      "avg_mae_bps": 316.2496795654297,
+      "avg_rmse_bps": 398.9342803955078,
+      "avg_direction_accuracy": 0.6666666666666666,
+      "num_symbols_tested": 2,
+      "symbol_results": [
+        {
+          "status": "success",
+          "mae_bps": 324.76202392578125,
+          "rmse_bps": 430.48834228515625,
+          "direction_accuracy": 0.6666666666666666,
+          "correlation": 0.5888722034701268,
+          "predicted": [
+            38.07004928588867,
+            -2.660477638244629,
+            6.856569766998291
+          ],
+          "actual": [
+            159.5800018310547,
+            -131.07000732421875,
+            -717.510009765625
+          ],
+          "symbol": "BTCUSD",
+          "context_length": 128,
+          "prediction_length": 3
+        },
+        {
+          "status": "success",
+          "mae_bps": 307.7373352050781,
+          "rmse_bps": 367.3802185058594,
+          "direction_accuracy": 0.6666666666666666,
+          "correlation": 0.34136215350532123,
+          "predicted": [
+            20.404699325561523,
+            15.48834228515625,
+            14.235054016113281
+          ],
+          "actual": [
+            58.41999816894531,
+            381.69000244140625,
+            -504.760009765625
+          ],
+          "symbol": "ETHUSD",
+          "context_length": 128,
+          "prediction_length": 3
+        }
+      ]
+    },
+    {
+      "context_length": 256,
+      "prediction_length": 3,
+      "avg_mae_bps": 321.4635772705078,
+      "avg_rmse_bps": 400.3782196044922,
+      "avg_direction_accuracy": 0.5,
+      "num_symbols_tested": 2,
+      "symbol_results": [
+        {
+          "status": "success",
+          "mae_bps": 333.5371398925781,
+          "rmse_bps": 431.8066711425781,
+          "direction_accuracy": 0.3333333333333333,
+          "correlation": 0.9449256603411671,
+          "predicted": [
+            22.168216705322266,
+            10.760750770568848,
+            3.8588361740112305
+          ],
+          "actual": [
+            159.5800018310547,
+            -131.07000732421875,
+            -717.510009765625
+          ],
+          "symbol": "BTCUSD",
+          "context_length": 256,
+          "prediction_length": 3
+        },
+        {
+          "status": "success",
+          "mae_bps": 309.3900146484375,
+          "rmse_bps": 368.94976806640625,
+          "direction_accuracy": 0.6666666666666666,
+          "correlation": -0.8293423222783033,
+          "predicted": [
+            17.784975051879883,
+            18.114107131958008,
+            19.19911766052246
+          ],
+          "actual": [
+            58.41999816894531,
+            381.69000244140625,
+            -504.760009765625
+          ],
+          "symbol": "ETHUSD",
+          "context_length": 256,
+          "prediction_length": 3
+        }
+      ]
+    },
+    {
+      "context_length": 512,
+      "prediction_length": 3,
+      "avg_mae_bps": 325.8881072998047,
+      "avg_rmse_bps": 401.60768127441406,
+      "avg_direction_accuracy": 0.5,
+      "num_symbols_tested": 2,
+      "symbol_results": [
+        {
+          "status": "success",
+          "mae_bps": 337.99639892578125,
+          "rmse_bps": 436.60028076171875,
+          "direction_accuracy": 0.3333333333333333,
+          "correlation": -0.1854500604868969,
+          "predicted": [
+            11.308477401733398,
+            5.865301132202148,
+            11.272332191467285
+          ],
+          "actual": [
+            159.5800018310547,
+            -131.07000732421875,
+            -717.510009765625
+          ],
+          "symbol": "BTCUSD",
+          "context_length": 512,
+          "prediction_length": 3
+        },
+        {
+          "status": "success",
+          "mae_bps": 313.7798156738281,
+          "rmse_bps": 366.6150817871094,
+          "direction_accuracy": 0.6666666666666666,
+          "correlation": 0.16465650142197202,
+          "predicted": [
+            3.477816581726074,
+            -0.8821811676025391,
+            -0.9349002838134766
+          ],
+          "actual": [
+            58.41999816894531,
+            381.69000244140625,
+            -504.760009765625
+          ],
+          "symbol": "ETHUSD",
+          "context_length": 512,
+          "prediction_length": 3
+        }
+      ]
+    }
+  ],
+  "best": {
+    "context_length": 128,
+    "prediction_length": 1,
+    "avg_mae_bps": 79.76262283325195,
+    "avg_rmse_bps": 79.76262283325195,
+    "avg_direction_accuracy": 1.0,
+    "num_symbols_tested": 2,
+    "symbol_results": [
+      {
+        "status": "success",
+        "mae_bps": 121.50994873046875,
+        "rmse_bps": 121.50994873046875,
+        "direction_accuracy": 1.0,
+        "correlation": 0.0,
+        "predicted": [
+          38.07004928588867
+        ],
+        "actual": [
+          159.5800018310547
+        ],
+        "symbol": "BTCUSD",
+        "context_length": 128,
+        "prediction_length": 1
+      },
+      {
+        "status": "success",
+        "mae_bps": 38.015296936035156,
+        "rmse_bps": 38.015296936035156,
+        "direction_accuracy": 1.0,
+        "correlation": 0.0,
+        "predicted": [
+          20.404699325561523
+        ],
+        "actual": [
+          58.41999816894531
+        ],
+        "symbol": "ETHUSD",
+        "context_length": 128,
+        "prediction_length": 1
+      }
+    ]
+  },
+  "timestamp": "2025-11-26T06:17:20.401992"
+}
