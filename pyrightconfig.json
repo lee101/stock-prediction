@@ -1,42 +1,69 @@
 {
   "include": [
-    "src"
+    "src",
+    "differentiable_market",
+    "differentiable_market_kronos",
+    "differentiable_market_totoembedding",
+    "gymrl",
+    "hfshared",
+    "hfinference",
+    "hftraining",
+    "marketsimulator",
+    "toto",
+    "traininglib",
+    "pufferlibtraining",
+    "pufferlibtraining2",
+    "pufferlibtraining3"
   ],
   "stubPath": "typings",
+  "venvPath": ".",
+  "venv": ".venv",
   "exclude": [
     "**/__pycache__",
     "**/.mypy_cache",
     "**/.pytest_cache",
-    ".venv",
-    ".venv311",
-    ".venv313",
-    ".venv314",
+    ".venv*/**",
+    ".uvcache/**",
+    ".cache/**",
     ".env",
     "data",
     "dashboards",
     "external",
     "experiments",
-    "hfshared",
-    "hftraining",
-    "hfinference",
-    "lightning_logs",
-    "lightning_logs2",
-    "lightning_logsminute",
+    "lightning_logs*",
     "logs",
     "results",
+    "runs",
     "tensorboard_logs",
     "testresults",
     "training",
-    "trainingdata"
+    "trainingdata",
+    "compiled_models",
+    "PufferLib"
   ],
   "executionEnvironments": [
     {
       "root": ".",
       "extraPaths": [
-        "src"
+        ".",
+        "src",
+        "differentiable_market",
+        "differentiable_market_kronos",
+        "differentiable_market_totoembedding",
+        "gymrl",
+        "hfshared",
+        "hfinference",
+        "hftraining",
+        "marketsimulator",
+        "toto",
+        "traininglib",
+        "pufferlibtraining",
+        "pufferlibtraining2",
+        "pufferlibtraining3"
       ],
-      "pythonVersion": "3.13"
+      "pythonVersion": "3.12"
     }
   ],
-  "pythonVersion": "3.13"
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic"
 }
