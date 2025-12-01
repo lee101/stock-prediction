@@ -242,3 +242,5 @@ hourlycryptotraining/checkpoints_*
 neuraldailytraining/checkpoints/
 hourlycryptomarketsimulator/*.csv
 .locks
+trainingdatabp/
+strategytraining/forecast_cache_backup_20251130_091549/
