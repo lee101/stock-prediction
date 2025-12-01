@@ -1,0 +1,24 @@
+{
+  "lsp": {
+    "pyright": {
+      "settings": {
+        "python.analysis.autoSearchPaths": true,
+        "python.analysis.diagnosticMode": "openFilesOnly",
+        "python.analysis.useLibraryCodeForTypes": true,
+        "python.analysis.autoImportCompletions": true,
+        "python.analysis.typeCheckingMode": "basic",
+        "python.analysis.indexing": true
+      }
+    }
+  },
+  "languages": {
+    "Python": {
+      "language_servers": ["pyright", "ruff"],
+      "tab_size": 4
+    }
+  },
+  "project_panel": {
+    "default_width": 300
+  },
+  "load_direnv": "shell_hook"
+}
