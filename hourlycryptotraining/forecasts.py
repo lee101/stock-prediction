@@ -58,6 +58,10 @@ class DailyChronosForecastManager:
         self.cache = ForecastCache(self.config.cache_dir)
         self._wrapper: Optional[object] = None
         self._predict_kwargs: Dict[str, object] = {}
+        # Multiscale parameters (set by _ensure_wrapper from hyperparams)
+        self._skip_rates: tuple = (1,)
+        self._aggregation_method: str = "single"
+        self._use_multiscale: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -237,12 +241,33 @@ class DailyChronosForecastManager:
         params = resolve_chronos2_params(self.config.symbol, frequency="hourly")
         quantiles = tuple(params.get("quantile_levels") or self.config.quantile_levels)
         self._predict_kwargs = dict(params.get("predict_kwargs") or {})
+
+        # Extract multiscale parameters from tuned hyperparams
+        skip_rates = params.get("skip_rates", (1,))
+        use_multiscale = params.get("use_multiscale", False) or len(skip_rates) > 1
+        aggregation_method = params.get("aggregation_method", "single")
+
+        # Store for use in forecasting
+        self._skip_rates = skip_rates
+        self._aggregation_method = aggregation_method
+        self._use_multiscale = use_multiscale
+
+        logger.info(
+            "Chronos2 hourly wrapper for %s: ctx=%d, skip_rates=%s, multiscale=%s, method=%s",
+            self.config.symbol,
+            int(params.get("context_length", self.config.context_hours)),
+            skip_rates,
+            use_multiscale,
+            aggregation_method,
+        )
+
         self._wrapper = Chronos2OHLCWrapper.from_pretrained(  # type: ignore[assignment]
             model_id=params.get("model_id", "amazon/chronos-2"),
             device_map=params.get("device_map", "cuda"),
             default_context_length=int(params.get("context_length", self.config.context_hours)),
             default_batch_size=int(params.get("batch_size", self.config.batch_size)),
             quantile_levels=quantiles,
+            multiscale_enabled=use_multiscale,
         )
         return self._wrapper
 

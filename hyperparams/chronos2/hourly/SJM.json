@@ -1,0 +1,45 @@
+{
+  "symbol": "SJM",
+  "model": "chronos2",
+  "config": {
+    "name": "hourly_ctx2048_skip1_2_3_median",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 2048,
+    "batch_size": 32,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "aggregation": "median",
+    "sample_count": 0,
+    "scaler": "meanstd",
+    "predict_kwargs": {},
+    "skip_rates": [
+      1,
+      2,
+      3
+    ],
+    "aggregation_method": "median",
+    "use_multivariate": false
+  },
+  "validation": {
+    "price_mae": 0.0665283203125,
+    "pct_return_mae": 0.0006420103018172085,
+    "direction_accuracy": 0.0,
+    "latency_s": 0.1547558307647705
+  },
+  "windows": {
+    "val_window": 168,
+    "test_window": 168,
+    "forecast_horizon": 1
+  },
+  "metadata": {
+    "source": "hyperparam_chronos_hourly",
+    "generated_at": "2025-12-01T08:10:00.738234Z",
+    "selection_metric": "validation_pct_return_mae",
+    "selection_value": 0.0006420103018172085,
+    "frequency": "hourly"
+  }
+}
