@@ -28,9 +28,10 @@ def _get_api_key() -> str:
     key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
     if not key:
         try:
-            from env_real import CLAUDE_API_KEY
-            if CLAUDE_API_KEY:
-                return CLAUDE_API_KEY
+            from env_real import ANTHROPIC_API_KEY, CLAUDE_API_KEY
+            key = ANTHROPIC_API_KEY or CLAUDE_API_KEY
+            if key:
+                return key
         except ImportError:
             pass
         raise RuntimeError("API key required: set ANTHROPIC_API_KEY or CLAUDE_API_KEY")
@@ -82,7 +83,7 @@ def _load_hourly_data(
     return result
 
 
-def _format_pctline_hourly(df: pd.DataFrame) -> PctLineData:
+def _format_pctline_hourly(df: pd.DataFrame, symbol: str) -> PctLineData:
     """Convert hourly OHLC DataFrame to PctLineData format."""
     # Calculate hourly returns
     close = df["close"].values
@@ -103,9 +104,13 @@ def _format_pctline_hourly(df: pd.DataFrame) -> PctLineData:
     for i in range(len(close_pct)):
         lines.append(f"{close_pct[i]:.4f},{high_pct[i]:.4f},{low_pct[i]:.4f}")
 
+    # num_days represents hours for hourly data (use hours / 24 as equivalent days)
+    num_hours = len(close_pct)
     return PctLineData(
-        lines="\n".join(lines),
+        symbol=symbol,
         last_close=float(close[-1]),
+        lines="\n".join(lines),
+        num_days=num_hours,  # Hours count (field name kept for compatibility)
     )
 
 
@@ -309,7 +314,7 @@ def run_backtest(
         for symbol, df in all_data.items():
             current_df = df[df.index <= current_ts]
             if len(current_df) > 10:
-                pct_data[symbol] = _format_pctline_hourly(current_df)
+                pct_data[symbol] = _format_pctline_hourly(current_df, symbol)
 
             # Get next hour's actual data
             if next_ts in df.index:
@@ -478,7 +483,7 @@ async def run_backtest_async(
         for symbol, df in all_data.items():
             current_df = df[df.index <= current_ts]
             if len(current_df) > 10:
-                pct_data[symbol] = _format_pctline_hourly(current_df)
+                pct_data[symbol] = _format_pctline_hourly(current_df, symbol)
 
             if next_ts in df.index:
                 row = df.loc[next_ts]

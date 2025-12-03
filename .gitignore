@@ -244,3 +244,5 @@ hourlycryptomarketsimulator/*.csv
 .locks
 trainingdatabp/
 strategytraining/forecast_cache_backup_20251130_091549/
+llms_vs_chronos2_returns.png
+gemini_vs_chronos2_returns.png
