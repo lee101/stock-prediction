@@ -19,9 +19,10 @@ def _get_api_key() -> str:
     if not key:
         # Try importing from env_real.py
         try:
-            from env_real import CLAUDE_API_KEY
-            if CLAUDE_API_KEY:
-                return CLAUDE_API_KEY
+            from env_real import ANTHROPIC_API_KEY, CLAUDE_API_KEY
+            key = ANTHROPIC_API_KEY or CLAUDE_API_KEY
+            if key:
+                return key
         except ImportError:
             pass
         raise RuntimeError("API key required: set ANTHROPIC_API_KEY or CLAUDE_API_KEY")

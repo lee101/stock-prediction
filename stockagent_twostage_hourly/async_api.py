@@ -18,19 +18,20 @@ def _get_api_key() -> str:
     if not key:
         # Try importing from env_real.py
         try:
-            from env_real import CLAUDE_API_KEY
-            if CLAUDE_API_KEY:
-                return CLAUDE_API_KEY
+            from env_real import ANTHROPIC_API_KEY, CLAUDE_API_KEY
+            key = ANTHROPIC_API_KEY or CLAUDE_API_KEY
+            if key:
+                return key
         except ImportError:
             pass
         raise RuntimeError("API key required: set ANTHROPIC_API_KEY or CLAUDE_API_KEY")
     return key
 
 
-# Default retry settings
-DEFAULT_MAX_RETRIES = 3
-DEFAULT_RETRY_DELAY = 1.0  # seconds
-DEFAULT_TIMEOUT = 120.0  # seconds
+# Default retry settings - increased for high-volume parallel requests
+DEFAULT_MAX_RETRIES = 8
+DEFAULT_RETRY_DELAY = 2.0  # seconds (exponential backoff)
+DEFAULT_TIMEOUT = 300.0  # seconds (5 min for thinking)
 
 
 async def async_api_call(
