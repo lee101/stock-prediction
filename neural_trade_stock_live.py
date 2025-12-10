@@ -31,7 +31,6 @@ from src.symbol_utils import is_crypto_symbol
 
 
 DEFAULT_INTERVAL_SECONDS = 300
-DEFAULT_ACCOUNT_FRACTION = 0.15
 ENTRY_STRATEGY = "neuraldaily"
 MIN_STOCK_QTY = 1.0
 MIN_CRYPTO_QTY = 0.001
@@ -89,9 +88,8 @@ class NeuralTradingLoop:
         symbols: Sequence[str],
         *,
         interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
-        account_fraction: float = DEFAULT_ACCOUNT_FRACTION,
         min_trade_amount: float = 0.05,
-        max_plans: int = 2,
+        max_plans: int = 0,  # 0 = unlimited, trade all symbols the model recommends
         force_immediate: bool = False,
         skip_equity_weekends: bool = True,
         log_windows: bool = False,
@@ -99,9 +97,8 @@ class NeuralTradingLoop:
         self.runtime = runtime
         self.symbols = [symbol.upper() for symbol in symbols]
         self.interval_seconds = max(30, int(interval_seconds))
-        self.account_fraction = max(0.01, float(account_fraction))
         self.min_trade_amount = max(0.0, float(min_trade_amount))
-        self.max_plans = max(1, int(max_plans))
+        self.max_plans = max(0, int(max_plans))  # 0 = unlimited
         self.force_immediate = bool(force_immediate)
         self.skip_equity_weekends = bool(skip_equity_weekends)
         self.log_windows = bool(log_windows)
@@ -265,32 +262,22 @@ class NeuralTradingLoop:
             if plan.trade_amount <= self.min_trade_amount:
                 continue
             asset_flag = 1.0 if is_crypto_symbol(plan.symbol.upper()) else 0.0
-            edge = max(plan.sell_price - plan.buy_price, 0.0) / max(plan.buy_price, 1e-9)
-            score = plan.trade_amount * edge
             enriched.append(
                 NeuralPlan(
                     plan=plan,
                     symbol=plan.symbol.upper(),
                     asset_flag=asset_flag,
                     priority=0,
-                    # Attach score to prioritize tighter/edge-rich opportunities
-                    # (used only for sorting; not part of dataclass fields)
                 )
             )
-        # Sort by expected edge*size, then fall back to trade_amount
-        enriched.sort(key=lambda item: (item.plan.trade_amount * max(item.plan.sell_price - item.plan.buy_price, 0.0) / max(item.plan.buy_price, 1e-9),
-                                        item.plan.trade_amount),
-                      reverse=True)
-        crypto_candidates = [p for p in enriched if (p.asset_flag > 0.5) or is_crypto_symbol(p.symbol)]
-        non_crypto = [p for p in enriched if p not in crypto_candidates]
+        # Trust the neural network's trade_amount directly - it has all the data
+        # (prices, Chronos forecasts, features) and was trained to output optimal allocation
+        enriched.sort(key=lambda item: item.plan.trade_amount, reverse=True)
 
-        selected: List[NeuralPlan] = []
-        if crypto_candidates:
-            selected.extend(crypto_candidates[:2])  # keep top 2 crypto opportunities
-        remaining = self.max_plans - len(selected)
-        if remaining > 0:
-            selected.extend(non_crypto[:remaining])
-        enriched = selected
+        # Apply max_plans limit if set, otherwise trade all eligible symbols
+        if self.max_plans > 0 and len(enriched) > self.max_plans:
+            enriched = enriched[:self.max_plans]
+
         for idx, item in enumerate(enriched, start=1):
             item.priority = idx
         return enriched
@@ -322,10 +309,12 @@ class NeuralTradingLoop:
                 sell_price,
             )
         limit_price = buy_price
-        # Model outputs allocation directly (0-2x for stocks, 0-1x for crypto)
-        # Respect broker leverage limits: crypto=1x, stocks=2x
-        max_leverage = 1.0 if asset_is_crypto else 2.0
-        allocation = min(plan.trade_amount, self.runtime.risk_threshold, max_leverage)
+        # Trust the neural network's trade_amount directly - it learned optimal allocation
+        # Only cap crypto at 1x (no leverage available), stocks can use up to 2x as model learned
+        if asset_is_crypto:
+            allocation = min(plan.trade_amount, 1.0)  # Crypto: no leverage available
+        else:
+            allocation = min(plan.trade_amount, 2.0)  # Stocks: broker allows 2x margin
         target_notional = max(account_equity * allocation, 0.0)
         min_qty = MIN_CRYPTO_QTY if asset_is_crypto else MIN_STOCK_QTY
         qty = target_notional / limit_price
@@ -377,18 +366,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--validation-days", type=int, default=40)
     parser.add_argument("--device", default=None)
-    parser.add_argument("--risk-threshold", type=float, help="Override runtime risk clamp.")
     parser.add_argument("--interval-seconds", type=int, default=DEFAULT_INTERVAL_SECONDS)
-    parser.add_argument("--account-fraction", type=float, default=DEFAULT_ACCOUNT_FRACTION)
     parser.add_argument("--min-trade-amount", type=float, default=0.05)
-    parser.add_argument("--max-plans", type=int, default=2, help="Max number of plans to dispatch per tick.")
+    parser.add_argument("--max-plans", type=int, default=0, help="Max plans per tick (0 = unlimited, trust the model).")
     parser.add_argument("--force-immediate", action="store_true", help="Force immediate execution on spawned entries.")
     parser.add_argument("--no-weekend-skip", action="store_true", help="Allow equity entries on weekends (default skips).")
     parser.add_argument(
         "--confidence-threshold",
         type=float,
-        default=0.2,
-        help="Minimum neural confidence required to dispatch a plan (0-1).",
+        default=None,
+        help="Minimum neural confidence required to dispatch a plan (0-1). Default: trust the model.",
     )
     parser.add_argument(
         "--ignore-non-tradable",
@@ -448,7 +435,6 @@ def main() -> None:
         checkpoint_path,
         dataset_config=dataset_cfg,
         device=args.device,
-        risk_threshold=args.risk_threshold,
         confidence_threshold=args.confidence_threshold,
         non_tradable=() if args.ignore_non_tradable else None,
     )
@@ -456,7 +442,6 @@ def main() -> None:
         runtime,
         symbols,
         interval_seconds=args.interval_seconds,
-        account_fraction=args.account_fraction,
         min_trade_amount=args.min_trade_amount,
         max_plans=args.max_plans,
         force_immediate=args.force_immediate,

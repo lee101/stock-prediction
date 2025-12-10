@@ -272,10 +272,11 @@ def _watcher_matches_params(metadata: dict, **expected_params) -> bool:
     return True
 
 
-def _stop_existing_watcher(config_path: Path, *, reason: str) -> None:
+def _stop_existing_watcher(config_path: Path, *, reason: str) -> bool:
+    """Stop an existing watcher. Returns True if a running process was terminated."""
     metadata = _load_watcher_metadata(config_path)
     if not metadata:
-        return
+        return False
 
     pid_raw = metadata.get("pid")
     try:
@@ -283,12 +284,14 @@ def _stop_existing_watcher(config_path: Path, *, reason: str) -> None:
     except (TypeError, ValueError):
         pid = None
 
+    terminated = False
     if pid:
         try:
             os.kill(pid, signal.SIGTERM)
             logger.info(f"Terminated prior maxdiff watcher at {config_path.name} (pid={pid})")
+            terminated = True
         except ProcessLookupError:
-            logger.debug(f"Watcher pid {pid} already exited for {config_path}")
+            pass  # Already exited, nothing to do
         except Exception as exc:  # pragma: no cover - best effort logging
             logger.warning(f"Failed to terminate watcher {config_path} pid={pid}: {exc}")
 
@@ -297,6 +300,8 @@ def _stop_existing_watcher(config_path: Path, *, reason: str) -> None:
         metadata["state"] = reason
         metadata["terminated_at"] = datetime.now(timezone.utc).isoformat()
         _persist_watcher_metadata(config_path, metadata)
+
+    return terminated
 
 
 def _stop_conflicting_entry_watchers(
@@ -355,11 +360,11 @@ def _stop_conflicting_entry_watchers(
         if limit_delta <= 1e-6:
             continue
 
-        logger.info(
-            f"Terminating conflicting {symbol} {side} entry watcher at {path.name} "
-            f"(limit {float(existing_limit):.8f}) in favor of {float(new_limit_price):.8f}"
-        )
-        _stop_existing_watcher(path, reason="superseded_entry_watcher")
+        if _stop_existing_watcher(path, reason="superseded_entry_watcher"):
+            logger.info(
+                f"Terminated conflicting {symbol} {side} entry watcher at {path.name} "
+                f"(limit {float(existing_limit):.8f}) in favor of {float(new_limit_price):.8f}"
+            )
 
 
 def _stop_conflicting_exit_watchers(
@@ -391,19 +396,19 @@ def _stop_conflicting_exit_watchers(
 
         existing_strategy = metadata.get("entry_strategy")
         if existing_strategy and existing_strategy != entry_strategy:
-            logger.info(
-                f"Terminating {symbol} {side} exit watcher at {path.name} "
-                f"due to strategy change {existing_strategy}->{entry_strategy}"
-            )
-            _stop_existing_watcher(path, reason="strategy_changed_exit_watcher")
+            if _stop_existing_watcher(path, reason="strategy_changed_exit_watcher"):
+                logger.info(
+                    f"Terminated {symbol} {side} exit watcher at {path.name} "
+                    f"due to strategy change {existing_strategy}->{entry_strategy}"
+                )
             continue
 
         if not existing_strategy:
-            logger.info(
-                f"Terminating legacy {symbol} {side} exit watcher at {path.name} "
-                f"for strategy {entry_strategy}"
-            )
-            _stop_existing_watcher(path, reason="legacy_strategy_exit_watcher")
+            if _stop_existing_watcher(path, reason="legacy_strategy_exit_watcher"):
+                logger.info(
+                    f"Terminated legacy {symbol} {side} exit watcher at {path.name} "
+                    f"for strategy {entry_strategy}"
+                )
             continue
 
         existing_tp = metadata.get("takeprofit_price")
@@ -418,11 +423,11 @@ def _stop_conflicting_exit_watchers(
         if tp_delta <= 1e-6:
             continue
 
-        logger.info(
-            f"Terminating conflicting {symbol} {side} exit watcher at {path.name} "
-            f"(takeprofit {float(existing_tp):.8f}) in favor of {float(new_takeprofit_price):.8f}"
-        )
-        _stop_existing_watcher(path, reason="superseded_exit_watcher")
+        if _stop_existing_watcher(path, reason="superseded_exit_watcher"):
+            logger.info(
+                f"Terminated conflicting {symbol} {side} exit watcher at {path.name} "
+                f"(takeprofit {float(existing_tp):.8f}) in favor of {float(new_takeprofit_price):.8f}"
+            )
 
 
 def _get_inherited_env():
