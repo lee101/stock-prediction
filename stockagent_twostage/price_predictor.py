@@ -51,6 +51,7 @@ INPUT:
 - Chronos2 forecast (expected return in bps)
 - Direction: long or short
 - Allocation amount
+- Asset type: crypto or stock
 
 TASK:
 Set entry, exit, and stop prices in BASIS POINTS from current close.
@@ -70,15 +71,21 @@ RULES FOR LONG (buy low, sell high):
 - exit_bps: +150 to +400 (profit target)
 - stop_loss_bps: -100 to -250 (loss limit)
 
-RULES FOR SHORT (sell high, buy back low):
+RULES FOR SHORT (sell high, buy back low) - STOCKS ONLY:
 - entry_bps: +50 to +100 (short on rally) or 0
 - exit_bps: -150 to -400 (cover at profit)
 - stop_loss_bps: +100 to +250 (cover at loss)
+
+TRADING FEES TO CONSIDER:
+- STOCKS: ~10 bps round-trip (5 bps per side - factor in for tight trades)
+- CRYPTO: ~16 bps round-trip (8 bps per side - must clear this hurdle)
+  - For crypto, set exit_bps at least +30 bps to cover fees and profit
 
 BE AGGRESSIVE:
 - Focus on maximizing expected return, not minimizing risk
 - Wider targets > conservative targets
 - High volatility = opportunity
+- For crypto: account for higher fees in targets
 
 RESPOND WITH JSON ONLY."""
 
@@ -147,10 +154,15 @@ def _build_price_prompt(
     max_lines: int = 300,
 ) -> str:
     """Build the user prompt for price prediction using basis points."""
+    asset_type = "crypto" if is_crypto(symbol) else "stock"
+    fee_note = "~8 bps round-trip" if is_crypto(symbol) else "~0.5 bps round-trip"
+
     parts = [
         f"## ASSET",
+        f"Type: {asset_type.upper()}",
         f"Direction: {allocation.direction.upper()}",
         f"Allocation: {allocation.alloc:.0%} of portfolio",
+        f"Trading fees: {fee_note}",
         "",
     ]
 
