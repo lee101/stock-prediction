@@ -29,7 +29,7 @@ def _get_api_key() -> str:
     return key
 
 from stockagent.agentsimulator.market_data import fetch_latest_ohlc, MarketDataBundle
-from stockagent.constants import TRADING_FEE
+from stockagent.constants import TRADING_FEE, CRYPTO_TRADING_FEE
 from stockagent_pctline.data_formatter import format_pctline_data, PctLineData
 
 from .portfolio_allocator import allocate_portfolio, async_allocate_portfolio, PortfolioAllocation, is_crypto
@@ -196,13 +196,11 @@ def _simulate_day(
         stop_loss = pred.stop_loss_price
 
         if is_long:
-            # Long exit: sell at target if high reaches it, or stop if low hits it
+            # Long exit: sell at target if high reaches it, else EOD close
+            # NO STOP LOSS - we hold through intraday dips
             if actual_high >= exit_target:
                 exit_price = exit_target
                 exit_reason = "target"
-            elif actual_low <= stop_loss:
-                exit_price = stop_loss
-                exit_reason = "stop"
             else:
                 exit_price = actual_close
                 exit_reason = "eod"
@@ -210,13 +208,11 @@ def _simulate_day(
             # P&L for long: (exit - entry) * quantity
             gross_pnl = (exit_price - entry_price) * quantity
         else:
-            # Short exit: cover at target if low reaches it, or stop if high hits it
+            # Short exit: cover at target if low reaches it, else EOD close
+            # NO STOP LOSS - we hold through intraday rallies
             if actual_low <= exit_target:
                 exit_price = exit_target
                 exit_reason = "target"
-            elif actual_high >= stop_loss:
-                exit_price = stop_loss
-                exit_reason = "stop"
             else:
                 exit_price = actual_close
                 exit_reason = "eod"
@@ -224,8 +220,9 @@ def _simulate_day(
             # P&L for short: (entry - exit) * quantity
             gross_pnl = (entry_price - exit_price) * quantity
 
-        # Fees on both legs
-        fees = (entry_price * quantity + exit_price * quantity) * trading_fee
+        # Fees on both legs - use crypto fee for crypto symbols
+        symbol_fee = CRYPTO_TRADING_FEE if is_crypto(symbol) else trading_fee
+        fees = (entry_price * quantity + exit_price * quantity) * symbol_fee
 
         # Leverage interest cost (daily rate on borrowed amount)
         leverage_cost = leveraged_amount * LEVERAGE_DAILY_RATE if leverage > 1.0 else 0.0
@@ -342,6 +339,7 @@ def run_backtest(
                 equity=equity,
                 max_lines=max_lines,
                 use_thinking=use_thinking,
+                trading_date=datetime.combine(trade_date, datetime.min.time()),
             )
             logger.info(
                 f"{trade_date}: Stage 1 - overall confidence {allocations.overall_confidence:.2f}, "
@@ -500,6 +498,7 @@ async def _process_single_day(
             equity=equity,
             max_lines=max_lines,
             use_thinking=use_thinking,
+            trading_date=datetime.combine(trade_date, datetime.min.time()),
         )
         logger.info(
             f"{trade_date}: Stage 1 - overall confidence {allocations.overall_confidence:.2f}, "
@@ -528,6 +527,9 @@ async def _process_single_day(
     # Get next day's actual data
     next_day_data: dict[str, dict] = {}
     for symbol, df in all_data.items():
+        # Skip DataFrames without DatetimeIndex
+        if not hasattr(df.index, 'date') or len(df) == 0:
+            continue
         next_df = df[df.index.date == next_date]
         if not next_df.empty:
             next_day_data[symbol] = {
@@ -563,12 +565,12 @@ async def run_backtest_async(
     use_chronos: bool = True,
     chronos_device: str = "cuda",
     use_thinking: bool = False,
-    max_parallel_days: int = 5,
+    max_parallel_days: int = 999,
 ) -> dict:
     """Run two-stage backtest with parallel day processing.
 
-    Note: Days are processed in parallel for API calls, but P&L is still
-    calculated sequentially (each day's equity depends on previous day).
+    Note: Days are processed in parallel for API calls (all days at once by default),
+    but P&L is still calculated sequentially (each day's equity depends on previous day).
 
     Args:
         symbols: List of symbols to trade
@@ -709,6 +711,33 @@ async def run_backtest_async(
     # Calculate avg confidence
     avg_confidence = sum(r["overall_confidence"] for r in results) / len(results) if results else 0
 
+    # Per-symbol PnL tracking
+    symbol_pnl: dict[str, float] = {}
+    symbol_trades: dict[str, int] = {}
+    symbol_wins: dict[str, int] = {}
+    for t in all_trades:
+        sym = t["symbol"]
+        symbol_pnl[sym] = symbol_pnl.get(sym, 0.0) + t["net_pnl"]
+        symbol_trades[sym] = symbol_trades.get(sym, 0) + 1
+        if t["net_pnl"] > 0:
+            symbol_wins[sym] = symbol_wins.get(sym, 0) + 1
+
+    # Sort symbols by PnL for reporting
+    symbol_performance = []
+    for sym in symbol_pnl:
+        pnl = symbol_pnl[sym]
+        trades = symbol_trades[sym]
+        wins = symbol_wins.get(sym, 0)
+        win_rate_sym = wins / trades if trades > 0 else 0
+        symbol_performance.append({
+            "symbol": sym,
+            "pnl": pnl,
+            "trades": trades,
+            "wins": wins,
+            "win_rate": win_rate_sym,
+        })
+    symbol_performance.sort(key=lambda x: x["pnl"], reverse=True)
+
     summary = {
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
@@ -720,6 +749,7 @@ async def run_backtest_async(
         "total_trades": len(all_trades),
         "win_rate": win_rate,
         "avg_confidence": avg_confidence,
+        "symbol_performance": symbol_performance,
         "daily_results": results,
     }
 
@@ -731,6 +761,13 @@ async def run_backtest_async(
     logger.info(f"Total trades: {len(all_trades)}, Win rate: {win_rate:.1%}")
     logger.info(f"Avg confidence: {avg_confidence:.2f}")
     logger.info("=" * 60)
+    logger.info("PER-SYMBOL PERFORMANCE (sorted by PnL):")
+    for sp in symbol_performance:
+        logger.info(
+            f"  {sp['symbol']:8s}: PnL ${sp['pnl']:+,.2f} | "
+            f"Trades: {sp['trades']:2d} | Win rate: {sp['win_rate']:.0%}"
+        )
+    logger.info("=" * 60)
 
     return summary
 
@@ -739,7 +776,18 @@ def main():
     parser = argparse.ArgumentParser(description="Two-stage portfolio backtest")
     parser.add_argument(
         "--symbols", nargs="+",
-        default=["BTCUSD", "ETHUSD", "BNBUSD", "UNIUSD", "SKYUSD"],
+        # Comprehensive list: crypto + volatile/liquid stocks
+        default=[
+            # Crypto (all available on Alpaca)
+            "BTCUSD", "ETHUSD", "SOLUSD", "AVAXUSD", "LINKUSD",
+            "MATICUSD", "UNIUSD", "XRPUSD", "DOTUSD",
+            # Tech mega-caps
+            "AAPL", "MSFT", "GOOG", "AMZN", "META", "NVDA", "TSLA",
+            # High-beta tech
+            "AMD", "NFLX", "CRM", "ADBE", "AVGO", "SHOP",
+            # Volatile/momentum
+            "COIN", "HOOD", "PLTR", "SNOW", "NET", "CRWD", "QUBT", "INTC",
+        ],
         help="Symbols to trade"
     )
     parser.add_argument("--days", type=int, default=15, help="Days to backtest")
@@ -751,7 +799,7 @@ def main():
     parser.add_argument("--end-date", type=str, default=None, help="End date YYYY-MM-DD")
     parser.add_argument("--thinking", action="store_true", help="Enable extended thinking (Opus with 60000 token budget)")
     parser.add_argument("--async", dest="use_async", action="store_true", help="Use async parallel backtest")
-    parser.add_argument("--parallel-days", type=int, default=5, help="Max days to process in parallel (async mode)")
+    parser.add_argument("--parallel-days", type=int, default=999, help="Max days to process in parallel (999=all at once)")
 
     args = parser.parse_args()
 

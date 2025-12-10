@@ -9,6 +9,7 @@ Given historical price data and Chronos2 forecasts, determine:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import os
 import re
@@ -17,6 +18,8 @@ from typing import Any, Mapping, Sequence
 
 import anthropic
 from loguru import logger
+
+import alpaca_wrapper
 
 
 def _get_api_key() -> str:
@@ -58,6 +61,8 @@ INPUT:
 - Chronos2 neural forecast (predicted OHLC with confidence intervals)
 - Current portfolio value
 - Asset class indicator (crypto vs stock)
+- Current day of week and timestamp
+- Trading fee structure
 
 GOAL: MAXIMIZE expected daily PnL. Ignore risk concerns - pure profit optimization.
 
@@ -80,17 +85,28 @@ TRADING RULES:
 - BE AGGRESSIVE - allocate heavily to your best ideas
 - Overall confidence 0.5+ = trade, 0.7+ = go big
 - Minimum 20% allocation to your best idea
-- CRYPTO: LONG ONLY (no shorting available)
-- STOCKS: Can short OR use leverage up to 2x (leverage costs 6.5% annually)
+- CRYPTO: LONG ONLY (no shorting available), trades 24/7 including weekends
+- STOCKS: Can short OR use leverage up to 2x (leverage costs 6.5% annually), Mon-Fri only
 - Long when: oversold, rising momentum, support bounce
 - Short when (stocks only): overbought, declining momentum, resistance hit
 - High volatility = MORE opportunity, not risk
 - Expected move > 50 bps = allocate
 
+TRADING FEES (factor into decisions):
+- STOCKS: ~10 bps round-trip (small, factor in for tight trades)
+- CRYPTO: ~16 bps round-trip (8 bps per side - must clear this hurdle)
+- Only trade crypto if expected move > 30 bps to cover fees and profit
+
 LEVERAGE GUIDANCE (stocks only):
 - Use 1.5-2x leverage when very confident in direction
 - Leverage cost: 6.5% annual = ~1.78 bps/day on leveraged portion
 - Only leverage if expected return > leverage cost
+
+DAY OF WEEK CONSIDERATIONS:
+- Friday: Consider reducing stock positions before weekend (no trading Sat/Sun)
+- Friday: Crypto keeps trading - can capture weekend moves
+- Monday: Stocks may gap from weekend news
+- Weekends: 100% crypto opportunity (stocks closed)
 
 PATTERN SIGNALS (all in basis points):
 - Momentum: 3+ days same direction = continuation likely
@@ -109,6 +125,7 @@ INPUT:
   (100 bps = 1%, so +250 bps = +2.5% move)
 - Chronos2 neural forecast (predicted OHLC with confidence intervals)
 - Current portfolio value
+- Current day of week and timestamp
 
 GOAL: MAXIMIZE expected daily PnL. LONG POSITIONS ONLY (cannot short crypto).
 
@@ -131,10 +148,20 @@ TRADING RULES:
 - Overall confidence 0.5+ = trade, 0.7+ = go big
 - Minimum 20% allocation to your best idea
 - LONG ONLY - if bearish, allocate 0% (skip symbol)
+- Crypto trades 24/7 including weekends (stocks are closed Sat/Sun)
 - Long when: oversold, rising momentum, support bounce, accumulation
 - Skip when: overbought, declining momentum, distribution
 - High volatility = MORE opportunity, not risk
-- Expected move > 50 bps upward = allocate
+
+TRADING FEES:
+- ~16 bps round-trip (8 bps per side - must clear this hurdle)
+- Only trade if expected move > 30 bps to cover fees and make profit
+- Expected move > 50 bps = strong allocation
+
+DAY OF WEEK CONSIDERATIONS:
+- Weekends: Full crypto opportunity (stocks closed)
+- Fridays/Saturdays: Often see increased crypto volume
+- Monday: Watch for correlation with stock market open
 
 PATTERN SIGNALS (all in basis points):
 - Momentum: 3+ days same direction = continuation likely
@@ -211,18 +238,71 @@ def _build_allocation_prompt(
     equity: float,
     max_lines: int = 200,
     debias: bool = True,
+    trading_date: datetime | None = None,
 ) -> tuple[str, dict[str, str], bool]:
     """Build the user prompt for portfolio allocation.
+
+    Args:
+        pct_data: Dict of symbol -> PctLineData with historical pct changes
+        chronos_forecasts: Optional Chronos2 forecasts per symbol
+        equity: Current portfolio value
+        max_lines: Max historical lines per symbol
+        debias: Use anonymous symbol names (SYMBOL_A, etc.) to avoid model bias
+        trading_date: Date being traded (for day of week context)
 
     Returns:
         (prompt_text, symbol_map, all_crypto) where:
         - symbol_map maps debiased names to real symbols
         - all_crypto indicates if all symbols are crypto (for prompt selection)
     """
-    # Check if all symbols are crypto (for prompt selection)
-    all_crypto = all(is_crypto(sym) for sym in pct_data.keys())
+    # Get day of week and market context
+    if trading_date is None:
+        trading_date = datetime.now()
+    day_name = trading_date.strftime("%A")
+    date_str = trading_date.strftime("%Y-%m-%d")
 
-    parts = [f"Portfolio Value: ${equity:,.2f}\n"]
+    # Use Alpaca clock to check if market is open (handles holidays, weekends, etc.)
+    try:
+        market_clock = alpaca_wrapper.get_clock()
+        is_stock_market_closed = not market_clock.is_open
+    except Exception as e:
+        logger.warning(f"Failed to get market clock, falling back to weekday check: {e}")
+        is_stock_market_closed = trading_date.weekday() >= 5  # Sat=5, Sun=6
+
+    # Filter out stocks when market is closed (weekends, holidays, etc.)
+    filtered_pct_data = {}
+    for sym, data in pct_data.items():
+        if is_stock_market_closed and not is_crypto(sym):
+            # Skip stocks when market is closed - they don't trade
+            continue
+        filtered_pct_data[sym] = data
+
+    # If no symbols left after filtering, return empty
+    if not filtered_pct_data:
+        return "", {}, True
+
+    # Check if all symbols are crypto (for prompt selection)
+    all_crypto = all(is_crypto(sym) for sym in filtered_pct_data.keys())
+
+    parts = [
+        f"Trading Date: {date_str} ({day_name})",
+        f"Portfolio Value: ${equity:,.2f}",
+    ]
+
+    # Add market context based on day
+    if is_stock_market_closed:
+        parts.append("Market Status: Stock markets CLOSED, Crypto markets OPEN")
+        parts.append("Note: Only crypto symbols available for trading today.")
+    elif day_name == "Friday":
+        parts.append("Market Status: Friday - Stock markets close soon, consider weekend positioning")
+    elif day_name == "Monday":
+        parts.append("Market Status: Monday - Watch for weekend gaps in stocks")
+    else:
+        parts.append("Market Status: Normal trading day")
+    parts.append("")
+
+    # Use filtered data for the rest
+    pct_data = filtered_pct_data
 
     # Create symbol mapping for debiasing
     symbol_list = sorted(pct_data.keys())
@@ -298,6 +378,7 @@ def allocate_portfolio(
     model: str = MODEL,
     use_thinking: bool = False,
     debias: bool = True,
+    trading_date: datetime | None = None,
 ) -> PortfolioAllocation:
     """Stage 1: Determine portfolio allocation across symbols.
 
@@ -309,6 +390,7 @@ def allocate_portfolio(
         model: Claude model to use
         use_thinking: Enable extended thinking (uses Opus with 60000 token budget)
         debias: Use anonymous symbol names (SYMBOL_A, etc.) to avoid model bias
+        trading_date: Date being traded (for day of week context)
 
     Returns:
         PortfolioAllocation with decisions for each symbol
@@ -316,8 +398,17 @@ def allocate_portfolio(
     client = anthropic.Anthropic(api_key=_get_api_key())
 
     user_prompt, symbol_map, all_crypto = _build_allocation_prompt(
-        pct_data, chronos_forecasts, equity, max_lines, debias=debias
+        pct_data, chronos_forecasts, equity, max_lines, debias=debias, trading_date=trading_date
     )
+
+    # Handle empty prompt (e.g., no symbols available on weekend)
+    if not user_prompt:
+        logger.info("No symbols available for trading (likely weekend with stocks-only)")
+        return PortfolioAllocation(
+            overall_confidence=0.0,
+            reasoning="No symbols available for trading",
+            allocations={},
+        )
 
     # Select appropriate prompt based on asset class
     system_prompt = PORTFOLIO_SYSTEM_PROMPT_CRYPTO if all_crypto else PORTFOLIO_SYSTEM_PROMPT
@@ -420,6 +511,7 @@ async def async_allocate_portfolio(
     model: str = MODEL,
     use_thinking: bool = False,
     debias: bool = True,
+    trading_date: datetime | None = None,
 ) -> PortfolioAllocation:
     """Async Stage 1: Determine portfolio allocation across symbols.
 
@@ -432,13 +524,23 @@ async def async_allocate_portfolio(
         model: Claude model to use
         use_thinking: Enable extended thinking (uses Opus with 60000 token budget)
         debias: Use anonymous symbol names (SYMBOL_A, etc.) to avoid model bias
+        trading_date: Date being traded (for day of week context)
 
     Returns:
         PortfolioAllocation with decisions for each symbol
     """
     user_prompt, symbol_map, all_crypto = _build_allocation_prompt(
-        pct_data, chronos_forecasts, equity, max_lines, debias=debias
+        pct_data, chronos_forecasts, equity, max_lines, debias=debias, trading_date=trading_date
     )
+
+    # Handle empty prompt (e.g., no symbols available on weekend)
+    if not user_prompt:
+        logger.info("No symbols available for trading (likely weekend with stocks-only)")
+        return PortfolioAllocation(
+            overall_confidence=0.0,
+            reasoning="No symbols available for trading",
+            allocations={},
+        )
 
     # Select appropriate prompt based on asset class
     system_prompt = PORTFOLIO_SYSTEM_PROMPT_CRYPTO if all_crypto else PORTFOLIO_SYSTEM_PROMPT

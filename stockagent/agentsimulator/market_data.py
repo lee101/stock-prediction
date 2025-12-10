@@ -128,6 +128,8 @@ def _load_local_symbol_data(symbol: str, directory: Path) -> pd.DataFrame:
         logger.warning(f"Failed to load {symbol} data from {latest}: {exc}")
         return pd.DataFrame()
     df.columns = [col.lower() for col in df.columns]
+    # Remove duplicate columns (keep first occurrence)
+    df = df.loc[:, ~df.columns.duplicated()]
     df = df.rename(columns={"time": "timestamp", "date": "timestamp", "datetime": "timestamp"})
     return df
 

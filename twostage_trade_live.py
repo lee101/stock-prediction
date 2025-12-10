@@ -250,6 +250,7 @@ class TwoStageTradingLoop:
                 pct_data,
                 chronos_forecasts=chronos_forecasts,
                 use_thinking=self.use_thinking,
+                trading_date=datetime.now(timezone.utc),
             )
         except Exception as e:
             logger.error(f"Stage 1 allocation failed: {e}")
