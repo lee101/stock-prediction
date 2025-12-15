@@ -154,6 +154,28 @@ def _sync_symbol(symbol: str, snapshot_dir: Path, training_dir: Path) -> int:
     return new_rows
 
 
+_NON_SYMBOL_STEMS = frozenset({
+    "correlation_matrix",
+    "data_summary",
+    "volatility_metrics",
+    "download_metadata",
+    "combined_training_data",
+})
+
+
+def _is_valid_symbol_stem(stem: str) -> bool:
+    """Check if a stem looks like a valid stock/crypto symbol."""
+    lower = stem.lower()
+    if lower in _NON_SYMBOL_STEMS:
+        return False
+    # Symbols are uppercase letters possibly followed by USD for crypto
+    upper = stem.upper()
+    if upper.endswith("USD"):
+        base = upper[:-3]
+        return base.isalpha() and len(base) >= 1
+    return upper.isalpha() and 1 <= len(upper) <= 5
+
+
 def list_symbols(training_dir: Path = TRAINING_DIR) -> List[str]:
     """Enumerate symbols that already have training CSVs."""
     if not training_dir.exists():
@@ -161,6 +183,9 @@ def list_symbols(training_dir: Path = TRAINING_DIR) -> List[str]:
     symbols = []
     for csv_file in training_dir.glob("*.csv"):
         stem = csv_file.stem
+        if not _is_valid_symbol_stem(stem):
+            logger.debug("Skipping non-symbol file: %s", csv_file.name)
+            continue
         symbol = _stem_to_symbol(stem)
         symbols.append(symbol)
     unique = sorted(set(symbols))

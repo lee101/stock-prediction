@@ -7,6 +7,8 @@ from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, StopO
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data import StockHistoricalDataClient
 
+from src.date_utils import is_nyse_open_on_date
+
 
 class AlpacaBroker:
     def __init__(self, config, paper: bool = True):
@@ -158,18 +160,21 @@ class AlpacaBroker:
             return self._is_market_hours()
     
     def _is_market_hours(self) -> bool:
-        """Check if current time is within market hours."""
+        """Check if current time is within market hours.
+
+        Uses exchange_calendars for accurate holiday detection.
+        """
         est = pytz.timezone('US/Eastern')
         now = datetime.now(est)
-        
-        # Skip weekends
-        if now.weekday() >= 5:
+
+        # Use calendar-based check for holidays and weekends
+        if not is_nyse_open_on_date(now):
             return False
-        
+
         # Market hours: 9:30 AM - 4:00 PM EST
         market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
         market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-        
+
         return market_open <= now <= market_close
     
     def is_new_trading_day(self) -> bool:

@@ -24,6 +24,7 @@ sys.path.extend(['.', './training', './src', './rlinference'])
 from src.sizing_utils import get_qty, get_current_symbol_exposure
 from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging
+from src.date_utils import is_nyse_open_on_date
 import alpaca_wrapper
 
 # RL inference imports
@@ -406,8 +407,8 @@ class TradeStockE2ETrained:
                 # Check if it's time for next cycle
                 if current_time - last_run >= timedelta(minutes=interval_minutes):
                     
-                    # Check if market is open (basic check)
-                    if current_time.weekday() < 5:  # Monday=0, Friday=4
+                    # Check if market is open (uses calendar for holidays)
+                    if is_nyse_open_on_date(current_time):
                         market_hour = current_time.hour
                         if 9 <= market_hour <= 16:  # Rough market hours
                             cycle_result = self.run_trading_cycle(dry_run=dry_run)
@@ -415,7 +416,7 @@ class TradeStockE2ETrained:
                         else:
                             self.logger.info("Outside market hours, skipping cycle")
                     else:
-                        self.logger.info("Weekend, skipping cycle")
+                        self.logger.info("Market closed (weekend/holiday), skipping cycle")
                 
                 # Sleep for a minute before checking again
                 time.sleep(60)
