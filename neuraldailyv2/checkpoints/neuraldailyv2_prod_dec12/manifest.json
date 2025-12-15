@@ -1,0 +1,307 @@
+{
+  "config": {
+    "epochs": 200,
+    "batch_size": 16,
+    "sequence_length": 128,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.0,
+    "grad_clip": 1.0,
+    "maker_fee": 0.0008,
+    "return_weight": 0.08,
+    "equity_max_leverage": 2.0,
+    "crypto_max_leverage": 1.0,
+    "leverage_fee_rate": 0.065,
+    "steps_per_year": 252,
+    "transformer_dim": 256,
+    "transformer_layers": 4,
+    "transformer_heads": 8,
+    "transformer_kv_heads": 4,
+    "transformer_dropout": 0.1,
+    "logits_softcap": 15.0,
+    "price_offset_pct": 0.025,
+    "min_price_gap_pct": 0.0005,
+    "initial_temperature": 0.01,
+    "final_temperature": 0.0001,
+    "temp_warmup_epochs": 10,
+    "temp_anneal_epochs": 150,
+    "temp_anneal_type": "linear",
+    "optimizer_name": "dual",
+    "matrix_lr": 0.02,
+    "embed_lr": 0.2,
+    "head_lr": 0.004,
+    "muon_momentum": 0.95,
+    "adamw_betas": [
+      0.8,
+      0.95
+    ],
+    "adamw_eps": 1e-10,
+    "warmup_steps": 100,
+    "use_cosine_schedule": true,
+    "ema_decay": 0.0,
+    "dry_train_steps": null,
+    "device": null,
+    "run_name": "neuraldailyv2_prod_dec12",
+    "wandb_project": "neuraldailyv2",
+    "wandb_entity": null,
+    "log_dir": "tensorboard_logs/neuraldailyv2",
+    "checkpoint_root": "neuraldailyv2/checkpoints",
+    "top_k_checkpoints": 50,
+    "preload_checkpoint_path": null,
+    "force_retrain": false,
+    "seed": 1337,
+    "num_workers": 0,
+    "use_compile": false,
+    "compile_mode": "max-autotune",
+    "use_amp": true,
+    "amp_dtype": "bfloat16",
+    "use_tf32": true,
+    "use_cross_attention": true,
+    "exposure_penalty": 0.0,
+    "permutation_rate": 0.5,
+    "price_scale_range": [
+      0.9,
+      1.1
+    ],
+    "price_scale_probability": 0.2,
+    "dataset": {
+      "symbols": [
+        "SPY",
+        "QQQ",
+        "AAPL",
+        "MSFT",
+        "GOOGL",
+        "AMZN",
+        "NVDA",
+        "TSLA",
+        "META",
+        "V",
+        "MA",
+        "JPM",
+        "GS",
+        "BAC",
+        "WMT",
+        "COST",
+        "HD",
+        "MCD",
+        "BTCUSD",
+        "ETHUSD"
+      ],
+      "data_root": "trainingdata/train",
+      "forecast_cache_dir": "strategytraining/forecast_cache",
+      "sequence_length": 128,
+      "val_fraction": 0.2,
+      "min_history_days": 300,
+      "require_forecasts": false,
+      "forecast_fill_strategy": "persistence",
+      "forecast_cache_writeback": true,
+      "feature_columns": null,
+      "start_date": null,
+      "end_date": null,
+      "validation_days": 40,
+      "symbol_dropout_rate": 0.1,
+      "exclude_symbols": null,
+      "exclude_symbols_file": null,
+      "crypto_only": false,
+      "include_weekly_features": true,
+      "grouping_strategy": "correlation",
+      "correlation_min_corr": 0.6,
+      "correlation_max_group_size": 12,
+      "correlation_window_days": 252,
+      "correlation_min_overlap": 60,
+      "split_crypto_groups": true
+    }
+  },
+  "feature_columns": [
+    "close",
+    "predicted_close",
+    "predicted_high",
+    "predicted_low",
+    "predicted_close_p10",
+    "predicted_close_p90",
+    "chronos_quantile_spread",
+    "chronos_move_pct",
+    "chronos_volatility_pct",
+    "atr_pct_14",
+    "range_pct",
+    "volume_z",
+    "weekly_return_5",
+    "weekly_range_pct_5",
+    "day_sin",
+    "day_cos",
+    "chronos_close_delta",
+    "chronos_high_delta",
+    "chronos_low_delta",
+    "asset_class"
+  ],
+  "checkpoints": [
+    {
+      "path": "epoch_0001.pt",
+      "val_loss": -4.2429161641859645,
+      "epoch": 1,
+      "timestamp": 1765572606.3778198
+    },
+    {
+      "path": "epoch_0002.pt",
+      "val_loss": -5.094800340999482,
+      "epoch": 2,
+      "timestamp": 1765573122.4417725
+    },
+    {
+      "path": "epoch_0008.pt",
+      "val_loss": -5.24139648563031,
+      "epoch": 8,
+      "timestamp": 1765576166.224731
+    },
+    {
+      "path": "epoch_0014.pt",
+      "val_loss": -5.4921428242867645,
+      "epoch": 14,
+      "timestamp": 1765579194.2664616
+    },
+    {
+      "path": "epoch_0019.pt",
+      "val_loss": -5.750511871947145,
+      "epoch": 19,
+      "timestamp": 1765581735.6966786
+    },
+    {
+      "path": "epoch_0030.pt",
+      "val_loss": -5.783693586292705,
+      "epoch": 30,
+      "timestamp": 1765587326.2489214
+    },
+    {
+      "path": "epoch_0031.pt",
+      "val_loss": -6.018779266936083,
+      "epoch": 31,
+      "timestamp": 1765587833.02984
+    },
+    {
+      "path": "epoch_0033.pt",
+      "val_loss": -6.030597825083092,
+      "epoch": 33,
+      "timestamp": 1765588838.631629
+    },
+    {
+      "path": "epoch_0035.pt",
+      "val_loss": -6.385319615559031,
+      "epoch": 35,
+      "timestamp": 1765589862.6397886
+    },
+    {
+      "path": "epoch_0040.pt",
+      "val_loss": -6.395867288394859,
+      "epoch": 40,
+      "timestamp": 1765592402.997985
+    },
+    {
+      "path": "epoch_0041.pt",
+      "val_loss": -6.535635703215093,
+      "epoch": 41,
+      "timestamp": 1765592918.3500776
+    },
+    {
+      "path": "epoch_0045.pt",
+      "val_loss": -6.6502968413811745,
+      "epoch": 45,
+      "timestamp": 1765594928.108639
+    },
+    {
+      "path": "epoch_0047.pt",
+      "val_loss": -6.773993933686253,
+      "epoch": 47,
+      "timestamp": 1765595935.3835778
+    },
+    {
+      "path": "epoch_0054.pt",
+      "val_loss": -6.94778440723365,
+      "epoch": 54,
+      "timestamp": 1765599504.8515816
+    },
+    {
+      "path": "epoch_0064.pt",
+      "val_loss": -6.9775426297476795,
+      "epoch": 64,
+      "timestamp": 1765604646.1268535
+    },
+    {
+      "path": "epoch_0065.pt",
+      "val_loss": -7.1922161161448015,
+      "epoch": 65,
+      "timestamp": 1765605147.121914
+    },
+    {
+      "path": "epoch_0066.pt",
+      "val_loss": -7.5815567434624285,
+      "epoch": 66,
+      "timestamp": 1765605649.3748326
+    },
+    {
+      "path": "epoch_0075.pt",
+      "val_loss": -7.94807387120796,
+      "epoch": 75,
+      "timestamp": 1765610233.4952447
+    },
+    {
+      "path": "epoch_0087.pt",
+      "val_loss": -8.149546527134424,
+      "epoch": 87,
+      "timestamp": 1765616304.290922
+    },
+    {
+      "path": "epoch_0088.pt",
+      "val_loss": -8.226143532912388,
+      "epoch": 88,
+      "timestamp": 1765616810.940113
+    },
+    {
+      "path": "epoch_0096.pt",
+      "val_loss": -8.342307987030257,
+      "epoch": 96,
+      "timestamp": 1765620829.8191009
+    },
+    {
+      "path": "epoch_0099.pt",
+      "val_loss": -8.382807660283465,
+      "epoch": 99,
+      "timestamp": 1765622354.266129
+    },
+    {
+      "path": "epoch_0103.pt",
+      "val_loss": -8.566114992806405,
+      "epoch": 103,
+      "timestamp": 1765624355.7318976
+    },
+    {
+      "path": "epoch_0110.pt",
+      "val_loss": -8.635882618639505,
+      "epoch": 110,
+      "timestamp": 1765627911.538539
+    },
+    {
+      "path": "epoch_0116.pt",
+      "val_loss": -8.64597791518,
+      "epoch": 116,
+      "timestamp": 1765630988.7216656
+    },
+    {
+      "path": "epoch_0123.pt",
+      "val_loss": -8.988806720484387,
+      "epoch": 123,
+      "timestamp": 1765634498.2443478
+    },
+    {
+      "path": "epoch_0131.pt",
+      "val_loss": -9.25045998806529,
+      "epoch": 131,
+      "timestamp": 1765638580.9488246
+    },
+    {
+      "path": "epoch_0136.pt",
+      "val_loss": -9.281768776024833,
+      "epoch": 136,
+      "timestamp": 1765641139.7985814
+    }
+  ],
+  "version": "v2"
+}

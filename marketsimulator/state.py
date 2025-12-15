@@ -9,6 +9,7 @@ import pytz
 
 from stock.data_utils import coerce_numeric
 from src.leverage_settings import LeverageSettings, get_leverage_settings
+from src.date_utils import is_nyse_open_on_date
 from loss_utils import CRYPTO_TRADING_FEE, TRADING_FEE
 from .execution import classify_liquidity, simulate_fill
 from src.fixtures import crypto_symbols
@@ -185,7 +186,8 @@ class SimulatedClock:
     @property
     def is_open(self) -> bool:
         local = _east_coast_time(self.current)
-        if local.weekday() >= 5:
+        # Use calendar-based check for holidays
+        if not is_nyse_open_on_date(local):
             return False
         open_time = local.replace(hour=9, minute=30, second=0, microsecond=0)
         close_time = local.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -197,7 +199,8 @@ class SimulatedClock:
         next_day = local
         while True:
             next_day += timedelta(days=1)
-            if next_day.weekday() < 5:
+            # Use calendar-based check for holidays
+            if is_nyse_open_on_date(next_day):
                 break
         open_time = next_day.replace(hour=9, minute=30, second=0, microsecond=0)
         return open_time.astimezone(pytz.utc)

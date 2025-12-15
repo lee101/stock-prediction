@@ -15,13 +15,19 @@ import pytz
 from scipy.optimize import differential_evolution
 
 from src.fixtures import all_crypto_symbols
+from src.date_utils import is_nyse_open_on_date
 
 EST = pytz.timezone("US/Eastern")
 
 
 def is_nyse_open(dt: datetime) -> bool:
+    """Check if NYSE is open at the given datetime.
+
+    Uses exchange_calendars for accurate holiday detection.
+    """
     dt_est = dt.astimezone(EST) if dt.tzinfo else EST.localize(dt)
-    if dt_est.weekday() >= 5:
+    # Use calendar-based check for holidays and weekends
+    if not is_nyse_open_on_date(dt_est):
         return False
     hour = dt_est.hour
     minute = dt_est.minute

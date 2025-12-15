@@ -28,6 +28,7 @@ from src.process_utils import (
 )
 from src.fixtures import active_crypto_symbols
 from src.symbol_utils import is_crypto_symbol
+from src.date_utils import is_nyse_open_on_date
 
 
 DEFAULT_INTERVAL_SECONDS = 300
@@ -287,9 +288,9 @@ class NeuralTradingLoop:
         symbol = neural_plan.symbol
         # Use model-provided asset flag first, fall back to symbol heuristic
         asset_is_crypto = (neural_plan.asset_flag > 0.5) or is_crypto_symbol(symbol)
-        # Skip opening new equity positions on weekends to avoid consuming buying power with stale orders
-        if self.skip_equity_weekends and not asset_is_crypto and datetime.now(timezone.utc).weekday() >= 5:
-            logger.info(f"Weekend skip for {symbol} (equity); not dispatching new entries.")
+        # Skip opening new equity positions on weekends/holidays to avoid consuming buying power with stale orders
+        if self.skip_equity_weekends and not asset_is_crypto and not is_nyse_open_on_date(datetime.now(timezone.utc)):
+            logger.info(f"Market closed skip for {symbol} (equity); not dispatching new entries.")
             return
         # Skip equities outside market hours
         if not asset_is_crypto:

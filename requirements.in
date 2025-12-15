@@ -76,6 +76,7 @@ fsspec>=2024.9
 yarl>=1.9
 websocket-client>=1.7
 websockets>=9,<11
+exchange-calendars>=4.5
 
 # Development extras
 black==24.10.0

@@ -18,6 +18,7 @@ from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging, get_log_filename
 from src.stock_utils import pairs_equal
 from src.trading_obj_utils import filter_to_realistic_positions
+from src.date_utils import is_nyse_open_on_date
 
 # Import position sizing utilities
 from src.sizing_utils import get_qty
@@ -290,7 +291,10 @@ def _current_spread_pct(symbol: str) -> Optional[float]:
 
 
 def _minutes_until_market_close(now_utc: Optional[datetime] = None) -> Optional[float]:
-    """Return minutes until NYSE close (16:00 ET) for the provided or current time."""
+    """Return minutes until NYSE close (16:00 ET) for the provided or current time.
+
+    Uses exchange_calendars for accurate holiday detection.
+    """
     try:
         eastern = pytz.timezone("US/Eastern")
     except Exception:
@@ -300,7 +304,8 @@ def _minutes_until_market_close(now_utc: Optional[datetime] = None) -> Optional[
     aware_now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
     now_et = aware_now.astimezone(eastern)
 
-    if now_et.weekday() >= 5:  # weekend
+    # Use calendar-based check for holidays and weekends
+    if not is_nyse_open_on_date(now_et):
         return None
 
     close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
