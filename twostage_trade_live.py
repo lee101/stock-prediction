@@ -47,6 +47,7 @@ from src.process_utils import (
 )
 from src.fixtures import active_crypto_symbols
 from src.symbol_utils import is_crypto_symbol
+from src.date_utils import is_nyse_open_on_date
 
 
 DEFAULT_INTERVAL_SECONDS = 300  # 5 minutes
@@ -357,10 +358,10 @@ class TwoStageTradingLoop:
         symbol = plan.symbol
         asset_is_crypto = is_crypto(symbol)
 
-        # Skip opening equity positions on weekends
+        # Skip opening equity positions on weekends/holidays
         if self.skip_equity_weekends and not asset_is_crypto:
-            if datetime.now(timezone.utc).weekday() >= 5:
-                logger.info(f"Weekend skip for {symbol} (equity)")
+            if not is_nyse_open_on_date(datetime.now(timezone.utc)):
+                logger.info(f"Market closed skip for {symbol} (equity)")
                 return
 
         # Skip equities outside market hours
