@@ -563,8 +563,8 @@ def has_current_open_position(symbol: str, side: str) -> bool:
         # if market value is significant
         # Use higher threshold for crypto (BTC can have tiny leftover positions worth $100+)
         min_significant_value = 200 if symbol.upper().endswith("USD") and not symbol.upper().startswith("USD") else 4
-        if float(position.market_value) < min_significant_value:
-            logger.debug(f"Ignoring insignificant position {symbol}: ${float(position.market_value):.2f} < ${min_significant_value}")
+        if abs(float(position.market_value)) < min_significant_value:
+            logger.debug(f"Ignoring insignificant position {symbol}: ${abs(float(position.market_value)):.2f} < ${min_significant_value}")
             continue
         if pairs_equal(position.symbol, symbol):
             if is_buy_side(position.side) and is_buy_side(side):
@@ -580,12 +580,47 @@ def open_order_at_price(symbol, qty, side, price):
     result = None
     qty = _enforce_min_notional(symbol, qty, price)
     price = _passivize_limit_price(symbol, side, price)
-    # todo: check if order is already open
-    # cancel all other orders on this symbol
+
+    # Anti-flapping: check if existing order is essentially the same
     current_open_orders = get_orders()
+    orders_to_cancel = []
+
     for order in current_open_orders:
-        if pairs_equal(order.symbol, symbol):
-            cancel_order(order)
+        if not pairs_equal(order.symbol, symbol):
+            continue
+
+        # Check if existing order is essentially the same (same side, similar price/qty)
+        existing_side = str(getattr(order, 'side', '')).lower()
+        existing_price = float(getattr(order, 'limit_price', 0) or 0)
+        existing_qty = float(getattr(order, 'qty', 0) or 0)
+
+        same_side = (is_buy_side(existing_side) and is_buy_side(side)) or \
+                    (is_sell_side(existing_side) and is_sell_side(side))
+
+        if same_side and existing_price > 0 and existing_qty > 0:
+            # Price tolerance: within 0.1% to reduce flapping
+            price_diff_pct = abs(existing_price - price) / price if price > 0 else float('inf')
+            price_similar = price_diff_pct < 0.001  # 10 bps = 0.1%
+
+            # Qty tolerance: within 5% OR notional difference < $100
+            qty_diff_pct = abs(existing_qty - qty) / qty if qty > 0 else float('inf')
+            notional_diff = abs((existing_qty - qty) * price)
+            qty_similar = qty_diff_pct < 0.05 or notional_diff < 100
+
+            if price_similar and qty_similar:
+                logger.info(
+                    f"[anti-flap] Skipping order update for {symbol} {side} - existing order similar: "
+                    f"qty {existing_qty:.6f} vs {qty:.6f}, price ${existing_price:.4f} vs ${price:.4f}"
+                )
+                return None  # Don't flap - existing order is good enough
+
+        # Order needs to be canceled (different side or different enough price/qty)
+        orders_to_cancel.append(order)
+
+    # Cancel orders that need replacing
+    for order in orders_to_cancel:
+        cancel_order(order)
+
     # also check that there are not any open positions on this symbol
     has_current_position = has_current_open_position(symbol, side)
     if has_current_position:
@@ -628,11 +663,47 @@ def open_order_at_price_or_all(symbol, qty, side, price):
     qty = _enforce_min_notional(symbol, qty, price)
     price = _passivize_limit_price(symbol, side, price)
 
-    # Cancel existing orders for this symbol
+    # Check for existing orders - skip if essentially the same to prevent flapping
     current_open_orders = get_orders()
+    orders_to_cancel = []
+
     for order in current_open_orders:
-        if pairs_equal(order.symbol, symbol):
-            cancel_order(order)
+        if not pairs_equal(order.symbol, symbol):
+            continue
+
+        # Check if existing order is essentially the same (same side, similar price/qty)
+        existing_price = float(order.limit_price) if order.limit_price else 0
+        existing_qty = float(order.qty) if order.qty else 0
+        existing_side = order.side
+
+        # Same side check
+        same_side = (is_buy_side(existing_side) and is_buy_side(side)) or \
+                    (is_sell_side(existing_side) and is_sell_side(side))
+
+        if same_side:
+            # Price tolerance: within 0.03% (tighter to allow ramp_into_position to work)
+            price_diff_pct = abs(existing_price - price) / price if price > 0 else float('inf')
+            price_similar = price_diff_pct < 0.0003  # 3 bps = 0.03%
+
+            # Qty tolerance: within 5% OR notional difference < $100
+            qty_diff_pct = abs(existing_qty - qty) / qty if qty > 0 else float('inf')
+            notional_diff = abs((existing_qty - qty) * price)
+            qty_similar = qty_diff_pct < 0.05 or notional_diff < 100
+
+            if price_similar and qty_similar:
+                logger.info(
+                    f"Skipping order update for {symbol} - existing order is similar: "
+                    f"qty {existing_qty:.6f} vs {qty:.6f} (diff: ${notional_diff:.2f}), "
+                    f"price ${existing_price:.4f} vs ${price:.4f} (diff: {price_diff_pct*100:.4f}%)"
+                )
+                return None  # Don't flap - existing order is good enough
+
+        # If we get here, order needs to be replaced
+        orders_to_cancel.append(order)
+
+    # Cancel orders that need replacing
+    for order in orders_to_cancel:
+        cancel_order(order)
 
     # Check for existing position and calculate remaining qty needed
     current_positions = get_all_positions()
@@ -685,6 +756,7 @@ def open_order_at_price_or_all(symbol, qty, side, price):
                     limit_price=str(price_rounded),
                 )
             )
+            invalidate_orders_cache()  # Invalidate cache after successful order
             return result
 
         except Exception as e:
@@ -1108,16 +1180,41 @@ def close_position_at_almost_current_price(position, row):
     return result
 
 
+# Orders cache to prevent rate limiting from repeated get_orders calls
+_orders_cache = None
+_orders_cache_time = 0
+_ORDERS_CACHE_TTL_SECONDS = 5  # Cache orders for 5 seconds
+
+
 @retry(delay=.1, tries=3)
-def get_orders():
+def get_orders(use_cache: bool = True):
+    global _orders_cache, _orders_cache_time
+
+    # Check cache
+    if use_cache and _orders_cache is not None:
+        cache_age = monotonic() - _orders_cache_time
+        if cache_age < _ORDERS_CACHE_TTL_SECONDS:
+            logger.debug(f"Using cached orders data (age: {cache_age:.1f}s)")
+            return _orders_cache
+
     try:
-        return alpaca_api.get_orders()
+        orders = alpaca_api.get_orders()
+        _orders_cache = orders
+        _orders_cache_time = monotonic()
+        return orders
     except Exception as e:
         logger.error(e)
         if _missing_alpaca_credentials() or _is_unauthorized_error(e):
             logger.warning("Alpaca orders unavailable; returning empty list.")
             return []
         raise
+
+
+def invalidate_orders_cache():
+    """Invalidate orders cache after placing/canceling orders."""
+    global _orders_cache, _orders_cache_time
+    _orders_cache = None
+    _orders_cache_time = 0
 
 
 def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, side="long", bid=None, ask=None):
@@ -1328,6 +1425,7 @@ def cancel_order(order):
         else:
             order_id = order
         alpaca_api.cancel_order_by_id(order_id)
+        invalidate_orders_cache()  # Invalidate cache after cancel
     except Exception as e:
         # Check if order is already pending cancellation (error 42210000)
         error_str = str(e)
@@ -1335,6 +1433,7 @@ def cancel_order(order):
         order_id = order.id if hasattr(order, 'id') else order
         if "42210000" in error_str or "pending cancel" in error_str.lower():
             logger.info(f"Order {order_id} already pending cancellation, treating as success")
+            invalidate_orders_cache()  # Still invalidate cache
             return  # Treat as success - order is already being cancelled
         logger.error(e)
         # traceback
