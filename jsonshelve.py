@@ -3,8 +3,10 @@ pickle (so data must be simple structures instead of arbitrary Python
 objects).
 """
 import datetime
+import fcntl
 import json
 import os
+import tempfile
 from collections.abc import MutableMapping
 
 try:
@@ -86,11 +88,29 @@ class FlatShelf(MemoryShelf):
 
     def load(self):
         with open(self.filename) as f:
-            self.data = json.load(f)
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+            try:
+                self.data = json.load(f)
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     def save(self):
-        with open(self.filename, 'w') as f:
-            json.dump(self.data, f, default=default)
+        # Atomic write: write to temp file, then rename
+        dir_path = os.path.dirname(os.path.abspath(self.filename))
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(self.data, f, default=default)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.filename)
+        except Exception:
+            # Clean up temp file on error
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 class PickleShelf(MemoryShelf):
