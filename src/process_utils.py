@@ -287,13 +287,17 @@ def _stop_existing_watcher(config_path: Path, *, reason: str) -> bool:
     terminated = False
     if pid:
         try:
-            os.kill(pid, signal.SIGTERM)
-            logger.info(f"Terminated prior maxdiff watcher at {config_path.name} (pid={pid})")
+            # Use killpg to kill entire process group since watchers are spawned
+            # with shell=True + start_new_session=True. The PID stored is the shell
+            # wrapper, and os.kill() only kills the shell leaving the Python child
+            # orphaned. killpg() kills the entire group including the Python child.
+            os.killpg(pid, signal.SIGTERM)
+            logger.info(f"Terminated prior maxdiff watcher process group at {config_path.name} (pgid={pid})")
             terminated = True
         except ProcessLookupError:
             pass  # Already exited, nothing to do
         except Exception as exc:  # pragma: no cover - best effort logging
-            logger.warning(f"Failed to terminate watcher {config_path} pid={pid}: {exc}")
+            logger.warning(f"Failed to terminate watcher {config_path} pgid={pid}: {exc}")
 
     if metadata.get("active") or pid:
         metadata["active"] = False
