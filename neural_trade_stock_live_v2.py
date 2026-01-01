@@ -95,6 +95,7 @@ class NeuralTradingLoopV2:
         runtime: DailyTradingRuntimeV2,
         symbols: Sequence[str],
         *,
+        non_tradable: Optional[Sequence[str]] = None,
         interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
         min_trade_amount: float = 0.05,
         max_plans: int = 0,
@@ -103,7 +104,12 @@ class NeuralTradingLoopV2:
         log_windows: bool = False,
     ) -> None:
         self.runtime = runtime
+        # All symbols for data/cross-attention
         self.symbols = [symbol.upper() for symbol in symbols]
+        # Symbols excluded from trading but still used for cross-attention
+        self.non_tradable = set(s.upper() for s in (non_tradable or []))
+        # Symbols we actively trade
+        self.tradable_symbols = [s for s in self.symbols if s not in self.non_tradable]
         self.interval_seconds = max(30, int(interval_seconds))
         self.min_trade_amount = max(0.0, float(min_trade_amount))
         self.max_plans = max(0, int(max_plans))
@@ -113,6 +119,10 @@ class NeuralTradingLoopV2:
         self._stop_requested = False
         self._bootstrapped = False
         self._last_forecast_refresh: Optional[datetime.date] = None
+
+        if self.non_tradable:
+            logger.info(f"Non-tradable symbols (data only): {sorted(self.non_tradable)}")
+            logger.info(f"Actively trading: {self.tradable_symbols}")
 
     def run(self, *, once: bool = False) -> None:
         """Main trading loop."""
@@ -195,15 +205,21 @@ class NeuralTradingLoopV2:
 
     def _generate_plans(self) -> List[NeuralPlan]:
         """Generate trading plans from V2 runtime."""
+        # Pass ALL symbols for cross-attention, filter results for tradable only
         raw_plans = self.runtime.generate_plans(self.symbols)
         enriched: List[NeuralPlan] = []
+        tradable_set = set(self.tradable_symbols)
 
         for plan in raw_plans:
+            sym = plan.symbol.upper()
+            # Skip non-tradable symbols
+            if sym not in tradable_set:
+                continue
             if plan.trade_amount <= self.min_trade_amount:
                 continue
             enriched.append(NeuralPlan(
                 plan=plan,
-                symbol=plan.symbol.upper(),
+                symbol=sym,
                 asset_flag=plan.asset_class,
                 priority=0,
             ))
@@ -301,19 +317,21 @@ class NeuralTradingLoopV2:
         )
 
     def _close_orphan_positions(self) -> None:
-        """Close positions not in current tradable set."""
+        """Close positions not in current tradable set (includes non-tradable symbols)."""
         try:
             positions = alpaca_wrapper.get_all_positions()
         except Exception as exc:
             logger.warning(f"Unable to load positions: {exc}")
             return
 
-        tradable = set(self.symbols)
+        # Only keep positions in actively tradable symbols
+        tradable = set(self.tradable_symbols)
         orphans = []
 
         for pos in positions:
             sym = getattr(pos, "symbol", "").upper()
-            if sym and sym not in tradable:
+            # Close if not in tradable set OR if explicitly marked non-tradable
+            if sym and (sym not in tradable or sym in self.non_tradable):
                 try:
                     qty = float(getattr(pos, "qty", 0.0))
                 except Exception:
@@ -362,7 +380,8 @@ def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="V2 Neural daily live trading.")
     parser.add_argument("--checkpoint", required=True, help="Path to V2 checkpoint.")
-    parser.add_argument("--symbols", nargs="*", help="Symbols to trade.")
+    parser.add_argument("--symbols", nargs="*", help="Symbols for data/cross-attention.")
+    parser.add_argument("--non-tradable", nargs="*", default=[], help="Symbols to exclude from trading (still used for cross-attention).")
     parser.add_argument("--data-root", default="trainingdata/train")
     parser.add_argument("--forecast-cache", default="strategytraining/forecast_cache")
     parser.add_argument("--sequence-length", type=int, default=256)
@@ -406,9 +425,13 @@ def main() -> None:
         non_tradable=() if args.ignore_non_tradable else None,
     )
 
+    # Get non-tradable symbols (use underscore for Python attr access)
+    non_tradable = getattr(args, 'non_tradable', []) or []
+
     loop = NeuralTradingLoopV2(
         runtime,
         symbols,
+        non_tradable=non_tradable,
         interval_seconds=args.interval_seconds,
         min_trade_amount=args.min_trade_amount,
         max_plans=args.max_plans,
