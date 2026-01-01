@@ -246,3 +246,9 @@ trainingdatabp/
 strategytraining/forecast_cache_backup_20251130_091549/
 llms_vs_chronos2_returns.png
 gemini_vs_chronos2_returns.png
+nepa
+neuraldailyv4/checkpoints/
+neuraldailyv3timed/checkpoints/
+experiments/model_sizes
+experiments/walk_forward/
+positions_shelf.json.bak
