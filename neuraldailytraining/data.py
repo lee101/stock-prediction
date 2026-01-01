@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -13,6 +15,10 @@ from torch.utils.data import DataLoader, Dataset
 
 from .config import DailyDatasetConfig
 from .symbol_groups import build_correlation_groups, get_group_id, group_ids_from_clusters
+
+# Import NYSE calendar for holiday awareness
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.date_utils import is_nyse_open_on_date
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +43,10 @@ DEFAULT_FEATURES: Tuple[str, ...] = (
     "chronos_high_delta",
     "chronos_low_delta",
     "asset_class",
+    # Holiday awareness features (V11+)
+    "is_tradable_tomorrow",
+    "days_until_trade_sin",
+    "days_until_trade_cos",
 )
 
 FORECAST_COLUMNS = (
@@ -203,6 +213,14 @@ class SymbolFrameBuilder:
         ).fillna(0.0)
         work["atr_pct_14"] = self._atr_percent(work).shift(1)
         work["asset_class"] = float(asset_flag)
+
+        # Holiday awareness features (V11+)
+        # For crypto (asset_flag > 0.5), markets are always tradable
+        # For stocks (asset_flag <= 0.5), check NYSE calendar
+        is_crypto = asset_flag > 0.5
+        work["is_tradable_tomorrow"], work["days_until_trade_sin"], work["days_until_trade_cos"] = \
+            self._compute_holiday_features(work["date"], is_crypto)
+
         work.replace([np.inf, -np.inf], 0.0, inplace=True)
         return work
 
@@ -233,6 +251,49 @@ class SymbolFrameBuilder:
         tr = components.max(axis=1).fillna(0.0)
         atr = tr.rolling(window, min_periods=1).mean()
         return atr / close.clip(lower=1e-6)
+
+    @staticmethod
+    def _compute_holiday_features(
+        dates: pd.Series, is_crypto: bool
+    ) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """Compute holiday awareness features.
+
+        Returns:
+            is_tradable_tomorrow: 1.0 if the next day is tradable, 0.0 otherwise
+            days_until_trade_sin: sin encoding of days until next trading day
+            days_until_trade_cos: cos encoding of days until next trading day
+        """
+        is_tradable = []
+        days_until = []
+
+        for date in dates:
+            if is_crypto:
+                # Crypto is always tradable
+                is_tradable.append(1.0)
+                days_until.append(1)
+            else:
+                # Check NYSE calendar for next trading day
+                days_ahead = 1
+                max_lookahead = 5  # Max 5 days (long weekend + holiday)
+                while days_ahead <= max_lookahead:
+                    check_date = date + timedelta(days=days_ahead)
+                    if is_nyse_open_on_date(check_date):
+                        break
+                    days_ahead += 1
+
+                is_tradable.append(1.0 if days_ahead == 1 else 0.0)
+                days_until.append(min(days_ahead, max_lookahead))
+
+        # Convert to pandas series
+        is_tradable_series = pd.Series(is_tradable, index=dates.index)
+        days_until_series = pd.Series(days_until, index=dates.index)
+
+        # Cyclical encoding for days until trade (period = 5 for max lookahead)
+        radians = 2 * math.pi * days_until_series / 5
+        days_sin = np.sin(radians)
+        days_cos = np.cos(radians)
+
+        return is_tradable_series, days_sin, days_cos
 
 
 class DailySymbolDataset(Dataset):
@@ -499,9 +560,20 @@ class DailyDataModule:
         tail = min(tail, total - self.sequence_length - 1)
         if tail <= 0:
             raise ValueError("Validation tail is non-positive; reduce sequence length or validation_days.")
-        split_idx = total - tail
+
+        # FIX: Add gap between train and validation to prevent data leakage
+        # Gap size = lookahead_days to ensure no target overlap
+        gap_days = getattr(self.config, 'lookahead_days', 20)
+        split_idx = total - tail - gap_days
+
+        # Training: up to split_idx (no overlap with validation)
         train = frame.iloc[:split_idx].reset_index(drop=True)
-        val = frame.iloc[split_idx - self.sequence_length :].reset_index(drop=True)
+
+        # Validation: starts AFTER the gap (no overlap with training targets)
+        # Include enough history for sequence_length context
+        val_start = split_idx + gap_days
+        val = frame.iloc[val_start - self.sequence_length:].reset_index(drop=True)
+
         return train, val
 
     def _build_symbol_frame(self, symbol: str) -> pd.DataFrame:
