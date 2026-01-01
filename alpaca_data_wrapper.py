@@ -26,6 +26,18 @@ def _merge_and_dedup(existing: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
     if existing.empty:
         combined = new
     else:
+        # Ensure both indices are datetime with consistent timezone
+        if not existing.empty and existing.index.dtype == 'object':
+            existing.index = pd.to_datetime(existing.index, utc=True)
+        if not new.empty and new.index.dtype == 'object':
+            new.index = pd.to_datetime(new.index, utc=True)
+
+        # Make both indices timezone-aware (UTC) for comparison
+        if not existing.empty and existing.index.tz is None:
+            existing.index = existing.index.tz_localize('UTC')
+        if not new.empty and new.index.tz is None:
+            new.index = new.index.tz_localize('UTC')
+
         combined = pd.concat([existing, new], ignore_index=False)
     combined = combined.sort_index()
     combined = combined[~combined.index.duplicated(keep="last")]
