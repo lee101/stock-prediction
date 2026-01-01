@@ -252,6 +252,9 @@ def main(
             logger.error("Symbol is required for debug_raw_data command")
             return
         debug_raw_data(pair)
+    elif command == 'trade_pnl':
+        # Show trade history and PnL for crypto positions
+        show_trade_pnl(symbol=pair, days=int(target_qty or 7))
 
 
 _DATA_CLIENT: Optional[StockHistoricalDataClient] = None
@@ -1143,6 +1146,177 @@ def show_account():
                     logger.info(f"  {symbol}: avg_return={avg_ret:.4f} [filled]")
     except Exception as e:
         logger.warning(f"Failed to load maxdiff plans: {e}")
+
+
+def show_trade_pnl(symbol: Optional[str] = None, days: int = 7):
+    """
+    Show trade history and calculate PnL for crypto positions.
+
+    Matches buy/sell pairs for the same symbol and calculates:
+    - Realized PnL from closed trades (matched buy/sell pairs)
+    - Unrealized PnL from open positions
+
+    Args:
+        symbol: Filter to specific symbol (e.g., 'LINKUSD'), or None for all crypto
+        days: Number of days of history to analyze
+    """
+    from collections import defaultdict
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus, OrderStatus
+    import time
+
+    logger.info(f"\n{'='*60}")
+    logger.info(f"TRADE PnL ANALYSIS - Last {days} days")
+    if symbol:
+        logger.info(f"Filtered to: {symbol}")
+    logger.info(f"{'='*60}")
+
+    # Get filled orders from the last N days
+    after_date = datetime.now(timezone.utc) - timedelta(days=days)
+
+    try:
+        request = GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED,
+            after=after_date,
+            limit=500,
+        )
+        time.sleep(1)  # Rate limit safety
+        orders = alpaca_wrapper.alpaca_api.get_orders(filter=request)
+    except Exception as e:
+        logger.error(f"Failed to fetch orders: {e}")
+        return
+
+    # Filter to filled crypto orders
+    filled_orders = []
+    for o in orders:
+        if str(o.status) != 'OrderStatus.FILLED':
+            continue
+        if not o.symbol.endswith('USD'):  # Only crypto
+            continue
+        if symbol and o.symbol != symbol:
+            continue
+        filled_orders.append(o)
+
+    logger.info(f"\nFound {len(filled_orders)} filled crypto orders")
+
+    # Group by symbol
+    by_symbol = defaultdict(list)
+    for o in filled_orders:
+        by_symbol[o.symbol].append({
+            'time': o.filled_at,
+            'side': str(o.side).replace('OrderSide.', '').lower(),
+            'qty': float(o.filled_qty),
+            'price': float(o.filled_avg_price),
+            'value': float(o.filled_qty) * float(o.filled_avg_price),
+        })
+
+    # Sort each symbol's orders by time
+    for sym in by_symbol:
+        by_symbol[sym].sort(key=lambda x: x['time'])
+
+    # Calculate realized PnL by matching buy/sell pairs (FIFO)
+    total_realized_pnl = 0.0
+    total_realized_trades = 0
+
+    logger.info("\n" + "="*60)
+    logger.info("FILLED ORDERS BY SYMBOL")
+    logger.info("="*60)
+
+    for sym, sym_orders in sorted(by_symbol.items()):
+        buys = [o for o in sym_orders if o['side'] == 'buy']
+        sells = [o for o in sym_orders if o['side'] == 'sell']
+
+        total_bought_qty = sum(o['qty'] for o in buys)
+        total_bought_value = sum(o['value'] for o in buys)
+        total_sold_qty = sum(o['qty'] for o in sells)
+        total_sold_value = sum(o['value'] for o in sells)
+
+        avg_buy_price = total_bought_value / total_bought_qty if total_bought_qty > 0 else 0
+        avg_sell_price = total_sold_value / total_sold_qty if total_sold_qty > 0 else 0
+
+        logger.info(f"\n{sym}:")
+        logger.info(f"  Buys:  {len(buys)} orders, {total_bought_qty:.6f} qty @ avg ${avg_buy_price:.4f} = ${total_bought_value:.2f}")
+        logger.info(f"  Sells: {len(sells)} orders, {total_sold_qty:.6f} qty @ avg ${avg_sell_price:.4f} = ${total_sold_value:.2f}")
+
+        # Match buy/sell pairs (FIFO) to calculate realized PnL
+        buy_queue = list(buys)  # Copy
+        realized_pnl = 0.0
+        matched_trades = 0
+
+        for sell in sells:
+            sell_qty_remaining = sell['qty']
+            while sell_qty_remaining > 0 and buy_queue:
+                buy = buy_queue[0]
+                match_qty = min(sell_qty_remaining, buy['qty'])
+
+                # Calculate PnL for this match
+                pnl = match_qty * (sell['price'] - buy['price'])
+                realized_pnl += pnl
+                matched_trades += 1
+
+                # Update quantities
+                sell_qty_remaining -= match_qty
+                buy['qty'] -= match_qty
+
+                if buy['qty'] <= 0.000001:  # Exhausted
+                    buy_queue.pop(0)
+
+        if matched_trades > 0:
+            logger.info(f"  Realized PnL: ${realized_pnl:+.2f} from {matched_trades} matched trades")
+            total_realized_pnl += realized_pnl
+            total_realized_trades += matched_trades
+
+        # Show individual fills
+        logger.info(f"  Recent fills:")
+        for o in sym_orders[-5:]:  # Last 5
+            logger.info(f"    {o['time'].strftime('%Y-%m-%d %H:%M')}: {o['side'].upper()} {o['qty']:.6f} @ ${o['price']:.4f}")
+
+    # Get current positions for unrealized PnL
+    logger.info("\n" + "="*60)
+    logger.info("CURRENT POSITIONS (Unrealized PnL)")
+    logger.info("="*60)
+
+    positions = alpaca_wrapper.get_all_positions()
+    total_unrealized_pnl = 0.0
+    total_cost_basis = 0.0
+    total_market_value = 0.0
+
+    for p in positions:
+        if not p.symbol.endswith('USD'):
+            continue
+        if symbol and p.symbol != symbol:
+            continue
+
+        qty = float(p.qty)
+        avg_entry = float(p.avg_entry_price)
+        current_price = float(p.current_price)
+        cost_basis = float(p.cost_basis)
+        market_value = float(p.market_value)
+        unrealized_pl = float(p.unrealized_pl)
+        unrealized_plpc = float(p.unrealized_plpc) * 100
+
+        total_unrealized_pnl += unrealized_pl
+        total_cost_basis += cost_basis
+        total_market_value += market_value
+
+        logger.info(f"\n{p.symbol}:")
+        logger.info(f"  Position: {qty:.6f} @ avg ${avg_entry:.4f}")
+        logger.info(f"  Current Price: ${current_price:.4f}")
+        logger.info(f"  Cost Basis: ${cost_basis:.2f}")
+        logger.info(f"  Market Value: ${market_value:.2f}")
+        logger.info(f"  Unrealized P&L: ${unrealized_pl:+.2f} ({unrealized_plpc:+.2f}%)")
+
+    # Summary
+    logger.info("\n" + "="*60)
+    logger.info("SUMMARY")
+    logger.info("="*60)
+    logger.info(f"Realized PnL (matched trades): ${total_realized_pnl:+.2f} ({total_realized_trades} trades)")
+    logger.info(f"Unrealized PnL (open positions): ${total_unrealized_pnl:+.2f}")
+    logger.info(f"Total PnL: ${total_realized_pnl + total_unrealized_pnl:+.2f}")
+    if total_cost_basis > 0:
+        total_return_pct = ((total_market_value - total_cost_basis + total_realized_pnl) / total_cost_basis) * 100
+        logger.info(f"Total Return: {total_return_pct:+.2f}%")
+    logger.info("="*60)
 
 
 def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=None):
