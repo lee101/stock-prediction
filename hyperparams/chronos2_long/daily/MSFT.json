@@ -1,0 +1,15 @@
+{
+  "symbol": "MSFT",
+  "context_length": 256,
+  "use_multivariate": false,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1,
+    2
+  ],
+  "aggregation_method": "trimmed",
+  "mae_pct": 0.7379568170588625,
+  "directional_accuracy": 50.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}
