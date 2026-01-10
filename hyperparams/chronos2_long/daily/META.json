@@ -1,0 +1,15 @@
+{
+  "symbol": "META",
+  "context_length": 512,
+  "use_multivariate": false,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1,
+    3
+  ],
+  "aggregation_method": "median",
+  "mae_pct": 0.9384146907081639,
+  "directional_accuracy": 70.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}

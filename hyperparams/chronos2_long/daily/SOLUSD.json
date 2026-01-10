@@ -1,0 +1,14 @@
+{
+  "symbol": "SOLUSD",
+  "context_length": 256,
+  "use_multivariate": true,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1
+  ],
+  "aggregation_method": "single",
+  "mae_pct": 2.3131651539971805,
+  "directional_accuracy": 30.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}

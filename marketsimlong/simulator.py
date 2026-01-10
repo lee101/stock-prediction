@@ -117,6 +117,8 @@ class LongTermDailySimulator:
 
         # State
         self.cash = sim_config.initial_cash
+        self.margin_borrowed = 0.0  # Amount borrowed on margin
+        self.total_margin_interest_paid = 0.0  # Track total margin interest
         self.positions: Dict[str, Position] = {}
         self.trades: List[TradeRecord] = []
         self.daily_results: List[DayResult] = []
@@ -125,26 +127,34 @@ class LongTermDailySimulator:
     def reset(self) -> None:
         """Reset simulator state."""
         self.cash = self.config.initial_cash
+        self.margin_borrowed = 0.0
+        self.total_margin_interest_paid = 0.0
         self.positions.clear()
         self.trades.clear()
         self.daily_results.clear()
         self.equity_values.clear()
 
     def get_portfolio_value(self, prices: Dict[str, float]) -> float:
-        """Calculate current portfolio value.
+        """Calculate current portfolio value (net of margin).
 
         Args:
             prices: Dict of symbol -> current price
 
         Returns:
-            Total portfolio value (cash + positions)
+            Total portfolio value (cash + positions - margin borrowed)
         """
         position_value = 0.0
         for symbol, pos in self.positions.items():
             price = prices.get(symbol, pos.entry_price)
             position_value += pos.quantity * price
 
-        return self.cash + position_value
+        return self.cash + position_value - self.margin_borrowed
+
+    def get_buying_power(self) -> float:
+        """Get available buying power including leverage."""
+        # Buying power = cash * leverage - margin already used
+        max_buying_power = self.config.initial_cash * self.config.leverage
+        return max(0, max_buying_power - self.margin_borrowed + self.cash - self.config.initial_cash)
 
     def close_position(
         self,
@@ -174,6 +184,13 @@ class LongTermDailySimulator:
         proceeds = notional - fee
 
         self.cash += proceeds
+
+        # Pay back margin if we have borrowed funds and excess cash
+        if self.margin_borrowed > 0 and self.cash > self.config.initial_cash:
+            excess = self.cash - self.config.initial_cash
+            payback = min(excess, self.margin_borrowed)
+            self.margin_borrowed -= payback
+            self.cash -= payback
 
         trade = TradeRecord(
             timestamp=trade_date,
@@ -206,17 +223,42 @@ class LongTermDailySimulator:
             trade_date: Date of trade
 
         Returns:
-            TradeRecord or None if insufficient cash
+            TradeRecord or None if insufficient buying power
         """
         # Calculate fee
         fee = notional_amount * self.config.maker_fee
         total_cost = notional_amount + fee
 
+        # Check if leverage applies (stocks only or all)
+        is_stock = not is_crypto_symbol(symbol)
+        can_use_leverage = (is_stock or not self.config.leverage_stocks_only) and self.config.leverage > 1.0
+
         if total_cost > self.cash:
-            # Adjust notional to fit available cash
-            notional_amount = self.cash / (1 + self.config.maker_fee)
-            fee = notional_amount * self.config.maker_fee
-            total_cost = notional_amount + fee
+            if can_use_leverage:
+                # Borrow the difference on margin
+                shortfall = total_cost - self.cash
+                max_margin = self.config.initial_cash * (self.config.leverage - 1)
+                available_margin = max_margin - self.margin_borrowed
+
+                if shortfall <= available_margin:
+                    # Borrow on margin
+                    self.margin_borrowed += shortfall
+                    self.cash += shortfall  # Cash increases from borrowing
+                else:
+                    # Cap at available margin
+                    max_affordable = self.cash + available_margin
+                    notional_amount = max_affordable / (1 + self.config.maker_fee)
+                    fee = notional_amount * self.config.maker_fee
+                    total_cost = notional_amount + fee
+                    margin_needed = total_cost - self.cash
+                    if margin_needed > 0:
+                        self.margin_borrowed += margin_needed
+                        self.cash += margin_needed
+            else:
+                # No leverage - adjust to fit available cash
+                notional_amount = self.cash / (1 + self.config.maker_fee)
+                fee = notional_amount * self.config.maker_fee
+                total_cost = notional_amount + fee
 
         if notional_amount <= 0:
             return None
@@ -290,10 +332,18 @@ class LongTermDailySimulator:
 
         # Open positions for top N symbols not already held
         if top_symbols:
-            # Equal weight allocation
-            available_cash = self.cash
+            # Equal weight allocation with leverage
+            # With leverage, we can allocate more than cash
+            portfolio_value = self.get_portfolio_value(prices)
+            max_position_value = portfolio_value * self.config.leverage
+            current_position_value = sum(
+                pos.quantity * prices.get(pos.symbol, pos.entry_price)
+                for pos in self.positions.values()
+            )
+            available_to_allocate = max_position_value - current_position_value
+
             weight = 1.0 / len(top_symbols) if self.config.equal_weight else self.config.max_position_size
-            allocation_per_symbol = available_cash * weight
+            allocation_per_symbol = available_to_allocate * weight
 
             for symbol in top_symbols:
                 if symbol in self.positions:
@@ -310,6 +360,12 @@ class LongTermDailySimulator:
                 )
                 if trade:
                     day_trades.append(trade)
+
+        # Calculate margin interest for the day
+        if self.margin_borrowed > 0:
+            daily_interest = self.margin_borrowed * self.config.daily_margin_rate
+            self.cash -= daily_interest
+            self.total_margin_interest_paid += daily_interest
 
         # Calculate ending portfolio value
         ending_value = self.get_portfolio_value(prices)

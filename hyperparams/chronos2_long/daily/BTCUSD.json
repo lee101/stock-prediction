@@ -1,0 +1,15 @@
+{
+  "symbol": "BTCUSD",
+  "context_length": 256,
+  "use_multivariate": true,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1,
+    3
+  ],
+  "aggregation_method": "median",
+  "mae_pct": 1.2688658233798722,
+  "directional_accuracy": 60.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}

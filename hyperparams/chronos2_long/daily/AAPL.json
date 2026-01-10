@@ -1,0 +1,14 @@
+{
+  "symbol": "AAPL",
+  "context_length": 512,
+  "use_multivariate": true,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1
+  ],
+  "aggregation_method": "single",
+  "mae_pct": 0.4509521693953504,
+  "directional_accuracy": 70.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}

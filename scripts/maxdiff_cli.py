@@ -102,7 +102,10 @@ def _prepare_status(config_path: Optional[Path], defaults: dict) -> dict:
     status = _load_status(config_path)
     status.update(defaults)
     status.setdefault("config_version", STATUS_VERSION)
-    status["pid"] = os.getpid()
+    # Store PGID (process group ID) instead of PID because watchers are spawned
+    # with start_new_session=True and we use os.killpg() to terminate them.
+    # The PGID is the shell's PID when spawned with shell=True + start_new_session=True.
+    status["pid"] = os.getpgid(os.getpid())
     if config_path is not None:
         status["config_path"] = str(config_path)
     return status
@@ -753,6 +756,11 @@ def close_position_at_maxdiff_takeprofit(
         )
 
     consecutive_errors = 0
+    # Track last successful order submission to prevent rapid cancel/reopen cycles
+    # when API returns empty lists due to rate limiting
+    last_order_submitted_at: Optional[datetime] = None
+    # Cooldown period: don't cancel/replace within this window after placing an order
+    order_cooldown_seconds = max(poll_seconds * 3, 60)  # At least 3 poll cycles or 60s
     # Crypto watchers run 24/7 - retry indefinitely
     # Stock watchers have a limit to avoid wasting resources when market is closed
     is_crypto = asset_class.lower() == "crypto"
@@ -794,6 +802,8 @@ def close_position_at_maxdiff_takeprofit(
                 if position is None or qty <= 0:
                     status = _update_status(config_path, status, state="awaiting_position")
                     _cancel_orders(symbol, side=exit_side)
+                    # Reset submission tracker since we have no position to exit
+                    last_order_submitted_at = None
                     time.sleep(poll_seconds)
                     consecutive_errors = 0  # Reset error counter on success
                     continue
@@ -843,6 +853,8 @@ def close_position_at_maxdiff_takeprofit(
                             exit_side,
                         )
                         status = _update_status(config_path, status, state="old_exit_orders_canceled")
+                        # Reset submission tracker since we canceled
+                        last_order_submitted_at = None
                         time.sleep(poll_seconds)
                         consecutive_errors = 0
                         continue
@@ -852,10 +864,34 @@ def close_position_at_maxdiff_takeprofit(
                     consecutive_errors = 0  # Reset error counter on success
                     continue
 
+                # Guard against rapid cancel/reopen when API returns empty due to rate limits
+                # If we recently submitted an order, don't cancel and re-submit
+                if last_order_submitted_at is not None:
+                    time_since_submit = (now - last_order_submitted_at).total_seconds()
+                    if time_since_submit < order_cooldown_seconds:
+                        watcher_logger.debug(
+                            "Skipping order replacement for %s - within cooldown period "
+                            "(%.1fs since last submit, cooldown=%ds). "
+                            "Order may exist but API returned empty list (rate limit?).",
+                            symbol,
+                            time_since_submit,
+                            order_cooldown_seconds,
+                        )
+                        status = _update_status(
+                            config_path,
+                            status,
+                            state="cooldown_wait",
+                            time_since_submit=time_since_submit,
+                            cooldown_seconds=order_cooldown_seconds,
+                        )
+                        time.sleep(poll_seconds)
+                        consecutive_errors = 0
+                        continue
+
                 _cancel_orders(symbol, side=exit_side)
                 status = _update_status(config_path, status, state="submitting_exit")
                 try:
-                    alpaca_wrapper.open_order_at_price(symbol, order_qty, exit_side, takeprofit_price)
+                    result = alpaca_wrapper.open_order_at_price(symbol, order_qty, exit_side, takeprofit_price)
                 except Exception as exc:
                     watcher_logger.error("Failed to submit takeprofit order for %s: %s", symbol, exc)
                     status = _update_status(
@@ -865,12 +901,15 @@ def close_position_at_maxdiff_takeprofit(
                         error=str(exc),
                     )
                 else:
+                    # Track successful submission (result is None if anti-flap skipped, still counts)
+                    last_order_submitted_at = now
                     open_orders = list(_orders_for_symbol(symbol, side=exit_side))
                     status = _update_status(
                         config_path,
                         status,
                         state="exit_submitted",
                         open_order_count=len(open_orders),
+                        last_order_submitted_at=now.isoformat(),
                     )
                     consecutive_errors = 0  # Reset error counter on success
                 time.sleep(poll_seconds)

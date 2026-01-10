@@ -148,11 +148,28 @@ def run_backtest(
     total_pnl = final_equity - initial_equity
     total_return = (final_equity / initial_equity - 1) * 100
 
+    # Calculate annualized return
+    # Period duration in hours
+    period_hours = len(result.equity_curve)
+    hours_per_year = 24 * 365  # 8760
+
+    # Annualize: (1 + period_return)^(8760/period_hours) - 1
+    period_return = final_equity / initial_equity - 1
+    if period_hours > 0 and period_return > -1:
+        annualized_return = ((1 + period_return) ** (hours_per_year / period_hours) - 1) * 100
+        annualized_pnl = initial_equity * (annualized_return / 100)
+    else:
+        annualized_return = 0.0
+        annualized_pnl = 0.0
+
     print(f"\nPNL Summary:")
     print(f"  Initial Equity: ${initial_equity:,.2f}")
     print(f"  Final Equity:   ${final_equity:,.2f}")
     print(f"  Total PnL:      ${total_pnl:+,.2f}")
     print(f"  Total Return:   {total_return:+.2f}%")
+    print(f"\nAnnualized (from {period_hours}h test period):")
+    print(f"  Annualized Return: {annualized_return:+.1f}%")
+    print(f"  Annualized PnL:    ${annualized_pnl:+,.0f} (on ${initial_equity:,.0f})")
 
     return {
         "checkpoint": checkpoint_path,
@@ -162,6 +179,9 @@ def run_backtest(
         "final_equity": final_equity,
         "total_pnl": total_pnl,
         "total_return": total_return,
+        "annualized_return": annualized_return,
+        "annualized_pnl": annualized_pnl,
+        "period_hours": period_hours,
         "sortino": result.metrics.get("sortino", 0),
         "num_trades": result.metrics.get("num_trades", 0),
         "win_rate": result.metrics.get("win_rate", 0),

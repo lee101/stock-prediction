@@ -1,0 +1,14 @@
+{
+  "symbol": "TSLA",
+  "context_length": 512,
+  "use_multivariate": false,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1
+  ],
+  "aggregation_method": "single",
+  "mae_pct": 2.126312883259349,
+  "directional_accuracy": 80.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}
