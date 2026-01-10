@@ -22,7 +22,7 @@ class DataConfigLong:
     )
 
     # Data paths
-    data_root: Path = field(default_factory=lambda: Path("data"))
+    data_root: Path = field(default_factory=lambda: Path("trainingdata/train"))
     forecast_cache_dir: Path = field(default_factory=lambda: Path("strategytraining/forecast_cache"))
 
     # Date range for simulation
@@ -73,6 +73,11 @@ class SimulationConfigLong:
     taker_fee: float = 0.001  # 0.1% (for market orders)
     slippage: float = 0.0005  # 0.05% estimated slippage
 
+    # Leverage (for stocks only - crypto typically 1x)
+    leverage: float = 1.0  # 1.0 = no leverage, 2.0 = 2x leverage
+    margin_rate_annual: float = 0.0625  # 6.25% annual margin interest rate
+    leverage_stocks_only: bool = True  # Only apply leverage to stocks, not crypto
+
     # Trading calendar
     stock_trading_days_per_year: int = 252
     crypto_trading_days_per_year: int = 365
@@ -92,6 +97,11 @@ class SimulationConfigLong:
     def total_cost_per_trade(self) -> float:
         """Total round-trip cost per trade (entry + exit)."""
         return 2 * (self.maker_fee + self.slippage)
+
+    @property
+    def daily_margin_rate(self) -> float:
+        """Daily margin interest rate."""
+        return self.margin_rate_annual / 365
 
 
 @dataclass

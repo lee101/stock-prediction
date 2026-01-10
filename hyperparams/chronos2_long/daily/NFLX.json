@@ -1,0 +1,14 @@
+{
+  "symbol": "NFLX",
+  "context_length": 512,
+  "use_multivariate": true,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1
+  ],
+  "aggregation_method": "single",
+  "mae_pct": 4.060915517989114,
+  "directional_accuracy": 50.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}

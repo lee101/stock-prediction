@@ -1,0 +1,15 @@
+{
+  "symbol": "SHOP",
+  "context_length": 256,
+  "use_multivariate": false,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1,
+    2
+  ],
+  "aggregation_method": "trimmed",
+  "mae_pct": 1.8133039845639207,
+  "directional_accuracy": 70.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}

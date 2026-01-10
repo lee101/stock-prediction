@@ -1,0 +1,15 @@
+{
+  "symbol": "ADBE",
+  "context_length": 256,
+  "use_multivariate": true,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1,
+    2
+  ],
+  "aggregation_method": "trimmed",
+  "mae_pct": 1.0441470203369811,
+  "directional_accuracy": 50.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}

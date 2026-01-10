@@ -1,0 +1,14 @@
+{
+  "symbol": "AMZN",
+  "context_length": 256,
+  "use_multivariate": false,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1
+  ],
+  "aggregation_method": "single",
+  "mae_pct": 0.9812914812376162,
+  "directional_accuracy": 70.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}

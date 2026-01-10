@@ -1,0 +1,16 @@
+{
+  "symbol": "GOOG",
+  "context_length": 256,
+  "use_multivariate": false,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1,
+    2,
+    3
+  ],
+  "aggregation_method": "trimmed",
+  "mae_pct": 1.2997513827983984,
+  "directional_accuracy": 60.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}

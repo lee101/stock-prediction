@@ -1,0 +1,14 @@
+{
+  "symbol": "UNIUSD",
+  "context_length": 512,
+  "use_multivariate": true,
+  "preaug_strategy": "baseline",
+  "skip_rates": [
+    1
+  ],
+  "aggregation_method": "single",
+  "mae_pct": 4.655376047367028,
+  "directional_accuracy": 40.0,
+  "n_samples": 10,
+  "tuned_for": "daily"
+}
