@@ -340,3 +340,5 @@ pnlforecast_cache/
 pnlforecast_results/
 experiments/v13_results/
 tmp*
+bagstraining/
+bagsneural/checkpoints/
