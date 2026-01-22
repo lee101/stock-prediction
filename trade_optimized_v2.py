@@ -12,17 +12,17 @@ Backtest results: +112% annual return with 52% win rate
 
 import argparse
 import logging
-import os
 import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pytz
 
 # Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import alpaca_wrapper
 from pnlforecast.chronos2_inference_daily import DailyForecastResult, Chronos2DailyInference

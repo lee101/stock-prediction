@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, List, Tuple, Optional, Any
 import sys
-import os
 import subprocess
 import time
 from dataclasses import dataclass, asdict
@@ -22,7 +21,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 @dataclass

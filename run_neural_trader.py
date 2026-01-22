@@ -21,7 +21,6 @@ Environment variables:
 
 import asyncio
 import logging
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -29,13 +28,14 @@ from pathlib import Path
 import torch
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bagsfm import BagsAPIClient, BagsConfig, DataCollector, DataConfig, TokenConfig
 from bagsfm.config import SOL_MINT
 from bagsfm.bags_api import SolanaTransactionExecutor
 from bagsneural.dataset import load_ohlc_dataframe, build_window_features, FeatureNormalizer
 from bagsneural.model import BagsNeuralModel
+from pnl_tracker import PnLTracker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -106,6 +106,16 @@ class NeuralTrader:
 
         # Price history for features
         self.price_history = []
+
+        # PnL tracking
+        self.pnl_tracker = PnLTracker(
+            token=CODEX_TOKEN.symbol,
+            log_dir="logs/pnl",
+            snapshot_interval=60,  # snapshot every minute
+        )
+        self.last_price = 0.0
+        self.consecutive_failures = 0
+        self.max_consecutive_failures = 5
 
     async def update_balances(self) -> None:
         """Update SOL and token balances."""
@@ -179,13 +189,22 @@ class NeuralTrader:
 
         return prob, size
 
-    async def execute_buy(self, sol_amount: float, price: float) -> bool:
+    async def execute_buy(self, sol_amount: float, price: float, signal_strength: float, position_size: float) -> bool:
         """Execute buy order."""
         if self.dry_run:
             logger.info(f"[DRY RUN] BUY {sol_amount:.4f} SOL worth of CODEX at {price:.10f}")
             self.holding = True
             self.entry_price = price
             self.position_tokens = sol_amount / price
+            # Log to PnL tracker
+            self.pnl_tracker.log_trade(
+                action="buy",
+                amount=self.position_tokens,
+                price=price,
+                sol_amount=sol_amount,
+                signal_strength=signal_strength,
+                position_size=position_size,
+            )
             return True
 
         try:
@@ -210,20 +229,43 @@ class NeuralTrader:
                 logger.info(f"BUY executed: {result.signature}")
                 self.holding = True
                 self.entry_price = price
+                tokens_received = quote.out_amount / (10 ** CODEX_TOKEN.decimals)
+                # Log to PnL tracker
+                self.pnl_tracker.log_trade(
+                    action="buy",
+                    amount=tokens_received,
+                    price=price,
+                    sol_amount=sol_amount,
+                    signal_strength=signal_strength,
+                    position_size=position_size,
+                )
+                self.consecutive_failures = 0
                 return True
             else:
                 logger.error(f"BUY failed: {result.error}")
+                self.consecutive_failures += 1
                 return False
 
         except Exception as e:
             logger.error(f"BUY execution error: {e}")
+            self.consecutive_failures += 1
             return False
 
-    async def execute_sell(self, price: float) -> bool:
+    async def execute_sell(self, price: float, signal_strength: float, position_size: float) -> bool:
         """Execute sell order."""
         if self.dry_run:
             pnl = (price - self.entry_price) / self.entry_price * 100 if self.entry_price > 0 else 0
+            sol_received = self.position_tokens * price
             logger.info(f"[DRY RUN] SELL all CODEX at {price:.10f} (PnL: {pnl:+.2f}%)")
+            # Log to PnL tracker
+            self.pnl_tracker.log_trade(
+                action="sell",
+                amount=self.position_tokens,
+                price=price,
+                sol_amount=sol_received,
+                signal_strength=signal_strength,
+                position_size=position_size,
+            )
             self.holding = False
             self.position_tokens = 0.0
             self.entry_price = 0.0
@@ -249,19 +291,38 @@ class NeuralTrader:
 
             if result.success:
                 logger.info(f"SELL executed: {result.signature}")
+                sol_received = quote.out_amount / 1e9
+                # Log to PnL tracker
+                self.pnl_tracker.log_trade(
+                    action="sell",
+                    amount=self.position_tokens,
+                    price=price,
+                    sol_amount=sol_received,
+                    signal_strength=signal_strength,
+                    position_size=position_size,
+                )
                 self.holding = False
                 self.position_tokens = 0.0
+                self.consecutive_failures = 0
                 return True
             else:
                 logger.error(f"SELL failed: {result.error}")
+                self.consecutive_failures += 1
                 return False
 
         except Exception as e:
             logger.error(f"SELL execution error: {e}")
+            self.consecutive_failures += 1
             return False
 
     async def trading_cycle(self) -> None:
         """Run one trading cycle."""
+        # Check for too many consecutive failures
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            logger.error(f"Too many consecutive failures ({self.consecutive_failures}), pausing trading")
+            self.consecutive_failures = 0  # Reset after warning
+            return
+
         # Update balances
         await self.update_balances()
 
@@ -269,7 +330,23 @@ class NeuralTrader:
         current_price = await self.get_current_price()
         if current_price <= 0:
             logger.warning("Could not get price, skipping cycle")
+            self.consecutive_failures += 1
             return
+
+        # Edge case: Check for price anomalies (sudden 50%+ moves)
+        if self.last_price > 0:
+            price_change = abs(current_price - self.last_price) / self.last_price
+            if price_change > 0.5:
+                logger.warning(f"Price anomaly detected: {price_change*100:.1f}% change, skipping cycle")
+                return
+        self.last_price = current_price
+
+        # Log PnL snapshot
+        self.pnl_tracker.log_snapshot(
+            sol_balance=self.sol_balance,
+            token_balance=self.position_tokens,
+            token_price=current_price,
+        )
 
         # Update price history
         now = datetime.utcnow()
@@ -301,16 +378,21 @@ class NeuralTrader:
         prob, size = self.predict(opens, highs, lows, closes)
         logger.info(f"Price: {current_price:.10f} SOL | Signal: {prob:.4f} | Size: {size:.4f} | Holding: {self.holding}")
 
+        # Log current PnL stats periodically
+        stats = self.pnl_tracker.get_stats()
+        if stats.get("status") != "no data":
+            logger.info(f"PnL: {stats['total_return_pct']:+.2f}% | Drawdown: {stats['drawdown_pct']:.2f}% | Trades: {stats['trades']}")
+
         # Trading logic
         if not self.holding and prob >= self.buy_threshold:
             trade_sol = min(size * self.max_position_sol, self.sol_balance * 0.95)
             if trade_sol >= self.min_trade_sol:
                 logger.info(f"BUY signal: prob={prob:.4f} >= {self.buy_threshold}")
-                await self.execute_buy(trade_sol, current_price)
+                await self.execute_buy(trade_sol, current_price, prob, size)
 
         elif self.holding and prob <= self.sell_threshold:
             logger.info(f"SELL signal: prob={prob:.4f} <= {self.sell_threshold}")
-            await self.execute_sell(current_price)
+            await self.execute_sell(current_price, prob, size)
 
     async def run(self, interval_minutes: int = 10, duration_hours: float = None) -> None:
         """Run trading loop."""
@@ -340,6 +422,10 @@ class NeuralTrader:
 
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
+        finally:
+            # Print final PnL stats
+            self.pnl_tracker.print_status()
+            logger.info(f"PnL log saved to: {self.pnl_tracker.summary_file}")
 
 
 async def main():

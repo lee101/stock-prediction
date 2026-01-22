@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -297,7 +297,7 @@ class DataCollector:
     async def run_collection_loop(
         self,
         duration_hours: Optional[float] = None,
-        callback: Optional[callable] = None,
+        callback: Optional[Callable] = None,
     ) -> None:
         """Run continuous price collection.
 
