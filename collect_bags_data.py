@@ -18,11 +18,11 @@ Usage:
 
 import asyncio
 import logging
-import os
 import sys
 from datetime import datetime
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bagsfm import DataCollector, BagsConfig, DataConfig, TokenConfig
 from bagsfm.config import SOL_MINT, USDC_MINT

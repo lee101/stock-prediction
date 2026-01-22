@@ -3,6 +3,7 @@
 import os
 import sys
 import subprocess
+from pathlib import Path
 
 def setup_cuda_env():
     """Setup CUDA environment variables"""
@@ -87,7 +88,7 @@ def main():
     print("-"*60)
     
     # Import and run training
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from train_hf import main as train_main
     
     try:
