@@ -288,6 +288,21 @@ class LongTermDailySimulator:
 
         return trade
 
+    def get_max_hold_days(self, symbol: str) -> int:
+        """Get max hold days for a symbol (per-symbol override or default).
+
+        Args:
+            symbol: Trading symbol
+
+        Returns:
+            Max hold days (0 = disabled)
+        """
+        if self.config.max_hold_days_per_symbol:
+            return self.config.max_hold_days_per_symbol.get(
+                symbol, self.config.max_hold_days
+            )
+        return self.config.max_hold_days
+
     def simulate_day(
         self,
         trade_date: date,
@@ -321,6 +336,20 @@ class LongTermDailySimulator:
         )
 
         day_trades = []
+
+        # Force exit positions held too long (max_hold_days)
+        for symbol, pos in list(self.positions.items()):
+            max_hold = self.get_max_hold_days(symbol)
+            if max_hold > 0:
+                days_held = (trade_date - pos.entry_date).days
+                if days_held >= max_hold and symbol in prices:
+                    logger.info(
+                        "MAX HOLD: Closing %s after %d days (limit: %d)",
+                        symbol, days_held, max_hold
+                    )
+                    trade = self.close_position(symbol, prices[symbol], trade_date)
+                    if trade:
+                        day_trades.append(trade)
 
         # Close positions not in top N
         symbols_to_close = [s for s in self.positions if s not in top_symbols]

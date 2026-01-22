@@ -53,7 +53,7 @@ class ExitMode:
     SAME_DAY_ONLY = "same_day_only"  # Force exit at close (most conservative)
     HOLD_ADAPTIVE = "hold_adaptive"  # Hold overnight, use new day's target (best returns)
 
-MAX_HOLD_DAYS = 5  # Force exit if held longer than this (backstop for HOLD_ADAPTIVE)
+MAX_HOLD_DAYS = 10  # Force exit if held longer than this (tuned optimal from simulation)
 
 
 def is_paper_mode() -> bool:
@@ -488,9 +488,11 @@ class ChronosFullTrader:
                         "sell_price": sell_price,
                         "entry_order_id": None,
                         "exit_order_id": exit_order_id,
+                        "exit_order_placed_at": time.time(),
                     }
                 else:
                     self.current_positions[symbol]["exit_order_id"] = exit_order_id
+                    self.current_positions[symbol]["exit_order_placed_at"] = time.time()
                 exits_placed += 1
 
         return exits_placed
@@ -638,6 +640,7 @@ class ChronosFullTrader:
 
             if exit_order_id:
                 pos_info["exit_order_id"] = exit_order_id
+                pos_info["exit_order_placed_at"] = time.time()
                 exits_placed += 1
 
         return exits_placed
@@ -659,6 +662,12 @@ class ChronosFullTrader:
             exit_order_id = pos_info.get("exit_order_id")
             if not exit_order_id or exit_order_id == "dry_run_exit":
                 continue
+
+            # Skip if order was just placed (give API time to propagate)
+            last_placed = pos_info.get("exit_order_placed_at")
+            if last_placed:
+                if time.time() - last_placed < 60:  # Skip if placed within last 60 seconds
+                    continue
 
             # Check if the exit order still exists in Alpaca
             exit_orders = [
@@ -691,6 +700,7 @@ class ChronosFullTrader:
             new_exit_order_id = self.place_exit_order(symbol, filled_qty, sell_price)
             if new_exit_order_id:
                 pos_info["exit_order_id"] = new_exit_order_id
+                pos_info["exit_order_placed_at"] = time.time()
                 refreshed += 1
 
         return refreshed
@@ -796,6 +806,7 @@ class ChronosFullTrader:
                     exit_order_id = self.place_exit_order(symbol, filled_qty, new_sell_price)
                     if exit_order_id:
                         pos_info["exit_order_id"] = exit_order_id
+                        pos_info["exit_order_placed_at"] = time.time()
                         updated_count += 1
 
             except Exception as e:

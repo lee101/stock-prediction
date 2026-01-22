@@ -27,7 +27,9 @@ active_crypto_symbols = [
     'BNBUSD',
     'BTCUSD',
     'ETHUSD',
+    'LINKUSD',
     'SKYUSD',
+    'SOLUSD',
     'UNIUSD',
 ]
 

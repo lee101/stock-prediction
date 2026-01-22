@@ -1,26 +1,10 @@
 {
-  "BTCUSD": {
-    "symbol": "BTCUSD",
-    "exit_price": 91141.7578125,
-    "exit_deadline": "2026-01-03T02:05:00+00:00",
-    "entry_qty": 0.027581558016266734,
+  "ESS": {
+    "symbol": "ESS",
+    "exit_price": 266.93402099609375,
+    "exit_deadline": "2026-01-22T19:05:00+00:00",
+    "entry_qty": 238.838708052519,
     "entry_strategy": "hourlyv5_multi",
-    "created_at": "2026-01-02T03:05:05.716378+00:00"
-  },
-  "SOLUSD": {
-    "symbol": "SOLUSD",
-    "exit_price": 131.5207061767578,
-    "exit_deadline": "2026-01-03T08:05:00+00:00",
-    "entry_qty": 19.113581885432414,
-    "entry_strategy": "hourlyv5_multi",
-    "created_at": "2026-01-02T09:05:06.101265+00:00"
-  },
-  "LINKUSD": {
-    "symbol": "LINKUSD",
-    "exit_price": 13.436555862426758,
-    "exit_deadline": "2026-01-03T09:05:00+00:00",
-    "entry_qty": 1557.0358522330907,
-    "entry_strategy": "hourlyv5_multi",
-    "created_at": "2026-01-02T10:05:05.784206+00:00"
+    "created_at": "2026-01-21T20:05:13.443908+00:00"
   }
 }

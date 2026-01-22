@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Tuple, Optional, Literal
+from typing import Dict, Tuple, Optional, Literal
 
 
 @dataclass
@@ -92,6 +92,10 @@ class SimulationConfigLong:
     # Risk controls
     min_predicted_return: float = 0.0  # Minimum predicted return to enter position
     max_daily_loss: float = 0.10  # Stop trading if daily loss exceeds 10%
+
+    # Max hold duration (force exit if position held too long)
+    max_hold_days: int = 5  # Default max hold days (0 = disabled)
+    max_hold_days_per_symbol: Optional[Dict[str, int]] = None  # Per-symbol overrides
 
     @property
     def total_cost_per_trade(self) -> float:

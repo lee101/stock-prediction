@@ -265,13 +265,13 @@ def execute_close_trade(
         # Use model's sell_price as take-profit target
         target_sell_price = plan.sell_price
 
-        # Safety check: only sell if target is above entry (profitable)
+        # Note: We exit at model's sell price even if below entry.
+        # Backtests show this is more profitable - frees capital for new opportunities.
         if target_sell_price <= avg_entry:
-            logger.warning(
-                f"Model sell target ${target_sell_price:.4f} <= entry ${avg_entry:.4f}. "
-                f"Skipping to avoid locking in loss. Current unrealized: ${unrealized_pnl:+.2f}"
+            logger.info(
+                f"Exiting at loss: sell ${target_sell_price:.4f} < entry ${avg_entry:.4f}. "
+                f"Realized loss: ${unrealized_pnl:+.2f} (freeing capital for better trades)"
             )
-            return False
 
         # Calculate expected profit
         expected_profit = position_qty * (target_sell_price - avg_entry)
@@ -291,7 +291,7 @@ def execute_close_trade(
 
         spawn_close_position_at_maxdiff_takeprofit(
             symbol=symbol,
-            side="sell",
+            side="buy",  # Entry side was BUY (long position), exit side will be SELL
             takeprofit_price=target_sell_price,
             target_qty=position_qty,
             expiry_minutes=plan.position_length * 60,  # Use model's predicted hold time
