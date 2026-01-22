@@ -1995,8 +1995,8 @@ def close_position_near_market(position, pct_above_market=0.0):
     result = None
     try:
         qty = abs(float(position.qty))
-        is_fractional = qty != int(qty)
-        tif = "day" if is_fractional else "gtc"
+        # Use helper function that correctly handles crypto (always gtc)
+        tif = _get_time_in_force_for_qty(qty, position.symbol)
 
         if position.side == "long":
             sell_price = price * (1 + pct_above_market)
