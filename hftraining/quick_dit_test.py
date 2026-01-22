@@ -4,8 +4,8 @@
 import torch
 import numpy as np
 import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from modern_dit_rl_trader import ModernTradingConfig, ModernDiTTrader, ImprovedRLEnvironment
 from data_utils import StockDataProcessor, split_data

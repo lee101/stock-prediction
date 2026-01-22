@@ -342,3 +342,6 @@ experiments/v13_results/
 tmp*
 bagstraining/
 bagsneural/checkpoints/
+
+# Live trading PnL logs
+logs/pnl/

@@ -23,11 +23,11 @@ Environment variables:
 
 import asyncio
 import logging
-import os
 import sys
+from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bagsfm import (
     BagsTrader,

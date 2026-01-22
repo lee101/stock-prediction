@@ -12,11 +12,11 @@ Usage:
 """
 
 import asyncio
-import os
 import sys
+from pathlib import Path
 
-# Add parent to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from bagsfm import BagsAPIClient, BagsConfig
 from bagsfm.config import SOL_MINT
