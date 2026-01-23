@@ -342,6 +342,7 @@ class SolanaTransactionExecutor:
         """
         try:
             from solana.rpc.async_api import AsyncClient
+            from solana.rpc.types import TxOpts
             from solders.transaction import VersionedTransaction
             from solders.message import to_bytes_versioned
         except ImportError:
@@ -369,14 +370,14 @@ class SolanaTransactionExecutor:
             payer_index = account_keys.index(keypair.pubkey())
             sigs = list(vtx.signatures)
             sigs[payer_index] = sig
-            vtx = VersionedTransaction(vtx.message, sigs)
+
+            # Create new transaction with updated signatures using populate()
+            vtx = VersionedTransaction.populate(vtx.message, sigs)
 
             # Send transaction
             async with AsyncClient(self.config.rpc_url) as rpc:
-                result = await rpc.send_raw_transaction(
-                    bytes(vtx),
-                    opts={"skip_preflight": skip_preflight},
-                )
+                opts = TxOpts(skip_preflight=skip_preflight, preflight_commitment="confirmed")
+                result = await rpc.send_raw_transaction(bytes(vtx), opts=opts)
 
                 if result.value is None:
                     return SwapResult(
@@ -384,14 +385,15 @@ class SolanaTransactionExecutor:
                         error=f"Transaction send failed: {result}",
                     )
 
-                signature = str(result.value)
+                signature_obj = result.value  # Signature object
+                signature = str(signature_obj)  # String for logging/return
 
                 # Wait for confirmation
-                await rpc.confirm_transaction(signature, commitment="confirmed")
+                await rpc.confirm_transaction(signature_obj, commitment="confirmed")
 
                 # Get transaction details for cost breakdown
                 tx_detail = await rpc.get_transaction(
-                    signature, max_supported_transaction_version=0
+                    signature_obj, max_supported_transaction_version=0
                 )
 
                 fee_lamports = None
