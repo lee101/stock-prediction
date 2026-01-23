@@ -422,7 +422,7 @@ class SolanaTransactionExecutor:
                 )
 
         except Exception as e:
-            logger.error(f"Transaction execution failed: {e}")
+            logger.exception(f"Transaction execution failed: {e}")
             return SwapResult(
                 success=False,
                 error=str(e),
