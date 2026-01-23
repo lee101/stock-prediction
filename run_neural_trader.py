@@ -290,7 +290,7 @@ class NeuralTrader:
         return prob, size
 
     async def execute_buy(self, sol_amount: float, price: float, signal_strength: float, position_size: float) -> bool:
-        """Execute buy order."""
+        """Execute buy order with retry logic for liquidity issues."""
         if self.dry_run:
             logger.info(f"[DRY RUN] BUY {sol_amount:.4f} SOL worth of CODEX at {price:.10f}")
             self.holding = True
@@ -307,52 +307,66 @@ class NeuralTrader:
             )
             return True
 
-        try:
-            # Get quote
-            lamports = int(sol_amount * 1e9)
-            quote = await self.api_client.get_quote(
-                input_mint=SOL_MINT,
-                output_mint=CODEX_TOKEN.mint,
-                amount=lamports,
-                slippage_mode="auto",
-            )
+        # Retry with decreasing amounts on failure
+        amounts_to_try = [sol_amount]
+        # Add smaller amounts: 75%, 50%, 25% of original
+        for fraction in [0.75, 0.5, 0.25]:
+            smaller = sol_amount * fraction
+            if smaller >= self.min_trade_sol:
+                amounts_to_try.append(smaller)
 
-            # Build and execute swap
-            swap_tx = await self.api_client.build_swap_transaction(
-                quote=quote,
-                user_public_key=self.bags_config.public_key,
-            )
-
-            result = await self.executor.sign_and_send(swap_tx)
-
-            if result.success:
-                logger.info(f"BUY executed: {result.signature}")
-                self.holding = True
-                self.entry_price = price
-                tokens_received = quote.out_amount / (10 ** CODEX_TOKEN.decimals)
-                # Log to PnL tracker
-                self.pnl_tracker.log_trade(
-                    action="buy",
-                    amount=tokens_received,
-                    price=price,
-                    sol_amount=sol_amount,
-                    signal_strength=signal_strength,
-                    position_size=position_size,
+        for attempt, try_amount in enumerate(amounts_to_try):
+            try:
+                lamports = int(try_amount * 1e9)
+                quote = await self.api_client.get_quote(
+                    input_mint=SOL_MINT,
+                    output_mint=CODEX_TOKEN.mint,
+                    amount=lamports,
+                    slippage_mode="auto",
                 )
-                self.consecutive_failures = 0
-                return True
-            else:
-                logger.error(f"BUY failed: {result.error}")
-                self.consecutive_failures += 1
-                return False
 
-        except Exception as e:
-            logger.error(f"BUY execution error: {e}")
-            self.consecutive_failures += 1
-            return False
+                swap_tx = await self.api_client.build_swap_transaction(
+                    quote=quote,
+                    user_public_key=self.bags_config.public_key,
+                )
+
+                result = await self.executor.sign_and_send(swap_tx)
+
+                if result.success:
+                    logger.info(f"BUY executed: {result.signature}")
+                    self.holding = True
+                    self.entry_price = price
+                    tokens_received = quote.out_amount / (10 ** CODEX_TOKEN.decimals)
+                    # Log to PnL tracker
+                    self.pnl_tracker.log_trade(
+                        action="buy",
+                        amount=tokens_received,
+                        price=price,
+                        sol_amount=try_amount,
+                        signal_strength=signal_strength,
+                        position_size=position_size,
+                    )
+                    self.consecutive_failures = 0
+                    return True
+                else:
+                    logger.warning(f"BUY attempt {attempt+1} failed ({try_amount:.2f} SOL): {result.error}")
+                    if attempt < len(amounts_to_try) - 1:
+                        logger.info(f"Retrying with smaller amount...")
+                        await asyncio.sleep(1)  # Brief pause before retry
+
+            except Exception as e:
+                logger.exception(f"BUY attempt {attempt+1} error ({try_amount:.2f} SOL): {e}")
+                if attempt < len(amounts_to_try) - 1:
+                    logger.info(f"Retrying with smaller amount...")
+                    await asyncio.sleep(1)
+
+        # All attempts failed
+        logger.error(f"BUY failed after {len(amounts_to_try)} attempts")
+        self.consecutive_failures += 1
+        return False
 
     async def execute_sell(self, price: float, signal_strength: float, position_size: float, sell_tokens: float = None) -> bool:
-        """Execute sell order. If sell_tokens is None, sells entire position."""
+        """Execute sell order with retry logic. If sell_tokens is None, sells entire position."""
         tokens_to_sell = sell_tokens if sell_tokens is not None else self.position_tokens
         tokens_to_sell = min(tokens_to_sell, self.position_tokens)  # Can't sell more than we have
 
@@ -375,51 +389,70 @@ class NeuralTrader:
                 self.entry_price = 0.0
             return True
 
-        try:
-            # Get token amount
-            token_amount = int(tokens_to_sell * (10 ** CODEX_TOKEN.decimals))
+        # Retry with decreasing amounts on failure
+        amounts_to_try = [tokens_to_sell]
+        for fraction in [0.75, 0.5, 0.25]:
+            smaller = tokens_to_sell * fraction
+            if smaller * price >= self.min_trade_sol:  # Check min SOL value
+                amounts_to_try.append(smaller)
 
-            quote = await self.api_client.get_quote(
-                input_mint=CODEX_TOKEN.mint,
-                output_mint=SOL_MINT,
-                amount=token_amount,
-                slippage_mode="auto",
-            )
+        total_sold = 0.0
+        total_sol_received = 0.0
 
-            swap_tx = await self.api_client.build_swap_transaction(
-                quote=quote,
-                user_public_key=self.bags_config.public_key,
-            )
+        for attempt, try_tokens in enumerate(amounts_to_try):
+            try:
+                token_amount = int(try_tokens * (10 ** CODEX_TOKEN.decimals))
 
-            result = await self.executor.sign_and_send(swap_tx)
-
-            if result.success:
-                logger.info(f"SELL executed: {result.signature}")
-                sol_received = quote.out_amount / 1e9
-                # Log to PnL tracker
-                self.pnl_tracker.log_trade(
-                    action="sell",
-                    amount=tokens_to_sell,
-                    price=price,
-                    sol_amount=sol_received,
-                    signal_strength=signal_strength,
-                    position_size=position_size,
+                quote = await self.api_client.get_quote(
+                    input_mint=CODEX_TOKEN.mint,
+                    output_mint=SOL_MINT,
+                    amount=token_amount,
+                    slippage_mode="auto",
                 )
-                self.position_tokens -= tokens_to_sell
-                self.holding = self.position_tokens > 0
-                if not self.holding:
-                    self.entry_price = 0.0
-                self.consecutive_failures = 0
-                return True
-            else:
-                logger.error(f"SELL failed: {result.error}")
-                self.consecutive_failures += 1
-                return False
 
-        except Exception as e:
-            logger.error(f"SELL execution error: {e}")
-            self.consecutive_failures += 1
-            return False
+                swap_tx = await self.api_client.build_swap_transaction(
+                    quote=quote,
+                    user_public_key=self.bags_config.public_key,
+                )
+
+                result = await self.executor.sign_and_send(swap_tx)
+
+                if result.success:
+                    logger.info(f"SELL executed: {result.signature}")
+                    sol_received = quote.out_amount / 1e9
+                    total_sold += try_tokens
+                    total_sol_received += sol_received
+                    # Log to PnL tracker
+                    self.pnl_tracker.log_trade(
+                        action="sell",
+                        amount=try_tokens,
+                        price=price,
+                        sol_amount=sol_received,
+                        signal_strength=signal_strength,
+                        position_size=position_size,
+                    )
+                    self.position_tokens -= try_tokens
+                    self.holding = self.position_tokens > 0
+                    if not self.holding:
+                        self.entry_price = 0.0
+                    self.consecutive_failures = 0
+                    return True
+                else:
+                    logger.warning(f"SELL attempt {attempt+1} failed ({try_tokens:.0f} tokens): {result.error}")
+                    if attempt < len(amounts_to_try) - 1:
+                        logger.info(f"Retrying with smaller amount...")
+                        await asyncio.sleep(1)
+
+            except Exception as e:
+                logger.exception(f"SELL attempt {attempt+1} error ({try_tokens:.0f} tokens): {e}")
+                if attempt < len(amounts_to_try) - 1:
+                    logger.info(f"Retrying with smaller amount...")
+                    await asyncio.sleep(1)
+
+        # All attempts failed
+        logger.error(f"SELL failed after {len(amounts_to_try)} attempts")
+        self.consecutive_failures += 1
+        return False
 
     async def trading_cycle(self) -> None:
         """Run one trading cycle."""
