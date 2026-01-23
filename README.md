@@ -582,3 +582,104 @@ uv run python -m tototraining.run_gpu_training \
   }, indent=2))
   PY
   ```
+
+## Bags.fm Neural Trading
+
+Neural-based trading bot for Solana tokens via Bags.fm API. Uses a trained neural model for buy/sell signals with automatic position sizing.
+
+### Architecture
+
+The system is split into two components:
+
+1. **Data Collector** (`collect_bags_data.py`) - Runs continuously, collecting OHLC price data
+2. **Neural Trader** (`run_neural_trader.py`) - Loads data from disk, trades when quality is good
+
+This separation allows:
+- Restart trader without losing price history
+- Gap detection before trading
+- Data freshness validation
+
+### Setup
+
+```bash
+# Install dependencies
+pip install solana solders base58
+
+# Set up credentials in env_real.py:
+BAGS_API_KEY = "your_bags_api_key"
+BAGS_PARTNER_KEY = "your_partner_key"
+SOLANA_PUBLIC_KEY = "your_wallet_public_key"
+SOLANA_PRIVATE_KEY = "your_88_char_private_key"  # For live trading
+```
+
+### Running
+
+**Step 1: Start the data collector** (runs continuously in background)
+```bash
+# Start data collection (10-minute OHLC bars)
+nohup python collect_bags_data.py --interval 10 > bagstraining/collection.log 2>&1 &
+
+# Check it's running
+ps aux | grep collect_bags
+tail -f bagstraining/collection.log
+```
+
+**Step 2: Start the neural trader**
+```bash
+# Dry run mode (simulated trades)
+python run_neural_trader.py --dry-run --interval 10
+
+# Live trading mode
+python run_neural_trader.py --live --max-position 1.0 --interval 10
+```
+
+### Data Quality Checks
+
+The trader validates data before trading:
+- **Freshness**: Last bar must be within 20 minutes
+- **Gaps**: Maximum 2 gaps allowed (30+ min between bars)
+- **History**: Needs 16 bars minimum for neural model
+
+If data quality fails, trading is skipped until the collector catches up.
+
+### PnL Tracking
+
+Trades and account snapshots are logged to `logs/pnl/`:
+- `trades_CODEX_YYYYMMDD.jsonl` - Trade history
+- `snapshots_CODEX_YYYYMMDD.jsonl` - Account value over time
+- `summary_CODEX.json` - Current performance stats
+
+View current status:
+```bash
+cat logs/pnl/summary_CODEX.json
+```
+
+### Training the Neural Model
+
+```bash
+# Train with 15 epochs
+python -m bagsneural.train --epochs 15 --context 16 --hidden 32,16
+
+# Run backtest to validate
+python -m bagsmarketsimulator.run_backtest
+```
+
+### Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--interval` | 10 | Check interval in minutes |
+| `--max-position` | 1.0 | Maximum position size in SOL |
+| `--buy-threshold` | 0.46 | Signal threshold for buying |
+| `--sell-threshold` | 0.42 | Signal threshold for selling |
+| `--checkpoint` | auto | Path to model checkpoint |
+
+### Files
+
+- `collect_bags_data.py` - Data collector daemon
+- `run_neural_trader.py` - Neural trading bot
+- `pnl_tracker.py` - PnL logging module
+- `bagstraining/ohlc_data.csv` - Collected OHLC data
+- `bagsneural/` - Neural model training code
+- `bagsmarketsimulator/` - Backtesting module
+- `logs/pnl/` - Trading logs (gitignored)
