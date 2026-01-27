@@ -170,6 +170,12 @@ class BagsAPIClient:
 
             if not data.get("success"):
                 error_msg = data.get("error", data.get("message", "Unknown error"))
+                logger.warning(
+                    f"Quote failed: {error_msg} | "
+                    f"input={input_mint[:8]}... output={output_mint[:8]}... "
+                    f"amount={amount} ({amount/1e9:.4f} SOL) | "
+                    f"response={data}"
+                )
                 raise RuntimeError(f"Quote failed: {error_msg}")
 
             resp = data["response"]
@@ -295,11 +301,33 @@ class SolanaTransactionExecutor:
     """Executes Solana transactions.
 
     Handles signing and sending transactions to the network.
+    Uses RobustRPCClient for rate limiting and fallback.
     """
 
     def __init__(self, config: BagsConfig) -> None:
         self.config = config
         self._keypair = None
+        self._rpc_client = None
+
+    def _get_rpc_client(self):
+        """Lazy load RPC client."""
+        if self._rpc_client is None:
+            from .rpc_client import RobustRPCClient, RPCConfig
+
+            rpc_config = RPCConfig(
+                max_retries=self.config.max_retries,
+                base_delay_seconds=self.config.retry_delay_seconds,
+                max_delay_seconds=self.config.rpc_max_backoff_seconds,
+                backoff_multiplier=self.config.rpc_backoff_multiplier,
+            )
+
+            self._rpc_client = RobustRPCClient(
+                primary_rpc_url=self.config.rpc_url,
+                helius_api_key=self.config.helius_api_key,
+                config=rpc_config,
+            )
+
+        return self._rpc_client
 
     def _get_keypair(self):
         """Lazy load keypair from config."""
@@ -333,6 +361,8 @@ class SolanaTransactionExecutor:
     ) -> SwapResult:
         """Sign and send a swap transaction.
 
+        Uses RobustRPCClient for rate limiting, fallback, and reliable confirmation.
+
         Args:
             swap_tx: SwapTransaction from build_swap_transaction()
             skip_preflight: If True, skip preflight simulation
@@ -341,29 +371,34 @@ class SolanaTransactionExecutor:
             SwapResult with execution details
         """
         try:
-            from solana.rpc.async_api import AsyncClient
-            from solana.rpc.types import TxOpts
             from solders.transaction import VersionedTransaction
             from solders.message import to_bytes_versioned
         except ImportError:
             raise ImportError(
-                "solana and solders packages required. "
-                "Install with: pip install solana solders"
+                "solders package required. "
+                "Install with: pip install solders"
             )
 
         start_time = datetime.utcnow()
+        payer_index = None
+        signature = None
 
         try:
+            logger.debug(f"Starting transaction execution, skip_preflight={skip_preflight}")
             keypair = self._get_keypair()
+            rpc = self._get_rpc_client()
+            logger.debug(f"Keypair loaded: {keypair.pubkey()}")
 
             # Decode and deserialize transaction (Base58 encoded from Bags API)
             import base58
             tx_bytes = base58.b58decode(swap_tx.swap_transaction)
             vtx = VersionedTransaction.from_bytes(tx_bytes)
+            logger.debug(f"Transaction decoded, {len(tx_bytes)} bytes")
 
             # Sign the transaction
             msg_bytes = to_bytes_versioned(vtx.message)
             sig = keypair.sign_message(msg_bytes)
+            logger.debug("Transaction signed")
 
             # Find payer index and set signature
             account_keys = list(vtx.message.account_keys)
@@ -373,59 +408,74 @@ class SolanaTransactionExecutor:
 
             # Create new transaction with updated signatures using populate()
             vtx = VersionedTransaction.populate(vtx.message, sigs)
+            logger.debug(f"Transaction populated, payer_index={payer_index}")
 
-            # Send transaction
-            async with AsyncClient(self.config.rpc_url) as rpc:
-                opts = TxOpts(skip_preflight=skip_preflight, preflight_commitment="confirmed")
-                result = await rpc.send_raw_transaction(bytes(vtx), opts=opts)
+            # Send transaction using robust RPC client
+            logger.debug("Sending transaction via RobustRPCClient...")
+            signature = await rpc.send_raw_transaction(
+                bytes(vtx),
+                skip_preflight=skip_preflight,
+            )
+            logger.info(f"Transaction sent: {signature[:20]}...")
 
-                if result.value is None:
-                    return SwapResult(
-                        success=False,
-                        error=f"Transaction send failed: {result}",
-                    )
+            # Wait for confirmation using robust polling
+            logger.debug("Waiting for confirmation via polling...")
+            await rpc.wait_for_confirmation(signature, commitment="confirmed")
+            logger.debug("Transaction confirmed")
 
-                signature_obj = result.value  # Signature object
-                signature = str(signature_obj)  # String for logging/return
+            # Get transaction details for cost breakdown
+            tx_detail = await rpc.get_transaction(signature)
 
-                # Wait for confirmation
-                await rpc.confirm_transaction(signature_obj, commitment="confirmed")
+            fee_lamports = None
+            payer_spent = None
 
-                # Get transaction details for cost breakdown
-                tx_detail = await rpc.get_transaction(
-                    signature_obj, max_supported_transaction_version=0
-                )
+            if tx_detail:
+                meta = tx_detail.get("meta", {})
+                fee_lamports = meta.get("fee")
 
-                fee_lamports = None
-                payer_spent = None
+                # Calculate payer total spent
+                pre_balances = meta.get("preBalances", [])
+                post_balances = meta.get("postBalances", [])
+                if payer_index is not None and payer_index < len(pre_balances):
+                    payer_spent = pre_balances[payer_index] - post_balances[payer_index]
 
-                if tx_detail.value:
-                    meta = tx_detail.value.transaction.meta
-                    fee_lamports = meta.fee
+                logger.debug(f"TX details: fee={fee_lamports}, payer_spent={payer_spent}")
 
-                    # Calculate payer total spent
-                    pre_balances = meta.pre_balances
-                    post_balances = meta.post_balances
-                    if payer_index < len(pre_balances):
-                        payer_spent = pre_balances[payer_index] - post_balances[payer_index]
+            # Invalidate balance cache after successful transaction
+            rpc.invalidate_balance_cache(str(keypair.pubkey()))
 
-                end_time = datetime.utcnow()
-                confirmation_ms = int((end_time - start_time).total_seconds() * 1000)
+            end_time = datetime.utcnow()
+            confirmation_ms = int((end_time - start_time).total_seconds() * 1000)
 
-                return SwapResult(
-                    success=True,
-                    signature=signature,
-                    fee_lamports=fee_lamports,
-                    payer_total_spent_lamports=payer_spent,
-                    timestamp=start_time,
-                    confirmation_time_ms=confirmation_ms,
-                )
+            return SwapResult(
+                success=True,
+                signature=signature,
+                fee_lamports=fee_lamports,
+                payer_total_spent_lamports=payer_spent,
+                timestamp=start_time,
+                confirmation_time_ms=confirmation_ms,
+            )
 
-        except Exception as e:
-            logger.exception(f"Transaction execution failed: {e}")
+        except TimeoutError as e:
+            logger.error(f"Transaction confirmation timed out: {e} | signature={signature}")
+            # Transaction may have succeeded but we couldn't confirm
             return SwapResult(
                 success=False,
-                error=str(e),
+                signature=signature,
+                error=f"Confirmation timeout: {e}",
+                timestamp=start_time,
+            )
+
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e) if str(e) else f"Empty exception of type {error_type}"
+            logger.exception(
+                f"Transaction execution failed: {error_msg} | "
+                f"type={error_type} | signature={signature} | payer_index={payer_index}"
+            )
+            return SwapResult(
+                success=False,
+                error=f"{error_type}: {error_msg}",
                 timestamp=start_time,
             )
 

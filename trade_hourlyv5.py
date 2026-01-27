@@ -225,6 +225,17 @@ def execute_trade(
             entry_strategy="hourlyv5",  # Required for watcher cleanup!
         )
 
+        # CRITICAL: Also spawn SELL exit watcher for take-profit!
+        # This was missing - positions were opened but never closed automatically
+        spawn_close_position_at_maxdiff_takeprofit(
+            symbol=symbol,
+            side="buy",  # Entry side was BUY, exit will be SELL
+            takeprofit_price=adj_sell,
+            target_qty=target_qty,
+            expiry_minutes=plan.position_length * 60,
+            entry_strategy="hourlyv5",
+        )
+
         record_buy(symbol, adj_buy)
         return True
 

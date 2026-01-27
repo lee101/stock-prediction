@@ -1,0 +1,33 @@
+{
+  "model_checkpoint": "bagsv3llm/checkpoints/bagsv3_best_v3.pt",
+  "buy_threshold": 0.405,
+  "sell_threshold": 0.375,
+  "context_length": 96,
+  "use_chronos": false,
+  "architecture": {
+    "n_layer": 4,
+    "n_head": 8,
+    "n_embd": 64
+  },
+  "training": {
+    "lr": 0.001,
+    "batch_size": 16,
+    "epochs": 40,
+    "early_stop": 10
+  },
+  "performance": {
+    "val_auc": 0.8185,
+    "backtest_return": 0.1783,
+    "buy_hold_return": -0.5442,
+    "alpha": 0.708,
+    "num_trades": 8,
+    "win_rate": 0.5,
+    "sharpe_ratio": 1.32,
+    "max_drawdown": 0.045
+  },
+  "data": {
+    "bars": 720,
+    "date_range": "2026-01-19 to 2026-01-24"
+  },
+  "notes": "Best V3 transformer - 96 context length, +71% alpha over buy-and-hold in bear market"
+}
