@@ -1,0 +1,24 @@
+{
+  "params": {
+    "buy_threshold": 0.064846016083411,
+    "sell_threshold": -0.0822253803218623,
+    "upside_ratio_min": 2.1224687967861113,
+    "hold_bars": 6,
+    "prediction_length": 6
+  },
+  "training_stats": {
+    "optimization_success": true,
+    "objective_value": -21.178751594569235,
+    "total_return": 21.178751594569235,
+    "num_trades": 6,
+    "win_rate": 1.0,
+    "avg_return": 0.8556052168522675,
+    "avg_bars_held": 39.333333333333336
+  },
+  "config": {
+    "mint": "HAK9cX1jfYmcNpr6keTkLvxehGPWKELXSu7GH2ofBAGS",
+    "train_split": 0.7,
+    "context_length": 64,
+    "prediction_length": 6
+  }
+}
