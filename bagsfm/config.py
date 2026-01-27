@@ -10,10 +10,18 @@ from typing import Dict, List, Optional, Tuple, Literal
 
 # Try to import credentials from env_real, fall back to env vars
 try:
-    from env_real import BAGS_API_KEY, BIRDSEYE_API_KEY, JUP_API_KEY, SOLANA_PRIVATE_KEY, SOLANA_PUBLIC_KEY
+    from env_real import (
+        BAGS_API_KEY,
+        BIRDSEYE_API_KEY,
+        HELIUS_API_KEY,
+        JUP_API_KEY,
+        SOLANA_PRIVATE_KEY,
+        SOLANA_PUBLIC_KEY,
+    )
 except ImportError:
     BAGS_API_KEY = os.getenv("BAGS_API_KEY", "")
     BIRDSEYE_API_KEY = os.getenv("BIRDSEYE_API_KEY", "")
+    HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
     JUP_API_KEY = os.getenv("JUP_API_KEY", "")
     # Support both SOLANA_PRIVATE_KEY and PRIVATE_KEY (Bags SDK convention)
     SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "") or os.getenv("PRIVATE_KEY", "")
@@ -40,6 +48,9 @@ class BagsConfig:
         )
     )
 
+    # Helius RPC (higher rate limits, priority fee estimation)
+    helius_api_key: str = field(default_factory=lambda: HELIUS_API_KEY)
+
     # Wallet configuration
     public_key: str = field(
         default_factory=lambda: SOLANA_PUBLIC_KEY
@@ -50,8 +61,13 @@ class BagsConfig:
 
     # Request configuration
     timeout_seconds: int = 30
-    max_retries: int = 3
-    retry_delay_seconds: float = 1.0
+    max_retries: int = 5
+    retry_delay_seconds: float = 0.5
+
+    # RPC rate limiting
+    rpc_rate_limit_rps: float = 10.0
+    rpc_backoff_multiplier: float = 2.0
+    rpc_max_backoff_seconds: float = 30.0
 
 
 @dataclass

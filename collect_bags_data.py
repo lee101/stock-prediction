@@ -77,13 +77,18 @@ TOKENS = [
         decimals=9,
         name="GrokPrompt",
     ),
-    # Add more tokens here as needed
-    # TokenConfig(
-    #     symbol="BONK",
-    #     mint="DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
-    #     decimals=5,
-    #     name="Bonk",
-    # ),
+    TokenConfig(
+        symbol="RO",
+        mint="BFTPbgPoeLjcmH1QCUAZxCafT56AgwRKGmJvbCv6BAGS",
+        decimals=9,
+        name="Ralph Orchestrator",
+    ),
+    TokenConfig(
+        symbol="ISONYC",
+        mint="6rZfGFiHydm1RQfE1i7hhSdsZAE57bAK7ydQvA49BAGS",
+        decimals=9,
+        name="ISO NYC",
+    ),
 ]
 
 

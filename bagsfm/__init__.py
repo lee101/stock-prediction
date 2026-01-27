@@ -18,8 +18,9 @@ from .config import (
     SOL_MINT,
     USDC_MINT,
 )
-from .bags_api import BagsAPIClient, SwapResult, QuoteResponse
+from .bags_api import BagsAPIClient, SwapResult, QuoteResponse, SolanaTransactionExecutor
 from .data_collector import DataCollector, OHLCBar
+from .rpc_client import RobustRPCClient, RPCConfig, get_shared_rpc_client
 from .forecaster import TokenForecaster, TokenForecast
 from .simulator import (
     MarketSimulator,
@@ -43,6 +44,11 @@ __all__ = [
     "BagsAPIClient",
     "SwapResult",
     "QuoteResponse",
+    "SolanaTransactionExecutor",
+    # RPC
+    "RobustRPCClient",
+    "RPCConfig",
+    "get_shared_rpc_client",
     # Data
     "DataCollector",
     "OHLCBar",
