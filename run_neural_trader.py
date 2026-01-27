@@ -349,19 +349,29 @@ class NeuralTrader:
                     self.consecutive_failures = 0
                     return True
                 else:
-                    logger.warning(f"BUY attempt {attempt+1} failed ({try_amount:.2f} SOL): {result.error}")
+                    logger.warning(
+                        f"BUY attempt {attempt+1}/{len(amounts_to_try)} failed ({try_amount:.2f} SOL): {result.error} | "
+                        f"quote_out={quote.out_amount/1e6:.0f} tokens"
+                    )
                     if attempt < len(amounts_to_try) - 1:
-                        logger.info(f"Retrying with smaller amount...")
+                        logger.info(f"Retrying with {amounts_to_try[attempt+1]:.2f} SOL...")
                         await asyncio.sleep(1)  # Brief pause before retry
 
             except Exception as e:
-                logger.exception(f"BUY attempt {attempt+1} error ({try_amount:.2f} SOL): {e}")
+                logger.exception(
+                    f"BUY attempt {attempt+1}/{len(amounts_to_try)} exception ({try_amount:.2f} SOL): "
+                    f"{type(e).__name__}: {e}"
+                )
                 if attempt < len(amounts_to_try) - 1:
-                    logger.info(f"Retrying with smaller amount...")
+                    logger.info(f"Retrying with {amounts_to_try[attempt+1]:.2f} SOL...")
                     await asyncio.sleep(1)
 
         # All attempts failed
-        logger.error(f"BUY failed after {len(amounts_to_try)} attempts")
+        logger.error(
+            f"BUY failed after {len(amounts_to_try)} attempts | "
+            f"amounts_tried={[f'{a:.2f}' for a in amounts_to_try]} SOL | "
+            f"price={price:.10f} signal={signal_strength:.4f}"
+        )
         self.consecutive_failures += 1
         return False
 
@@ -438,19 +448,29 @@ class NeuralTrader:
                     self.consecutive_failures = 0
                     return True
                 else:
-                    logger.warning(f"SELL attempt {attempt+1} failed ({try_tokens:.0f} tokens): {result.error}")
+                    logger.warning(
+                        f"SELL attempt {attempt+1}/{len(amounts_to_try)} failed ({try_tokens:.0f} tokens): {result.error} | "
+                        f"quote_out={quote.out_amount/1e9:.4f} SOL"
+                    )
                     if attempt < len(amounts_to_try) - 1:
-                        logger.info(f"Retrying with smaller amount...")
+                        logger.info(f"Retrying with {amounts_to_try[attempt+1]:.0f} tokens...")
                         await asyncio.sleep(1)
 
             except Exception as e:
-                logger.exception(f"SELL attempt {attempt+1} error ({try_tokens:.0f} tokens): {e}")
+                logger.exception(
+                    f"SELL attempt {attempt+1}/{len(amounts_to_try)} exception ({try_tokens:.0f} tokens): "
+                    f"{type(e).__name__}: {e}"
+                )
                 if attempt < len(amounts_to_try) - 1:
-                    logger.info(f"Retrying with smaller amount...")
+                    logger.info(f"Retrying with {amounts_to_try[attempt+1]:.0f} tokens...")
                     await asyncio.sleep(1)
 
         # All attempts failed
-        logger.error(f"SELL failed after {len(amounts_to_try)} attempts")
+        logger.error(
+            f"SELL failed after {len(amounts_to_try)} attempts | "
+            f"tokens_tried={[f'{t:.0f}' for t in amounts_to_try]} | "
+            f"price={price:.10f} signal={signal_strength:.4f}"
+        )
         self.consecutive_failures += 1
         return False
 

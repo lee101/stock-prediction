@@ -597,7 +597,11 @@ def open_order_at_price(symbol, qty, side, price):
         same_side = (is_buy_side(existing_side) and is_buy_side(side)) or \
                     (is_sell_side(existing_side) and is_sell_side(side))
 
-        if same_side and existing_price > 0 and existing_qty > 0:
+        # Only consider orders on the SAME side - never cancel opposite side orders!
+        if not same_side:
+            continue  # Skip opposite side orders entirely
+
+        if existing_price > 0 and existing_qty > 0:
             # Price tolerance: within 0.1% to reduce flapping
             price_diff_pct = abs(existing_price - price) / price if price > 0 else float('inf')
             price_similar = price_diff_pct < 0.001  # 10 bps = 0.1%
@@ -614,7 +618,7 @@ def open_order_at_price(symbol, qty, side, price):
                 )
                 return None  # Don't flap - existing order is good enough
 
-        # Order needs to be canceled (different side or different enough price/qty)
+        # Order on same side needs to be canceled (different enough price/qty)
         orders_to_cancel.append(order)
 
     # Cancel orders that need replacing
@@ -680,25 +684,28 @@ def open_order_at_price_or_all(symbol, qty, side, price):
         same_side = (is_buy_side(existing_side) and is_buy_side(side)) or \
                     (is_sell_side(existing_side) and is_sell_side(side))
 
-        if same_side:
-            # Price tolerance: within 0.03% (tighter to allow ramp_into_position to work)
-            price_diff_pct = abs(existing_price - price) / price if price > 0 else float('inf')
-            price_similar = price_diff_pct < 0.0003  # 3 bps = 0.03%
+        # Only consider orders on the SAME side - never cancel opposite side orders!
+        if not same_side:
+            continue  # Skip opposite side orders entirely
 
-            # Qty tolerance: within 5% OR notional difference < $100
-            qty_diff_pct = abs(existing_qty - qty) / qty if qty > 0 else float('inf')
-            notional_diff = abs((existing_qty - qty) * price)
-            qty_similar = qty_diff_pct < 0.05 or notional_diff < 100
+        # Price tolerance: within 0.03% (tighter to allow ramp_into_position to work)
+        price_diff_pct = abs(existing_price - price) / price if price > 0 else float('inf')
+        price_similar = price_diff_pct < 0.0003  # 3 bps = 0.03%
 
-            if price_similar and qty_similar:
-                logger.info(
-                    f"Skipping order update for {symbol} - existing order is similar: "
-                    f"qty {existing_qty:.6f} vs {qty:.6f} (diff: ${notional_diff:.2f}), "
-                    f"price ${existing_price:.4f} vs ${price:.4f} (diff: {price_diff_pct*100:.4f}%)"
-                )
-                return None  # Don't flap - existing order is good enough
+        # Qty tolerance: within 5% OR notional difference < $100
+        qty_diff_pct = abs(existing_qty - qty) / qty if qty > 0 else float('inf')
+        notional_diff = abs((existing_qty - qty) * price)
+        qty_similar = qty_diff_pct < 0.05 or notional_diff < 100
 
-        # If we get here, order needs to be replaced
+        if price_similar and qty_similar:
+            logger.info(
+                f"Skipping order update for {symbol} - existing order is similar: "
+                f"qty {existing_qty:.6f} vs {qty:.6f} (diff: ${notional_diff:.2f}), "
+                f"price ${existing_price:.4f} vs ${price:.4f} (diff: {price_diff_pct*100:.4f}%)"
+            )
+            return None  # Don't flap - existing order is good enough
+
+        # Order on same side needs to be replaced
         orders_to_cancel.append(order)
 
     # Cancel orders that need replacing
