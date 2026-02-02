@@ -27,6 +27,14 @@ aws s3 sync s3://models/stock/trainingdata/ trainingdata/ --endpoint-url "$R2_EN
 aws s3 sync s3://models/stock/models/binance/binanceneural/checkpoints/ binanceneural/checkpoints/ --endpoint-url "$R2_ENDPOINT"
 ```
 
+Optional (Chronos2 + hyperparams):
+
+```bash
+aws s3 sync s3://models/stock/models/binance/chronos2_finetuned/ chronos2_finetuned/ --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/hyperparams/chronos2/ hyperparams/chronos2/ --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/preaugstrategies/chronos2/hourly/ preaugstrategies/chronos2/hourly/ --endpoint-url "$R2_ENDPOINT"
+```
+
 Note: if you want to avoid rebuilding Chronos forecasts on the inference host, sync `binanceneural/forecast_cache/` as well (if present).
 
 ## Inference-only (no live orders)
