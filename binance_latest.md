@@ -82,6 +82,33 @@ Verify checkpoint exists:
 ls -lh binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/epoch_005.pt
 ```
 
+Optional (Chronos2 + hyperparams):
+```bash
+aws s3 sync s3://models/stock/models/binance/chronos2_finetuned/ chronos2_finetuned/ --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/hyperparams/chronos2/ hyperparams/chronos2/ --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/preaugstrategies/chronos2/hourly/ preaugstrategies/chronos2/hourly/ --endpoint-url "$R2_ENDPOINT"
+```
+
+## Inference-only (no live orders)
+
+For testing predictions without placing real orders:
+
+```bash
+source .venv313/bin/activate
+PYTHONPATH=/path/to/stock-prediction \
+python -m binanceexp1.trade_binance_hourly \
+  --symbols SOLUSD \
+  --checkpoint binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/epoch_005.pt \
+  --horizon 24 \
+  --sequence-length 96 \
+  --intensity-scale 20.0 \
+  --min-gap-pct 0.0003 \
+  --once \
+  --dry-run
+```
+
+Optional: add `--cache-only` if you have a populated `binanceneural/forecast_cache/`.
+
 ## Testing API Connection
 
 Before running live trading, verify your Binance API credentials work:

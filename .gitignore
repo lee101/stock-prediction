@@ -346,3 +346,57 @@ bagsneural/checkpoints/
 # Live trading PnL logs
 logs/pnl/
 exit_plans.json
+tradingdata/
+tradingdatahourly/
+trainingdatahourlybinance/
+bagsfm_state.json
+
+# Experiment logs and results
+*.log.*
+*results.md
+EXPERIMENTS_LOG.md
+
+# Experiment directories (not code modules)
+alpacawide/
+chronos2_finetuned/
+marketsim_results_*/
+
+# Experiment artifacts within modules
+binance*/checkpoints/
+binance*/forecast_cache/
+binance*/marketsimulator/
+binance*/plots/
+binance*/results/
+
+# Experiment configs and strategies
+hyperparams/chronos2/
+preaugstrategies/chronos2/
+experiments/*sweep*
+
+# One-off/temporary scripts (keep utility scripts tracked)
+scripts/queue_followups.sh
+
+# Experimental tests
+tests/test_alpaca_data_wrapper_backfill.py
+tests/test_bagsfm_*.py
+tests/test_bags*.py
+tests/test_binance*.py
+tests/test_default_strategy_checkpoint.py
+tests/test_download_hourly_update.py
+tests/test_marketsim*.py
+tests/test_neural_trader_v3_sleep.py
+tests/test_neuralhourly*.py
+tests/test_patch_embedding.py
+tests/test_pnl_tracker_limits.py
+tests/test_trade_binance_hourly_levels.py
+tests/test_training_summary_paths.py
+tests/test_data_loading_utils.py
+tests/prod/binance*/
+tests/prod/chronos2/
+tests/prod/brokers/test_binance*.py
+tests/prod/cli/test_binance*.py
+
+# Experimental data utilities
+src/data_loading_utils.py
+src/metrics_utils.py
+alpaca_cli_paper.log*
