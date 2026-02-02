@@ -37,7 +37,14 @@ from bagsfm import (
     ForecastConfig,
     TokenConfig,
 )
-from bagsfm.config import SOL_MINT, USDC_MINT
+from bagsfm.config import (
+    SOL_MINT,
+    USDC_MINT,
+    CODEX_MINT,
+    BLON_MINT,
+    BAGS_TOTAL_FEE_BPS,
+    BAGS_CREATOR_FEE_BPS,
+)
 
 
 # Example tokens to trade (add your own here)
@@ -53,10 +60,22 @@ EXAMPLE_TOKENS = {
     # Add CODEX (Bags.fm token) - has historical data
     "CODEX": TokenConfig(
         symbol="CODEX",
-        mint="HAK9cX1jfYmcNpr6keTkLvxehGPWKELXSu7GH2ofBAGS",
+        mint=CODEX_MINT,
         decimals=9,
         name="CODEX",
         min_trade_amount=1.0,
+        entry_fee_bps=BAGS_TOTAL_FEE_BPS,
+        exit_fee_bps=BAGS_TOTAL_FEE_BPS,
+        creator_rebate_bps=BAGS_CREATOR_FEE_BPS,
+    ),
+    "BLON": TokenConfig(
+        symbol="BLON",
+        mint=BLON_MINT,
+        decimals=9,
+        name="BLON",
+        min_trade_amount=1.0,
+        entry_fee_bps=BAGS_TOTAL_FEE_BPS,
+        exit_fee_bps=BAGS_TOTAL_FEE_BPS,
     ),
     # USDC removed - no historical OHLC data available
     # Uncomment after collecting USDC price data:
@@ -95,6 +114,11 @@ def create_config(
     dry_run: bool = True,
     interval_minutes: int = 10,
     tokens: list[TokenConfig] | None = None,
+    strategy: str = "forecast",
+    daily_range_min_bps: float = 100.0,
+    daily_range_max_actions: int = 2,
+    daily_range_use_previous_day: bool = True,
+    max_daily_trades: int = 20,
 ) -> TradingConfig:
     """Create trading configuration.
 
@@ -128,15 +152,19 @@ def create_config(
         bags=bags_config,
         data=data_config,
         forecast=forecast_config,
+        strategy="daily-range" if strategy == "daily-range" else "forecast",
         check_interval_minutes=interval_minutes,
         min_predicted_return=0.005,  # 0.5% min predicted return
         min_confidence=0.3,
+        daily_range_min_bps=daily_range_min_bps,
+        daily_range_max_actions_per_day=daily_range_max_actions,
+        daily_range_use_previous_day=daily_range_use_previous_day,
         position_size_pct=0.25,  # 25% of portfolio per position
         max_positions=4,
         max_position_sol=1.0,
         slippage_bps=100,  # 1% slippage tolerance
         max_daily_loss_pct=0.05,  # 5% daily loss limit
-        max_daily_trades=20,
+        max_daily_trades=max_daily_trades,
         dry_run=dry_run,
     )
 
@@ -197,6 +225,41 @@ async def main():
         action="store_true",
         help="Trade only CODEX",
     )
+    parser.add_argument(
+        "--strategy",
+        choices=["forecast", "daily-range"],
+        default="forecast",
+        help="Trading strategy [default: forecast]",
+    )
+    parser.add_argument(
+        "--daily-range-min-bps",
+        type=float,
+        default=100.0,
+        help="Min prior-day range in bps for daily-range [default: 100]",
+    )
+    parser.add_argument(
+        "--daily-range-max-actions",
+        type=int,
+        default=2,
+        help="Max actions per token per day for daily-range [default: 2]",
+    )
+    parser.add_argument(
+        "--daily-range-use-previous-day",
+        action="store_true",
+        default=True,
+        help="Use prior-day levels for daily-range [default]",
+    )
+    parser.add_argument(
+        "--daily-range-use-same-day",
+        action="store_true",
+        help="Use same-day levels for daily-range (override previous-day)",
+    )
+    parser.add_argument(
+        "--max-daily-trades",
+        type=int,
+        default=20,
+        help="Max trades per day [default: 20]",
+    )
 
     args = parser.parse_args()
 
@@ -213,7 +276,17 @@ async def main():
     # Create config
     dry_run = not args.live
     tokens = _select_tokens(args.trade_mints, args.codex_only)
-    config = create_config(dry_run=dry_run, interval_minutes=args.interval, tokens=tokens)
+    use_previous = args.daily_range_use_previous_day and not args.daily_range_use_same_day
+    config = create_config(
+        dry_run=dry_run,
+        interval_minutes=args.interval,
+        tokens=tokens,
+        strategy=args.strategy,
+        daily_range_min_bps=args.daily_range_min_bps,
+        daily_range_max_actions=args.daily_range_max_actions,
+        daily_range_use_previous_day=use_previous,
+        max_daily_trades=args.max_daily_trades,
+    )
 
     print(f"\n{'='*60}")
     print(f"Bags.fm Trading Bot")
@@ -238,9 +311,12 @@ async def main():
         # Just collect data
         from bagsfm import DataCollector, create_collector
 
+        max_rows = max(2000, config.data.context_bars * len(tokens) * 4)
         collector = await create_collector(
             bags_config=config.bags,
             data_config=config.data,
+            max_rows=max_rows,
+            required_mints=[token.mint for token in tokens],
         )
 
         print("Collecting price data...")

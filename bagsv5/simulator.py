@@ -296,6 +296,7 @@ def optimize_thresholds(
     ohlc_path: Path,
     mint: str,
     test_split: float = 0.2,
+    cost_bps: float = 130.0,
     device: str = "cuda",
 ) -> Tuple[float, float, SimulationResult]:
     """Find optimal buy/sell thresholds."""
@@ -308,6 +309,7 @@ def optimize_thresholds(
         model=model,
         config=config,
         normalizers=normalizers,
+        cost_bps=cost_bps,
         device=device,
     )
 
@@ -347,6 +349,7 @@ def main():
     parser.add_argument("--test-split", type=float, default=0.2)
     parser.add_argument("--buy-threshold", type=float, default=0.5)
     parser.add_argument("--sell-threshold", type=float, default=0.45)
+    parser.add_argument("--cost-bps", type=float, default=130.0)
     parser.add_argument("--optimize", action="store_true", help="Optimize thresholds")
     parser.add_argument("--device", type=str, default="cuda")
 
@@ -355,13 +358,14 @@ def main():
     if args.optimize:
         logger.info("Optimizing thresholds...")
         buy_t, sell_t, result = optimize_thresholds(
-            args.checkpoint, args.ohlc, args.mint, args.test_split, args.device
+            args.checkpoint, args.ohlc, args.mint, args.test_split, args.cost_bps, args.device
         )
         print(f"\nOptimal thresholds: Buy={buy_t:.2f}, Sell={sell_t:.2f}")
     else:
         result = run_simulation(
             args.checkpoint, args.ohlc, args.mint,
             args.test_split, args.buy_threshold, args.sell_threshold,
+            cost_bps=args.cost_bps,
             device=args.device,
         )
 

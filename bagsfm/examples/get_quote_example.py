@@ -19,12 +19,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from bagsfm import BagsAPIClient, BagsConfig
-from bagsfm.config import SOL_MINT
+from bagsfm.config import SOL_MINT, CODEX_MINT
 from bagsfm.utils import lamports_to_sol, format_sol, format_pct
-
-
-# CODEX token (Bags.fm)
-CODEX_MINT = "HAK9cX1jfYmcNpr6keTkLvxehGPWKELXSu7GH2ofBAGS"
 
 
 async def main():
