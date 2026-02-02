@@ -355,7 +355,6 @@ bagsfm_state.json
 *.log.*
 *results.md
 EXPERIMENTS_LOG.md
-binance_latest.md
 
 # Experiment directories
 alpacawide/
