@@ -3,12 +3,31 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
+import os
 from pathlib import Path
 from typing import Iterable, Optional
 
 import pandas as pd
 
 DEFAULT_HOURLY_ROOT = Path(__file__).resolve().parents[1] / "trainingdatahourly"
+ENV_HOURLY_ROOT = "MARKETSIM_HOURLY_DATA_ROOT"
+logger = logging.getLogger(__name__)
+
+
+def _resolve_hourly_root(data_root: Path) -> Path:
+    env_value = os.getenv(ENV_HOURLY_ROOT, "").strip()
+    if not env_value:
+        return data_root
+    candidate = Path(env_value).expanduser()
+    if candidate.exists():
+        return candidate
+    logger.warning(
+        "MARKETSIM_HOURLY_DATA_ROOT=%s does not exist; falling back to %s",
+        candidate,
+        data_root,
+    )
+    return data_root
 
 
 def _candidate_hourly_paths(symbol: str, data_root: Path) -> Iterable[Path]:
@@ -67,6 +86,10 @@ def load_hourly_bars(symbol: str, data_root: Path = DEFAULT_HOURLY_ROOT) -> pd.D
 
     Returns an empty DataFrame when no data is available.
     """
+    if data_root == DEFAULT_HOURLY_ROOT:
+        resolved_root = _resolve_hourly_root(data_root)
+        if resolved_root != data_root:
+            return load_hourly_bars(symbol, data_root=resolved_root)
     if not data_root.exists():
         return pd.DataFrame()
     path = _resolve_hourly_path(symbol, data_root)

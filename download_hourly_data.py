@@ -120,12 +120,26 @@ def download_and_save_symbol(
     asset_dir.mkdir(parents=True, exist_ok=True)
     output_file = asset_dir / f"{symbol}.csv"
 
-    # Check if already exists
-    if skip_if_exists and output_file.exists():
+    # Check if already exists and optionally update in place
+    existing_df: Optional[pd.DataFrame] = None
+    if output_file.exists():
         try:
             existing_df = pd.read_csv(output_file, index_col=0, parse_dates=True)
-            if len(existing_df) > 0:
-                logger.info(f"Skipping {symbol} - already have {len(existing_df)} hourly bars")
+        except Exception as e:
+            logger.warning(f"Error reading existing file for {symbol}: {e}")
+            existing_df = None
+
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=years_back * 365)
+    update_mode = False
+
+    if existing_df is not None and not existing_df.empty:
+        existing_df.index = pd.to_datetime(existing_df.index, utc=True, errors="coerce")
+        existing_df = existing_df[~existing_df.index.isna()]
+        latest_ts = pd.to_datetime(existing_df.index.max(), utc=True, errors="coerce") if not existing_df.empty else None
+        if latest_ts is not None and not pd.isna(latest_ts):
+            if skip_if_exists and latest_ts >= end_dt - timedelta(hours=2):
+                logger.info(f"Skipping {symbol} - latest hourly bar already up to date ({latest_ts})")
                 return {
                     "symbol": symbol,
                     "status": "skipped",
@@ -133,12 +147,9 @@ def download_and_save_symbol(
                     "start": str(existing_df.index.min()),
                     "end": str(existing_df.index.max()),
                 }
-        except Exception as e:
-            logger.warning(f"Error reading existing file for {symbol}: {e}")
-
-    # Set time range
-    end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(days=years_back * 365)
+            if skip_if_exists:
+                update_mode = True
+                start_dt = max(start_dt, latest_ts - timedelta(hours=2))
 
     logger.info(f"Downloading {symbol} hourly data from {start_dt.date()} to {end_dt.date()}")
 
@@ -149,6 +160,15 @@ def download_and_save_symbol(
         df = download_hourly_stock_data(symbol, start_dt, end_dt)
 
     if df.empty:
+        if update_mode and existing_df is not None and not existing_df.empty:
+            logger.warning(f"No new hourly data retrieved for {symbol}; keeping existing file")
+            return {
+                "symbol": symbol,
+                "status": "no_update",
+                "bars": len(existing_df),
+                "start": str(existing_df.index.min()),
+                "end": str(existing_df.index.max()),
+            }
         logger.warning(f"No hourly data retrieved for {symbol}")
         return {
             "symbol": symbol,
@@ -157,7 +177,28 @@ def download_and_save_symbol(
             "error": "Empty dataframe returned",
         }
 
-    # Save to CSV
+    if update_mode and existing_df is not None and not existing_df.empty:
+        df.index = pd.to_datetime(df.index, utc=True, errors="coerce")
+        df = df[~df.index.isna()]
+        combined = pd.concat([existing_df, df], axis=0, sort=False)
+        combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+        added = max(0, len(combined) - len(existing_df))
+        combined.index.name = "timestamp"
+        combined.to_csv(output_file)
+        logger.success(
+            f"Updated {symbol} with {added} new hourly bars (total {len(combined)}) -> {output_file}"
+        )
+        return {
+            "symbol": symbol,
+            "status": "updated",
+            "bars": len(combined),
+            "added_bars": added,
+            "start": str(combined.index.min()),
+            "end": str(combined.index.max()),
+            "file": str(output_file),
+        }
+
+    # Save to CSV (full download)
     df.index.name = "timestamp"
     df.to_csv(output_file)
 
@@ -224,8 +265,8 @@ def download_all_symbols(
     logger.info(f"Download Complete!")
     logger.info(f"{'='*60}")
     logger.success(f"Total symbols: {len(results)}")
-    logger.success(f"Successful: {sum(1 for r in results if r['status'] == 'ok')}")
-    logger.success(f"Skipped: {sum(1 for r in results if r['status'] == 'skipped')}")
+    logger.success(f"Successful: {sum(1 for r in results if r['status'] in {'ok', 'updated'})}")
+    logger.success(f"Skipped: {sum(1 for r in results if r['status'] in {'skipped', 'no_update'})}")
     logger.warning(f"No data: {sum(1 for r in results if r['status'] == 'no_data')}")
     logger.info(f"Summary saved to: {summary_file}")
 
