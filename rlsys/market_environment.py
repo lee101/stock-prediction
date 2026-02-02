@@ -15,6 +15,7 @@ from .utils import (
     compute_sharpe_ratio,
     compute_sortino_ratio,
 )
+from src.tradinglib.rewards import DrawdownTracker, RewardState, RunningMoments, risk_adjusted_reward, sharpe_like_reward
 
 
 @dataclass(slots=True)
@@ -66,9 +67,15 @@ class MarketEnvironment(gym.Env):
 
         self._state: Optional[MarketState] = None
         self._returns: list[float] = []
+        self._rewards: list[float] = []
         self._equity_curve: list[float] = []
         self._last_action: float = 0.0
         self._peak_value = self.config.initial_capital
+        self._reward_state = RewardState(
+            moments=RunningMoments(),
+            drawdown=DrawdownTracker(peak=self.config.initial_capital, drawdown=0.0),
+        )
+        self._sharpe_state = RunningMoments()
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict] = None):
         super().reset(seed=seed)
@@ -82,9 +89,15 @@ class MarketEnvironment(gym.Env):
             turnover=0.0,
         )
         self._returns = []
+        self._rewards = []
         self._equity_curve = [initial_value]
         self._last_action = 0.0
         self._peak_value = initial_value
+        self._reward_state = RewardState(
+            moments=RunningMoments(),
+            drawdown=DrawdownTracker(peak=initial_value, drawdown=0.0),
+        )
+        self._sharpe_state = RunningMoments()
         return self._get_observation(), {}
 
     def step(self, action: np.ndarray):
@@ -115,10 +128,10 @@ class MarketEnvironment(gym.Env):
             + self.config.slippage
             + self.config.market_impact * abs(delta)
         )
-        reward = target_position * price_return - trade_penalty
-        reward -= self.config.risk_aversion * (target_position**2)
+        base_return = target_position * price_return - trade_penalty
+        base_return -= self.config.risk_aversion * (target_position**2)
 
-        new_portfolio_value = prev_value * (1.0 + reward)
+        new_portfolio_value = prev_value * (1.0 + base_return)
         if not np.isfinite(new_portfolio_value):
             new_portfolio_value = self.config.min_cash
         new_portfolio_value = max(new_portfolio_value, 0.0)
@@ -141,7 +154,27 @@ class MarketEnvironment(gym.Env):
         )
         truncated = False
 
-        self._returns.append(reward)
+        reward_mode = self.config.reward_mode
+        if reward_mode == "risk_adjusted":
+            reward = risk_adjusted_reward(
+                step_return=float(base_return),
+                state=self._reward_state,
+                equity=float(new_portfolio_value),
+                drawdown_penalty=self.config.drawdown_penalty,
+                volatility_penalty=self.config.volatility_penalty,
+            )
+        elif reward_mode == "sharpe_like":
+            reward = sharpe_like_reward(
+                step_return=float(base_return),
+                state=self._sharpe_state,
+                eps=self.config.sharpe_eps,
+                clip=self.config.sharpe_clip,
+            )
+        else:
+            reward = float(base_return)
+
+        self._returns.append(float(base_return))
+        self._rewards.append(float(reward))
         self._equity_curve.append(new_portfolio_value)
         self._peak_value = max(self._peak_value, new_portfolio_value)
         drawdown = 0.0
@@ -204,7 +237,7 @@ class MarketEnvironment(gym.Env):
         max_dd = compute_max_drawdown(self._equity_curve)
         sortino = compute_sortino_ratio(self._returns)
         return EpisodeMetrics(
-            reward=float(sum(self._returns)),
+            reward=float(sum(self._rewards)),
             length=len(self._returns),
             max_drawdown=float(max_dd),
             sharpe_ratio=float(sharpe),

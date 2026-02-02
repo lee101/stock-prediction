@@ -133,7 +133,13 @@ class MultiOptim(torch.optim.Optimizer):
     def step(self, closure=None):
         loss = None
         for opt in self.optimizers:
-            loss = opt.step(closure)
+            if closure is None:
+                loss = opt.step()
+            else:
+                try:
+                    loss = opt.step(closure)
+                except TypeError:
+                    loss = opt.step()
         return loss
 
 

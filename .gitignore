@@ -346,3 +346,6 @@ bagsneural/checkpoints/
 # Live trading PnL logs
 logs/pnl/
 exit_plans.json
+tradingdata/
+tradingdatahourly/
+trainingdatahourlybinance/
