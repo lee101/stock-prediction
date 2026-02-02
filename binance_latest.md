@@ -89,6 +89,17 @@ aws s3 sync s3://models/stock/models/binance/hyperparams/chronos2/ hyperparams/c
 aws s3 sync s3://models/stock/models/binance/preaugstrategies/chronos2/hourly/ preaugstrategies/chronos2/hourly/ --endpoint-url "$R2_ENDPOINT"
 ```
 
+Note: if you want to avoid rebuilding Chronos forecasts on the inference host, sync `binanceneural/forecast_cache/` as well (if present).
+
+Minimal SOLUSD-only sync (optional):
+
+```bash
+aws s3 sync s3://models/stock/models/binance/binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/ binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/ --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/trainingdatahourly/crypto/ trainingdatahourly/crypto/ --exclude "*" --include "SOLUSD.csv" --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/hyperparams/chronos2/hourly/ hyperparams/chronos2/hourly/ --exclude "*" --include "SOLUSD.json" --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/preaugstrategies/chronos2/hourly/ preaugstrategies/chronos2/hourly/ --exclude "*" --include "SOLUSDT.json" --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/chronos2_finetuned/ chronos2_finetuned/ --exclude "*" --include "SOLUSDT_lora_*/*" --endpoint-url "$R2_ENDPOINT"
+```
 ## Inference-only (no live orders)
 
 For testing predictions without placing real orders:
