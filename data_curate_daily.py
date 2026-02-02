@@ -133,7 +133,7 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
 
     try:
         alpaca_clock = api.get_clock()
-    except APIError as exc:
+    except Exception as exc:
         logger.warning(
             f"Alpaca API unavailable ({exc}); falling back to cached datasets for {', '.join(symbols)}."
         )
@@ -153,7 +153,7 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
         end = (datetime.datetime.now()).strftime('%Y-%m-%d')
         try:
             daily_df = download_exchange_historical_data(client, symbol)
-        except APIError as exc:
+        except Exception as exc:
             logger.warning(
                 f"Failed to download historical data for {symbol} ({exc}); using cached dataset."
             )

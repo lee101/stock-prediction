@@ -103,6 +103,10 @@ def load_symbol_data(
 
     # Normalize column names
     df.columns = df.columns.str.lower()
+    if df.columns.duplicated().any():
+        duplicates = df.columns[df.columns.duplicated()].tolist()
+        logger.warning("Duplicate columns %s detected for %s; keeping first occurrence.", duplicates, symbol)
+        df = df.loc[:, ~df.columns.duplicated()].copy()
 
     # Ensure timestamp column exists
     if "timestamp" not in df.columns:
@@ -258,12 +262,18 @@ class DailyDataLoader:
             return None
 
         row = df[mask].iloc[0]
+
+        def _safe_float(value) -> float:
+            if isinstance(value, pd.Series):
+                value = value.iloc[0]
+            return float(value)
+
         return {
-            "open": float(row["open"]),
-            "high": float(row["high"]),
-            "low": float(row["low"]),
-            "close": float(row["close"]),
-            "volume": float(row["volume"]),
+            "open": _safe_float(row["open"]),
+            "high": _safe_float(row["high"]),
+            "low": _safe_float(row["low"]),
+            "close": _safe_float(row["close"]),
+            "volume": _safe_float(row["volume"]),
         }
 
     def get_available_symbols_on_date(self, target_date: date) -> List[str]:

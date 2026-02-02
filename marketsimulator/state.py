@@ -485,6 +485,16 @@ class SimulationState:
             existing = self.positions.get(symbol)
             if existing and existing.side == watcher.side and existing.qty >= watcher.target_qty - 1e-9:
                 continue
+            if watcher.last_fill is not None and (timestamp - watcher.last_fill) < watcher.min_interval:
+                continue
+            if watcher.force_immediate and watcher.last_fill is None:
+                qty = watcher.target_qty
+                if qty <= 0:
+                    continue
+                self.ensure_position(symbol, qty, watcher.side, close, market_row=row)
+                watcher.fills += 1
+                watcher.last_fill = timestamp
+                continue
             limit_price = watcher.limit_price
             tolerance = watcher.tolerance_pct
             if watcher.side == "buy":
@@ -493,8 +503,6 @@ class SimulationState:
             else:
                 threshold = limit_price * (1.0 - tolerance)
                 trigger = high >= threshold
-            if watcher.last_fill is not None and (timestamp - watcher.last_fill) < watcher.min_interval:
-                continue
             if not trigger:
                 continue
             qty = watcher.target_qty
