@@ -193,8 +193,7 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
         python_bin,
         "-m",
         "binanceneural.binance_watcher_cli",
-        "watch",
-        plan.symbol,
+        plan.symbol,  # No "watch" subcommand - it's the default
         "--side",
         plan.side,
         "--limit-price",
