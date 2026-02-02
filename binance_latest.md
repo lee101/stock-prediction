@@ -7,6 +7,28 @@ Updated: 2026-02-02
 - Checkpoint: `binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/epoch_005.pt`
 - Best PnL config: `intensity-scale=20.0`, `horizon=24`, `sequence-length=96`, `min-gap-pct=0.0003`
 
+## Clone + setup (inference host)
+
+```bash
+git clone <REPO_URL> stock-prediction
+cd stock-prediction
+
+python3.13 -m venv .venv313
+source .venv313/bin/activate
+
+uv pip install -e .
+uv pip install -e toto/
+```
+
+Sync required assets from R2 (mirror local paths):
+
+```bash
+aws s3 sync s3://models/stock/trainingdata/ trainingdata/ --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/binanceneural/checkpoints/ binanceneural/checkpoints/ --endpoint-url "$R2_ENDPOINT"
+```
+
+Note: if you want to avoid rebuilding Chronos forecasts on the inference host, sync `binanceneural/forecast_cache/` as well (if present).
+
 ## Production run (on a Binance.com-allowed host)
 
 1) Ensure env vars are set:
