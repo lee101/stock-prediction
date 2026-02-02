@@ -109,6 +109,15 @@ def _stable_options_payload(options: Mapping[str, Any]) -> str:
     return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
 
 
+def _normalize_predict_kwargs(predict_kwargs: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    options: Dict[str, Any] = dict(predict_kwargs or {})
+    if "cross_learning" in options and "predict_batches_jointly" not in options:
+        options["predict_batches_jointly"] = bool(options.pop("cross_learning"))
+    else:
+        options.pop("cross_learning", None)
+    return options
+
+
 def _chronos_version() -> str:
     if _chronos_pkg is not None:  # pragma: no branch - lightweight accessor
         return getattr(_chronos_pkg, "__version__", "unknown")
@@ -271,6 +280,19 @@ class Chronos2PredictionBatch:
     quantile_frames: QuantileFrameMap
     applied_augmentation: Optional[str] = None
     applied_choice: Optional[PreAugmentationChoice] = None
+
+    def quantile(self, level: float) -> pd.DataFrame:
+        """Return the pivoted frame for the requested quantile level."""
+
+        if level not in self.quantile_frames:
+            raise KeyError(f"Quantile {level} unavailable; computed levels={list(self.quantile_frames)}")
+        return self.quantile_frames[level]
+
+    @property
+    def median(self) -> pd.DataFrame:
+        """Convenience accessor for the 0.5 quantile."""
+
+        return self.quantile(0.5)
 
 
 @dataclass
@@ -1048,7 +1070,7 @@ class Chronos2OHLCWrapper:
             quantiles = tuple(sorted((*quantiles, 0.5)))
         quantile_columns = [_quantile_column(level) for level in quantiles]
 
-        predict_options: Dict[str, Any] = dict(predict_kwargs or {})
+        predict_options: Dict[str, Any] = _normalize_predict_kwargs(predict_kwargs)
         effective_batch_size = int(batch_size or self.default_batch_size)
         cache_key = None
         cached_batch: Optional[Chronos2PredictionBatch] = None
@@ -1247,7 +1269,11 @@ class Chronos2OHLCWrapper:
         # Build multivariate tensor input: shape (n_variates, history_length)
         target_values = []
         for col in self.target_columns:
-            target_values.append(torch.tensor(df[col].values, dtype=torch.float32))
+            series = df[col]
+            if isinstance(series, pd.DataFrame):
+                series = series.iloc[:, 0]
+            series = pd.to_numeric(series, errors="coerce")
+            target_values.append(torch.tensor(series.values, dtype=torch.float32))
 
         target_tensor = torch.stack(target_values, dim=0)  # Shape: (n_variates, history)
         inputs = [{"target": target_tensor}]
@@ -1409,11 +1435,14 @@ class Chronos2OHLCWrapper:
                 logger.warning("Skipping %s: insufficient data (%d rows)", symbol, len(df))
                 continue
 
-            # Build multivariate tensor
-            target_values = [
-                torch.tensor(df[col].values, dtype=torch.float32)
-                for col in self.target_columns
-            ]
+            # Build multivariate tensor (guard duplicate columns)
+            target_values = []
+            for col in self.target_columns:
+                series = df[col]
+                if isinstance(series, pd.DataFrame):
+                    series = series.iloc[:, 0]
+                series = pd.to_numeric(series, errors="coerce")
+                target_values.append(torch.tensor(series.values, dtype=torch.float32))
             target_tensor = torch.stack(target_values, dim=0)
             inputs.append({"target": target_tensor})
             valid_indices.append((idx, symbol, df))
@@ -1535,7 +1564,7 @@ class Chronos2OHLCWrapper:
         if 0.5 not in quantiles:
             quantiles = tuple(sorted((*quantiles, 0.5)))
         quantile_columns = [_quantile_column(level) for level in quantiles]
-        predict_options: Dict[str, Any] = dict(predict_kwargs or {})
+        predict_options: Dict[str, Any] = _normalize_predict_kwargs(predict_kwargs)
         effective_batch_size = int(batch_size or self.default_batch_size)
 
         results: Dict[int, Chronos2PredictionBatch] = {}

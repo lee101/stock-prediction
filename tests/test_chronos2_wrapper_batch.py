@@ -15,6 +15,7 @@ class _FakePipeline:
     def __init__(self) -> None:
         self.model = _FakeModel()
         self.calls = 0
+        self.last_kwargs = None
 
     def predict_df(
         self,
@@ -30,6 +31,7 @@ class _FakePipeline:
         **_: dict,
     ) -> pd.DataFrame:
         self.calls += 1
+        self.last_kwargs = dict(_)
         rows = []
         for symbol, group in df.groupby(id_column):
             last_ts = group[timestamp_column].max()
@@ -73,6 +75,7 @@ def _build_wrapper() -> Chronos2OHLCWrapper:
         default_batch_size=8,
         quantile_levels=(0.1, 0.5, 0.9),
         torch_compile=False,
+        preaugmentation_dirs=(),
     )
 
 
@@ -128,3 +131,23 @@ def test_batch_predictions_use_cache():
         batch_size=2,
     )
     assert pipeline.calls == 1
+
+
+def test_batch_cross_learning_alias():
+    wrapper = _build_wrapper()
+    pipeline = wrapper.pipeline
+    assert isinstance(pipeline, _FakePipeline)
+
+    contexts = [_build_context(5.0), _build_context(6.0)]
+    wrapper.predict_ohlc_batch(
+        contexts,
+        symbols=("CTX_X", "CTX_Y"),
+        prediction_length=1,
+        context_length=8,
+        batch_size=4,
+        predict_kwargs={"cross_learning": True},
+    )
+
+    assert pipeline.last_kwargs is not None
+    assert pipeline.last_kwargs.get("predict_batches_jointly") is True
+    assert "cross_learning" not in pipeline.last_kwargs

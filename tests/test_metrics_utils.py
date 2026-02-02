@@ -1,40 +1,31 @@
 import numpy as np
-import pytest
 
-from kronostraining.metrics_utils import compute_mae_percent
-
-
-def test_compute_mae_percent_basic():
-    actual = np.array([10.0, 20.0, 30.0], dtype=np.float64)
-    mae = 2.0
-    assert compute_mae_percent(mae, actual) == pytest.approx(10.0)
+from src.metrics_utils import annualized_sharpe, annualized_sortino, compute_step_returns
 
 
-def test_compute_mae_percent_handles_negative_actuals():
-    actual = np.array([-5.0, 5.0, -15.0, 15.0], dtype=np.float64)
-    mae = 1.5
-    mean_abs = np.mean(np.abs(actual))
-    expected = (mae / mean_abs) * 100.0
-    assert compute_mae_percent(mae, actual) == pytest.approx(expected)
+def test_compute_step_returns_basic():
+    series = [100.0, 110.0, 99.0]
+    returns = compute_step_returns(series)
+    expected = np.array([0.10, (99.0 - 110.0) / 110.0])
+    assert np.allclose(returns, expected)
 
 
-def test_compute_mae_percent_zero_scale_returns_inf():
-    actual = np.zeros(4, dtype=np.float64)
-    mae = 0.25
-    result = compute_mae_percent(mae, actual)
-    assert np.isinf(result) and result > 0
+def test_annualized_sharpe_zero_variance():
+    returns = [0.0, 0.0, 0.0]
+    assert annualized_sharpe(returns) == 0.0
 
 
-def test_compute_mae_percent_zero_mae_zero_scale():
-    actual = np.zeros(3, dtype=np.float64)
-    mae = 0.0
-    assert compute_mae_percent(mae, actual) == 0.0
+def test_annualized_sortino_all_positive_matches_sharpe():
+    returns = [0.01, 0.02, 0.03, 0.015]
+    sharpe = annualized_sharpe(returns)
+    sortino = annualized_sortino(returns)
+    assert np.isclose(sortino, sharpe)
 
 
-def test_compute_mae_percent_validates_inputs():
-    actual = np.array([1.0, 2.0])
-    with pytest.raises(ValueError):
-        compute_mae_percent(-0.1, actual)
-
-    with pytest.raises(ValueError):
-        compute_mae_percent(0.1, np.array([]))
+def test_annualized_sortino_with_downside():
+    returns = np.array([0.01, -0.02, 0.03, -0.01])
+    mean = returns.mean()
+    downside = returns[returns < 0]
+    downside_std = downside.std(ddof=1)
+    expected = mean / downside_std * np.sqrt(252.0)
+    assert np.isclose(annualized_sortino(returns), expected)
