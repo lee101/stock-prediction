@@ -122,6 +122,7 @@ def resolve_chronos2_params(
     global_default = CHRONOS2_USE_MULTIVARIATE and not is_crypto
     default_multivariate = _get_symbol_multivariate_setting(symbol, global_default)
 
+    env_cross_learning = os.getenv("CHRONOS2_CROSS_LEARNING")
     if record is not None:
         # Extract skip_rates - new multiscale parameter from hourly tuning
         raw_skip_rates = config.get("skip_rates", [1])
@@ -134,6 +135,18 @@ def resolve_chronos2_params(
         has_multiscale = len(skip_rates) > 1
         aggregation_method = str(config.get("aggregation_method", "single"))
 
+        use_cross_learning = bool(config.get("use_cross_learning", False))
+        if env_cross_learning is not None:
+            use_cross_learning = env_cross_learning.strip().lower() in {"1", "true", "yes", "on"}
+
+        predict_kwargs = dict(config.get("predict_kwargs") or {})
+        if "cross_learning" in predict_kwargs and "predict_batches_jointly" not in predict_kwargs:
+            predict_kwargs["predict_batches_jointly"] = bool(predict_kwargs.pop("cross_learning"))
+        else:
+            predict_kwargs.pop("cross_learning", None)
+        if use_cross_learning:
+            predict_kwargs.setdefault("predict_batches_jointly", True)
+
         params = {
             "model_id": config.get("model_id", "amazon/chronos-2"),
             "device_map": config.get("device_map", "cuda"),
@@ -144,12 +157,12 @@ def resolve_chronos2_params(
             "aggregation": str(config.get("aggregation", "median")),
             "sample_count": int(config.get("sample_count", 0)),
             "scaler": str(config.get("scaler", "none")),
-            "predict_kwargs": dict(config.get("predict_kwargs") or {}),
+            "predict_kwargs": predict_kwargs,
             "_config_path": str(config_path) if config_path.exists() else None,
             "_config_name": str(config.get("name") or ""),
             # Multivariate forecasting parameters
             "use_multivariate": bool(config.get("use_multivariate", default_multivariate)),
-            "use_cross_learning": bool(config.get("use_cross_learning", False)),
+            "use_cross_learning": use_cross_learning,
             # Multiscale skip-rate parameters (from hourly tuning)
             "skip_rates": skip_rates,
             "aggregation_method": aggregation_method,
@@ -157,6 +170,12 @@ def resolve_chronos2_params(
             "multiscale_method": aggregation_method if has_multiscale else str(config.get("multiscale_method", "single")),
         }
     else:
+        use_cross_learning = False
+        if env_cross_learning is not None:
+            use_cross_learning = env_cross_learning.strip().lower() in {"1", "true", "yes", "on"}
+        predict_kwargs: Dict[str, object] = {}
+        if use_cross_learning:
+            predict_kwargs["predict_batches_jointly"] = True
         params = {
             "model_id": "amazon/chronos-2",
             "device_map": "cuda",
@@ -167,12 +186,12 @@ def resolve_chronos2_params(
             "aggregation": "median",
             "sample_count": 0,
             "scaler": "none",
-            "predict_kwargs": {},
+            "predict_kwargs": predict_kwargs,
             "_config_path": str(config_path) if config_path.exists() else None,
             "_config_name": "",
             # Multivariate forecasting parameters
             "use_multivariate": default_multivariate,
-            "use_cross_learning": False,
+            "use_cross_learning": use_cross_learning,
             # Multiscale skip-rate parameters (defaults)
             "skip_rates": (1,),
             "aggregation_method": "single",

@@ -132,6 +132,7 @@ def test_predict_ohlc_pivots_quantiles() -> None:
         target_columns=("open", "close"),
         default_context_length=16,
         quantile_levels=(0.1, 0.5, 0.9),
+        preaugmentation_dirs=(),
     )
 
     context = df.iloc[:-4]
@@ -161,11 +162,39 @@ def test_predict_ohlc_pivots_quantiles() -> None:
         batch.quantile(0.95)
 
 
+def test_predict_kwargs_alias_cross_learning() -> None:
+    df = _make_dataframe(32)
+    pipeline = _DummyPipeline()
+    wrapper = Chronos2OHLCWrapper(
+        pipeline=pipeline,
+        id_column="symbol",
+        timestamp_column="timestamp",
+        target_columns=("open", "close"),
+        default_context_length=16,
+        quantile_levels=(0.1, 0.5, 0.9),
+        preaugmentation_dirs=(),
+    )
+
+    wrapper.predict_ohlc(
+        df.iloc[:-2],
+        symbol="BTCUSD",
+        prediction_length=2,
+        context_length=16,
+        predict_kwargs={"cross_learning": True},
+    )
+
+    assert pipeline.recorded_kwargs
+    last_kwargs = pipeline.recorded_kwargs[-1]
+    assert last_kwargs.get("predict_batches_jointly") is True
+    assert "cross_learning" not in last_kwargs
+
+
 def test_unload_blocks_future_predictions() -> None:
     df = _make_dataframe(24)
     wrapper = Chronos2OHLCWrapper(
         pipeline=_DummyPipeline(),
         default_context_length=8,
+        preaugmentation_dirs=(),
     )
     wrapper.unload()
 
@@ -194,6 +223,7 @@ def test_compile_failure_falls_back_to_eager() -> None:
         timestamp_column="timestamp",
         target_columns=("open",),
         default_context_length=16,
+        preaugmentation_dirs=(),
     )
 
     wrapper._torch_compile_success = True
