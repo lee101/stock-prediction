@@ -1,0 +1,5 @@
+[
+  {"name": "cl_ctx1024_bs128_chunk200_top3", "top_n": 3, "context_length": 1024, "batch_size": 128, "chunk_size": 200, "prediction_length": 1},
+  {"name": "cl_ctx1024_bs128_chunk200_top5", "top_n": 5, "context_length": 1024, "batch_size": 128, "chunk_size": 200, "prediction_length": 1},
+  {"name": "cl_ctx2048_bs128_chunk200_top5", "top_n": 5, "context_length": 2048, "batch_size": 128, "chunk_size": 200, "prediction_length": 1}
+]
