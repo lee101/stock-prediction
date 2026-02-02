@@ -49,10 +49,34 @@ else:  # pragma: no cover
     from wandboard import WandBoardLogger
 
 from src.cache_utils import ensure_huggingface_cache_dir
-from trade_stock_e2e import (
-    STRATEGYTRAINING_FAST_RESULTS_PATH,
-    _load_strategytraining_symbols,
-)
+from src.metrics_utils import annualized_sharpe, annualized_sortino, compute_step_returns
+STRATEGYTRAINING_FAST_RESULTS_PATH = REPO_ROOT / "strategytraining" / "sizing_strategy_fast_test_results.json"
+
+
+def _load_strategytraining_symbols(path: Path = STRATEGYTRAINING_FAST_RESULTS_PATH) -> List[str]:
+    """Load the latest symbol cohort used for sizing experiments."""
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text())
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Unable to parse %s for neural symbols: %s", path, exc)
+        return []
+
+    symbols = payload.get("symbols")
+    if not isinstance(symbols, list):
+        return []
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        if not isinstance(symbol, str):
+            continue
+        clean = symbol.strip().upper()
+        if not clean or clean in seen:
+            continue
+        normalized.append(clean)
+        seen.add(clean)
+    return normalized
 
 ensure_huggingface_cache_dir(logger=logger)
 
@@ -384,24 +408,14 @@ def _compute_step_metrics(report) -> dict[str, float]:
     else:
         closes = [report.initial_cash] + closes
 
-    series = np.asarray(closes, dtype=np.float64)
-    if series.size < 2:
-        step_returns = np.array([], dtype=np.float64)
-    else:
-        prev = series[:-1]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            step_returns = np.where(prev != 0.0, (series[1:] - prev) / prev, 0.0)
-
-    mean_return = float(step_returns.mean()) if step_returns.size else 0.0
-    std_return = float(step_returns.std(ddof=1)) if step_returns.size > 1 else 0.0
-    if std_return > 0.0:
-        sharpe = mean_return / std_return * np.sqrt(252.0)
-    else:
-        sharpe = 0.0
+    step_returns = compute_step_returns(closes)
+    sharpe = annualized_sharpe(step_returns, periods_per_year=252.0)
+    sortino = annualized_sortino(step_returns, periods_per_year=252.0)
 
     return {
         "return": float(report.total_return_pct),
         "sharpe": float(sharpe),
+        "sortino": float(sortino),
         "pnl": float(report.total_return),
         "cash": float(report.final_cash),
         "balance": float(report.final_equity),
@@ -432,7 +446,7 @@ def _flatten_entry_limits(entry_snapshot: Dict[str, Dict]) -> Dict[str, float]:
 
 
 def _format_metric_line(key: str, value: float) -> str:
-    if key in {"return", "sharpe", "max_drawdown_pct"}:
+    if key in {"return", "sharpe", "sortino", "max_drawdown_pct"}:
         return f"{key}={value:.6f}"
     return f"{key}={value:.2f}"
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +20,7 @@ from marketsimulator.logging_utils import logger
 
 from src.fixtures import crypto_symbols
 
+from .data_feed import DEFAULT_DATA_ROOT
 from .environment import activate_simulation
 from .state import SimulationState, TradeExecution
 
@@ -251,6 +253,23 @@ def _generate_plots(report: SimulationReport, output_dir: Path) -> List[Path]:
     return generated
 
 
+def _resolve_data_root() -> Path:
+    env_value = os.getenv("MARKETSIM_DATA_ROOT", "").strip()
+    if not env_value:
+        return DEFAULT_DATA_ROOT
+
+    candidate = Path(env_value).expanduser()
+    if not candidate.exists():
+        logger.warning(
+            "[sim] MARKETSIM_DATA_ROOT=%s does not exist; falling back to %s",
+            candidate,
+            DEFAULT_DATA_ROOT,
+        )
+        return DEFAULT_DATA_ROOT
+
+    return candidate
+
+
 def simulate_strategy(
     symbols: Sequence[str],
     days: int = 5,
@@ -268,9 +287,12 @@ def simulate_strategy(
     price_history: Dict[str, List[Dict[str, Any]]] = {}
     daily_analysis: List[Dict[str, Any]] = []
 
+    data_root = _resolve_data_root()
+
     with activate_simulation(
         symbols=symbols,
         initial_cash=initial_cash,
+        data_root=data_root,
         force_kronos=force_kronos,
     ) as controller:
         trade_module = importlib.import_module("trade_stock_e2e")

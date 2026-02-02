@@ -573,11 +573,28 @@ def _fallback_backtest(symbol: str, num_simulations: int | None = None) -> pd.Da
     return result
 
 
-def backtest_forecasts(symbol: str, num_simulations: int | None = None) -> pd.DataFrame:
+def backtest_forecasts(
+    symbol: str,
+    num_simulations: int | None = None,
+    model_override: Optional[str] = None,
+    **kwargs: object,
+) -> pd.DataFrame:
     num_simulations = num_simulations or _DEFAULT_NUM_SIMULATIONS
     if _REAL_BACKTEST_MODULE and hasattr(_REAL_BACKTEST_MODULE, "backtest_forecasts"):
         try:
-            return _REAL_BACKTEST_MODULE.backtest_forecasts(symbol, num_simulations=num_simulations)  # type: ignore[return-value]
+            return _REAL_BACKTEST_MODULE.backtest_forecasts(  # type: ignore[return-value]
+                symbol,
+                num_simulations=num_simulations,
+                model_override=model_override,
+                **kwargs,
+            )
+        except TypeError as exc:  # pragma: no cover - guard older signatures
+            if model_override is not None and "unexpected keyword" in str(exc):
+                return _REAL_BACKTEST_MODULE.backtest_forecasts(  # type: ignore[return-value]
+                    symbol,
+                    num_simulations=num_simulations,
+                )
+            raise
         except Exception as exc:  # pragma: no cover - mirrors behaviour if real stack fails at runtime
             import traceback
 

@@ -30,6 +30,7 @@ import logging
 import sys
 from datetime import date, datetime
 from pathlib import Path
+from typing import List
 
 import pandas as pd
 
@@ -47,6 +48,47 @@ logger = logging.getLogger(__name__)
 def parse_date(date_str: str) -> date:
     """Parse date string to date object."""
     return datetime.strptime(date_str, "%Y-%m-%d").date()
+
+
+def _clean_symbol(symbol: str) -> str:
+    cleaned = symbol.strip().upper()
+    if not cleaned:
+        return ""
+    if cleaned in {"CORRELATION_MATRIX", "DATA_SUMMARY", "VOLATILITY_METRICS"}:
+        return ""
+    if not cleaned.replace("-", "").replace("_", "").isalnum():
+        return ""
+    return cleaned
+
+
+def _load_symbols_from_dir(path: Path) -> List[str]:
+    if not path.exists():
+        raise FileNotFoundError(f"Symbol directory not found: {path}")
+    symbols = sorted({_clean_symbol(p.stem) for p in path.glob("*.csv")})
+    return [s for s in symbols if s]
+
+
+def _load_symbols_from_file(path: Path) -> List[str]:
+    if not path.exists():
+        raise FileNotFoundError(f"Symbols file not found: {path}")
+    if path.suffix.lower() == ".json":
+        data = json.loads(path.read_text())
+        if isinstance(data, dict):
+            candidates = data.get("available_symbols") or data.get("symbols") or []
+        else:
+            candidates = data
+        cleaned = [_clean_symbol(str(s)) for s in candidates if str(s).strip()]
+        return [s for s in cleaned if s]
+
+    symbols: List[str] = []
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        cleaned = _clean_symbol(stripped.strip("',\" "))
+        if cleaned:
+            symbols.append(cleaned)
+    return symbols
 
 
 def format_pct(value: float) -> str:
@@ -83,6 +125,10 @@ def print_simulation_summary(result: SimulationResult) -> None:
 
     print("\n--- Daily Statistics ---")
     print(f"Avg Daily Return: {format_pct(result.avg_daily_return)}")
+    if result.total_margin_interest_paid or result.total_risk_penalty:
+        print("\n--- Costs ---")
+        print(f"Margin Interest Paid: {format_currency(result.total_margin_interest_paid)}")
+        print(f"Risk Penalties: {format_currency(result.total_risk_penalty)}")
 
     if result.symbol_returns:
         print("\n--- Top Performing Symbols ---")
@@ -124,6 +170,8 @@ def save_results(
         "win_rate": result.win_rate,
         "total_trades": result.total_trades,
         "total_days": result.total_days,
+        "margin_interest_paid": result.total_margin_interest_paid,
+        "risk_penalties": result.total_risk_penalty,
         "config": config_used,
         "symbol_returns": result.symbol_returns,
     }
@@ -185,6 +233,24 @@ def main() -> int:
         default="2025-12-31",
         help="Simulation end date (default: 2025-12-31)",
     )
+    parser.add_argument(
+        "--symbols-dir",
+        type=str,
+        default="",
+        help="Directory of CSVs to build symbol universe (overrides defaults)",
+    )
+    parser.add_argument(
+        "--symbols-file",
+        type=str,
+        default="",
+        help="Optional symbols file (txt/json) to build symbol universe",
+    )
+    parser.add_argument(
+        "--max-symbols",
+        type=int,
+        default=0,
+        help="Limit number of symbols (0 = no limit)",
+    )
 
     # Tuning
     parser.add_argument(
@@ -198,6 +264,54 @@ def main() -> int:
         choices=["grid", "optuna"],
         default="grid",
         help="Tuning method (default: grid)",
+    )
+
+    # Forecasting controls
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Device map for Chronos2 (default: cuda)",
+    )
+    parser.add_argument(
+        "--context-length",
+        type=int,
+        default=512,
+        help="Chronos2 context length (default: 512)",
+    )
+    parser.add_argument(
+        "--prediction-length",
+        type=int,
+        default=1,
+        help="Chronos2 prediction length (default: 1)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=128,
+        help="Chronos2 batch size (default: 128)",
+    )
+    parser.add_argument(
+        "--cross-learning",
+        action="store_true",
+        help="Enable Chronos2 cross-learning (predict_batches_jointly)",
+    )
+    parser.add_argument(
+        "--cross-learning-min-batch",
+        type=int,
+        default=2,
+        help="Minimum batch size to enable cross-learning",
+    )
+    parser.add_argument(
+        "--cross-learning-chunk",
+        type=int,
+        default=0,
+        help="Chunk size for cross-learning batches (0 = no chunking)",
+    )
+    parser.add_argument(
+        "--cross-learning-no-group",
+        action="store_true",
+        help="Disable asset-type grouping for cross-learning",
     )
 
     # Data
@@ -229,6 +343,30 @@ def main() -> int:
         default=0.0625,
         help="Annual margin interest rate (default: 0.0625 = 6.25%%)",
     )
+    parser.add_argument(
+        "--leverage-soft-cap",
+        type=float,
+        default=0.0,
+        help="Soft cap for leverage (0 disables penalties).",
+    )
+    parser.add_argument(
+        "--leverage-penalty-rate",
+        type=float,
+        default=0.0,
+        help="Daily penalty rate per unit leverage above soft cap.",
+    )
+    parser.add_argument(
+        "--hold-penalty-start-days",
+        type=int,
+        default=0,
+        help="Start applying hold penalty after this many days (0 disables).",
+    )
+    parser.add_argument(
+        "--hold-penalty-rate",
+        type=float,
+        default=0.0,
+        help="Daily penalty rate applied to notional for held positions beyond threshold.",
+    )
 
     # Experiment variations
     parser.add_argument(
@@ -243,14 +381,46 @@ def main() -> int:
     start_date = parse_date(args.start)
     end_date = parse_date(args.end)
 
+    symbols_override: List[str] = []
+    if args.symbols_file:
+        symbols_override = _load_symbols_from_file(Path(args.symbols_file))
+    elif args.symbols_dir:
+        symbols_override = _load_symbols_from_dir(Path(args.symbols_dir))
+
+    if args.max_symbols and args.max_symbols > 0:
+        symbols_override = symbols_override[: args.max_symbols]
+
+    if symbols_override:
+        stock_symbols = tuple(
+            sym for sym in symbols_override if not sym.endswith(("USD", "USDT", "USDC", "BTC", "ETH"))
+        )
+        crypto_symbols = tuple(
+            sym for sym in symbols_override if sym.endswith(("USD", "USDT", "USDC", "BTC", "ETH"))
+        )
+    else:
+        stock_symbols = DataConfigLong().stock_symbols
+        crypto_symbols = DataConfigLong().crypto_symbols
+
     # Build configs
     data_config = DataConfigLong(
+        stock_symbols=stock_symbols,
+        crypto_symbols=crypto_symbols,
         data_root=Path(args.data_dir),
         start_date=start_date,
         end_date=end_date,
     )
 
-    forecast_config = ForecastConfigLong()
+    forecast_config = ForecastConfigLong(
+        device_map=args.device,
+        context_length=args.context_length,
+        prediction_length=args.prediction_length,
+        batch_size=args.batch_size,
+        use_multivariate=True,
+        use_cross_learning=bool(args.cross_learning),
+        cross_learning_min_batch=max(2, int(args.cross_learning_min_batch)),
+        cross_learning_group_by_asset_type=not args.cross_learning_no_group,
+        cross_learning_chunk_size=int(args.cross_learning_chunk) if args.cross_learning_chunk > 0 else None,
+    )
 
     # Run tuning if requested
     if args.tune:
@@ -267,10 +437,16 @@ def main() -> int:
         # Update forecast config with tuned parameters
         if best_config:
             forecast_config = ForecastConfigLong(
-                context_length=best_config.get("context_length", 512),
-                prediction_length=best_config.get("prediction_length", 1),
+                device_map=args.device,
+                context_length=best_config.get("context_length", args.context_length),
+                prediction_length=best_config.get("prediction_length", args.prediction_length),
                 use_multivariate=best_config.get("use_multivariate", True),
                 use_preaugmentation=best_config.get("preaug_strategy", "baseline") != "baseline",
+                batch_size=args.batch_size,
+                use_cross_learning=bool(args.cross_learning),
+                cross_learning_min_batch=max(2, int(args.cross_learning_min_batch)),
+                cross_learning_group_by_asset_type=not args.cross_learning_no_group,
+                cross_learning_chunk_size=int(args.cross_learning_chunk) if args.cross_learning_chunk > 0 else None,
             )
 
     # Compare top_n values if requested
@@ -283,6 +459,12 @@ def main() -> int:
             sim_config = SimulationConfigLong(
                 top_n=top_n,
                 initial_cash=args.initial_cash,
+                leverage=args.leverage,
+                margin_rate_annual=args.margin_rate,
+                leverage_soft_cap=args.leverage_soft_cap,
+                leverage_penalty_rate=args.leverage_penalty_rate,
+                hold_penalty_start_days=args.hold_penalty_start_days,
+                hold_penalty_rate=args.hold_penalty_rate,
             )
 
             result = run_simulation(data_config, forecast_config, sim_config)
@@ -317,6 +499,10 @@ def main() -> int:
         initial_cash=args.initial_cash,
         leverage=args.leverage,
         margin_rate_annual=args.margin_rate,
+        leverage_soft_cap=args.leverage_soft_cap,
+        leverage_penalty_rate=args.leverage_penalty_rate,
+        hold_penalty_start_days=args.hold_penalty_start_days,
+        hold_penalty_rate=args.hold_penalty_rate,
     )
 
     logger.info(
@@ -352,6 +538,12 @@ def main() -> int:
     config_used = {
         "top_n": args.top_n,
         "initial_cash": args.initial_cash,
+        "leverage": args.leverage,
+        "margin_rate": args.margin_rate,
+        "leverage_soft_cap": args.leverage_soft_cap,
+        "leverage_penalty_rate": args.leverage_penalty_rate,
+        "hold_penalty_start_days": args.hold_penalty_start_days,
+        "hold_penalty_rate": args.hold_penalty_rate,
         "start_date": str(start_date),
         "end_date": str(end_date),
         "tuned": args.tune,
