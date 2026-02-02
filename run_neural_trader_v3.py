@@ -13,6 +13,9 @@ Usage:
 """
 
 import asyncio
+import gc
+import io
+import os
 import logging
 import sys
 from datetime import datetime, timezone
@@ -54,6 +57,32 @@ CODEX_TOKEN = TokenConfig(
 )
 
 
+def _read_tail_lines(path: Path, max_lines: int, block_size: int = 1024 * 1024) -> list[str]:
+    """Read the last N lines from a file without loading it all into memory."""
+    if max_lines <= 0:
+        return []
+
+    with path.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        end_pos = f.tell()
+        buffer = b""
+        lines: list[bytes] = []
+
+        while end_pos > 0 and len(lines) <= max_lines:
+            read_size = min(block_size, end_pos)
+            end_pos -= read_size
+            f.seek(end_pos)
+            buffer = f.read(read_size) + buffer
+            lines = buffer.splitlines()
+            if end_pos == 0:
+                break
+
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
+
+    return [line.decode("utf-8", errors="replace") for line in lines]
+
+
 def load_v3_model(checkpoint_path: Path, device: str = "cuda"):
     """Load V3 model from checkpoint."""
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -93,6 +122,8 @@ class NeuralTraderV3:
         min_trade_sol: float = 0.01,
         dry_run: bool = True,
         device: str = "cuda",
+        sleep_offload: bool = False,
+        sleep_unload: bool = False,
     ):
         self.bags_config = bags_config
         self.buy_threshold = buy_threshold
@@ -102,6 +133,10 @@ class NeuralTraderV3:
         self.min_trade_sol = min_trade_sol
         self.dry_run = dry_run
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.checkpoint_path = checkpoint_path
+        self.sleep_offload = sleep_offload
+        self.sleep_unload = sleep_unload
+        self._model_offloaded = False
 
         # Load V3 model
         logger.info(f"Loading V3 model from {checkpoint_path}")
@@ -126,18 +161,107 @@ class NeuralTraderV3:
             token=CODEX_TOKEN.symbol,
             log_dir="logs/pnl_v3",
             snapshot_interval=60,
+            max_trades_in_memory=2000,
+            max_snapshots_in_memory=1440,
         )
 
         self.consecutive_failures = 0
         self.max_consecutive_failures = 5
+
+    def _model_device(self) -> torch.device:
+        if self.model is None:
+            return torch.device("cpu")
+        try:
+            return next(self.model.parameters()).device
+        except StopIteration:
+            return torch.device("cpu")
+
+    def ensure_model_loaded(self) -> None:
+        """Ensure model is loaded on the active device before inference."""
+        if self.model is None:
+            logger.info("Reloading V3 model for inference")
+            self.model, self.config, self.normalizers = load_v3_model(
+                self.checkpoint_path, self.device.type
+            )
+            self.model.to(self.device)
+            self.context_length = self.config.context_length
+            self._model_offloaded = False
+            return
+
+        if self.device.type == "cuda":
+            current_device = self._model_device()
+            if current_device.type != "cuda":
+                self.model.to(self.device)
+                self._model_offloaded = False
+
+    def offload_model(self) -> None:
+        """Move model to CPU to release GPU memory between cycles."""
+        if self.model is None:
+            return
+        if self.device.type != "cuda":
+            return
+        if self._model_device().type == "cpu":
+            self._model_offloaded = True
+            return
+        self.model.to("cpu")
+        self._model_offloaded = True
+        torch.cuda.empty_cache()
+
+    def unload_model(self) -> None:
+        """Unload model entirely to release RAM/GPU between cycles."""
+        if self.model is None:
+            return
+        self.model = None
+        self._model_offloaded = True
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+        gc.collect()
+
+    def release_model_for_sleep(self) -> None:
+        """Optionally offload or unload model during sleep interval."""
+        if self.sleep_unload:
+            self.unload_model()
+        elif self.sleep_offload:
+            self.offload_model()
 
     def load_ohlc_data(self) -> pd.DataFrame:
         """Load and deduplicate OHLC data."""
         if not OHLC_DATA_PATH.exists():
             return None
 
-        df = pd.read_csv(OHLC_DATA_PATH)
-        df = df[df["token_symbol"] == CODEX_TOKEN.symbol].copy()
+        max_rows = max(2000, self.context_length * 20)
+        max_cap = max_rows * 16
+        limit = max_rows
+
+        header_line = None
+        with OHLC_DATA_PATH.open("r", encoding="utf-8") as f:
+            header_line = f.readline().strip()
+
+        df = None
+        while True:
+            tail_lines = _read_tail_lines(OHLC_DATA_PATH, limit)
+            if tail_lines and tail_lines[0].lower().startswith("timestamp"):
+                tail_lines = tail_lines[1:]
+            if not tail_lines:
+                return None
+
+            if header_line:
+                csv_data = "\n".join([header_line] + tail_lines)
+            else:
+                csv_data = "\n".join(tail_lines)
+
+            df = pd.read_csv(io.StringIO(csv_data))
+            if "token_symbol" in df.columns:
+                df = df[df["token_symbol"] == CODEX_TOKEN.symbol].copy()
+
+            if len(df) >= self.context_length * 2 or limit >= max_cap:
+                break
+
+            limit = min(limit * 2, max_cap)
+
+        if df is None or df.empty:
+            return None
+
         df = df.drop_duplicates(subset=["timestamp"], keep="last")
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df = df.sort_values("timestamp").reset_index(drop=True)
@@ -387,6 +511,9 @@ class NeuralTraderV3:
             logger.warning(f"Data stale: {age_minutes:.0f} min old")
             return
 
+        # Ensure model is ready for inference
+        self.ensure_model_loaded()
+
         # Get prediction
         prob, size = self.predict(df, len(df))
         logger.info(f"Price: {current_price:.10f} | Signal: {prob:.4f} | Size: {size:.4f} | Holding: {self.holding}")
@@ -424,6 +551,7 @@ class NeuralTraderV3:
                 cycle_count += 1
                 logger.info(f"=== Cycle {cycle_count} ===")
                 await self.trading_cycle()
+                self.release_model_for_sleep()
                 await asyncio.sleep(interval_minutes * 60)
 
         except KeyboardInterrupt:
@@ -445,6 +573,8 @@ async def main():
     parser.add_argument("--buy-threshold", type=float, default=0.29)
     parser.add_argument("--sell-threshold", type=float, default=0.23)
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--sleep-offload", action="store_true", help="Move model to CPU between cycles")
+    parser.add_argument("--sleep-unload", action="store_true", help="Unload model between cycles")
 
     args = parser.parse_args()
     dry_run = not args.live
@@ -466,6 +596,9 @@ async def main():
             print("Cancelled.")
             return
 
+    if args.sleep_offload and args.sleep_unload:
+        raise SystemExit("Use only one of --sleep-offload or --sleep-unload")
+
     bags_config = BagsConfig()
 
     trader = NeuralTraderV3(
@@ -477,6 +610,8 @@ async def main():
         max_trade_sol=args.max_trade,
         dry_run=dry_run,
         device=args.device,
+        sleep_offload=args.sleep_offload,
+        sleep_unload=args.sleep_unload,
     )
 
     await trader.run(interval_minutes=args.interval)
