@@ -32,6 +32,14 @@ except ImportError:
 SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+# Bags.fm token mints
+CODEX_MINT = "HAK9cX1jfYmcNpr6keTkLvxehGPWKELXSu7GH2ofBAGS"
+BLON_MINT = "E2KVeSMV6GzRxMuVa4GXA42RwQeCL959VwFxTbmqBAGS"
+
+# Bags.fm fee structure (bps)
+BAGS_PLATFORM_FEE_BPS: float = 100.0
+BAGS_CREATOR_FEE_BPS: float = 100.0
+BAGS_TOTAL_FEE_BPS: float = BAGS_PLATFORM_FEE_BPS + BAGS_CREATOR_FEE_BPS
 
 
 @dataclass
@@ -82,6 +90,10 @@ class TokenConfig:
     # Trading parameters
     min_trade_amount: float = 0.001  # Minimum trade amount in token units
     max_position_pct: float = 0.25  # Max % of portfolio in this token
+    entry_fee_bps: float = 0.0  # Token-specific entry fee/tax in bps
+    exit_fee_bps: float = 0.0  # Token-specific exit fee/tax in bps
+    spread_bps: float = 0.0  # Full bid/ask spread in bps (round-trip)
+    creator_rebate_bps: float = 0.0  # Rebate to creator in bps (credited on volume)
 
 
 # Default tokens to trade
@@ -99,6 +111,25 @@ DEFAULT_TOKENS: Dict[str, TokenConfig] = {
         decimals=6,
         name="USD Coin",
         min_trade_amount=1.0,
+    ),
+    "CODEX": TokenConfig(
+        symbol="CODEX",
+        mint=CODEX_MINT,
+        decimals=9,
+        name="CODEX (Bags.fm)",
+        min_trade_amount=1.0,
+        entry_fee_bps=BAGS_TOTAL_FEE_BPS,
+        exit_fee_bps=BAGS_TOTAL_FEE_BPS,
+        creator_rebate_bps=BAGS_CREATOR_FEE_BPS,
+    ),
+    "BLON": TokenConfig(
+        symbol="BLON",
+        mint=BLON_MINT,
+        decimals=9,
+        name="BLON",
+        min_trade_amount=1.0,
+        entry_fee_bps=BAGS_TOTAL_FEE_BPS,
+        exit_fee_bps=BAGS_TOTAL_FEE_BPS,
     ),
 }
 
@@ -208,6 +239,7 @@ class SimulationConfig:
     # Risk controls
     max_daily_loss_pct: float = 0.10  # Stop trading if daily loss > 10%
     max_drawdown_pct: float = 0.20  # Stop trading if drawdown > 20%
+    max_trades_per_day: Optional[int] = None  # Limit entries per day (None = no limit)
 
     # Simulation dates
     start_date: Optional[datetime] = None
@@ -225,9 +257,13 @@ class TradingConfig:
     costs: CostConfig = field(default_factory=CostConfig)
 
     # Trading parameters
+    strategy: Literal["forecast", "daily-range"] = "forecast"
     check_interval_minutes: int = 10  # How often to check for trades
     min_predicted_return: float = 0.005  # Minimum predicted return to trade (0.5%)
     min_confidence: float = 0.6  # Minimum forecast confidence
+    daily_range_min_bps: float = 100.0  # Min prior-day range in bps to trade
+    daily_range_max_actions_per_day: int = 2  # Per-token actions/day for daily-range
+    daily_range_use_previous_day: bool = True  # Use prior-day levels if True
 
     # Position sizing
     position_size_pct: float = 0.25  # % of portfolio per position
@@ -273,5 +309,20 @@ def load_config_from_env() -> TradingConfig:
 
     if os.getenv("BAGS_MAX_POSITION_SOL"):
         config.max_position_sol = float(os.getenv("BAGS_MAX_POSITION_SOL"))
+
+    if os.getenv("BAGS_STRATEGY"):
+        strategy = os.getenv("BAGS_STRATEGY", "").strip().lower()
+        if strategy in ("forecast", "daily-range"):
+            config.strategy = strategy  # type: ignore[assignment]
+
+    if os.getenv("BAGS_DAILY_RANGE_MIN_BPS"):
+        config.daily_range_min_bps = float(os.getenv("BAGS_DAILY_RANGE_MIN_BPS"))
+
+    if os.getenv("BAGS_DAILY_RANGE_MAX_ACTIONS"):
+        config.daily_range_max_actions_per_day = int(os.getenv("BAGS_DAILY_RANGE_MAX_ACTIONS"))
+
+    if os.getenv("BAGS_DAILY_RANGE_USE_PREVIOUS"):
+        value = os.getenv("BAGS_DAILY_RANGE_USE_PREVIOUS", "true")
+        config.daily_range_use_previous_day = value.lower() not in ("0", "false", "no")
 
     return config

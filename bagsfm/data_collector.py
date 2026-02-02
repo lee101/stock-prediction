@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import io
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
@@ -20,6 +22,33 @@ from .bags_api import BagsAPIClient
 from .config import DataConfig, TokenConfig, SOL_MINT, BagsConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _read_tail_lines(path: Path, max_lines: int, block_size: int = 1024 * 1024) -> List[str]:
+    """Read the last N lines from a file without loading it all into memory."""
+    if max_lines <= 0:
+        return []
+
+    with path.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        end_pos = f.tell()
+        buffer = b""
+        lines: List[bytes] = []
+
+        while end_pos > 0 and len(lines) <= max_lines:
+            read_size = min(block_size, end_pos)
+            end_pos -= read_size
+            f.seek(end_pos)
+            buffer = f.read(read_size) + buffer
+            lines = buffer.splitlines()
+
+            if end_pos == 0:
+                break
+
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
+
+    return [line.decode("utf-8", errors="replace") for line in lines]
 
 
 @dataclass
@@ -202,6 +231,8 @@ class DataCollector:
 
         # Price history (in memory)
         self._price_history: List[PricePoint] = []
+        # Track how many OHLC bars have been persisted per token
+        self._ohlc_saved_counts: Dict[str, int] = {}
 
         # Ensure data directory exists
         data_config.data_path.mkdir(parents=True, exist_ok=True)
@@ -265,7 +296,16 @@ class DataCollector:
             return price
 
         except Exception as e:
-            logger.error(f"Failed to collect price for {token.symbol}: {e}")
+            err_text = str(e).strip()
+            if not err_text:
+                err_text = repr(e)
+            logger.error(
+                "Failed to collect price for %s (%s): %s",
+                token.symbol,
+                type(e).__name__,
+                err_text,
+            )
+            logger.debug("Collect price exception details", exc_info=True)
             return None
 
     async def collect_all_prices(self) -> List[PricePoint]:
@@ -365,11 +405,14 @@ class DataCollector:
             # Clear in-memory history after saving
             self._price_history.clear()
 
-        # Save OHLC data
+        # Save OHLC data (only new bars since last save)
         all_bars = self.aggregator.get_all_bars()
         if all_bars:
             ohlc_path = self.data_config.ohlc_path
             write_header = not ohlc_path.exists()
+            if write_header:
+                # File missing or reset; persist everything we have
+                self._ohlc_saved_counts = {mint: 0 for mint in all_bars.keys()}
 
             with open(ohlc_path, "a", newline="") as f:
                 writer = csv.writer(f)
@@ -380,7 +423,12 @@ class DataCollector:
                     ])
 
                 for mint, bars in all_bars.items():
-                    for bar in bars:
+                    start_idx = self._ohlc_saved_counts.get(mint, 0)
+                    if start_idx < 0 or start_idx > len(bars):
+                        start_idx = 0
+                    if start_idx >= len(bars):
+                        continue
+                    for bar in bars[start_idx:]:
                         writer.writerow([
                             bar.timestamp.isoformat(),
                             bar.token_mint,
@@ -392,8 +440,38 @@ class DataCollector:
                             bar.volume,
                             bar.num_ticks,
                         ])
+                    self._ohlc_saved_counts[mint] = len(bars)
 
-    def load_from_disk(self) -> Tuple[int, int]:
+            # Trim in-memory history after persisting
+            self._trim_ohlc_history()
+
+    def _trim_ohlc_history(self) -> None:
+        """Trim in-memory OHLC history based on max_history_days."""
+        max_days = self.data_config.max_history_days
+        if max_days is None or max_days <= 0:
+            return
+
+        interval = self.data_config.ohlc_interval_minutes
+        if interval <= 0:
+            return
+
+        max_bars = int((max_days * 24 * 60) / interval)
+        if max_bars <= 0:
+            return
+
+        for mint, bars in self.aggregator._completed_bars.items():
+            if len(bars) <= max_bars:
+                continue
+            drop = len(bars) - max_bars
+            del bars[:drop]
+            saved = self._ohlc_saved_counts.get(mint, 0)
+            self._ohlc_saved_counts[mint] = max(0, saved - drop)
+
+    def load_from_disk(
+        self,
+        max_rows: Optional[int] = None,
+        required_mints: Optional[Iterable[str]] = None,
+    ) -> Tuple[int, int]:
         """Load existing data from disk.
 
         Returns:
@@ -406,8 +484,58 @@ class DataCollector:
         ohlc_path = self.data_config.ohlc_path
         if ohlc_path.exists():
             try:
-                df = pd.read_csv(ohlc_path)
+                if max_rows is None:
+                    df = pd.read_csv(ohlc_path)
+                else:
+                    header_line = None
+                    with ohlc_path.open("r", encoding="utf-8") as f:
+                        header_line = f.readline().strip()
+
+                    target_mints = set(required_mints) if required_mints else None
+                    limit = max(1, max_rows)
+                    max_cap = max(limit * 16, limit)
+                    data_lines: List[str] = []
+
+                    while True:
+                        tail_lines = _read_tail_lines(ohlc_path, limit)
+                        data_lines = list(tail_lines)
+                        if data_lines and data_lines[0].lower().startswith("timestamp"):
+                            data_lines = data_lines[1:]
+
+                        if not target_mints:
+                            break
+
+                        found = set()
+                        for line in data_lines:
+                            parts = line.split(",")
+                            if len(parts) > 1:
+                                found.add(parts[1])
+                            if found >= target_mints:
+                                break
+
+                        if found >= target_mints or limit >= max_cap:
+                            if found < target_mints:
+                                logger.warning(
+                                    "OHLC tail load missing tokens: %s",
+                                    ", ".join(sorted(target_mints - found)),
+                                )
+                            break
+
+                        limit = min(limit * 2, max_cap)
+
+                    if not data_lines:
+                        logger.warning("OHLC tail load found no rows in %s", ohlc_path)
+                        return num_prices, num_bars
+
+                    if header_line:
+                        csv_data = "\n".join([header_line] + data_lines)
+                    else:
+                        csv_data = "\n".join(data_lines)
+                    df = pd.read_csv(io.StringIO(csv_data))
+
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
+                df = df.drop_duplicates(subset=["token_mint", "timestamp"], keep="last")
+                df = df.sort_values("timestamp")
 
                 for _, row in df.iterrows():
                     bar = OHLCBar(
@@ -427,6 +555,10 @@ class DataCollector:
                         self.aggregator._completed_bars[mint] = []
                     self.aggregator._completed_bars[mint].append(bar)
                     num_bars += 1
+
+                # Initialize saved counts to avoid re-writing loaded bars
+                for mint, bars in self.aggregator._completed_bars.items():
+                    self._ohlc_saved_counts[mint] = len(bars)
 
                 logger.info(f"Loaded {num_bars} OHLC bars from disk")
 
@@ -484,10 +616,16 @@ class DataCollector:
 
         return self.aggregator.get_bars(token_mint, n=n)
 
+    async def aclose(self) -> None:
+        """Close underlying network resources."""
+        await self.client.aclose()
+
 
 async def create_collector(
     bags_config: Optional[BagsConfig] = None,
     data_config: Optional[DataConfig] = None,
+    max_rows: Optional[int] = None,
+    required_mints: Optional[Iterable[str]] = None,
 ) -> DataCollector:
     """Factory function to create a data collector.
 
@@ -505,6 +643,6 @@ async def create_collector(
         data_config = DataConfig()
 
     collector = DataCollector(bags_config, data_config)
-    collector.load_from_disk()
+    collector.load_from_disk(max_rows=max_rows, required_mints=required_mints)
 
     return collector

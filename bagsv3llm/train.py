@@ -34,6 +34,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _make_split_indices(
+    num_samples: int,
+    val_split: float,
+    random_split: bool,
+    seed: int,
+) -> tuple[list[int], list[int]]:
+    """Create train/val index splits with optional randomization."""
+    if num_samples < 2:
+        raise ValueError(f"Need at least 2 samples for split, got {num_samples}")
+    if not 0.0 < val_split < 1.0:
+        raise ValueError(f"val_split must be between 0 and 1, got {val_split}")
+
+    val_size = int(round(num_samples * val_split))
+    if val_size <= 0:
+        val_size = 1
+    if val_size >= num_samples:
+        val_size = num_samples - 1
+
+    if random_split:
+        rng = np.random.default_rng(seed)
+        indices = np.arange(num_samples)
+        rng.shuffle(indices)
+        val_indices = indices[:val_size].tolist()
+        train_indices = indices[val_size:].tolist()
+    else:
+        split_idx = num_samples - val_size
+        train_indices = list(range(split_idx))
+        val_indices = list(range(split_idx, num_samples))
+
+    return train_indices, val_indices
+
+
 def train_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -174,6 +206,8 @@ def finetune(
     weight_decay: float = 0.01,
     warmup_epochs: int = 5,
     val_split: float = 0.2,
+    random_split: bool = False,
+    split_seed: int = 42,
     signal_weight: float = 1.0,
     size_weight: float = 0.5,
     use_focal_loss: bool = True,
@@ -228,10 +262,13 @@ def finetune(
 
     logger.info(f"Built {len(dataset)} fine-tuning samples")
 
-    # Split data (time-based)
-    split_idx = int(len(dataset) * (1 - val_split))
-    train_indices = list(range(split_idx))
-    val_indices = list(range(split_idx, len(dataset)))
+    # Split data (time-based by default; random split optional)
+    train_indices, val_indices = _make_split_indices(
+        num_samples=len(dataset),
+        val_split=val_split,
+        random_split=random_split,
+        seed=split_seed,
+    )
 
     train_sampler = torch.utils.data.SubsetRandomSampler(train_indices)
     val_sampler = torch.utils.data.SequentialSampler(val_indices)
@@ -243,7 +280,10 @@ def finetune(
         dataset, batch_size=batch_size, sampler=val_sampler, num_workers=0
     )
 
-    logger.info(f"Train: {len(train_indices)}, Val: {len(val_indices)}")
+    split_mode = "random" if random_split else "time-based"
+    logger.info(
+        f"Split mode: {split_mode} | Train: {len(train_indices)}, Val: {len(val_indices)}"
+    )
 
     # Load or create model
     device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -463,6 +503,8 @@ def main():
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--val-split", type=float, default=0.2)
+    parser.add_argument("--random-split", action="store_true", help="Randomize train/val split")
+    parser.add_argument("--seed", type=int, default=42, help="Seed for randomized split")
     parser.add_argument("--early-stop", type=int, default=15)
 
     # Loss config
@@ -497,6 +539,8 @@ def main():
         weight_decay=args.weight_decay,
         warmup_epochs=args.warmup_epochs,
         val_split=args.val_split,
+        random_split=args.random_split,
+        split_seed=args.seed,
         signal_weight=args.signal_weight,
         size_weight=args.size_weight,
         use_focal_loss=args.focal_loss,

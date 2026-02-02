@@ -168,6 +168,7 @@ def pretrain_multi_token(
     epochs: int = 30,
     batch_size: int = 32,
     lr: float = 1e-3,
+    min_rows_per_token: int = 50,
     val_split: float = 0.2,
     device: str = "cuda",
     out_dir: Path = Path("bagsv5/checkpoints"),
@@ -178,7 +179,11 @@ def pretrain_multi_token(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Load multi-token data
-    token_dfs = load_multi_token_data(ohlc_path, exclude_mints=[exclude_mint])
+    token_dfs = load_multi_token_data(
+        ohlc_path,
+        exclude_mints=[exclude_mint],
+        min_rows=min_rows_per_token,
+    )
     logger.info(f"Loaded {len(token_dfs)} tokens for pre-training: {list(token_dfs.keys())}")
 
     if not token_dfs:
@@ -389,6 +394,7 @@ def train_v5(
     batch_size: int = 16,
     pretrain_lr: float = 1e-3,
     finetune_lr: float = 5e-4,
+    pretrain_min_rows: int = 50,
     device: str = "cuda",
     out_dir: Path = Path("bagsv5/checkpoints"),
 ) -> Dict[str, Any]:
@@ -413,6 +419,7 @@ def train_v5(
         epochs=pretrain_epochs,
         batch_size=batch_size,
         lr=pretrain_lr,
+        min_rows_per_token=pretrain_min_rows,
         device=device,
         out_dir=out_dir,
     )
@@ -460,6 +467,7 @@ def main():
     parser.add_argument("--pretrain-epochs", type=int, default=30)
     parser.add_argument("--finetune-epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--pretrain-min-rows", type=int, default=50)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--out-dir", type=Path, default=Path("bagsv5/checkpoints"))
 
@@ -474,6 +482,7 @@ def main():
         pretrain_epochs=args.pretrain_epochs,
         finetune_epochs=args.finetune_epochs,
         batch_size=args.batch_size,
+        pretrain_min_rows=args.pretrain_min_rows,
         device=args.device,
         out_dir=args.out_dir,
     )
