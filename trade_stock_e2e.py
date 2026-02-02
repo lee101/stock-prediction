@@ -142,6 +142,7 @@ PROBE_NOTIONAL_LIMIT = _resolve_probe_notional_limit()
 PROBE_LOSS_COOLDOWN_MINUTES = 180
 ALLOW_HIGHLOW_ENTRY = os.getenv("ALLOW_HIGHLOW_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
 ALLOW_TAKEPROFIT_ENTRY = os.getenv("ALLOW_TAKEPROFIT_ENTRY", "0").strip().lower() in {"1", "true", "yes", "on"}
+FORCE_HIGHLOW_IMMEDIATE = os.getenv("MARKETSIM_FORCE_HIGHLOW_IMMEDIATE", "0").strip().lower() in {"1", "true", "yes", "on"}
 _ALLOW_MAXDIFF_ENV = os.getenv("ALLOW_MAXDIFF_ENTRY")
 if _ALLOW_MAXDIFF_ENV is None:
     ALLOW_MAXDIFF_ENTRY = True
@@ -867,8 +868,8 @@ BACKOUT_START_OFFSET_MINUTES = int(os.getenv("BACKOUT_START_OFFSET_MINUTES", "30
 BACKOUT_SLEEP_SECONDS = int(os.getenv("BACKOUT_SLEEP_SECONDS", "45"))
 BACKOUT_MARKET_CLOSE_BUFFER_MINUTES = int(os.getenv("BACKOUT_MARKET_CLOSE_BUFFER_MINUTES", "30"))
 BACKOUT_MARKET_CLOSE_FORCE_MINUTES = int(os.getenv("BACKOUT_MARKET_CLOSE_FORCE_MINUTES", "3"))
-MAXDIFF_ENTRY_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_ENTRY_POLL_SECONDS", "12")))
-MAXDIFF_EXIT_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_EXIT_POLL_SECONDS", "12")))
+MAXDIFF_ENTRY_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_ENTRY_POLL_SECONDS", "45")))
+MAXDIFF_EXIT_WATCHER_POLL_SECONDS = max(5, int(os.getenv("MAXDIFF_EXIT_POLL_SECONDS", "45")))
 MAXDIFF_EXIT_WATCHER_PRICE_TOLERANCE = float(os.getenv("MAXDIFF_EXIT_PRICE_TOLERANCE", "0.001"))
 MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT = max(0, int(os.getenv("MAXDIFF_ALWAYS_ON_PRIORITY_LIMIT", "2")))
 
@@ -3689,6 +3690,12 @@ def manage_positions(
         else:
             data.pop("maxdiffalwayson_priority_rank", None)
             data.pop("maxdiffalwayson_force_immediate", None)
+        if (
+            not force_immediate_entry
+            and FORCE_HIGHLOW_IMMEDIATE
+            and data.get("strategy") in {"highlow", "pctdiff"}
+        ):
+            force_immediate_entry = True
         simplified_mode = SIMPLIFIED_MODE
         if simplified_mode:
             data["trade_mode"] = "normal"

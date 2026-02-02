@@ -56,6 +56,8 @@ class PnLTracker:
         token: str,
         log_dir: str = "logs/pnl",
         snapshot_interval: int = 60,  # seconds between snapshots
+        max_trades_in_memory: Optional[int] = None,
+        max_snapshots_in_memory: Optional[int] = None,
     ):
         self.token = token
         self.log_dir = Path(log_dir)
@@ -63,6 +65,13 @@ class PnLTracker:
 
         self.snapshot_interval = snapshot_interval
         self.last_snapshot_time: Optional[datetime] = None
+        self.max_trades_in_memory = max_trades_in_memory
+        self.max_snapshots_in_memory = max_snapshots_in_memory
+
+        if self.max_trades_in_memory is not None and self.max_trades_in_memory < 0:
+            self.max_trades_in_memory = 0
+        if self.max_snapshots_in_memory is not None and self.max_snapshots_in_memory < 0:
+            self.max_snapshots_in_memory = 0
 
         # File paths
         date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -75,6 +84,11 @@ class PnLTracker:
         self.snapshots: list[SnapshotRecord] = []
         self.initial_net_worth: Optional[float] = None
         self.peak_net_worth: float = 0.0
+        self._last_snapshot: Optional[SnapshotRecord] = None
+        self.total_trades: int = 0
+        self.total_buy_trades: int = 0
+        self.total_sell_trades: int = 0
+        self.total_snapshots: int = 0
 
         # Load existing data if any
         self._load_existing()
@@ -91,8 +105,25 @@ class PnLTracker:
                 for line in f:
                     if line.strip():
                         data = json.loads(line)
-                        self.trades.append(TradeRecord(**data))
-            logger.info(f"Loaded {len(self.trades)} existing trades")
+                        record = TradeRecord(**data)
+                        self.total_trades += 1
+                        if record.action == "buy":
+                            self.total_buy_trades += 1
+                        elif record.action == "sell":
+                            self.total_sell_trades += 1
+
+                        if self.max_trades_in_memory is None:
+                            self.trades.append(record)
+                        elif self.max_trades_in_memory > 0:
+                            if len(self.trades) >= self.max_trades_in_memory:
+                                self.trades.pop(0)
+                            self.trades.append(record)
+
+            logger.info(
+                "Loaded %d existing trades (kept %d in memory)",
+                self.total_trades,
+                len(self.trades),
+            )
 
         # Load snapshots
         if self.snapshots_file.exists():
@@ -100,13 +131,25 @@ class PnLTracker:
                 for line in f:
                     if line.strip():
                         data = json.loads(line)
-                        self.snapshots.append(SnapshotRecord(**data))
-            logger.info(f"Loaded {len(self.snapshots)} existing snapshots")
+                        record = SnapshotRecord(**data)
+                        self.total_snapshots += 1
+                        if self.initial_net_worth is None:
+                            self.initial_net_worth = record.net_worth_sol
+                        self.peak_net_worth = max(self.peak_net_worth, record.net_worth_sol)
+                        self._last_snapshot = record
 
-            # Restore peak and initial net worth
-            if self.snapshots:
-                self.initial_net_worth = self.snapshots[0].net_worth_sol
-                self.peak_net_worth = max(s.net_worth_sol for s in self.snapshots)
+                        if self.max_snapshots_in_memory is None:
+                            self.snapshots.append(record)
+                        elif self.max_snapshots_in_memory > 0:
+                            if len(self.snapshots) >= self.max_snapshots_in_memory:
+                                self.snapshots.pop(0)
+                            self.snapshots.append(record)
+
+            logger.info(
+                "Loaded %d existing snapshots (kept %d in memory)",
+                self.total_snapshots,
+                len(self.snapshots),
+            )
 
     def log_trade(
         self,
@@ -130,6 +173,17 @@ class PnLTracker:
         )
 
         self.trades.append(record)
+        if self.max_trades_in_memory is not None:
+            if self.max_trades_in_memory <= 0:
+                self.trades.clear()
+            elif len(self.trades) > self.max_trades_in_memory:
+                self.trades.pop(0)
+
+        self.total_trades += 1
+        if action == "buy":
+            self.total_buy_trades += 1
+        elif action == "sell":
+            self.total_sell_trades += 1
 
         # Append to file
         with open(self.trades_file, 'a') as f:
@@ -179,7 +233,14 @@ class PnLTracker:
             net_worth_usd=net_worth_usd,
         )
 
-        self.snapshots.append(record)
+        self._last_snapshot = record
+        self.total_snapshots += 1
+        if self.max_snapshots_in_memory is None:
+            self.snapshots.append(record)
+        elif self.max_snapshots_in_memory > 0:
+            self.snapshots.append(record)
+            if len(self.snapshots) > self.max_snapshots_in_memory:
+                self.snapshots.pop(0)
         self.last_snapshot_time = now
 
         # Track initial and peak
@@ -198,18 +259,17 @@ class PnLTracker:
 
     def _update_summary(self):
         """Update the summary file with current stats."""
-        if not self.snapshots or self.initial_net_worth is None:
+        current = self._last_snapshot or (self.snapshots[-1] if self.snapshots else None)
+        if current is None or self.initial_net_worth is None:
             return
-
-        current = self.snapshots[-1]
 
         # Calculate metrics
         total_return = (current.net_worth_sol - self.initial_net_worth) / self.initial_net_worth
         drawdown = (self.peak_net_worth - current.net_worth_sol) / self.peak_net_worth if self.peak_net_worth > 0 else 0
 
         # Count trades
-        buy_count = sum(1 for t in self.trades if t.action == 'buy')
-        sell_count = sum(1 for t in self.trades if t.action == 'sell')
+        buy_count = self.total_buy_trades
+        sell_count = self.total_sell_trades
 
         summary = {
             "token": self.token,
@@ -219,10 +279,10 @@ class PnLTracker:
             "peak_net_worth_sol": self.peak_net_worth,
             "total_return_pct": total_return * 100,
             "max_drawdown_pct": drawdown * 100,
-            "total_trades": len(self.trades),
+            "total_trades": self.total_trades,
             "buy_trades": buy_count,
             "sell_trades": sell_count,
-            "snapshots_count": len(self.snapshots),
+            "snapshots_count": self.total_snapshots,
             "sol_balance": current.sol_balance,
             "token_balance": current.token_balance,
             "token_price": current.token_price,
@@ -236,10 +296,10 @@ class PnLTracker:
 
     def get_stats(self) -> dict:
         """Get current performance statistics."""
-        if not self.snapshots or self.initial_net_worth is None:
+        current = self._last_snapshot or (self.snapshots[-1] if self.snapshots else None)
+        if current is None or self.initial_net_worth is None:
             return {"status": "no data"}
 
-        current = self.snapshots[-1]
         total_return = (current.net_worth_sol - self.initial_net_worth) / self.initial_net_worth
         drawdown = (self.peak_net_worth - current.net_worth_sol) / self.peak_net_worth if self.peak_net_worth > 0 else 0
 
@@ -248,8 +308,8 @@ class PnLTracker:
             "initial_net_worth_sol": self.initial_net_worth,
             "total_return_pct": total_return * 100,
             "drawdown_pct": drawdown * 100,
-            "trades": len(self.trades),
-            "snapshots": len(self.snapshots),
+            "trades": self.total_trades,
+            "snapshots": self.total_snapshots,
         }
 
     def print_status(self):
