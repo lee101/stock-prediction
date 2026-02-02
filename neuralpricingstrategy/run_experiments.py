@@ -40,6 +40,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--pnl-weight", type=float, default=0.2, help="Loss weight for pnl gain head.")
     parser.add_argument("--max-grad-norm", type=float, default=5.0)
+    parser.add_argument("--hidden-dim", type=int, default=192, help="Hidden dimension for MLP.")
+    parser.add_argument("--depth", type=int, default=3, help="Hidden layer count.")
+    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate.")
     parser.add_argument("--clamp-pct", type=float, default=0.08, help="Price delta clamp percentage.")
     parser.add_argument(
         "--val-fraction",
@@ -77,6 +80,9 @@ def main() -> None:
         pnl_weight=args.pnl_weight,
         max_grad_norm=args.max_grad_norm,
         device=args.device,
+        hidden_dim=args.hidden_dim,
+        depth=args.depth,
+        dropout=args.dropout,
     )
 
     output_root = Path(args.output_dir)
@@ -101,7 +107,21 @@ def main() -> None:
 
         torch.save(result.model.state_dict(), run_dir / "pricing_model.pt")
         _save_json(run_dir / "feature_spec.json", dataset.feature_spec.to_dict())
-        _save_json(run_dir / "run_config.json", {"clamp_pct": dataset.clamp_pct})
+        _save_json(
+            run_dir / "run_config.json",
+            {
+                "clamp_pct": dataset.clamp_pct,
+                "hidden_dim": config.hidden_dim,
+                "depth": config.depth,
+                "dropout": config.dropout,
+                "epochs": config.epochs,
+                "batch_size": config.batch_size,
+                "learning_rate": config.learning_rate,
+                "weight_decay": config.weight_decay,
+                "pnl_weight": config.pnl_weight,
+                "max_grad_norm": config.max_grad_norm,
+            },
+        )
         _save_json(run_dir / "training_history.json", [entry.__dict__ for entry in result.history])
         _save_json(run_dir / "training_metrics.json", result.final_metrics)
 
