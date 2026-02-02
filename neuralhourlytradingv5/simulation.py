@@ -24,6 +24,7 @@ class HourlyTradeResult:
 
     entry_filled: torch.Tensor  # (batch,) soft probability of entry
     exit_tp_filled: torch.Tensor  # (batch,) take-profit hit probability
+    exit_stop: torch.Tensor  # (batch,) stop-loss hit probability
     exit_forced: torch.Tensor  # (batch,) forced exit probability
     pnl: torch.Tensor  # (batch,) profit/loss
     returns: torch.Tensor  # (batch,) return percentage
@@ -83,7 +84,7 @@ def simulate_hourly_trade(
 
     Flow:
     1. Hour 0: Check if buy fills (low <= buy_price)
-    2. Hours 1 to position_length: Check if sell fills (high >= sell_price)
+    2. Hours 1 to position_length: Check stop-loss then take-profit
     3. At position_length: Forced exit at close with slippage
 
     position_length = 0 means skip trade (no entry attempted)
@@ -124,12 +125,21 @@ def simulate_hourly_trade(
     entry_prob = entry_prob * trade_weight
 
     # Track cumulative "still holding" probability
-    # Starts at 1.0, decreases as we hit take-profit
+    # Starts at 1.0, decreases as we hit stop/take-profit/forced exit
     cumulative_holding = torch.ones(batch_size, device=device)
     weighted_exit_price = torch.zeros(batch_size, device=device)
     tp_probability = torch.zeros(batch_size, device=device)
+    stop_probability = torch.zeros(batch_size, device=device)
     forced_exit_prob = torch.zeros(batch_size, device=device)
     weighted_hold_hours = torch.zeros(batch_size, device=device)
+
+    use_stop = config.stop_loss_pct > 0
+    if use_stop:
+        stop_price = buy_price * (1 - config.stop_loss_pct)
+        stop_exit_price = stop_price * (1 - config.stop_loss_slippage)
+    else:
+        stop_price = buy_price
+        stop_exit_price = buy_price
 
     # Round position length for hour-by-hour simulation
     # Use soft floor/ceiling for gradient flow
@@ -137,12 +147,29 @@ def simulate_hourly_trade(
 
     for hour in range(1, max_hours):
         hour_high = future_highs[:, hour]
+        hour_low = future_lows[:, hour]
         hour_close = future_closes[:, hour]
 
         # Soft "still within holding period" check
         # Creates smooth transition around the position_length boundary
         hours_remaining = position_length_clamped - hour
         still_holding_weight = torch.sigmoid(hours_remaining * 5)  # Soft step
+
+        stop_prob_now = torch.zeros_like(cumulative_holding)
+        if use_stop:
+            stop_prob_now = _soft_fill_prob(
+                stop_price,
+                hour_low,
+                reference_price,
+                is_buy=True,
+                temperature=temperature,
+            )
+            stop_this_hour = cumulative_holding * stop_prob_now * still_holding_weight
+            stop_probability = stop_probability + stop_this_hour
+            weighted_exit_price = weighted_exit_price + stop_this_hour * stop_exit_price
+            weighted_hold_hours = weighted_hold_hours + stop_this_hour * hour
+        else:
+            stop_this_hour = torch.zeros_like(cumulative_holding)
 
         # Take-profit check: sell if high >= sell_price
         tp_prob_now = _soft_fill_prob(
@@ -154,16 +181,19 @@ def simulate_hourly_trade(
         )
 
         # Probability of TP on this specific hour
-        # = (probability still holding) * (probability TP fills this hour) * (still in holding period)
-        tp_this_hour = cumulative_holding * tp_prob_now * still_holding_weight
+        # = (probability still holding) * (probability TP fills this hour after stop) * (still in holding period)
+        tp_this_hour = (
+            cumulative_holding * (1 - stop_prob_now) * tp_prob_now * still_holding_weight
+        )
 
         # Accumulate TP probability and weighted exit price
         tp_probability = tp_probability + tp_this_hour
         weighted_exit_price = weighted_exit_price + tp_this_hour * sell_price
         weighted_hold_hours = weighted_hold_hours + tp_this_hour * hour
 
-        # Update cumulative holding (reduce by TP probability)
-        cumulative_holding = cumulative_holding * (1 - tp_prob_now * still_holding_weight)
+        # Update cumulative holding (reduce by stop or TP probability)
+        exit_prob = (stop_prob_now + (1 - stop_prob_now) * tp_prob_now) * still_holding_weight
+        cumulative_holding = cumulative_holding * (1 - exit_prob)
 
         # Forced exit check: at position_length hour
         # Soft check: is this hour the exit hour?
@@ -192,7 +222,7 @@ def simulate_hourly_trade(
     forced_exit_prob = forced_exit_prob + final_forced
 
     # Ensure probabilities sum correctly
-    total_exit_prob = tp_probability + forced_exit_prob
+    total_exit_prob = tp_probability + stop_probability + forced_exit_prob
     # Normalize to prevent probability > 1
     total_exit_prob = total_exit_prob.clamp(max=1.0)
 
@@ -215,6 +245,7 @@ def simulate_hourly_trade(
     return HourlyTradeResult(
         entry_filled=entry_prob,
         exit_tp_filled=tp_probability.clamp(0, 1),
+        exit_stop=stop_probability.clamp(0, 1),
         exit_forced=forced_exit_prob.clamp(0, 1),
         pnl=net_return * reference_price,  # Absolute P&L
         returns=net_return,
@@ -238,8 +269,9 @@ def compute_v5_loss(
     1. Sortino ratio (risk-adjusted returns)
     2. Raw returns
     3. Forced exit penalty (discourage hitting max hold time)
-    4. No-trade penalty (discourage always skipping)
-    5. Spread utilization (encourage using offset range)
+    4. Stop-loss penalty (discourage stop triggers when enabled)
+    5. No-trade penalty (discourage always skipping)
+    6. Spread utilization (encourage using offset range)
 
     Args:
         result: HourlyTradeResult from simulation
@@ -267,9 +299,11 @@ def compute_v5_loss(
     sortino_loss = -config.sortino_weight * sortino
     return_loss = -config.return_weight * mean_return * 24 * 365  # Annualized
 
-    # Forced exit penalty: discourage hitting max hold time
+    # Forced/stop exit penalties: discourage max-hold and stop-loss triggers
     forced_exit_rate = result.exit_forced.mean()
+    stop_exit_rate = result.exit_stop.mean()
     forced_penalty = config.forced_exit_penalty * forced_exit_rate
+    stop_penalty = config.stop_loss_penalty * stop_exit_rate
 
     # No-trade penalty: discourage always predicting position_length=0
     # length_probs[:, 0] is probability of "skip trade"
@@ -289,6 +323,7 @@ def compute_v5_loss(
         sortino_loss
         + return_loss
         + forced_penalty
+        + stop_penalty
         + no_trade_penalty
         + spread_util_loss
     )
@@ -298,12 +333,14 @@ def compute_v5_loss(
         "sortino_loss": sortino_loss,
         "return_loss": return_loss,
         "forced_penalty": forced_penalty,
+        "stop_penalty": stop_penalty,
         "no_trade_penalty": no_trade_penalty,
         "spread_util_loss": spread_util_loss,
         # Metrics (not losses)
         "sortino": sortino,
         "mean_return": mean_return,
         "forced_exit_rate": forced_exit_rate,
+        "stop_exit_rate": stop_exit_rate,
         "no_trade_rate": no_trade_prob,
         "avg_offset": avg_offset,
         "tp_rate": result.exit_tp_filled.mean(),

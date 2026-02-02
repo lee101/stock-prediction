@@ -46,6 +46,8 @@ class SimulationConfigV5:
     max_leverage: float = 1.0  # Crypto typically 1x
     forced_exit_slippage: float = 0.001  # 10 bps slippage on forced exit
     max_position_hours: int = 24  # Maximum hours to hold a position
+    stop_loss_pct: float = 0.0  # 0 disables stop-loss
+    stop_loss_slippage: float = 0.001  # Slippage applied on stop-loss exits
 
 
 @dataclass
@@ -145,6 +147,7 @@ class DatasetConfigV5:
     lookahead_hours: int = 24  # Max position length for simulation
     validation_hours: int = 240  # 10 days as specified
     min_history_hours: int = 24 * 60  # 60 days minimum
+    max_history_hours: Optional[int] = None  # Limit history for memory safety
     max_feature_lookback_hours: int = 24 * 7  # 1 week lookback for features
     chronos_skip_rates: Tuple[int, ...] = (1, 2, 4)  # Multi-scale forecasting
     val_fraction: float = 0.15
@@ -172,6 +175,8 @@ class TrainingConfigV5:
     maker_fee: float = 0.0008  # 8 bps
     max_leverage: float = 1.0  # Crypto 1x
     forced_exit_slippage: float = 0.001
+    stop_loss_pct: float = 0.0  # 0 disables stop-loss
+    stop_loss_slippage: float = 0.001
 
     # Price constraints (CRITICAL for safety)
     min_price_offset_pct: float = 0.0008  # == maker_fee (dead zone)
@@ -211,6 +216,7 @@ class TrainingConfigV5:
     sortino_weight: float = 1.0  # Primary: risk-adjusted returns
     return_weight: float = 0.1  # Raw returns
     forced_exit_penalty: float = 0.2  # Discourage hitting max hold time
+    stop_loss_penalty: float = 0.1  # Penalize stop-loss exits when enabled
     no_trade_penalty: float = 0.01  # Prevent always skipping
     spread_utilization: float = 0.05  # Encourage using offset range
 
@@ -254,6 +260,8 @@ class TrainingConfigV5:
             max_leverage=self.max_leverage,
             forced_exit_slippage=self.forced_exit_slippage,
             max_position_hours=self.lookahead_hours,
+            stop_loss_pct=self.stop_loss_pct,
+            stop_loss_slippage=self.stop_loss_slippage,
         )
 
     def get_policy_config(self, input_dim: int) -> PolicyConfigV5:

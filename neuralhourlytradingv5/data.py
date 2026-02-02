@@ -20,6 +20,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from neuralhourlytradingv5.config import DatasetConfigV5
+from src.data_loading_utils import read_csv_tail
 
 # Features for V5 hourly model
 HOURLY_FEATURES_V5: Tuple[str, ...] = (
@@ -255,7 +256,16 @@ class HourlyDataModuleV5:
         if not path.exists():
             raise FileNotFoundError(f"Missing hourly dataset {path}")
 
-        frame = pd.read_csv(path)
+        if self.config.max_history_hours:
+            max_hours = int(self.config.max_history_hours)
+            frame = read_csv_tail(
+                path,
+                max_rows=max_hours,
+                chunksize=200_000,
+                low_memory=False,
+            )
+        else:
+            frame = pd.read_csv(path, low_memory=False)
         frame.columns = [col.lower() for col in frame.columns]
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
         frame["symbol"] = symbol.upper()
@@ -263,7 +273,14 @@ class HourlyDataModuleV5:
         cols = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
         available_cols = [c for c in cols if c in frame.columns]
 
-        return frame[available_cols].sort_values("timestamp").reset_index(drop=True)
+        frame = frame[available_cols].sort_values("timestamp").reset_index(drop=True)
+
+        if self.config.max_history_hours:
+            max_hours = int(self.config.max_history_hours)
+            if max_hours > 0 and len(frame) > max_hours:
+                frame = frame.iloc[-max_hours:].reset_index(drop=True)
+
+        return frame
 
     def _load_forecasts(self) -> pd.DataFrame:
         """Load Chronos2 forecast cache."""
@@ -442,6 +459,7 @@ class MultiSymbolDataModuleV5:
                 lookahead_hours=config.lookahead_hours,
                 validation_hours=config.validation_hours,
                 min_history_hours=config.min_history_hours,
+                max_history_hours=config.max_history_hours,
                 max_feature_lookback_hours=config.max_feature_lookback_hours,
                 chronos_skip_rates=config.chronos_skip_rates,
                 val_fraction=config.val_fraction,

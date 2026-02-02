@@ -25,6 +25,9 @@ class PricingTrainingConfig:
     pnl_weight: float = 0.2
     max_grad_norm: Optional[float] = 5.0
     device: Optional[str] = None
+    hidden_dim: int = 192
+    depth: int = 3
+    dropout: float = 0.1
 
 
 @dataclass
@@ -94,6 +97,9 @@ def train_pricing_model(
     device = _resolve_device(config.device)
     model_config = PricingModelConfig(
         input_dim=train_dataset.features.shape[1],
+        hidden_dim=config.hidden_dim,
+        depth=config.depth,
+        dropout=config.dropout,
         max_delta_pct=train_dataset.clamp_pct,
     )
     model = PricingAdjustmentModel(model_config).to(device)

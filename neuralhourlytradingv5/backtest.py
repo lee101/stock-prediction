@@ -120,8 +120,37 @@ class HourlyMarketSimulatorV5:
                 hours_held = current_position["hours_held"]
                 target_hours = current_position["target_hours"]
 
+                # Check stop-loss first (if enabled)
+                if (
+                    self.config.stop_loss_pct > 0
+                    and current_low <= current_position["stop_price"]
+                ):
+                    exit_price = current_position["stop_price"] * (1 - self.config.stop_loss_slippage)
+                    exit_value = inventory * exit_price * (1 - self.maker_fee)
+                    pnl = exit_value - current_position["entry_value"]
+
+                    trades.append(
+                        TradeRecord(
+                            entry_timestamp=current_position["entry_ts"],
+                            entry_price=current_position["entry_price"],
+                            exit_timestamp=current_ts,
+                            exit_price=exit_price,
+                            position_size=current_position["position_size"],
+                            position_length_target=target_hours,
+                            actual_hold_hours=hours_held,
+                            exit_type="stop",
+                            pnl=pnl,
+                            return_pct=pnl / current_position["entry_value"],
+                            fees=self.maker_fee * 2 * exit_value,
+                        )
+                    )
+
+                    cash += exit_value
+                    inventory = 0.0
+                    current_position = None
+
                 # Check take-profit
-                if current_high >= current_position["sell_price"]:
+                elif current_high >= current_position["sell_price"]:
                     # TP hit - exit at sell_price
                     exit_price = current_position["sell_price"]
                     exit_value = (
@@ -179,7 +208,7 @@ class HourlyMarketSimulatorV5:
                     # Still holding, increment hours
                     current_position["hours_held"] += 1
 
-            # Check for new entry (only if no current position)
+                # Check for new entry (only if no current position)
             if current_position is None and position_length > 0:
                 # Check if entry fills
                 if current_low <= buy_price:
@@ -199,6 +228,7 @@ class HourlyMarketSimulatorV5:
                             "entry_price": buy_price,
                             "entry_value": entry_value,
                             "sell_price": sell_price,
+                            "stop_price": buy_price * (1 - self.config.stop_loss_pct),
                             "position_size": position_size,
                             "target_hours": position_length,
                             "hours_held": 0,
@@ -272,16 +302,18 @@ class HourlyMarketSimulatorV5:
         # Trade statistics
         if trades:
             tp_trades = [t for t in trades if t.exit_type == "tp"]
+            stop_trades = [t for t in trades if t.exit_type == "stop"]
             forced_trades = [t for t in trades if t.exit_type == "forced"]
             winning_trades = [t for t in trades if t.pnl > 0]
 
             tp_rate = len(tp_trades) / len(trades)
+            stop_rate = len(stop_trades) / len(trades)
             win_rate = len(winning_trades) / len(trades)
             avg_hold_hours = np.mean([t.actual_hold_hours for t in trades])
             avg_return = np.mean([t.return_pct for t in trades])
             avg_pnl = np.mean([t.pnl for t in trades])
         else:
-            tp_rate = win_rate = avg_hold_hours = avg_return = avg_pnl = 0.0
+            tp_rate = stop_rate = win_rate = avg_hold_hours = avg_return = avg_pnl = 0.0
 
         return {
             "total_return": float(total_return),
@@ -289,11 +321,13 @@ class HourlyMarketSimulatorV5:
             "mean_hourly_return": float(mean_ret),
             "num_trades": len(trades),
             "tp_rate": float(tp_rate),
+            "stop_rate": float(stop_rate),
             "win_rate": float(win_rate),
             "avg_hold_hours": float(avg_hold_hours),
             "avg_trade_return": float(avg_return),
             "avg_trade_pnl": float(avg_pnl),
             "num_tp_exits": len([t for t in trades if t.exit_type == "tp"]),
+            "num_stop_exits": len([t for t in trades if t.exit_type == "stop"]),
             "num_forced_exits": len([t for t in trades if t.exit_type == "forced"]),
         }
 
@@ -351,7 +385,9 @@ def print_backtest_summary(result: BacktestResult) -> None:
     print(f"  Total Trades:    {m.get('num_trades', 0)}")
     print(f"  Win Rate:        {m.get('win_rate', 0) * 100:.1f}%")
     print(f"  TP Rate:         {m.get('tp_rate', 0) * 100:.1f}%")
+    print(f"  Stop Rate:       {m.get('stop_rate', 0) * 100:.1f}%")
     print(f"  TP Exits:        {m.get('num_tp_exits', 0)}")
+    print(f"  Stop Exits:      {m.get('num_stop_exits', 0)}")
     print(f"  Forced Exits:    {m.get('num_forced_exits', 0)}")
 
     print(f"\nHolding:")
