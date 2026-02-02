@@ -356,32 +356,25 @@ bagsfm_state.json
 *results.md
 EXPERIMENTS_LOG.md
 
-# Experiment directories
+# Experiment directories (not code modules)
 alpacawide/
-binance*/
 chronos2_finetuned/
-marketsim*/
 marketsim_results_*/
+
+# Experiment artifacts within modules
+binance*/checkpoints/
+binance*/forecast_cache/
+binance*/marketsimulator/
+binance*/plots/
+binance*/results/
 
 # Experiment configs and strategies
 hyperparams/chronos2/
 preaugstrategies/chronos2/
 experiments/*sweep*
-*/*sweep*.py
 
-# Experimental scripts
-binance_cli.py
-binance_data_wrapper.py
-chronos2_trainer.py
-run_neural_pricing_sweep.py
-scripts/archive_hourly_data.py
-scripts/audit_exit_watchers.py
-scripts/backfill_hourly_crypto.py
-scripts/memory_leak_neural_trader_v3.py
-scripts/monitor_and_queue_experiments.py
+# One-off/temporary scripts (keep utility scripts tracked)
 scripts/queue_followups.sh
-scripts/run_large_universe_selection.py
-scripts/train_link_uni_nflx.sh
 
 # Experimental tests
 tests/test_alpaca_data_wrapper_backfill.py
