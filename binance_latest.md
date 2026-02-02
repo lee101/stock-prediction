@@ -29,6 +29,24 @@ aws s3 sync s3://models/stock/models/binance/binanceneural/checkpoints/ binancen
 
 Note: if you want to avoid rebuilding Chronos forecasts on the inference host, sync `binanceneural/forecast_cache/` as well (if present).
 
+## Inference-only (no live orders)
+
+```bash
+source .venv313/bin/activate
+PYTHONPATH=/path/to/stock-prediction \\
+python -m binanceexp1.trade_binance_hourly \\
+  --symbols SOLUSD \\
+  --checkpoint /path/to/stock-prediction/binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/epoch_005.pt \\
+  --horizon 24 \\
+  --sequence-length 96 \\
+  --intensity-scale 20.0 \\
+  --min-gap-pct 0.0003 \\
+  --once \\
+  --dry-run
+```
+
+Optional: add `--cache-only` if you have a populated `binanceneural/forecast_cache/`.
+
 ## Production run (on a Binance.com-allowed host)
 
 1) Ensure env vars are set:
