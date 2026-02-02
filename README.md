@@ -300,6 +300,8 @@ Crypto can only be traded non-margin for some time, cant be shorted in alpaca, s
 ./.env/bin/gunicorn -k uvicorn.workers.UvicornWorker -b :5050 src.crypto_loop.crypto_order_loop_server:app --timeout 1800 --workers 1
 ```
 
+API reference: `docs/api.md`
+
 ### Install Requirements
 
 ```bash
