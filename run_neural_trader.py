@@ -20,9 +20,10 @@ Environment variables:
 """
 
 import asyncio
+import csv
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import torch
@@ -30,9 +31,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import pandas as pd
-
-from bagsfm import BagsAPIClient, BagsConfig, DataCollector, DataConfig, TokenConfig
+from bagsfm import BagsAPIClient, BagsConfig, TokenConfig
 from bagsfm.config import SOL_MINT
 from bagsfm.bags_api import SolanaTransactionExecutor
 from bagsneural.dataset import load_ohlc_dataframe, build_window_features, FeatureNormalizer
@@ -119,6 +118,8 @@ class NeuralTrader:
             token=CODEX_TOKEN.symbol,
             log_dir="logs/pnl",
             snapshot_interval=60,  # snapshot every minute
+            max_trades_in_memory=2000,
+            max_snapshots_in_memory=1440,
         )
         self.last_price = 0.0
         self.consecutive_failures = 0
@@ -128,6 +129,91 @@ class NeuralTrader:
         self.ohlc_interval_minutes = 10  # matches collect_bags_data.py
         self.max_gap_minutes = 30  # max allowed gap between bars
         self.data_loaded_from_disk = False
+        self._ohlc_file_pos = 0
+        self._ohlc_col_index = {}
+        self._latest_bar_time = None
+        self._max_keep_bars = self.context_bars + 10
+
+    def _reset_ohlc_cache(self) -> None:
+        self._ohlc_file_pos = 0
+        self._ohlc_col_index = {}
+        self._latest_bar_time = None
+        self.price_history = []
+        self.data_loaded_from_disk = False
+
+    def _configure_ohlc_columns(self, header: list[str]) -> bool:
+        required = ["timestamp", "token_symbol", "open", "high", "low", "close"]
+        missing = [col for col in required if col not in header]
+        if missing:
+            logger.error(f"OHLC data missing required columns: {missing}")
+            return False
+        self._ohlc_col_index = {col: header.index(col) for col in required}
+        return True
+
+    def _append_price_bar(self, timestamp: datetime, open_: float, high: float, low: float, close: float) -> None:
+        if self._latest_bar_time is not None:
+            if timestamp < self._latest_bar_time:
+                return
+            if timestamp == self._latest_bar_time and self.price_history:
+                self.price_history[-1].update(
+                    {"timestamp": timestamp, "open": open_, "high": high, "low": low, "close": close}
+                )
+                return
+
+        self.price_history.append(
+            {"timestamp": timestamp, "open": open_, "high": high, "low": low, "close": close}
+        )
+        self._latest_bar_time = timestamp
+        if len(self.price_history) > self._max_keep_bars:
+            self.price_history = self.price_history[-self._max_keep_bars:]
+
+    def _read_new_ohlc_rows(self) -> int:
+        if not OHLC_DATA_PATH.exists():
+            return 0
+
+        file_size = OHLC_DATA_PATH.stat().st_size
+        if self._ohlc_file_pos > file_size:
+            logger.warning("OHLC data file truncated; resetting cache")
+            self._reset_ohlc_cache()
+
+        rows_loaded = 0
+        with OHLC_DATA_PATH.open("r", newline="") as handle:
+            if self._ohlc_file_pos == 0:
+                header_line = handle.readline()
+                if not header_line:
+                    return 0
+                header = [col.strip() for col in header_line.strip().split(",")]
+                if not self._configure_ohlc_columns(header):
+                    return 0
+            else:
+                handle.seek(self._ohlc_file_pos)
+
+            reader = csv.reader(handle)
+            idx = self._ohlc_col_index
+            max_idx = max(idx.values(), default=0)
+            for row in reader:
+                if not row or len(row) <= max_idx:
+                    continue
+                if row[idx["token_symbol"]].strip() != CODEX_TOKEN.symbol:
+                    continue
+                ts_raw = row[idx["timestamp"]].strip()
+                if not ts_raw:
+                    continue
+                try:
+                    timestamp = datetime.fromisoformat(ts_raw)
+                    open_ = float(row[idx["open"]])
+                    high = float(row[idx["high"]])
+                    low = float(row[idx["low"]])
+                    close = float(row[idx["close"]])
+                except (ValueError, IndexError):
+                    continue
+
+                self._append_price_bar(timestamp, open_, high, low, close)
+                rows_loaded += 1
+
+            self._ohlc_file_pos = handle.tell()
+
+        return rows_loaded
 
     def load_ohlc_from_disk(self) -> bool:
         """Load OHLC data from disk and check for gaps.
@@ -140,39 +226,18 @@ class NeuralTrader:
             return False
 
         try:
-            df = pd.read_csv(OHLC_DATA_PATH)
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-
-            # Filter for CODEX token and deduplicate
-            df = df[df["token_symbol"] == CODEX_TOKEN.symbol].copy()
-            df = df.drop_duplicates(subset=["timestamp"], keep="last")
-            df = df.sort_values("timestamp")
-
-            if len(df) < self.context_bars:
-                logger.warning(f"Not enough bars: {len(df)} < {self.context_bars}")
+            self._read_new_ohlc_rows()
+            if len(self.price_history) < self.context_bars:
+                logger.warning(f"Not enough bars: {len(self.price_history)} < {self.context_bars}")
                 return False
 
-            # Get recent bars
-            recent = df.tail(self.context_bars + 10)
-
-            # Check for gaps
+            recent = self.price_history[-(self.context_bars + 10):]
             gaps = self._check_gaps(recent)
-            if gaps > 2:  # Allow up to 2 gaps
+            if gaps > 2:
                 logger.warning(f"Too many gaps in data: {gaps} gaps (max 2)")
                 return False
 
-            # Load into price history
-            self.price_history = []
-            for _, row in recent.iterrows():
-                self.price_history.append({
-                    "timestamp": row["timestamp"],
-                    "open": row["open"],
-                    "high": row["high"],
-                    "low": row["low"],
-                    "close": row["close"],
-                })
-
-            logger.info(f"Loaded {len(self.price_history)} bars from disk (gaps: {gaps})")
+            logger.info(f"Loaded {len(recent)} recent bars from disk (gaps: {gaps})")
             self.data_loaded_from_disk = True
             return True
 
@@ -180,22 +245,16 @@ class NeuralTrader:
             logger.error(f"Failed to load OHLC from disk: {e}")
             return False
 
-    def _check_gaps(self, df: pd.DataFrame) -> int:
-        """Check for gaps in OHLC data.
-
-        Args:
-            df: DataFrame with timestamp column
-
-        Returns:
-            Number of gaps found
-        """
+    def _check_gaps(self, bars: list[dict]) -> int:
+        """Check for gaps in OHLC data."""
         gaps = 0
-        timestamps = df["timestamp"].values
-        expected_delta = pd.Timedelta(minutes=self.ohlc_interval_minutes)
-        max_delta = pd.Timedelta(minutes=self.max_gap_minutes)
+        if len(bars) < 2:
+            return gaps
+        timestamps = [entry["timestamp"] for entry in bars]
+        max_delta = timedelta(minutes=self.max_gap_minutes)
 
         for i in range(1, len(timestamps)):
-            delta = pd.Timestamp(timestamps[i]) - pd.Timestamp(timestamps[i - 1])
+            delta = timestamps[i] - timestamps[i - 1]
             if delta > max_delta:
                 gaps += 1
                 logger.debug(f"Gap detected: {timestamps[i-1]} -> {timestamps[i]} ({delta})")
@@ -204,18 +263,10 @@ class NeuralTrader:
 
     def get_latest_bar_time(self) -> datetime:
         """Get timestamp of latest bar in disk data."""
-        if not OHLC_DATA_PATH.exists():
-            return None
+        return self._latest_bar_time
 
-        try:
-            df = pd.read_csv(OHLC_DATA_PATH)
-            df = df[df["token_symbol"] == CODEX_TOKEN.symbol]
-            if df.empty:
-                return None
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-            return df["timestamp"].max()
-        except Exception:
-            return None
+    async def aclose(self) -> None:
+        await self.api_client.aclose()
 
     async def update_balances(self) -> None:
         """Update SOL and token balances."""
@@ -610,6 +661,10 @@ class NeuralTrader:
         finally:
             # Print final PnL stats
             self.pnl_tracker.print_status()
+            try:
+                await self.aclose()
+            except Exception as exc:
+                logger.warning(f"Failed closing API client: {exc}")
             logger.info(f"PnL log saved to: {self.pnl_tracker.summary_file}")
 
 

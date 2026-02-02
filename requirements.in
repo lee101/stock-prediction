@@ -75,6 +75,7 @@ joblib>=1.4
 fsspec>=2024.9
 yarl>=1.9
 websocket-client>=1.7
+peft>=0.11
 websockets>=9,<11
 exchange-calendars>=4.5
 
