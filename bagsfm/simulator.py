@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -49,12 +49,15 @@ class Trade:
     quantity: float
     price_sol: float
     notional_sol: float
-    fee_sol: float  # Swap fees + network fees
+    fee_sol: float  # Swap + network fees (SOL outflow)
     slippage_sol: float  # Actual slippage cost
 
     # Portfolio state after trade
     sol_balance_after: float
     portfolio_value_after: float
+    spread_sol: float = 0.0  # Bid/ask spread cost in SOL terms
+    token_fee_sol: float = 0.0  # Token tax/fee in SOL terms
+    creator_rebate_sol: float = 0.0  # Creator rebate credited in SOL terms
 
 
 @dataclass
@@ -70,6 +73,7 @@ class SimulationState:
     # Daily tracking
     day_start_value: float = 0.0
     daily_pnl: float = 0.0
+    accrued_creator_rebate_sol: float = 0.0
 
     def get_portfolio_value(self, prices: Dict[str, float]) -> float:
         """Calculate total portfolio value in SOL.
@@ -84,7 +88,7 @@ class SimulationState:
             pos.quantity * prices.get(pos.token_mint, pos.entry_price_sol)
             for pos in self.positions.values()
         )
-        return self.sol_balance + position_value
+        return self.sol_balance + position_value + self.accrued_creator_rebate_sol
 
 
 @dataclass
@@ -117,6 +121,9 @@ class SimulationResult:
 
     # Per-token performance
     token_returns: Dict[str, float] = field(default_factory=dict)
+    total_token_fees_sol: float = 0.0
+    total_spread_sol: float = 0.0
+    total_creator_rebate_sol: float = 0.0
 
 
 class MarketSimulator:
@@ -138,6 +145,8 @@ class MarketSimulator:
         # State
         self.state: Optional[SimulationState] = None
         self._prices: Dict[str, float] = {}  # Current prices
+        self._trade_day: Optional[date] = None
+        self._daily_trade_count: int = 0
 
     def reset(self) -> None:
         """Reset simulator to initial state."""
@@ -148,8 +157,31 @@ class MarketSimulator:
             trades=[],
             equity_history=[],
             day_start_value=self.config.initial_sol,
+            accrued_creator_rebate_sol=0.0,
         )
         self._prices = {SOL_MINT: 1.0}
+        self._trade_day = None
+        self._daily_trade_count = 0
+
+    def _update_trade_day(self, timestamp: datetime) -> None:
+        """Reset per-day trade counters when day changes."""
+        current_day = timestamp.date()
+        if self._trade_day != current_day:
+            self._trade_day = current_day
+            self._daily_trade_count = 0
+
+    def _can_open_position(self, timestamp: datetime) -> bool:
+        """Return True if a new position can be opened under daily limits."""
+        self._update_trade_day(timestamp)
+        limit = self.config.max_trades_per_day
+        if limit is None:
+            return True
+        return self._daily_trade_count < limit
+
+    def _record_entry(self, timestamp: datetime) -> None:
+        """Record an entry trade for daily limit tracking."""
+        self._update_trade_day(timestamp)
+        self._daily_trade_count += 1
 
     def _calculate_swap_cost(
         self,
@@ -183,6 +215,41 @@ class MarketSimulator:
         total_fee = swap_fee + network_fee
 
         return total_fee, slippage
+
+    @staticmethod
+    def _token_fee_sol(
+        token: TokenConfig,
+        notional_sol: float,
+        is_buy: bool,
+    ) -> float:
+        """Calculate token-specific fee/tax in SOL terms."""
+        if notional_sol <= 0:
+            return 0.0
+        fee_bps = token.entry_fee_bps if is_buy else token.exit_fee_bps
+        if fee_bps <= 0:
+            return 0.0
+        return notional_sol * (fee_bps / 10000.0)
+
+    @staticmethod
+    def _token_spread_half_frac(token: TokenConfig) -> float:
+        """Return half-spread as a fraction of price."""
+        spread_bps = token.spread_bps
+        if spread_bps <= 0:
+            return 0.0
+        return spread_bps / 20000.0
+
+    @staticmethod
+    def _creator_rebate_sol(
+        token: TokenConfig,
+        notional_sol: float,
+    ) -> float:
+        """Calculate creator rebate in SOL terms."""
+        if notional_sol <= 0:
+            return 0.0
+        rebate_bps = token.creator_rebate_bps
+        if rebate_bps <= 0:
+            return 0.0
+        return notional_sol * (rebate_bps / 10000.0)
 
     def update_prices(self, prices: Dict[str, float]) -> None:
         """Update current prices.
@@ -222,12 +289,17 @@ class MarketSimulator:
                 continue
 
             if action == "buy" and mint not in self.state.positions:
+                if not self._can_open_position(timestamp):
+                    logger.info("Daily trade limit reached: skipping buy")
+                    continue
                 portfolio_value = self.state.get_portfolio_value(self._prices)
                 position_size = portfolio_value * self.config.max_position_pct
                 position_size = min(position_size, self.state.sol_balance * 0.9)
                 if self.config.max_position_sol is not None:
                     position_size = min(position_size, self.config.max_position_sol)
-                self.open_position(token, position_size, bar.close, timestamp)
+                trade = self.open_position(token, position_size, bar.close, timestamp)
+                if trade is not None:
+                    self._record_entry(timestamp)
 
             elif action == "sell" and mint in self.state.positions:
                 self.close_position(token, bar.close, timestamp)
@@ -289,8 +361,24 @@ class MarketSimulator:
             total_cost = sol_amount + fee_sol
 
         # Execute trade
-        effective_price = price_sol * (1 + slippage_sol / sol_amount)
-        quantity = sol_amount / effective_price
+        half_spread = self._token_spread_half_frac(token)
+        ask_price = price_sol * (1 + half_spread)
+        effective_price = ask_price * (1 + slippage_sol / max(sol_amount, 1e-12))
+        quantity = sol_amount / max(effective_price, 1e-12)
+        spread_sol = 0.0
+        if half_spread > 0:
+            spread_sol = sol_amount - (sol_amount / (1 + half_spread))
+        token_fee_sol = self._token_fee_sol(token, sol_amount, is_buy=True)
+        if token_fee_sol > 0:
+            fee_frac = token_fee_sol / max(sol_amount, 1e-12)
+            quantity = quantity * max(0.0, 1.0 - fee_frac)
+        if quantity <= 0:
+            logger.warning("Token fees eliminate position: skipping buy")
+            return None
+        effective_entry_price = total_cost / max(quantity, 1e-12)
+        creator_rebate_sol = self._creator_rebate_sol(token, sol_amount)
+        if creator_rebate_sol > 0:
+            self.state.accrued_creator_rebate_sol += creator_rebate_sol
 
         # Update state
         self.state.sol_balance -= total_cost
@@ -299,7 +387,7 @@ class MarketSimulator:
             # Add to existing position (average entry)
             pos = self.state.positions[token.mint]
             total_qty = pos.quantity + quantity
-            avg_price = (pos.notional_sol + sol_amount) / total_qty
+            avg_price = (pos.entry_cost_sol + total_cost) / total_qty
             pos.quantity = total_qty
             pos.entry_price_sol = avg_price
             pos.entry_cost_sol += total_cost
@@ -309,7 +397,7 @@ class MarketSimulator:
                 token_mint=token.mint,
                 token_symbol=token.symbol,
                 quantity=quantity,
-                entry_price_sol=effective_price,
+                entry_price_sol=effective_entry_price,
                 entry_time=timestamp,
                 entry_cost_sol=total_cost,
             )
@@ -329,15 +417,24 @@ class MarketSimulator:
             notional_sol=sol_amount,
             fee_sol=fee_sol,
             slippage_sol=slippage_sol,
+            spread_sol=spread_sol,
+            token_fee_sol=token_fee_sol,
+            creator_rebate_sol=creator_rebate_sol,
             sol_balance_after=self.state.sol_balance,
             portfolio_value_after=portfolio_value,
         )
         self.state.trades.append(trade)
 
-        logger.info(
-            f"BUY {quantity:.6f} {token.symbol} @ {price_sol:.8f} SOL "
-            f"(cost: {total_cost:.6f} SOL, fee: {fee_sol:.6f} SOL)"
-        )
+        if token_fee_sol > 0 or spread_sol > 0 or creator_rebate_sol > 0:
+            logger.info(
+                f"BUY {quantity:.6f} {token.symbol} @ {price_sol:.8f} SOL "
+                f"(cost: {total_cost:.6f} SOL, fee: {fee_sol:.6f} SOL, spread: {spread_sol:.6f} SOL, token_fee: {token_fee_sol:.6f} SOL, rebate: {creator_rebate_sol:.6f} SOL)"
+            )
+        else:
+            logger.info(
+                f"BUY {quantity:.6f} {token.symbol} @ {price_sol:.8f} SOL "
+                f"(cost: {total_cost:.6f} SOL, fee: {fee_sol:.6f} SOL)"
+            )
 
         return trade
 
@@ -370,9 +467,16 @@ class MarketSimulator:
         quantity = min(quantity, pos.quantity)
 
         # Calculate proceeds and costs
-        gross_proceeds = quantity * price_sol
+        half_spread = self._token_spread_half_frac(token)
+        bid_price = price_sol * (1 - half_spread)
+        gross_proceeds = quantity * bid_price
+        spread_sol = quantity * price_sol - gross_proceeds
         fee_sol, slippage_sol = self._calculate_swap_cost(gross_proceeds, is_buy=False)
-        net_proceeds = gross_proceeds - fee_sol - slippage_sol
+        token_fee_sol = self._token_fee_sol(token, gross_proceeds, is_buy=False)
+        creator_rebate_sol = self._creator_rebate_sol(token, gross_proceeds)
+        if creator_rebate_sol > 0:
+            self.state.accrued_creator_rebate_sol += creator_rebate_sol
+        net_proceeds = gross_proceeds - fee_sol - slippage_sol - token_fee_sol
 
         # Update state
         self.state.sol_balance += net_proceeds
@@ -399,15 +503,24 @@ class MarketSimulator:
             notional_sol=gross_proceeds,
             fee_sol=fee_sol,
             slippage_sol=slippage_sol,
+            spread_sol=spread_sol,
+            token_fee_sol=token_fee_sol,
+            creator_rebate_sol=creator_rebate_sol,
             sol_balance_after=self.state.sol_balance,
             portfolio_value_after=portfolio_value,
         )
         self.state.trades.append(trade)
 
-        logger.info(
-            f"SELL {quantity:.6f} {token.symbol} @ {price_sol:.8f} SOL "
-            f"(proceeds: {net_proceeds:.6f} SOL, fee: {fee_sol:.6f} SOL)"
-        )
+        if token_fee_sol > 0 or spread_sol > 0 or creator_rebate_sol > 0:
+            logger.info(
+                f"SELL {quantity:.6f} {token.symbol} @ {price_sol:.8f} SOL "
+                f"(proceeds: {net_proceeds:.6f} SOL, fee: {fee_sol:.6f} SOL, spread: {spread_sol:.6f} SOL, token_fee: {token_fee_sol:.6f} SOL, rebate: {creator_rebate_sol:.6f} SOL)"
+            )
+        else:
+            logger.info(
+                f"SELL {quantity:.6f} {token.symbol} @ {price_sol:.8f} SOL "
+                f"(proceeds: {net_proceeds:.6f} SOL, fee: {fee_sol:.6f} SOL)"
+            )
 
         return trade
 
@@ -436,6 +549,9 @@ class MarketSimulator:
 
         # Execute action
         if action == "buy" and token.mint not in self.state.positions:
+            if not self._can_open_position(bar.timestamp):
+                logger.info("Daily trade limit reached: skipping buy")
+                return
             # Calculate position size
             portfolio_value = self.state.get_portfolio_value(self._prices)
             position_size = portfolio_value * self.config.max_position_pct
@@ -443,7 +559,9 @@ class MarketSimulator:
             if self.config.max_position_sol is not None:
                 position_size = min(position_size, self.config.max_position_sol)
 
-            self.open_position(token, position_size, price, bar.timestamp)
+            trade = self.open_position(token, position_size, price, bar.timestamp)
+            if trade is not None:
+                self._record_entry(bar.timestamp)
 
         elif action == "sell" and token.mint in self.state.positions:
             self.close_position(token, price, bar.timestamp)
@@ -498,6 +616,8 @@ class MarketSimulator:
                 continue
 
             self.update_prices(prices)
+            if self.state is not None:
+                self.state.timestamp = ts
 
             # Generate forecasts if forecaster available
             forecasts = {}
@@ -568,6 +688,8 @@ class MarketSimulator:
                 continue
 
             prices = {mint: bar.close for mint, bar in bars_at_ts.items()}
+            if self.state is not None:
+                self.state.timestamp = ts
 
             if forecast_cache is not None:
                 forecasts = forecast_cache.get(ts, {})
@@ -618,6 +740,9 @@ class MarketSimulator:
                 winning_trades=0,
                 total_fees_sol=0.0,
                 total_slippage_sol=0.0,
+                total_token_fees_sol=0.0,
+                total_spread_sol=0.0,
+                total_creator_rebate_sol=0.0,
                 equity_curve=pd.Series(dtype=float),
                 trades=[],
             )
@@ -654,6 +779,9 @@ class MarketSimulator:
 
         # Trade statistics
         total_fees = sum(t.fee_sol for t in self.state.trades)
+        total_token_fees = sum(t.token_fee_sol for t in self.state.trades)
+        total_spread = sum(t.spread_sol for t in self.state.trades)
+        total_rebates = sum(t.creator_rebate_sol for t in self.state.trades)
         total_slippage = sum(t.slippage_sol for t in self.state.trades)
 
         # Win rate (profitable trades)
@@ -682,8 +810,11 @@ class MarketSimulator:
             win_rate=win_rate,
             total_trades=len(self.state.trades),
             winning_trades=winning,
-            total_fees_sol=total_fees,
+            total_fees_sol=total_fees + total_token_fees,
             total_slippage_sol=total_slippage,
+            total_token_fees_sol=total_token_fees,
+            total_spread_sol=total_spread,
+            total_creator_rebate_sol=total_rebates,
             equity_curve=equity_curve,
             trades=self.state.trades,
         )
@@ -731,6 +862,96 @@ def forecast_threshold_strategy(
             elif forecast.predicted_return <= max_drawdown_return:
                 if mint in state.positions:
                     actions[mint] = "sell"
+
+        return actions
+
+    return _strategy
+
+
+def compute_daily_high_low(
+    bars: Dict[str, List[OHLCBar]],
+) -> Dict[str, Dict[date, Tuple[float, float]]]:
+    """Compute daily high/low levels for each token."""
+    levels: Dict[str, Dict[date, Tuple[float, float]]] = {}
+
+    for mint, mint_bars in bars.items():
+        daily: Dict[date, Tuple[float, float]] = {}
+        for bar in mint_bars:
+            day = bar.timestamp.date()
+            if day not in daily:
+                daily[day] = (bar.high, bar.low)
+                continue
+            high, low = daily[day]
+            daily[day] = (max(high, bar.high), min(low, bar.low))
+        levels[mint] = daily
+
+    return levels
+
+
+def daily_high_low_strategy(
+    bars: Dict[str, List[OHLCBar]],
+    min_range_bps: float = 100.0,
+    max_actions_per_day: int = 2,
+    use_previous_day: bool = True,
+) -> callable:
+    """Trade on daily high/low levels to reduce trading frequency.
+
+    Buys when price touches the prior day's low, sells when price reaches
+    the prior day's high (or same-day levels if use_previous_day=False).
+    """
+    levels = compute_daily_high_low(bars)
+    current_day: Optional[date] = None
+    actions_today: Dict[str, int] = {}
+
+    def _strategy(
+        state: SimulationState,
+        prices: Dict[str, float],
+        forecasts: Dict[str, TokenForecast],
+    ) -> Dict[str, str]:
+        nonlocal current_day, actions_today
+        ts = state.timestamp
+        if ts is None:
+            return {}
+
+        day = ts.date()
+        if current_day != day:
+            current_day = day
+            actions_today = {}
+
+        actions: Dict[str, str] = {}
+
+        for mint, price in prices.items():
+            mint_levels = levels.get(mint)
+            if not mint_levels:
+                continue
+
+            level_day = day - timedelta(days=1) if use_previous_day else day
+            level = mint_levels.get(level_day)
+            if level is None:
+                continue
+            high, low = level
+            if low <= 0:
+                continue
+
+            range_bps = (high - low) / max(low, 1e-12) * 10000.0
+            if range_bps < max(min_range_bps, 0.0):
+                continue
+
+            max_actions = max_actions_per_day if max_actions_per_day is not None else 0
+            if max_actions <= 0:
+                continue
+
+            if actions_today.get(mint, 0) >= max_actions:
+                continue
+
+            if mint in state.positions:
+                if price >= high:
+                    actions[mint] = "sell"
+                    actions_today[mint] = actions_today.get(mint, 0) + 1
+            else:
+                if price <= low:
+                    actions[mint] = "buy"
+                    actions_today[mint] = actions_today.get(mint, 0) + 1
 
         return actions
 

@@ -33,11 +33,10 @@ from bagsfm import (
     TokenForecaster,
     build_forecast_cache,
     forecast_threshold_strategy,
+    daily_high_low_strategy,
 )
+from bagsfm.config import CODEX_MINT
 from bagsfm.data_collector import OHLCBar
-
-
-CODEX_MINT = "HAK9cX1jfYmcNpr6keTkLvxehGPWKELXSu7GH2ofBAGS"
 
 
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -147,7 +146,14 @@ def _filter_forecast_cache(
     return filtered
 
 
-def _build_token_configs(bars: Dict[str, List[OHLCBar]], decimals: int) -> Dict[str, TokenConfig]:
+def _build_token_configs(
+    bars: Dict[str, List[OHLCBar]],
+    decimals: int,
+    entry_fee_bps: float = 0.0,
+    exit_fee_bps: float = 0.0,
+    spread_bps: float = 0.0,
+    creator_rebate_bps: float = 0.0,
+) -> Dict[str, TokenConfig]:
     tokens: Dict[str, TokenConfig] = {}
     for mint, mint_bars in bars.items():
         symbol = mint_bars[-1].token_symbol if mint_bars else mint[:6]
@@ -157,6 +163,10 @@ def _build_token_configs(bars: Dict[str, List[OHLCBar]], decimals: int) -> Dict[
             decimals=decimals,
             name=symbol,
             min_trade_amount=0.0,
+            entry_fee_bps=entry_fee_bps,
+            exit_fee_bps=exit_fee_bps,
+            spread_bps=spread_bps,
+            creator_rebate_bps=creator_rebate_bps,
         )
     return tokens
 
@@ -238,6 +248,55 @@ def main() -> None:
         help="Token decimals [default: 9]",
     )
     parser.add_argument(
+        "--strategy",
+        type=str,
+        default="forecast",
+        choices=["forecast", "daily-range"],
+        help="Strategy: forecast (Chronos2) or daily-range [default: forecast]",
+    )
+    parser.add_argument(
+        "--min-range-bps",
+        type=float,
+        default=100.0,
+        help="Minimum prior-day range (bps) to trade [default: 100]",
+    )
+    parser.add_argument(
+        "--max-actions-per-day",
+        type=int,
+        default=2,
+        help="Max actions per token per day for daily-range [default: 2]",
+    )
+    parser.add_argument(
+        "--max-trades-per-day",
+        type=int,
+        default=None,
+        help="Max entry trades per day (global) [default: None]",
+    )
+    parser.add_argument(
+        "--entry-fee-bps",
+        type=float,
+        default=0.0,
+        help="Entry fee bps applied in simulator [default: 0]",
+    )
+    parser.add_argument(
+        "--exit-fee-bps",
+        type=float,
+        default=0.0,
+        help="Exit fee bps applied in simulator [default: 0]",
+    )
+    parser.add_argument(
+        "--spread-bps",
+        type=float,
+        default=0.0,
+        help="Bid/ask spread bps applied in simulator [default: 0]",
+    )
+    parser.add_argument(
+        "--creator-rebate-bps",
+        type=float,
+        default=0.0,
+        help="Creator rebate bps credited in simulator [default: 0]",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda",
@@ -276,26 +335,19 @@ def main() -> None:
     train_end = eval_start
     train_start = train_end - timedelta(days=args.train_days) if args.train_days else None
 
-    tokens = _build_token_configs(bars, decimals=args.decimals)
-
-    forecast_config = ForecastConfig(
-        context_length=args.context_bars,
-        prediction_length=6,
-        device_map=args.device,
-    )
-    data_config = DataConfig(
-        tracked_tokens=list(tokens.values()),
-        data_dir=args.ohlc.parent,
-    )
-    bags_config = BagsConfig()
-
-    collector = DataCollector(bags_config, data_config)
-    forecaster = TokenForecaster(
-        data_collector=collector,
-        config=forecast_config,
+    tokens = _build_token_configs(
+        bars,
+        decimals=args.decimals,
+        entry_fee_bps=args.entry_fee_bps,
+        exit_fee_bps=args.exit_fee_bps,
+        spread_bps=args.spread_bps,
+        creator_rebate_bps=args.creator_rebate_bps,
     )
 
-    sim_config = SimulationConfig(initial_sol=1.0)
+    sim_config = SimulationConfig(
+        initial_sol=1.0,
+        max_trades_per_day=args.max_trades_per_day,
+    )
 
     sample_bars = next(iter(bars.values()))
     interval_minutes = _infer_interval_minutes(sample_bars)
@@ -304,72 +356,117 @@ def main() -> None:
         anchor = train_start if train_start is not None else eval_start
         warmup_start = anchor - timedelta(minutes=interval_minutes * args.context_bars)
 
-    cache_bars = _filter_bars(bars, warmup_start, end_time)
-    cache = build_forecast_cache(
-        bars=cache_bars,
-        tokens=tokens,
-        forecaster=forecaster,
-        context_bars=args.context_bars,
-        min_context_bars=args.min_context_bars,
-    )
+    eval_bars = _filter_bars(bars, eval_start, end_time)
+    level_bars = _filter_bars(bars, eval_start - timedelta(days=1), end_time)
 
-    train_bars = _filter_bars(bars, train_start, train_end)
-    train_cache = _filter_forecast_cache(cache, train_start, train_end)
-
-    best_threshold = args.thresholds[0]
-    best_return = float("-inf")
-
-    if args.train_days and len(args.thresholds) > 1 and train_bars:
-        logging.info(
-            "Training thresholds on %s to %s",
-            train_start.isoformat() if train_start else "start",
-            train_end.isoformat(),
+    if args.strategy == "daily-range":
+        strategy = daily_high_low_strategy(
+            bars=level_bars,
+            min_range_bps=args.min_range_bps,
+            max_actions_per_day=args.max_actions_per_day,
+            use_previous_day=True,
         )
-        for threshold in args.thresholds:
-            total_return, _ = _run_simulation(
-                bars=train_bars,
-                tokens=tokens,
-                forecaster=None,
-                forecast_cache=train_cache,
-                threshold=threshold,
-                context_bars=args.context_bars,
-                min_context_bars=args.min_context_bars,
-                sim_config=sim_config,
-            )
-            logging.info("Threshold %.4f -> return %.2f%%", threshold, total_return)
-            if total_return > best_return:
-                best_return = total_return
-                best_threshold = threshold
-
-        logging.info("Selected threshold %.4f", best_threshold)
+        simulator = MarketSimulator(sim_config)
+        logging.info("Evaluating daily-range from %s to %s", eval_start.isoformat(), end_time.isoformat())
+        result = simulator.run_walk_forward_backtest(
+            bars=eval_bars,
+            tokens=tokens,
+            strategy_fn=strategy,
+            forecaster=None,
+            forecast_cache=None,
+            context_bars=None,
+            min_context_bars=args.min_context_bars,
+        )
+        total_return = result.total_return_pct
+        best_threshold = None
     else:
-        if args.train_days and not train_bars:
-            logging.warning(
-                "No training bars found between %s and %s; skipping threshold training.",
+        forecast_config = ForecastConfig(
+            context_length=args.context_bars,
+            prediction_length=6,
+            device_map=args.device,
+        )
+        data_config = DataConfig(
+            tracked_tokens=list(tokens.values()),
+            data_dir=args.ohlc.parent,
+        )
+        bags_config = BagsConfig()
+
+        collector = DataCollector(bags_config, data_config)
+        forecaster = TokenForecaster(
+            data_collector=collector,
+            config=forecast_config,
+        )
+
+        cache_bars = _filter_bars(bars, warmup_start, end_time)
+        cache = build_forecast_cache(
+            bars=cache_bars,
+            tokens=tokens,
+            forecaster=forecaster,
+            context_bars=args.context_bars,
+            min_context_bars=args.min_context_bars,
+        )
+
+        train_bars = _filter_bars(bars, train_start, train_end)
+        train_cache = _filter_forecast_cache(cache, train_start, train_end)
+
+        best_threshold = args.thresholds[0]
+        best_return = float("-inf")
+
+        if args.train_days and len(args.thresholds) > 1 and train_bars:
+            logging.info(
+                "Training thresholds on %s to %s",
                 train_start.isoformat() if train_start else "start",
                 train_end.isoformat(),
             )
-        best_threshold = args.thresholds[0]
+            for threshold in args.thresholds:
+                total_return, _ = _run_simulation(
+                    bars=train_bars,
+                    tokens=tokens,
+                    forecaster=None,
+                    forecast_cache=train_cache,
+                    threshold=threshold,
+                    context_bars=args.context_bars,
+                    min_context_bars=args.min_context_bars,
+                    sim_config=sim_config,
+                )
+                logging.info("Threshold %.4f -> return %.2f%%", threshold, total_return)
+                if total_return > best_return:
+                    best_return = total_return
+                    best_threshold = threshold
 
-    eval_bars = _filter_bars(bars, eval_start, end_time)
-    eval_cache = _filter_forecast_cache(cache, eval_start, end_time)
+            logging.info("Selected threshold %.4f", best_threshold)
+        else:
+            if args.train_days and not train_bars:
+                logging.warning(
+                    "No training bars found between %s and %s; skipping threshold training.",
+                    train_start.isoformat() if train_start else "start",
+                    train_end.isoformat(),
+                )
+            best_threshold = args.thresholds[0]
 
-    logging.info("Evaluating from %s to %s", eval_start.isoformat(), end_time.isoformat())
-    total_return, result = _run_simulation(
-        bars=eval_bars,
-        tokens=tokens,
-        forecaster=None,
-        forecast_cache=eval_cache,
-        threshold=best_threshold,
-        context_bars=args.context_bars,
-        min_context_bars=args.min_context_bars,
-        sim_config=sim_config,
-    )
+        eval_cache = _filter_forecast_cache(cache, eval_start, end_time)
+
+        logging.info("Evaluating from %s to %s", eval_start.isoformat(), end_time.isoformat())
+        total_return, result = _run_simulation(
+            bars=eval_bars,
+            tokens=tokens,
+            forecaster=None,
+            forecast_cache=eval_cache,
+            threshold=best_threshold,
+            context_bars=args.context_bars,
+            min_context_bars=args.min_context_bars,
+            sim_config=sim_config,
+        )
 
     print("\n=== Backtest Summary ===")
     print(f"Token mints: {', '.join(tokens.keys())}")
     print(f"Eval window: {eval_start} -> {end_time}")
-    print(f"Threshold: {best_threshold:.4f}")
+    if best_threshold is not None:
+        print(f"Threshold: {best_threshold:.4f}")
+    else:
+        print("Strategy: daily-range")
+        print(f"Min prior-day range: {args.min_range_bps:.1f} bps")
+        print(f"Max actions per day: {args.max_actions_per_day}")
     print(f"Total return: {total_return:.2f}%")
     print(f"Sharpe: {result.sharpe_ratio:.2f} | Sortino: {result.sortino_ratio:.2f}")
     print(f"Max drawdown: {result.max_drawdown:.2%}")
