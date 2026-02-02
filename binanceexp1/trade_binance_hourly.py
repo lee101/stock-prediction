@@ -118,14 +118,23 @@ def _log_account_metrics(
         ignore_index=True,
     )
 
-    if history["total_usdt"].notna().any():
-        start_value = float(history["total_usdt"].iloc[0])
+    # Find first non-zero value as baseline
+    nonzero_values = history["total_usdt"][history["total_usdt"] > 0]
+    if len(nonzero_values) > 0:
+        start_value = float(nonzero_values.iloc[0])
     else:
-        start_value = total_usdt
+        start_value = total_usdt if total_usdt > 0 else 1.0
+    
     pnl_usdt = total_usdt - start_value
-    pnl_pct = pnl_usdt / start_value if start_value else 0.0
-    returns = compute_step_returns(history["total_usdt"].fillna(0.0).to_numpy())
-    sortino = annualized_sortino(returns, periods_per_year=periods_per_year)
+    pnl_pct = pnl_usdt / start_value if start_value > 0 else 0.0
+    
+    # Calculate returns only from non-zero values
+    valid_values = history["total_usdt"][history["total_usdt"] > 0].to_numpy()
+    if len(valid_values) > 1:
+        returns = compute_step_returns(valid_values)
+        sortino = annualized_sortino(returns, periods_per_year=periods_per_year)
+    else:
+        sortino = 0.0
 
     history["pnl_usdt"] = pnl_usdt
     history["pnl_pct"] = pnl_pct
