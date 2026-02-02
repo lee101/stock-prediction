@@ -305,6 +305,7 @@ def main() -> None:
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--once", action="store_true", help="Run one cycle and exit")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--cycle-minutes", type=int, default=5, help="Minutes between trading cycles (default 5 for high-frequency)")
     args = parser.parse_args()
 
     symbols = _parse_symbols(args.symbols)
@@ -335,8 +336,8 @@ def main() -> None:
             _log_account_metrics(symbols, log_path=log_path)
         if args.once:
             break
-        sleep_seconds = _seconds_until_next_hour()
-        print(f"Sleeping {sleep_seconds:.1f}s until next hour...")
+        sleep_seconds = args.cycle_minutes * 60
+        print(f"Sleeping {sleep_seconds:.1f}s until next cycle...")
         time.sleep(sleep_seconds)
 
 
