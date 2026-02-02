@@ -129,9 +129,41 @@ class DefaultStrategyConfig:
     # All benchmarked symbols
     all_symbols: Tuple[str, ...] = ("BTCUSD", "ETHUSD", "SOLUSD", "LINKUSD", "UNIUSD")
 
+    def _latest_best_checkpoint(self, directory: Path) -> Optional[Path]:
+        """Pick newest best_* checkpoint in a directory."""
+        if not directory.exists():
+            return None
+        candidates = list(directory.glob("best_*.pt"))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda p: p.stat().st_mtime)
+
+    def _resolve_checkpoint(self, path: str) -> Optional[str]:
+        """Resolve a checkpoint path, preferring the newest best_* in the same dir."""
+        candidate = Path(path)
+
+        if candidate.is_dir():
+            best = self._latest_best_checkpoint(candidate)
+            return str(best) if best else None
+
+        if candidate.exists():
+            best = self._latest_best_checkpoint(candidate.parent)
+            if best and best.stat().st_mtime >= candidate.stat().st_mtime:
+                return str(best)
+            return str(candidate)
+
+        # If the file path doesn't exist, try best_* in its parent directory.
+        best = self._latest_best_checkpoint(candidate.parent)
+        return str(best) if best else None
+
     def get_checkpoint_for_symbol(self, symbol: str) -> str:
         """Get the best checkpoint for a specific symbol."""
-        return self.symbol_checkpoints.get(symbol, self.checkpoint_path)
+        candidate = self.symbol_checkpoints.get(symbol, self.checkpoint_path)
+        resolved = self._resolve_checkpoint(candidate)
+        if resolved:
+            return resolved
+        fallback = self._resolve_checkpoint(self.checkpoint_path)
+        return fallback if fallback else self.checkpoint_path
 
 
 @dataclass
