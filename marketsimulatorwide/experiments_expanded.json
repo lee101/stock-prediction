@@ -1,0 +1,10 @@
+[
+  {"name": "cl_ctx512_bs128_chunk200_top3", "top_n": 3, "context_length": 512, "batch_size": 128, "chunk_size": 200},
+  {"name": "cl_ctx512_bs128_chunk200_top5", "top_n": 5, "context_length": 512, "batch_size": 128, "chunk_size": 200},
+  {"name": "cl_ctx512_bs128_chunk200_top7", "top_n": 7, "context_length": 512, "batch_size": 128, "chunk_size": 200},
+  {"name": "cl_ctx1024_bs128_chunk200_top3", "top_n": 3, "context_length": 1024, "batch_size": 128, "chunk_size": 200},
+  {"name": "cl_ctx1024_bs128_chunk200_top5", "top_n": 5, "context_length": 1024, "batch_size": 128, "chunk_size": 200},
+  {"name": "cl_ctx1024_bs128_chunk200_top7", "top_n": 7, "context_length": 1024, "batch_size": 128, "chunk_size": 200},
+  {"name": "cl_ctx512_bs256_chunk200_top5", "top_n": 5, "context_length": 512, "batch_size": 256, "chunk_size": 200},
+  {"name": "cl_ctx1024_bs256_chunk200_top5", "top_n": 5, "context_length": 1024, "batch_size": 256, "chunk_size": 200}
+]
