@@ -52,6 +52,12 @@ class ForecastConfigLong:
     # Multivariate forecasting (better for stocks)
     use_multivariate: bool = True
 
+    # Cross-learning across multiple symbols (Chronos2 predict_batches_jointly)
+    use_cross_learning: bool = False
+    cross_learning_min_batch: int = 2
+    cross_learning_group_by_asset_type: bool = True
+    cross_learning_chunk_size: Optional[int] = None
+
     # Pre-augmentation strategies
     use_preaugmentation: bool = True
     preaugmentation_dirs: Tuple[str, ...] = (
@@ -96,6 +102,14 @@ class SimulationConfigLong:
     # Max hold duration (force exit if position held too long)
     max_hold_days: int = 5  # Default max hold days (0 = disabled)
     max_hold_days_per_symbol: Optional[Dict[str, int]] = None  # Per-symbol overrides
+
+    # Soft penalties (risk shaping)
+    # If leverage exceeds leverage_soft_cap, apply leverage_penalty_rate per day on excess leverage * equity.
+    leverage_soft_cap: float = 0.0  # 0 disables penalty
+    leverage_penalty_rate: float = 0.0  # Daily penalty per unit leverage above soft cap
+    # Apply a daily penalty on positions held beyond hold_penalty_start_days.
+    hold_penalty_start_days: int = 0  # 0 disables penalty
+    hold_penalty_rate: float = 0.0  # Daily penalty as fraction of notional per position
 
     @property
     def total_cost_per_trade(self) -> float:

@@ -3161,7 +3161,10 @@ def backtest_forecasts(symbol, num_simulations=50, model_override: Optional[str]
         set_strategy_for_symbol(symbol, best_strategy)
 
         # Evaluate and save the best close policy for maxdiff strategies
-        evaluate_and_save_close_policy(symbol, num_comparisons=10)
+        if read_env_flag(("BACKTEST_SKIP_CLOSE_POLICY",)):
+            logger.info("Skipping close policy evaluation for %s (BACKTEST_SKIP_CLOSE_POLICY=1).", symbol)
+        else:
+            evaluate_and_save_close_policy(symbol, num_comparisons=10)
 
         return results_df
     finally:

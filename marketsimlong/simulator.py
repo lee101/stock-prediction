@@ -59,6 +59,7 @@ class DayResult:
     positions_held: List[str]
     trades_executed: List[TradeRecord]
     daily_return: float
+    risk_penalty: float = 0.0
     forecasts_used: Optional[DailyForecasts] = None
 
 
@@ -93,6 +94,10 @@ class SimulationResult:
     # Per-symbol performance
     symbol_returns: Dict[str, float] = field(default_factory=dict)
 
+    # Cost tracking
+    total_margin_interest_paid: float = 0.0
+    total_risk_penalty: float = 0.0
+
 
 class LongTermDailySimulator:
     """Simulates long-term daily trading strategy.
@@ -119,6 +124,7 @@ class LongTermDailySimulator:
         self.cash = sim_config.initial_cash
         self.margin_borrowed = 0.0  # Amount borrowed on margin
         self.total_margin_interest_paid = 0.0  # Track total margin interest
+        self.total_risk_penalties = 0.0  # Track total risk penalties
         self.positions: Dict[str, Position] = {}
         self.trades: List[TradeRecord] = []
         self.daily_results: List[DayResult] = []
@@ -129,6 +135,7 @@ class LongTermDailySimulator:
         self.cash = self.config.initial_cash
         self.margin_borrowed = 0.0
         self.total_margin_interest_paid = 0.0
+        self.total_risk_penalties = 0.0
         self.positions.clear()
         self.trades.clear()
         self.daily_results.clear()
@@ -396,6 +403,36 @@ class LongTermDailySimulator:
             self.cash -= daily_interest
             self.total_margin_interest_paid += daily_interest
 
+        # Apply soft penalties for leverage and hold duration
+        risk_penalty = 0.0
+        if (
+            self.config.hold_penalty_rate > 0.0
+            and self.config.hold_penalty_start_days > 0
+            and self.positions
+        ):
+            for symbol, pos in self.positions.items():
+                days_held = (trade_date - pos.entry_date).days
+                if days_held >= self.config.hold_penalty_start_days:
+                    price = prices.get(symbol, pos.entry_price)
+                    notional = pos.quantity * price
+                    risk_penalty += notional * self.config.hold_penalty_rate
+
+        if self.config.leverage_penalty_rate > 0.0 and self.config.leverage_soft_cap > 0.0:
+            equity = self.get_portfolio_value(prices)
+            if equity > 0:
+                exposure = sum(
+                    pos.quantity * prices.get(pos.symbol, pos.entry_price)
+                    for pos in self.positions.values()
+                )
+                leverage_ratio = exposure / equity
+                if leverage_ratio > self.config.leverage_soft_cap:
+                    excess = leverage_ratio - self.config.leverage_soft_cap
+                    risk_penalty += equity * excess * self.config.leverage_penalty_rate
+
+        if risk_penalty > 0.0:
+            self.cash -= risk_penalty
+            self.total_risk_penalties += risk_penalty
+
         # Calculate ending portfolio value
         ending_value = self.get_portfolio_value(prices)
         daily_return = (ending_value - starting_value) / starting_value if starting_value > 0 else 0.0
@@ -412,6 +449,7 @@ class LongTermDailySimulator:
             positions_held=list(self.positions.keys()),
             trades_executed=day_trades,
             daily_return=daily_return,
+            risk_penalty=risk_penalty,
             forecasts_used=forecasts,
         )
         self.daily_results.append(result)
@@ -518,6 +556,8 @@ class LongTermDailySimulator:
                 daily_results=[],
                 all_trades=[],
                 symbol_returns={},
+                total_margin_interest_paid=self.total_margin_interest_paid,
+                total_risk_penalty=self.total_risk_penalties,
             )
 
         # Build equity curve
@@ -574,6 +614,8 @@ class LongTermDailySimulator:
             daily_results=self.daily_results,
             all_trades=self.trades,
             symbol_returns=symbol_returns,
+            total_margin_interest_paid=self.total_margin_interest_paid,
+            total_risk_penalty=self.total_risk_penalties,
         )
 
     def _compute_symbol_returns(self) -> Dict[str, float]:

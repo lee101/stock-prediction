@@ -1703,6 +1703,7 @@ def _write_training_summary(base_path: Path) -> None:
             latest_candidates.append(test_df.index.max())
 
         latest_ts = pd.to_datetime(max(latest_candidates), utc=True, errors="coerce") if latest_candidates else None
+        base_name = base_path.name
         summary_rows.append(
             {
                 "symbol": symbol,
@@ -1710,8 +1711,8 @@ def _write_training_summary(base_path: Path) -> None:
                 "total_rows": len(train_df) + len(test_df),
                 "train_rows": len(train_df),
                 "test_rows": len(test_df),
-                "train_file": f"trainingdata/train/{symbol}.csv",
-                "test_file": f"trainingdata/test/{symbol}.csv",
+                "train_file": f"{base_name}/train/{symbol}.csv",
+                "test_file": f"{base_name}/test/{symbol}.csv",
             }
         )
 
