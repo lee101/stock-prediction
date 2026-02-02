@@ -128,6 +128,21 @@ class BagsAPIClient:
             "x-api-key": config.api_key,
             "Content-Type": "application/json",
         }
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Lazily create and reuse a single AsyncClient for connection pooling."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=self.config.timeout_seconds,
+                headers=self._headers,
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client to release resources."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
 
     async def get_quote(
         self,
@@ -160,55 +175,54 @@ class BagsAPIClient:
             "slippageBps": str(slippage_bps),
         }
 
-        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
-            response = await client.get(
-                f"{self.config.base_url}/trade/quote",
-                headers=self._headers,
-                params=params,
+        client = self._get_client()
+        response = await client.get(
+            f"{self.config.base_url}/trade/quote",
+            headers=self._headers,
+            params=params,
+        )
+        data = response.json()
+        if not data.get("success"):
+            error_msg = data.get("error", data.get("message", "Unknown error"))
+            logger.warning(
+                f"Quote failed: {error_msg} | "
+                f"input={input_mint[:8]}... output={output_mint[:8]}... "
+                f"amount={amount} ({amount/1e9:.4f} SOL) | "
+                f"response={data}"
             )
-            data = response.json()
+            raise RuntimeError(f"Quote failed: {error_msg}")
 
-            if not data.get("success"):
-                error_msg = data.get("error", data.get("message", "Unknown error"))
-                logger.warning(
-                    f"Quote failed: {error_msg} | "
-                    f"input={input_mint[:8]}... output={output_mint[:8]}... "
-                    f"amount={amount} ({amount/1e9:.4f} SOL) | "
-                    f"response={data}"
+        resp = data["response"]
+
+        # Parse route legs
+        route_plan = []
+        for leg in resp.get("routePlan", []):
+            route_plan.append(
+                RouteLeg(
+                    input_mint=leg.get("inputMint", ""),
+                    output_mint=leg.get("outputMint", ""),
+                    amount_in=int(leg.get("inAmount", 0)),
+                    amount_out=int(leg.get("outAmount", 0)),
+                    fee_amount=int(leg.get("feeAmount", 0)),
+                    fee_mint=leg.get("feeMint", ""),
+                    source=leg.get("source", ""),
                 )
-                raise RuntimeError(f"Quote failed: {error_msg}")
-
-            resp = data["response"]
-
-            # Parse route legs
-            route_plan = []
-            for leg in resp.get("routePlan", []):
-                route_plan.append(
-                    RouteLeg(
-                        input_mint=leg.get("inputMint", ""),
-                        output_mint=leg.get("outputMint", ""),
-                        amount_in=int(leg.get("inAmount", 0)),
-                        amount_out=int(leg.get("outAmount", 0)),
-                        fee_amount=int(leg.get("feeAmount", 0)),
-                        fee_mint=leg.get("feeMint", ""),
-                        source=leg.get("source", ""),
-                    )
-                )
-
-            return QuoteResponse(
-                input_mint=input_mint,
-                output_mint=output_mint,
-                in_amount=int(resp.get("inAmount", amount)),
-                out_amount=int(resp.get("outAmount", 0)),
-                min_out_amount=int(resp.get("minOutAmount", 0)),
-                price_impact_pct=float(resp.get("priceImpactPct", 0)),
-                slippage_bps=slippage_bps,
-                platform_fee=resp.get("platformFee"),
-                out_transfer_fee=resp.get("outTransferFee"),
-                route_plan=route_plan,
-                simulated_compute_units=resp.get("simulatedComputeUnits"),
-                raw_response=resp,
             )
+
+        return QuoteResponse(
+            input_mint=input_mint,
+            output_mint=output_mint,
+            in_amount=int(resp.get("inAmount", amount)),
+            out_amount=int(resp.get("outAmount", 0)),
+            min_out_amount=int(resp.get("minOutAmount", 0)),
+            price_impact_pct=float(resp.get("priceImpactPct", 0)),
+            slippage_bps=slippage_bps,
+            platform_fee=resp.get("platformFee"),
+            out_transfer_fee=resp.get("outTransferFee"),
+            route_plan=route_plan,
+            simulated_compute_units=resp.get("simulatedComputeUnits"),
+            raw_response=resp,
+        )
 
     async def build_swap_transaction(
         self,
@@ -232,32 +246,31 @@ class BagsAPIClient:
             "userPublicKey": user_public_key,
         }
 
-        async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
-            response = await client.post(
-                f"{self.config.base_url}/trade/swap",
-                headers=self._headers,
-                json=payload,
-            )
-            data = response.json()
+        client = self._get_client()
+        response = await client.post(
+            f"{self.config.base_url}/trade/swap",
+            headers=self._headers,
+            json=payload,
+        )
+        data = response.json()
+        if not data.get("success"):
+            error_msg = data.get("error", data.get("message", "Unknown error"))
+            raise RuntimeError(f"Swap transaction build failed: {error_msg}")
 
-            if not data.get("success"):
-                error_msg = data.get("error", data.get("message", "Unknown error"))
-                raise RuntimeError(f"Swap transaction build failed: {error_msg}")
+        resp = data["response"]
 
-            resp = data["response"]
+        swap_tx = SwapTransaction(
+            swap_transaction=resp["swapTransaction"],
+            compute_unit_limit=int(resp.get("computeUnitLimit", 200000)),
+            prioritization_fee_lamports=int(resp.get("prioritizationFeeLamports", 0)),
+            last_valid_block_height=int(resp.get("lastValidBlockHeight", 0)),
+        )
 
-            swap_tx = SwapTransaction(
-                swap_transaction=resp["swapTransaction"],
-                compute_unit_limit=int(resp.get("computeUnitLimit", 200000)),
-                prioritization_fee_lamports=int(resp.get("prioritizationFeeLamports", 0)),
-                last_valid_block_height=int(resp.get("lastValidBlockHeight", 0)),
-            )
+        # Estimate total SOL fee
+        # Base fee (5000 lamports) + priority fee
+        swap_tx.estimated_sol_fee = (5000 + swap_tx.prioritization_fee_lamports) / 1e9
 
-            # Estimate total SOL fee
-            # Base fee (5000 lamports) + priority fee
-            swap_tx.estimated_sol_fee = (5000 + swap_tx.prioritization_fee_lamports) / 1e9
-
-            return swap_tx
+        return swap_tx
 
     async def get_price_usd(self, mint: str) -> Optional[float]:
         """Get USD price for a token using Jupiter Price API.
@@ -275,16 +288,16 @@ class BagsAPIClient:
             JUP_API_KEY = os.getenv("JUP_API_KEY", "")
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(
-                    "https://api.jup.ag/price/v3",
-                    headers={"x-api-key": JUP_API_KEY},
-                    params={"ids": mint},
-                )
-                data = response.json()
+            client = self._get_client()
+            response = await client.get(
+                "https://api.jup.ag/price/v3",
+                headers={"x-api-key": JUP_API_KEY},
+                params={"ids": mint},
+            )
+            data = response.json()
 
-                if data.get("data") and mint in data["data"]:
-                    return float(data["data"][mint].get("price", 0))
+            if data.get("data") and mint in data["data"]:
+                return float(data["data"][mint].get("price", 0))
 
         except Exception as e:
             logger.warning(f"Failed to get price for {mint}: {e}")

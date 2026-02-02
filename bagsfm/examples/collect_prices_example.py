@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from bagsfm import DataCollector, BagsConfig, DataConfig, TokenConfig
-from bagsfm.config import SOL_MINT
+from bagsfm.config import SOL_MINT, CODEX_MINT
 
 
 # Tokens to track
@@ -34,7 +34,7 @@ TOKENS = [
     ),
     TokenConfig(
         symbol="CODEX",
-        mint="HAK9cX1jfYmcNpr6keTkLvxehGPWKELXSu7GH2ofBAGS",
+        mint=CODEX_MINT,
         decimals=9,
         name="CODEX",
     ),

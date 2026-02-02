@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -25,6 +25,7 @@ from .config import (
 )
 from .data_collector import DataCollector, create_collector
 from .forecaster import TokenForecaster, TokenForecast, ForecastBatch, create_forecaster
+from .simulator import compute_daily_high_low
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,8 @@ class BagsTrader:
 
         # Token registry
         self._tokens: Dict[str, TokenConfig] = {}
+        self._daily_action_day: Optional[date] = None
+        self._daily_actions_by_token: Dict[str, int] = {}
 
         # Load state if exists
         self._load_state()
@@ -160,9 +163,15 @@ class BagsTrader:
     async def initialize(self) -> None:
         """Initialize all components."""
         # Create data collector
+        max_rows = max(
+            2000,
+            self.config.data.context_bars * len(self.config.data.tracked_tokens) * 4,
+        )
         self._collector = await create_collector(
             bags_config=self.config.bags,
             data_config=self.config.data,
+            max_rows=max_rows,
+            required_mints=[token.mint for token in self.config.data.tracked_tokens],
         )
 
         # Create forecaster
@@ -241,6 +250,17 @@ class BagsTrader:
 
         logger.debug(f"Collected {len(prices)} prices")
 
+    def _reset_daily_counters_if_needed(self) -> None:
+        """Reset daily counters when the UTC day changes."""
+        now = datetime.utcnow()
+        if self.state.last_price_check and self.state.last_price_check.date() == now.date():
+            return
+
+        self.state.day_start_value = self._get_portfolio_value()
+        self.state.trades_today = 0
+        self._daily_action_day = now.date()
+        self._daily_actions_by_token = {}
+
     def generate_forecasts(self) -> ForecastBatch:
         """Generate forecasts for all tracked tokens."""
         if self._forecaster is None:
@@ -250,6 +270,128 @@ class BagsTrader:
             )
 
         return self._forecaster.forecast_all_tokens()
+
+    def _record_daily_action(self, token_mint: str) -> None:
+        """Track per-token daily actions for daily-range strategy."""
+        now = datetime.utcnow().date()
+        if self._daily_action_day != now:
+            self._daily_action_day = now
+            self._daily_actions_by_token = {}
+        self._daily_actions_by_token[token_mint] = self._daily_actions_by_token.get(token_mint, 0) + 1
+
+    def _daily_actions_used(self, token_mint: str) -> int:
+        now = datetime.utcnow().date()
+        if self._daily_action_day != now:
+            return 0
+        return self._daily_actions_by_token.get(token_mint, 0)
+
+    def make_daily_range_decisions(self) -> List[TradeDecision]:
+        """Generate trading decisions based on prior-day high/low levels."""
+        decisions: List[TradeDecision] = []
+
+        if self._collector is None:
+            return []
+
+        # Check daily limits
+        if self.state.trades_today >= self.config.max_daily_trades:
+            logger.info("Daily trade limit reached")
+            return []
+
+        # Check daily loss limit
+        portfolio_value = self._get_portfolio_value()
+        daily_return = (
+            (portfolio_value - self.state.day_start_value) / self.state.day_start_value
+            if self.state.day_start_value > 0
+            else 0
+        )
+        if daily_return < -self.config.max_daily_loss_pct:
+            logger.warning(f"Daily loss limit exceeded: {daily_return*100:.2f}%")
+            return []
+
+        # Build daily levels from collected bars
+        bars: Dict[str, List] = {}
+        for mint, token in self._tokens.items():
+            mint_bars = self._collector.aggregator.get_bars(mint)
+            if mint_bars:
+                bars[mint] = mint_bars
+
+        levels = compute_daily_high_low(bars)
+
+        today = datetime.utcnow().date()
+        level_day = today - timedelta(days=1) if self.config.daily_range_use_previous_day else today
+
+        # Enforce total exposure cap
+        remaining_capacity = self.config.max_position_sol
+        missing_price = False
+        for mint, quantity in self.state.positions.items():
+            price = self._collector.get_latest_price(mint)
+            if price is None:
+                missing_price = True
+                break
+            remaining_capacity -= quantity * price
+        if missing_price:
+            logger.warning("Skipping new buys: missing latest price for an open position.")
+            remaining_capacity = 0.0
+        remaining_capacity = max(0.0, remaining_capacity)
+
+        for mint, token in self._tokens.items():
+            mint_levels = levels.get(mint)
+            if not mint_levels or level_day not in mint_levels:
+                continue
+
+            high, low = mint_levels[level_day]
+            if low <= 0:
+                continue
+
+            range_bps = (high - low) / low * 10000.0
+            if range_bps < self.config.daily_range_min_bps:
+                continue
+
+            if self._daily_actions_used(mint) >= self.config.daily_range_max_actions_per_day:
+                continue
+
+            current_price = self._collector.get_latest_price(mint)
+            if current_price is None:
+                continue
+
+            has_position = mint in self.state.positions and self.state.positions[mint] > 0
+
+            if not has_position and current_price <= low:
+                position_value = portfolio_value * self.config.position_size_pct
+                position_value = min(position_value, self.state.sol_balance * 0.9)
+                if self.config.max_position_sol is not None:
+                    position_value = min(position_value, self.config.max_position_sol)
+                position_value = min(position_value, remaining_capacity)
+
+                if position_value >= 0.01:
+                    decisions.append(
+                        TradeDecision(
+                            token=token,
+                            action="buy",
+                            reason=f"Daily low touch ({level_day})",
+                            amount_sol=position_value,
+                        )
+                    )
+                    remaining_capacity -= position_value
+
+            elif has_position and current_price >= high:
+                decisions.append(
+                    TradeDecision(
+                        token=token,
+                        action="sell",
+                        reason=f"Daily high touch ({level_day})",
+                        amount_tokens=self.state.positions[mint],
+                    )
+                )
+
+        # Sort to keep deterministic order
+        decisions.sort(key=lambda d: d.token.symbol)
+
+        max_new_trades = self.config.max_daily_trades - self.state.trades_today
+        decisions = decisions[:max_new_trades]
+        for decision in decisions:
+            self._record_daily_action(decision.token.mint)
+        return decisions
 
     def make_decisions(
         self,
@@ -455,6 +597,7 @@ class BagsTrader:
         4. Execute trades
         """
         logger.info("Starting trading cycle")
+        self._reset_daily_counters_if_needed()
 
         # Collect prices
         await self.collect_prices()
@@ -462,12 +605,16 @@ class BagsTrader:
         # Update balances
         await self._update_balances()
 
-        # Generate forecasts
-        forecasts = self.generate_forecasts()
-        logger.info(f"Generated {len(forecasts.forecasts)} forecasts")
+        if self.config.strategy == "daily-range":
+            decisions = self.make_daily_range_decisions()
+            logger.info(f"Daily-range decisions: {len(decisions)}")
+        else:
+            # Generate forecasts
+            forecasts = self.generate_forecasts()
+            logger.info(f"Generated {len(forecasts.forecasts)} forecasts")
 
-        # Make decisions
-        decisions = self.make_decisions(forecasts)
+            # Make decisions
+            decisions = self.make_decisions(forecasts)
 
         if decisions:
             logger.info(f"Made {len(decisions)} trade decisions")

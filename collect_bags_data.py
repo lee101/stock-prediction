@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bagsfm import DataCollector, BagsConfig, DataConfig, TokenConfig
-from bagsfm.config import SOL_MINT, USDC_MINT
+from bagsfm.config import SOL_MINT, CODEX_MINT, BLON_MINT
 
 # Configure logging
 logging.basicConfig(
@@ -49,7 +49,7 @@ TOKENS = [
     ),
     TokenConfig(
         symbol="CODEX",
-        mint="HAK9cX1jfYmcNpr6keTkLvxehGPWKELXSu7GH2ofBAGS",
+        mint=CODEX_MINT,
         decimals=9,
         name="CODEX (Bags.fm)",
     ),
@@ -88,6 +88,12 @@ TOKENS = [
         mint="6rZfGFiHydm1RQfE1i7hhSdsZAE57bAK7ydQvA49BAGS",
         decimals=9,
         name="ISO NYC",
+    ),
+    TokenConfig(
+        symbol="BLON",
+        mint=BLON_MINT,
+        decimals=9,
+        name="BLON",
     ),
 ]
 
@@ -130,9 +136,13 @@ async def main():
     # Create collector
     collector = DataCollector(bags_config, data_config)
 
-    # Load existing data
-    num_prices, num_bars = collector.load_from_disk()
-    logger.info(f"Loaded {num_bars} existing OHLC bars")
+    # Load recent history only (avoid full-file scan for very large CSVs)
+    max_rows = max(2000, data_config.context_bars * len(TOKENS) * 4)
+    num_prices, num_bars = collector.load_from_disk(
+        max_rows=max_rows,
+        required_mints=[t.mint for t in TOKENS],
+    )
+    logger.info(f"Loaded {num_bars} existing OHLC bars (tail {max_rows} rows)")
 
     # Show current state
     for token in TOKENS:
@@ -161,6 +171,7 @@ async def main():
         logger.info("Stopping collection...")
     finally:
         collector.save_to_disk()
+        await collector.aclose()
         logger.info("Data saved.")
 
         # Show final stats

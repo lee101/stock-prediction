@@ -65,7 +65,11 @@ def load_ohlc_dataframe(path: Path, mint: Optional[str] = None) -> pd.DataFrame:
     return df
 
 
-def load_multi_token_data(path: Path, exclude_mints: Optional[List[str]] = None) -> Dict[str, pd.DataFrame]:
+def load_multi_token_data(
+    path: Path,
+    exclude_mints: Optional[List[str]] = None,
+    min_rows: int = 50,
+) -> Dict[str, pd.DataFrame]:
     """Load OHLC data for multiple tokens."""
     df = pd.read_csv(path)
 
@@ -81,7 +85,7 @@ def load_multi_token_data(path: Path, exclude_mints: Optional[List[str]] = None)
             continue
         token_df = df[df['token_symbol'] == symbol].copy()
         token_df = token_df.sort_values('timestamp').reset_index(drop=True)
-        if len(token_df) >= 50:  # Minimum bars required
+        if len(token_df) >= min_rows:  # Minimum bars required
             token_dfs[symbol] = token_df
 
     return token_dfs
