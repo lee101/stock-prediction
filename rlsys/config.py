@@ -30,6 +30,11 @@ class MarketConfig:
     slippage: float = 0.0002
     market_impact: float = 0.0001
     risk_aversion: float = 0.01
+    reward_mode: str = "raw"  # raw, risk_adjusted, sharpe_like
+    drawdown_penalty: float = 0.0
+    volatility_penalty: float = 0.0
+    sharpe_clip: Optional[float] = None
+    sharpe_eps: float = 1e-8
     min_cash: float = 100.0
     max_position_change: float = 1.0
     max_drawdown_threshold: Optional[float] = None
@@ -40,6 +45,8 @@ class MarketConfig:
     def __post_init__(self) -> None:
         if self.max_drawdown_threshold is not None and self.max_drawdown_threshold <= 0:
             raise ValueError("max_drawdown_threshold must be positive if provided")
+        if self.reward_mode not in {"raw", "risk_adjusted", "sharpe_like"}:
+            raise ValueError("reward_mode must be 'raw', 'risk_adjusted', or 'sharpe_like'")
 
 
 @dataclass(slots=True)
