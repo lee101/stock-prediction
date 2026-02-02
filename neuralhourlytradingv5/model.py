@@ -101,7 +101,7 @@ class PatchEmbedding(nn.Module):
         x = x[:, : num_patches * self.patch_size]
 
         # Reshape to patches: (B, num_patches, patch_size * input_dim)
-        x = x.view(B, num_patches, self.patch_size * D)
+        x = x.reshape(B, num_patches, self.patch_size * D)
 
         # Embed
         h = self.embed(x)
