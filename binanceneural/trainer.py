@@ -76,14 +76,14 @@ class BinanceHourlyTrainer:
         if self.config.use_tf32:
             if hasattr(torch, "set_float32_matmul_precision"):
                 torch.set_float32_matmul_precision("high")
-            if hasattr(torch.backends.cuda.matmul, "allow_tf32"):
-                torch.backends.cuda.matmul.allow_tf32 = True
             if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
                 torch.backends.cuda.matmul.fp32_precision = "tf32"
-            if hasattr(torch.backends.cudnn, "allow_tf32"):
-                torch.backends.cudnn.allow_tf32 = True
             if hasattr(torch.backends.cudnn, "conv") and hasattr(torch.backends.cudnn.conv, "fp32_precision"):
                 torch.backends.cudnn.conv.fp32_precision = "tf32"
+            if not hasattr(torch.backends.cuda.matmul, "fp32_precision") and hasattr(torch.backends.cuda.matmul, "allow_tf32"):
+                torch.backends.cuda.matmul.allow_tf32 = True
+            if not hasattr(torch.backends.cudnn, "conv") and hasattr(torch.backends.cudnn, "allow_tf32"):
+                torch.backends.cudnn.allow_tf32 = True
         if self.config.use_flash_attention and self.device.type == "cuda":
             if hasattr(torch.backends.cuda, "enable_flash_sdp"):
                 torch.backends.cuda.enable_flash_sdp(True)

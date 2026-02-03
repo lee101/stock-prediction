@@ -9,12 +9,13 @@ from .config import DatasetConfig, TrainingConfig
 from .data import BinanceHourlyDataModule
 from .inference import generate_actions_from_frame
 from .marketsimulator import BinanceMarketSimulator, SimulationConfig, save_trade_plot
-from .model import BinancePolicyBase, build_policy, policy_config_from_payload
+from .model import BinancePolicyBase, align_state_dict_input_dim, build_policy, policy_config_from_payload
 
 
 def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConfig) -> BinancePolicyBase:
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
+    state_dict = align_state_dict_input_dim(state_dict, input_dim=input_dim)
     cfg = payload.get("config", default_cfg)
     if hasattr(cfg, "__dict__"):
         cfg = cfg.__dict__

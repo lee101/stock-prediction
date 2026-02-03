@@ -3,7 +3,7 @@
   "model": "chronos2",
   "config": {
     "name": "hourly_ctx2048_skip1_single",
-    "model_id": "amazon/chronos-2",
+    "model_id": "chronos2_finetuned/NFLX_lora_20260203_091648/finetuned-ckpt",
     "device_map": "cuda",
     "context_length": 2048,
     "batch_size": 32,
@@ -14,7 +14,7 @@
     ],
     "aggregation": "median",
     "sample_count": 0,
-    "scaler": "meanstd",
+    "scaler": "none",
     "predict_kwargs": {},
     "skip_rates": [
       1
@@ -26,7 +26,7 @@
     "price_mae": 0.2559814453125,
     "pct_return_mae": 0.00023302817135117948,
     "direction_accuracy": 0.0,
-    "latency_s": 0.04947710037231445
+    "latency_s": 0.04895496368408203
   },
   "windows": {
     "val_window": 168,
@@ -35,7 +35,7 @@
   },
   "metadata": {
     "source": "hyperparam_chronos_hourly",
-    "generated_at": "2025-12-01T08:10:00.727321Z",
+    "generated_at": "2026-02-03T09:09:03.961994Z",
     "selection_metric": "validation_pct_return_mae",
     "selection_value": 0.00023302817135117948,
     "frequency": "hourly"

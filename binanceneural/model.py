@@ -431,11 +431,38 @@ def policy_config_from_payload(
     )
 
 
+def align_state_dict_input_dim(
+    state_dict: Mapping[str, object],
+    *,
+    input_dim: int,
+) -> Dict[str, torch.Tensor]:
+    """Pad/trim embedding weights so checkpoints remain loadable after feature changes."""
+    if "embed.weight" not in state_dict:
+        return dict(state_dict)
+    weight = state_dict.get("embed.weight")
+    if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
+        return dict(state_dict)
+    if weight.shape[1] == int(input_dim):
+        return dict(state_dict)
+
+    target = int(input_dim)
+    if weight.shape[1] < target:
+        pad = torch.zeros(weight.shape[0], target - weight.shape[1], dtype=weight.dtype)
+        updated = torch.cat([weight, pad], dim=1)
+    else:
+        updated = weight[:, :target]
+
+    patched = dict(state_dict)
+    patched["embed.weight"] = updated
+    return patched
+
+
 __all__ = [
     "BinanceHourlyPolicy",
     "BinanceHourlyPolicyNano",
     "BinancePolicyBase",
     "PolicyConfig",
     "build_policy",
+    "align_state_dict_input_dim",
     "policy_config_from_payload",
 ]
