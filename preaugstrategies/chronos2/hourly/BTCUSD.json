@@ -1,62 +1,64 @@
 {
   "symbol": "BTCUSD",
-  "best_strategy": "rolling_norm",
-  "mae": 367.23759875705633,
-  "mae_percent": 0.35559686750944103,
-  "rmse": 476.41378774823784,
-  "pct_return_mae": 0.003552760977331556,
+  "best_strategy": "differencing",
   "config": {
-    "name": "rolling_norm",
+    "name": "differencing",
     "params": {}
   },
-  "timestamp": "2025-11-13T03:13:24Z",
+  "timestamp": "2026-02-03T05:14:12Z",
   "selection_metric": "mae_percent",
-  "selection_value": 0.35559686750944103,
+  "selection_value": 0.27779835078358667,
   "comparison": {
     "baseline": {
-      "mae": 408.164203618705,
-      "mae_percent": 0.39522617707865704,
-      "pct_return_mae": 0.003952660982051717
-    },
-    "percent_change": {
-      "mae": 381.3574100367866,
-      "mae_percent": 0.36926910771003696,
-      "pct_return_mae": 0.0036980353173498674
-    },
-    "log_returns": {
-      "mae": 387.16667561713194,
-      "mae_percent": 0.37489423065467264,
-      "pct_return_mae": 0.003754334655950928
-    },
-    "differencing": {
-      "mae": 6386.544789163515,
-      "mae_percent": 6.184103503894431,
-      "pct_return_mae": 0.061636792002394504
+      "mae": 255.0107421875,
+      "mae_percent": 0.28639799326291143,
+      "rmse": 388.68206787109375,
+      "pct_return_mae": 0.0028626848943531513
     },
     "detrending": {
-      "mae": 387.6449240375683,
-      "mae_percent": 0.37535731951260576,
-      "pct_return_mae": 0.003759007270430587
+      "mae": 252.63978576660156,
+      "mae_percent": 0.2837352146080426,
+      "rmse": 397.1534729003906,
+      "pct_return_mae": 0.002837168052792549
     },
-    "robust_scaling": {
-      "mae": 382.8887729468032,
-      "mae_percent": 0.3707519293374115,
-      "pct_return_mae": 0.0037126406294032597
+    "differencing": {
+      "mae": 247.3535614013672,
+      "mae_percent": 0.27779835078358667,
+      "rmse": 391.6436462402344,
+      "pct_return_mae": 0.002777817426249385
+    },
+    "log_returns": {
+      "mae": 255.08189392089844,
+      "mae_percent": 0.2864779024992349,
+      "rmse": 388.1629638671875,
+      "pct_return_mae": 0.0028636553324759007
     },
     "minmax_standard": {
-      "mae": 381.7212174294326,
-      "mae_percent": 0.3696213831024248,
-      "pct_return_mae": 0.0037016054209206236
+      "mae": 255.01126098632812,
+      "mae_percent": 0.28639857591657536,
+      "rmse": 388.6822204589844,
+      "pct_return_mae": 0.0028626907151192427
+    },
+    "percent_change": {
+      "mae": 255.0113983154297,
+      "mae_percent": 0.28639873014842754,
+      "rmse": 388.6824951171875,
+      "pct_return_mae": 0.0028626923449337482
+    },
+    "robust_scaling": {
+      "mae": 255.0113067626953,
+      "mae_percent": 0.28639862732719273,
+      "rmse": 388.6822814941406,
+      "pct_return_mae": 0.0028626914136111736
     },
     "rolling_norm": {
-      "mae": 367.23759875705633,
-      "mae_percent": 0.35559686750944103,
-      "pct_return_mae": 0.003552760977331556
+      "mae": 267.8988952636719,
+      "mae_percent": 0.30087244695148146,
+      "rmse": 410.00604248046875,
+      "pct_return_mae": 0.0030090510845184326
     }
   },
   "metadata": {
-    "source": "chronos2_preaug_eval",
-    "hyperparam_root": "hyperparams/chronos2/hourly",
-    "frequency": "hourly"
+    "source": "chronos2_trainer_preaug"
   }
 }

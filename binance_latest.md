@@ -1,6 +1,6 @@
 # Binance Trading Runbook
 
-Updated: 2026-02-02
+Updated: 2026-02-03
 
 ## Overview
 
@@ -11,11 +11,40 @@ This runbook covers setting up and running live trading on Binance.com or Binanc
 - Always test with small amounts first (use `--skip-order` flag for dry runs).
 - Monitor logs closely during the first 24 hours of live trading.
 
-## Best SOLUSD model (marketsimulator)
+## Best SOLUSD models (marketsimulator)
 
+**LoRA + h1 (latest)**
+- Checkpoint: `binanceneural/checkpoints/solusd_h1_ft_20260203/epoch_005.pt`
+- Best PnL config (h1): `intensity-scale=1.4`, `horizon=1`, `sequence-length=96`
+- Best Sortino config (h1): `intensity-scale=0.8`, `horizon=1`, `sequence-length=96`
+- Performance (h1):
+  - intensity 1.4 → total_return 10.8068, sortino 48.6080
+  - intensity 0.8 → total_return 5.4643, sortino 55.0102
+
+**Legacy h24 (highest PnL so far)**
 - Checkpoint: `binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/epoch_005.pt`
 - Best PnL config: `intensity-scale=20.0`, `horizon=24`, `sequence-length=96`, `min-gap-pct=0.0003`
 - Performance: total_return 17.7449, sortino 66.1148
+
+## H1 multi-pair checkpoints (quick, 1 epoch / 300 steps)
+- BTCUSD: `binanceneural/checkpoints/btcusd_h1_quick_20260203/epoch_001.pt`
+  - Best sortino: intensity 1.0 (return 7.1541, sortino 253.5392)
+  - Best return: intensity 1.4 (return 8.5504, sortino 234.4700)
+- ETHUSD: `binanceneural/checkpoints/ethusd_h1_quick_20260203/epoch_001.pt`
+  - Best sortino: intensity 1.0 (return 3.6789, sortino 166.1271)
+  - Best return: intensity 1.4 (return 4.5134, sortino 145.5026)
+- LINKUSD: `binanceneural/checkpoints/linkusd_h1_quick_20260203/epoch_001.pt`
+  - Best sortino: intensity 0.8 (return 2.2955, sortino 46.8543)
+  - Best return: intensity 1.2 (return 3.9597, sortino 39.0122)
+- UNIUSD: `binanceneural/checkpoints/uniusd_h1_quick_20260203/epoch_001.pt`
+  - Best sortino: intensity 0.8 offset 0.0002 (return 5.4407, sortino 45.0316)
+  - Best return: intensity 1.2 offset 0.0002 (return 9.5057, sortino 36.3816)
+- NFLX: `binanceneural/checkpoints/nflx_h1_quick_20260203/epoch_001.pt`
+  - Best sortino: intensity 1.0 (return 1.0497, sortino 55.6645)
+  - Best return: intensity 1.4 (return 1.1271, sortino 44.4451)
+- NVDA: `binanceneural/checkpoints/nvda_h1_quick_20260203/epoch_001.pt`
+  - Best sortino: intensity 0.8 (return 6.8115, sortino 41.7632)
+  - Best return: intensity 1.0 offset 0.0005 (return 11.9568, sortino 34.3337)
 
 ## Prerequisites
 
@@ -67,14 +96,20 @@ Download required training data and model checkpoints:
 # Set R2 endpoint (should already be configured)
 export R2_ENDPOINT="<your_r2_endpoint>"
 
-# Sync training data (hourly Binance data)
-aws s3 sync s3://models/stock/trainingdata/ trainingdata/ --endpoint-url "$R2_ENDPOINT"
+# Sync hourly crypto data
+aws s3 sync s3://models/stock/trainingdatahourly/crypto/ trainingdatahourly/crypto/ --endpoint-url "$R2_ENDPOINT"
 
-# Sync model checkpoints
+# Sync hourly stock data (for NFLX/NVDA)
+aws s3 sync s3://models/stock/trainingdatahourly/stocks/ trainingdatahourly/stocks/ --endpoint-url "$R2_ENDPOINT"
+
+# Sync binanceexp1 checkpoints (mirror local path)
 aws s3 sync s3://models/stock/models/binance/binanceneural/checkpoints/ binanceneural/checkpoints/ --endpoint-url "$R2_ENDPOINT"
 
-# Optional: sync forecast cache to avoid rebuilding Chronos forecasts
-aws s3 sync s3://models/stock/models/binance/binanceneural/forecast_cache/ binanceneural/forecast_cache/ --endpoint-url "$R2_ENDPOINT"
+# Sync h1 Chronos forecast cache (recommended for h1 runs)
+aws s3 sync s3://models/stock/models/binance/binanceneural/forecast_cache/h1/ binanceneural/forecast_cache/h1/ --endpoint-url "$R2_ENDPOINT"
+
+# Optional: sync h24 cache only if you run horizon=24
+aws s3 sync s3://models/stock/models/binance/binanceneural/forecast_cache/h24/ binanceneural/forecast_cache/h24/ --endpoint-url "$R2_ENDPOINT"
 ```
 
 Verify checkpoint exists:
@@ -94,11 +129,37 @@ Note: if you want to avoid rebuilding Chronos forecasts on the inference host, s
 Minimal SOLUSD-only sync (optional):
 
 ```bash
-aws s3 sync s3://models/stock/models/binance/binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/ binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/ --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/binanceneural/checkpoints/solusd_h1_ft_20260203/ binanceneural/checkpoints/solusd_h1_ft_20260203/ --endpoint-url "$R2_ENDPOINT"
 aws s3 sync s3://models/stock/trainingdatahourly/crypto/ trainingdatahourly/crypto/ --exclude "*" --include "SOLUSD.csv" --endpoint-url "$R2_ENDPOINT"
 aws s3 sync s3://models/stock/models/binance/hyperparams/chronos2/hourly/ hyperparams/chronos2/hourly/ --exclude "*" --include "SOLUSD.json" --endpoint-url "$R2_ENDPOINT"
-aws s3 sync s3://models/stock/models/binance/preaugstrategies/chronos2/hourly/ preaugstrategies/chronos2/hourly/ --exclude "*" --include "SOLUSDT.json" --endpoint-url "$R2_ENDPOINT"
-aws s3 sync s3://models/stock/models/binance/chronos2_finetuned/ chronos2_finetuned/ --exclude "*" --include "SOLUSDT_lora_*/*" --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/preaugstrategies/chronos2/hourly/ preaugstrategies/chronos2/hourly/ --exclude "*" --include "SOLUSD.json" --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/chronos2_finetuned/ chronos2_finetuned/ --exclude "*" --include "SOLUSD_lora_*/*" --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/binanceneural/forecast_cache/h1/ binanceneural/forecast_cache/h1/ --exclude "*" --include "SOLUSD.parquet" --endpoint-url "$R2_ENDPOINT"
+```
+
+Minimal UNIUSD/NFLX/NVDA sync (optional):
+
+```bash
+# Checkpoints
+aws s3 sync s3://models/stock/models/binance/binanceneural/checkpoints/ binanceneural/checkpoints/ \
+  --exclude "*" --include "uniusd_h1_quick_20260203/*" --include "nflx_h1_quick_20260203/*" --include "nvda_h1_quick_20260203/*" \
+  --endpoint-url "$R2_ENDPOINT"
+
+# Chronos2 LoRA + hyperparams + preaug
+aws s3 sync s3://models/stock/models/binance/chronos2_finetuned/ chronos2_finetuned/ \
+  --exclude "*" --include "UNIUSD_lora_*/*" --include "NFLX_lora_*/*" --include "NVDA_lora_*/*" \
+  --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/hyperparams/chronos2/hourly/ hyperparams/chronos2/hourly/ \
+  --exclude "*" --include "UNIUSD.json" --include "NFLX.json" --include "NVDA.json" \
+  --endpoint-url "$R2_ENDPOINT"
+aws s3 sync s3://models/stock/models/binance/preaugstrategies/chronos2/hourly/ preaugstrategies/chronos2/hourly/ \
+  --exclude "*" --include "UNIUSD.json" --include "NFLX.json" --include "NVDA.json" \
+  --endpoint-url "$R2_ENDPOINT"
+
+# Forecast cache (h1)
+aws s3 sync s3://models/stock/models/binance/binanceneural/forecast_cache/h1/ binanceneural/forecast_cache/h1/ \
+  --exclude "*" --include "UNIUSD.parquet" --include "NFLX.parquet" --include "NVDA.parquet" \
+  --endpoint-url "$R2_ENDPOINT"
 ```
 ## Inference-only (no live orders)
 
@@ -107,6 +168,21 @@ For testing predictions without placing real orders:
 ```bash
 source .venv313/bin/activate
 PYTHONPATH=/path/to/stock-prediction \
+python -m binanceexp1.trade_binance_hourly \
+  --symbols SOLUSD \
+  --checkpoint binanceneural/checkpoints/solusd_h1_ft_20260203/epoch_005.pt \
+  --horizon 1 \
+  --sequence-length 96 \
+  --intensity-scale 1.4 \
+  --once \
+  --dry-run
+```
+
+Optional: add `--cache-only` if you have a populated `binanceneural/forecast_cache/h1/`.
+
+Legacy h24 inference (highest PnL so far):
+
+```bash
 python -m binanceexp1.trade_binance_hourly \
   --symbols SOLUSD \
   --checkpoint binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/epoch_005.pt \
@@ -118,7 +194,44 @@ python -m binanceexp1.trade_binance_hourly \
   --dry-run
 ```
 
-Optional: add `--cache-only` if you have a populated `binanceneural/forecast_cache/`.
+### H1 bot commands (UNIUSD/NFLX/NVDA)
+
+**UNIUSD (crypto, Binance-compatible):**
+```bash
+python -m binanceexp1.trade_binance_hourly \
+  --symbols UNIUSD \
+  --checkpoint binanceneural/checkpoints/uniusd_h1_quick_20260203/epoch_001.pt \
+  --horizon 1 \
+  --sequence-length 96 \
+  --intensity-scale 0.8 \
+  --price-offset-pct 0.0002 \
+  --once \
+  --dry-run
+```
+
+**NFLX / NVDA (stocks, not tradable on Binance):**
+- Binance does not list US equities. Use these commands for **dry-run/inference only** or adapt to another broker.
+```bash
+python -m binanceexp1.trade_binance_hourly \
+  --symbols NFLX \
+  --data-root trainingdatahourly/stocks \
+  --checkpoint binanceneural/checkpoints/nflx_h1_quick_20260203/epoch_001.pt \
+  --horizon 1 \
+  --sequence-length 96 \
+  --intensity-scale 1.0 \
+  --once \
+  --dry-run
+
+python -m binanceexp1.trade_binance_hourly \
+  --symbols NVDA \
+  --data-root trainingdatahourly/stocks \
+  --checkpoint binanceneural/checkpoints/nvda_h1_quick_20260203/epoch_001.pt \
+  --horizon 1 \
+  --sequence-length 96 \
+  --intensity-scale 0.8 \
+  --once \
+  --dry-run
+```
 
 ## Testing API Connection
 
@@ -189,6 +302,20 @@ source .venv313/bin/activate
 
 python -m binanceexp1.trade_binance_hourly \
   --symbols SOLUSD \
+  --checkpoint binanceneural/checkpoints/solusd_h1_ft_20260203/epoch_005.pt \
+  --horizon 1 \
+  --sequence-length 96 \
+  --intensity-scale 1.4 \
+  --poll-seconds 30 \
+  --expiry-minutes 90 \
+  --log-metrics \
+  --metrics-log-path strategy_state/binanceexp1-solusd-metrics.csv
+
+Legacy h24 (highest PnL so far):
+
+```bash
+python -m binanceexp1.trade_binance_hourly \
+  --symbols SOLUSD \
   --checkpoint binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/epoch_005.pt \
   --horizon 24 \
   --sequence-length 96 \
@@ -203,7 +330,7 @@ python -m binanceexp1.trade_binance_hourly \
 **Key Parameters:**
 - `--symbols SOLUSD`: Trading pair (internally maps to SOLUSDT)
 - `--checkpoint`: Path to trained model
-- `--intensity-scale 20.0`: Position sizing multiplier (higher = more aggressive)
+- `--intensity-scale`: Position sizing multiplier (h1 best PnL=1.4, legacy h24=20.0)
 - `--min-gap-pct 0.0003`: Minimum price movement (0.03%) to trigger trades
 - `--poll-seconds 30`: How often to check for trading opportunities
 - `--expiry-minutes 90`: Cancel unfilled orders after this many minutes
@@ -261,7 +388,7 @@ sudo nano /etc/supervisor/conf.d/binanceexp1-solusd.conf
 **Step 2:** Update the config file with your paths:
 ```ini
 [program:binanceexp1-solusd]
-command=/path/to/stock-prediction/.venv313/bin/python -m binanceexp1.trade_binance_hourly --symbols SOLUSD --checkpoint /path/to/stock-prediction/binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/epoch_005.pt --horizon 24 --sequence-length 96 --intensity-scale 20.0 --min-gap-pct 0.0003 --poll-seconds 30 --expiry-minutes 90 --log-metrics --metrics-log-path /path/to/stock-prediction/strategy_state/binanceexp1-solusd-metrics.csv
+command=/path/to/stock-prediction/.venv313/bin/python -m binanceexp1.trade_binance_hourly --symbols SOLUSD --checkpoint /path/to/stock-prediction/binanceneural/checkpoints/solusd_h1_ft_20260203/epoch_005.pt --horizon 1 --sequence-length 96 --intensity-scale 1.4 --poll-seconds 30 --expiry-minutes 90 --log-metrics --metrics-log-path /path/to/stock-prediction/strategy_state/binanceexp1-solusd-metrics.csv
 directory=/path/to/stock-prediction
 user=yourusername
 autostart=true
@@ -272,6 +399,8 @@ stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
 environment=HOME="/home/yourusername",PYTHONPATH="/path/to/stock-prediction",BINANCE_API_KEY="your_key",BINANCE_SECRET="your_secret",BINANCE_TLD="us"
 ```
+
+Note: for legacy h24 runs, swap the checkpoint to `binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/epoch_005.pt` and set `--horizon 24 --intensity-scale 20.0 --min-gap-pct 0.0003`.
 
 **Important:** Add your actual API credentials to the `environment` line, or use a `.env` file approach.
 

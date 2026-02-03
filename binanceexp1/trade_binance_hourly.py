@@ -168,6 +168,7 @@ def _run_cycle(
     poll_seconds: int,
     expiry_minutes: int,
     price_tolerance: float,
+    data_root: Path,
     cache_only: bool,
     dry_run: bool,
 ) -> None:
@@ -179,6 +180,7 @@ def _run_cycle(
                 continue
             data_cfg = DatasetConfig(
                 symbol=symbol,
+                data_root=data_root,
                 sequence_length=sequence_length,
                 cache_only=cache_only,
             )
@@ -303,6 +305,11 @@ def main() -> None:
     parser.add_argument("--log-metrics", action="store_true", help="Log account PnL/sortino each cycle")
     parser.add_argument("--metrics-log-path", help="CSV path for PnL history logs")
     parser.add_argument("--cache-only", action="store_true")
+    parser.add_argument(
+        "--data-root",
+        default=str(DatasetConfig().data_root),
+        help="Root directory for hourly data (e.g., trainingdatahourly/crypto or trainingdatahourly/stocks).",
+    )
     parser.add_argument("--once", action="store_true", help="Run one cycle and exit")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--cycle-minutes", type=int, default=5, help="Minutes between trading cycles (default 5 for high-frequency)")
@@ -328,6 +335,7 @@ def main() -> None:
             poll_seconds=args.poll_seconds,
             expiry_minutes=args.expiry_minutes,
             price_tolerance=args.price_tolerance,
+            data_root=Path(args.data_root),
             cache_only=args.cache_only,
             dry_run=args.dry_run,
         )

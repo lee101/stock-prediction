@@ -61,6 +61,13 @@ class PolicyConfig:
     use_qk_norm: bool = True
     use_causal_attention: bool = True
     rms_norm_eps: float = 1e-5
+    attention_window: Optional[int] = None
+    use_residual_scalars: bool = False
+    residual_scale_init: float = 1.0
+    skip_scale_init: float = 0.0
+    use_value_embedding: bool = False
+    value_embedding_every: int = 2
+    value_embedding_scale: float = 1.0
 
 
 @dataclass
@@ -93,11 +100,22 @@ class TrainingConfig:
     use_qk_norm: bool = True
     use_causal_attention: bool = True
     rms_norm_eps: float = 1e-5
+    attention_window: Optional[int] = None
+    use_residual_scalars: bool = False
+    residual_scale_init: float = 1.0
+    skip_scale_init: float = 0.0
+    use_value_embedding: bool = False
+    value_embedding_every: int = 2
+    value_embedding_scale: float = 1.0
     muon_lr: float = 0.02
     muon_momentum: float = 0.95
+    muon_momentum_start: Optional[float] = None
+    muon_momentum_warmup_steps: int = 300
     muon_nesterov: bool = True
     muon_ns_steps: int = 5
     warmup_steps: int = 100
+    weight_decay_schedule: str = "none"
+    weight_decay_end: float = 0.0
     ema_decay: float = 0.0
     dry_train_steps: Optional[int] = None
     device: Optional[str] = None
@@ -115,6 +133,7 @@ class TrainingConfig:
     use_amp: bool = False
     amp_dtype: str = "bfloat16"
     use_tf32: bool = True
+    use_flash_attention: bool = True
     forecast_config: ForecastConfig = field(default_factory=ForecastConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 

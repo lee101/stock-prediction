@@ -1,62 +1,64 @@
 {
   "symbol": "SOLUSD",
-  "best_strategy": "robust_scaling",
-  "mae": 0.9685397200016761,
-  "mae_percent": 0.6042963200420278,
-  "rmse": 1.2856650721607825,
-  "pct_return_mae": 0.006041590141708004,
+  "best_strategy": "differencing",
   "config": {
-    "name": "robust_scaling",
+    "name": "differencing",
     "params": {}
   },
-  "timestamp": "2025-11-13T04:46:58Z",
+  "timestamp": "2026-02-03T05:27:15Z",
   "selection_metric": "mae_percent",
-  "selection_value": 0.6042963200420278,
+  "selection_value": 0.43062249175323886,
   "comparison": {
     "baseline": {
-      "mae": 0.9741736179486101,
-      "mae_percent": 0.607811450837922,
-      "pct_return_mae": 0.006078354294935308
-    },
-    "percent_change": {
-      "mae": 0.9808789873507665,
-      "mae_percent": 0.6119950996553793,
-      "pct_return_mae": 0.0061193359134996605
-    },
-    "log_returns": {
-      "mae": 0.9777239233813793,
-      "mae_percent": 0.6100265757974269,
-      "pct_return_mae": 0.006102038314681721
-    },
-    "differencing": {
-      "mae": 74.67530450351758,
-      "mae_percent": 46.59180287352123,
-      "pct_return_mae": 0.4673584141200877
+      "mae": 0.5960311889648438,
+      "mae_percent": 0.47064191598123384,
+      "rmse": 0.9185164570808411,
+      "pct_return_mae": 0.004725798033177853
     },
     "detrending": {
-      "mae": 0.9798442729843108,
-      "mae_percent": 0.6113495153070754,
-      "pct_return_mae": 0.006112394502810868
+      "mae": 0.5925850868225098,
+      "mae_percent": 0.4679207830187929,
+      "rmse": 0.9316835403442383,
+      "pct_return_mae": 0.004686500411480665
     },
-    "robust_scaling": {
-      "mae": 0.9685397200016761,
-      "mae_percent": 0.6042963200420278,
-      "pct_return_mae": 0.006041590141708004
+    "differencing": {
+      "mae": 0.5453497171401978,
+      "mae_percent": 0.43062249175323886,
+      "rmse": 0.8681703805923462,
+      "pct_return_mae": 0.004310877062380314
+    },
+    "log_returns": {
+      "mae": 0.5963302850723267,
+      "mae_percent": 0.4708780901407317,
+      "rmse": 0.9196276068687439,
+      "pct_return_mae": 0.00472943764179945
     },
     "minmax_standard": {
-      "mae": 0.9746690148434831,
-      "mae_percent": 0.6081205414351889,
-      "pct_return_mae": 0.006079900958569986
+      "mae": 0.596031665802002,
+      "mae_percent": 0.4706422925044056,
+      "rmse": 0.9185168147087097,
+      "pct_return_mae": 0.004725802224129438
+    },
+    "percent_change": {
+      "mae": 0.5960313677787781,
+      "mae_percent": 0.47064205717742325,
+      "rmse": 0.9185164570808411,
+      "pct_return_mae": 0.004725800361484289
+    },
+    "robust_scaling": {
+      "mae": 0.5960312485694885,
+      "mae_percent": 0.4706419630466303,
+      "rmse": 0.9185161590576172,
+      "pct_return_mae": 0.004725798964500427
     },
     "rolling_norm": {
-      "mae": 1.0256889272423302,
-      "mae_percent": 0.6399531495097823,
-      "pct_return_mae": 0.006388816327464943
+      "mae": 0.5912350416183472,
+      "mae_percent": 0.46685475178869595,
+      "rmse": 0.9161876440048218,
+      "pct_return_mae": 0.004685303196310997
     }
   },
   "metadata": {
-    "source": "chronos2_preaug_eval",
-    "hyperparam_root": "hyperparams/chronos2/hourly",
-    "frequency": "hourly"
+    "source": "chronos2_trainer_preaug"
   }
 }

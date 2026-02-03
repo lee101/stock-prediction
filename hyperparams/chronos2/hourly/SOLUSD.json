@@ -2,10 +2,10 @@
   "symbol": "SOLUSD",
   "model": "chronos2",
   "config": {
-    "name": "hourly_ctx1024_skip1_2_3_median",
-    "model_id": "amazon/chronos-2",
+    "name": "hourly_ctx512_skip1_2_median",
+    "model_id": "chronos2_finetuned/SOLUSD_lora_20260203_052715/finetuned-ckpt",
     "device_map": "cuda",
-    "context_length": 1024,
+    "context_length": 512,
     "batch_size": 32,
     "quantile_levels": [
       0.1,
@@ -14,21 +14,20 @@
     ],
     "aggregation": "median",
     "sample_count": 0,
-    "scaler": "meanstd",
+    "scaler": "none",
     "predict_kwargs": {},
     "skip_rates": [
       1,
-      2,
-      3
+      2
     ],
     "aggregation_method": "median",
     "use_multivariate": false
   },
   "validation": {
-    "price_mae": 0.236114501953125,
-    "pct_return_mae": 0.0016707789618521929,
+    "price_mae": 0.30294036865234375,
+    "pct_return_mae": 0.002436534035950899,
     "direction_accuracy": 0.0,
-    "latency_s": 0.12487268447875977
+    "latency_s": 0.08022212982177734
   },
   "windows": {
     "val_window": 168,
@@ -37,9 +36,9 @@
   },
   "metadata": {
     "source": "hyperparam_chronos_hourly",
-    "generated_at": "2025-12-01T07:25:16.358683Z",
+    "generated_at": "2026-02-03T05:12:56.180297Z",
     "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.0016707789618521929,
+    "selection_value": 0.002436534035950899,
     "frequency": "hourly"
   }
 }

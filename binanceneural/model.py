@@ -174,8 +174,9 @@ class RotaryEmbedding(nn.Module):
 
 
 class MultiQueryAttention(nn.Module):
-    def __init__(self, config: PolicyConfig) -> None:
+    def __init__(self, config: PolicyConfig, layer_idx: int) -> None:
         super().__init__()
+        self.layer_idx = int(layer_idx)
         self.n_head = int(config.num_heads)
         self.head_dim = int(config.hidden_dim // config.num_heads)
         kv_heads = config.num_kv_heads or max(1, self.n_head // 2)
@@ -193,13 +194,33 @@ class MultiQueryAttention(nn.Module):
         self.use_qk_norm = config.use_qk_norm
         self.causal = config.use_causal_attention
         self.rms_eps = config.rms_norm_eps
+        self.attention_window = config.attention_window if config.attention_window and config.attention_window > 0 else None
+        self._window_mask: torch.Tensor | None = None
+        self._window_mask_len = 0
+        self._window_mask_device: torch.device | None = None
+        self.use_value_embedding = bool(config.use_value_embedding) and int(config.value_embedding_every) > 0
+        if self.use_value_embedding:
+            every = int(config.value_embedding_every)
+            self.use_value_embedding = (self.layer_idx % every == 0)
+        self.value_embedding_scale = float(config.value_embedding_scale)
+        if self.use_value_embedding:
+            self.value_embedding = nn.Parameter(torch.zeros(config.max_len, config.hidden_dim))
+        else:
+            self.register_parameter("value_embedding", None)
 
     def forward(self, x: torch.Tensor, cos_sin: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         B, T, _ = x.shape
         cos, sin = cos_sin
         q = self.q_proj(x).view(B, T, self.n_head, self.head_dim)
         k = self.k_proj(x).view(B, T, self.n_kv_head, self.head_dim)
-        v = self.v_proj(x).view(B, T, self.n_kv_head, self.head_dim)
+        v_input = x
+        if self.value_embedding is not None:
+            if T > self.value_embedding.size(0):
+                raise ValueError(
+                    f"Sequence length {T} exceeds value embedding max_len {self.value_embedding.size(0)}."
+                )
+            v_input = v_input + self.value_embedding[:T].unsqueeze(0) * self.value_embedding_scale
+        v = self.v_proj(v_input).view(B, T, self.n_kv_head, self.head_dim)
 
         q = _apply_rotary_emb(q, cos, sin)
         k = _apply_rotary_emb(k, cos, sin)
@@ -215,16 +236,36 @@ class MultiQueryAttention(nn.Module):
             n_rep = self.n_head // self.n_kv_head
             k = k.repeat_interleave(n_rep, dim=1)
             v = v.repeat_interleave(n_rep, dim=1)
-
+        attn_mask = self._sliding_window_mask(T, x.device)
         y = F.scaled_dot_product_attention(
             q,
             k,
             v,
-            is_causal=self.causal,
+            attn_mask=attn_mask,
+            is_causal=self.causal if attn_mask is None else False,
             dropout_p=self.dropout.p if self.training else 0.0,
         )
         y = y.transpose(1, 2).contiguous().view(B, T, -1)
         return self.out_proj(y)
+
+    def _sliding_window_mask(self, seq_len: int, device: torch.device) -> torch.Tensor | None:
+        if self.attention_window is None:
+            return None
+        if (
+            self._window_mask is None
+            or self._window_mask_len < seq_len
+            or self._window_mask_device != device
+        ):
+            idx = torch.arange(seq_len, device=device)
+            dist = idx[:, None] - idx[None, :]
+            if self.causal:
+                mask = (dist >= 0) & (dist < self.attention_window)
+            else:
+                mask = dist.abs() < self.attention_window
+            self._window_mask = mask
+            self._window_mask_len = seq_len
+            self._window_mask_device = device
+        return self._window_mask[:seq_len, :seq_len]
 
 
 class FeedForward(nn.Module):
@@ -242,16 +283,33 @@ class FeedForward(nn.Module):
 
 
 class NanoTransformerBlock(nn.Module):
-    def __init__(self, config: PolicyConfig) -> None:
+    def __init__(self, config: PolicyConfig, layer_idx: int) -> None:
         super().__init__()
-        self.attn = MultiQueryAttention(config)
+        self.attn = MultiQueryAttention(config, layer_idx)
         self.mlp = FeedForward(config)
         self.dropout = nn.Dropout(config.dropout)
         self.rms_eps = config.rms_norm_eps
+        self.use_residual_scalars = bool(config.use_residual_scalars)
+        if self.use_residual_scalars:
+            self.attn_resid_scale = nn.Parameter(torch.tensor(float(config.residual_scale_init)))
+            self.attn_skip_scale = nn.Parameter(torch.tensor(float(config.skip_scale_init)))
+            self.mlp_resid_scale = nn.Parameter(torch.tensor(float(config.residual_scale_init)))
+            self.mlp_skip_scale = nn.Parameter(torch.tensor(float(config.skip_scale_init)))
+        else:
+            self.register_parameter("attn_resid_scale", None)
+            self.register_parameter("attn_skip_scale", None)
+            self.register_parameter("mlp_resid_scale", None)
+            self.register_parameter("mlp_skip_scale", None)
 
     def forward(self, x: torch.Tensor, cos_sin: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        x0 = x
         x = x + self.dropout(self.attn(_rms_norm(x, self.rms_eps), cos_sin))
+        if self.use_residual_scalars:
+            x = self.attn_resid_scale * x + self.attn_skip_scale * x0
+        x0 = x
         x = x + self.dropout(self.mlp(_rms_norm(x, self.rms_eps)))
+        if self.use_residual_scalars:
+            x = self.mlp_resid_scale * x + self.mlp_skip_scale * x0
         return x
 
 
@@ -272,7 +330,9 @@ class BinanceHourlyPolicyNano(BinancePolicyBase):
             max_len=config.max_len,
             base=config.rope_base,
         )
-        self.blocks = nn.ModuleList([NanoTransformerBlock(config) for _ in range(config.num_layers)])
+        self.blocks = nn.ModuleList(
+            [NanoTransformerBlock(config, layer_idx) for layer_idx in range(config.num_layers)]
+        )
         self.norm_eps = config.rms_norm_eps
         self.head = nn.Linear(config.hidden_dim, 4, bias=False)
         self._init_weights()
@@ -334,6 +394,11 @@ def policy_config_from_payload(
         pe = state_dict.get("pos_encoding.pe")
         if isinstance(pe, torch.Tensor) and pe.ndim >= 2:
             max_len = int(pe.shape[0])
+        if max_len is None:
+            for key, tensor in state_dict.items():
+                if key.endswith("value_embedding") and isinstance(tensor, torch.Tensor) and tensor.ndim == 2:
+                    max_len = int(tensor.shape[0])
+                    break
     if max_len is None:
         max_len = 2048
 
@@ -356,6 +421,13 @@ def policy_config_from_payload(
         use_qk_norm=bool(payload.get("use_qk_norm", True)),
         use_causal_attention=bool(payload.get("use_causal_attention", True)),
         rms_norm_eps=_maybe(payload.get("rms_norm_eps"), float, 1e-5),
+        attention_window=_maybe(payload.get("attention_window"), int, None),
+        use_residual_scalars=bool(payload.get("use_residual_scalars", False)),
+        residual_scale_init=_maybe(payload.get("residual_scale_init"), float, 1.0),
+        skip_scale_init=_maybe(payload.get("skip_scale_init"), float, 0.0),
+        use_value_embedding=bool(payload.get("use_value_embedding", False)),
+        value_embedding_every=_maybe(payload.get("value_embedding_every"), int, 2),
+        value_embedding_scale=_maybe(payload.get("value_embedding_scale"), float, 1.0),
     )
 
 
