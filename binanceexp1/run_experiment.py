@@ -9,7 +9,7 @@ import torch
 
 from binanceneural.config import TrainingConfig, PolicyConfig
 from binanceneural.marketsimulator import BinanceMarketSimulator, SimulationConfig
-from binanceneural.model import BinanceHourlyPolicy
+from binanceneural.model import BinanceHourlyPolicy, align_state_dict_input_dim
 from binanceneural.trainer import BinanceHourlyTrainer
 from binanceneural.inference import generate_actions_from_frame
 
@@ -36,6 +36,7 @@ def _infer_max_len(state_dict: dict, cfg: TrainingConfig) -> int:
 def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConfig) -> BinanceHourlyPolicy:
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
+    state_dict = align_state_dict_input_dim(state_dict, input_dim=input_dim)
     cfg = payload.get("config", default_cfg)
     model = BinanceHourlyPolicy(
         PolicyConfig(
@@ -165,6 +166,11 @@ def main() -> None:
     parser.add_argument("--intensity-scale", type=float, default=None, help="Scale trade intensity during evaluation")
     parser.add_argument("--price-offset-pct", type=float, default=None, help="Offset buy/sell prices during evaluation")
     parser.add_argument("--cache-only", action="store_true")
+    parser.add_argument(
+        "--data-root",
+        default=str(DatasetConfig().data_root),
+        help="Root directory for hourly data (e.g., trainingdatahourly/crypto or trainingdatahourly/stocks).",
+    )
     args = parser.parse_args()
 
     ctx_lengths = tuple(int(x) for x in args.context_lengths.split(",") if x)
@@ -176,6 +182,7 @@ def main() -> None:
         forecast_horizons = DatasetConfig().forecast_horizons
     data_cfg = DatasetConfig(
         symbol=args.symbol,
+        data_root=Path(args.data_root),
         sequence_length=args.sequence_length,
         cache_only=args.cache_only,
         forecast_horizons=forecast_horizons,
