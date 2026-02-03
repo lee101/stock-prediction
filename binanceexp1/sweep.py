@@ -42,6 +42,13 @@ def apply_action_overrides(
     return adjusted
 
 
+def _infer_max_len(state_dict: dict, cfg: TrainingConfig) -> int:
+    pe = state_dict.get("pos_encoding.pe")
+    if pe is not None and hasattr(pe, "shape"):
+        return int(pe.shape[0])
+    return int(getattr(cfg, "sequence_length", PolicyConfig.max_len))
+
+
 def _actions_for_horizon(
     *,
     model: BinanceHourlyPolicy,
@@ -180,6 +187,7 @@ def main() -> None:
             trade_amount_scale=cfg.trade_amount_scale,
             num_heads=cfg.transformer_heads,
             num_layers=cfg.transformer_layers,
+            max_len=_infer_max_len(state_dict, cfg),
         )
     )
     model.load_state_dict(state_dict, strict=False)
