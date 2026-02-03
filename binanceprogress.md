@@ -132,12 +132,18 @@ Note: attention_window >= sequence_length behaves like full attention, so Win=96
 - Win=96 + skip_scale_init=0.1 + value_embedding_every=3: `chronos_sol_v2_win96_skip01_ve3_20260203_201700`
   - Metrics (10-day test): total_return=0.118162, sortino=170.433597, annualized_return=58.955209
   - Last 2 days: total_return=0.035090, sortino=18497.570350, annualized_return=540.389433
+- Win=128 + skip_scale_init=0.1 + value_embedding_every=3: `chronos_sol_v2_win128_skip01_ve3_20260203_210500`
+  - Metrics (10-day test): total_return=0.118162, sortino=170.433597, annualized_return=58.955209
+  - Last 2 days: total_return=0.035090, sortino=18497.570350, annualized_return=540.389433
 - Win=128 + skip_scale_init=0.05: `chronos_sol_v2_win128_skip005_20260203_203000`
   - Metrics (10-day test): total_return=0.148934, sortino=91.914223, annualized_return=161.174633
   - Last 2 days: total_return=0.034244, sortino=12127.487356, annualized_return=465.354448
 - Win=128 + skip_scale_init=0.2: `chronos_sol_v2_win128_skip02_20260203_204300`
   - Metrics (10-day test): total_return=0.153551, sortino=152.815771, annualized_return=186.853345
   - Last 2 days: total_return=0.033610, sortino=2113.671477, annualized_return=415.989073
+- Win=64 + skip_scale_init=0.1: `chronos_sol_v2_win64_skip01_20260203_212000`
+  - Metrics (10-day test): total_return=0.102255, sortino=103.215131, annualized_return=34.460601
+  - Last 2 days: total_return=0.007902, sortino=535.322223, annualized_return=3.205639
 
 Best PnL unchanged: total_return=0.224781 (skip_scale_init=0.1, attention_window >= 96).
 
