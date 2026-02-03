@@ -119,6 +119,28 @@ Updated: 2026-02-03
 
 Note: attention_window >= sequence_length behaves like full attention, so Win=96/128/192 runs matched the Win=128 baseline when other settings were identical.
 
+### Nano v2 follow-up sweep (attention window/value embedding/skip-scale, 4-epoch)
+- Win=96 + skip_scale_init=0.1: `chronos_sol_v2_win96_skip01_20260203_194200`
+  - Metrics (10-day test): total_return=0.224781, sortino=110.011380, annualized_return=1687.823288
+  - Last 2 days: total_return=0.055692, sortino=32793.242972, annualized_return=19748.420368
+- Win=192 + skip_scale_init=0.1: `chronos_sol_v2_win192_skip01_20260203_195500`
+  - Metrics (10-day test): total_return=0.224781, sortino=110.011380, annualized_return=1687.823288
+  - Last 2 days: total_return=0.055692, sortino=32793.242972, annualized_return=19748.420368
+- Win=256 + skip_scale_init=0.1: `chronos_sol_v2_win256_skip01_20260203_200500`
+  - Metrics (10-day test): total_return=0.224781, sortino=110.011380, annualized_return=1687.823288
+  - Last 2 days: total_return=0.055692, sortino=32793.242972, annualized_return=19748.420368
+- Win=96 + skip_scale_init=0.1 + value_embedding_every=3: `chronos_sol_v2_win96_skip01_ve3_20260203_201700`
+  - Metrics (10-day test): total_return=0.118162, sortino=170.433597, annualized_return=58.955209
+  - Last 2 days: total_return=0.035090, sortino=18497.570350, annualized_return=540.389433
+- Win=128 + skip_scale_init=0.05: `chronos_sol_v2_win128_skip005_20260203_203000`
+  - Metrics (10-day test): total_return=0.148934, sortino=91.914223, annualized_return=161.174633
+  - Last 2 days: total_return=0.034244, sortino=12127.487356, annualized_return=465.354448
+- Win=128 + skip_scale_init=0.2: `chronos_sol_v2_win128_skip02_20260203_204300`
+  - Metrics (10-day test): total_return=0.153551, sortino=152.815771, annualized_return=186.853345
+  - Last 2 days: total_return=0.033610, sortino=2113.671477, annualized_return=415.989073
+
+Best PnL unchanged: total_return=0.224781 (skip_scale_init=0.1, attention_window >= 96).
+
 ### Nano v2 best-config sanity (6-epoch)
 - Run: `chronos_sol_v2_win128_skip01_e6_20260203_140000`
 - Metrics (10-day test): total_return=0.157931, sortino=118.091167, annualized_return=214.846481
