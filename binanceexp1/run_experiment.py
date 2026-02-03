@@ -26,6 +26,13 @@ class ExperimentResult:
     sortino: float
 
 
+def _infer_max_len(state_dict: dict, cfg: TrainingConfig) -> int:
+    pe = state_dict.get("pos_encoding.pe")
+    if pe is not None and hasattr(pe, "shape"):
+        return int(pe.shape[0])
+    return int(getattr(cfg, "sequence_length", PolicyConfig.max_len))
+
+
 def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConfig) -> BinanceHourlyPolicy:
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
@@ -40,6 +47,7 @@ def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConf
             trade_amount_scale=cfg.trade_amount_scale,
             num_heads=cfg.transformer_heads,
             num_layers=cfg.transformer_layers,
+            max_len=_infer_max_len(state_dict, cfg),
         )
     )
     model.load_state_dict(state_dict, strict=False)

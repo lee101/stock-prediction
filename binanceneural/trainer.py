@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -65,12 +66,29 @@ class BinanceHourlyTrainer:
         self.checkpoint_dir = self.config.checkpoint_root / run_name
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._warmup_base_lrs: list[float] = []
+        self._amp_context = nullcontext()
+        self._scaler = None
+        self._total_train_steps = 0
+        self._weight_decay_groups: list[tuple[dict, float]] = []
 
     def train(self) -> TrainingArtifacts:
         torch.manual_seed(self.config.seed)
         if self.config.use_tf32:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
+            if hasattr(torch, "set_float32_matmul_precision"):
+                torch.set_float32_matmul_precision("high")
+            if hasattr(torch.backends.cuda.matmul, "allow_tf32"):
+                torch.backends.cuda.matmul.allow_tf32 = True
+            if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
+                torch.backends.cuda.matmul.fp32_precision = "tf32"
+            if hasattr(torch.backends.cudnn, "allow_tf32"):
+                torch.backends.cudnn.allow_tf32 = True
+            if hasattr(torch.backends.cudnn, "conv") and hasattr(torch.backends.cudnn.conv, "fp32_precision"):
+                torch.backends.cudnn.conv.fp32_precision = "tf32"
+        if self.config.use_flash_attention and self.device.type == "cuda":
+            if hasattr(torch.backends.cuda, "enable_flash_sdp"):
+                torch.backends.cuda.enable_flash_sdp(True)
+            if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
+                torch.backends.cuda.enable_mem_efficient_sdp(True)
 
         policy_cfg = PolicyConfig(
             input_dim=len(self.data.feature_columns),
@@ -90,6 +108,13 @@ class BinanceHourlyTrainer:
             use_qk_norm=self.config.use_qk_norm,
             use_causal_attention=self.config.use_causal_attention,
             rms_norm_eps=self.config.rms_norm_eps,
+            attention_window=self.config.attention_window,
+            use_residual_scalars=self.config.use_residual_scalars,
+            residual_scale_init=self.config.residual_scale_init,
+            skip_scale_init=self.config.skip_scale_init,
+            use_value_embedding=self.config.use_value_embedding,
+            value_embedding_every=self.config.value_embedding_every,
+            value_embedding_scale=self.config.value_embedding_scale,
             use_midpoint_offsets=True,
         )
         model = build_policy(policy_cfg).to(self.device)
@@ -113,9 +138,19 @@ class BinanceHourlyTrainer:
 
         optimizer = self._build_optimizer(model)
         self._warmup_base_lrs = [group.get("lr", self.config.learning_rate) for group in optimizer.param_groups]
+        self._weight_decay_groups = [
+            (group, float(group.get("weight_decay", 0.0))) for group in self._iter_param_groups(optimizer)
+        ]
+        self._amp_context, self._scaler = self._build_amp()
 
         train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
         val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
+        self._total_train_steps = max(1, len(train_loader) * max(1, self.config.epochs))
+        if self.config.dry_train_steps:
+            self._total_train_steps = min(
+                self._total_train_steps,
+                int(self.config.dry_train_steps) * max(1, self.config.epochs),
+            )
 
         history: List[TrainingHistoryEntry] = []
         best_score = float("-inf")
@@ -198,32 +233,34 @@ class BinanceHourlyTrainer:
             chronos_high = batch["chronos_high"].to(self.device)
             chronos_low = batch["chronos_low"].to(self.device)
 
-            outputs = model(features)
-            actions = model.decode_actions(
-                outputs,
-                reference_close=reference_close,
-                chronos_high=chronos_high,
-                chronos_low=chronos_low,
-            )
+            with self._amp_context:
+                outputs = model(features)
+                actions = model.decode_actions(
+                    outputs,
+                    reference_close=reference_close,
+                    chronos_high=chronos_high,
+                    chronos_low=chronos_low,
+                )
 
-            scale = float(self.config.trade_amount_scale)
-            trade_intensity = actions["trade_amount"] / scale
-            buy_intensity = actions["buy_amount"] / scale
-            sell_intensity = actions["sell_amount"] / scale
+                scale = float(self.config.trade_amount_scale)
+                trade_intensity = actions["trade_amount"] / scale
+                buy_intensity = actions["buy_amount"] / scale
+                sell_intensity = actions["sell_amount"] / scale
 
-            sim = simulate_hourly_trades(
-                highs=highs,
-                lows=lows,
-                closes=closes,
-                buy_prices=actions["buy_price"],
-                sell_prices=actions["sell_price"],
-                trade_intensity=trade_intensity,
-                buy_trade_intensity=buy_intensity,
-                sell_trade_intensity=sell_intensity,
-                maker_fee=self.config.maker_fee,
-                initial_cash=self.config.initial_cash,
-            )
-            returns = sim.returns
+                sim = simulate_hourly_trades(
+                    highs=highs,
+                    lows=lows,
+                    closes=closes,
+                    buy_prices=actions["buy_price"],
+                    sell_prices=actions["sell_price"],
+                    trade_intensity=trade_intensity,
+                    buy_trade_intensity=buy_intensity,
+                    sell_trade_intensity=sell_intensity,
+                    maker_fee=self.config.maker_fee,
+                    initial_cash=self.config.initial_cash,
+                )
+
+            returns = sim.returns.float()
             score, sortino, annual_return = compute_hourly_objective(
                 returns,
                 periods_per_year=HOURLY_PERIODS_PER_YEAR,
@@ -238,14 +275,28 @@ class BinanceHourlyTrainer:
 
             if train and optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                if self.config.grad_clip:
-                    clip_grad_norm_(model.parameters(), self.config.grad_clip)
-                if self.config.warmup_steps and global_step < self.config.warmup_steps:
-                    warmup_frac = float(global_step + 1) / float(self.config.warmup_steps)
-                    for group, base_lr in zip(optimizer.param_groups, self._warmup_base_lrs):
-                        group["lr"] = float(base_lr) * warmup_frac
-                optimizer.step()
+                if self._scaler is not None:
+                    self._scaler.scale(loss).backward()
+                    if self.config.grad_clip:
+                        self._scaler.unscale_(optimizer)
+                        clip_grad_norm_(model.parameters(), self.config.grad_clip)
+                    self._apply_schedules(optimizer, global_step)
+                    if self.config.warmup_steps and global_step < self.config.warmup_steps:
+                        warmup_frac = float(global_step + 1) / float(self.config.warmup_steps)
+                        for group, base_lr in zip(optimizer.param_groups, self._warmup_base_lrs):
+                            group["lr"] = float(base_lr) * warmup_frac
+                    self._scaler.step(optimizer)
+                    self._scaler.update()
+                else:
+                    loss.backward()
+                    if self.config.grad_clip:
+                        clip_grad_norm_(model.parameters(), self.config.grad_clip)
+                    self._apply_schedules(optimizer, global_step)
+                    if self.config.warmup_steps and global_step < self.config.warmup_steps:
+                        warmup_frac = float(global_step + 1) / float(self.config.warmup_steps)
+                        for group, base_lr in zip(optimizer.param_groups, self._warmup_base_lrs):
+                            group["lr"] = float(base_lr) * warmup_frac
+                    optimizer.step()
                 global_step += 1
 
             total_loss += float(loss.detach().mean().item())
@@ -266,6 +317,62 @@ class BinanceHourlyTrainer:
             "return": total_return / steps,
         }
         return metrics, global_step
+
+    def _build_amp(self):
+        if not self.config.use_amp or self.device.type != "cuda":
+            return nullcontext(), None
+        dtype_name = str(self.config.amp_dtype or "bfloat16").lower()
+        if dtype_name in {"float16", "fp16"}:
+            dtype = torch.float16
+            use_scaler = True
+        else:
+            dtype = torch.bfloat16
+            use_scaler = False
+
+        if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+            amp_ctx = torch.amp.autocast(device_type="cuda", dtype=dtype)
+        else:  # pragma: no cover - legacy fallback
+            amp_ctx = torch.cuda.amp.autocast(dtype=dtype)
+
+        scaler = None
+        if use_scaler:
+            if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+                try:
+                    scaler = torch.amp.GradScaler(device_type="cuda")
+                except TypeError:  # pragma: no cover - older signature
+                    scaler = torch.amp.GradScaler()
+            else:  # pragma: no cover - legacy fallback
+                scaler = torch.cuda.amp.GradScaler()
+        return amp_ctx, scaler
+
+    def _iter_param_groups(self, optimizer: torch.optim.Optimizer) -> List[dict]:
+        if isinstance(optimizer, MultiOptim):
+            groups: List[dict] = []
+            for opt in optimizer.optimizers:
+                groups.extend(opt.param_groups)
+            return groups
+        return list(optimizer.param_groups)
+
+    def _apply_schedules(self, optimizer: torch.optim.Optimizer, global_step: int) -> None:
+        if self._total_train_steps <= 0:
+            return
+        progress = min(max(global_step / float(self._total_train_steps), 0.0), 1.0)
+        schedule = (self.config.weight_decay_schedule or "none").lower()
+        if schedule in {"linear", "linear_to_zero", "linear_decay"}:
+            wd_end = float(self.config.weight_decay_end)
+            for group, base_wd in self._weight_decay_groups:
+                if base_wd <= 0:
+                    continue
+                group["weight_decay"] = float(base_wd + (wd_end - base_wd) * progress)
+
+        if self.config.muon_momentum_start is not None and self.config.muon_momentum_warmup_steps > 0:
+            start = float(self.config.muon_momentum_start)
+            end = float(self.config.muon_momentum)
+            frac = min(global_step / float(self.config.muon_momentum_warmup_steps), 1.0)
+            momentum = start + (end - start) * frac
+            for group in self._iter_param_groups(optimizer):
+                if "momentum" in group:
+                    group["momentum"] = momentum
 
     def _save_checkpoint(self, model: BinancePolicyBase, epoch: int, metrics: Dict[str, float]) -> Path:
         path = self.checkpoint_dir / f"epoch_{epoch:03d}.pt"

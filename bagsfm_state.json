@@ -1,13 +1,13 @@
 {
-  "sol_balance": 11.123411969,
+  "sol_balance": 5.261701219,
   "positions": {
-    "HAK9cX1jfYmcNpr6keTkLvxehGPWKELXSu7GH2ofBAGS": 64562341.370354995
+    "HAK9cX1jfYmcNpr6keTkLvxehGPWKELXSu7GH2ofBAGS": 59780205.84487113
   },
-  "day_start_value": 75.6292375491142,
+  "day_start_value": 20.19468417303959,
   "daily_pnl": 0.0,
   "trades_today": 0,
   "total_trades": 0,
   "total_fees_sol": 0.0,
-  "last_price_check": "2026-02-02T06:00:38.520660",
+  "last_price_check": "2026-02-03T08:28:03.856314",
   "last_trade_time": null
 }
