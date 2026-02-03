@@ -2,10 +2,10 @@
   "symbol": "ETHUSD",
   "model": "chronos2",
   "config": {
-    "name": "hourly_ctx2048_skip1_single",
-    "model_id": "amazon/chronos-2",
+    "name": "hourly_ctx3072_skip1_2_3_median",
+    "model_id": "chronos2_finetuned/ETHUSD_lora_20260203_051846/finetuned-ckpt",
     "device_map": "cuda",
-    "context_length": 2048,
+    "context_length": 3072,
     "batch_size": 32,
     "quantile_levels": [
       0.1,
@@ -14,19 +14,21 @@
     ],
     "aggregation": "median",
     "sample_count": 0,
-    "scaler": "meanstd",
+    "scaler": "none",
     "predict_kwargs": {},
     "skip_rates": [
-      1
+      1,
+      2,
+      3
     ],
-    "aggregation_method": "single",
+    "aggregation_method": "median",
     "use_multivariate": false
   },
   "validation": {
-    "price_mae": 1.71533203125,
-    "pct_return_mae": 0.0005372576997615397,
-    "direction_accuracy": 1.0,
-    "latency_s": 0.04119753837585449
+    "price_mae": 11.966552734375,
+    "pct_return_mae": 0.0040768710896372795,
+    "direction_accuracy": 0.0,
+    "latency_s": 0.1334061622619629
   },
   "windows": {
     "val_window": 168,
@@ -35,9 +37,9 @@
   },
   "metadata": {
     "source": "hyperparam_chronos_hourly",
-    "generated_at": "2025-12-01T07:25:16.357937Z",
+    "generated_at": "2026-02-03T05:12:56.179592Z",
     "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.0005372576997615397,
+    "selection_value": 0.0040768710896372795,
     "frequency": "hourly"
   }
 }

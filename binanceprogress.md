@@ -5,7 +5,27 @@ Updated: 2026-02-03
 ## Notes / Fixes
 - Added `state_dict`-aware max_len inference when loading classic models so positional encoding buffers match checkpoint shapes.
   - Updated: `binanceneural/model.py`, `binancechronossolexperiment/inference.py`, `binanceneural/run_simulation.py`, `binanceneural/trade_binance_hourly.py`, `binanceneural/sweep.py`.
+- Added max_len inference for binanceexp1 checkpoint reloads (prevents positional encoding size mismatch).
+  - Updated: `binanceexp1/run_experiment.py`, `binanceexp1/sweep.py`.
+- Added `value_embedding`-aware max_len inference for nano policy checkpoints (avoids size mismatch on reload).
 - New PnL/RL utility library (`src/tradinglib/`) with tests (metrics, rewards, benchmarks, target gating).
+- Added input-dim alignment for checkpoint embeddings when feature sets drift (pads/trims `embed.weight`).
+  - Updated: `binanceneural/model.py`, `binanceneural/sweep.py`, `binanceneural/run_simulation.py`,
+    `binanceexp1/sweep.py`, `binanceexp1/run_experiment.py`, `binanceexp1/run_multiasset_selector.py`.
+- Added multi-asset best-trade selector simulator + CLI + tests.
+  - New: `binanceneural/marketsimulator/selector.py`, `binanceexp1/run_multiasset_selector.py`,
+    `tests/test_binance_multiasset_selector.py`.
+
+## Chronos2 LoRA (hourly, Alpaca data)
+- BTCUSD LoRA: `chronos2_finetuned/BTCUSD_lora_20260203_051412` → Validation MAE% 0.2785, preaug=diff
+- ETHUSD LoRA: `chronos2_finetuned/ETHUSD_lora_20260203_051846` → Validation MAE% 0.4450, preaug=diff
+- LINKUSD LoRA: `chronos2_finetuned/LINKUSD_lora_20260203_052258` → Validation MAE% 0.4456, preaug=diff
+- SOLUSD LoRA: `chronos2_finetuned/SOLUSD_lora_20260203_052715` → Validation MAE% 0.4337, preaug=diff
+- UNIUSD LoRA: `chronos2_finetuned/UNIUSD_lora_20260203_091020` → Validation MAE% 0.5416, preaug=detrending
+- NFLX LoRA: `chronos2_finetuned/NFLX_lora_20260203_091648` → Validation MAE% 0.1050, preaug=differencing
+- NVDA LoRA: `chronos2_finetuned/NVDA_lora_20260203_092111` → Validation MAE% 0.1333, preaug=differencing
+- Updated `hyperparams/chronos2/hourly/{BTCUSD,ETHUSD,LINKUSD,SOLUSD,UNIUSD,NFLX,NVDA}.json` to point `model_id` at the LoRA finetuned checkpoints.
+- Forecast cache rebuilt for h1 only (BTCUSD/ETHUSD/LINKUSD/SOLUSD/UNIUSD/NFLX/NVDA); h24 recompute deferred (very heavy with long contexts).
 
 ## Experiments (Chronos2 + Binance neural)
 
@@ -56,6 +76,31 @@ Updated: 2026-02-03
 - Metrics (10-day test): total_return=0.150219, sortino=139.825174, annualized_return=167.955148
 - Last 2 days: total_return=0.056290, sortino=1120.777238, annualized_return=21899.280913
 
+### Nano v2 (nanochat-style upgrades, multi-horizon 1/4/24, full history)
+- Run: `chronos_sol_v2_nano_muon_h1_4_24_20260203_110000`
+- Settings: muon_mix, residual scalars, value embeddings (every layer), attention_window=64, weight_decay linear->0, amp bfloat16
+- Metrics (10-day test): total_return=0.135517, sortino=153.291137, annualized_return=104.436765
+- Last 2 days: total_return=0.008194, sortino=376.950354, annualized_return=3.434440
+
+### Nano v2 sweep (4-epoch runs, full history)
+- Win=0 alt2: `chronos_sol_v2_win0_alt2_20260203_120000`
+  - Metrics (10-day test): total_return=0.168163, sortino=127.621894, annualized_return=296.979450
+  - Last 2 days: total_return=0.034318, sortino=4112.864558, annualized_return=471.432240
+- Win=128 alt2: `chronos_sol_v2_win128_alt2_20260203_123000`
+  - Metrics (10-day test): total_return=0.176363, sortino=131.492666, annualized_return=384.060802
+  - Last 2 days: total_return=0.027708, sortino=5468.897139, annualized_return=145.641555
+- Win=64 alt1: `chronos_sol_v2_win64_alt1_20260203_130000`
+  - Metrics (10-day test): total_return=0.135580, sortino=388.062129, annualized_return=104.651151
+  - Last 2 days: total_return=0.026850, sortino=2206.419941, annualized_return=124.898822
+- Win=128 alt2 + skip_scale_init=0.1: `chronos_sol_v2_win128_skip01_20260203_133000`
+  - Metrics (10-day test): total_return=0.224781, sortino=110.011380, annualized_return=1687.823288
+  - Last 2 days: total_return=0.055692, sortino=32793.242972, annualized_return=19748.420368
+
+### Nano v2 best-config sanity (6-epoch)
+- Run: `chronos_sol_v2_win128_skip01_e6_20260203_140000`
+- Metrics (10-day test): total_return=0.157931, sortino=118.091167, annualized_return=214.846481
+- Last 2 days: total_return=0.062030, sortino=188.092299, annualized_return=58877.772244
+
 ## RL Reward Sweep (SOLUSDT hourly)
 - Run: `python -m rlsys.run_reward_sweep --csv trainingdatahourlybinance/SOLUSDT.csv`
 - Results saved: `rlsys/results/reward_sweep.json`
@@ -68,10 +113,17 @@ Updated: 2026-02-03
 - Supervisor `binanceexp1-solusd` now running with BINANCE_TLD=us; requires Binance.US API keys (current keys rejected with "API-key format invalid").
 - See `binanceresults.md` for full details of live attempt and command used.
 
+## Syncs (R2)
+- Synced binance checkpoints to R2:
+  - `aws s3 sync binanceneural/checkpoints/ s3://models/stock/models/binance/binanceneural/checkpoints/ --endpoint-url "$R2_ENDPOINT"`
+- Synced Chronos2 finetunes to R2:
+  - `aws s3 sync chronos2_finetuned/ s3://models/stock/models/binance/chronos2_finetuned/ --endpoint-url "$R2_ENDPOINT"`
+
 ## Next Experiments
 - Longer RL sweeps (e.g., 50k+ timesteps) with a grid over drawdown/volatility penalties.
 - Multi-horizon (1/4/24) variants with larger sequence length (96/128) and/or context_hours 2048 vs 3072.
 - Run longer backtests (30d+) on the best multi-horizon run and log trade stats + PnL targets.
+- Multi-asset selector: tune min_edge/risk_weight, test cooldowns, and compare on matched windows vs SOLUSD h24 baseline.
 
 ## Binanceexp1 SOLUSD (marketsimulator, hourly)
 
@@ -106,3 +158,107 @@ Production target (SOLUSD)
 - intensity-scale 20.0, horizon 24, sequence length 96, min-gap-pct 0.0003
 - Runner: `scripts/run_binanceexp1_prod_solusd.sh`
 - Supervisor: `supervisor/binanceexp1-solusd.conf`
+
+## Binanceexp1 Horizon=1 (Chronos2 LoRA, h1-only cache)
+
+### SOLUSD (full 5 epochs)
+- Run: `solusd_h1_ft_20260203` (checkpoint: `binanceneural/checkpoints/solusd_h1_ft_20260203/epoch_005.pt`)
+- Baseline eval (intensity=1.0): total_return 8.9329, sortino 47.5089
+- Sweep highlights:
+  - Best sortino: intensity 0.80, offset 0.00000 → total_return 5.4643, sortino 55.0102
+  - Best return: intensity 1.40, offset 0.00000 → total_return 10.8068, sortino 48.6080
+- Risk mitigations:
+  - probe-after-loss (notional 1.0) lowered return (7.5718) and sortino (42.7107)
+  - max-hold-hours 24 had no measurable improvement
+- Expanded sweep (h1-only cache; intensity 0.6-1.8, offsets 0-0.0005):
+  - Best sortino: intensity 0.80, offset 0.00000 → total_return 7.1795, sortino 60.5213
+  - Best return: intensity 1.80, offset 0.00000 → total_return 14.4635, sortino 53.6626
+
+### BTCUSD (quick 1 epoch / 300 steps)
+- Run: `btcusd_h1_quick_20260203` (checkpoint: `binanceneural/checkpoints/btcusd_h1_quick_20260203/epoch_001.pt`)
+- Baseline eval (intensity=1.0): total_return 7.1547, sortino 253.3211
+- Sweep highlights:
+  - Best sortino: intensity 1.00, offset 0.00000 → total_return 7.1541, sortino 253.5392
+  - Best return: intensity 1.40, offset 0.00000 → total_return 8.5504, sortino 234.4700
+- Expanded sweep (intensity 0.6-1.8, offsets 0-0.0005):
+  - Best sortino: intensity 1.00, offset 0.00000 → total_return 7.3499, sortino 230.1740
+  - Best return: intensity 1.80, offset 0.00010 → total_return 9.8338, sortino 202.4425
+- Aggregate (contexts 64/96/192, trim_ratio 0.2):
+  - Best sortino: intensity 1.00, offset 0.00000 → total_return 7.1246, sortino 243.8277
+  - Best return: intensity 1.60, offset 0.00020 → total_return 9.1776, sortino 183.7078
+- Blend horizons 1/24 (weights 0.7/0.3):
+  - Best sortino: intensity 1.00, offset 0.00000 → total_return 7.5609, sortino 231.9530
+  - Best return: intensity 1.40, offset 0.00020 → total_return 9.2805, sortino 182.3951
+
+### ETHUSD (quick 1 epoch / 300 steps)
+- Run: `ethusd_h1_quick_20260203` (checkpoint: `binanceneural/checkpoints/ethusd_h1_quick_20260203/epoch_001.pt`)
+- Baseline eval (intensity=1.0): total_return 3.6791, sortino 165.9452
+- Sweep highlights:
+  - Best sortino: intensity 1.00, offset 0.00000 → total_return 3.6789, sortino 166.1271
+  - Best return: intensity 1.40, offset 0.00000 → total_return 4.5134, sortino 145.5026
+- Expanded sweep (intensity 0.6-1.8, offsets 0-0.0005):
+  - Best sortino: intensity 1.00, offset 0.00000 → total_return 4.0286, sortino 165.7779
+  - Best return: intensity 1.80, offset 0.00020 → total_return 5.3999, sortino 137.1733
+- Aggregate (contexts 64/96/192, trim_ratio 0.2):
+  - Best sortino: intensity 1.00, offset 0.00000 → total_return 3.7065, sortino 166.4207
+  - Best return: intensity 1.60, offset 0.00000 → total_return 4.8140, sortino 143.6667
+
+### LINKUSD (quick 1 epoch / 300 steps)
+- Run: `linkusd_h1_quick_20260203` (checkpoint: `binanceneural/checkpoints/linkusd_h1_quick_20260203/epoch_001.pt`)
+- Baseline eval (intensity=1.0): total_return 3.4529, sortino 44.2042
+- Sweep highlights:
+  - Best sortino: intensity 0.80, offset 0.00000 → total_return 2.2955, sortino 46.8543
+  - Best return: intensity 1.20, offset 0.00000 → total_return 3.9597, sortino 39.0122
+- Expanded sweep (h1-only cache; intensity 0.6-1.8, offsets 0-0.0005):
+  - Best sortino: intensity 0.80, offset 0.00000 → total_return 2.8358, sortino 38.9894
+  - Best return: intensity 1.80, offset 0.00000 → total_return 4.7164, sortino 33.1052
+
+### UNIUSD (quick 1 epoch / 300 steps)
+- Run: `uniusd_h1_quick_20260203` (checkpoint: `binanceneural/checkpoints/uniusd_h1_quick_20260203/epoch_001.pt`)
+- Baseline eval (intensity=1.0): total_return 8.0990, sortino 38.5863
+- Sweep highlights:
+  - Best sortino: intensity 0.80, offset 0.00020 → total_return 5.4407, sortino 45.0316
+  - Best return: intensity 1.20, offset 0.00020 → total_return 9.5057, sortino 36.3816
+- Backtest (best PnL config): intensity 1.20, offset 0.00020 → total_return 9.5057, sortino 36.3816
+- Expanded sweep (h1-only cache; intensity 0.6-1.8, offsets 0-0.0005):
+  - Best sortino: intensity 0.80, offset 0.00050 → total_return 6.2135, sortino 42.5577
+  - Best return: intensity 1.00, offset 0.00020 → total_return 10.8490, sortino 36.6693
+
+### NFLX (quick 1 epoch / 300 steps)
+- Run: `nflx_h1_quick_20260203` (checkpoint: `binanceneural/checkpoints/nflx_h1_quick_20260203/epoch_001.pt`)
+- Baseline eval (intensity=1.0): total_return 1.0496, sortino 55.6672
+- Sweep highlights:
+  - Best sortino: intensity 1.00, offset 0.00000 → total_return 1.0497, sortino 55.6645
+  - Best return: intensity 1.40, offset 0.00000 → total_return 1.1271, sortino 44.4451
+- Backtest (best PnL config): intensity 1.40, offset 0.00000 → total_return 1.1271, sortino 44.4451
+
+### NVDA (quick 1 epoch / 300 steps)
+- Run: `nvda_h1_quick_20260203` (checkpoint: `binanceneural/checkpoints/nvda_h1_quick_20260203/epoch_001.pt`)
+- Baseline eval (intensity=1.0): total_return 11.2049, sortino 38.6581
+- Sweep highlights:
+  - Best sortino: intensity 0.80, offset 0.00000 → total_return 6.8115, sortino 41.7632
+  - Best return: intensity 1.00, offset 0.00050 → total_return 11.9568, sortino 34.3337
+- Backtest (best PnL config): intensity 1.00, offset 0.00050 → total_return 11.9568, sortino 34.3337
+
+## Multi-Asset Best-Trade Selector (BTC/ETH/LINK/UNI/SOL, h1)
+
+Selector inputs
+- Symbols: BTCUSD, ETHUSD, LINKUSD, UNIUSD, SOLUSD (h1-only forecast cache).
+- Checkpoints: `binanceneural/checkpoints/{btcusd_h1_quick_20260203,ethusd_h1_quick_20260203,linkusd_h1_quick_20260203,uniusd_h1_quick_20260203,solusd_h1_ft_20260203}/epoch_*.pt`.
+- Action overrides used (from expanded sweeps):
+  - BTCUSD intensity 1.8 offset 0.0001
+  - ETHUSD intensity 1.8 offset 0.0002
+  - LINKUSD intensity 1.8 offset 0.0000
+  - UNIUSD intensity 1.0 offset 0.0002
+  - SOLUSD intensity 1.8 offset 0.0000
+- CLI: `python -m binanceexp1.run_multiasset_selector ...` (see commands in logs).
+
+Results (no same-bar re-entry by default)
+- Baseline (edge_mode=high_low, min_edge=0.0): total_return 5.3570, sortino 29.3199.
+- Best conservative (edge_mode=high_low, min_edge=0.002): total_return 13.9718, sortino 24.3030.
+- Close-mode (edge_mode=close, min_edge=0.001): total_return 8.2331, sortino 25.0939.
+- Aggressive upper bound (allow_reentry_same_bar, min_edge=0.002): total_return 42.1318, sortino 34.9956.
+
+Comparison to best-20 sweep
+- Best 20 sweep (SOLUSD horizon=24) total_return 17.7449 (not apples-to-apples; single-symbol, h24).
+- Conservative selector is below that baseline; aggressive upper-bound run exceeds it.
