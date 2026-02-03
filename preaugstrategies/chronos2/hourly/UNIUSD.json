@@ -1,62 +1,64 @@
 {
   "symbol": "UNIUSD",
-  "best_strategy": "log_returns",
-  "mae": 0.09898032410486075,
-  "mae_percent": 1.5288430180504604,
-  "rmse": 0.189409531013309,
-  "pct_return_mae": 0.013881164513422166,
+  "best_strategy": "detrending",
   "config": {
-    "name": "log_returns",
+    "name": "detrending",
     "params": {}
   },
-  "timestamp": "2025-11-13T04:57:34Z",
+  "timestamp": "2026-02-03T09:10:20Z",
   "selection_metric": "mae_percent",
-  "selection_value": 1.5288430180504604,
+  "selection_value": 0.526273790501772,
   "comparison": {
     "baseline": {
-      "mae": 0.10261831632160957,
-      "mae_percent": 1.585035186045445,
-      "pct_return_mae": 0.014567681727195504
-    },
-    "percent_change": {
-      "mae": 0.10213712797450761,
-      "mae_percent": 1.5776027851972247,
-      "pct_return_mae": 0.014474550731616001
-    },
-    "log_returns": {
-      "mae": 0.09898032410486075,
-      "mae_percent": 1.5288430180504604,
-      "pct_return_mae": 0.013881164513422166
-    },
-    "differencing": {
-      "mae": 7.336802119936217,
-      "mae_percent": 113.32372163177695,
-      "pct_return_mae": 1.180979251436392
+      "mae": 0.02633582055568695,
+      "mae_percent": 0.5467591974323506,
+      "rmse": 0.037799298763275146,
+      "pct_return_mae": 0.005471103824675083
     },
     "detrending": {
-      "mae": 0.09940456920968226,
-      "mae_percent": 1.5353958776446694,
-      "pct_return_mae": 0.013900884523926568
+      "mae": 0.025349097326397896,
+      "mae_percent": 0.526273790501772,
+      "rmse": 0.036912623792886734,
+      "pct_return_mae": 0.005268367938697338
     },
-    "robust_scaling": {
-      "mae": 0.10181552284801887,
-      "mae_percent": 1.5726352953789386,
-      "pct_return_mae": 0.01439809659047627
+    "differencing": {
+      "mae": 0.025722753256559372,
+      "mae_percent": 0.5340312786749215,
+      "rmse": 0.03677540272474289,
+      "pct_return_mae": 0.00534520810469985
+    },
+    "log_returns": {
+      "mae": 0.026379698887467384,
+      "mae_percent": 0.5476701575225521,
+      "rmse": 0.037776216864585876,
+      "pct_return_mae": 0.005479962565004826
     },
     "minmax_standard": {
-      "mae": 0.10283038136911998,
-      "mae_percent": 1.5883107276259651,
-      "pct_return_mae": 0.014589907731586013
+      "mae": 0.02633585035800934,
+      "mae_percent": 0.5467598161597541,
+      "rmse": 0.03779930993914604,
+      "pct_return_mae": 0.005471109412610531
+    },
+    "percent_change": {
+      "mae": 0.026335841044783592,
+      "mae_percent": 0.5467596228074405,
+      "rmse": 0.03779929131269455,
+      "pct_return_mae": 0.005471108015626669
+    },
+    "robust_scaling": {
+      "mae": 0.026335831731557846,
+      "mae_percent": 0.5467594294551269,
+      "rmse": 0.03779928758740425,
+      "pct_return_mae": 0.00547110615298152
     },
     "rolling_norm": {
-      "mae": 0.10412568281710084,
-      "mae_percent": 1.6083178612954632,
-      "pct_return_mae": 0.014552697135838283
+      "mae": 0.025786589831113815,
+      "mae_percent": 0.5353565927731253,
+      "rmse": 0.036992866545915604,
+      "pct_return_mae": 0.0053630671463906765
     }
   },
   "metadata": {
-    "source": "chronos2_preaug_eval",
-    "hyperparam_root": "hyperparams/chronos2/hourly",
-    "frequency": "hourly"
+    "source": "chronos2_trainer_preaug"
   }
 }

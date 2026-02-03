@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
 import numpy as np
@@ -11,7 +12,7 @@ import torch
 from binanceneural.config import PolicyConfig, TrainingConfig
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.marketsimulator import BinanceMarketSimulator, SimulationConfig
-from binanceneural.model import BinanceHourlyPolicy
+from binanceneural.model import BinanceHourlyPolicy, align_state_dict_input_dim
 
 from .config import DatasetConfig, ExperimentConfig
 from .data import BinanceExp1DataModule, FeatureNormalizer
@@ -162,11 +163,17 @@ def main() -> None:
     parser.add_argument("--offset", nargs="+", type=float, default=[0.0, 0.0002, 0.0005])
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
     parser.add_argument("--cache-only", action="store_true")
+    parser.add_argument(
+        "--data-root",
+        default=str(DatasetConfig().data_root),
+        help="Root directory for hourly data (e.g., trainingdatahourly/crypto or trainingdatahourly/stocks).",
+    )
     args = parser.parse_args()
 
     forecast_horizons = tuple(int(x) for x in args.forecast_horizons.split(",") if x)
     data_cfg = DatasetConfig(
         symbol=args.symbol,
+        data_root=Path(args.data_root),
         sequence_length=args.sequence_length,
         cache_only=args.cache_only,
         forecast_horizons=forecast_horizons,
@@ -176,6 +183,7 @@ def main() -> None:
 
     payload = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
+    state_dict = align_state_dict_input_dim(state_dict, input_dim=len(data.feature_columns))
     cfg = payload.get("config", TrainingConfig(sequence_length=args.sequence_length))
     model = BinanceHourlyPolicy(
         PolicyConfig(
