@@ -213,6 +213,23 @@ Note: context_hours 2048/4096 matched the best baseline exactly (cache-only run 
 
 Best PnL unchanged after micro-sweep + seq-length sweep: total_return=0.224781 (skip_scale_init=0.1, attention_window >= 96, seq_len=72).
 
+### Nano v2 longer test window (20-day test / 20-day val, 4-epoch)
+- Baseline (skip_scale_init=0.1): `chronos_sol_v2_test20_skip01_20260204_042613`
+  - Metrics (20-day test): total_return=0.283456, sortino=104.303940, annualized_return=94.958200
+  - Last 2 days: total_return=0.039501, sortino=10193.434517, annualized_return=1175.415846
+- value_embedding_every=1 (skip_scale_init=0.1): `chronos_sol_v2_test20_vale1_skip01_20260204_043452`
+  - Metrics (20-day test): total_return=0.272807, sortino=72.602345, annualized_return=81.396613
+  - Last 2 days: total_return=0.033666, sortino=10424.777798, annualized_return=420.089043
+- muon_momentum=0.97 (skip_scale_init=0.1): `chronos_sol_v2_test20_muon097_20260204_044258`
+  - Metrics (20-day test): total_return=0.324214, sortino=92.312041, annualized_return=168.973961
+  - Last 2 days: total_return=0.031608, sortino=1188.725587, annualized_return=291.713480
+- attention_window=56 (skip_scale_init=0.1): `chronos_sol_v2_test20_win56_skip01_20260204_045236`
+  - Metrics (20-day test): total_return=0.282851, sortino=115.827681, annualized_return=94.134199
+  - Last 2 days: total_return=0.024458, sortino=11294.884243, annualized_return=81.255827
+- muon_momentum=0.98 (skip_scale_init=0.1): `chronos_sol_v2_test20_muon098_20260204_050146`
+  - Metrics (20-day test): total_return=0.281030, sortino=262.268200, annualized_return=91.695231
+  - Last 2 days: total_return=0.031809, sortino=6890.016604, annualized_return=302.285574
+
 ### Nano v2 best-config sanity (6-epoch)
 - Run: `chronos_sol_v2_win128_skip01_e6_20260203_140000`
 - Metrics (10-day test): total_return=0.157931, sortino=118.091167, annualized_return=214.846481
