@@ -40,6 +40,10 @@ Tracking Alpaca crypto-only hourly experiments with CRYPTO_TRADING_FEE applied e
 
 - Best return: intensity=1.40 → total_return=0.0795, sortino=8.4736
 
+### Sweep highlights (20d, 6-epoch checkpoint, max_round_trips=8, offset=0.0002)
+
+- Best return: intensity=1.40 → total_return=0.1170, sortino=20.6102
+
 ## Artifact sync
 
 ```bash
