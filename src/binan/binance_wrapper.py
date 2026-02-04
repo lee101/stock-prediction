@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, cast
 
 from binance import Client
@@ -82,7 +83,9 @@ def _coerce_balance_value(value: Any) -> float:
 def _normalize_symbol(symbol: str) -> str:
     if not isinstance(symbol, str):
         raise TypeError(f"Symbol must be a string, received {type(symbol).__name__}.")
-    return symbol.replace("/", "").strip().upper()
+    normalized = symbol.replace("/", "").strip().upper()
+    normalized = binance_remap_symbols(normalized)
+    return normalized
 
 
 def _extract_filter_value(filter_entry: Mapping[str, Any], keys: Iterable[str]) -> float | None:
@@ -335,12 +338,15 @@ def get_all_orders(symbol: str, client: Client | None = None) -> List[Dict[str, 
     return orders
 
 
-def get_open_orders(symbol: str, client: Client | None = None) -> List[Dict[str, Any]]:
+def get_open_orders(symbol: str | None = None, client: Client | None = None) -> List[Dict[str, Any]]:
     client = _resolve_client(client)
+    payload: Dict[str, Any] = {}
+    if symbol:
+        payload["symbol"] = _normalize_symbol(symbol)
     try:
-        raw_orders = client.get_open_orders(symbol=symbol)
-    except Exception as e:
-        logger.error(e)
+        raw_orders = client.get_open_orders(**payload)
+    except Exception as exc:
+        logger.error(f"Failed to fetch Binance open orders: {exc}")
         return []
     if not isinstance(raw_orders, list):
         logger.error(f"Unexpected open orders payload from Binance: {raw_orders}")
@@ -354,12 +360,26 @@ def get_open_orders(symbol: str, client: Client | None = None) -> List[Dict[str,
     return orders
 
 
-def get_my_trades(symbol: str, client: Client | None = None) -> List[Dict[str, Any]]:
+def get_my_trades(
+    symbol: str,
+    *,
+    start_time: int | None = None,
+    end_time: int | None = None,
+    limit: int | None = None,
+    client: Client | None = None,
+) -> List[Dict[str, Any]]:
     client = _resolve_client(client)
+    payload: Dict[str, Any] = {"symbol": _normalize_symbol(symbol)}
+    if start_time is not None:
+        payload["startTime"] = int(start_time)
+    if end_time is not None:
+        payload["endTime"] = int(end_time)
+    if limit is not None:
+        payload["limit"] = int(limit)
     try:
-        raw_trades = client.get_my_trades(symbol=symbol)
-    except Exception as e:
-        logger.error(e)
+        raw_trades = client.get_my_trades(**payload)
+    except Exception as exc:
+        logger.error(f"Failed to fetch Binance trades for {payload['symbol']}: {exc}")
         return []
     if not isinstance(raw_trades, list):
         logger.error(f"Unexpected trades payload from Binance: {raw_trades}")
@@ -371,8 +391,6 @@ def get_my_trades(symbol: str, client: Client | None = None) -> List[Dict[str, A
         else:
             logger.debug(f"Discarding non-dict trade entry: {entry}")
     return trades
-
-
 def get_account_balances(client: Client | None = None) -> List[Dict[str, Any]]:
     client = _resolve_client(client)
     try:
@@ -469,6 +487,74 @@ def get_account_value_usdt(
         "total_usdt": total_value,
         "assets": assets,
         "skipped": skipped,
+    }
+
+
+def get_account_snapshots_spot(limit: int = 5, client: Client | None = None) -> List[Dict[str, Any]]:
+    client = _resolve_client(client)
+    safe_limit = max(1, min(int(limit), 30))
+    try:
+        payload = cast(Dict[str, Any], client.get_account_snapshot(type="SPOT", limit=safe_limit))
+    except Exception as exc:
+        logger.error(f"Failed to fetch Binance account snapshots: {exc}")
+        return []
+    if not isinstance(payload, dict):
+        logger.error(f"Unexpected snapshot payload from Binance: {payload}")
+        return []
+    snapshots = payload.get("snapshotVos", [])
+    if not isinstance(snapshots, list):
+        logger.error(f"Unexpected snapshot list from Binance: {snapshots}")
+        return []
+    cleaned: List[Dict[str, Any]] = []
+    for entry in snapshots:
+        if isinstance(entry, dict):
+            cleaned.append(entry)
+        else:
+            logger.debug(f"Discarding non-dict snapshot entry: {entry}")
+    cleaned.sort(key=lambda item: item.get("updateTime", 0))
+    return cleaned
+
+
+def get_prev_day_pnl_usdt(client: Client | None = None) -> Dict[str, Any]:
+    snapshots = get_account_snapshots_spot(limit=2, client=client)
+    if len(snapshots) < 2:
+        raise RuntimeError("Not enough account snapshots to compute previous-day PnL.")
+
+    prev_snap = snapshots[-2]
+    latest_snap = snapshots[-1]
+
+    def _total_btc(entry: Dict[str, Any]) -> float:
+        data = entry.get("data", {})
+        if not isinstance(data, dict):
+            return 0.0
+        try:
+            return float(data.get("totalAssetOfBtc", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _format_time(entry: Dict[str, Any]) -> str | None:
+        ts = entry.get("updateTime")
+        if not isinstance(ts, (int, float)):
+            return None
+        return datetime.fromtimestamp(ts / 1000.0, tz=timezone.utc).isoformat()
+
+    prev_btc = _total_btc(prev_snap)
+    latest_btc = _total_btc(latest_snap)
+    delta_btc = latest_btc - prev_btc
+
+    btc_price = get_symbol_price("BTCUSDT", client=client)
+    if btc_price is None:
+        raise RuntimeError("Unable to fetch BTCUSDT price to value account snapshots.")
+    delta_usdt = delta_btc * btc_price
+
+    return {
+        "prev_total_btc": prev_btc,
+        "latest_total_btc": latest_btc,
+        "delta_btc": delta_btc,
+        "btc_price_usdt": btc_price,
+        "delta_usdt": delta_usdt,
+        "prev_update_time": _format_time(prev_snap),
+        "latest_update_time": _format_time(latest_snap),
     }
 
 
