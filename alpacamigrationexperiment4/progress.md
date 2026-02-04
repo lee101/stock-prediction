@@ -20,6 +20,7 @@ Tracking Alpaca crypto-only hourly experiments with CRYPTO_TRADING_FEE applied e
 | 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_intrabar_best_rt5 | SOLUSD | 20d | 0.0718 | 7.6836 | intrabar max=5, intensity=1.2, offset=0.0002 |
 | 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_intrabar_best_rt8 | SOLUSD | 20d | 0.0766 | 8.1433 | intrabar max=8, intensity=1.2, offset=0.0002 |
 | 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_intrabar_best_rt12 | SOLUSD | 20d | 0.0766 | 8.1433 | intrabar max=12, intensity=1.2, offset=0.0002 |
+| 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_intrabar_rt8_i14 | SOLUSD | 20d | 0.0795 | 8.4736 | intrabar max=8, intensity=1.4, offset=0.0002 |
 
 ### Sweep highlights (20d, intrabar max=3)
 
@@ -29,6 +30,10 @@ Tracking Alpaca crypto-only hourly experiments with CRYPTO_TRADING_FEE applied e
 ### Sweep highlights (20d, intensity/offset fixed, max round trips)
 
 - Best return: max_round_trips_per_bar=8 (tie with 12) → total_return=0.0766, sortino=8.1433
+
+### Sweep highlights (20d, max_round_trips=8, offset=0.0002)
+
+- Best return: intensity=1.40 → total_return=0.0795, sortino=8.4736
 
 ## Artifact sync
 
