@@ -162,6 +162,12 @@ def main() -> None:
     parser.add_argument("--price-offset-pct", type=float, default=None, help="Offset buy/sell prices during evaluation")
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument(
+        "--validation-days",
+        type=float,
+        default=None,
+        help="Override validation window length in days (e.g., 10 for a 10-day sim).",
+    )
+    parser.add_argument(
         "--data-root",
         default=str(DatasetConfig().data_root),
         help="Root directory for hourly data (e.g., trainingdatahourly/crypto or trainingdatahourly/stocks).",
@@ -175,13 +181,16 @@ def main() -> None:
         forecast_horizons = tuple(int(x) for x in args.forecast_horizons.split(",") if x)
     else:
         forecast_horizons = DatasetConfig().forecast_horizons
-    data_cfg = DatasetConfig(
+    data_cfg_kwargs = dict(
         symbol=args.symbol,
         data_root=Path(args.data_root),
         sequence_length=args.sequence_length,
         cache_only=args.cache_only,
         forecast_horizons=forecast_horizons,
     )
+    if args.validation_days is not None:
+        data_cfg_kwargs["validation_days"] = float(args.validation_days)
+    data_cfg = DatasetConfig(**data_cfg_kwargs)
     data = BinanceExp1DataModule(data_cfg)
 
     checkpoint_path = Path(args.checkpoint).expanduser().resolve() if args.checkpoint else None

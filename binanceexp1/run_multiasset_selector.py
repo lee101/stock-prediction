@@ -8,7 +8,16 @@ import pandas as pd
 import torch
 
 from binanceneural.inference import generate_actions_from_frame
-from binanceneural.marketsimulator import SelectionConfig, run_best_trade_simulation
+try:  # Optional selector simulation (may be unavailable in older builds).
+    from binanceneural.marketsimulator import SelectionConfig, run_best_trade_simulation
+except ImportError:  # pragma: no cover - fallback path for older simulators
+    SelectionConfig = None
+    run_best_trade_simulation = None
+    from binanceneural.marketsimulator import (
+        BinanceMarketSimulator,
+        SimulationConfig,
+        run_shared_cash_simulation,
+    )
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
 
 from .config import DatasetConfig
@@ -69,6 +78,7 @@ def _load_symbol_data(
     sequence_length: int,
     forecast_horizons: Sequence[int],
     cache_only: bool,
+    validation_days: Optional[float] = None,
 ) -> BinanceExp1DataModule:
     config = DatasetConfig(
         symbol=symbol,
@@ -77,6 +87,7 @@ def _load_symbol_data(
         sequence_length=sequence_length,
         forecast_horizons=tuple(int(h) for h in forecast_horizons),
         cache_only=cache_only,
+        validation_days=validation_days if validation_days is not None else DatasetConfig().validation_days,
     )
     return BinanceExp1DataModule(config)
 
@@ -99,6 +110,12 @@ def main() -> None:
     parser.add_argument("--data-root", default=str(DatasetConfig().data_root))
     parser.add_argument("--forecast-cache-root", default=str(DatasetConfig().forecast_cache_root))
     parser.add_argument("--cache-only", action="store_true")
+    parser.add_argument(
+        "--validation-days",
+        type=float,
+        default=None,
+        help="Override validation window length in days (e.g., 10 for a 10-day sim).",
+    )
     parser.add_argument("--default-intensity", type=float, default=1.0)
     parser.add_argument("--default-offset", type=float, default=0.0)
     parser.add_argument("--intensity-map", help="Comma-separated SYMBOL=VALUE overrides for intensity.")
@@ -109,6 +126,12 @@ def main() -> None:
     parser.add_argument("--edge-mode", default="high_low", choices=["high_low", "high", "close"])
     parser.add_argument("--max-hold-hours", type=int, default=None)
     parser.add_argument("--allow-reentry-same-bar", action="store_true")
+    parser.add_argument(
+        "--strategy",
+        default="independent",
+        choices=["independent", "shared_cash"],
+        help="Simulation strategy when selector is unavailable.",
+    )
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
 
@@ -132,13 +155,18 @@ def main() -> None:
     actions_frames: List[pd.DataFrame] = []
 
     for symbol in symbols:
-        data = _load_symbol_data(
-            symbol,
+        data_cfg_kwargs = dict(
             data_root=data_root,
             forecast_cache_root=forecast_cache_root,
             sequence_length=args.sequence_length,
             forecast_horizons=forecast_horizons,
             cache_only=args.cache_only,
+        )
+        if args.validation_days is not None:
+            data_cfg_kwargs["validation_days"] = float(args.validation_days)
+        data = _load_symbol_data(
+            symbol,
+            **data_cfg_kwargs,
         )
         frame = data.val_dataset.frame.copy()
         if "symbol" not in frame.columns:
@@ -173,30 +201,72 @@ def main() -> None:
     bars = pd.concat(bars_frames, ignore_index=True)
     actions = pd.concat(actions_frames, ignore_index=True)
 
-    sim_config = SelectionConfig(
-        initial_cash=args.initial_cash,
-        min_edge=args.min_edge,
-        risk_weight=args.risk_weight,
-        edge_mode=args.edge_mode,
-        max_hold_hours=args.max_hold_hours,
-        symbols=symbols,
-        allow_reentry_same_bar=args.allow_reentry_same_bar,
-    )
-    result = run_best_trade_simulation(bars, actions, sim_config, horizon=args.horizon)
+    if run_best_trade_simulation is not None and SelectionConfig is not None:
+        sim_config = SelectionConfig(
+            initial_cash=args.initial_cash,
+            min_edge=args.min_edge,
+            risk_weight=args.risk_weight,
+            edge_mode=args.edge_mode,
+            max_hold_hours=args.max_hold_hours,
+            symbols=symbols,
+            allow_reentry_same_bar=args.allow_reentry_same_bar,
+        )
+        result = run_best_trade_simulation(bars, actions, sim_config, horizon=args.horizon)
 
-    metrics = result.metrics
-    print(f"total_return: {metrics.get('total_return', 0.0):.4f}")
-    print(f"sortino: {metrics.get('sortino', 0.0):.4f}")
-    print(f"final_cash: {result.final_cash:.4f}")
-    print(f"final_inventory: {result.final_inventory:.6f}")
-    print(f"open_symbol: {result.open_symbol}")
+        metrics = result.metrics
+        print(f"total_return: {metrics.get('total_return', 0.0):.4f}")
+        print(f"sortino: {metrics.get('sortino', 0.0):.4f}")
+        print(f"final_cash: {result.final_cash:.4f}")
+        print(f"final_inventory: {result.final_inventory:.6f}")
+        print(f"open_symbol: {result.open_symbol}")
 
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        result.per_hour.to_csv(output_dir / "selector_per_hour.csv", index=False)
-        trades_df = pd.DataFrame([t.__dict__ for t in result.trades])
-        trades_df.to_csv(output_dir / "selector_trades.csv", index=False)
+        if args.output_dir:
+            output_dir = Path(args.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            result.per_hour.to_csv(output_dir / "selector_per_hour.csv", index=False)
+            trades_df = pd.DataFrame([t.__dict__ for t in result.trades])
+            trades_df.to_csv(output_dir / "selector_trades.csv", index=False)
+    else:
+        print("Selector simulation unavailable; used fallback strategy instead.")
+        if args.strategy == "shared_cash":
+            result = run_shared_cash_simulation(
+                bars,
+                actions,
+                SimulationConfig(initial_cash=args.initial_cash, max_hold_hours=args.max_hold_hours),
+            )
+        else:
+            sim = BinanceMarketSimulator(
+                SimulationConfig(initial_cash=args.initial_cash, max_hold_hours=args.max_hold_hours)
+            )
+            result = sim.run(bars, actions)
+        metrics = result.metrics
+        print(f"total_return: {metrics.get('total_return', 0.0):.4f}")
+        print(f"sortino: {metrics.get('sortino', 0.0):.4f}")
+
+        if result.per_symbol:
+            negative = []
+            any_metrics = False
+            for symbol, sym_result in result.per_symbol.items():
+                total_return = sym_result.metrics.get("total_return") if sym_result.metrics else None
+                if total_return is not None:
+                    any_metrics = True
+                    print(f"{symbol} total_return: {total_return:.4f}")
+                    if total_return < 0:
+                        negative.append(symbol)
+            if any_metrics:
+                if negative:
+                    print(f"Negative PnL symbols: {', '.join(sorted(negative))}")
+                else:
+                    print("Negative PnL symbols: none")
+            else:
+                print("Per-symbol metrics unavailable for this strategy.")
+
+        if args.output_dir:
+            output_dir = Path(args.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            result.combined_equity.to_frame(name="equity").to_csv(
+                output_dir / "combined_equity.csv", index=True
+            )
 
 
 if __name__ == "__main__":
