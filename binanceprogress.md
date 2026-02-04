@@ -249,6 +249,9 @@ Best 20-day PnL so far: total_return=0.404804 (muon_momentum=0.975, skip_scale_i
 - muon_momentum=0.975 (skip_scale_init=0.1): `chronos_sol_v2_test30_muon0975_20260204_114507`
   - Metrics (30-day test): total_return=0.703753, sortino=106.251893, annualized_return=658.726004
   - Last 2 days: total_return=0.070984, sortino=28667.020760, annualized_return=272505.067898
+- baseline (skip_scale_init=0.1): `chronos_sol_v2_test30_skip01_20260204_115545`
+  - Metrics (30-day test): total_return=0.534233, sortino=81.648603, annualized_return=183.001900
+  - Last 2 days: total_return=0.026818, sortino=4597.584149, annualized_return=124.183249
 
 Best 30-day PnL so far: total_return=0.703753 (muon_momentum=0.975, skip_scale_init=0.1).
 
