@@ -82,6 +82,7 @@ class TrainingConfig:
     grad_clip: float = 1.0
     maker_fee: float = 0.0
     return_weight: float = 0.08
+    periods_per_year: Optional[float] = None
     price_offset_pct: float = 0.0003
     min_price_gap_pct: float = 0.0003
     trade_amount_scale: float = 100.0

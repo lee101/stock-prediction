@@ -261,15 +261,16 @@ class BinanceHourlyTrainer:
                 )
 
             returns = sim.returns.float()
+            periods_per_year = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
             score, sortino, annual_return = compute_hourly_objective(
                 returns,
-                periods_per_year=HOURLY_PERIODS_PER_YEAR,
+                periods_per_year=periods_per_year,
                 return_weight=self.config.return_weight,
             )
             loss = combined_sortino_pnl_loss(
                 returns,
                 target_sign=self.config.sortino_target_sign,
-                periods_per_year=HOURLY_PERIODS_PER_YEAR,
+                periods_per_year=periods_per_year,
                 return_weight=self.config.return_weight,
             )
 
