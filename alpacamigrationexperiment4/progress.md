@@ -49,6 +49,10 @@ Tracking Alpaca crypto-only hourly experiments with CRYPTO_TRADING_FEE applied e
 | 2026-02-04 12:54 | alpaca_mig4_multiasset_selector_solbtceth_eval20_per_symbol | SOLUSD,BTCUSD,ETHUSD | 20d | 0.0695 | 72.1785 | multi-asset selector, per-symbol checkpoints, intensity=1.4, offset=0.0002, open_symbol=BTCUSD |
 | 2026-02-04 12:54 | alpaca_mig4_multiasset_selector_solbtceth_eval60_per_symbol | SOLUSD,BTCUSD,ETHUSD | 60d | 0.0903 | 40.3983 | multi-asset selector, per-symbol checkpoints, intensity=1.4, offset=0.0002, open_symbol=BTCUSD |
 | 2026-02-04 12:57 | alpaca_mig4_multiasset_selector_solbtceth_eval90_per_symbol | SOLUSD,BTCUSD,ETHUSD | 90d | 0.0903 | 37.2873 | multi-asset selector, per-symbol checkpoints, intensity=1.4, offset=0.0002, open_symbol=BTCUSD |
+| 2026-02-04 13:00 | alpaca_mig4_multiasset_selector_solbtceth_eval20_intmap_1p4_1p0_1p0 | SOLUSD,BTCUSD,ETHUSD | 20d | 0.0375 | 4.0486 | per-symbol intensity map (SOL=1.4,BTC=1.0,ETH=1.0), offset=0.0002 |
+| 2026-02-04 13:00 | alpaca_mig4_multiasset_selector_solbtceth_eval20_intmap_1p4_1p2_1p2 | SOLUSD,BTCUSD,ETHUSD | 20d | 0.0375 | 3.8495 | per-symbol intensity map (SOL=1.4,BTC=1.2,ETH=1.2), offset=0.0002 |
+| 2026-02-04 13:00 | alpaca_mig4_multiasset_selector_solbtceth_eval20_intmap_1p4_1p2_1p0 | SOLUSD,BTCUSD,ETHUSD | 20d | 0.0375 | 4.0487 | per-symbol intensity map (SOL=1.4,BTC=1.2,ETH=1.0), offset=0.0002 |
+| 2026-02-04 13:00 | alpaca_mig4_multiasset_selector_solbtceth_eval20_intmap_1p4_1p0_1p2 | SOLUSD,BTCUSD,ETHUSD | 20d | 0.0375 | 3.8495 | per-symbol intensity map (SOL=1.4,BTC=1.0,ETH=1.2), offset=0.0002 |
 | 2026-02-04 11:55 | alpaca_mig4_solusd_8e_20260204_115546 | SOLUSD | full val | 0.1403 | 2.4949 | 8 epochs, CRYPTO_TRADING_FEE, cache-only |
 | 2026-02-04 11:55 | alpaca_mig4_solusd_8e_20260204_115546_intrabar_rt8_i14_eval20 | SOLUSD | 20d | 0.0810 | 8.3224 | intrabar max=8, intensity=1.4, offset=0.0002 |
 
