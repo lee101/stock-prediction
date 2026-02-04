@@ -16,6 +16,7 @@ Tracking Alpaca crypto-only hourly experiments with CRYPTO_TRADING_FEE applied e
 | 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355 | SOLUSD | full val | 0.1019 | 2.3323 | 4 epochs, CRYPTO_TRADING_FEE, cache-only |
 | 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_eval20 | SOLUSD | 20d | -0.0004 | 0.1859 | baseline eval window |
 | 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_intrabar | SOLUSD | 20d | 0.0522 | 5.9735 | intrabar cycles (max=3) |
+| 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_intrabar_best | SOLUSD | 20d | 0.0681 | 7.2754 | intrabar max=3, intensity=1.2, offset=0.0002 |
 
 ### Sweep highlights (20d, intrabar max=3)
 
