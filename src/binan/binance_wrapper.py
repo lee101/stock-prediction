@@ -335,6 +335,44 @@ def get_all_orders(symbol: str, client: Client | None = None) -> List[Dict[str, 
     return orders
 
 
+def get_open_orders(symbol: str, client: Client | None = None) -> List[Dict[str, Any]]:
+    client = _resolve_client(client)
+    try:
+        raw_orders = client.get_open_orders(symbol=symbol)
+    except Exception as e:
+        logger.error(e)
+        return []
+    if not isinstance(raw_orders, list):
+        logger.error(f"Unexpected open orders payload from Binance: {raw_orders}")
+        return []
+    orders: List[Dict[str, Any]] = []
+    for entry in raw_orders:
+        if isinstance(entry, dict):
+            orders.append(entry)
+        else:
+            logger.debug(f"Discarding non-dict open order entry: {entry}")
+    return orders
+
+
+def get_my_trades(symbol: str, client: Client | None = None) -> List[Dict[str, Any]]:
+    client = _resolve_client(client)
+    try:
+        raw_trades = client.get_my_trades(symbol=symbol)
+    except Exception as e:
+        logger.error(e)
+        return []
+    if not isinstance(raw_trades, list):
+        logger.error(f"Unexpected trades payload from Binance: {raw_trades}")
+        return []
+    trades: List[Dict[str, Any]] = []
+    for entry in raw_trades:
+        if isinstance(entry, dict):
+            trades.append(entry)
+        else:
+            logger.debug(f"Discarding non-dict trade entry: {entry}")
+    return trades
+
+
 def get_account_balances(client: Client | None = None) -> List[Dict[str, Any]]:
     client = _resolve_client(client)
     try:

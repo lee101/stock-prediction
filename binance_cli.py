@@ -45,6 +45,12 @@ def _format_usdt(value: float) -> str:
     return f"${numeric:,.2f}"
 
 
+def _format_side(value) -> str:
+    if not isinstance(value, str):
+        return "n/a"
+    return value.upper()
+
+
 def _normalize_assets_filter(assets: Optional[List[str]]) -> Optional[set[str]]:
     if not assets:
         return None
@@ -165,6 +171,131 @@ def account_value(
             asset = entry.get("asset", "n/a")
             amount = entry.get("amount", 0.0)
             typer.echo(f"- {asset} amount={_format_amount(amount)}")
+
+
+@app.command("orders")
+def orders(
+    symbols: Optional[List[str]] = typer.Option(
+        None, "--symbol", "-s", help="Symbol(s), repeatable or comma-separated (e.g., BTCUSDT)."
+    ),
+    open_only: bool = typer.Option(True, "--open-only/--all"),
+) -> None:
+    """Show Binance orders for the provided symbols."""
+    normalized_symbols = _normalize_assets_filter(symbols)
+    if not normalized_symbols:
+        normalized_symbols = {symbol.upper() for symbol in binance_wrapper.crypto_symbols}
+    lines: List[str] = []
+    for symbol in sorted(normalized_symbols):
+        try:
+            if open_only:
+                orders_list = binance_wrapper.get_open_orders(symbol)
+            else:
+                orders_list = binance_wrapper.get_all_orders(symbol)
+        except RuntimeError as exc:
+            _handle_cli_error(exc)
+        for order in orders_list:
+            status = order.get("status", "n/a")
+            side = _format_side(order.get("side"))
+            qty = _format_amount(order.get("origQty", order.get("executedQty", 0)))
+            price = _format_amount(order.get("price", 0))
+            order_id = order.get("orderId", "n/a")
+            lines.append(
+                f"- {symbol} order_id={order_id} side={side} status={status} qty={qty} price={price}"
+            )
+    if not lines:
+        typer.echo("No orders found.")
+        raise typer.Exit(code=0)
+    typer.echo("Orders:")
+    for line in lines:
+        typer.echo(line)
+
+
+@app.command("trades")
+def trades(
+    symbols: Optional[List[str]] = typer.Option(
+        None, "--symbol", "-s", help="Symbol(s), repeatable or comma-separated (e.g., BTCUSDT)."
+    ),
+    limit: int = typer.Option(50, "--limit", help="Max trades to show per symbol."),
+) -> None:
+    """Show recent Binance trades per symbol."""
+    normalized_symbols = _normalize_assets_filter(symbols)
+    if not normalized_symbols:
+        normalized_symbols = {symbol.upper() for symbol in binance_wrapper.crypto_symbols}
+    lines: List[str] = []
+    total_count = 0
+    for symbol in sorted(normalized_symbols):
+        try:
+            trades_list = binance_wrapper.get_my_trades(symbol)
+        except RuntimeError as exc:
+            _handle_cli_error(exc)
+        trades_list = trades_list[: max(limit, 0)]
+        total_count += len(trades_list)
+        for trade in trades_list:
+            side = "BUY" if trade.get("isBuyer") else "SELL"
+            qty = _format_amount(trade.get("qty", 0))
+            price = _format_amount(trade.get("price", 0))
+            trade_id = trade.get("id", "n/a")
+            lines.append(f"- {symbol} trade_id={trade_id} side={side} qty={qty} price={price}")
+    if not lines:
+        typer.echo("No trades found.")
+        raise typer.Exit(code=0)
+    typer.echo(f"Trades (showing {len(lines)} total, across {total_count} fetched):")
+    for line in lines:
+        typer.echo(line)
+
+
+@app.command("summary")
+def summary() -> None:
+    """Show a quick summary of balances, open orders, and trade counts."""
+    typer.echo("Balances:")
+    try:
+        balances_list = binance_wrapper.get_account_balances()
+    except RuntimeError as exc:
+        _handle_cli_error(exc)
+    for entry in balances_list:
+        asset = entry.get("asset")
+        if not isinstance(asset, str) or not asset:
+            continue
+        free = _coerce_balance_value(entry.get("free"))
+        locked = _coerce_balance_value(entry.get("locked"))
+        total = free + locked
+        if total <= 0:
+            continue
+        typer.echo(
+            f"- {asset.upper()} free={_format_amount(free)} locked={_format_amount(locked)} "
+            f"total={_format_amount(total)}"
+        )
+
+    typer.echo("Open Orders:")
+    order_count = 0
+    for symbol in sorted(binance_wrapper.crypto_symbols):
+        try:
+            orders_list = binance_wrapper.get_open_orders(symbol)
+        except RuntimeError as exc:
+            _handle_cli_error(exc)
+        for order in orders_list:
+            order_count += 1
+            status = order.get("status", "n/a")
+            side = _format_side(order.get("side"))
+            qty = _format_amount(order.get("origQty", order.get("executedQty", 0)))
+            price = _format_amount(order.get("price", 0))
+            order_id = order.get("orderId", "n/a")
+            typer.echo(
+                f"- {symbol} order_id={order_id} side={side} status={status} qty={qty} price={price}"
+            )
+    typer.echo(f"Open Orders Count: {order_count}")
+
+    typer.echo("Trade Counts:")
+    total_trades = 0
+    for symbol in sorted(binance_wrapper.crypto_symbols):
+        try:
+            trades_list = binance_wrapper.get_my_trades(symbol)
+        except RuntimeError as exc:
+            _handle_cli_error(exc)
+        count = len(trades_list)
+        total_trades += count
+        typer.echo(f"- {symbol} trades={count}")
+    typer.echo(f"Total Trades: {total_trades}")
 
 
 @app.command("buy-btc")
