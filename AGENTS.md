@@ -31,3 +31,5 @@ Refactorings and bugfixes must never silently discard, mask, or change user data
 use latest tactics in terms of machine learning can see nanochat/ for some good practice
 
 instead of reconfirming with me just do it - you are probably right and yea i can always roll back thats fine lets just do it.
+
+Creating new experiment directories is expected and safe; keep experiments reproducible so we can rerun them and match marketsimulator PnL closely to production.
