@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Iterable, List, Optional
 
 import typer
 
 from src.binan import binance_wrapper
+from src.binan.holdings_snapshot import DEFAULT_DB_PATH, load_latest_snapshot, record_snapshot
 
 app = typer.Typer(help="Binance spot trading CLI utilities.")
 
@@ -50,7 +53,17 @@ def _format_side(value) -> str:
         return "n/a"
     return value.upper()
 
-
+def _format_delta(value: float) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not math.isfinite(numeric):
+        return "n/a"
+    sign = "+" if numeric >= 0 else ""
+    return f"{sign}{numeric:,.2f}"
 def _normalize_assets_filter(assets: Optional[List[str]]) -> Optional[set[str]]:
     if not assets:
         return None
@@ -63,6 +76,33 @@ def _normalize_assets_filter(assets: Optional[List[str]]) -> Optional[set[str]]:
             if token:
                 normalized.add(token)
     return normalized or None
+
+
+def _normalize_symbols_filter(symbols: Optional[List[str]]) -> Optional[List[str]]:
+    if not symbols:
+        return None
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for entry in symbols:
+        if not entry:
+            continue
+        for token in entry.replace(",", " ").split():
+            token = token.strip().upper().replace("/", "")
+            if token and token not in seen:
+                normalized.append(token)
+                seen.add(token)
+    return normalized or None
+
+
+def _format_time_ms(value) -> str:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if numeric <= 0:
+        return "n/a"
+    dt = datetime.fromtimestamp(numeric / 1000.0, tz=timezone.utc)
+    return dt.isoformat()
 
 
 def _handle_cli_error(exc: Exception) -> None:
@@ -296,7 +336,223 @@ def summary() -> None:
         total_trades += count
         typer.echo(f"- {symbol} trades={count}")
     typer.echo(f"Total Trades: {total_trades}")
+@app.command("open-orders")
+def open_orders(
+    symbols: Optional[List[str]] = typer.Option(
+        None, "--symbol", "-s", help="Filter to symbol(s), e.g. BTCUSDT or BTCUSD."
+    ),
+) -> None:
+    """List open spot orders on Binance."""
+    normalized = _normalize_symbols_filter(symbols)
+    try:
+        if not normalized:
+            orders = binance_wrapper.get_open_orders()
+        else:
+            orders = []
+            for symbol in normalized:
+                orders.extend(binance_wrapper.get_open_orders(symbol))
+    except RuntimeError as exc:
+        _handle_cli_error(exc)
 
+    if not orders:
+        typer.echo("No open orders.")
+        raise typer.Exit(code=0)
+
+    typer.echo("Open Orders:")
+    for order in sorted(orders, key=lambda item: (item.get("symbol", ""), item.get("time", 0))):
+        symbol = order.get("symbol", "n/a")
+        side = order.get("side", "n/a")
+        order_type = order.get("type", "n/a")
+        status = order.get("status", "n/a")
+        price = order.get("price")
+        qty = order.get("origQty")
+        filled = order.get("executedQty")
+        typer.echo(
+            f"- {symbol} {side} {order_type} status={status} "
+            f"price={_format_amount(price, 8)} qty={_format_amount(qty, 8)} filled={_format_amount(filled, 8)}"
+        )
+
+
+@app.command("daily-pnl")
+def daily_pnl() -> None:
+    """Estimate previous-day PnL using Binance spot account snapshots."""
+    try:
+        result = binance_wrapper.get_prev_day_pnl_usdt()
+    except RuntimeError as exc:
+        _handle_cli_error(exc)
+
+    typer.echo("Previous-day PnL (spot snapshot):")
+    typer.echo(f"- prev_total_btc: {_format_amount(result.get('prev_total_btc', 0.0), 8)}")
+    typer.echo(f"- latest_total_btc: {_format_amount(result.get('latest_total_btc', 0.0), 8)}")
+    typer.echo(f"- delta_btc: {_format_amount(result.get('delta_btc', 0.0), 8)}")
+    typer.echo(f"- btc_price_usdt: {_format_usdt(result.get('btc_price_usdt', 0.0))}")
+    typer.echo(f"- delta_usdt: {_format_usdt(result.get('delta_usdt', 0.0))}")
+    typer.echo(f"- prev_update_time: {result.get('prev_update_time')}")
+    typer.echo(f"- latest_update_time: {result.get('latest_update_time')}")
+
+
+@app.command("recent-trades")
+def recent_trades(
+    symbols: Optional[List[str]] = typer.Option(
+        None, "--symbol", "-s", help="Filter to symbol(s), e.g. BTCUSDT or BTCUSD."
+    ),
+    days: float = typer.Option(1.0, "--days", help="Lookback window in days."),
+    limit: int = typer.Option(1000, "--limit", help="Max trades per symbol (default 1000)."),
+) -> None:
+    """Show executed trades for the past N days."""
+    if not math.isfinite(days) or days <= 0:
+        _handle_cli_error(ValueError(f"Days must be positive, received {days}."))
+    normalized = _normalize_symbols_filter(symbols)
+    if not normalized:
+        normalized = ["BTCUSD", "ETHUSD", "LINKUSD"]
+
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days)
+    start_ms = int(start.timestamp() * 1000)
+
+    all_trades = []
+    for symbol in normalized:
+        trades = binance_wrapper.get_my_trades(
+            symbol,
+            start_time=start_ms,
+            limit=limit,
+        )
+        for trade in trades:
+            trade_time = trade.get("time")
+            try:
+                trade_ms = int(trade_time)
+            except (TypeError, ValueError):
+                trade_ms = 0
+            if trade_ms >= start_ms:
+                all_trades.append(trade)
+
+    if not all_trades:
+        typer.echo("No executed trades in the requested window.")
+        raise typer.Exit(code=0)
+
+    all_trades.sort(key=lambda item: (item.get("time", 0), item.get("symbol", "")))
+
+    typer.echo("Executed trades:")
+    for trade in all_trades:
+        symbol = trade.get("symbol", "n/a")
+        side = "BUY" if trade.get("isBuyer") else "SELL"
+        price = trade.get("price")
+        qty = trade.get("qty")
+        quote_qty = trade.get("quoteQty")
+        commission = trade.get("commission")
+        commission_asset = trade.get("commissionAsset", "")
+        trade_id = trade.get("id", "n/a")
+        order_id = trade.get("orderId", "n/a")
+        time_str = _format_time_ms(trade.get("time"))
+        typer.echo(
+            f"- {time_str} {symbol} {side} price={_format_amount(price, 8)} "
+            f"qty={_format_amount(qty, 8)} quote={_format_amount(quote_qty, 8)} "
+            f"order_id={order_id} trade_id={trade_id} "
+            f"commission={_format_amount(commission, 8)} {commission_asset}"
+        )
+
+
+@app.command("holdings-summary")
+def holdings_summary(
+    include_locked: bool = typer.Option(True, "--include-locked/--free-only"),
+    top: int = typer.Option(10, "--top", help="Show top N holdings by value (0 shows all)."),
+    db_path: Optional[Path] = typer.Option(
+        None, "--db-path", help="Override snapshot DB path."
+    ),
+) -> None:
+    """Summarize current holdings and compare against the previous day snapshot."""
+    try:
+        account = binance_wrapper.get_account_value_usdt(include_locked=include_locked)
+    except RuntimeError as exc:
+        _handle_cli_error(exc)
+
+    total_usdt = float(account.get("total_usdt", 0.0))
+    assets = account.get("assets", [])
+    if not isinstance(assets, list):
+        assets = []
+
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    db_path = db_path or DEFAULT_DB_PATH
+
+    prev_snapshot = load_latest_snapshot(
+        db_path=db_path,
+        before_ts_ms=int(today_start.timestamp() * 1000),
+    )
+    comparison_label = "previous day snapshot"
+    if prev_snapshot is None:
+        prev_snapshot = load_latest_snapshot(db_path=db_path)
+        comparison_label = "previous snapshot (same-day)" if prev_snapshot else "no previous snapshot"
+
+    current_snapshot = record_snapshot(
+        total_usdt=total_usdt,
+        assets=assets,
+        db_path=db_path,
+    )
+
+    typer.echo(f"Holdings Snapshot: {current_snapshot.ts_iso}")
+    typer.echo(f"- total_usdt: {_format_usdt(total_usdt)}")
+    typer.echo(f"- db_path: {db_path}")
+
+    if prev_snapshot is None:
+        typer.echo("No previous snapshot available to compare.")
+    else:
+        delta_usdt = total_usdt - prev_snapshot.total_usdt
+        pct = (delta_usdt / prev_snapshot.total_usdt * 100.0) if prev_snapshot.total_usdt else 0.0
+        typer.echo(f"Comparison: {comparison_label} ({prev_snapshot.ts_iso})")
+        typer.echo(f"- prev_total_usdt: {_format_usdt(prev_snapshot.total_usdt)}")
+        typer.echo(f"- delta_usdt: {_format_delta(delta_usdt)} ({pct:+.2f}%)")
+
+        prev_assets = {asset.asset: asset for asset in prev_snapshot.assets}
+        current_assets = {asset.get("asset", "").upper(): asset for asset in assets if isinstance(asset, dict)}
+        combined_keys = sorted(set(prev_assets) | set(current_assets))
+
+        deltas = []
+        for key in combined_keys:
+            prev = prev_assets.get(key)
+            curr = current_assets.get(key, {})
+            curr_amount = float(curr.get("amount", 0.0)) if curr else 0.0
+            curr_value = float(curr.get("value_usdt", 0.0)) if curr else 0.0
+            prev_amount = prev.amount if prev else 0.0
+            prev_value = prev.value_usdt if prev else 0.0
+            delta_amount = curr_amount - prev_amount
+            delta_value = curr_value - prev_value
+            deltas.append((key, delta_value, delta_amount, curr_value, curr_amount))
+
+        deltas.sort(key=lambda item: abs(item[1]), reverse=True)
+        if deltas:
+            typer.echo("Asset deltas (sorted by abs value change):")
+            for asset, delta_value, delta_amount, curr_value, curr_amount in deltas:
+                typer.echo(
+                    f"- {asset} delta_value={_format_delta(delta_value)} "
+                    f"delta_amount={_format_amount(delta_amount, 8)} "
+                    f"current_value={_format_usdt(curr_value)} "
+                    f"current_amount={_format_amount(curr_amount, 8)}"
+                )
+
+    holdings = sorted(
+        [
+            (
+                entry.get("asset", "n/a"),
+                float(entry.get("amount", 0.0)),
+                float(entry.get("price_usdt", 0.0)),
+                float(entry.get("value_usdt", 0.0)),
+            )
+            for entry in assets
+            if isinstance(entry, dict)
+        ],
+        key=lambda item: item[3],
+        reverse=True,
+    )
+    if holdings:
+        if top > 0:
+            holdings = holdings[: int(top)]
+        typer.echo("Holdings (by value):")
+        for asset, amount, price, value in holdings:
+            typer.echo(
+                f"- {asset} amount={_format_amount(amount, 8)} "
+                f"price={_format_amount(price, 6)} value={_format_usdt(value)}"
+            )
 
 @app.command("buy-btc")
 def buy_btc(
