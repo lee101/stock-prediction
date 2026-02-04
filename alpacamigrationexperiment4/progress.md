@@ -38,6 +38,8 @@ Tracking Alpaca crypto-only hourly experiments with CRYPTO_TRADING_FEE applied e
 | 2026-02-04 12:18 | alpaca_mig4_solusd_6e_20260204_114240_intrabar_rt10_i14_eval120 | SOLUSD | 120d | 0.2491 | 7.5298 | intrabar max=10, intensity=1.4, offset=0.0002 |
 | 2026-02-04 12:18 | alpaca_mig4_solusd_6e_20260204_114240_intrabar_rt20_i14_eval20 | SOLUSD | 20d | 0.1185 | 20.7736 | intrabar max=20, intensity=1.4, offset=0.0002 |
 | 2026-02-04 12:18 | alpaca_mig4_solusd_6e_20260204_114240_intrabar_rt24_i14_eval20 | SOLUSD | 20d | 0.1185 | 20.7736 | intrabar max=24, intensity=1.4, offset=0.0002 |
+| 2026-02-04 12:21 | alpaca_mig4_multiasset_selector_solbtceth_eval20 | SOLUSD,BTCUSD,ETHUSD | 20d | 0.0262 | 6.9054 | multi-asset selector, shared checkpoint, intensity=1.4, offset=0.0002 |
+| 2026-02-04 12:21 | alpaca_mig4_multiasset_selector_solbtceth_eval60 | SOLUSD,BTCUSD,ETHUSD | 60d | 0.0734 | 5.4545 | multi-asset selector, shared checkpoint, intensity=1.4, offset=0.0002 |
 | 2026-02-04 11:55 | alpaca_mig4_solusd_8e_20260204_115546 | SOLUSD | full val | 0.1403 | 2.4949 | 8 epochs, CRYPTO_TRADING_FEE, cache-only |
 | 2026-02-04 11:55 | alpaca_mig4_solusd_8e_20260204_115546_intrabar_rt8_i14_eval20 | SOLUSD | 20d | 0.0810 | 8.3224 | intrabar max=8, intensity=1.4, offset=0.0002 |
 
