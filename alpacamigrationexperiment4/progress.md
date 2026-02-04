@@ -17,11 +17,18 @@ Tracking Alpaca crypto-only hourly experiments with CRYPTO_TRADING_FEE applied e
 | 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_eval20 | SOLUSD | 20d | -0.0004 | 0.1859 | baseline eval window |
 | 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_intrabar | SOLUSD | 20d | 0.0522 | 5.9735 | intrabar cycles (max=3) |
 | 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_intrabar_best | SOLUSD | 20d | 0.0681 | 7.2754 | intrabar max=3, intensity=1.2, offset=0.0002 |
+| 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_intrabar_best_rt5 | SOLUSD | 20d | 0.0718 | 7.6836 | intrabar max=5, intensity=1.2, offset=0.0002 |
+| 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_intrabar_best_rt8 | SOLUSD | 20d | 0.0766 | 8.1433 | intrabar max=8, intensity=1.2, offset=0.0002 |
+| 2026-02-04 11:23 | alpaca_mig4_solusd_20260204_112355_intrabar_best_rt12 | SOLUSD | 20d | 0.0766 | 8.1433 | intrabar max=12, intensity=1.2, offset=0.0002 |
 
 ### Sweep highlights (20d, intrabar max=3)
 
 - Best return: intensity=1.20 offset=0.00020 → total_return=0.0681, sortino=7.2754
 - Runner: `python -m alpacamigrationexperiment4.sweep --checkpoint binanceneural/checkpoints/alpaca_mig4_solusd_20260204_112355/epoch_002.pt --symbol SOLUSD --sequence-length 96 --cache-only --intensity 0.8 1.0 1.2 1.4 --offset 0.0 0.0002 --eval-days 20 --allow-intrabar-round-trips --max-round-trips-per-bar 3`
+
+### Sweep highlights (20d, intensity/offset fixed, max round trips)
+
+- Best return: max_round_trips_per_bar=8 (tie with 12) → total_return=0.0766, sortino=8.1433
 
 ## Artifact sync
 
