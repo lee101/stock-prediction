@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, Optional
@@ -20,12 +20,12 @@ from binanceneural.binance_watchers import WatcherPlan, spawn_watcher
 from binanceneural.config import TrainingConfig, PolicyConfig
 from binanceneural.execution import compute_order_quantities, get_free_balances, resolve_symbol_rules
 from binanceneural.inference import generate_latest_action
-from binanceneural.model import BinanceHourlyPolicy
+from binanceneural.model import build_policy, policy_config_from_payload
 from binanceneural.pnl_state import get_probe_mode
 from binanceneural.trade_binance_hourly import _ensure_valid_levels, _parse_checkpoint_map, _parse_symbols, _apply_probe_allocation
 
 from .config import DatasetConfig
-from .data import BinanceExp1DataModule
+from .data import BinanceExp1DataModule, build_default_feature_columns
 
 
 @dataclass
@@ -38,22 +38,56 @@ class TradingPlan:
     timestamp: datetime
 
 
-def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConfig) -> BinanceHourlyPolicy:
+def _load_checkpoint_payload(checkpoint_path: Path) -> dict:
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    state_dict = payload.get("state_dict", payload)
-    cfg = payload.get("config", default_cfg)
-    model = BinanceHourlyPolicy(
-        PolicyConfig(
-            input_dim=input_dim,
-            hidden_dim=cfg.transformer_dim,
-            dropout=cfg.transformer_dropout,
-            price_offset_pct=cfg.price_offset_pct,
-            min_price_gap_pct=cfg.min_price_gap_pct,
-            trade_amount_scale=cfg.trade_amount_scale,
-            num_heads=cfg.transformer_heads,
-            num_layers=cfg.transformer_layers,
-        )
+    if not isinstance(payload, dict):
+        payload = {"state_dict": payload}
+    return payload
+
+
+def _infer_input_dim(state_dict: object, fallback: int) -> int:
+    if isinstance(state_dict, dict):
+        embed_weight = state_dict.get("embed.weight")
+        if isinstance(embed_weight, torch.Tensor) and embed_weight.ndim == 2:
+            return int(embed_weight.shape[1])
+    return int(fallback)
+
+
+def _resolve_dataset_config(
+    base_cfg: DatasetConfig, *, input_dim: int, horizon: int
+) -> DatasetConfig:
+    candidates = []
+    if (horizon,) not in candidates:
+        candidates.append((horizon,))
+    if base_cfg.forecast_horizons not in candidates:
+        candidates.append(base_cfg.forecast_horizons)
+    for horizons in candidates:
+        cfg = replace(base_cfg, forecast_horizons=tuple(int(h) for h in horizons))
+        feature_cols = build_default_feature_columns(cfg)
+        if len(feature_cols) == input_dim:
+            return replace(cfg, feature_columns=feature_cols)
+    raise RuntimeError(
+        "Feature dimension mismatch: "
+        f"checkpoint input_dim={input_dim} cannot be matched with forecast_horizons "
+        f"{candidates} (computed dims: {[len(build_default_feature_columns(replace(base_cfg, forecast_horizons=h))) for h in candidates]}). "
+        "Update DatasetConfig.feature_columns to match the checkpoint."
     )
+
+
+def _load_model_from_payload(payload: dict, input_dim: int, default_cfg: TrainingConfig):
+    state_dict = payload.get("state_dict", payload)
+    if isinstance(state_dict, dict):
+        embed_weight = state_dict.get("embed.weight")
+        if isinstance(embed_weight, torch.Tensor) and embed_weight.ndim == 2:
+            input_dim = int(embed_weight.shape[1])
+    cfg = payload.get("config", default_cfg)
+    payload_cfg = cfg if isinstance(cfg, dict) else getattr(cfg, "__dict__", {})
+    policy_cfg = policy_config_from_payload(
+        payload_cfg,
+        input_dim=input_dim,
+        state_dict=state_dict if isinstance(state_dict, dict) else None,
+    )
+    model = build_policy(policy_cfg)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
     return model
@@ -178,14 +212,19 @@ def _run_cycle(
             if checkpoint_path is None:
                 print(f"No checkpoint provided for {symbol}; skipping.")
                 continue
-            data_cfg = DatasetConfig(
+            payload = _load_checkpoint_payload(checkpoint_path)
+            state_dict = payload.get("state_dict", payload)
+            base_cfg = DatasetConfig(
                 symbol=symbol,
                 data_root=data_root,
                 sequence_length=sequence_length,
                 cache_only=cache_only,
             )
+            fallback_dim = len(build_default_feature_columns(base_cfg))
+            input_dim = _infer_input_dim(state_dict, fallback=fallback_dim)
+            data_cfg = _resolve_dataset_config(base_cfg, input_dim=input_dim, horizon=horizon)
             data = BinanceExp1DataModule(data_cfg)
-            model = _load_model(checkpoint_path, len(data.feature_columns), TrainingConfig(sequence_length=sequence_length))
+            model = _load_model_from_payload(payload, input_dim, TrainingConfig(sequence_length=sequence_length))
             action = generate_latest_action(
                 model=model,
                 frame=data.frame,

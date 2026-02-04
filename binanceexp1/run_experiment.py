@@ -7,9 +7,14 @@ from typing import Optional
 
 import torch
 
-from binanceneural.config import TrainingConfig, PolicyConfig
+from binanceneural.config import TrainingConfig
 from binanceneural.marketsimulator import BinanceMarketSimulator, SimulationConfig
-from binanceneural.model import BinanceHourlyPolicy, align_state_dict_input_dim
+from binanceneural.model import (
+    BinancePolicyBase,
+    align_state_dict_input_dim,
+    build_policy,
+    policy_config_from_payload,
+)
 from binanceneural.trainer import BinanceHourlyTrainer
 from binanceneural.inference import generate_actions_from_frame
 
@@ -26,31 +31,21 @@ class ExperimentResult:
     sortino: float
 
 
-def _infer_max_len(state_dict: dict, cfg: TrainingConfig) -> int:
-    pe = state_dict.get("pos_encoding.pe")
-    if pe is not None and hasattr(pe, "shape"):
-        return int(pe.shape[0])
-    return int(getattr(cfg, "sequence_length", PolicyConfig.max_len))
-
-
-def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConfig) -> BinanceHourlyPolicy:
+def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConfig) -> BinancePolicyBase:
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict):
+        payload = {"state_dict": payload}
     state_dict = payload.get("state_dict", payload)
-    state_dict = align_state_dict_input_dim(state_dict, input_dim=input_dim)
+    if isinstance(state_dict, dict):
+        state_dict = align_state_dict_input_dim(state_dict, input_dim=input_dim)
     cfg = payload.get("config", default_cfg)
-    model = BinanceHourlyPolicy(
-        PolicyConfig(
-            input_dim=input_dim,
-            hidden_dim=cfg.transformer_dim,
-            dropout=cfg.transformer_dropout,
-            price_offset_pct=cfg.price_offset_pct,
-            min_price_gap_pct=cfg.min_price_gap_pct,
-            trade_amount_scale=cfg.trade_amount_scale,
-            num_heads=cfg.transformer_heads,
-            num_layers=cfg.transformer_layers,
-            max_len=_infer_max_len(state_dict, cfg),
-        )
+    payload_cfg = cfg if isinstance(cfg, dict) else getattr(cfg, "__dict__", {})
+    policy_cfg = policy_config_from_payload(
+        payload_cfg,
+        input_dim=input_dim,
+        state_dict=state_dict if isinstance(state_dict, dict) else None,
     )
+    model = build_policy(policy_cfg)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
     return model
@@ -74,7 +69,7 @@ def train_model(data: BinanceExp1DataModule, args: argparse.Namespace) -> Path:
 
 def evaluate_model(
     *,
-    model: BinanceHourlyPolicy,
+    model: BinancePolicyBase,
     data: BinanceExp1DataModule,
     horizon: int,
     aggregate: bool,
