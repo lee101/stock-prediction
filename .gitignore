@@ -350,10 +350,12 @@ tradingdata/
 tradingdatahourly/
 trainingdatahourlybinance/
 bagsfm_state.json
+strategy_state/binance_holdings_snapshots.db
 
 # Experiment logs and results
 *.log.*
 *results.md
+!binanceresults.md
 EXPERIMENTS_LOG.md
 
 # Experiment directories (not code modules)

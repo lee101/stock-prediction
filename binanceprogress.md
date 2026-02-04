@@ -26,6 +26,7 @@ Updated: 2026-02-03
 - NVDA LoRA: `chronos2_finetuned/NVDA_lora_20260203_092111` → Validation MAE% 0.1333, preaug=differencing
 - Updated `hyperparams/chronos2/hourly/{BTCUSD,ETHUSD,LINKUSD,SOLUSD,UNIUSD,NFLX,NVDA}.json` to point `model_id` at the LoRA finetuned checkpoints.
 - Forecast cache rebuilt for h1 only (BTCUSD/ETHUSD/LINKUSD/SOLUSD/UNIUSD/NFLX/NVDA); h24 recompute deferred (very heavy with long contexts).
+- Supervisor `binanceexp1-solusd` updated to cross-pair BTCUSD/ETHUSD/LINKUSD checkpoints (horizon=1, seq=96).
 
 ## Experiments (Chronos2 + Binance neural)
 
@@ -292,7 +293,6 @@ Production target (SOLUSD)
 - intensity-scale 20.0, horizon 24, sequence length 96, min-gap-pct 0.0003
 - Runner: `scripts/run_binanceexp1_prod_solusd.sh`
 - Supervisor: `supervisor/binanceexp1-solusd.conf`
-
 ## Binanceexp1 Horizon=1 (Chronos2 LoRA, h1-only cache)
 
 ### SOLUSD (full 5 epochs)
@@ -396,3 +396,18 @@ Results (no same-bar re-entry by default)
 Comparison to best-20 sweep
 - Best 20 sweep (SOLUSD horizon=24) total_return 17.7449 (not apples-to-apples; single-symbol, h24).
 - Conservative selector is below that baseline; aggressive upper-bound run exceeds it.
+
+## Cross-pair marketsimulator (BTCUSD/ETHUSD/LINKUSD, hourly)
+
+Setup (2026-02-03)
+- Checkpoints: `binanceneural/checkpoints/btcusd_h1_quick_20260203/epoch_001.pt`, `binanceneural/checkpoints/ethusd_h1_quick_20260203/epoch_001.pt`, `binanceneural/checkpoints/linkusd_h1_quick_20260203/epoch_001.pt`
+- Features: binanceexp1 feature set (forecast_horizons=1, sequence_length=96)
+- Validation window (subset): ~2025-05-03 through 2025-10-24
+
+Metrics (per-symbol)
+- BTCUSD: total_return 0.1068, sortino 88.6565
+- ETHUSD: total_return 0.7707, sortino 26.9238
+- LINKUSD: total_return 10.1283, sortino 63.2361
+
+Combined (equal initial cash per symbol)
+- total_return 13.1723, sortino 97.3380
