@@ -40,6 +40,14 @@ Tracking Alpaca crypto-only hourly experiments with CRYPTO_TRADING_FEE applied e
 | 2026-02-04 12:18 | alpaca_mig4_solusd_6e_20260204_114240_intrabar_rt24_i14_eval20 | SOLUSD | 20d | 0.1185 | 20.7736 | intrabar max=24, intensity=1.4, offset=0.0002 |
 | 2026-02-04 12:21 | alpaca_mig4_multiasset_selector_solbtceth_eval20 | SOLUSD,BTCUSD,ETHUSD | 20d | 0.0262 | 6.9054 | multi-asset selector, shared checkpoint, intensity=1.4, offset=0.0002 |
 | 2026-02-04 12:21 | alpaca_mig4_multiasset_selector_solbtceth_eval60 | SOLUSD,BTCUSD,ETHUSD | 60d | 0.0734 | 5.4545 | multi-asset selector, shared checkpoint, intensity=1.4, offset=0.0002 |
+| 2026-02-04 12:54 | alpaca_mig4_btcusd_6e_20260204_122215 | BTCUSD | full val | -0.0207 | -1.2437 | 6 epochs, CRYPTO_TRADING_FEE, cache-only |
+| 2026-02-04 12:54 | alpaca_mig4_btcusd_6e_20260204_122215_intrabar_rt10_i14_eval20 | BTCUSD | 20d | 0.0130 | 3.4146 | intrabar max=10, intensity=1.4, offset=0.0002 |
+| 2026-02-04 12:54 | alpaca_mig4_btcusd_6e_20260204_122215_intrabar_rt10_i14_eval60 | BTCUSD | 60d | 0.0082 | 0.6738 | intrabar max=10, intensity=1.4, offset=0.0002 |
+| 2026-02-04 12:54 | alpaca_mig4_ethusd_6e_20260204_123651 | ETHUSD | full val | -0.0135 | -0.1761 | 6 epochs, CRYPTO_TRADING_FEE, cache-only |
+| 2026-02-04 12:54 | alpaca_mig4_ethusd_6e_20260204_123651_intrabar_rt10_i14_eval20 | ETHUSD | 20d | 0.0194 | 2.0512 | intrabar max=10, intensity=1.4, offset=0.0002 |
+| 2026-02-04 12:54 | alpaca_mig4_ethusd_6e_20260204_123651_intrabar_rt10_i14_eval60 | ETHUSD | 60d | 0.0374 | 2.0339 | intrabar max=10, intensity=1.4, offset=0.0002 |
+| 2026-02-04 12:54 | alpaca_mig4_multiasset_selector_solbtceth_eval20_per_symbol | SOLUSD,BTCUSD,ETHUSD | 20d | 0.0695 | 72.1785 | multi-asset selector, per-symbol checkpoints, intensity=1.4, offset=0.0002, open_symbol=BTCUSD |
+| 2026-02-04 12:54 | alpaca_mig4_multiasset_selector_solbtceth_eval60_per_symbol | SOLUSD,BTCUSD,ETHUSD | 60d | 0.0903 | 40.3983 | multi-asset selector, per-symbol checkpoints, intensity=1.4, offset=0.0002, open_symbol=BTCUSD |
 | 2026-02-04 11:55 | alpaca_mig4_solusd_8e_20260204_115546 | SOLUSD | full val | 0.1403 | 2.4949 | 8 epochs, CRYPTO_TRADING_FEE, cache-only |
 | 2026-02-04 11:55 | alpaca_mig4_solusd_8e_20260204_115546_intrabar_rt8_i14_eval20 | SOLUSD | 20d | 0.0810 | 8.3224 | intrabar max=8, intensity=1.4, offset=0.0002 |
 
