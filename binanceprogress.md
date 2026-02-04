@@ -145,7 +145,73 @@ Note: attention_window >= sequence_length behaves like full attention, so Win=96
   - Metrics (10-day test): total_return=0.102255, sortino=103.215131, annualized_return=34.460601
   - Last 2 days: total_return=0.007902, sortino=535.322223, annualized_return=3.205639
 
-Best PnL unchanged: total_return=0.224781 (skip_scale_init=0.1, attention_window >= 96).
+### Nano v2 micro-sweep (attention window/value embedding/Muon LR, 4-epoch)
+- Win=24 + skip_scale_init=0.1: `chronos_sol_v2_win24_skip01_20260203_190000`
+  - Metrics (10-day test): total_return=0.131183, sortino=49.734845, annualized_return=90.647583
+  - Last 2 days: total_return=0.029858, sortino=93.975619, annualized_return=213.718822
+- Win=40 + skip_scale_init=0.1: `chronos_sol_v2_win40_skip01_20260204_000000`
+  - Metrics (10-day test): total_return=0.156633, sortino=40.493034, annualized_return=206.152934
+  - Last 2 days: total_return=0.011449, sortino=8.054279, annualized_return=6.985773
+- Win=56 + skip_scale_init=0.1: `chronos_sol_v2_win56_skip01_20260204_003000`
+  - Metrics (10-day test): total_return=0.183902, sortino=151.187906, annualized_return=485.653023
+  - Last 2 days: total_return=0.053722, sortino=7227.691172, annualized_return=14043.617352
+- Win=64 + skip_scale_init=0.1 + value_embedding_every=3: `chronos_sol_v2_win64_vale3_skip01_20260204_010000`
+  - Metrics (10-day test): total_return=0.106891, sortino=204.396658, annualized_return=40.358946
+  - Last 2 days: total_return=0.028697, sortino=7396.888054, annualized_return=173.771543
+- Win=64 + skip_scale_init=0.1 + value_embedding_every=4: `chronos_sol_v2_win64_vale4_skip01_20260204_013000`
+  - Metrics (10-day test): total_return=0.149532, sortino=116.811572, annualized_return=164.296970
+  - Last 2 days: total_return=0.052753, sortino=4335.442502, annualized_return=11872.874383
+- Win=128 + skip_scale_init=0.1 + value_embedding_every=1: `chronos_sol_v2_vale1_skip01_20260204_011846`
+  - Metrics (10-day test): total_return=0.185369, sortino=160.869717, annualized_return=508.252224
+  - Last 2 days: total_return=0.057419, sortino=21575.395855, annualized_return=26614.317587
+- Win=128 + skip_scale_init=0.05 + value_embedding_every=1: `chronos_sol_v2_vale1_skip005_20260204_012841`
+  - Metrics (10-day test): total_return=0.128222, sortino=88.884578, annualized_return=82.254881
+  - Last 2 days: total_return=0.023395, sortino=4226.743686, annualized_return=67.061177
+- Win=128 + skip_scale_init=0.15 + value_embedding_every=1: `chronos_sol_v2_vale1_skip015_20260204_013817`
+  - Metrics (10-day test): total_return=0.157671, sortino=113.337640, annualized_return=213.079502
+  - Last 2 days: total_return=0.031390, sortino=13977.423338, annualized_return=280.653506
+- Win=128 + skip_scale_init=0.1 + muon_lr=0.015: `chronos_sol_v2_win128_skip01_muon015_20260204_020000`
+  - Metrics (10-day test): total_return=0.144029, sortino=114.980093, annualized_return=137.636905
+  - Last 2 days: total_return=0.032975, sortino=1601.106040, annualized_return=371.751577
+- Win=128 + skip_scale_init=0.1 + muon_lr=0.03: `chronos_sol_v2_win128_skip01_muon03_20260204_023000`
+  - Metrics (10-day test): total_return=0.109021, sortino=65.846097, annualized_return=43.377910
+  - Last 2 days: total_return=0.028804, sortino=6587.062715, annualized_return=177.116790
+- Win=128 + skip_scale_init=0.1 + muon_momentum=0.93: `chronos_sol_v2_muon093_20260204_014809`
+  - Metrics (10-day test): total_return=0.112421, sortino=140.816244, annualized_return=48.646180
+  - Last 2 days: total_return=0.032995, sortino=4038.468056, annualized_return=373.074915
+- Win=128 + skip_scale_init=0.1 + muon_momentum=0.97: `chronos_sol_v2_muon097_20260204_015606`
+  - Metrics (10-day test): total_return=0.193740, sortino=152.846581, annualized_return=658.107035
+  - Last 2 days: total_return=0.048688, sortino=5613.438236, annualized_return=5860.035917
+- Win=128 + skip_scale_init=0.1 + muon_momentum=0.98: `chronos_sol_v2_muon098_20260204_021639`
+  - Metrics (10-day test): total_return=0.172828, sortino=95.283727, annualized_return=343.849245
+  - Last 2 days: total_return=0.044075, sortino=14528.643033, annualized_return=2620.416473
+- Win=128 + skip_scale_init=0.1 + muon_momentum=0.99: `chronos_sol_v2_muon099_20260204_021641`
+  - Metrics (10-day test): total_return=0.129935, sortino=140.445793, annualized_return=87.015755
+  - Last 2 days: total_return=0.007348, sortino=1231.628070, annualized_return=2.804469
+- Win=128 + skip_scale_init=0.1 + muon_lr=0.025: `chronos_sol_v2_muon025_20260204_021642`
+  - Metrics (10-day test): total_return=0.122925, sortino=129.919800, annualized_return=69.063854
+  - Last 2 days: total_return=0.027347, sortino=12956.396462, annualized_return=136.527182
+- Win=128 + skip_scale_init=0.1 + muon_lr=0.035: `chronos_sol_v2_muon035_20260204_021643`
+  - Metrics (10-day test): total_return=0.122698, sortino=58.989053, annualized_return=68.546359
+  - Last 2 days: total_return=0.027950, sortino=13908.088305, annualized_return=152.062641
+- Win=128 + skip_scale_init=0.1 + context_hours=2048: `chronos_sol_v2_ctx2048_20260204_021644`
+  - Metrics (10-day test): total_return=0.224781, sortino=110.011380, annualized_return=1687.823288
+  - Last 2 days: total_return=0.055692, sortino=32793.242972, annualized_return=19748.420368
+- Win=128 + skip_scale_init=0.1 + context_hours=4096: `chronos_sol_v2_ctx4096_20260204_021645`
+  - Metrics (10-day test): total_return=0.224781, sortino=110.011380, annualized_return=1687.823288
+  - Last 2 days: total_return=0.055692, sortino=32793.242972, annualized_return=19748.420368
+
+Note: context_hours 2048/4096 matched the best baseline exactly (cache-only run likely reused identical forecast cache).
+
+### Nano v2 sequence length sweep (full attention, 4-epoch)
+- Seq=96, Win=96 + skip_scale_init=0.1: `chronos_sol_v2_seq96_win96_skip01_20260204_005446`
+  - Metrics (10-day test): total_return=0.147737, sortino=105.345177, annualized_return=155.092648
+  - Last 2 days: total_return=0.052962, sortino=235.802923, annualized_return=12311.639256
+- Seq=128, Win=128 + skip_scale_init=0.1: `chronos_sol_v2_seq128_win128_skip01_20260204_010516`
+  - Metrics (10-day test): total_return=0.150824, sortino=94.192548, annualized_return=171.243700
+  - Last 2 days: total_return=0.062229, sortino=202.545430, annualized_return=60922.071574
+
+Best PnL unchanged after micro-sweep + seq-length sweep: total_return=0.224781 (skip_scale_init=0.1, attention_window >= 96, seq_len=72).
 
 ### Nano v2 best-config sanity (6-epoch)
 - Run: `chronos_sol_v2_win128_skip01_e6_20260203_140000`
