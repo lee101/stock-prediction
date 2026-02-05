@@ -92,7 +92,7 @@ def main() -> None:
     quantiles = [float(x) for x in args.quantiles.split(",") if x.strip()]
     cache_root = Path(args.forecast_cache_root)
 
-    logger.info("Loading fine-tuned Chronos2 model from %s", args.finetuned_model)
+    logger.info("Loading fine-tuned Chronos2 model from {}", args.finetuned_model)
     wrapper = Chronos2OHLCWrapper.from_pretrained(
         model_id=str(Path(args.finetuned_model)),
         device_map="cuda",
@@ -132,7 +132,7 @@ def main() -> None:
             manager = ChronosForecastManager(cfg, wrapper_factory=_factory)
             if args.predict_batches_jointly:
                 manager._predict_kwargs = {"predict_batches_jointly": True}
-            logger.info("Generating forecasts for %s horizon=%dh", symbol, horizon)
+            logger.info("Generating forecasts for {} horizon={}h", symbol, horizon)
             manager.ensure_latest(start=start_ts, end=end_ts, cache_only=False)
 
 

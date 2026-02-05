@@ -39,6 +39,9 @@ Tracking multi-symbol Chronos2 fine-tunes and global selector results.
 | 2026-02-05 04:17 | selector_mixed7_best_20260205_target3 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1952 | 71.5462 | 20d eval using best mixed7 config (intensity=2.0, min_edge=0.004, risk_weight=0.2, dip=0.005). |
 | 2026-02-05 04:34 | alpaca_cross_global_mixed7_robust_short_seq128_20260205_043448 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 0.5935 | 291.1584 | Seq128 policy (short-window features), best checkpoint epoch_003. |
 | 2026-02-05 04:36 | selector_seq128_best_20260205_043448 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.6463 | 128.4568 | 10d/20d eval using seq128 checkpoint epoch_003 (intensity=2.0, min_edge=0.004, risk_weight=0.2, dip=0.005). |
+| 2026-02-05 22:14 | cross_lora_mixed7_robust_20260205_2209 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | (n/a) | (n/a) | Mixed7 LoRA retrain (400 steps, ctx=1024, preaug robust_scaling). Forecast cache built (lb2400, h1+h24). |
+| 2026-02-05 22:26 | alpaca_cross_global_mixed7_robust_short_seq128_lb2400_20260205_2222 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 18.0359 | 65.6919 | Seq128 policy trained on lb2400 mixed7 forecasts (MA/EMA/ATR=24/72, min_history=200). |
+| 2026-02-05 22:37 | selector_sweep_mixed7_seq128_lb2400_20260205_2227 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.0106 | 132.6112 | 10d sweep (144 configs) best total_return config intensity=2.2, min_edge=0.004, risk_weight=0.15. 30d eval total_return=2.8514 sortino=103.1766. |
 
 ## Notes
 
