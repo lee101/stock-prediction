@@ -97,6 +97,9 @@ class AlpacaHourlyDataModule:
         forecast_frame = self._load_forecasts()
         merged = price_frame.merge(forecast_frame, on=["timestamp", "symbol"], how="inner")
         merged = merged.sort_values("timestamp").reset_index(drop=True)
+        max_lookback = int(self.config.max_feature_lookback_hours or 0)
+        if max_lookback > 0 and len(merged) > max_lookback:
+            merged = merged.iloc[-max_lookback:].reset_index(drop=True)
         enriched = build_feature_frame(
             merged,
             config=self.config,

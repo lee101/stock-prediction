@@ -53,6 +53,26 @@ python -m alpacanewccrosslearning.train_global_policy \
   --min-history-hours 100
 ```
 
+For mixed stock/crypto windows with limited stock hours, you can override the feature windows:
+
+```bash
+python -m alpacanewccrosslearning.train_global_policy \
+  --symbols SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX \
+  --forecast-cache-root alpacanewccrosslearning/forecast_cache/mixed7 \
+  --cache-only \
+  --allow-mixed-asset \
+  --moving-average-windows 24,72 \
+  --ema-windows 24,72 \
+  --atr-windows 24,72 \
+  --trend-windows 72 \
+  --drawdown-windows 72 \
+  --volume-z-window 72 \
+  --volume-shock-window 24 \
+  --vol-regime-short 24 \
+  --vol-regime-long 72 \
+  --min-history-hours 50
+```
+
 ## 4) Evaluate global selector (best trade per hour)
 
 ```bash
