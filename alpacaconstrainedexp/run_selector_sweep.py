@@ -62,6 +62,31 @@ def _slice_eval_window(
     return frame.reset_index(drop=True), actions.reset_index(drop=True)
 
 
+def _slice_frame_for_eval(
+    frame: pd.DataFrame,
+    *,
+    eval_days: Optional[float],
+    sequence_length: int,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    if not eval_days or eval_days <= 0:
+        return frame
+    ts = pd.to_datetime(frame["timestamp"], utc=True)
+    ts_end = ts.max()
+    if pd.isna(ts_end):
+        return frame
+    ts_start = ts_end - pd.Timedelta(days=float(eval_days))
+    eval_mask = ts >= ts_start
+    eval_count = int(eval_mask.sum())
+    if eval_count <= 0:
+        return frame
+    needed = eval_count + max(0, int(sequence_length))
+    if needed >= len(frame):
+        return frame
+    return frame.iloc[-needed:].reset_index(drop=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sweep selector hyperparams for constrained global policy.")
     parser.add_argument("--symbols", default=None)
@@ -89,6 +114,7 @@ def main() -> None:
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--moving-average-windows", default=None)
     parser.add_argument("--min-history-hours", type=int, default=None)
+    parser.add_argument("--max-feature-lookback-hours", type=int, default=None)
     parser.add_argument("--intensity-list", default="1.0")
     parser.add_argument("--offset-list", default="0.0")
     parser.add_argument("--min-edge-list", default="0.0,0.0005,0.001")
@@ -121,6 +147,11 @@ def main() -> None:
         else DatasetConfig().moving_average_windows
     )
     min_history = args.min_history_hours if args.min_history_hours is not None else DatasetConfig().min_history_hours
+    max_lookback = (
+        int(args.max_feature_lookback_hours)
+        if args.max_feature_lookback_hours is not None
+        else DatasetConfig().max_feature_lookback_hours
+    )
 
     bars_frames: List[pd.DataFrame] = []
     base_actions_frames: List[pd.DataFrame] = []
@@ -137,10 +168,16 @@ def main() -> None:
             cache_only=args.cache_only,
             moving_average_windows=ma_windows,
             min_history_hours=min_history,
+            max_feature_lookback_hours=max_lookback,
         )
         data = AlpacaHourlyDataModule(data_cfg)
         model = _load_model(Path(args.checkpoint), len(data.feature_columns), args.sequence_length)
         frame = data.val_dataset.frame.copy()
+        frame = _slice_frame_for_eval(
+            frame,
+            eval_days=args.eval_days,
+            sequence_length=args.sequence_length,
+        )
         actions = generate_actions_from_frame(
             model=model,
             frame=frame,

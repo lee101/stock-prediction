@@ -24,8 +24,20 @@ Tracking multi-symbol Chronos2 fine-tunes and global selector results.
 | 2026-02-05 02:22 | selector_sweep_robust_20260205_022214 | SOLUSD,LINKUSD,UNIUSD | 0.2370 | 26.2556 | 10d selector sweep (27 configs) on robust_scaling policy. |
 | 2026-02-05 02:23 | selector_sweep_robust_intensity_20260205_022332 | SOLUSD,LINKUSD,UNIUSD | 0.5629 | 30.8584 | 10d selector sweep (54 configs, intensity 1.0/1.2); best total_return config. |
 | 2026-02-05 02:24 | selector_robust_best_20260205 | SOLUSD,LINKUSD,UNIUSD | 0.7482 | 21.3372 | 20d eval using best robust_scaling config (intensity=1.2, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 02:27 | cross_lora_mixed7_robust_20260205_022709 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | (n/a) | (n/a) | Mixed7 LoRA, preaug robust_scaling, eval_loss=0.133268. |
+| 2026-02-05 04:09 | cross_lora_mixed7_robust_lr2e5_20260205_040853 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | (n/a) | (n/a) | Mixed7 LoRA, preaug robust_scaling, lr=2e-5, eval_loss=0.167414. |
+| 2026-02-05 02:53 | alpaca_cross_global_mixed7_robust_short_20260205_025307 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 0.3038 | 76.5146 | Mixed7 policy with short-window feature overrides (cache window 2025-09-01..2025-11-12). |
+| 2026-02-05 02:57 | selector_sweep_mixed7_20260205_025742 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1196 | 77.4274 | 10d sweep (54 configs, intensity 1.0/1.2) best total_return config. |
+| 2026-02-05 02:58 | selector_mixed7_best_20260205 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1196 | 77.4274 | 20d eval using best mixed7 config (intensity=1.2, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 03:56 | selector_sweep_mixed7_intensity16_20260205_035644 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1541 | 77.5686 | 10d sweep (54 configs, intensity 1.4/1.6) best total_return config. |
+| 2026-02-05 03:57 | selector_mixed7_best_20260205_int16 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1541 | 77.5686 | 20d eval using best mixed7 config (intensity=1.6, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 04:06 | selector_sweep_mixed7_intensity20_20260205_040605 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1737 | 73.5806 | 10d sweep (54 configs, intensity 1.8/2.0) best total_return config. |
+| 2026-02-05 04:07 | selector_mixed7_best_20260205_int20 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1737 | 73.5806 | 20d eval using best mixed7 config (intensity=2.0, min_edge=0.001, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 04:10 | selector_sweep_mixed7_target2_20260205_041026 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1819 | 73.1664 | 10d targeted sweep (48 configs, intensity=2.0, min_edge/risk grid) best total_return config. |
+| 2026-02-05 04:11 | selector_mixed7_best_20260205_target2 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1819 | 73.1664 | 20d eval using best mixed7 config (intensity=2.0, min_edge=0.003, risk_weight=0.25, dip=0.005). |
 
 ## Notes
 
 - Forecast cache root: `alpacanewccrosslearning/forecast_cache`
 - Chronos fine-tunes: `alpacanewccrosslearning/chronos_finetuned`
+- Mixed7 cache window (stocks + crypto): `alpacanewccrosslearning/forecast_cache/mixed7_robust_20260205_022709_window20250901_20251112`
