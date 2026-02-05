@@ -35,6 +35,10 @@ Tracking multi-symbol Chronos2 fine-tunes and global selector results.
 | 2026-02-05 04:07 | selector_mixed7_best_20260205_int20 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1737 | 73.5806 | 20d eval using best mixed7 config (intensity=2.0, min_edge=0.001, risk_weight=0.25, dip=0.005). |
 | 2026-02-05 04:10 | selector_sweep_mixed7_target2_20260205_041026 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1819 | 73.1664 | 10d targeted sweep (48 configs, intensity=2.0, min_edge/risk grid) best total_return config. |
 | 2026-02-05 04:11 | selector_mixed7_best_20260205_target2 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1819 | 73.1664 | 20d eval using best mixed7 config (intensity=2.0, min_edge=0.003, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 04:16 | selector_sweep_mixed7_target3_20260205_041640 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1952 | 71.5462 | 10d targeted sweep v3 (27 configs, intensity=2.0, min_edge/risk grid) best total_return config. |
+| 2026-02-05 04:17 | selector_mixed7_best_20260205_target3 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.1952 | 71.5462 | 20d eval using best mixed7 config (intensity=2.0, min_edge=0.004, risk_weight=0.2, dip=0.005). |
+| 2026-02-05 04:34 | alpaca_cross_global_mixed7_robust_short_seq128_20260205_043448 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 0.5935 | 291.1584 | Seq128 policy (short-window features), best checkpoint epoch_003. |
+| 2026-02-05 04:36 | selector_seq128_best_20260205_043448 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.6463 | 128.4568 | 10d/20d eval using seq128 checkpoint epoch_003 (intensity=2.0, min_edge=0.004, risk_weight=0.2, dip=0.005). |
 
 ## Notes
 

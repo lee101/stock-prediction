@@ -79,6 +79,15 @@ def _parse_horizon_map(raw: Optional[str]) -> Dict[str, Tuple[int, ...]]:
     return mapping
 
 
+def _parse_int_tuple(raw: Optional[str]) -> Optional[Tuple[int, ...]]:
+    if raw is None:
+        return None
+    values = [token.strip() for token in raw.split(",") if token.strip()]
+    if not values:
+        return None
+    return tuple(int(v) for v in values)
+
+
 def _seconds_until_next_hour(buffer_seconds: int = 30) -> float:
     now = datetime.now(timezone.utc)
     next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
@@ -229,6 +238,16 @@ def _run_cycle(
     crypto_data_root: Optional[Path],
     stock_data_root: Optional[Path],
     forecast_cache_root: Path,
+    moving_average_windows: Tuple[int, ...],
+    ema_windows: Tuple[int, ...],
+    atr_windows: Tuple[int, ...],
+    trend_windows: Tuple[int, ...],
+    drawdown_windows: Tuple[int, ...],
+    volume_z_window: int,
+    volume_shock_window: int,
+    vol_regime_short: int,
+    vol_regime_long: int,
+    min_history_hours: int,
     refresher: HourlyDataRefresher,
     device: torch.device,
     exit_only_symbols: Sequence[str],
@@ -265,6 +284,16 @@ def _run_cycle(
             sequence_length=sequence_length,
             forecast_horizons=horizons,
             cache_only=cache_only,
+            moving_average_windows=moving_average_windows,
+            ema_windows=ema_windows,
+            atr_windows=atr_windows,
+            trend_windows=trend_windows,
+            drawdown_windows=drawdown_windows,
+            volume_z_window=volume_z_window,
+            volume_shock_window=volume_shock_window,
+            vol_regime_short=vol_regime_short,
+            vol_regime_long=vol_regime_long,
+            min_history_hours=min_history_hours,
         )
         data = AlpacaHourlyDataModule(data_cfg)
         model = _load_model(checkpoint, len(data.feature_columns), sequence_length)
@@ -349,6 +378,16 @@ def main() -> None:
     parser.add_argument("--stock-data-root", default=None)
     parser.add_argument("--forecast-cache-root", default=str(DatasetConfig().forecast_cache_root))
     parser.add_argument("--cache-only", action="store_true")
+    parser.add_argument("--moving-average-windows", default=None)
+    parser.add_argument("--ema-windows", default=None)
+    parser.add_argument("--atr-windows", default=None)
+    parser.add_argument("--trend-windows", default=None)
+    parser.add_argument("--drawdown-windows", default=None)
+    parser.add_argument("--volume-z-window", type=int, default=None)
+    parser.add_argument("--volume-shock-window", type=int, default=None)
+    parser.add_argument("--vol-regime-short", type=int, default=None)
+    parser.add_argument("--vol-regime-long", type=int, default=None)
+    parser.add_argument("--min-history-hours", type=int, default=None)
     parser.add_argument("--exit-only-symbols", default="", help="Comma-separated symbols to only exit/close.")
     parser.add_argument("--device", default=None, help="Override device (cuda/cuda:0).")
     parser.add_argument("--once", action="store_true")
@@ -365,6 +404,18 @@ def main() -> None:
     forecast_horizons_map = _parse_horizon_map(args.forecast_horizons_map)
     context_lengths = tuple(int(x) for x in args.context_lengths.split(",") if x.strip())
     exit_only_symbols = [s.strip().upper() for s in args.exit_only_symbols.split(",") if s.strip()]
+    ma_windows = _parse_int_tuple(args.moving_average_windows) or DatasetConfig().moving_average_windows
+    ema_windows = _parse_int_tuple(args.ema_windows) or DatasetConfig().ema_windows
+    atr_windows = _parse_int_tuple(args.atr_windows) or DatasetConfig().atr_windows
+    trend_windows = _parse_int_tuple(args.trend_windows) or DatasetConfig().trend_windows
+    drawdown_windows = _parse_int_tuple(args.drawdown_windows) or DatasetConfig().drawdown_windows
+    volume_z_window = args.volume_z_window if args.volume_z_window is not None else DatasetConfig().volume_z_window
+    volume_shock_window = (
+        args.volume_shock_window if args.volume_shock_window is not None else DatasetConfig().volume_shock_window
+    )
+    vol_regime_short = args.vol_regime_short if args.vol_regime_short is not None else DatasetConfig().vol_regime_short
+    vol_regime_long = args.vol_regime_long if args.vol_regime_long is not None else DatasetConfig().vol_regime_long
+    min_history_hours = args.min_history_hours if args.min_history_hours is not None else DatasetConfig().min_history_hours
 
     device = _resolve_device(args.device)
 
@@ -403,6 +454,16 @@ def main() -> None:
             crypto_data_root=crypto_root,
             stock_data_root=stock_root,
             forecast_cache_root=forecast_cache_root,
+            moving_average_windows=ma_windows,
+            ema_windows=ema_windows,
+            atr_windows=atr_windows,
+            trend_windows=trend_windows,
+            drawdown_windows=drawdown_windows,
+            volume_z_window=volume_z_window,
+            volume_shock_window=volume_shock_window,
+            vol_regime_short=vol_regime_short,
+            vol_regime_long=vol_regime_long,
+            min_history_hours=min_history_hours,
             refresher=refresher,
             device=device,
             exit_only_symbols=exit_only_symbols,

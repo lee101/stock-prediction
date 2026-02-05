@@ -120,3 +120,4 @@ python -m alpacanewccrosslearning.run_selector_sweep \
 - GPU is required (Chronos2 fine-tuning + forecasting + policy inference).
 - For crypto-only runs you can omit stock data roots.
 - Use `--cache-only` once forecasts are populated.
+- Feature parity: training + inference both use `binanceexp1.data.build_feature_frame`. Keep the same window overrides (MA/EMA/ATR/vol regime) across training and inference to ensure volatility features match.

@@ -10,20 +10,28 @@ Environment=PYTHONPATH=/nvme0n1-disk/code/stock-prediction
 Environment=PYTHONUNBUFFERED=1
 Environment=PAPER=0
 Environment=TRADE_STATE_SUFFIX=hourly
-ExecStart=/nvme0n1-disk/code/stock-prediction/.venv313-3/bin/python -m newnanoalpacahourlyexp.trade_alpaca_hourly \
-  --symbols SOLUSD,LINKUSD,UNIUSD \
-  --checkpoints "SOLUSD=/nvme0n1-disk/code/stock-prediction/binanceneural/checkpoints/alpaca_solusd_20260204_013044/epoch_006.pt,LINKUSD=/nvme0n1-disk/code/stock-prediction/binanceneural/checkpoints/alpaca_linkusd_20260204_111049/epoch_006.pt,UNIUSD=/nvme0n1-disk/code/stock-prediction/binanceneural/checkpoints/alpaca_uniusd_20260204_231926/epoch_004.pt" \
-  --default-checkpoint /nvme0n1-disk/code/stock-prediction/binanceneural/checkpoints/alpaca_solusd_20260204_013044/epoch_006.pt \
-  --sequence-length 96 \
+ExecStart=/nvme0n1-disk/code/stock-prediction/.venv313/bin/python -m newnanoalpacahourlyexp.trade_alpaca_hourly \
+  --symbols SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX \
+  --default-checkpoint /nvme0n1-disk/code/stock-prediction/binanceneural/checkpoints/alpaca_cross_global_mixed7_robust_short_seq128_20260205_043448/epoch_003.pt \
+  --sequence-length 128 \
   --horizon 1 \
   --forecast-horizons 1,24 \
-  --forecast-horizons-map "UNIUSD=1" \
   --forecast-cache-root /nvme0n1-disk/code/stock-prediction/binanceneural/forecast_cache \
   --crypto-data-root /nvme0n1-disk/code/stock-prediction/trainingdatahourly/crypto \
   --stock-data-root /nvme0n1-disk/code/stock-prediction/trainingdatahourly/stocks \
-  --allocation-pct 0.05 \
-  --intensity-scale 1.0 \
+  --allocation-pct 1.0 \
+  --intensity-scale 2.0 \
   --min-gap-pct 0.001 \
+  --moving-average-windows 24,72 \
+  --ema-windows 24,72 \
+  --atr-windows 24,72 \
+  --trend-windows 72 \
+  --drawdown-windows 72 \
+  --volume-z-window 72 \
+  --volume-shock-window 24 \
+  --vol-regime-short 24 \
+  --vol-regime-long 72 \
+  --min-history-hours 50 \
   --buffer-seconds 30
 Restart=always
 RestartSec=10

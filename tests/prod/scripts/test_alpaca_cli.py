@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import importlib
 import sys
 from types import ModuleType, SimpleNamespace
@@ -143,3 +143,61 @@ def test_backout_near_market_forces_market_when_close_imminent(cli, monkeypatch)
 
     assert wrapper.market_calls == 1
     assert wrapper.limit_calls == 0
+
+
+def test_normalize_fills_parses_activity_fields(cli):
+    now = datetime.now(timezone.utc)
+    activities = [
+        {
+            "activity_type": "FILL",
+            "symbol": "AAPL",
+            "side": "buy",
+            "qty": "2",
+            "price": "100.50",
+            "transaction_time": now.isoformat(),
+        },
+        {
+            "activity_type": "FILL",
+            "symbol": "MSFT",
+            "side": "sell",
+            "qty": "1",
+            "price": "200",
+            "transact_time": now.isoformat(),
+        },
+        {
+            "activity_type": "DIV",
+            "symbol": "MSFT",
+            "amount": "3.0",
+            "transaction_time": now.isoformat(),
+        },
+    ]
+    start = now - timedelta(hours=1)
+    end = now + timedelta(hours=1)
+
+    fills = cli._normalize_fills(activities, start=start, end=end)
+
+    assert len(fills) == 2
+    assert fills[0]["symbol"] == "AAPL"
+    assert fills[0]["side"] == "buy"
+    assert fills[1]["symbol"] == "MSFT"
+    assert fills[1]["side"] == "sell"
+
+
+def test_summarize_fills_totals(cli):
+    now = datetime.now(timezone.utc)
+    fills = [
+        {"symbol": "AAPL", "side": "buy", "qty": 2.0, "price": 100.0, "time": now},
+        {"symbol": "AAPL", "side": "sell", "qty": 1.0, "price": 110.0, "time": now},
+        {"symbol": "MSFT", "side": "sell", "qty": 3.0, "price": 200.0, "time": now},
+    ]
+
+    totals, by_symbol = cli._summarize_fills(fills)
+
+    assert totals["count"] == 3
+    assert totals["buy_count"] == 1
+    assert totals["sell_count"] == 2
+    assert totals["buy_notional"] == pytest.approx(200.0)
+    assert totals["sell_notional"] == pytest.approx(110.0 + 600.0)
+    assert totals["net_qty"] == pytest.approx(-2.0)
+    assert by_symbol["AAPL"]["net_qty"] == pytest.approx(1.0)
+    assert by_symbol["MSFT"]["net_qty"] == pytest.approx(-3.0)

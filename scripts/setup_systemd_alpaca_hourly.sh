@@ -7,7 +7,7 @@ SERVICE_DST="/etc/systemd/system/${SERVICE_NAME}.service"
 
 if ! command -v systemctl >/dev/null 2>&1; then
   echo "systemctl not found. Install systemd or run manually:" >&2
-  echo "  python -m newnanoalpacahourlyexp.trade_alpaca_hourly --symbols SOLUSD,LINKUSD,UNIUSD ..." >&2
+  echo "  python -m newnanoalpacahourlyexp.trade_alpaca_hourly --symbols SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX ..." >&2
   exit 1
 fi
 
