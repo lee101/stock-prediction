@@ -185,6 +185,8 @@ class AlpacaMultiSymbolDataModule:
         self.symbols = cleaned
         self.target_symbol = target_symbol
         self.base_config = config
+        # Preserve a config attribute for shared evaluation paths.
+        self.config = config
         self.modules: Dict[str, AlpacaHourlyDataModule] = {}
         self.normalizers: Dict[str, FeatureNormalizer] = {}
         self.asset_meta_by_symbol: Dict[str, AssetMeta] = {}
