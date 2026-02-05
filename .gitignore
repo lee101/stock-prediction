@@ -410,3 +410,6 @@ alpacanewccrosslearning/chronos_finetuned/
 alpacaconstrainedexp/outputs/
 alpacaconstrainedexp/forecast_cache/
 alpacaconstrainedexp/chronos_finetuned/
+trainingdatabinance
+trainingdata.local_backup_20260204_222309/
+binanceneural/binanceneural/forecast_cache/

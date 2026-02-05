@@ -1,0 +1,44 @@
+# Binance Results
+
+Updated: 2026-02-03
+
+## Live Attempt Summary
+- Binance.com access from US IPs is blocked; use Binance.US or a non‑US host.
+- Current keys were rejected with `API-key format invalid` when using `BINANCE_TLD=us`.
+
+## Current Production Config (SOLUSD)
+
+Supervisor: `supervisor/binanceexp1-solusd.conf`
+
+Command:
+```
+/home/lee/code/stock/.venv313/bin/python -m binanceexp1.trade_binance_hourly \
+  --symbols SOLUSD \
+  --checkpoint /home/lee/code/stock/binanceneural/checkpoints/binanceexp1_regime_solusd_backfill/epoch_005.pt \
+  --horizon 24 \
+  --sequence-length 96 \
+  --intensity-scale 10.0 \
+  --min-gap-pct 0.0005 \
+  --poll-seconds 30 \
+  --expiry-minutes 90 \
+  --price-tolerance 0.05 \
+  --cycle-minutes 5 \
+  --log-metrics \
+  --metrics-log-path /home/lee/code/stock/strategy_state/binanceexp1-solusd-metrics.csv
+```
+
+## Cross‑Pair Marketsimulator Check (BTCUSD/ETHUSD/LINKUSD)
+
+Checkpoints:
+- `binanceneural/checkpoints/btcusd_h1_quick_20260203/epoch_001.pt`
+- `binanceneural/checkpoints/ethusd_h1_quick_20260203/epoch_001.pt`
+- `binanceneural/checkpoints/linkusd_h1_quick_20260203/epoch_001.pt`
+
+Validation window (subset): ~2025-05-03 through 2025-10-24  
+Metrics summary:
+- BTCUSD total_return 0.1068, sortino 88.6565
+- ETHUSD total_return 0.7707, sortino 26.9238
+- LINKUSD total_return 10.1283, sortino 63.2361
+- Combined total_return 13.1723, sortino 97.3380
+
+Raw results: `analysis/binance_cross_pair_marketsim_20260203.json`
