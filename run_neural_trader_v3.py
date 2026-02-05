@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bagsfm import BagsAPIClient, BagsConfig, TokenConfig
 from bagsfm.config import SOL_MINT
 from bagsfm.bags_api import SolanaTransactionExecutor
+from bagsfm.utils import require_live_trading_enabled
 from bagsv3llm.model import BagsV3Config, BagsV3Transformer
 from bagsv3llm.dataset import (
     build_bar_features,
@@ -589,6 +590,7 @@ async def main():
     print(f"{'='*60}\n")
 
     if not dry_run:
+        require_live_trading_enabled()
         print("WARNING: LIVE TRADING MODE - Press Ctrl+C within 10s to cancel")
         try:
             await asyncio.sleep(10)

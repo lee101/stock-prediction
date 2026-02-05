@@ -45,6 +45,7 @@ from bagsfm.config import (
     BAGS_TOTAL_FEE_BPS,
     BAGS_CREATOR_FEE_BPS,
 )
+from bagsfm.utils import require_live_trading_enabled
 
 
 # Example tokens to trade (add your own here)
@@ -298,6 +299,7 @@ async def main():
     print(f"{'='*60}\n")
 
     if not dry_run:
+        require_live_trading_enabled()
         print("\n⚠️  WARNING: LIVE TRADING MODE")
         print("Real trades will be executed!")
         print("Press Ctrl+C within 10 seconds to cancel...\n")
