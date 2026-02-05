@@ -88,7 +88,7 @@ def test_download_and_save(tmp_path: Path):
         assert entry["status"] == "ok"
 
     crypto_file = tmp_path / "crypto" / "BTCUSD.csv"
-    stock_file = tmp_path / "stock" / "AAPL.csv"
+    stock_file = tmp_path / "stocks" / "AAPL.csv"
     assert crypto_file.exists()
     assert stock_file.exists()
 
