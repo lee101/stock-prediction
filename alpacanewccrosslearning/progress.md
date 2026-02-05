@@ -42,6 +42,10 @@ Tracking multi-symbol Chronos2 fine-tunes and global selector results.
 | 2026-02-05 22:14 | cross_lora_mixed7_robust_20260205_2209 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | (n/a) | (n/a) | Mixed7 LoRA retrain (400 steps, ctx=1024, preaug robust_scaling). Forecast cache built (lb2400, h1+h24). |
 | 2026-02-05 22:26 | alpaca_cross_global_mixed7_robust_short_seq128_lb2400_20260205_2222 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 18.0359 | 65.6919 | Seq128 policy trained on lb2400 mixed7 forecasts (MA/EMA/ATR=24/72, min_history=200). |
 | 2026-02-05 22:37 | selector_sweep_mixed7_seq128_lb2400_20260205_2227 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.0106 | 132.6112 | 10d sweep (144 configs) best total_return config intensity=2.2, min_edge=0.004, risk_weight=0.15. 30d eval total_return=2.8514 sortino=103.1766. |
+| 2026-02-05 21:36 | cross_lora_mixed7_novol_baseline_20260205_2136 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | (n/a) | (n/a) | Mixed7 LoRA baseline (500 steps, ctx=1024, lr=2e-5) with no volume/log_volume covariates. Forecast cache built: `mixed7_novol_baseline_20260205_2136_lb2400`. |
+| 2026-02-05 22:43 | rebuild_forecast_cache_stocks_20260205_2243 | NVDA,NFLX | (n/a) | (n/a) | Rebuilt NVDA/NFLX forecast parquet caches (h1+h24) after hourly gap-fill to remove stale predictions across the NFLX split boundary. |
+| 2026-02-05 22:57 | alpaca_cross_global_mixed7_novol_baseline_seq128_rebuiltstocks_nocompile_20260205_2250 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 13.6560 | 57.9001 | Retrained global policy on rebuilt caches; best checkpoint `epoch_003.pt`. |
+| 2026-02-05 23:00 | selector_sweep_mixed7_novol_baseline_rebuiltstocks_20260205_2300 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 1.4613 | 347.5836 | 10d sweep (48 configs) best config intensity=2.0, min_edge=0.001, risk_weight=0.15, dip=0.0025. 20d total_return=2.2006 sortino=225.4522; 30d total_return=3.6897 sortino=184.4416. |
 
 ## Notes
 
