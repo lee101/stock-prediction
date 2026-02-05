@@ -1,0 +1,32 @@
+include pyproject.toml
+include README.md
+include README_CONFIGURATION.txt
+include LICENSE*
+
+# Exclude large artifacts and datasets
+prune data
+prune trainingdata
+prune trainingdatahourly
+prune trainingdatadaily
+prune trainingdatabinance
+prune trainingdata.local_backup_*
+prune binanceneural/checkpoints
+prune binanceneural/forecast_cache
+prune binanceneural/forecast_cache_backup
+prune chronos2_finetuned
+prune backtests
+prune runs
+prune results
+prune logs
+prune wandb
+prune tensorboard_logs
+prune analysis
+
+# Exclude bulky files
+exclude *.pt
+exclude *.parquet
+exclude *.csv
+exclude *.log
+exclude *.bin
+exclude *.npy
+exclude *.npz
