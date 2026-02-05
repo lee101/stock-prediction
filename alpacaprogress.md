@@ -6,10 +6,26 @@ Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
 
 | Date (UTC) | Run | Symbols | Eval window | total_return | sortino | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
+| 2026-02-05 | selector_sweep_mixed7_target2_20260205_041026 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1819 | 73.1664 | Mixed7 robust_scaling short-window; targeted min_edge/risk sweep (intensity=2.0, min_edge=0.003, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 | selector_mixed7_best_20260205_target2 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1819 | 73.1664 | Same config as 10d; window-limited by stock data. |
+| 2026-02-05 | selector_sweep_mixed7_intensity20_20260205_040605 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1737 | 73.5806 | Mixed7 robust_scaling short-window; best sweep config (intensity=2.0, min_edge=0.001, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 | selector_mixed7_best_20260205_int20 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1737 | 73.5806 | Same config as 10d; window-limited by stock data. |
+| 2026-02-05 | selector_sweep_mixed7_intensity16_20260205_035644 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1541 | 77.5686 | Mixed7 robust_scaling short-window; best sweep config (intensity=1.6, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 | selector_mixed7_best_20260205_int16 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1541 | 77.5686 | Same config as 10d; window-limited by stock data. |
+| 2026-02-05 | selector_sweep_mixed7_20260205_025742 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1196 | 77.4274 | Mixed7 robust_scaling + short-window features; best sweep config (intensity=1.2, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 | selector_mixed7_best_20260205 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1196 | 77.4274 | Same config as 10d; window-limited by stock data. |
 | 2026-02-05 | selector_sweep_robust_intensity_20260205_022332 | SOLUSD,LINKUSD,UNIUSD | 10d | 0.5629 | 30.8584 | Robust_scaling policy; best sweep config (intensity=1.2, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
 | 2026-02-05 | selector_robust_best_20260205 | SOLUSD,LINKUSD,UNIUSD | 20d | 0.7482 | 21.3372 | Robust_scaling policy; best sweep config carried to 20d eval. |
 | 2026-02-05 | selector_cross_lora_20260205_013206 | SOLUSD,LINKUSD,UNIUSD | 10d | 0.0379 | 510.2498 | Global policy checkpoint epoch_001. |
 | 2026-02-05 | selector_cross_lora_20260205_013206 | SOLUSD,LINKUSD,UNIUSD | 20d | 0.0379 | 510.2498 | Same as 10d (limited window in current cache). |
+
+## Constrained experiment (alpacaconstrainedexp)
+
+| Date (UTC) | Run | Stage | Symbols | total_return | sortino | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-02-05 | chronos2_multi_20260205_022403 | Chronos2 LoRA | NVDA,MSFT,GOOG,BTCUSD,SOLUSD,ETHUSD,NWSA,BKNG,MTCH,EXPE,EBAY | (n/a) | (n/a) | Preaug=percent_change, ctx=1024, steps=1000. |
+| 2026-02-05 | constrained_global_20260205_0230 | Global policy | NVDA,MSFT,GOOG,BTCUSD,SOLUSD,ETHUSD,NWSA,BKNG,MTCH,EXPE,EBAY | 0.0608 | 73.1732 | MA windows=168, min_history=150. |
+| 2026-02-05 | selector_20260205_10d | Selector 10d | NVDA,MSFT,GOOG,BTCUSD,SOLUSD,ETHUSD,NWSA,BKNG,MTCH,EXPE,EBAY | (running) | (running) | Constrained selector sim (checkpoint epoch_004). |
 
 ## Chronos2 multi‑symbol fine‑tunes
 
@@ -17,6 +33,8 @@ Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2026-02-05 | cross_smoke_20260205_012017 | SOLUSD,LINKUSD | 20 | 512 | 1e‑5 | baseline | Smoke LoRA run. |
 | 2026-02-05 | cross_lora_20260205_012542 | SOLUSD,LINKUSD,UNIUSD | 200 | 1024 | 1e‑5 | baseline | Forecast cache built (h1+h24, 720h lookback). |
+| 2026-02-05 | cross_lora_mixed7_robust_20260205_022709 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 200 | 1024 | 1e‑5 | robust_scaling | Mixed7 LoRA (preaug robust_scaling). |
+| 2026-02-05 | cross_lora_mixed7_robust_lr2e5_20260205_040853 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 200 | 1024 | 2e‑5 | robust_scaling | Mixed7 LoRA (eval_loss=0.167414). |
 
 ## Global policy training
 
@@ -24,12 +42,13 @@ Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
 | --- | --- | --- | --- | --- | --- |
 | 2026-02-05 | alpaca_cross_global_lora_20260205_013206 | SOLUSD,LINKUSD,UNIUSD | 0.1872 | 47.2885 | MA windows 168/336, min_history=200. |
 | 2026-02-05 | alpaca_cross_global_robust_20260205_020915 | SOLUSD,LINKUSD,UNIUSD | 0.1010 | 26.9010 | Robust_scaling forecasts, MA windows 168/336, min_history=200. |
+| 2026-02-05 | alpaca_cross_global_mixed7_robust_short_20260205_025307 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 0.3038 | 76.5146 | Mixed7 policy with short-window feature overrides; window 2025-09-01..2025-11-12. |
 
 ## TODO
 
-- Expand cross‑learning to mixed symbols (BTCUSD, ETHUSD, NVDA, NFLX) with separate cache roots.
-- Re‑run selector sweeps on the mixed‑symbol policy (10d/20d) and track top PnL.
-- Try higher intensity grid (1.4/1.6) and alternate min_edge for robust scaling.
+- Extend mixed7 window beyond 2025‑11‑12 to add more stock hours (refresh data) and re‑train.
+- Run 30d selector sweeps once longer stock windows are available.
+- Try higher intensity grid (1.4/1.6) and alternate min_edge for mixed7 policy.
 
 ## Preaug sweep (eval_loss)
 
@@ -92,4 +111,68 @@ Best sortino (10d):
 ```
 intensity=1.0 offset=0.0 min_edge=0.0 risk_weight=0.25 edge_mode=high_low dip_threshold=0.01
 total_return=0.150579 sortino=134.386252 final_cash=11505.785239
+```
+
+## Selector sweep (10d, 54 configs, mixed7 short-window)
+
+Sweep CSV: `alpacanewccrosslearning/outputs/selector_sweep_mixed7_20260205_025742/selector_sweep.csv`
+
+Best total_return (10d):
+```
+intensity=1.2 offset=0.0 min_edge=0.0005 risk_weight=0.25 edge_mode=high_low dip_threshold=0.005
+total_return=1.119632 sortino=77.427394 final_cash=21196.315290
+```
+
+Best sortino (10d):
+```
+intensity=1.2 offset=0.0 min_edge=0.0 risk_weight=0.25 edge_mode=high_low dip_threshold=0.0
+total_return=0.954793 sortino=149.867478 final_cash=19547.932885
+```
+
+## Selector sweep (10d, 54 configs, mixed7 intensity 1.4/1.6)
+
+Sweep CSV: `alpacanewccrosslearning/outputs/selector_sweep_mixed7_intensity16_20260205_035644/selector_sweep.csv`
+
+Best total_return (10d):
+```
+intensity=1.6 offset=0.0 min_edge=0.0005 risk_weight=0.25 edge_mode=high_low dip_threshold=0.005
+total_return=1.154100 sortino=77.568583 final_cash=21540.999453
+```
+
+Best sortino (10d):
+```
+intensity=1.4 offset=0.0 min_edge=0.0 risk_weight=0.25 edge_mode=high_low dip_threshold=0.0
+total_return=0.966661 sortino=135.564330 final_cash=19666.608425
+```
+
+## Selector sweep (10d, 54 configs, mixed7 intensity 1.8/2.0)
+
+Sweep CSV: `alpacanewccrosslearning/outputs/selector_sweep_mixed7_intensity20_20260205_040605/selector_sweep.csv`
+
+Best total_return (10d):
+```
+intensity=2.0 offset=0.0 min_edge=0.001 risk_weight=0.25 edge_mode=high_low dip_threshold=0.005
+total_return=1.173715 sortino=73.580583 final_cash=21737.154313
+```
+
+Best sortino (10d):
+```
+intensity=2.0 offset=0.0 min_edge=0.0 risk_weight=0.25 edge_mode=high_low dip_threshold=0.0
+total_return=0.992136 sortino=132.820633 final_cash=19921.356461
+```
+
+## Selector sweep (10d, 48 configs, mixed7 targeted min_edge/risk)
+
+Sweep CSV: `alpacanewccrosslearning/outputs/selector_sweep_mixed7_target2_20260205_041026/selector_sweep.csv`
+
+Best total_return (10d):
+```
+intensity=2.0 offset=0.0 min_edge=0.003 risk_weight=0.25 edge_mode=high_low dip_threshold=0.005
+total_return=1.181937 sortino=73.166435 final_cash=21819.366134
+```
+
+Best sortino (10d):
+```
+intensity=2.0 offset=0.0 min_edge=0.0005 risk_weight=0.25 edge_mode=high_low dip_threshold=0.0
+total_return=0.982480 sortino=123.332145 final_cash=19824.803099
 ```
