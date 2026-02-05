@@ -972,10 +972,7 @@ def close_position_violently(position):
 
             logger.info(f"Placing limit order to close {position.symbol} at ${limit_price} (midpoint)")
 
-            if position.side == "long":
-                side = OrderSide.SELL
-            else:
-                side = OrderSide.BUY
+            side = OrderSide.SELL if is_buy_side(getattr(position, "side", "")) else OrderSide.BUY
 
             result = alpaca_api.submit_order(
                 order_data=LimitOrderRequest(
@@ -999,7 +996,7 @@ def close_position_violently(position):
     # Market orders are allowed - proceed with market order
     result = None
     try:
-        if position.side == "long":
+        if is_buy_side(getattr(position, "side", "")):
             result = alpaca_api.submit_order(
                 order_data=MarketOrderRequest(
                     symbol=remap_symbols(position.symbol),
@@ -1033,7 +1030,7 @@ def close_position_at_current_price(position, row):
         return False
     result = None
     try:
-        if position.side == "long":
+        if is_buy_side(getattr(position, "side", "")):
             if position.symbol in crypto_symbols:
                 result = crypto_alpaca_looper_api.submit_order(
                     order_data=LimitOrderRequest(
@@ -1134,7 +1131,7 @@ def backout_all_non_crypto_positions(positions, predictions):
 def close_position_at_almost_current_price(position, row):
     result = None
     try:
-        if position.side == "long":
+        if is_buy_side(getattr(position, "side", "")):
             if position.symbol in crypto_symbols:
                 result = crypto_alpaca_looper_api.submit_order(
                     order_data=LimitOrderRequest(
@@ -1371,7 +1368,7 @@ def open_take_profit_position(position, row, price, qty):
     result = None
     try:
         mapped_symbol = remap_symbols(position.symbol)
-        if position.side == "long":
+        if is_buy_side(getattr(position, "side", "")):
             if position.symbol in crypto_symbols:
                 result = crypto_alpaca_looper_api.submit_order(
                     order_data=LimitOrderRequest(
@@ -1993,7 +1990,8 @@ def close_position_near_market(position, pct_above_market=0.0):
         logger.error(f"error getting ask/bid price for {position.symbol}")
         return False
 
-    if position.side == "long":
+    is_long = is_buy_side(getattr(position, "side", ""))
+    if is_long:
         # For long positions, reference the bid price when selling
         price = bid_price
     else:
@@ -2006,7 +2004,7 @@ def close_position_near_market(position, pct_above_market=0.0):
         # Use helper function that correctly handles crypto (always gtc)
         tif = _get_time_in_force_for_qty(qty, position.symbol)
 
-        if position.side == "long":
+        if is_long:
             sell_price = price * (1 + pct_above_market)
             sell_price = round(sell_price, 2)
             logger.info(f"selling {position.symbol} at {sell_price}")
