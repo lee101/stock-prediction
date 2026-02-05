@@ -9,7 +9,8 @@ description = "Production trading bot and research environment."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
-    "numpy>=1.26,<2",
+    "numpy>=1.26,<2; python_version < \"3.13\"",
+    "numpy>=2.1,<3; python_version >= \"3.13\"",
     "nvidia-ml-py>=13.580.82",
     "pandas>=2.2.3",
     "pandas_datareader",
@@ -173,7 +174,19 @@ all = [
 ]
 
 [tool.setuptools.packages.find]
-where = [".", "src"]
+where = [
+    "src",
+    "binanceexp1",
+    "binanceneural",
+    "binancechronossolexperiment",
+    "binancecrosslearning",
+    "marketsimulator",
+    "marketsimhourly",
+    "marketsimlong",
+    "marketsimulatorwide",
+    "marketsimulatorwide_hourly",
+    "traininglib",
+]
 exclude = [
     "tests",
     "tests.*",
@@ -182,8 +195,51 @@ exclude = [
     "runs",
     "results",
     "data",
+    "analysis",
+    "analysis.*",
+    "backtest_cache",
+    "backtests",
+    "logs",
+    "trainingdata",
+    "trainingdata.*",
+    "trainingdata*",
+    "trainingdatahourly",
+    "trainingdatahourly.*",
+    "trainingdatahourly*",
+    "trainingdatadaily",
+    "trainingdatadaily.*",
+    "trainingdatadaily*",
+    "trainingdatabinance",
+    "trainingdatabinance.*",
+    "trainingdatabinance*",
+    "trainingdata.local_backup*",
     "lightning_logs*",
     "tensorboard_logs*",
+]
+
+[tool.setuptools.exclude-package-data]
+"*" = [
+    "*.pt",
+    "*.parquet",
+    "*.csv",
+    "*.log",
+    "*.bin",
+    "*.npz",
+    "*.npy",
+    "analysis/**",
+    "backtests/**",
+    "checkpoints/**",
+    "forecast_cache/**",
+    "forecast_cache_backup/**",
+    "logs/**",
+    "results/**",
+    "runs/**",
+    "tensorboard_logs/**",
+    "trainingdata/**",
+    "trainingdatahourly/**",
+    "trainingdatadaily/**",
+    "trainingdatabinance/**",
+    "wandb/**",
 ]
 
 [tool.uv]

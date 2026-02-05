@@ -19,6 +19,7 @@ from src.logging_utils import setup_logging, get_log_filename
 from src.stock_utils import pairs_equal
 from src.trading_obj_utils import filter_to_realistic_positions
 from src.date_utils import is_nyse_open_on_date
+from src.exit_watch_utils import update_intrahour_baseline, intrahour_triggered
 
 # Import position sizing utilities
 from src.sizing_utils import get_qty
@@ -139,6 +140,38 @@ def main(
         min=0,
         help="Force market order when this close to market close even if ramp not completed.",
     ),
+    watch_pct_above: float = typer.Option(
+        0.005,
+        "--watch-pct-above",
+        help="Trigger when price rises this fraction above baseline (0.005 = 0.5%).",
+    ),
+    watch_min_price: float = typer.Option(
+        81.0,
+        "--watch-min-price",
+        help="Minimum price required to arm the intrahour exit watcher.",
+    ),
+    watch_poll_seconds: int = typer.Option(
+        30,
+        "--watch-poll-seconds",
+        min=1,
+        help="Polling interval (seconds) for intrahour exit watcher.",
+    ),
+    watch_reset_minutes: int = typer.Option(
+        60,
+        "--watch-reset-minutes",
+        min=1,
+        help="Reset baseline after this many minutes (default 60 = hourly).",
+    ),
+    watch_exit_after_trigger: bool = typer.Option(
+        True,
+        "--watch-exit-after-trigger/--watch-keep-running",
+        help="Exit after placing a close order, or keep running.",
+    ),
+    watch_force_exit_at: Optional[str] = typer.Option(
+        None,
+        "--watch-force-exit-at",
+        help="ISO timestamp (UTC or with offset) to force exit even if trigger not reached.",
+    ),
 ):
     """
     Alpaca CLI - Trade stocks with safety restrictions for out-of-hours trading.
@@ -169,6 +202,9 @@ def main(
     show_forecasts - display forecast predictions for a symbol
 
     debug_raw_data SYMBOL - print raw JSON data from Alpaca for the symbol
+
+    watch_exit_intrahour NFLX - cancel NFLX orders and close position when price
+                                rises above an intrahour baseline by a threshold
 
     Environment Variables:
     ----------------------
@@ -255,6 +291,16 @@ def main(
     elif command == 'trade_pnl':
         # Show trade history and PnL for crypto positions
         show_trade_pnl(symbol=pair, days=int(target_qty or 7))
+    elif command == "watch_exit_intrahour":
+        watch_exit_intrahour(
+            symbol=pair or "NFLX",
+            pct_above=watch_pct_above,
+            min_price=watch_min_price,
+            poll_seconds=watch_poll_seconds,
+            reset_minutes=watch_reset_minutes,
+            exit_after_trigger=watch_exit_after_trigger,
+            force_exit_at=_parse_watch_datetime(watch_force_exit_at),
+        )
 
 
 _DATA_CLIENT: Optional[StockHistoricalDataClient] = None
@@ -1373,6 +1419,180 @@ def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=
         except Exception as e:
             logger.error(f"Failed to place takeprofit limit order: {e}")
             return False
+
+
+def _quote_mid_price(symbol: str) -> float:
+    try:
+        quote = alpaca_wrapper.latest_data(symbol)
+    except Exception as exc:
+        logger.warning(f"Failed to fetch latest quote for {symbol}: {exc}")
+        return 0.0
+
+    bid = float(getattr(quote, "bid_price", 0) or 0)
+    ask = float(getattr(quote, "ask_price", 0) or 0)
+
+    if bid > 0 and ask > 0:
+        return (bid + ask) / 2.0
+    return ask or bid or 0.0
+
+
+def _parse_watch_datetime(value: Optional[str]) -> Optional[datetime]:
+    if value is None:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid timestamp {value!r}; expected ISO format like 2026-02-06T20:55:00Z") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _cancel_symbol_orders(symbol: str) -> None:
+    orders = alpaca_wrapper.get_open_orders()
+    for order in orders:
+        if hasattr(order, "symbol") and pairs_equal(order.symbol, symbol):
+            try:
+                logger.info(f"Cancelling order {order.id} for {symbol}")
+                alpaca_wrapper.cancel_order(order)
+            except Exception as exc:
+                logger.warning(f"Failed to cancel order for {symbol}: {exc}")
+
+
+def _close_position_only(symbol: str, limit_price: float) -> bool:
+    positions = alpaca_wrapper.get_all_positions()
+    positions = filter_to_realistic_positions(positions)
+    matching = [p for p in positions if hasattr(p, "symbol") and pairs_equal(p.symbol, symbol)]
+    if not matching:
+        logger.info(f"No open position found for {symbol}; skipping close order.")
+        return False
+
+    position = matching[0]
+    side = str(getattr(position, "side", "")).lower()
+    if side not in {"long", "short", "buy", "sell"}:
+        logger.warning(f"Unknown position side for {symbol}: {side}")
+        return False
+
+    qty = float(getattr(position, "qty", 0) or 0)
+    if qty <= 0:
+        logger.warning(f"Position qty for {symbol} is non-positive: {qty}")
+        return False
+
+    if side in {"short", "sell"}:
+        logger.info(f"{symbol} position is short; skipping exit-only sell to avoid shorts.")
+        return False
+
+    _cancel_symbol_orders(symbol)
+    logger.info(f"Placing limit order to close {symbol} qty={qty:.6f} @ ${limit_price:.2f}")
+    try:
+        alpaca_wrapper.open_order_at_price(symbol, qty, "sell", limit_price)
+        return True
+    except Exception as exc:
+        logger.error(f"Failed to place close order for {symbol}: {exc}")
+        return False
+
+
+def watch_exit_intrahour(
+    *,
+    symbol: str,
+    pct_above: float,
+    min_price: float,
+    poll_seconds: int,
+    reset_minutes: int,
+    exit_after_trigger: bool,
+    force_exit_at: Optional[datetime],
+) -> None:
+    pct_above = float(pct_above)
+    if pct_above >= 1.0:
+        logger.info(f"pct_above {pct_above} interpreted as percent; dividing by 100.")
+        pct_above = pct_above / 100.0
+    if pct_above < 0:
+        raise ValueError("pct_above must be non-negative")
+    min_price = float(min_price)
+    if min_price <= 0:
+        raise ValueError("min_price must be positive")
+    poll_seconds = max(int(poll_seconds), 1)
+    reset_minutes = max(int(reset_minutes), 1)
+
+    baseline_price = None
+    baseline_bucket = None
+    last_trigger_bucket = None
+    last_state = None
+    force_exit_done = False
+
+    logger.info(
+        f"Starting intrahour exit watcher for {symbol}: pct_above={pct_above:.4%} "
+        f"min_price=${min_price:.2f} reset_minutes={reset_minutes} poll={poll_seconds}s "
+        f"exit_after_trigger={exit_after_trigger}"
+    )
+    if force_exit_at is not None:
+        logger.info(f"{symbol} watcher force-exit deadline: {force_exit_at.isoformat()}")
+
+    while True:
+        now = datetime.now(timezone.utc)
+        current_price = _quote_mid_price(symbol)
+        baseline_price, baseline_bucket, state = update_intrahour_baseline(
+            current_price=current_price,
+            now=now,
+            baseline_price=baseline_price,
+            baseline_hour=baseline_bucket,
+            min_price=min_price,
+            bucket_minutes=reset_minutes,
+        )
+
+        if state != last_state:
+            logger.info(
+                f"{symbol} watcher state={state} price={current_price:.2f} "
+                f"baseline={baseline_price if baseline_price else 0:.2f}"
+            )
+            last_state = state
+
+        if force_exit_at is not None and not force_exit_done and now >= force_exit_at:
+            if current_price > 0:
+                target_price = max(current_price, baseline_price or 0.0, min_price)
+                logger.info(
+                    f"{symbol} force-exit deadline reached: price={current_price:.2f} "
+                    f"target={target_price:.2f}"
+                )
+                placed = _close_position_only(symbol, target_price)
+                force_exit_done = True
+                if placed or exit_after_trigger:
+                    logger.info("Force-exit order handled; stopping watcher.")
+                    return
+            else:
+                logger.warning(f"{symbol} force-exit deadline reached but price unavailable.")
+
+        if baseline_price is None or baseline_bucket is None:
+            sleep(poll_seconds)
+            continue
+
+        if last_trigger_bucket is not None and baseline_bucket == last_trigger_bucket:
+            sleep(poll_seconds)
+            continue
+
+        if intrahour_triggered(
+            current_price=current_price,
+            baseline_price=baseline_price,
+            pct_above=pct_above,
+        ):
+            target_price = max(baseline_price * (1.0 + pct_above), current_price)
+            logger.info(
+                f"{symbol} trigger: price={current_price:.2f} baseline={baseline_price:.2f} "
+                f"target={target_price:.2f}"
+            )
+            placed = _close_position_only(symbol, target_price)
+            if placed:
+                last_trigger_bucket = baseline_bucket
+                if exit_after_trigger:
+                    logger.info("Exit order placed; stopping watcher.")
+                    return
+
+        sleep(poll_seconds)
 
 
 def show_forecasts_for_symbol(symbol: str):
