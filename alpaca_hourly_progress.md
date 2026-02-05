@@ -2,6 +2,8 @@
 
 Tracking Alpaca hourly experiments (Chronos2-driven) for crypto + stocks.
 
+For detailed run-by-run metrics, see `newnanoalpacahourlyexp/progress.md`.
+
 ## Current setup
 
 - Training pipeline: `newnanoalpacahourlyexp/`

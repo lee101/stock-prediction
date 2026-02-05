@@ -11,6 +11,7 @@ from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
 from binanceexp1.sweep import apply_action_overrides
 from src.symbol_utils import is_crypto_symbol
+from src.torch_device_utils import require_cuda as require_cuda_device
 
 from .config import DatasetConfig
 from .data import AlpacaHourlyDataModule
@@ -62,6 +63,17 @@ def _load_model(checkpoint_path: Path, input_dim: int, sequence_length: int) -> 
     return model
 
 
+def _resolve_device(device_arg: Optional[str]) -> torch.device:
+    if device_arg:
+        device = torch.device(device_arg)
+        if device.type != "cuda":
+            raise RuntimeError(f"GPU required for inference; received device={device_arg!r}.")
+        if not torch.cuda.is_available():
+            raise RuntimeError("GPU required for inference but CUDA is not available.")
+        return device
+    return require_cuda_device("multi-asset inference", allow_fallback=False)
+
+
 def _load_symbol_data(
     symbol: str,
     *,
@@ -103,6 +115,7 @@ def main() -> None:
     parser.add_argument("--stock-data-root", default=None)
     parser.add_argument("--forecast-cache-root", default=str(DatasetConfig().forecast_cache_root))
     parser.add_argument("--cache-only", action="store_true")
+    parser.add_argument("--device", default=None, help="Override inference device (e.g., cuda, cuda:0).")
     parser.add_argument("--default-intensity", type=float, default=1.0)
     parser.add_argument("--default-offset", type=float, default=0.0)
     parser.add_argument("--intensity-map", help="Comma-separated SYMBOL=VALUE overrides for intensity.")
@@ -119,6 +132,7 @@ def main() -> None:
     parser.add_argument("--eval-hours", type=float, default=None, help="Limit evaluation to last N hours")
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
+    device = _resolve_device(args.device)
 
     symbols = [sym.strip().upper() for sym in args.symbols.split(",") if sym.strip()]
     if not symbols:
@@ -168,6 +182,8 @@ def main() -> None:
             normalizer=data.normalizer,
             sequence_length=args.sequence_length,
             horizon=args.horizon,
+            device=device,
+            require_gpu=True,
         )
 
         intensity = float(intensity_map.get(symbol, args.default_intensity))
