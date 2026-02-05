@@ -3,12 +3,40 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+_TRUTHY_ENV_VALUES = {"1", "true", "yes", "y", "on"}
+
+
+def is_truthy_env(name: str, *, default: bool = False) -> bool:
+    """Return True if environment variable is set to a truthy value.
+
+    Accepted truthy values (case-insensitive): 1/true/yes/y/on.
+    """
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in _TRUTHY_ENV_VALUES
+
+
+def require_live_trading_enabled(env_var: str = "BAGSFM_ENABLE_LIVE_TRADING") -> None:
+    """Guardrail to prevent accidental Bags.fm live trading.
+
+    Intended for CLI entrypoints and live execution paths.
+    """
+    if is_truthy_env(env_var, default=False):
+        return
+
+    raise SystemExit(
+        "Bags.fm live trading is disabled by default. "
+        f"To enable intentionally: set {env_var}=1 and re-run with --live."
+    )
 
 
 def lamports_to_sol(lamports: int) -> float:

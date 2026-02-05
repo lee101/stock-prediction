@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bagsfm import BagsAPIClient, BagsConfig, TokenConfig
 from bagsfm.config import SOL_MINT
 from bagsfm.bags_api import SolanaTransactionExecutor
+from bagsfm.utils import require_live_trading_enabled
 from bagsneural.dataset import load_ohlc_dataframe, build_window_features, FeatureNormalizer
 from bagsneural.model import BagsNeuralModel
 from pnl_tracker import PnLTracker
@@ -705,6 +706,7 @@ async def main():
         print("")
 
     if not dry_run:
+        require_live_trading_enabled()
         print("\n⚠️  WARNING: LIVE TRADING MODE")
         print("Real trades will be executed!")
 
