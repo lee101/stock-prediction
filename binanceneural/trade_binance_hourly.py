@@ -179,6 +179,7 @@ def _run_cycle(
                 normalizer=data.normalizer,
                 sequence_length=sequence_length,
                 horizon=horizon,
+                require_gpu=True,
             )
             plan = _build_plan(action, intensity_scale=intensity_scale)
             buy_price = plan.buy_price * (1.0 - price_offset_pct)

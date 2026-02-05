@@ -404,3 +404,9 @@ src/metrics_utils.py
 alpaca_cli_paper.log*
 binanceneural/forecast_cache_backup/
 newnanoalpacahourlyexp/outputs/
+alpacanewccrosslearning/outputs/
+alpacanewccrosslearning/forecast_cache/
+alpacanewccrosslearning/chronos_finetuned/
+alpacaconstrainedexp/outputs/
+alpacaconstrainedexp/forecast_cache/
+alpacaconstrainedexp/chronos_finetuned/

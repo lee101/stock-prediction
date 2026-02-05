@@ -15,12 +15,18 @@ def test_is_crypto_symbol():
         ("ETHUSD", True, "ETHUSD - direct match"),
         ("UNIUSD", True, "UNIUSD - direct match"),
         ("BNBUSD", True, "BNBUSD - direct match"),
+        ("BTCUSDT", True, "BTCUSDT - stable quote"),
+        ("ETHUSDT", True, "ETHUSDT - stable quote"),
+        ("BTCFDUSD", True, "BTCFDUSD - stable quote"),
 
         # Crypto symbols with slash (should be detected)
         ("BTC/USD", True, "BTC/USD - with slash"),
         ("ETH/USD", True, "ETH/USD - with slash"),
         ("UNI/USD", True, "UNI/USD - with slash"),
         ("BNB/USD", True, "BNB/USD - with slash"),
+        ("BTC/USDT", True, "BTC/USDT - stable quote slash"),
+        ("BTC/FDUSD", True, "BTC/FDUSD - stable quote slash"),
+        ("BTC-USDT", True, "BTC-USDT - stable quote dash"),
 
         # Non-crypto symbols
         ("AAPL", False, "AAPL - stock"),

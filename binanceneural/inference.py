@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from src.torch_device_utils import require_cuda as require_cuda_device
+
 from .data import FeatureNormalizer
 from .model import BinancePolicyBase
 
@@ -19,13 +21,19 @@ def generate_actions_from_frame(
     sequence_length: int,
     horizon: int = 1,
     device: Optional[torch.device] = None,
+    require_gpu: bool = False,
 ) -> pd.DataFrame:
     """Generate per-hour trading actions from a prepared feature frame."""
 
     if len(frame) < sequence_length:
         raise ValueError("Frame shorter than sequence length; cannot generate actions.")
 
-    device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+    if require_gpu:
+        if device is not None and device.type != "cuda":
+            raise RuntimeError(f"GPU required for inference; received device={device}.")
+        device = device or require_cuda_device("inference", allow_fallback=False)
+    else:
+        device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
     model = model.to(device)
     model.eval()
 
@@ -83,13 +91,19 @@ def generate_latest_action(
     sequence_length: int,
     horizon: int = 1,
     device: Optional[torch.device] = None,
+    require_gpu: bool = False,
 ) -> dict:
     """Generate a single latest action from the most recent sequence window."""
 
     if len(frame) < sequence_length:
         raise ValueError("Frame shorter than sequence length; cannot generate latest action.")
 
-    device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+    if require_gpu:
+        if device is not None and device.type != "cuda":
+            raise RuntimeError(f"GPU required for inference; received device={device}.")
+        device = device or require_cuda_device("inference", allow_fallback=False)
+    else:
+        device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
     model = model.to(device)
     model.eval()
 

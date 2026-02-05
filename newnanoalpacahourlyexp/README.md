@@ -84,8 +84,44 @@ python newnanoalpacahourlyexp/sweep.py \
   --offset 0.0 0.0002 0.0005
 ```
 
+## Live trading (Alpaca)
+
+Hourly production loop (GPU required):
+
+```bash
+python -m newnanoalpacahourlyexp.trade_alpaca_hourly \
+  --symbols SOLUSD,LINKUSD,UNIUSD \
+  --checkpoints "SOLUSD=binanceneural/checkpoints/alpaca_solusd_20260204_013044/epoch_006.pt,LINKUSD=binanceneural/checkpoints/alpaca_linkusd_20260204_111049/epoch_006.pt,UNIUSD=binanceneural/checkpoints/alpaca_uniusd_20260204_231926/epoch_004.pt" \
+  --default-checkpoint binanceneural/checkpoints/alpaca_solusd_20260204_013044/epoch_006.pt \
+  --sequence-length 96 \
+  --horizon 1 \
+  --forecast-horizons 1,24 \
+  --forecast-horizons-map "UNIUSD=1" \
+  --forecast-cache-root binanceneural/forecast_cache \
+  --crypto-data-root trainingdatahourly/crypto \
+  --stock-data-root trainingdatahourly/stocks \
+  --allocation-pct 0.05 \
+  --intensity-scale 1.0
+```
+
+Exit-only guard (NFLX):
+
+```bash
+python -m newnanoalpacahourlyexp.exit_only_alpaca \
+  --symbols NFLX \
+  --poll-seconds 300
+```
+
+Systemd helpers (live):
+
+```bash
+sudo bash scripts/setup_systemd_alpaca_hourly.sh
+sudo bash scripts/setup_systemd_alpaca_exit_nflx.sh
+```
+
 ## Notes
 
+- GPU is required for both training and inference. Use `--device cuda` (or `cuda:0`) if you need to pin a GPU.
 - `--maker-fee` and `--periods-per-year` let you override fee/annualization assumptions per run.
 - `--no-enforce-market-hours` or `--no-close-at-eod` can be used to disable stock-only guards.
 
