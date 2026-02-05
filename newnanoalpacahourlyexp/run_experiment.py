@@ -19,6 +19,7 @@ from .config import DatasetConfig, ExperimentConfig
 from .data import AlpacaHourlyDataModule, AlpacaMultiSymbolDataModule
 from .inference import blend_actions, generate_actions_multi_context
 from .marketsimulator import AlpacaMarketSimulator, SimulationConfig, save_trade_plot
+from src.torch_device_utils import require_cuda as require_cuda_device
 
 
 @dataclass
@@ -43,9 +44,22 @@ def _load_model(checkpoint_path: Path, input_dim: int, sequence_length: int) -> 
     return model
 
 
+def _resolve_device(device_arg: Optional[str], *, symbol: str) -> torch.device:
+    if device_arg:
+        device = torch.device(device_arg)
+        if device.type != "cuda":
+            raise RuntimeError(f"GPU required for training/inference; received device={device_arg!r}.")
+        if not torch.cuda.is_available():
+            raise RuntimeError("GPU required for training/inference but CUDA is not available.")
+        return device
+    return require_cuda_device("alpaca hourly training", symbol=symbol, allow_fallback=False)
+
+
 def train_model(
     data: AlpacaHourlyDataModule | AlpacaMultiSymbolDataModule,
     args: argparse.Namespace,
+    *,
+    device: torch.device,
 ) -> TrainingArtifacts:
     maker_fee = float(args.maker_fee) if args.maker_fee is not None else float(data.asset_meta.maker_fee)
     periods_per_year = float(args.periods_per_year) if args.periods_per_year is not None else float(
@@ -60,6 +74,7 @@ def train_model(
         use_compile=args.use_compile,
         maker_fee=maker_fee,
         periods_per_year=periods_per_year,
+        device=str(device),
     )
     trainer = BinanceHourlyTrainer(cfg, data)
     artifacts = trainer.train()
@@ -112,6 +127,7 @@ def evaluate_model(
     output_dir: Optional[Path] = None,
     eval_days: Optional[float] = None,
     eval_hours: Optional[float] = None,
+    device: Optional[torch.device] = None,
 ) -> ExperimentResult:
     val_frame = data.val_dataset.frame
 
@@ -125,6 +141,7 @@ def evaluate_model(
                 base_sequence_length=data.config.sequence_length,
                 horizon=target_horizon,
                 experiment=experiment_cfg,
+                device=device,
             )
             return agg.aggregated
         return generate_actions_from_frame(
@@ -134,6 +151,8 @@ def evaluate_model(
             normalizer=data.normalizer,
             sequence_length=data.config.sequence_length,
             horizon=target_horizon,
+            device=device,
+            require_gpu=True,
         )
 
     if blend_horizons:
@@ -191,6 +210,7 @@ def main() -> None:
     parser.add_argument("--sequence-length", type=int, default=96)
     parser.add_argument("--dry-train-steps", type=int, default=300)
     parser.add_argument("--use-compile", action="store_true")
+    parser.add_argument("--device", default=None, help="Override training device (e.g., cuda, cuda:0).")
     parser.add_argument("--run-name", default="alpaca_hourly_run")
     parser.add_argument("--checkpoint", help="Skip training and evaluate this checkpoint")
     parser.add_argument("--aggregate", action="store_true", help="Use multi-context aggregation")
@@ -225,6 +245,8 @@ def main() -> None:
     parser.add_argument("--allow-mixed-asset", action="store_true", help="Allow mixing crypto + stocks for training")
     args = parser.parse_args()
 
+    device = _resolve_device(args.device, symbol=args.symbol)
+
     ctx_lengths = tuple(int(x) for x in args.context_lengths.split(",") if x)
     experiment_cfg = ExperimentConfig(context_lengths=ctx_lengths, trim_ratio=args.trim_ratio)
 
@@ -249,7 +271,7 @@ def main() -> None:
     checkpoint_path = Path(args.checkpoint).expanduser().resolve() if args.checkpoint else None
     training_artifacts: Optional[TrainingArtifacts] = None
     if checkpoint_path is None:
-        training_artifacts = train_model(data, args)
+        training_artifacts = train_model(data, args, device=device)
         checkpoint_path = training_artifacts.best_checkpoint
 
     model = _load_model(checkpoint_path, len(data.feature_columns), args.sequence_length)
@@ -285,6 +307,7 @@ def main() -> None:
         output_dir=Path(args.output_dir) if args.output_dir else None,
         eval_days=args.eval_days,
         eval_hours=args.eval_hours,
+        device=device,
     )
     if training_artifacts is not None and args.output_dir:
         history_payload = [entry.__dict__ for entry in training_artifacts.history]

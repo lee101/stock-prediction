@@ -1,0 +1,21 @@
+[Unit]
+Description=Alpaca NFLX exit-only guard (live)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/nvme0n1-disk/code/stock-prediction
+Environment=PYTHONPATH=/nvme0n1-disk/code/stock-prediction
+Environment=PYTHONUNBUFFERED=1
+Environment=PAPER=0
+Environment=TRADE_STATE_SUFFIX=hourly
+ExecStart=/nvme0n1-disk/code/stock-prediction/.venv313-3/bin/python -m newnanoalpacahourlyexp.exit_only_alpaca \
+  --symbols NFLX \
+  --pct-above-market 0.0 \
+  --poll-seconds 300
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

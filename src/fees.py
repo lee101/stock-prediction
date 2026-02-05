@@ -13,8 +13,11 @@ from typing import Iterable, List
 
 
 def _is_crypto_symbol(symbol: str) -> bool:
-    s = symbol.upper()
-    return s.endswith("USD") or "-USD" in s
+    s = str(symbol).upper().replace("/", "").replace("-", "")
+    stable_quotes = ("USD", "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI")
+    if s in stable_quotes:
+        return True
+    return any(s.endswith(quote) for quote in stable_quotes)
 
 
 def get_fee_for_symbol(symbol: str) -> float:
@@ -47,4 +50,3 @@ def get_fees_for_symbols(symbols: Iterable[str]) -> List[float]:
 
 
 __all__ = ["get_fee_for_symbol", "get_fees_for_symbols"]
-

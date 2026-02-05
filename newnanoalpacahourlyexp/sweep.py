@@ -19,6 +19,7 @@ from .config import DatasetConfig, ExperimentConfig
 from .data import AlpacaHourlyDataModule, FeatureNormalizer
 from .inference import blend_actions, generate_actions_multi_context
 from .marketsimulator import AlpacaMarketSimulator, SimulationConfig
+from src.torch_device_utils import require_cuda as require_cuda_device
 
 
 @dataclass
@@ -39,6 +40,7 @@ def _actions_for_horizon(
     horizon: int,
     aggregate: bool,
     experiment_cfg: ExperimentConfig,
+    device: torch.device,
 ) -> pd.DataFrame:
     if aggregate:
         agg = generate_actions_multi_context(
@@ -49,6 +51,7 @@ def _actions_for_horizon(
             base_sequence_length=sequence_length,
             horizon=horizon,
             experiment=experiment_cfg,
+            device=device,
         )
         return agg.aggregated
     return generate_actions_from_frame(
@@ -58,6 +61,8 @@ def _actions_for_horizon(
         normalizer=normalizer,
         sequence_length=sequence_length,
         horizon=horizon,
+        device=device,
+        require_gpu=True,
     )
 
 
@@ -83,6 +88,7 @@ def sweep_action_overrides(
     symbol: str = "",
     eval_days: Optional[float] = None,
     eval_hours: Optional[float] = None,
+    device: torch.device,
 ) -> List[SweepResult]:
     if blend_horizons:
         actions_list = [
@@ -95,6 +101,7 @@ def sweep_action_overrides(
                 horizon=h,
                 aggregate=aggregate,
                 experiment_cfg=experiment_cfg,
+                device=device,
             )
             for h in blend_horizons
         ]
@@ -109,6 +116,7 @@ def sweep_action_overrides(
             horizon=horizon,
             aggregate=aggregate,
             experiment_cfg=experiment_cfg,
+            device=device,
         )
 
     if eval_days or eval_hours:
@@ -169,7 +177,17 @@ def main() -> None:
     parser.add_argument("--no-close-at-eod", action="store_true")
     parser.add_argument("--eval-days", type=float, default=None, help="Limit evaluation to last N days")
     parser.add_argument("--eval-hours", type=float, default=None, help="Limit evaluation to last N hours")
+    parser.add_argument("--device", default=None, help="Override inference device (e.g., cuda, cuda:0).")
     args = parser.parse_args()
+
+    if args.device:
+        device = torch.device(args.device)
+        if device.type != "cuda":
+            raise RuntimeError(f"GPU required for inference; received device={args.device!r}.")
+        if not torch.cuda.is_available():
+            raise RuntimeError("GPU required for inference but CUDA is not available.")
+    else:
+        device = require_cuda_device("sweep inference", allow_fallback=False)
 
     forecast_horizons = tuple(int(x) for x in args.forecast_horizons.split(",") if x)
     data_cfg = DatasetConfig(
@@ -221,6 +239,7 @@ def main() -> None:
         symbol=data.asset_meta.symbol,
         eval_days=args.eval_days,
         eval_hours=args.eval_hours,
+        device=device,
     )
 
     for result in results:

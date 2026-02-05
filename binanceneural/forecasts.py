@@ -38,7 +38,14 @@ class ForecastCache:
         path = self._path(symbol)
         if not path.exists():
             return pd.DataFrame()
-        return pd.read_parquet(path)
+        frame = pd.read_parquet(path)
+        if frame.empty:
+            return frame
+        if "timestamp" in frame.columns:
+            frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+        if "issued_at" in frame.columns:
+            frame["issued_at"] = pd.to_datetime(frame["issued_at"], utc=True, errors="coerce")
+        return frame
 
     def write(self, symbol: str, frame: pd.DataFrame) -> None:
         path = self._path(symbol)

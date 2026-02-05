@@ -11,6 +11,7 @@ def is_crypto_symbol(symbol):
     - Direct matches: "BTCUSD" in all_crypto_symbols
     - Slash format: "BTC/USD" -> "BTCUSD" in all_crypto_symbols
     - Split format: "BTC/USD" -> check if "BTCUSD" exists
+    - Stable-quote pairs: "BTCUSDT", "BTC/FDUSD", "ETH-USDC"
 
     Args:
         symbol: The symbol to check (e.g., "BTC/USD", "BTCUSD", "AAPL")
@@ -33,16 +34,24 @@ def is_crypto_symbol(symbol):
     if symbol in all_crypto_symbols:
         return True
 
+    normalized = symbol.replace("/", "").replace("-", "").upper()
+
     # Remove slash and try again (e.g., "BTC/USD" -> "BTCUSD")
-    symbol_no_slash = symbol.replace("/", "")
-    if symbol_no_slash in all_crypto_symbols:
+    if normalized in all_crypto_symbols:
         return True
+
+    stable_quotes = ("USD", "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI")
+    if normalized in stable_quotes:
+        return True
+    for quote in stable_quotes:
+        if normalized.endswith(quote) and len(normalized) > len(quote):
+            return True
 
     # Check if it ends with USD and the base is a known crypto
     # This handles cases like "BTC/USD" where we strip to "BTC" and check if "BTCUSD" exists
-    if "/" in symbol and symbol.endswith("/USD"):
+    if "/" in symbol and symbol.upper().endswith("/USD"):
         base = symbol.split("/")[0]
-        if f"{base}USD" in all_crypto_symbols:
+        if f"{base}USD".upper() in all_crypto_symbols:
             return True
 
     return False

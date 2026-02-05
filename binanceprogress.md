@@ -1,8 +1,10 @@
 # Binance Progress Log
 
-Updated: 2026-02-03
+Updated: 2026-02-05
 
 ## Notes / Fixes
+- Added `binancecrosslearning/` pipeline (multi-symbol Chronos2 fine-tune + global policy + selector) with Binance defaults.
+- Extended crypto symbol detection + fee heuristics for stable-quote pairs (USDT/FDUSD/USDC/etc); added tests.
 - Added `state_dict`-aware max_len inference when loading classic models so positional encoding buffers match checkpoint shapes.
   - Updated: `binanceneural/model.py`, `binancechronossolexperiment/inference.py`, `binanceneural/run_simulation.py`, `binanceneural/trade_binance_hourly.py`, `binanceneural/sweep.py`.
 - Added max_len inference for binanceexp1 checkpoint reloads (prevents positional encoding size mismatch).
