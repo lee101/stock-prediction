@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from .config import BagsConfig, SOL_MINT
+from .config import BagsConfig, SOL_MINT, is_bagsfm_trading_disabled
 
 logger = logging.getLogger(__name__)
 
@@ -386,6 +386,15 @@ class SolanaTransactionExecutor:
         Returns:
             SwapResult with execution details
         """
+        if is_bagsfm_trading_disabled():
+            msg = (
+                "Bags.fm live trading is disabled (BAGSFM_TRADING_DISABLED=1). "
+                "Refusing to sign/send swap transaction. "
+                "Unset BAGSFM_TRADING_DISABLED (or DISABLE_BAGSFM_TRADING) to re-enable."
+            )
+            logger.error(msg)
+            return SwapResult(success=False, error=msg)
+
         try:
             from solders.transaction import VersionedTransaction
             from solders.message import to_bytes_versioned
@@ -576,6 +585,15 @@ async def execute_swap(
     Returns:
         SwapResult with execution details
     """
+    if not dry_run and is_bagsfm_trading_disabled():
+        msg = (
+            "Bags.fm live trading is disabled (BAGSFM_TRADING_DISABLED=1). "
+            "Refusing to execute swap. "
+            "Unset BAGSFM_TRADING_DISABLED (or DISABLE_BAGSFM_TRADING) to re-enable."
+        )
+        logger.error(msg)
+        return SwapResult(success=False, error=msg)
+
     client = BagsAPIClient(config)
     executor = SolanaTransactionExecutor(config)
 
