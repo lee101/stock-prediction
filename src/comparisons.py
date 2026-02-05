@@ -1,7 +1,41 @@
 """Utility functions for comparing trading-related values."""
 
+from __future__ import annotations
 
-def is_same_side(side1: str, side2: str) -> bool:
+from typing import Any
+
+
+def normalize_side(side: Any) -> str:
+    """Normalize buy/sell/long/short-like inputs (including Enum objects)."""
+    if side is None:
+        return ""
+    if isinstance(side, str):
+        raw = side.strip().lower()
+        if "." in raw:
+            raw = raw.rsplit(".", 1)[-1]
+        return raw
+
+    value = getattr(side, "value", None)
+    if isinstance(value, str) and value.strip():
+        raw = value.strip().lower()
+        if "." in raw:
+            raw = raw.rsplit(".", 1)[-1]
+        return raw
+
+    name = getattr(side, "name", None)
+    if isinstance(name, str) and name.strip():
+        raw = name.strip().lower()
+        if "." in raw:
+            raw = raw.rsplit(".", 1)[-1]
+        return raw
+
+    raw = str(side).strip().lower()
+    if "." in raw:
+        raw = raw.rsplit(".", 1)[-1]
+    return raw
+
+
+def is_same_side(side1: Any, side2: Any) -> bool:
     """
     Compare position sides accounting for different nomenclature.
     Handles 'buy'/'long' and 'sell'/'short' equivalence.
@@ -15,8 +49,8 @@ def is_same_side(side1: str, side2: str) -> bool:
     buy_variants = {'buy', 'long'}
     sell_variants = {'sell', 'short'}
 
-    side1 = side1.lower()
-    side2 = side2.lower()
+    side1 = normalize_side(side1)
+    side2 = normalize_side(side2)
 
     if side1 in buy_variants and side2 in buy_variants:
         return True
@@ -25,9 +59,9 @@ def is_same_side(side1: str, side2: str) -> bool:
     return False
 
 
-def is_buy_side(side: str) -> bool:
-    return side.lower() in {'buy', 'long'}
+def is_buy_side(side: Any) -> bool:
+    return normalize_side(side) in {'buy', 'long'}
 
 
-def is_sell_side(side: str) -> bool:
-    return side.lower() in {'sell', 'short'}
+def is_sell_side(side: Any) -> bool:
+    return normalize_side(side) in {'sell', 'short'}

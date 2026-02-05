@@ -15,6 +15,7 @@ import alpaca_wrapper
 from data_curate_daily import download_exchange_latest_data, get_bid, get_ask
 from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from jsonshelve import FlatShelf
+from src.comparisons import is_buy_side, is_sell_side
 from src.fixtures import crypto_symbols
 from src.logging_utils import setup_logging, get_log_filename
 from src.stock_utils import pairs_equal
@@ -175,6 +176,35 @@ def main(
         "--watch-force-exit-at",
         help="ISO timestamp (UTC or with offset) to force exit even if trigger not reached.",
     ),
+    watch_force_backout: bool = typer.Option(
+        False,
+        "--watch-force-backout/--watch-force-limit",
+        help="On force-exit, run backout_near_market instead of placing a single limit order.",
+    ),
+    watch_force_backout_ramp_minutes: int = typer.Option(
+        20,
+        "--watch-force-backout-ramp-minutes",
+        min=1,
+        help="Ramp minutes for the force-exit backout_near_market.",
+    ),
+    watch_force_backout_market_after_minutes: int = typer.Option(
+        30,
+        "--watch-force-backout-market-after-minutes",
+        min=1,
+        help="Market fallback minutes for the force-exit backout_near_market.",
+    ),
+    watch_force_backout_close_force_minutes: int = typer.Option(
+        10,
+        "--watch-force-backout-close-force-minutes",
+        min=0,
+        help="Force market close when this close to the NYSE close (stocks only).",
+    ),
+    watch_force_backout_close_buffer_minutes: int = typer.Option(
+        30,
+        "--watch-force-backout-close-buffer-minutes",
+        min=0,
+        help="Minutes from the close to keep tighter limit offsets before widening.",
+    ),
     lookback_hours: int = typer.Option(
         24,
         "--lookback-hours",
@@ -323,6 +353,11 @@ def main(
             reset_minutes=watch_reset_minutes,
             exit_after_trigger=watch_exit_after_trigger,
             force_exit_at=_parse_watch_datetime(watch_force_exit_at),
+            force_backout=watch_force_backout,
+            force_backout_ramp_minutes=watch_force_backout_ramp_minutes,
+            force_backout_market_after_minutes=watch_force_backout_market_after_minutes,
+            force_backout_close_force_minutes=watch_force_backout_close_force_minutes,
+            force_backout_close_buffer_minutes=watch_force_backout_close_buffer_minutes,
         )
     elif command == 'day_progress':
         show_day_progress(
@@ -571,7 +606,7 @@ def backout_near_market(
             for position in positions:
                 if hasattr(position, 'symbol') and pairs_equal(position.symbol, pair):
                     logger.info(f"Found matching position for {pair}")
-                    is_long = hasattr(position, 'side') and position.side == 'long'
+                    is_long = is_buy_side(getattr(position, "side", ""))
 
                     minutes_since_start = (datetime.now() - start_time).seconds // 60
                     progress = min(minutes_since_start / effective_ramp_minutes, 1.0)
@@ -703,7 +738,7 @@ def close_all_positions():
         bid = get_bid(symbol)
         ask = get_ask(symbol)
 
-        current_price = ask if hasattr(position, 'side') and position.side == 'long' else bid
+        current_price = ask if is_buy_side(getattr(position, "side", "")) else bid
         # close a long with the ask price
         # close a short with the bid price
         # get bid/ask
@@ -1680,7 +1715,7 @@ def show_account():
     else:
         for pos in positions:
             if hasattr(pos, 'symbol') and hasattr(pos, 'qty') and hasattr(pos, 'current_price'):
-                side = "LONG" if hasattr(pos, 'side') and pos.side == 'long' else "SHORT"
+                side = "LONG" if is_buy_side(getattr(pos, "side", "")) else "SHORT"
                 logger.info(f"{pos.symbol}: {side} {pos.qty} shares @ ${float(pos.current_price):,.2f}")
 
     # Get and display orders
@@ -1967,7 +2002,7 @@ def close_position_at_takeprofit(pair: str, takeprofit_price: float, start_time=
         # Place the takeprofit order
         logger.info(f"Placing limit order to close {pair} at {takeprofit_price}")
         try:
-            side = 'sell' if position.side == 'long' else 'buy'
+            side = 'sell' if is_buy_side(getattr(position, "side", "")) else 'buy'
             alpaca_wrapper.open_order_at_price(pair, position.qty, side, takeprofit_price)
             return True
         except Exception as e:
@@ -2027,9 +2062,11 @@ def _close_position_only(symbol: str, limit_price: float) -> bool:
         return False
 
     position = matching[0]
-    side = str(getattr(position, "side", "")).lower()
-    if side not in {"long", "short", "buy", "sell"}:
-        logger.warning(f"Unknown position side for {symbol}: {side}")
+    pos_side = getattr(position, "side", "")
+    is_long = is_buy_side(pos_side)
+    is_short = is_sell_side(pos_side)
+    if not is_long and not is_short:
+        logger.warning(f"Unknown position side for {symbol}: {pos_side}")
         return False
 
     qty = float(getattr(position, "qty", 0) or 0)
@@ -2037,14 +2074,14 @@ def _close_position_only(symbol: str, limit_price: float) -> bool:
         logger.warning(f"Position qty for {symbol} is non-positive: {qty}")
         return False
 
-    if side in {"short", "sell"}:
-        logger.info(f"{symbol} position is short; skipping exit-only sell to avoid shorts.")
-        return False
+    close_side = "sell" if is_long else "buy"
 
     _cancel_symbol_orders(symbol)
-    logger.info(f"Placing limit order to close {symbol} qty={qty:.6f} @ ${limit_price:.2f}")
+    logger.info(
+        f"Placing limit order to close {symbol} qty={qty:.6f} side={close_side} @ ${limit_price:.2f}"
+    )
     try:
-        alpaca_wrapper.open_order_at_price(symbol, qty, "sell", limit_price)
+        alpaca_wrapper.open_order_at_price(symbol, qty, close_side, limit_price)
         return True
     except Exception as exc:
         logger.error(f"Failed to place close order for {symbol}: {exc}")
@@ -2060,6 +2097,11 @@ def watch_exit_intrahour(
     reset_minutes: int,
     exit_after_trigger: bool,
     force_exit_at: Optional[datetime],
+    force_backout: bool,
+    force_backout_ramp_minutes: int,
+    force_backout_market_after_minutes: int,
+    force_backout_close_force_minutes: int,
+    force_backout_close_buffer_minutes: int,
 ) -> None:
     pct_above = float(pct_above)
     if pct_above >= 1.0:
@@ -2107,6 +2149,27 @@ def watch_exit_intrahour(
             last_state = state
 
         if force_exit_at is not None and not force_exit_done and now >= force_exit_at:
+            if force_backout:
+                logger.info(
+                    f"{symbol} force-exit deadline reached; starting backout_near_market "
+                    f"(ramp={force_backout_ramp_minutes}m market_after={force_backout_market_after_minutes}m)"
+                )
+                result = backout_near_market(
+                    symbol,
+                    ramp_minutes=force_backout_ramp_minutes,
+                    market_after=force_backout_market_after_minutes,
+                    sleep_interval=poll_seconds,
+                    market_close_force_minutes=force_backout_close_force_minutes,
+                    market_close_buffer_minutes=force_backout_close_buffer_minutes,
+                )
+                if result is False:
+                    logger.error(f"{symbol} force-exit backout_near_market failed; will retry.")
+                    sleep(poll_seconds)
+                    continue
+                force_exit_done = True
+                logger.info("Force-exit backout completed; stopping watcher.")
+                return
+
             if current_price > 0:
                 target_price = max(current_price, baseline_price or 0.0, min_price)
                 logger.info(
