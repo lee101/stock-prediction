@@ -6,6 +6,8 @@ Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
 
 | Date (UTC) | Run | Symbols | Eval window | total_return | sortino | ann_return_365 | ann_return_252 | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-02-05 | selector_seq128_lb2400_best_20260205_2227 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.0106 | 132.6112 | 1.178e+11 | 4.403e+07 | Seq128 policy checkpoint epoch_003 (`alpaca_cross_global_mixed7_robust_short_seq128_lb2400_20260205_2222`) with selector sweep config intensity=2.2, min_edge=0.004, risk_weight=0.15, dip=0.0 (lb2400 cache). 30d total_return=2.8514 sortino=103.1766. |
+| 2026-02-05 | selector_seq128_lb2400_best_20260205_2227 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.5574 | 110.4913 | 2.768e+07 | 1.375e+05 | Same config as 10d; 30d total_return=2.8514 sortino=103.1766; 60d total_return=10.4748 sortino=47.7637. |
 | 2026-02-05 | selector_seq128_best_20260205_043448 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.6463 | 128.4568 | 2.669e+15 | 4.472e+10 | Seq128 policy checkpoint epoch_003 with intensity=2.0, min_edge=0.004, risk_weight=0.2, dip=0.005. |
 | 2026-02-05 | selector_seq128_best_20260205_043448 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.6463 | 128.4568 | 5.166e+07 | 2.115e+05 | Same config as 10d; window-limited by stock data. |
 | 2026-02-05 | selector_sweep_mixed7_target3_20260205_041640 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1952 | 71.5462 | 2.909e+12 | 4.029e+08 | Mixed7 robust_scaling short-window; targeted min_edge/risk sweep v3 (intensity=2.0, min_edge=0.004, risk_weight=0.2, dip=0.005). |
@@ -41,6 +43,7 @@ Annualized returns use CAGR: `(1 + total_return) ** (basis_days / eval_days) - 1
 | 2026-02-05 | cross_lora_20260205_012542 | SOLUSD,LINKUSD,UNIUSD | 200 | 1024 | 1e‑5 | baseline | Forecast cache built (h1+h24, 720h lookback). |
 | 2026-02-05 | cross_lora_mixed7_robust_20260205_022709 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 200 | 1024 | 1e‑5 | robust_scaling | Mixed7 LoRA (preaug robust_scaling). |
 | 2026-02-05 | cross_lora_mixed7_robust_lr2e5_20260205_040853 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 200 | 1024 | 2e‑5 | robust_scaling | Mixed7 LoRA (eval_loss=0.167414). |
+| 2026-02-05 | cross_lora_mixed7_robust_20260205_2209 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 400 | 1024 | 1e‑5 | robust_scaling | Mixed7 LoRA retrain on refreshed hourly data (final eval_loss≈0.1658). Forecast cache built (lb2400, h1+h24). |
 
 ## Global policy training
 
@@ -50,12 +53,15 @@ Annualized returns use CAGR: `(1 + total_return) ** (basis_days / eval_days) - 1
 | 2026-02-05 | alpaca_cross_global_robust_20260205_020915 | SOLUSD,LINKUSD,UNIUSD | 0.1010 | 26.9010 | Robust_scaling forecasts, MA windows 168/336, min_history=200. |
 | 2026-02-05 | alpaca_cross_global_mixed7_robust_short_20260205_025307 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 0.3038 | 76.5146 | Mixed7 policy with short-window feature overrides; window 2025-09-01..2025-11-12. |
 | 2026-02-05 | alpaca_cross_global_mixed7_robust_short_seq128_20260205_043448 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 0.5935 | 291.1584 | Seq128 policy with short-window feature overrides; best checkpoint epoch_003. |
+| 2026-02-05 | alpaca_cross_global_mixed7_robust_short_seq128_lb2400_20260205_2222 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 18.0359 | 65.6919 | Seq128 policy trained on lb2400 mixed7 cache (`mixed7_robust_20260205_2209_lb2400`); MA/EMA/ATR=24/72, min_history=200. |
 
 ## TODO
 
-- Extend mixed7 window beyond 2025‑11‑12 to add more stock hours (refresh data) and re‑train.
-- Run 30d selector sweeps once longer stock windows are available.
+- Extend mixed7 window beyond 2025‑11‑12 (done: lb2400 cache `mixed7_robust_20260205_2209_lb2400`).
+- Run 30d selector evals on extended window (done: `selector_seq128_lb2400_best_20260205_2227`).
 - Try higher intensity grid (1.4/1.6) and alternate min_edge for mixed7 policy.
+- Try longer lookback (lb4000+) so stocks have 700+ bars, then compare longer feature windows vs short windows.
+- Expand symbol universe (e.g., add AAPL/AMZN/META/TSLA/JPM/V/WMT) and retrain Chronos2 LoRA + policy.
 
 ## Preaug sweep (eval_loss)
 
@@ -199,3 +205,23 @@ Best sortino (10d):
 intensity=2.0 offset=0.0 min_edge=0.003 risk_weight=0.2 edge_mode=high_low dip_threshold=0.0025
 total_return=1.097744 sortino=79.130229 final_cash=20977.442667
 ```
+
+## Selector sweep (10d, 144 configs, mixed7 seq128 lb2400)
+
+Sweep CSV: `alpacanewccrosslearning/outputs/selector_sweep_mixed7_seq128_lb2400_20260205_2227/selector_sweep.csv`
+
+Best total_return (10d):
+```
+intensity=2.2 offset=0.0 min_edge=0.004 risk_weight=0.15 edge_mode=high_low dip_threshold=0.0
+total_return=1.010591 sortino=132.611165 final_cash=0.0
+```
+
+Best sortino (10d):
+```
+intensity=1.6 offset=0.0 min_edge=0.002 risk_weight=0.2 edge_mode=high_low dip_threshold=0.005
+total_return=0.867208 sortino=202.196523 final_cash~0.0
+```
+
+Best total_return config extra evals (same selector config):
+- 20d: total_return=1.557372 sortino=110.491282
+- 30d: total_return=2.851445 sortino=103.176568 (`alpacanewccrosslearning/outputs/selector_best_mixed7_seq128_lb2400_20260205_2227_eval30d`)

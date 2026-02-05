@@ -105,7 +105,7 @@ def main() -> None:
         merge_lora=args.merge_lora,
     )
 
-    logger.info("Loading Chronos2 model %s", config.model_id)
+    logger.info("Loading Chronos2 model {}", config.model_id)
     pipeline = _load_pipeline(config.model_id, config.device_map, config.torch_dtype)
     finetuned = _fit_pipeline(
         pipeline=pipeline,
@@ -115,7 +115,7 @@ def main() -> None:
         output_dir=output_dir,
     )
     save_path = _save_pipeline(finetuned, output_dir, "finetuned")
-    logger.info("Saved fine-tuned model to %s", save_path)
+    logger.info("Saved fine-tuned model to {}", save_path)
 
     metadata = {
         "symbols": symbols,
