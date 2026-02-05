@@ -26,6 +26,7 @@ from .config import (
 from .data_collector import DataCollector, create_collector
 from .forecaster import TokenForecaster, TokenForecast, ForecastBatch, create_forecaster
 from .simulator import compute_daily_high_low
+from .utils import require_live_trading_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -750,6 +751,9 @@ def main():
         level=getattr(logging, args.log_level.upper()),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+
+    if args.live:
+        require_live_trading_enabled()
 
     # Create config
     from .config import load_config_from_env

@@ -184,10 +184,13 @@ class BagsAPIClient:
         data = response.json()
         if not data.get("success"):
             error_msg = data.get("error", data.get("message", "Unknown error"))
+            amount_hint = " (base units)"
+            if input_mint == SOL_MINT:
+                amount_hint = f" ({amount/1e9:.4f} SOL)"
             logger.warning(
                 f"Quote failed: {error_msg} | "
                 f"input={input_mint[:8]}... output={output_mint[:8]}... "
-                f"amount={amount} ({amount/1e9:.4f} SOL) | "
+                f"amount={amount}{amount_hint} | "
                 f"response={data}"
             )
             raise RuntimeError(f"Quote failed: {error_msg}")

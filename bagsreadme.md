@@ -2,6 +2,10 @@
 
 This document covers running the Bags.fm trading bots for CODEX and other Solana tokens.
 
+## Status (2026-02-05)
+
+We no longer run Bags.fm live trading from this repo by default. All `--live` entrypoints are guarded behind `BAGSFM_ENABLE_LIVE_TRADING=1` to prevent accidental execution.
+
 ## Neural Trader (bagsneural)
 
 Neural network-based trading using a trained model for buy/sell signals.
@@ -44,11 +48,11 @@ python bagsneural/run_backtest.py \
 # Dry run (default)
 python run_neural_trader.py --dry-run
 
-# Live trading (requires SOLANA_PRIVATE_KEY in env_real.py)
-python run_neural_trader.py --live --max-position 0.5
+# Live trading (guarded; requires SOLANA_PRIVATE_KEY in env_real.py)
+BAGSFM_ENABLE_LIVE_TRADING=1 python run_neural_trader.py --live --max-position 0.5
 
 # With custom thresholds
-python run_neural_trader.py --live \
+BAGSFM_ENABLE_LIVE_TRADING=1 python run_neural_trader.py --live \
   --buy-threshold 0.46 \
   --sell-threshold 0.42 \
   --interval 10
