@@ -580,6 +580,13 @@ async def main():
     args = parser.parse_args()
     dry_run = not args.live
 
+    from bagsfm.config import is_bagsfm_trading_disabled
+    if args.live and is_bagsfm_trading_disabled():
+        raise SystemExit(
+            "Bags.fm live trading is disabled (BAGSFM_TRADING_DISABLED=1). "
+            "Refusing to start in --live mode."
+        )
+
     print(f"\n{'='*60}")
     print("Neural Trader V3 - CODEX")
     print(f"{'='*60}")

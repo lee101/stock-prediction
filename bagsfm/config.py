@@ -27,6 +27,30 @@ except ImportError:
     SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "") or os.getenv("PRIVATE_KEY", "")
     SOLANA_PUBLIC_KEY = os.getenv("SOLANA_PUBLIC_KEY", "")
 
+_BAGSFM_TRADING_DISABLED_ENV_VARS: Tuple[str, ...] = (
+    "BAGSFM_TRADING_DISABLED",
+    "DISABLE_BAGSFM_TRADING",
+)
+
+
+def _env_truthy(value: str) -> bool:
+    v = value.strip().lower()
+    return v not in ("", "0", "false", "no", "off")
+
+
+def is_bagsfm_trading_disabled() -> bool:
+    """Return True if Bags.fm *live* trading is disabled via environment.
+
+    This is a hard safety switch used to prevent accidental live swaps.
+    """
+    for env_var in _BAGSFM_TRADING_DISABLED_ENV_VARS:
+        raw = os.getenv(env_var)
+        if raw is None:
+            continue
+        if _env_truthy(raw):
+            return True
+    return False
+
 
 # Well-known Solana token mints
 SOL_MINT = "So11111111111111111111111111111111111111112"

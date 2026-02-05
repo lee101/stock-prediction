@@ -746,6 +746,13 @@ def main():
 
     args = parser.parse_args()
 
+    from .config import is_bagsfm_trading_disabled
+    if args.live and is_bagsfm_trading_disabled():
+        raise SystemExit(
+            "Bags.fm live trading is disabled (BAGSFM_TRADING_DISABLED=1). "
+            "Refusing to start in --live mode."
+        )
+
     # Configure logging
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper()),
