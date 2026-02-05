@@ -57,6 +57,37 @@ def _apply_dip_filter(actions: pd.DataFrame, bars: pd.DataFrame, threshold_pct: 
     return filtered
 
 
+def _slice_frame_for_eval(
+    frame: pd.DataFrame,
+    *,
+    eval_days: Optional[float],
+    eval_hours: Optional[float],
+    sequence_length: int,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    hours = 0.0
+    if eval_days:
+        hours = max(hours, float(eval_days) * 24.0)
+    if eval_hours:
+        hours = max(hours, float(eval_hours))
+    if hours <= 0:
+        return frame
+    ts = pd.to_datetime(frame["timestamp"], utc=True)
+    ts_end = ts.max()
+    if pd.isna(ts_end):
+        return frame
+    ts_start = ts_end - pd.Timedelta(hours=hours)
+    eval_mask = ts >= ts_start
+    eval_count = int(eval_mask.sum())
+    if eval_count <= 0:
+        return frame
+    needed = eval_count + max(0, int(sequence_length))
+    if needed >= len(frame):
+        return frame
+    return frame.iloc[-needed:].reset_index(drop=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run global best-trade selector (constrained long/short).")
     parser.add_argument("--symbols", default=None)
@@ -84,6 +115,7 @@ def main() -> None:
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--moving-average-windows", default=None)
     parser.add_argument("--min-history-hours", type=int, default=None)
+    parser.add_argument("--max-feature-lookback-hours", type=int, default=None)
     parser.add_argument("--intensity-scale", type=float, default=1.0)
     parser.add_argument("--price-offset-pct", type=float, default=0.0)
     parser.add_argument("--dip-threshold-pct", type=float, default=0.0)
@@ -127,6 +159,11 @@ def main() -> None:
     else:
         ma_windows = DatasetConfig().moving_average_windows
     min_history_hours = args.min_history_hours if args.min_history_hours is not None else DatasetConfig().min_history_hours
+    max_lookback = (
+        int(args.max_feature_lookback_hours)
+        if args.max_feature_lookback_hours is not None
+        else DatasetConfig().max_feature_lookback_hours
+    )
 
     for symbol in symbols:
         data_cfg = DatasetConfig(
@@ -138,11 +175,18 @@ def main() -> None:
             cache_only=args.cache_only,
             moving_average_windows=ma_windows,
             min_history_hours=min_history_hours,
+            max_feature_lookback_hours=max_lookback,
         )
         data = AlpacaHourlyDataModule(data_cfg)
         model = _load_model(Path(args.checkpoint), len(data.feature_columns), args.sequence_length)
 
         frame = data.val_dataset.frame.copy()
+        frame = _slice_frame_for_eval(
+            frame,
+            eval_days=args.eval_days,
+            eval_hours=args.eval_hours,
+            sequence_length=args.sequence_length,
+        )
         actions = generate_actions_from_frame(
             model=model,
             frame=frame,
