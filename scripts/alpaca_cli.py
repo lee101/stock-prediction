@@ -1,8 +1,9 @@
 import os
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from time import sleep
 import traceback
-from typing import Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import alpaca_trade_api as tradeapi
 import math
@@ -19,7 +20,9 @@ from src.logging_utils import setup_logging, get_log_filename
 from src.stock_utils import pairs_equal
 from src.trading_obj_utils import filter_to_realistic_positions
 from src.date_utils import is_nyse_open_on_date
-from src.exit_watch_utils import update_intrahour_baseline, intrahour_triggered
+from src.exit_watch_utils import intrahour_triggered, update_intrahour_baseline
+from src.pnl_utils import compute_trade_pnl
+from src.symbol_utils import is_crypto_symbol
 
 # Import position sizing utilities
 from src.sizing_utils import get_qty
@@ -172,6 +175,24 @@ def main(
         "--watch-force-exit-at",
         help="ISO timestamp (UTC or with offset) to force exit even if trigger not reached.",
     ),
+    lookback_hours: int = typer.Option(
+        24,
+        "--lookback-hours",
+        min=1,
+        help="Lookback window in hours for day_progress.",
+    ),
+    activity_page_size: int = typer.Option(
+        100,
+        "--activity-page-size",
+        min=1,
+        help="Account activity page size for day_progress.",
+    ),
+    activity_max_pages: int = typer.Option(
+        20,
+        "--activity-max-pages",
+        min=1,
+        help="Max pages for account activity lookups in day_progress.",
+    ),
 ):
     """
     Alpaca CLI - Trade stocks with safety restrictions for out-of-hours trading.
@@ -202,6 +223,8 @@ def main(
     show_forecasts - display forecast predictions for a symbol
 
     debug_raw_data SYMBOL - print raw JSON data from Alpaca for the symbol
+
+    day_progress - show last-day portfolio equity change and executed fills
 
     watch_exit_intrahour NFLX - cancel NFLX orders and close position when price
                                 rises above an intrahour baseline by a threshold
@@ -300,6 +323,12 @@ def main(
             reset_minutes=watch_reset_minutes,
             exit_after_trigger=watch_exit_after_trigger,
             force_exit_at=_parse_watch_datetime(watch_force_exit_at),
+        )
+    elif command == 'day_progress':
+        show_day_progress(
+            lookback_hours=lookback_hours,
+            activity_page_size=activity_page_size,
+            activity_max_pages=activity_max_pages,
         )
 
 
@@ -1092,6 +1121,531 @@ def ramp_into_position(
                 logger.error("Max retries reached, exiting")
                 return False
             sleep(60)
+            continue
+
+
+def _safe_float(value: object) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_activity_time(value: object) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        raw = str(value)
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            try:
+                dt = datetime.strptime(raw, "%Y-%m-%d")
+            except ValueError:
+                return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _activity_to_dict(activity: object) -> dict:
+    if hasattr(activity, "to_dict"):
+        return activity.to_dict()
+    if isinstance(activity, dict):
+        return activity
+    return activity.__dict__
+
+
+def _extract_activity_items(response: object) -> List[dict]:
+    if isinstance(response, list):
+        return [_activity_to_dict(item) for item in response]
+    if isinstance(response, dict):
+        for key in ("account_activities", "activities", "items", "data"):
+            items = response.get(key)
+            if items:
+                return [_activity_to_dict(item) for item in items]
+    return []
+
+
+def _fetch_activities_after_until(
+    *,
+    client,
+    after: datetime,
+    until: datetime,
+    activity_types: List[str],
+    direction: str,
+    page_size: int,
+    max_pages: int,
+) -> List[dict]:
+    results: List[dict] = []
+    page_token: Optional[str] = None
+
+    for _ in range(max_pages):
+        params: Dict[str, str] = {
+            "direction": direction,
+            "page_size": str(page_size),
+            "activity_types": ",".join(activity_types),
+            "after": after.isoformat(),
+            "until": until.isoformat(),
+        }
+        if page_token:
+            params["page_token"] = page_token
+
+        response = client._request("GET", "/account/activities", data=params)
+        items = _extract_activity_items(response)
+        results.extend(items)
+
+        if isinstance(response, dict):
+            page_token = (
+                response.get("next_page_token")
+                or response.get("next_page")
+                or response.get("next")
+            )
+        else:
+            page_token = None
+
+        if not page_token or not items:
+            break
+
+    return results
+
+
+def _fetch_activities_by_date(
+    *,
+    client,
+    start: datetime,
+    end: datetime,
+    activity_types: List[str],
+    direction: str,
+) -> List[dict]:
+    results: List[dict] = []
+    day = start.date()
+    end_date = end.date()
+    while day <= end_date:
+        params: Dict[str, str] = {
+            "direction": direction,
+            "activity_types": ",".join(activity_types),
+            "date": day.strftime("%Y-%m-%d"),
+        }
+        response = client._request("GET", "/account/activities", data=params)
+        items = _extract_activity_items(response)
+        results.extend(items)
+        day += timedelta(days=1)
+    return results
+
+
+def _fetch_account_activities(
+    *,
+    client,
+    start: datetime,
+    end: datetime,
+    activity_types: List[str],
+    direction: str,
+    page_size: int,
+    max_pages: int,
+) -> List[dict]:
+    try:
+        return _fetch_activities_after_until(
+            client=client,
+            after=start,
+            until=end,
+            activity_types=activity_types,
+            direction=direction,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
+    except Exception:
+        return _fetch_activities_by_date(
+            client=client,
+            start=start,
+            end=end,
+            activity_types=activity_types,
+            direction=direction,
+        )
+
+
+def _normalize_fills(
+    activities: Iterable[object],
+    start: datetime,
+    end: datetime,
+) -> List[dict]:
+    fills: List[dict] = []
+    for activity in activities:
+        data = _activity_to_dict(activity)
+        if data.get("activity_type") != "FILL":
+            continue
+        ts_raw = (
+            data.get("transaction_time")
+            or data.get("transact_time")
+            or data.get("timestamp")
+            or data.get("time")
+        )
+        ts = _parse_activity_time(ts_raw)
+        if ts is None or ts < start or ts > end:
+            continue
+
+        symbol_raw = data.get("symbol") or data.get("asset_symbol")
+        if not symbol_raw:
+            continue
+        symbol = str(symbol_raw).replace("/", "").upper()
+
+        side_raw = data.get("side") or data.get("order_side")
+        side = str(side_raw).replace("OrderSide.", "").lower()
+        if side not in {"buy", "sell"}:
+            continue
+
+        qty = _safe_float(data.get("qty") or data.get("quantity"))
+        price = _safe_float(data.get("price") or data.get("fill_price") or data.get("avg_price"))
+        if qty is None or price is None:
+            continue
+
+        fills.append(
+            {
+                "symbol": symbol,
+                "side": side,
+                "qty": qty,
+                "price": price,
+                "time": ts,
+            }
+        )
+    return fills
+
+
+def _summarize_fills(
+    fills: Iterable[dict],
+) -> Tuple[dict, Dict[str, dict]]:
+    totals = {
+        "count": 0,
+        "buy_count": 0,
+        "sell_count": 0,
+        "buy_qty": 0.0,
+        "sell_qty": 0.0,
+        "buy_notional": 0.0,
+        "sell_notional": 0.0,
+        "net_qty": 0.0,
+        "net_notional": 0.0,
+    }
+    by_symbol: Dict[str, dict] = defaultdict(
+        lambda: {
+            "count": 0,
+            "buy_count": 0,
+            "sell_count": 0,
+            "buy_qty": 0.0,
+            "sell_qty": 0.0,
+            "buy_notional": 0.0,
+            "sell_notional": 0.0,
+            "net_qty": 0.0,
+            "net_notional": 0.0,
+            "avg_buy_price": None,
+            "avg_sell_price": None,
+        }
+    )
+
+    for fill in fills:
+        qty = float(fill["qty"])
+        price = float(fill["price"])
+        notional = qty * price
+        totals["count"] += 1
+
+        symbol = str(fill["symbol"]).upper()
+        stats = by_symbol[symbol]
+        stats["count"] += 1
+
+        if fill["side"] == "buy":
+            totals["buy_count"] += 1
+            totals["buy_qty"] += qty
+            totals["buy_notional"] += notional
+            stats["buy_count"] += 1
+            stats["buy_qty"] += qty
+            stats["buy_notional"] += notional
+        elif fill["side"] == "sell":
+            totals["sell_count"] += 1
+            totals["sell_qty"] += qty
+            totals["sell_notional"] += notional
+            stats["sell_count"] += 1
+            stats["sell_qty"] += qty
+            stats["sell_notional"] += notional
+
+    for stats in by_symbol.values():
+        stats["net_qty"] = stats["buy_qty"] - stats["sell_qty"]
+        stats["net_notional"] = stats["sell_notional"] - stats["buy_notional"]
+        if stats["buy_qty"] > 0:
+            stats["avg_buy_price"] = stats["buy_notional"] / stats["buy_qty"]
+        if stats["sell_qty"] > 0:
+            stats["avg_sell_price"] = stats["sell_notional"] / stats["sell_qty"]
+
+    totals["net_qty"] = totals["buy_qty"] - totals["sell_qty"]
+    totals["net_notional"] = totals["sell_notional"] - totals["buy_notional"]
+    return totals, dict(by_symbol)
+
+
+def _timestamp_to_datetime(value: object) -> Optional[datetime]:
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _get_portfolio_history(
+    *,
+    start: datetime,
+    end: datetime,
+    timeframe: str,
+) -> Optional[dict]:
+    client = alpaca_wrapper.alpaca_api
+    params = {
+        "timeframe": timeframe,
+        "date_start": start.strftime("%Y-%m-%d"),
+        "date_end": end.strftime("%Y-%m-%d"),
+    }
+    try:
+        response = client._request("GET", "/account/portfolio/history", data=params)
+    except Exception as exc:
+        logger.warning("Failed to fetch portfolio history (%s): %s", timeframe, exc)
+        return None
+    if isinstance(response, dict) and response.get("equity"):
+        return response
+    return None
+
+
+def _summarize_equity_history(
+    history: dict,
+) -> Optional[Tuple[float, float, Optional[datetime], Optional[datetime]]]:
+    equity = history.get("equity")
+    if not equity:
+        return None
+    try:
+        start_equity = float(equity[0])
+        end_equity = float(equity[-1])
+    except (TypeError, ValueError, IndexError):
+        return None
+
+    timestamps = history.get("timestamp") or []
+    start_ts = _timestamp_to_datetime(timestamps[0]) if timestamps else None
+    end_ts = _timestamp_to_datetime(timestamps[-1]) if timestamps else None
+    return start_equity, end_equity, start_ts, end_ts
+
+
+def _current_prices_from_positions(positions: Iterable[object]) -> Dict[str, float]:
+    prices: Dict[str, float] = {}
+    for pos in positions:
+        symbol = getattr(pos, "symbol", None)
+        if not symbol:
+            continue
+        price = _safe_float(getattr(pos, "current_price", None))
+        if price is None:
+            continue
+        prices[str(symbol).replace("/", "").upper()] = price
+    return prices
+
+
+def _fee_rate_for_symbol(symbol: str) -> float:
+    crypto_fee_bps = float(os.getenv("ALPACA_CRYPTO_FEE_BPS", "0.0"))
+    stock_fee_bps = float(os.getenv("ALPACA_STOCK_FEE_BPS", "0.0"))
+    if is_crypto_symbol(symbol) or symbol.upper() in crypto_symbols:
+        return crypto_fee_bps / 10000.0
+    return stock_fee_bps / 10000.0
+
+
+def show_day_progress(
+    *,
+    lookback_hours: int = 24,
+    activity_page_size: int = 100,
+    activity_max_pages: int = 20,
+    max_recent_fills: int = 10,
+) -> None:
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(hours=lookback_hours)
+
+    logger.info("\n=== Day Progress ===")
+    logger.info(f"Window (UTC): {start.isoformat()} -> {end.isoformat()}")
+
+    account = None
+    try:
+        account = alpaca_wrapper.get_account(use_cache=False)
+    except Exception as exc:
+        logger.error("Failed to load account snapshot: %s", exc)
+
+    equity = _safe_float(getattr(account, "equity", None)) if account else None
+    cash = _safe_float(getattr(account, "cash", None)) if account else None
+    buying_power_raw = getattr(account, "buying_power", None) if account else None
+    multiplier = _safe_float(getattr(account, "multiplier", None)) if account else None
+    last_equity = _safe_float(getattr(account, "last_equity", None)) if account else None
+    long_market_value = _safe_float(getattr(account, "long_market_value", None)) if account else None
+    short_market_value = _safe_float(getattr(account, "short_market_value", None)) if account else None
+    account_net_market_value = None
+    if long_market_value is not None and short_market_value is not None:
+        if short_market_value < 0:
+            account_net_market_value = long_market_value + short_market_value
+        else:
+            account_net_market_value = long_market_value - short_market_value
+
+    if equity is not None:
+        if buying_power_raw in (None, ""):
+            buying_power = equity * (multiplier or 1.0)
+        else:
+            buying_power = _safe_float(buying_power_raw) or 0.0
+        logger.info("\n=== Account Snapshot (USD) ===")
+        logger.info(f"Equity: ${equity:,.2f}")
+        if cash is not None:
+            logger.info(f"Cash: ${cash:,.2f}")
+        logger.info(f"Buying Power: ${buying_power:,.2f}")
+    else:
+        logger.warning("Account snapshot unavailable; skipping equity summary.")
+
+    try:
+        positions = filter_to_realistic_positions(alpaca_wrapper.get_all_positions())
+    except Exception as exc:
+        logger.warning("Unable to load positions: %s", exc)
+        positions = []
+
+    total_market_value = 0.0
+    total_abs_value = 0.0
+    total_unrealized = 0.0
+    for pos in positions:
+        market_value = _safe_float(getattr(pos, "market_value", None)) or 0.0
+        total_market_value += market_value
+        total_abs_value += abs(market_value)
+        total_unrealized += _safe_float(getattr(pos, "unrealized_pl", None)) or 0.0
+
+    if cash is not None:
+        if account_net_market_value is not None:
+            liquidation_value = cash + account_net_market_value
+        else:
+            liquidation_value = cash + total_market_value
+    else:
+        liquidation_value = None
+
+    logger.info("\n=== Portfolio Snapshot ===")
+    logger.info(f"Open Positions: {len(positions)} | Gross Exposure: ${total_abs_value:,.2f}")
+    logger.info(f"Positions Market Value: ${total_market_value:,.2f}")
+    if account_net_market_value is not None:
+        logger.info(
+            "Account Market Value (long-short): $%0.2f (long $%0.2f, short $%0.2f)",
+            account_net_market_value,
+            long_market_value or 0.0,
+            short_market_value or 0.0,
+        )
+    logger.info(f"Unrealized P&L: ${total_unrealized:+,.2f}")
+    if liquidation_value is not None:
+        logger.info(f"Liquidation Value (cash + positions): ${liquidation_value:,.2f}")
+    if equity is not None and liquidation_value is not None:
+        logger.info(f"Equity vs liquidation diff: ${(liquidation_value - equity):+,.2f}")
+
+    history = _get_portfolio_history(start=start, end=end, timeframe="1H")
+    if history is None:
+        history = _get_portfolio_history(start=start, end=end, timeframe="1D")
+
+    summary = _summarize_equity_history(history) if history else None
+    if summary:
+        start_equity, end_equity, start_ts, end_ts = summary
+        change = end_equity - start_equity
+        pct = (change / start_equity * 100.0) if start_equity else 0.0
+        logger.info("\n=== Equity Change (Portfolio History) ===")
+        if start_ts and end_ts:
+            logger.info(f"History Window: {start_ts.isoformat()} -> {end_ts.isoformat()}")
+        logger.info(f"Start Equity: ${start_equity:,.2f}")
+        logger.info(f"End Equity: ${end_equity:,.2f}")
+        logger.info(f"Change: ${change:+,.2f} ({pct:+.2f}%)")
+    elif equity is not None and last_equity is not None:
+        change = equity - last_equity
+        pct = (change / last_equity * 100.0) if last_equity else 0.0
+        logger.info("\n=== Equity Change (Account Last Equity) ===")
+        logger.info(f"Last Equity: ${last_equity:,.2f}")
+        logger.info(f"Current Equity: ${equity:,.2f}")
+        logger.info(f"Change: ${change:+,.2f} ({pct:+.2f}%)")
+    else:
+        logger.warning("Portfolio history unavailable; unable to compute equity change.")
+
+    try:
+        activities = _fetch_account_activities(
+            client=alpaca_wrapper.alpaca_api,
+            start=start,
+            end=end,
+            activity_types=["FILL"],
+            direction="asc",
+            page_size=activity_page_size,
+            max_pages=activity_max_pages,
+        )
+    except Exception as exc:
+        logger.error("Failed to load account activities: %s", exc)
+        activities = []
+
+    fills = _normalize_fills(activities, start=start, end=end)
+    totals, by_symbol = _summarize_fills(fills)
+
+    logger.info("\n=== Executed Fills (Last %d Hours) ===", lookback_hours)
+    logger.info(
+        "Fills: %d | Buys: %d | Sells: %d",
+        totals["count"],
+        totals["buy_count"],
+        totals["sell_count"],
+    )
+    logger.info(
+        "Buy Notional: $%0.2f | Sell Notional: $%0.2f | Net Cash Flow: $%0.2f",
+        totals["buy_notional"],
+        totals["sell_notional"],
+        totals["net_notional"],
+    )
+    logger.info("Net Qty (buys - sells): %0.6f", totals["net_qty"])
+
+    if by_symbol:
+        logger.info("\nTop Symbols by Notional:")
+        ranked = sorted(
+            by_symbol.items(),
+            key=lambda item: abs(item[1]["buy_notional"] + item[1]["sell_notional"]),
+            reverse=True,
+        )
+        for symbol, stats in ranked[:10]:
+            avg_buy = stats["avg_buy_price"]
+            avg_sell = stats["avg_sell_price"]
+            avg_buy_str = f"{avg_buy:.4f}" if avg_buy is not None else "n/a"
+            avg_sell_str = f"{avg_sell:.4f}" if avg_sell is not None else "n/a"
+            logger.info(
+                "  %s | buys $%0.2f (%0.6f @ %s) | sells $%0.2f (%0.6f @ %s) | net qty %0.6f",
+                symbol,
+                stats["buy_notional"],
+                stats["buy_qty"],
+                avg_buy_str,
+                stats["sell_notional"],
+                stats["sell_qty"],
+                avg_sell_str,
+                stats["net_qty"],
+            )
+    else:
+        logger.info("No fills recorded in this window.")
+
+    if fills:
+        logger.info("\nRecent Fills:")
+        recent = sorted(fills, key=lambda item: item["time"], reverse=True)[:max_recent_fills]
+        for fill in recent:
+            logger.info(
+                "  %s | %s %s %0.6f @ $%0.4f",
+                fill["time"].strftime("%Y-%m-%d %H:%M:%S"),
+                fill["symbol"],
+                fill["side"].upper(),
+                fill["qty"],
+                fill["price"],
+            )
+
+    if fills:
+        positions_for_prices = positions or []
+        current_prices = _current_prices_from_positions(positions_for_prices)
+        fee_symbols = {fill["symbol"] for fill in fills}
+        fee_rates = {symbol: _fee_rate_for_symbol(symbol) for symbol in fee_symbols}
+        pnl_summary = compute_trade_pnl(
+            fills,
+            current_prices=current_prices,
+            fee_rate_by_symbol=fee_rates,
+        )
+        logger.info("\n=== Fill-Based P&L (Approximate) ===")
+        logger.info("Realized: $%0.2f | Unrealized: $%0.2f | Fees: $%0.2f", pnl_summary.realized, pnl_summary.unrealized, pnl_summary.fees)
+        logger.info("Gross: $%0.2f | Net: $%0.2f", pnl_summary.gross, pnl_summary.net)
+        logger.info("Note: Fill-based P&L assumes a flat starting position inside the window.")
 
 
 def show_account():

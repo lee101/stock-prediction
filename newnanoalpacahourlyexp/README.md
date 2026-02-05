@@ -104,6 +104,36 @@ python -m newnanoalpacahourlyexp.trade_alpaca_hourly \
   --intensity-scale 1.0
 ```
 
+Best-trade selector (single position across symbols):
+
+```bash
+python -m newnanoalpacahourlyexp.trade_alpaca_selector \
+  --symbols SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX \
+  --checkpoint binanceneural/checkpoints/alpaca_cross_global_mixed7_robust_short_seq128_20260205_043448/epoch_003.pt \
+  --sequence-length 128 \
+  --forecast-horizons 1,24 \
+  --forecast-cache-root alpacanewccrosslearning/forecast_cache/mixed7_live \
+  --crypto-data-root trainingdatahourly/crypto \
+  --stock-data-root trainingdatahourly/stocks \
+  --allocation-pct 1.0 \
+  --intensity-scale 2.0 \
+  --min-edge 0.004 \
+  --risk-weight 0.2 \
+  --edge-mode high_low \
+  --dip-threshold-pct 0.005 \
+  --moving-average-windows 24,72 \
+  --ema-windows 24,72 \
+  --atr-windows 24,72 \
+  --trend-windows 72 \
+  --drawdown-windows 72 \
+  --volume-z-window 72 \
+  --volume-shock-window 24 \
+  --vol-regime-short 24 \
+  --vol-regime-long 72 \
+  --min-history-hours 50 \
+  --close-at-eod
+```
+
 Exit-only guard (NFLX):
 
 ```bash

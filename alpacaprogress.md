@@ -4,20 +4,26 @@ Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
 
 ## Latest summary (10d / 20d marketsim)
 
-| Date (UTC) | Run | Symbols | Eval window | total_return | sortino | Notes |
-| --- | --- | --- | --- | --- | --- | --- |
-| 2026-02-05 | selector_sweep_mixed7_target2_20260205_041026 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1819 | 73.1664 | Mixed7 robust_scaling short-window; targeted min_edge/risk sweep (intensity=2.0, min_edge=0.003, risk_weight=0.25, dip=0.005). |
-| 2026-02-05 | selector_mixed7_best_20260205_target2 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1819 | 73.1664 | Same config as 10d; window-limited by stock data. |
-| 2026-02-05 | selector_sweep_mixed7_intensity20_20260205_040605 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1737 | 73.5806 | Mixed7 robust_scaling short-window; best sweep config (intensity=2.0, min_edge=0.001, risk_weight=0.25, dip=0.005). |
-| 2026-02-05 | selector_mixed7_best_20260205_int20 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1737 | 73.5806 | Same config as 10d; window-limited by stock data. |
-| 2026-02-05 | selector_sweep_mixed7_intensity16_20260205_035644 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1541 | 77.5686 | Mixed7 robust_scaling short-window; best sweep config (intensity=1.6, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
-| 2026-02-05 | selector_mixed7_best_20260205_int16 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1541 | 77.5686 | Same config as 10d; window-limited by stock data. |
-| 2026-02-05 | selector_sweep_mixed7_20260205_025742 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1196 | 77.4274 | Mixed7 robust_scaling + short-window features; best sweep config (intensity=1.2, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
-| 2026-02-05 | selector_mixed7_best_20260205 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1196 | 77.4274 | Same config as 10d; window-limited by stock data. |
-| 2026-02-05 | selector_sweep_robust_intensity_20260205_022332 | SOLUSD,LINKUSD,UNIUSD | 10d | 0.5629 | 30.8584 | Robust_scaling policy; best sweep config (intensity=1.2, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
-| 2026-02-05 | selector_robust_best_20260205 | SOLUSD,LINKUSD,UNIUSD | 20d | 0.7482 | 21.3372 | Robust_scaling policy; best sweep config carried to 20d eval. |
-| 2026-02-05 | selector_cross_lora_20260205_013206 | SOLUSD,LINKUSD,UNIUSD | 10d | 0.0379 | 510.2498 | Global policy checkpoint epoch_001. |
-| 2026-02-05 | selector_cross_lora_20260205_013206 | SOLUSD,LINKUSD,UNIUSD | 20d | 0.0379 | 510.2498 | Same as 10d (limited window in current cache). |
+| Date (UTC) | Run | Symbols | Eval window | total_return | sortino | ann_return_365 | ann_return_252 | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-02-05 | selector_seq128_best_20260205_043448 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.6463 | 128.4568 | 2.669e+15 | 4.472e+10 | Seq128 policy checkpoint epoch_003 with intensity=2.0, min_edge=0.004, risk_weight=0.2, dip=0.005. |
+| 2026-02-05 | selector_seq128_best_20260205_043448 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.6463 | 128.4568 | 5.166e+07 | 2.115e+05 | Same config as 10d; window-limited by stock data. |
+| 2026-02-05 | selector_sweep_mixed7_target3_20260205_041640 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1952 | 71.5462 | 2.909e+12 | 4.029e+08 | Mixed7 robust_scaling short-window; targeted min_edge/risk sweep v3 (intensity=2.0, min_edge=0.004, risk_weight=0.2, dip=0.005). |
+| 2026-02-05 | selector_mixed7_best_20260205_target3 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1952 | 71.5462 | 1.706e+06 | 2.007e+04 | Same config as 10d; window-limited by stock data. |
+| 2026-02-05 | selector_sweep_mixed7_target2_20260205_041026 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1819 | 73.1664 | 2.331e+12 | 3.457e+08 | Mixed7 robust_scaling short-window; targeted min_edge/risk sweep (intensity=2.0, min_edge=0.003, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 | selector_mixed7_best_20260205_target2 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1819 | 73.1664 | 1.527e+06 | 1.859e+04 | Same config as 10d; window-limited by stock data. |
+| 2026-02-05 | selector_sweep_mixed7_intensity20_20260205_040605 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1737 | 73.5806 | 2.031e+12 | 3.144e+08 | Mixed7 robust_scaling short-window; best sweep config (intensity=2.0, min_edge=0.001, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 | selector_mixed7_best_20260205_int20 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1737 | 73.5806 | 1.425e+06 | 1.773e+04 | Same config as 10d; window-limited by stock data. |
+| 2026-02-05 | selector_sweep_mixed7_intensity16_20260205_035644 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1541 | 77.5686 | 1.459e+12 | 2.502e+08 | Mixed7 robust_scaling short-window; best sweep config (intensity=1.6, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 | selector_mixed7_best_20260205_int16 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1541 | 77.5686 | 1.208e+06 | 1.582e+04 | Same config as 10d; window-limited by stock data. |
+| 2026-02-05 | selector_sweep_mixed7_20260205_025742 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.1196 | 77.4274 | 8.096e+11 | 1.666e+08 | Mixed7 robust_scaling + short-window features; best sweep config (intensity=1.2, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 | selector_mixed7_best_20260205 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 1.1196 | 77.4274 | 8.998e+05 | 1.291e+04 | Same config as 10d; window-limited by stock data. |
+| 2026-02-05 | selector_sweep_robust_intensity_20260205_022332 | SOLUSD,LINKUSD,UNIUSD | 10d | 0.5629 | 30.8584 | 1.198e+07 | 7.71e+04 | Robust_scaling policy; best sweep config (intensity=1.2, min_edge=0.0005, risk_weight=0.25, dip=0.005). |
+| 2026-02-05 | selector_robust_best_20260205 | SOLUSD,LINKUSD,UNIUSD | 20d | 0.7482 | 21.3372 | 2.675e+04 | 1138 | Robust_scaling policy; best sweep config carried to 20d eval. |
+| 2026-02-05 | selector_cross_lora_20260205_013206 | SOLUSD,LINKUSD,UNIUSD | 10d | 0.0379 | 510.2498 | 2.888 | 1.553 | Global policy checkpoint epoch_001. |
+| 2026-02-05 | selector_cross_lora_20260205_013206 | SOLUSD,LINKUSD,UNIUSD | 20d | 0.0379 | 510.2498 | 0.9717 | 0.5979 | Same as 10d (limited window in current cache). |
+
+Annualized returns use CAGR: `(1 + total_return) ** (basis_days / eval_days) - 1`. Short windows will inflate annualized values; use them only for relative comparison across runs.
 
 ## Constrained experiment (alpacaconstrainedexp)
 
@@ -43,6 +49,7 @@ Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
 | 2026-02-05 | alpaca_cross_global_lora_20260205_013206 | SOLUSD,LINKUSD,UNIUSD | 0.1872 | 47.2885 | MA windows 168/336, min_history=200. |
 | 2026-02-05 | alpaca_cross_global_robust_20260205_020915 | SOLUSD,LINKUSD,UNIUSD | 0.1010 | 26.9010 | Robust_scaling forecasts, MA windows 168/336, min_history=200. |
 | 2026-02-05 | alpaca_cross_global_mixed7_robust_short_20260205_025307 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 0.3038 | 76.5146 | Mixed7 policy with short-window feature overrides; window 2025-09-01..2025-11-12. |
+| 2026-02-05 | alpaca_cross_global_mixed7_robust_short_seq128_20260205_043448 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 0.5935 | 291.1584 | Seq128 policy with short-window feature overrides; best checkpoint epoch_003. |
 
 ## TODO
 
@@ -175,4 +182,20 @@ Best sortino (10d):
 ```
 intensity=2.0 offset=0.0 min_edge=0.0005 risk_weight=0.25 edge_mode=high_low dip_threshold=0.0
 total_return=0.982480 sortino=123.332145 final_cash=19824.803099
+```
+
+## Selector sweep (10d, 27 configs, mixed7 targeted min_edge/risk v3)
+
+Sweep CSV: `alpacanewccrosslearning/outputs/selector_sweep_mixed7_target3_20260205_041640/selector_sweep.csv`
+
+Best total_return (10d):
+```
+intensity=2.0 offset=0.0 min_edge=0.004 risk_weight=0.2 edge_mode=high_low dip_threshold=0.005
+total_return=1.195198 sortino=71.546160 final_cash=21951.980205
+```
+
+Best sortino (10d):
+```
+intensity=2.0 offset=0.0 min_edge=0.003 risk_weight=0.2 edge_mode=high_low dip_threshold=0.0025
+total_return=1.097744 sortino=79.130229 final_cash=20977.442667
 ```
