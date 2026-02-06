@@ -10,6 +10,7 @@ The high-level workflow is:
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -18,6 +19,7 @@ import pandas as pd
 from loguru import logger
 
 from data_curate_daily import download_daily_stock_data
+from src.symbol_utils import is_crypto_symbol
 
 TRAINING_DIR = Path("trainingdata/train")
 SNAPSHOT_DIR = Path("data/train")
@@ -47,6 +49,10 @@ def _stem_to_symbol(stem: str) -> str:
     doesn't support slash format for crypto.
     """
     return stem.upper()
+
+def _canonical_cli_symbol(symbol: str) -> str:
+    """Normalize CLI symbols to the canonical storage form (BTC/USD -> BTCUSD)."""
+    return symbol.replace("/", "").replace("-", "").upper()
 
 
 def _normalize_columns(frame: pd.DataFrame) -> pd.DataFrame:
@@ -137,7 +143,7 @@ def _sync_symbol(symbol: str, snapshot_dir: Path, training_dir: Path) -> int:
     """Append the newest snapshot rows to the canonical training CSV."""
     latest_snapshot = _find_latest_snapshot(symbol, snapshot_dir)
     if latest_snapshot is None:
-        logger.warning("No downloaded snapshot found for %s", symbol)
+        logger.warning("No downloaded snapshot found for {}", symbol)
         return 0
 
     snapshot_df = pd.read_csv(latest_snapshot)
@@ -145,12 +151,12 @@ def _sync_symbol(symbol: str, snapshot_dir: Path, training_dir: Path) -> int:
     existing = _load_existing_training(symbol, training_dir)
     merged, new_rows = _merge_training_frames(existing, prepared_snapshot)
     if new_rows == 0:
-        logger.debug("%s: no new rows to append", symbol)
+        logger.debug("{}: no new rows to append", symbol)
         return 0
 
     target_path = training_dir / f"{_storage_symbol(symbol)}.csv"
     merged.to_csv(target_path, index=False)
-    logger.info("%s: appended %d new rows (total=%d)", symbol, new_rows, merged.shape[0])
+    logger.info("{}: appended {} new rows (total={})", symbol, new_rows, merged.shape[0])
     return new_rows
 
 
@@ -184,7 +190,7 @@ def list_symbols(training_dir: Path = TRAINING_DIR) -> List[str]:
     for csv_file in training_dir.glob("*.csv"):
         stem = csv_file.stem
         if not _is_valid_symbol_stem(stem):
-            logger.debug("Skipping non-symbol file: %s", csv_file.name)
+            logger.debug("Skipping non-symbol file: {}", csv_file.name)
             continue
         symbol = _stem_to_symbol(stem)
         symbols.append(symbol)
@@ -194,10 +200,10 @@ def list_symbols(training_dir: Path = TRAINING_DIR) -> List[str]:
     return unique
 
 
-def download_and_sync(symbols: Sequence[str]) -> Dict[str, int]:
+def download_and_sync(symbols: Sequence[str], *, strict: bool = False) -> Dict[str, int]:
     """Download the latest bars and sync them into trainingdata/train."""
-    logger.info("Updating %d symbols", len(symbols))
-    download_daily_stock_data(path="train", all_data_force=True, symbols=list(symbols))
+    logger.info("Updating {} symbols (strict={})", len(symbols), strict)
+    download_daily_stock_data(path="train", all_data_force=True, symbols=list(symbols), strict=strict)
     snapshot_dir = SNAPSHOT_DIR
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     training_dir = TRAINING_DIR
@@ -208,21 +214,54 @@ def download_and_sync(symbols: Sequence[str]) -> Dict[str, int]:
         try:
             appended[symbol] = _sync_symbol(symbol, snapshot_dir, training_dir)
         except Exception as exc:
-            logger.exception("Failed to sync %s: %s", symbol, exc)
+            logger.exception("Failed to sync {}: {}", symbol, exc)
             appended[symbol] = 0
     total_new = sum(appended.values())
-    logger.info("Daily data sync complete (%d new rows).", total_new)
+    logger.info("Daily data sync complete ({} new rows).", total_new)
     return appended
 
 
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Refresh daily training data and sync `trainingdata/train`.",
+    )
+    parser.add_argument(
+        "--symbols",
+        nargs="+",
+        help="Symbols to refresh (default: discover from existing trainingdata/train/*.csv).",
+    )
+    parser.add_argument("--only-stocks", action="store_true", help="Only refresh stock symbols.")
+    parser.add_argument("--only-crypto", action="store_true", help="Only refresh crypto symbols.")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail the download step if a symbol cannot be downloaded and has no cached dataset.",
+    )
+    return parser.parse_args(argv)
+
+
 def main() -> int:
+    args = parse_args()
+
+    if args.only_stocks and args.only_crypto:
+        logger.error("Cannot specify both --only-stocks and --only-crypto.")
+        return 2
+
     try:
-        symbols = list_symbols()
+        if args.symbols:
+            symbols = [_canonical_cli_symbol(s) for s in args.symbols]
+        else:
+            symbols = list_symbols()
     except Exception as exc:
-        logger.error("Unable to enumerate symbols: %s", exc)
+        logger.error("Unable to enumerate symbols: {}", exc)
         return 1
 
-    download_and_sync(symbols)
+    if args.only_stocks:
+        symbols = [s for s in symbols if not is_crypto_symbol(s)]
+    elif args.only_crypto:
+        symbols = [s for s in symbols if is_crypto_symbol(s)]
+
+    download_and_sync(symbols, strict=bool(args.strict))
     return 0
 
 
