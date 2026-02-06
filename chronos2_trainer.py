@@ -37,8 +37,8 @@ DEFAULT_DATA_ROOTS = (
 )
 DEFAULT_OUTPUT_ROOT = Path("chronos2_finetuned")
 DEFAULT_PREAUG_DIRS = (
-    Path("preaugstrategies") / "chronos2",
     Path("preaugstrategies") / "chronos2" / "hourly",
+    Path("preaugstrategies") / "chronos2",
 )
 DEFAULT_PREAUG_HOURLY_DIR = Path("preaugstrategies") / "chronos2" / "hourly"
 DEFAULT_HYPERPARAM_ROOT = Path("hyperparams") / "chronos2"
@@ -517,6 +517,8 @@ def _fit_pipeline(
     val_inputs: Optional[List[Dict[str, Any]]],
     config: TrainerConfig,
     output_dir: Path,
+    *,
+    resume_from_checkpoint: Optional[str] = None,
 ) -> Any:
     from copy import deepcopy
 
@@ -610,7 +612,21 @@ def _fit_pipeline(
         eval_dataset=eval_dataset,
         callbacks=callbacks,
     )
-    trainer.train()
+
+    resume_path: Optional[str] = None
+    if resume_from_checkpoint:
+        token = str(resume_from_checkpoint).strip()
+        if token.lower() in {"1", "true", "yes", "y", "auto", "last"}:
+            resume_path = _find_last_checkpoint(output_dir)
+        else:
+            candidate = Path(token)
+            if not candidate.is_dir():
+                candidate = output_dir / token
+            if candidate.is_dir():
+                resume_path = str(candidate)
+    if resume_path:
+        logger.info("Resuming Chronos2 training from checkpoint: {}", resume_path)
+    trainer.train(resume_from_checkpoint=resume_path)
 
     if use_lora:
         adapter_dir = Path(output_dir) / "lora-adapter"
@@ -641,6 +657,28 @@ def _save_pipeline(pipeline: Any, output_dir: Path, name: str) -> Path:
     save_path = output_dir / name
     pipeline.save_pretrained(save_path)
     return save_path
+
+
+def _find_last_checkpoint(output_dir: Path) -> Optional[str]:
+    if not output_dir.exists():
+        return None
+    best_step = -1
+    best_path: Optional[Path] = None
+    for child in output_dir.iterdir():
+        if not child.is_dir():
+            continue
+        name = child.name
+        if not name.startswith("checkpoint-"):
+            continue
+        suffix = name.split("-", 1)[1].strip()
+        try:
+            step = int(suffix)
+        except ValueError:
+            continue
+        if step > best_step:
+            best_step = step
+            best_path = child
+    return str(best_path) if best_path is not None else None
 
 
 def _json_default(value: Any) -> Any:

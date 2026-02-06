@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Mapping, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -30,6 +30,15 @@ class SweepResult:
     price_offset_pct: float
     total_return: float
     sortino: float
+
+
+def _infer_max_len(state_dict: Mapping[str, torch.Tensor], cfg: TrainingConfig) -> int:
+    """Infer the model's maximum supported sequence length from a checkpoint."""
+
+    pe = state_dict.get("pos_encoding.pe")
+    if isinstance(pe, torch.Tensor) and pe.ndim >= 1:
+        return int(pe.shape[0])
+    return int(getattr(cfg, "sequence_length", 0) or 0)
 
 
 def apply_action_overrides(
@@ -193,6 +202,7 @@ def main() -> None:
         input_dim=input_dim,
         state_dict=state_dict if isinstance(state_dict, dict) else None,
     )
+    policy_cfg.max_len = max(int(policy_cfg.max_len or 0), _infer_max_len(state_dict if isinstance(state_dict, dict) else {}, TrainingConfig(sequence_length=args.sequence_length)))
     model = build_policy(policy_cfg)
     model.load_state_dict(state_dict, strict=False)
     model.eval()

@@ -369,7 +369,6 @@ marketsim_results_*/
 
 # Experiment artifacts within modules
 binance*/checkpoints/
-binance*/forecast_cache/
 binance*/forecast_cache*/
 binance*/chronos_finetuned/
 binance*/marketsimulator/
@@ -390,6 +389,7 @@ tests/test_bagsfm_*.py
 tests/test_bags*.py
 tests/test_binance*.py
 !tests/test_binance_symbol_utils.py
+!tests/test_binancechronossolexperiment_forecast_windowing.py
 tests/test_default_strategy_checkpoint.py
 tests/test_download_hourly_update.py
 tests/test_marketsim*.py

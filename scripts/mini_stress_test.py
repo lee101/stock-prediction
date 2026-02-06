@@ -4,33 +4,11 @@ Mini stress test - runs a subset of scenarios to find issues faster.
 """
 
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from src.models.chronos2_wrapper import Chronos2OHLCWrapper
-
-print("=" * 60)
-print("Mini Stress Test for Chronos2 Compilation")
-print("=" * 60)
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Device: {device}\n")
-
-# Test scenarios that might cause issues
-scenarios = {
-    "normal": lambda n: _random_walk(n, volatility=0.02),
-    "high_vol": lambda n: _random_walk(n, volatility=0.15),
-    "very_small": lambda n: _random_walk(n, volatility=0.02, scale=1e-4),
-    "jumps": lambda n: _with_jumps(n),
-    "near_zero": lambda n: _near_zero(n),
-    "outliers": lambda n: _with_outliers(n),
-}
 
 
 def _random_walk(n_points, volatility=0.02, scale=100.0):
@@ -72,6 +50,17 @@ def _with_outliers(n_points):
     return prices
 
 
+def _build_scenarios():
+    return {
+        "normal": lambda n: _random_walk(n, volatility=0.02),
+        "high_vol": lambda n: _random_walk(n, volatility=0.15),
+        "very_small": lambda n: _random_walk(n, volatility=0.02, scale=1e-4),
+        "jumps": lambda n: _with_jumps(n),
+        "near_zero": lambda n: _near_zero(n),
+        "outliers": lambda n: _with_outliers(n),
+    }
+
+
 def create_df(prices, n_points):
     """Convert prices to OHLC dataframe."""
     opens = prices * (1 + np.random.randn(n_points) * 0.002)
@@ -89,6 +78,19 @@ def create_df(prices, n_points):
     })
 
 
+_CHRONOS2_WRAPPER = None
+
+
+def _get_chronos2_wrapper():
+    global _CHRONOS2_WRAPPER
+    if _CHRONOS2_WRAPPER is None:
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from src.models.chronos2_wrapper import Chronos2OHLCWrapper as _Wrapper
+
+        _CHRONOS2_WRAPPER = _Wrapper
+    return _CHRONOS2_WRAPPER
+
+
 def test_scenario(name, data_fn, iterations=3):
     """Test a scenario multiple times."""
     print(f"\nTesting: {name}")
@@ -96,6 +98,7 @@ def test_scenario(name, data_fn, iterations=3):
 
     failures = []
     mae_diffs = []
+    Chronos2OHLCWrapper = _get_chronos2_wrapper()
 
     for i in range(iterations):
         try:
@@ -177,29 +180,42 @@ def test_scenario(name, data_fn, iterations=3):
     return len(failures) == 0
 
 
-# Run tests
-results = {}
-for name, data_fn in scenarios.items():
-    results[name] = test_scenario(name, data_fn, iterations=3)
+def main() -> int:
+    print("=" * 60)
+    print("Mini Stress Test for Chronos2 Compilation")
+    print("=" * 60)
 
-# Summary
-print("\n" + "=" * 60)
-print("SUMMARY")
-print("=" * 60)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device}\n")
 
-passed = sum(1 for v in results.values() if v)
-total = len(results)
+    scenarios = _build_scenarios()
 
-print(f"Passed: {passed}/{total}")
-print()
+    # Run tests
+    results = {}
+    for name, data_fn in scenarios.items():
+        results[name] = test_scenario(name, data_fn, iterations=3)
 
-for name, passed in results.items():
-    status = "✅" if passed else "❌"
-    print(f"  {status} {name}")
+    # Summary
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
 
-if passed == total:
-    print("\n✅ All scenarios passed!")
-    sys.exit(0)
-else:
+    passed = sum(1 for v in results.values() if v)
+    total = len(results)
+
+    print(f"Passed: {passed}/{total}")
+    print()
+
+    for name, scenario_passed in results.items():
+        status = "✅" if scenario_passed else "❌"
+        print(f"  {status} {name}")
+
+    if passed == total:
+        print("\n✅ All scenarios passed!")
+        return 0
     print(f"\n❌ {total - passed} scenario(s) failed")
-    sys.exit(1)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

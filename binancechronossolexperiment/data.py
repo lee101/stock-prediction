@@ -152,7 +152,14 @@ class ChronosSolDataModule:
     # ------------------------------------------------------------------
     def _prepare_frame(self) -> pd.DataFrame:
         price_frame = self._load_price_history()
-        forecast_frame = self._load_forecasts()
+        end_ts = pd.to_datetime(price_frame["timestamp"], utc=True, errors="coerce").max()
+        start_ts = None
+        if self.max_history_days and self.max_history_days > 0:
+            lookback_hours = int(self.max_history_days) * 24 + max(0, int(self.max_feature_lookback_hours))
+            if end_ts is not None and not pd.isna(end_ts) and lookback_hours > 0:
+                start_ts = end_ts - pd.Timedelta(hours=float(lookback_hours))
+
+        forecast_frame = self._load_forecasts(start=start_ts, end=end_ts)
         merged = price_frame.merge(forecast_frame, on=["timestamp", "symbol"], how="inner")
         merged = merged.sort_values("timestamp").reset_index(drop=True)
         enriched = build_feature_frame(
@@ -178,7 +185,12 @@ class ChronosSolDataModule:
         cols = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
         return frame[cols].sort_values("timestamp").reset_index(drop=True)
 
-    def _load_forecasts(self) -> pd.DataFrame:
+    def _load_forecasts(
+        self,
+        *,
+        start: Optional[pd.Timestamp],
+        end: Optional[pd.Timestamp],
+    ) -> pd.DataFrame:
         return build_forecast_bundle(
             symbol=self.symbol,
             data_root=self.data_root,
@@ -190,6 +202,8 @@ class ChronosSolDataModule:
             model_id=self.model_id,
             device_map=self.device_map,
             cache_only=self.cache_only,
+            start=start,
+            end=end,
             preaugmentation_dirs=self.preaugmentation_dirs,
         )
 

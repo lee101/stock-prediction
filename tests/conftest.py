@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pytest configuration for environments with real PyTorch installed."""
 
+import importlib.util
 import os
 import sys
 import types
@@ -200,6 +201,16 @@ if not hasattr(tradeapi_mod, "REST"):
         def get_clock(self):
             return types.SimpleNamespace(is_open=True)
 
+        def cancel_orders(self):
+            self._orders.clear()
+            return []
+
+        def submit_order(self, *args, **kwargs):
+            self._orders.append((args, kwargs))
+            return types.SimpleNamespace(id=len(self._orders))
+
+    tradeapi_mod.REST = _DummyREST
+
 
 def pytest_addoption(parser):
     """Register custom CLI options for this repository."""
@@ -261,23 +272,75 @@ def pytest_collection_modifyitems(config, items):
 
         # Skip self-hosted-only tests on non-self-hosted runners
         if is_ci and "self_hosted_only" in item.keywords:
-            if not os.getenv("SELF_HOSTED", "0") in ("1", "true", "TRUE", "yes", "YES"):
+            if os.getenv("SELF_HOSTED", "0") not in ("1", "true", "TRUE", "yes", "YES"):
                 item.add_marker(pytest.mark.skip(reason="Self-hosted only test skipped on standard runner"))
 
         # Skip external/network tests in CI unless explicitly enabled
-        if is_ci and not os.getenv("RUN_EXTERNAL_TESTS", "0") in ("1", "true", "TRUE", "yes", "YES"):
+        if is_ci and os.getenv("RUN_EXTERNAL_TESTS", "0") not in ("1", "true", "TRUE", "yes", "YES"):
             if "external" in item.keywords or "network_required" in item.keywords:
                 item.add_marker(pytest.mark.skip(reason="External/network test skipped in CI"))
 
-        def cancel_orders(self):
-            self._orders.clear()
-            return []
 
-        def submit_order(self, *args, **kwargs):
-            self._orders.append((args, kwargs))
-            return types.SimpleNamespace(id=len(self._orders))
+def _module_available(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
 
-    tradeapi_mod.REST = _DummyREST
+
+def pytest_ignore_collect(path, config):
+    """Skip suites that are disabled by default or require optional packages.
+
+    This prevents import-time failures during collection (which would happen
+    before markers like @pytest.mark.experimental can be applied).
+    """
+
+    root = Path(str(config.rootpath)).resolve()
+    p = Path(str(path)).resolve()
+    try:
+        rel = p.relative_to(root).as_posix()
+    except ValueError:
+        rel = p.as_posix()
+
+    if rel.startswith("tests/.uvcache/"):
+        return True
+
+    experimental_root = (root / "tests" / "experimental").resolve()
+    if p == experimental_root or experimental_root in p.parents:
+        return not config.getoption("--run-experimental")
+
+    # Optional repos/packages not always present in this monorepo checkout.
+    if rel in {
+        "tests/prod/core/test_faltrain_dependencies.py",
+        "tests/prod/integration/test_kronos_toto_line.py",
+        "tests/prod/utils/test_logger_utils.py",
+    } and not _module_available("faltrain.dependencies"):
+        return True
+
+    if rel in {
+        "tests/prod/falsimulatortest/test_runtime_restrictions.py",
+        "tests/prod/test_marketsimulator_runner.py",
+    } and (not _module_available("fal_marketsimulator.runner") or not _module_available("falmarket.app")):
+        return True
+
+    if rel == "tests/test_falmarket_openapi.py" and not _module_available("falmarket.app"):
+        return True
+
+    if rel == "tests/test_download_crypto_daily.py" and not _module_available("trainingdatadaily.download_crypto_daily"):
+        return True
+
+    if rel == "tests/test_rlinc_market.py" and not (root / "rlinc_market" / "env.py").exists():
+        return True
+
+    if rel in {"tests/test_cuda_graph_quick_check.py", "tests/test_toto_cuda_graphs_accuracy.py"} and not _module_available(
+        "toto.toto.pipelines.time_series_forecasting"
+    ):
+        return True
+
+    if rel.startswith("tests/pufferlibtraining2/") and not _module_available("pufferlib.pufferl"):
+        return True
+
+    return False
 
 if "data_curate_daily" not in sys.modules:
     data_curate_daily_stub = types.ModuleType("data_curate_daily")

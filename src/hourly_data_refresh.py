@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,10 +25,22 @@ from src.symbol_utils import is_crypto_symbol
 from src.stock_utils import remap_symbols
 
 FetchFn = Callable[[str, datetime, datetime], pd.DataFrame]
-BINANCE_ENDPOINT = "https://api.binance.com/api/v3/klines"
+_BINANCE_GLOBAL_KLINES_ENDPOINT = "https://api.binance.com/api/v3/klines"
+_BINANCE_US_KLINES_ENDPOINT = "https://api.binance.us/api/v3/klines"
 _PLACEHOLDER_TOKEN = "placeholder"
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_binance_klines_endpoint() -> str:
+    """Resolve the Binance REST endpoint used for public kline downloads."""
+    base_endpoint = os.getenv("BINANCE_BASE_ENDPOINT")
+    if base_endpoint:
+        return base_endpoint.rstrip("/") + "/api/v3/klines"
+    tld = os.getenv("BINANCE_TLD")
+    if tld:
+        return f"https://api.binance.{tld}/api/v3/klines"
+    return _BINANCE_GLOBAL_KLINES_ENDPOINT
 
 
 def _has_valid_alpaca_credentials() -> bool:
@@ -152,12 +165,28 @@ def fetch_binance_bars(symbol: str, start: datetime, end: datetime) -> pd.DataFr
         "startTime": max(0, int(start.timestamp() * 1000)),
         "endTime": max(0, int(end.timestamp() * 1000)),
     }
-    try:
-        response = requests.get(BINANCE_ENDPOINT, params=params, timeout=10)
+
+    endpoint = _resolve_binance_klines_endpoint()
+
+    def _do_request(url: str) -> requests.Response:
+        response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
+        return response
+
+    try:
+        response = _do_request(endpoint)
     except requests.RequestException as exc:  # pragma: no cover - network issues
-        logger.error("Binance fallback failed for %s: %s", symbol, exc)
-        return pd.DataFrame()
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        is_restricted = status_code == 451 or "restricted location" in str(exc).lower()
+        if is_restricted and endpoint == _BINANCE_GLOBAL_KLINES_ENDPOINT:
+            try:
+                response = _do_request(_BINANCE_US_KLINES_ENDPOINT)
+            except requests.RequestException as exc2:  # pragma: no cover
+                logger.error("Binance.US fallback failed for %s: %s", symbol, exc2)
+                return pd.DataFrame()
+        else:
+            logger.error("Binance fallback failed for %s: %s", symbol, exc)
+            return pd.DataFrame()
     rows = response.json()
     records = []
     for row in rows:
@@ -205,6 +234,8 @@ class HourlyDataRefresher:
         backfill_hours: int = 48,
         overlap_hours: int = 2,
         crypto_max_staleness_hours: float = 1.5,
+        max_request_hours_crypto: int = 900,
+        max_request_hours_stock: int = 5000,
         sleep_seconds: float = 0.0,
         logger_override: logging.Logger | None = None,
     ) -> None:
@@ -215,6 +246,10 @@ class HourlyDataRefresher:
         self.backfill_hours = max(1, backfill_hours)
         self.overlap_hours = max(0, overlap_hours)
         self.crypto_max_staleness_hours = max(0.1, crypto_max_staleness_hours)
+        # Binance klines are capped at 1000 rows; keeping this <= 995 avoids losing
+        # trailing data when a Binance fallback is used.
+        self.max_request_hours_crypto = max(1, int(max_request_hours_crypto))
+        self.max_request_hours_stock = max(1, int(max_request_hours_stock))
         self.sleep_seconds = max(0.0, sleep_seconds)
         self._logger = logger_override or logger
 
@@ -254,6 +289,38 @@ class HourlyDataRefresher:
                 refresh.add(status.symbol)
         return sorted(refresh)
 
+    def _fetch_in_chunks(
+        self,
+        symbol: str,
+        fetcher: FetchFn,
+        start: datetime,
+        end: datetime,
+        *,
+        chunk_hours: int,
+    ) -> pd.DataFrame:
+        """Fetch bars in smaller chunks to accommodate API limits (e.g., Binance limit=1000)."""
+
+        if start >= end:
+            return pd.DataFrame()
+
+        frames: List[pd.DataFrame] = []
+        cursor = start
+        delta = timedelta(hours=max(1, int(chunk_hours)))
+        while cursor < end:
+            chunk_end = min(cursor + delta, end)
+            frame = fetcher(symbol, cursor, chunk_end)
+            if not frame.empty:
+                frames.append(frame)
+            cursor = chunk_end
+
+        if not frames:
+            return pd.DataFrame()
+        combined = pd.concat(frames)
+        combined = combined[~combined.index.duplicated(keep="last")]
+        combined.sort_index(inplace=True)
+        combined.index.name = "timestamp"
+        return combined
+
     def _refresh_symbol(self, symbol: str, now: datetime) -> bool:
         path = self._resolve_target_path(symbol)
         existing = self._load_existing_frame(path)
@@ -268,7 +335,8 @@ class HourlyDataRefresher:
         start = min(start, now - timedelta(hours=self.backfill_hours))
         end = now + timedelta(minutes=1)
         fetcher = self.crypto_fetcher if is_crypto_symbol(symbol) else self.stock_fetcher
-        new_frame = fetcher(symbol, start, end)
+        chunk_hours = self.max_request_hours_crypto if is_crypto_symbol(symbol) else self.max_request_hours_stock
+        new_frame = self._fetch_in_chunks(symbol, fetcher, start, end, chunk_hours=chunk_hours)
         if new_frame.empty:
             return False
         combined = new_frame if existing.empty else pd.concat([existing, new_frame])

@@ -27,7 +27,8 @@ DEFAULT_BINANCE_FDUSD_PAIRS = [
     "APT/FDUSD",
     "AVAX/FDUSD",
     "DOT/FDUSD",
-    "MATIC/FDUSD",
+    # MATIC markets have been deprecated on Binance.US (status BREAK); use POL instead.
+    "POL/FDUSD",
     "ATOM/FDUSD",
     "LTC/FDUSD",
     "BCH/FDUSD",

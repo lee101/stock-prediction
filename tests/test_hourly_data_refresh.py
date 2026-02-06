@@ -82,6 +82,57 @@ def test_hourly_refresher_appends_overlaps(tmp_path: Path) -> None:
     assert latest >= captured["end"] - timedelta(hours=1)
 
 
+def test_hourly_refresher_chunks_large_crypto_gaps(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    # Force a large gap so the refresher needs multiple requests.
+    past_end = now - timedelta(hours=2500)
+    existing = _build_frame("ALGOUSD", past_end - timedelta(hours=1), past_end)
+    target = tmp_path / "crypto" / "ALGOUSD.csv"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing.to_csv(target, index=True)
+
+    validator = HourlyDataValidator(tmp_path, max_staleness_hours=1)
+
+    calls: list[tuple[datetime, datetime]] = []
+
+    def _crypto_fetcher(symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
+        calls.append((start, end))
+        # Emit one bar per hour for the requested window.
+        index = pd.date_range(start=start, end=end, freq="h", tz=timezone.utc)
+        if index.empty:
+            index = pd.date_range(end=end, periods=1, freq="h", tz=timezone.utc)
+        frame = pd.DataFrame(
+            {
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 0.0,
+                "trade_count": 0.0,
+                "vwap": 1.0,
+                "symbol": symbol,
+            },
+            index=index,
+        )
+        frame.index.name = "timestamp"
+        return frame
+
+    refresher = HourlyDataRefresher(
+        data_root=tmp_path,
+        validator=validator,
+        stock_fetcher=_build_frame,
+        crypto_fetcher=_crypto_fetcher,
+        max_request_hours_crypto=100,
+        crypto_max_staleness_hours=1.5,
+        overlap_hours=1,
+    )
+    statuses, issues = refresher.refresh(["ALGOUSD"])
+    assert not issues
+    assert statuses and statuses[0].symbol == "ALGOUSD"
+    assert len(calls) > 1
+    assert all((end - start) <= timedelta(hours=100) for start, end in calls)
+
+
 def test_fetch_binance_bars_parses_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     start = datetime(2025, 1, 1, tzinfo=timezone.utc)
     end = start + timedelta(hours=2)
