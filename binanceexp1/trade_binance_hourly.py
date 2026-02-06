@@ -13,6 +13,7 @@ import torch
 from src.price_guard import enforce_gap
 from src.process_utils import enforce_min_spread
 from src.metrics_utils import compute_step_returns, annualized_sortino
+from src.torch_load_utils import torch_load_compat
 from src.binan import binance_wrapper
 from stock.state import get_state_dir, resolve_state_suffix, get_paper_suffix
 
@@ -39,7 +40,7 @@ class TradingPlan:
 
 
 def _load_checkpoint_payload(checkpoint_path: Path) -> dict:
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    payload = torch_load_compat(checkpoint_path, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
         payload = {"state_dict": payload}
     return payload

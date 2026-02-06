@@ -10,6 +10,7 @@ import torch
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
 from binanceexp1.sweep import apply_action_overrides
+from src.torch_load_utils import torch_load_compat
 from src.torch_device_utils import require_cuda as require_cuda_device
 
 from newnanoalpacahourlyexp.config import DatasetConfig
@@ -27,7 +28,7 @@ def _parse_symbols(raw: str) -> List[str]:
 
 
 def _load_model(checkpoint_path: Path, input_dim: int, sequence_length: int) -> torch.nn.Module:
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    payload = torch_load_compat(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
     state_dict = align_state_dict_input_dim(state_dict, input_dim=input_dim)
     cfg = payload.get("config", {})
