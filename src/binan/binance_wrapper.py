@@ -14,6 +14,33 @@ from src.stock_utils import binance_remap_symbols
 _client: Client | None
 
 
+def _is_restricted_location_error(exc: Exception) -> bool:
+    """Heuristic: Binance global endpoints return HTTP 451 in restricted regions.
+
+    We only use this to decide whether to retry against Binance.US when no explicit
+    endpoint override is configured.
+    """
+
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 451:
+        return True
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if response_status == 451:
+        return True
+
+    text = str(exc).lower()
+    return any(
+        needle in text
+        for needle in (
+            "restricted location",
+            "service unavailable from a restricted location",
+            "eligibility",
+            "http 451",
+        )
+    )
+
+
 def _init_client() -> Client | None:
     kwargs: Dict[str, Any] = {}
     tld = os.getenv("BINANCE_TLD")
@@ -33,9 +60,28 @@ def _init_client() -> Client | None:
     if ping_setting is not None:
         kwargs["ping"] = ping_setting.lower() in {"1", "true", "yes", "on"}
 
+    explicit_endpoint = bool(tld) or bool(base_endpoint)
+
     try:
         return Client(BINANCE_API_KEY, BINANCE_SECRET, **kwargs)
     except Exception as exc:  # pragma: no cover - connectivity / credential issues
+        if (
+            not explicit_endpoint
+            and not testnet
+            and not demo
+            and _is_restricted_location_error(exc)
+        ):
+            logger.warning(
+                "Binance global endpoint blocked (restricted location). Falling back to Binance.US. "
+                "Set BINANCE_TLD/BINANCE_BASE_ENDPOINT to override."
+            )
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["tld"] = "us"
+            try:
+                return Client(BINANCE_API_KEY, BINANCE_SECRET, **retry_kwargs)
+            except Exception as exc2:  # pragma: no cover
+                logger.error(f"Failed to initialise Binance.US client: {exc2}")
+                return None
         logger.error(f"Failed to initialise Binance client: {exc}")
         logger.info(
             "Maybe you are offline or using a restricted region. "

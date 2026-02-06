@@ -20,6 +20,8 @@ def build_forecast_bundle(
     device_map: str = "cuda",
     preaugmentation_dirs: Optional[Sequence[Path]] = None,
     cache_only: bool = False,
+    start: Optional["pd.Timestamp"] = None,
+    end: Optional["pd.Timestamp"] = None,
     wrapper_factory: Optional[Callable[[], object]] = None,
 ) -> "pd.DataFrame":
     """Build merged Chronos forecast frame with horizon-specific suffixes."""
@@ -49,7 +51,7 @@ def build_forecast_bundle(
             cache_dir=horizon_dir,
         )
         manager = ChronosForecastManager(cfg, wrapper_factory=wrapper_factory)
-        forecast = manager.ensure_latest(cache_only=cache_only)
+        forecast = manager.ensure_latest(start=start, end=end, cache_only=cache_only)
         if forecast.empty:
             continue
         suffix = f"_h{int(horizon)}"

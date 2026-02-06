@@ -97,7 +97,9 @@ env_real.ALP_SECRET_KEY = "secret"
 env_real.ALP_KEY_ID_PROD = "key"
 env_real.ALP_SECRET_KEY_PROD = "secret"
 env_real.ALP_ENDPOINT = "paper"
-sys.modules["env_real"] = env_real
+env_real.BINANCE_API_KEY = "test-binance-key"
+env_real.BINANCE_SECRET = "test-binance-secret"
+sys.modules.setdefault("env_real", env_real)
 
 from alpaca_wrapper import (
     latest_data,
