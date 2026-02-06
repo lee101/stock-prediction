@@ -94,7 +94,18 @@ class ChronosForecastManager:
                 existing = existing.loc[keep_mask].reset_index(drop=True)
         existing_ts = set(pd.to_datetime(existing["timestamp"], utc=True)) if not existing.empty else set()
 
-        min_idx = max(1, int(self.config.context_hours))
+        # Allow short-history symbols (e.g., new Binance markets like BTCU) to produce forecasts.
+        # The wrapper trims context_length to the available history, so we only require a smaller
+        # minimum context window for generation rather than context_hours full length.
+        min_context = max(16, int(self.config.context_hours // 8) or 16)
+        min_idx = max(1, min_context)
+        if len(history) <= min_idx:
+            if existing.empty:
+                raise RuntimeError(
+                    f"Insufficient hourly history for {self.config.symbol}: "
+                    f"need >{min_idx} rows for forecasting but found {len(history)}."
+                )
+            return existing
         missing_indices: List[int] = []
         for idx in range(min_idx, len(history)):
             target_ts = history.iloc[idx]["timestamp"]
