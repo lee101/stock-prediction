@@ -7,6 +7,7 @@ Updated: 2026-02-06
 - Fixed Chronos multi-step horizon alignment in `binanceneural/forecasts.py` (previously multi-horizon caches effectively used the 1-step prediction for every horizon). Any cached forecasts for horizons >1 generated before 2026-02-06 should be considered invalid and rebuilt before comparing multi-horizon PnL/MAE runs.
 - Added stable-quote symbol utilities + tests, plus a builder script for `trainingdatahourlybinance/`.
   - New: `src/binance_symbol_utils.py`, `tests/test_binance_symbol_utils.py`, `scripts/build_trainingdatahourlybinance.py`.
+- `binancecrosslearning/run_global_selector.py` now supports `--frame-split {val,full}` and `--val-fraction/--validation-days` overrides. This matters for short-history symbols (e.g. U pairs): selector sims use only timestamps where actions exist, so `val` split windows can collapse to ~1 day when `sequence_length` is large relative to available history.
 - Fixed `refresh_daily_inputs.py` / `update_key_forecasts.py` to run forecast refresh under the active venv interpreter (was calling system `python`, breaking `chronos` imports) and corrected log formatting.
 - Added `binancecrosslearning/` pipeline (multi-symbol Chronos2 fine-tune + global policy + selector) with Binance defaults.
 - Extended crypto symbol detection + fee heuristics for stable-quote pairs (USDT/FDUSD/USDC/etc); added tests.
@@ -161,6 +162,19 @@ Updated: 2026-02-06
   - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_u_shortma_h14_seq48_20260206_1314/epoch_024.pt`
   - Train script eval (BTCU, last 7d): total_return=-0.0269, sortino=-13.0422
   - Selector eval (shared cash, last 7d, BTCU/ETHU/SOLU/BNBU): total_return=-0.0484, sortino=-17.1613 (open_symbol=SOLU)
+
+### BTCU selector tuning (transfer policy)
+- Policy checkpoint (trained on FDUSD symbols, feature-matched to U):
+  - `binancecrosslearning/checkpoints/binance_cross_global_fdusd_shortma_h14_seq48_20260206_1311/epoch_006.pt`
+- Forecast cache root (U LoRA, h1/h4): `binancechronossolexperiment2/forecast_cache_u_lora_20260206_1150_h14`
+
+**Best BTCU sim so far (holdout-style val split):**
+- Run selector with: `--frame-split val --val-fraction 0.5 --edge-mode close --min-edge 0.0064 --intensity-scale 20 --price-offset-pct 0.00025`
+- BTCU (2026-02-02 00:00 → 2026-02-05 23:00, 78 hours): total_return=0.0757, sortino=22.8950, max_drawdown=-0.0060
+
+**Full-frame backtest (train+val):**
+- Run selector with: `--frame-split full --edge-mode close --min-edge 0.0064 --intensity-scale 20 --price-offset-pct 0.00025`
+- BTCU (2026-01-31 15:00 → 2026-02-05 23:00, 106 hours): total_return=0.0986, sortino=11.3014, max_drawdown=-0.0159
 
 ## Chronos2 LoRA (hourly, Alpaca data)
 - BTCUSD LoRA: `chronos2_finetuned/BTCUSD_lora_20260203_051412` → Validation MAE% 0.2785, preaug=diff
