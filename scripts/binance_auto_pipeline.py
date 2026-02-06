@@ -331,51 +331,47 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     policy_metrics: Optional[dict] = None
     if args.train_policy:
         policy_run_name = args.policy_run_name or f"{run_name}_policy"
-        train_out = _run_cmd(
-            [
-                sys.executable,
-                "-m",
-                "binancecrosslearning.train_global_policy",
-                "--symbols",
-                ",".join(symbols),
-                "--epochs",
-                str(int(args.policy_epochs)),
-                "--sequence-length",
-                str(int(args.policy_sequence_length)),
-                "--batch-size",
-                str(int(args.policy_batch_size)),
-                "--learning-rate",
-                str(float(args.policy_learning_rate)),
-                "--weight-decay",
-                str(float(args.policy_weight_decay)),
-                "--optimizer",
-                str(args.policy_optimizer),
-                "--model-arch",
-                str(args.policy_model_arch),
-                "--attention-window",
-                str(int(args.policy_attention_window)),
-                "--skip-scale-init",
-                str(float(args.policy_skip_scale_init)),
-                "--forecast-horizons",
-                ",".join(str(int(h)) for h in horizons),
-                "--forecast-cache-root",
-                str(forecast_cache_root),
-                "--data-root",
-                str(args.data_root),
-                "--cache-only",
-                "--run-name",
-                str(policy_run_name),
-                "--horizon",
-                str(int(args.policy_horizon)),
-                "--eval-days",
-                str(float(args.policy_eval_days)),
-            ],
-            cwd=_REPO_ROOT,
-        )
+        train_cmd = [
+            sys.executable,
+            "-m",
+            "binancecrosslearning.train_global_policy",
+            "--symbols",
+            ",".join(symbols),
+            "--epochs",
+            str(int(args.policy_epochs)),
+            "--sequence-length",
+            str(int(args.policy_sequence_length)),
+            "--batch-size",
+            str(int(args.policy_batch_size)),
+            "--learning-rate",
+            str(float(args.policy_learning_rate)),
+            "--weight-decay",
+            str(float(args.policy_weight_decay)),
+            "--optimizer",
+            str(args.policy_optimizer),
+            "--model-arch",
+            str(args.policy_model_arch),
+            "--attention-window",
+            str(int(args.policy_attention_window)),
+            "--skip-scale-init",
+            str(float(args.policy_skip_scale_init)),
+            "--forecast-horizons",
+            ",".join(str(int(h)) for h in horizons),
+            "--forecast-cache-root",
+            str(forecast_cache_root),
+            "--data-root",
+            str(args.data_root),
+            "--cache-only",
+            "--run-name",
+            str(policy_run_name),
+            "--horizon",
+            str(int(args.policy_horizon)),
+            "--eval-days",
+            str(float(args.policy_eval_days)),
+        ]
         if args.policy_no_compile:
-            # Re-run quickly without compile for environments where compile is slow to start.
-            # Keep output parsing robust by reusing stdout from the last run.
-            pass
+            train_cmd.append("--no-compile")
+        train_out = _run_cmd(train_cmd, cwd=_REPO_ROOT)
 
         checkpoint_path = _parse_key_value(train_out, "Checkpoint")
         total_return = _parse_float(train_out, "total_return")
@@ -523,4 +519,3 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
 if __name__ == "__main__":
     main()
-

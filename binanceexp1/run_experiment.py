@@ -7,6 +7,8 @@ from typing import Mapping, Optional
 
 import torch
 
+from src.torch_load_utils import torch_load_compat
+
 from binanceneural.config import TrainingConfig
 from binanceneural.marketsimulator import BinanceMarketSimulator, SimulationConfig
 from binanceneural.model import (
@@ -46,7 +48,7 @@ def _infer_max_len(state_dict: Mapping[str, torch.Tensor], cfg: TrainingConfig) 
 
 
 def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConfig) -> BinancePolicyBase:
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    payload = torch_load_compat(checkpoint_path, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
         payload = {"state_dict": payload}
     state_dict = payload.get("state_dict", payload)

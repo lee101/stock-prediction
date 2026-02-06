@@ -16,6 +16,8 @@ from differentiable_loss_utils import (
     compute_hourly_objective,
     simulate_hourly_trades,
 )
+from src.serialization_utils import serialize_for_checkpoint
+from src.torch_load_utils import torch_load_compat
 
 from .config import TrainingConfig
 from .data import BinanceHourlyDataModule, FeatureNormalizer, MultiSymbolDataModule
@@ -123,7 +125,7 @@ class BinanceHourlyTrainer:
             preload_path = Path(self.config.preload_checkpoint_path)
             if preload_path.exists():
                 logger.info("Preloading weights from %s", preload_path)
-                checkpoint = torch.load(preload_path, map_location="cpu")
+                checkpoint = torch_load_compat(preload_path, map_location="cpu", weights_only=False)
                 state_dict = checkpoint.get("state_dict", checkpoint)
                 missing, unexpected = model.load_state_dict(state_dict, strict=False)
                 if missing:
@@ -394,7 +396,8 @@ class BinanceHourlyTrainer:
             "state_dict": model.state_dict(),
             "metrics": metrics,
             "epoch": epoch,
-            "config": self.config,
+            # Keep checkpoints portable across Python versions by avoiding Path objects.
+            "config": serialize_for_checkpoint(self.config),
         }
         torch.save(payload, path)
         return path

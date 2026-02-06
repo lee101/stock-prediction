@@ -5,6 +5,8 @@ from pathlib import Path
 
 import torch
 
+from src.torch_load_utils import torch_load_compat
+
 from .config import DatasetConfig, TrainingConfig
 from .data import BinanceHourlyDataModule
 from .inference import generate_actions_from_frame
@@ -13,7 +15,7 @@ from .model import BinancePolicyBase, align_state_dict_input_dim, build_policy, 
 
 
 def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConfig) -> BinancePolicyBase:
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    payload = torch_load_compat(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
     state_dict = align_state_dict_input_dim(state_dict, input_dim=input_dim)
     cfg = payload.get("config", default_cfg)

@@ -18,6 +18,7 @@ from src.hourly_data_refresh import HourlyDataRefresher
 from src.hourly_data_utils import HourlyDataValidator
 from src.symbol_utils import is_crypto_symbol
 from src.torch_device_utils import require_cuda as require_cuda_device
+from src.torch_load_utils import torch_load_compat
 
 from .config import DatasetConfig
 from .data import AlpacaHourlyDataModule
@@ -80,7 +81,7 @@ def _resolve_device(device_arg: Optional[str]) -> torch.device:
 
 
 def _load_model(checkpoint_path: Path, input_dim: int, sequence_length: int) -> torch.nn.Module:
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    payload = torch_load_compat(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
     state_dict = align_state_dict_input_dim(state_dict, input_dim=input_dim)
     cfg = payload.get("config", {})
