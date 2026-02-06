@@ -61,12 +61,41 @@ def main() -> None:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--sequence-length", type=int, default=96)
     parser.add_argument("--horizon", type=int, default=1)
+    parser.add_argument(
+        "--frame-split",
+        default="val",
+        choices=["val", "full"],
+        help=(
+            "Which prepared frame to run inference+simulation over. "
+            "'val' uses the validation slice (default, matches training reporting). "
+            "'full' uses the full enriched frame (train+val) for longer backtests."
+        ),
+    )
     parser.add_argument("--forecast-horizons", default="1,4,24")
     parser.add_argument("--forecast-cache-root", default="binancecrosslearning/forecast_cache")
     parser.add_argument("--data-root", default="trainingdatahourlybinance")
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--moving-average-windows", default=None)
     parser.add_argument("--min-history-hours", type=int, default=None)
+    parser.add_argument(
+        "--val-fraction",
+        type=float,
+        default=None,
+        help=(
+            "Override the fraction of history reserved for validation (default: DatasetConfig.val_fraction). "
+            "Only affects how the train/val split is constructed; ignored when --frame-split full."
+        ),
+    )
+    parser.add_argument(
+        "--validation-days",
+        type=int,
+        default=None,
+        help=(
+            "Override the validation window length in days (default: DatasetConfig.validation_days). "
+            "If set and enough history exists, the last N days are used for validation. "
+            "Ignored when --frame-split full."
+        ),
+    )
     parser.add_argument("--intensity-scale", type=float, default=1.0)
     parser.add_argument("--price-offset-pct", type=float, default=0.0)
     parser.add_argument("--dip-threshold-pct", type=float, default=0.0)
@@ -100,6 +129,12 @@ def main() -> None:
     else:
         ma_windows = DatasetConfig().moving_average_windows
     min_history_hours = args.min_history_hours if args.min_history_hours is not None else DatasetConfig().min_history_hours
+    val_fraction = float(args.val_fraction) if args.val_fraction is not None else DatasetConfig().val_fraction
+    if not (0.0 < val_fraction < 1.0):
+        raise ValueError(f"--val-fraction must be in (0, 1), got {val_fraction}.")
+    validation_days = int(args.validation_days) if args.validation_days is not None else DatasetConfig().validation_days
+    if validation_days < 0:
+        raise ValueError(f"--validation-days must be >= 0, got {validation_days}.")
 
     fee_override = float(args.maker_fee) if args.maker_fee is not None else None
     periods_override = float(args.periods_per_year) if args.periods_per_year is not None else None
@@ -114,11 +149,16 @@ def main() -> None:
             cache_only=args.cache_only,
             moving_average_windows=ma_windows,
             min_history_hours=min_history_hours,
+            val_fraction=val_fraction,
+            validation_days=validation_days,
         )
         data = AlpacaHourlyDataModule(data_cfg)
         model = _load_model(Path(args.checkpoint), len(data.feature_columns), args.sequence_length)
 
-        frame = data.val_dataset.frame.copy()
+        if args.frame_split == "full":
+            frame = data.frame.copy()
+        else:
+            frame = data.val_dataset.frame.copy()
         actions = generate_actions_from_frame(
             model=model,
             frame=frame,
