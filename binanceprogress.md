@@ -24,6 +24,14 @@ Updated: 2026-02-06
 - Added multi-asset best-trade selector simulator + CLI + tests.
   - New: `binanceneural/marketsimulator/selector.py`, `binanceexp1/run_multiasset_selector.py`,
     `tests/test_binance_multiasset_selector.py`.
+- Binance data downloads now work in restricted locations by default:
+  - `src/binan/binance_wrapper.py` retries with Binance.US when Binance Global returns HTTP 451 restricted-region.
+  - `src/hourly_data_refresh.py` retries Binance.US for kline fallback when Binance Global is blocked.
+- Binance hourly pair list updated: `MATIC/FDUSD` -> `POL/FDUSD` (Binance.US `MATICUSDT` is status BREAK / no fresh klines).
+- Chronos2 hourly trainer now prefers hourly preaug selections over legacy daily preaug entries (fixes ETHUSDT selecting old `rolling_norm`).
+  - Updated: `chronos2_trainer.py`
+  - New tests: `tests/test_chronos2_trainer_preaug_choice.py`
+  - New helper: `scripts/retrain_chronos2_lora_binance_pairs.py`
 
 ## Binance FDUSD (zero-fee) hourly
 
@@ -122,7 +130,61 @@ Updated: 2026-02-06
 - Forecast cache rebuilt for h1 only (BTCUSD/ETHUSD/LINKUSD/SOLUSD/UNIUSD/NFLX/NVDA); h24 recompute deferred (very heavy with long contexts).
 - Supervisor `binanceexp1-solusd` updated to cross-pair BTCUSD/ETHUSD/LINKUSD checkpoints (horizon=1, seq=96).
 
+## Chronos2 LoRA (hourly, Binance.US data)
+- Data: refreshed `trainingdatahourlybinance/*USDT.csv` to 2026-02-06 09:00 UTC (Binance.US; Global endpoint restricted-region).
+- Batch LoRA run `20260206_0818` (15 symbols, `--preaug-eval`; selection metric=val MAE%):
+  - Summary: `reports/chronos2_lora_binance/binance_lora_20260206_0818_summary.md`
+  - Reports: `hyperparams/chronos2/hourly_lora/*_lora_binance_lora_20260206_0818_*.json`
+  - Outputs: `chronos2_finetuned/binance_lora_20260206_0818_<SYMBOL>/finetuned-ckpt`
+  - Promoted configs: `hyperparams/chronos2/hourly/{AAVEUSDT,ADAUSDT,APTUSDT,ATOMUSDT,AVAXUSDT,BCHUSDT,BNBUSDT,BTCUSDT,DOTUSDT,ETHUSDT,LINKUSDT,LTCUSDT,POLUSDT,SOLUSDT,UNIUSDT}.json`
+
+| Symbol | Preaug | Val MAE% | Test MAE% | Val ret MAE | Test ret MAE |
+|---|---|---:|---:|---:|---:|
+| BTCUSDT | differencing | 0.2964 | 0.6417 | 0.0030 | 0.0066 |
+| APTUSDT | differencing | 0.3200 | 0.7206 | 0.0032 | 0.0076 |
+| BNBUSDT | robust_scaling | 0.3342 | 0.9440 | 0.0034 | 0.0097 |
+| LINKUSDT | differencing | 0.4170 | 0.9127 | 0.0042 | 0.0093 |
+| AAVEUSDT | differencing | 0.4187 | 1.0117 | 0.0042 | 0.0103 |
+| ETHUSDT | differencing | 0.4122 | 0.9218 | 0.0041 | 0.0095 |
+| SOLUSDT | differencing | 0.4359 | 0.9292 | 0.0044 | 0.0096 |
+| AVAXUSDT | differencing | 0.4549 | 0.8196 | 0.0046 | 0.0083 |
+| ADAUSDT | differencing | 0.5210 | 0.9559 | 0.0052 | 0.0097 |
+| UNIUSDT | differencing | 0.5560 | 1.0655 | 0.0056 | 0.0108 |
+| BCHUSDT | detrending | 0.5805 | 1.1391 | 0.0059 | 0.0115 |
+| DOTUSDT | log_returns | 0.6479 | 1.1964 | 0.0065 | 0.0121 |
+| POLUSDT | differencing | 0.6772 | 1.1958 | 0.0068 | 0.0122 |
+| LTCUSDT | log_returns | 0.7151 | 1.1262 | 0.0072 | 0.0114 |
+| ATOMUSDT | differencing | 0.8981 | 1.2665 | 0.0090 | 0.0128 |
+
+- Previous quick runs (superseded by `20260206_0818`):
+  - BTCUSDT LoRA: `chronos2_finetuned/BTCUSDT_lora_20260206_074018` → Validation MAE% 0.2960, preaug=differencing
+  - SOLUSDT LoRA: `chronos2_finetuned/SOLUSDT_lora_20260206_074244` → Validation MAE% 0.4359, preaug=differencing
+  - ETHUSDT LoRA: `chronos2_finetuned/ETHUSDT_lora_20260206_075058` → Validation MAE% 0.4127, preaug=differencing
+  - POLUSDT LoRA: `chronos2_finetuned/POLUSDT_lora_20260206_073634` → Validation MAE% 0.6910, preaug=baseline
+
 ## Experiments (Chronos2 + Binance neural)
+
+### Policy batch (LoRA 20260206_0818, nano v2 + muon, 90d history)
+- Summary: `reports/binance_policy/binance_policy_lora0818_nano_v2_muon_90d_20260206_summary.md`
+- Forecast cache root: `binancechronossolexperiment2/forecast_cache_lora_20260206_0818` (h1/h4/h24; per-symbol parquets)
+
+| Symbol | Total Return | Sortino | Last 2d Return | Run |
+|---|---:|---:|---:|---|
+| ETHUSDT | 0.397039 | 48.423498 | 0.072744 | `ethusdt_lora0818_nano_v2_muon_90d_20260206_0926` |
+| SOLUSDT | 0.381142 | 52.623876 | 0.128440 | `solusdt_lora0818_nano_v2_muon_90d_20260206_0930` |
+| BNBUSDT | 0.369530 | 34.431249 | 0.028878 | `bnbusdt_lora0818_nano_v2_muon_90d_20260206_0933` |
+| BTCUSDT | 0.313967 | 47.858053 | 0.084447 | `btcusdt_lora0818_nano_v2_muon_90d_20260206_0918` |
+| BCHUSDT | 0.303637 | 24.429731 | 0.067853 | `bchusdt_lora0818_nano_v2_muon_90d_20260206_0933` |
+| LTCUSDT | 0.287870 | 24.536757 | 0.002231 | `ltcusdt_lora0818_nano_v2_muon_90d_20260206_0933` |
+| ATOMUSDT | 0.257163 | 13.519264 | 0.041600 | `atomusdt_lora0818_nano_v2_muon_90d_20260206_0933` |
+| POLUSDT | 0.236184 | 13.309563 | 0.085585 | `polusdt_lora0818_nano_v2_muon_90d_20260206_0933` |
+| ADAUSDT | 0.214842 | 16.769195 | 0.035352 | `adausdt_lora0818_nano_v2_muon_90d_20260206_0933` |
+| LINKUSDT | 0.078683 | 7.235045 | 0.007517 | `linkusdt_lora0818_nano_v2_muon_90d_20260206_0933` |
+| AVAXUSDT | 0.017097 | 1.715396 | 0.008183 | `avaxusdt_lora0818_nano_v2_muon_90d_20260206_0933` |
+| DOTUSDT | -0.059666 | -1.980600 | -0.056529 | `dotusdt_lora0818_nano_v2_muon_90d_20260206_0933` |
+| AAVEUSDT | -0.073214 | -3.007001 | -0.031294 | `aaveusdt_lora0818_nano_v2_muon_90d_20260206_0933` |
+| UNIUSDT | -0.092815 | -4.354703 | -0.011269 | `uniusdt_lora0818_nano_v2_muon_90d_20260206_0933` |
+| APTUSDT | -0.180532 | -5.029216 | -0.097441 | `aptusdt_lora0818_nano_v2_muon_90d_20260206_0933` |
 
 ### Baseline (classic, full history)
 - Run: `chronos_sol_20260202_041139`
