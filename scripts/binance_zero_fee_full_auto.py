@@ -207,6 +207,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--selector-edge-mode", default="close", choices=("high_low", "high", "close"))
     parser.add_argument("--selector-eval-days", type=float, default=7.0)
     parser.add_argument("--selector-frame-split", default="full", choices=("val", "full"))
+    parser.add_argument(
+        "--selector-initial-cash",
+        type=float,
+        default=10_000.0,
+        help="Initial cash used for selector simulations (affects volume-cap binding/capacity).",
+    )
+    parser.add_argument(
+        "--selector-max-hold-hours",
+        type=int,
+        default=None,
+        help="Max hold in hours for selector simulations (None disables the max-hold forced close).",
+    )
     parser.add_argument("--selector-intensity-scales", default="1,2,5,10,20")
     parser.add_argument("--selector-price-offset-pcts", default="0,0.0001,0.00025,0.0005")
     parser.add_argument("--selector-min-edges", default="0,0.001,0.002,0.004,0.006")
@@ -302,6 +314,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         else (72 if is_u_run else None)
     )
     policy_ma_windows = args.policy_moving_average_windows or ("24,72" if is_u_run else None)
+    selector_max_hold_hours = (
+        int(args.selector_max_hold_hours)
+        if args.selector_max_hold_hours is not None
+        else (6 if is_u_run else None)
+    )
+    selector_initial_cash = float(args.selector_initial_cash)
 
     if args.update_data:
         pairs: List[str] = []
@@ -481,6 +499,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             str(int(policy_validation_days or 0)),
             "--edge-mode",
             str(args.selector_edge_mode),
+            "--initial-cash",
+            str(selector_initial_cash),
             "--maker-fee",
             str(float(args.policy_maker_fee)),
             "--eval-days",
@@ -496,6 +516,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             "--max-volume-fractions",
             str(args.selector_max_volume_fractions),
         ]
+        if selector_max_hold_hours is not None:
+            cmd += ["--max-hold-hours", str(int(selector_max_hold_hours))]
         if policy_ma_windows:
             cmd += ["--moving-average-windows", str(policy_ma_windows)]
         if policy_feature_max_window is not None:
