@@ -32,6 +32,7 @@ data/_simulator/
 
 optuna_test
 .pytest_cache
+pytest-of-*
 .ruff_cache
 .mypy_cache
 .pytype
