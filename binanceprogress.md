@@ -30,7 +30,12 @@ Updated: 2026-02-06
 - Binance data downloads now work in restricted locations by default:
   - `src/binan/binance_wrapper.py` retries with Binance.US when Binance Global returns HTTP 451 restricted-region.
   - `src/hourly_data_refresh.py` retries Binance.US for kline fallback when Binance Global is blocked.
+- Binance data downloader now drops the current-hour in-progress kline from persisted CSVs (prevents leakage):
+  - Updated: `binance_data_wrapper.py`
+  - New tests: `tests/test_binance_data_wrapper_incomplete_hour.py`
 - Binance hourly pair list updated: `MATIC/FDUSD` -> `POL/FDUSD` (Binance.US `MATICUSDT` is status BREAK / no fresh klines).
+- As of 2026-02-06 (UTC), `AAVEFDUSD` and `MATICFDUSD` report status `BREAK` via `get_symbol_info`; treat them as inactive and exclude from active FDUSD training/trading lists.
+- Fixed crypto symbol fixtures to classify `APT*`, `AVAX*`, `BCH*`, `POL*` (and `AEUR*`) stable-quote symbols as crypto. Any prior backtests/sims involving these symbols before 2026-02-07 should be considered suspect if market-hours/EOD logic was enabled.
 - Chronos2 hourly trainer now prefers hourly preaug selections over legacy daily preaug entries (fixes ETHUSDT selecting old `rolling_norm`).
   - Updated: `chronos2_trainer.py`
   - New tests: `tests/test_chronos2_trainer_preaug_choice.py`
@@ -42,12 +47,22 @@ Updated: 2026-02-06
 - Script: `scripts/collect_binance_hourly_zero_fee_pairs.py`
 - Output dir: `binance_spot_hourly/` (symlinks: `binancetrainingdatahourly/`, `trainingdatahourlybinance/`)
 - Download summary (UTC, 1h bars):
-  - BTCFDUSD: 22010 bars, 2023-08-04 08:00 → 2026-02-06 09:00
-  - ETHFDUSD: 22010 bars, 2023-08-04 08:00 → 2026-02-06 09:00
-  - SOLFDUSD: 21194 bars, 2023-09-07 08:00 → 2026-02-06 09:00
-  - BNBFDUSD: 22222 bars, 2023-07-26 08:00 → 2026-02-06 09:00
-  - FDUSDUSDT: 22222 bars, 2023-07-26 08:00 → 2026-02-06 09:00
-  - AEURUSDT: 19012 bars, 2023-12-04 10:00 → 2026-02-06 09:00
+  - BTCFDUSD: 22012 bars, 2023-08-04 08:00 → 2026-02-06 11:00
+  - ETHFDUSD: 22012 bars, 2023-08-04 08:00 → 2026-02-06 11:00
+  - SOLFDUSD: 21196 bars, 2023-09-07 08:00 → 2026-02-06 11:00
+  - BNBFDUSD: 22224 bars, 2023-07-26 08:00 → 2026-02-06 11:00
+  - LINKFDUSD: 20020 bars, 2023-10-26 08:00 → 2026-02-06 11:00
+  - ADAFDUSD: 20356 bars, 2023-10-12 08:00 → 2026-02-06 11:00
+  - APTFDUSD: 17812 bars, 2024-01-26 08:00 → 2026-02-06 11:00
+  - AVAXFDUSD: 20188 bars, 2023-10-19 08:00 → 2026-02-06 11:00
+  - DOTFDUSD: 20020 bars, 2023-10-26 08:00 → 2026-02-06 11:00
+  - POLFDUSD: 12266 bars, 2024-09-13 10:00 → 2026-02-06 11:00
+  - ATOMFDUSD: 20188 bars, 2023-10-19 08:00 → 2026-02-06 11:00
+  - LTCFDUSD: 20356 bars, 2023-10-12 08:00 → 2026-02-06 11:00
+  - BCHFDUSD: 20188 bars, 2023-10-19 08:00 → 2026-02-06 11:00
+  - UNIFDUSD: 16876 bars, 2024-03-05 08:00 → 2026-02-06 11:00
+  - FDUSDUSDT: 22224 bars, 2023-07-26 08:00 → 2026-02-06 11:00
+  - AEURUSDT: 19014 bars, 2023-12-04 10:00 → 2026-02-06 11:00
 
 ### Account conversion (USDT → FDUSD)
 - Script: `scripts/convert_binance_usdt_to_fdusd.py`
@@ -59,12 +74,22 @@ Updated: 2026-02-06
 - Forecast cache:
   - Root: `binancecrosslearning/forecast_cache_fdusd/`
   - Horizons: h1/h4/h24
-  - Lookback: 5000h (up to 2026-02-06 09:00 UTC)
+  - Lookback: 5000h (up to 2026-02-06 11:00 UTC)
 - Forecast MAE% (close p50 vs realized close at the target horizon, over cache window):
-  - BTCFDUSD: h1 0.2581, h4 0.4728, h24 1.4424
-  - ETHFDUSD: h1 0.4346, h4 0.7831, h24 2.4953
-  - SOLFDUSD: h1 0.4973, h4 0.8903, h24 2.8363
-  - BNBFDUSD: h1 0.3865, h4 0.7229, h24 2.1064
+  - BTCFDUSD: h1 0.2794, h4 0.5676, h24 1.4943
+  - ETHFDUSD: h1 0.4928, h4 1.0008, h24 2.6192
+  - SOLFDUSD: h1 0.5783, h4 1.1514, h24 3.1349
+  - BNBFDUSD: h1 0.4470, h4 0.8628, h24 2.3023
+  - LINKFDUSD: h1 0.6693, h4 1.3377, h24 3.3415
+  - ADAFDUSD: h1 0.6514, h4 1.3022, h24 3.2010
+  - APTFDUSD: h1 0.7176, h4 1.3426, h24 3.4553
+  - AVAXFDUSD: h1 0.6770, h4 1.3118, h24 3.4674
+  - DOTFDUSD: h1 0.6765, h4 1.2788, h24 3.3255
+  - POLFDUSD: h1 0.6811, h4 1.2809, h24 3.1878
+  - ATOMFDUSD: h1 0.6051, h4 1.1329, h24 2.8557
+  - LTCFDUSD: h1 0.5756, h4 1.0983, h24 2.8000
+  - BCHFDUSD: h1 0.5088, h4 0.9981, h24 2.5159
+  - UNIFDUSD: h1 0.7650, h4 1.5203, h24 3.6670
 
 ### Chronos2 LoRA (per-symbol, Binance FDUSD)
 - Script: `scripts/retrain_chronos2_hourly_loras.py`
@@ -103,6 +128,19 @@ Updated: 2026-02-06
   - BNBFDUSD: total_return=0.6562, sortino=93.1969
 - Compile smoke test (post attention-mask fix):
   - `binance_cross_global_fdusd_20260206_compile_smoke` (epochs=1, dry_train_steps=5) succeeded.
+- Selector eval (shared cash, last 30d, 4 symbols, initial_cash=10_000, maker_fee=0.0):
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_fdusd_20260206_nocompile/epoch_005.pt`
+  - Symbols: BTCFDUSD,ETHFDUSD,SOLFDUSD,BNBFDUSD
+  - total_return=0.1943, sortino=9.0436
+
+- Train run (8 epochs, seq=96, nano, muon_mix, horizons 1/4/24, cache-only, dry_train_steps=0, no-compile):
+  - `binance_cross_global_fdusd_14sym_20260207_nocompile_full`
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_fdusd_14sym_20260207_nocompile_full/epoch_005.pt`
+  - Train script eval (BTCFDUSD): total_return=2.8184, sortino=328.0766
+- Selector eval (shared cash, last 30d, 14 symbols, initial_cash=10_000, maker_fee=0.0):
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_fdusd_14sym_20260207_nocompile_full/epoch_005.pt`
+  - Symbols: BTCFDUSD,ETHFDUSD,SOLFDUSD,BNBFDUSD,LINKFDUSD,ADAFDUSD,APTFDUSD,AVAXFDUSD,DOTFDUSD,POLFDUSD,ATOMFDUSD,LTCFDUSD,BCHFDUSD,UNIFDUSD
+  - total_return=0.5626, sortino=102.3775, final_cash=15625.5828
 
 ## Binance U (zero-fee) hourly
 
@@ -110,11 +148,11 @@ Updated: 2026-02-06
 - Script: `scripts/collect_binance_hourly_zero_fee_pairs.py`
 - Output dir: `binance_spot_hourly/` (symlinks: `binancetrainingdatahourly/`, `trainingdatahourlybinance/`)
 - Download summary (UTC, 1h bars):
-  - BTCU: 410 bars, 2026-01-20 08:00 → 2026-02-06 09:00
-  - ETHU: 242 bars, 2026-01-27 08:00 → 2026-02-06 09:00
-  - SOLU: 242 bars, 2026-01-27 08:00 → 2026-02-06 09:00
-  - BNBU: 242 bars, 2026-01-27 08:00 → 2026-02-06 09:00
-  - UUSDT: 578 bars, 2026-01-13 08:00 → 2026-02-06 09:00
+  - BTCU: 412 bars, 2026-01-20 08:00 → 2026-02-06 11:00
+  - ETHU: 244 bars, 2026-01-27 08:00 → 2026-02-06 11:00
+  - SOLU: 244 bars, 2026-01-27 08:00 → 2026-02-06 11:00
+  - BNBU: 244 bars, 2026-01-27 08:00 → 2026-02-06 11:00
+  - UUSDT: 580 bars, 2026-01-13 08:00 → 2026-02-06 11:00
 
 ### Account conversion (USDT → U)
 - 2026-02-06: executed market buy on `UUSDT` spending 38.35448968 USDT (left 10 USDT buffer) → received 38.0 U @ 1.0012 (fee=0.0).
@@ -140,6 +178,10 @@ Updated: 2026-02-06
   - ETHU: total_return=0.0001, sortino=65.9701
   - SOLU: total_return=-0.0146, sortino=-11.8264
   - BNBU: total_return=0.0006, sortino=1.6576
+- Selector eval (shared cash, last 7d, 4 symbols, initial_cash=10_000, maker_fee=0.0, MA windows 24/72/168):
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_u_20260206_nocompile2/epoch_017.pt`
+  - Symbols: BTCU,ETHU,SOLU,BNBU
+  - total_return=0.0123, sortino=226.9193, final_cash=10122.7148 (open_symbol=BTCU)
 
 ## Chronos2 LoRA (hourly, Alpaca data)
 - BTCUSD LoRA: `chronos2_finetuned/BTCUSD_lora_20260203_051412` → Validation MAE% 0.2785, preaug=diff
