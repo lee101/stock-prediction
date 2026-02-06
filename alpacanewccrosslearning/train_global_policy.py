@@ -56,6 +56,21 @@ def main() -> None:
     parser.add_argument("--min-history-hours", type=int, default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--allow-mixed-asset", action="store_true")
+    parser.add_argument(
+        "--allow-short",
+        action="store_true",
+        help="Enable shorting in the differentiable training simulator (stocks only; crypto remains long-only).",
+    )
+    parser.add_argument(
+        "--long-only-symbols",
+        default=None,
+        help="Comma-separated symbols to restrict to long-only entries (in addition to default groups).",
+    )
+    parser.add_argument(
+        "--short-only-symbols",
+        default=None,
+        help="Comma-separated symbols to restrict to short-only entries (in addition to default groups).",
+    )
     parser.add_argument("--eval-days", type=float, default=None)
     parser.add_argument("--eval-hours", type=float, default=None)
     args = parser.parse_args()
@@ -117,6 +132,13 @@ def main() -> None:
         vol_regime_short=vol_regime_short,
         vol_regime_long=vol_regime_long,
         min_history_hours=min_history_hours,
+        allow_short=bool(args.allow_short),
+        long_only_symbols=tuple(
+            token.strip().upper() for token in (args.long_only_symbols or "").split(",") if token.strip()
+        ),
+        short_only_symbols=tuple(
+            token.strip().upper() for token in (args.short_only_symbols or "").split(",") if token.strip()
+        ),
     )
     data = AlpacaMultiSymbolDataModule(symbols, data_cfg)
 

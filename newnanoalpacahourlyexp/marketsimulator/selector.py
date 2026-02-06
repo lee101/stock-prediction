@@ -9,6 +9,7 @@ import pandas as pd
 from src.fees import get_fee_for_symbol
 from src.metrics_utils import annualized_sortino, compute_step_returns
 from src.symbol_utils import is_crypto_symbol
+from src.trade_directions import resolve_trade_directions
 
 from .simulator import _end_of_day_mask, _market_open_mask, _to_new_york, _infer_periods_per_year
 
@@ -27,6 +28,9 @@ class SelectionConfig:
     close_at_eod: bool = True
     fee_by_symbol: Optional[Dict[str, float]] = None
     periods_per_year_by_symbol: Optional[Dict[str, float]] = None
+    allow_short: bool = False
+    long_only_symbols: Optional[Sequence[str]] = None
+    short_only_symbols: Optional[Sequence[str]] = None
 
 
 @dataclass
@@ -70,8 +74,7 @@ def run_best_trade_simulation(
     symbol_meta = _build_symbol_meta(merged, cfg)
 
     cash = float(cfg.initial_cash)
-    inventory = 0.0
-    cost_basis = 0.0
+    inventory = 0.0  # signed: >0 long, <0 short
     open_symbol: Optional[str] = None
     open_ts: Optional[pd.Timestamp] = None
     last_close: Dict[str, float] = {}
@@ -105,31 +108,36 @@ def run_best_trade_simulation(
             )
         )
 
-    def _execute_buy(ts: pd.Timestamp, symbol: str, qty: float, price: float, fee_rate: float) -> None:
-        nonlocal cash, inventory, cost_basis, open_symbol, open_ts
+    def _execute_buy(ts: pd.Timestamp, symbol: str, qty: float, price: float, fee_rate: float, reason: Optional[str] = None) -> None:
+        nonlocal cash, inventory, open_symbol, open_ts
         if qty <= 0:
             return
         cost = qty * price * (1 + fee_rate)
         cash -= cost
-        if inventory <= 0:
-            cost_basis = price * (1 + fee_rate)
-            open_ts = ts
-        else:
-            cost_basis = (cost_basis * inventory + price * (1 + fee_rate) * qty) / (inventory + qty)
+        was_flat = (open_symbol is None) or abs(inventory) <= 1e-12
         inventory += qty
-        open_symbol = symbol
-        _record_trade(ts=ts, symbol=symbol, side="buy", price=price, qty=qty)
+        if was_flat and abs(inventory) > 1e-12:
+            open_ts = ts
+            open_symbol = symbol
+        if abs(inventory) <= 1e-12:
+            inventory = 0.0
+            open_symbol = None
+            open_ts = None
+        _record_trade(ts=ts, symbol=symbol, side="buy", price=price, qty=qty, reason=reason)
 
     def _execute_sell(ts: pd.Timestamp, symbol: str, qty: float, price: float, fee_rate: float, reason: Optional[str] = None) -> None:
-        nonlocal cash, inventory, cost_basis, open_symbol, open_ts
+        nonlocal cash, inventory, open_symbol, open_ts
         if qty <= 0:
             return
         proceeds = qty * price * (1 - fee_rate)
         cash += proceeds
+        was_flat = (open_symbol is None) or abs(inventory) <= 1e-12
         inventory -= qty
-        if inventory <= 1e-8:
+        if was_flat and abs(inventory) > 1e-12:
+            open_ts = ts
+            open_symbol = symbol
+        if abs(inventory) <= 1e-12:
             inventory = 0.0
-            cost_basis = 0.0
             open_symbol = None
             open_ts = None
         _record_trade(ts=ts, symbol=symbol, side="sell", price=price, qty=qty, reason=reason)
@@ -140,7 +148,7 @@ def run_best_trade_simulation(
         selected_symbol = ""
         selected_score = 0.0
         forced_close = False
-        sold_this_step = False
+        closed_this_step = False
 
         for row in group.itertuples(index=False):
             last_close[str(row.symbol)] = float(row.close)
@@ -150,61 +158,95 @@ def run_best_trade_simulation(
                 row = _lookup_symbol_row(group, open_symbol)
                 if row is not None:
                     fee_rate = symbol_meta[open_symbol]["fee"]
-                    _execute_sell(ts, open_symbol, inventory, float(row.close), fee_rate, reason="max_hold")
-                    sell_filled = 1.0
+                    if inventory > 0:
+                        _execute_sell(ts, open_symbol, inventory, float(row.close), fee_rate, reason="max_hold")
+                        sell_filled = 1.0
+                    elif inventory < 0:
+                        _execute_buy(ts, open_symbol, abs(inventory), float(row.close), fee_rate, reason="max_hold")
+                        buy_filled = 1.0
                     forced_close = True
-                    sold_this_step = True
+                    closed_this_step = True
 
-        if open_symbol and inventory > 0:
+        if open_symbol and inventory != 0:
             row = _lookup_symbol_row(group, open_symbol)
             if row is not None and not forced_close:
                 buy_intensity, sell_intensity = _extract_intensity(row)
                 if not _is_tradable(symbol_meta, open_symbol, ts, cfg):
                     sell_intensity = 0.0
-                sell_fill = bool(row.high >= row.sell_price and sell_intensity > 0)
-                if sell_fill:
-                    qty = sell_intensity * inventory
-                    fee_rate = symbol_meta[open_symbol]["fee"]
-                    _execute_sell(ts, open_symbol, min(qty, inventory), float(row.sell_price), fee_rate)
-                    sell_filled = 1.0
-                    sold_this_step = True
+                if inventory > 0:
+                    sell_fill = bool(row.high >= row.sell_price and sell_intensity > 0)
+                    if sell_fill:
+                        qty = sell_intensity * inventory
+                        fee_rate = symbol_meta[open_symbol]["fee"]
+                        _execute_sell(ts, open_symbol, min(qty, inventory), float(row.sell_price), fee_rate)
+                        sell_filled = 1.0
+                        closed_this_step = True
+                else:
+                    buy_fill_condition = bool(row.low <= row.buy_price and buy_intensity > 0)
+                    if buy_fill_condition:
+                        qty = buy_intensity * abs(inventory)
+                        fee_rate = symbol_meta[open_symbol]["fee"]
+                        _execute_buy(ts, open_symbol, min(qty, abs(inventory)), float(row.buy_price), fee_rate)
+                        buy_filled = 1.0
+                        closed_this_step = True
             current_price = _resolve_close(open_symbol, row, last_close)
         else:
             current_price = None
 
-        if open_symbol is None and not forced_close and (cfg.allow_reentry_same_bar or not sold_this_step):
-            candidates: List[Tuple[float, str, object, float]] = []
+        if open_symbol is None and not forced_close and (cfg.allow_reentry_same_bar or not closed_this_step):
+            candidates: List[Tuple[float, str, str, object, float]] = []
             for row in group.itertuples(index=False):
                 symbol = str(row.symbol)
                 if not _is_tradable(symbol_meta, symbol, ts, cfg):
                     continue
-                buy_intensity, _ = _extract_intensity(row)
-                if buy_intensity <= 0:
-                    continue
-                if row.low > row.buy_price:
-                    continue
                 fee_rate = symbol_meta[symbol]["fee"]
-                score = _edge_score(
-                    row,
-                    horizon=horizon,
-                    config=cfg,
-                    buy_intensity=buy_intensity,
-                    fee_rate=fee_rate,
-                )
-                if score is None or score < cfg.min_edge:
-                    continue
-                candidates.append((score, symbol, row, buy_intensity))
+                dirs = symbol_meta[symbol].get("directions") or {}
+                can_long = bool(dirs.get("can_long", True))
+                can_short = bool(dirs.get("can_short", False))
+
+                buy_intensity, sell_intensity = _extract_intensity(row)
+
+                if can_long and buy_intensity > 0 and row.low <= row.buy_price:
+                    score = _edge_score_long(
+                        row,
+                        horizon=horizon,
+                        config=cfg,
+                        buy_intensity=buy_intensity,
+                        fee_rate=fee_rate,
+                    )
+                    if score is not None and score >= cfg.min_edge:
+                        candidates.append((score, symbol, "long", row, buy_intensity))
+
+                if can_short and sell_intensity > 0 and row.high >= row.sell_price:
+                    score = _edge_score_short(
+                        row,
+                        horizon=horizon,
+                        config=cfg,
+                        sell_intensity=sell_intensity,
+                        fee_rate=fee_rate,
+                    )
+                    if score is not None and score >= cfg.min_edge:
+                        candidates.append((score, symbol, "short", row, sell_intensity))
 
             if candidates:
                 candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-                selected_score, selected_symbol, row, buy_intensity = candidates[0]
+                selected_score, selected_symbol, direction, row, intensity = candidates[0]
                 fee_rate = symbol_meta[selected_symbol]["fee"]
-                max_buy = cash / (row.buy_price * (1 + fee_rate)) if row.buy_price > 0 else 0.0
-                qty = buy_intensity * max_buy
-                if qty > 0:
-                    _execute_buy(ts, selected_symbol, qty, float(row.buy_price), fee_rate)
-                    buy_filled = 1.0
-                    current_price = float(row.close)
+                if direction == "long":
+                    max_buy = cash / (row.buy_price * (1 + fee_rate)) if row.buy_price > 0 else 0.0
+                    qty = intensity * max_buy
+                    if qty > 0:
+                        _execute_buy(ts, selected_symbol, qty, float(row.buy_price), fee_rate)
+                        buy_filled = 1.0
+                        current_price = float(row.close)
+                else:
+                    equity = cash  # flat at entry
+                    max_short = equity / (row.sell_price * (1 + fee_rate)) if row.sell_price > 0 else 0.0
+                    qty = intensity * max(0.0, max_short)
+                    if qty > 0:
+                        _execute_sell(ts, selected_symbol, qty, float(row.sell_price), fee_rate)
+                        sell_filled = 1.0
+                        current_price = float(row.close)
 
         if open_symbol and current_price is None:
             current_price = _resolve_close(open_symbol, None, last_close)
@@ -221,6 +263,20 @@ def run_best_trade_simulation(
             if row is not None:
                 _execute_sell(ts, open_symbol, inventory, float(row.close), fee_rate, reason="eod")
                 sell_filled = 1.0
+                forced_close = True
+                current_price = float(row.close)
+        elif (
+            open_symbol
+            and inventory < 0
+            and cfg.close_at_eod
+            and symbol_meta[open_symbol]["asset_class"] == "stock"
+            and ts in symbol_meta[open_symbol]["eod_ts"]
+        ):
+            fee_rate = symbol_meta[open_symbol]["fee"]
+            row = _lookup_symbol_row(group, open_symbol)
+            if row is not None:
+                _execute_buy(ts, open_symbol, abs(inventory), float(row.close), fee_rate, reason="eod")
+                buy_filled = 1.0
                 forced_close = True
                 current_price = float(row.close)
 
@@ -305,6 +361,12 @@ def _build_symbol_meta(merged: pd.DataFrame, cfg: SelectionConfig) -> Dict[str, 
         symbol = str(symbol).upper()
         asset_class = "crypto" if is_crypto_symbol(symbol) else "stock"
         fee_rate = float(fee_map.get(symbol, get_fee_for_symbol(symbol)))
+        dirs = resolve_trade_directions(
+            symbol,
+            allow_short=bool(cfg.allow_short),
+            long_only_symbols=cfg.long_only_symbols,
+            short_only_symbols=cfg.short_only_symbols,
+        )
         if symbol in periods_map:
             periods_per_year = float(periods_map[symbol])
         else:
@@ -323,6 +385,7 @@ def _build_symbol_meta(merged: pd.DataFrame, cfg: SelectionConfig) -> Dict[str, 
             "periods_per_year": periods_per_year,
             "eod_ts": eod_ts,
             "market_open_ts": market_open_ts,
+            "directions": {"can_long": bool(dirs.can_long), "can_short": bool(dirs.can_short)},
         }
     return meta
 
@@ -385,7 +448,7 @@ def _extract_intensity(row: object) -> Tuple[float, float]:
     return buy_intensity, sell_intensity
 
 
-def _edge_score(
+def _edge_score_long(
     row: object,
     *,
     horizon: int,
@@ -419,6 +482,42 @@ def _edge_score(
     if not np.isfinite(edge):
         return None
     return float(edge * buy_intensity)
+
+
+def _edge_score_short(
+    row: object,
+    *,
+    horizon: int,
+    config: SelectionConfig,
+    sell_intensity: float,
+    fee_rate: float,
+) -> Optional[float]:
+    sell_price = _safe_float(getattr(row, "sell_price", None))
+    if sell_price is None or sell_price <= 0:
+        return None
+    pred_high = _safe_float(getattr(row, f"predicted_high_p50_h{int(horizon)}", None))
+    pred_low = _safe_float(getattr(row, f"predicted_low_p50_h{int(horizon)}", None))
+    pred_close = _safe_float(getattr(row, f"predicted_close_p50_h{int(horizon)}", None))
+    if pred_high is None or pred_low is None or pred_close is None:
+        return None
+
+    mode = str(config.edge_mode or "high_low").lower()
+    if mode == "close":
+        upside = (sell_price - pred_close) / sell_price
+        downside = 0.0
+    elif mode == "high":
+        upside = (sell_price - pred_low) / sell_price
+        downside = 0.0
+    elif mode == "high_low":
+        upside = (sell_price - pred_low) / sell_price
+        downside = max(0.0, (pred_high - sell_price) / sell_price)
+    else:
+        raise ValueError(f"Unsupported edge_mode '{config.edge_mode}'.")
+
+    edge = upside - float(config.risk_weight) * downside - (2.0 * fee_rate)
+    if not np.isfinite(edge):
+        return None
+    return float(edge * sell_intensity)
 
 
 def _safe_float(value: object) -> Optional[float]:

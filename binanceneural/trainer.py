@@ -258,6 +258,8 @@ class BinanceHourlyTrainer:
                     sell_trade_intensity=sell_intensity,
                     maker_fee=self.config.maker_fee,
                     initial_cash=self.config.initial_cash,
+                    can_short=batch.get("can_short", False),
+                    can_long=batch.get("can_long", True),
                 )
 
             returns = sim.returns.float()
