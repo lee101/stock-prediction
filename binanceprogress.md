@@ -180,6 +180,9 @@ Updated: 2026-02-06
   - total_return=0.3305, sortino=51.1465, final_cash=6091.7925, open_symbol=SOLFDUSD
 - Selector sweep highlight (same 14 symbols, last 30d, maker_fee=0.0; min_edge=0.0 risk_weight=0.5):
   - Best found: intensity=1.2 offset=0.0 → total_return=3.8566, sortino=67.4564, final_cash=16975.0014, open_symbol=SOLFDUSD
+- Selector eval (shared cash, last 90d, 14 symbols; validation_days=120, maker_fee=0.0; min_edge=0.0 risk_weight=0.5):
+  - intensity=1.0 offset=0.0 → total_return=0.2598, sortino=124.3081, final_cash=12598.1507, open_symbol=POLFDUSD
+  - intensity=1.2 offset=0.0 → total_return=1.8496, sortino=147.2874, final_cash=6587.8356, open_symbol=SOLFDUSD
 
 ## Binance U (zero-fee) hourly
 
