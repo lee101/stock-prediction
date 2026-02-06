@@ -86,6 +86,12 @@ def main() -> None:
     parser.add_argument("--start", default=None, help="ISO timestamp for start of forecast window (UTC).")
     parser.add_argument("--end", default=None, help="ISO timestamp for end of forecast window (UTC).")
     parser.add_argument("--lookback-hours", type=float, default=None)
+    parser.add_argument(
+        "--force-rebuild",
+        action="store_true",
+        help="Recompute forecasts in the requested window even if cache rows already exist "
+        "(use after gap-fill/corporate actions).",
+    )
     args = parser.parse_args()
 
     require_cuda_device("chronos2 forecast generation", allow_fallback=False)
@@ -95,7 +101,7 @@ def main() -> None:
     quantiles = [float(x) for x in args.quantiles.split(",") if x.strip()]
     cache_root = Path(args.forecast_cache_root)
 
-    logger.info("Loading fine-tuned Chronos2 model from %s", args.finetuned_model)
+    logger.info("Loading fine-tuned Chronos2 model from {}", args.finetuned_model)
     wrapper = Chronos2OHLCWrapper.from_pretrained(
         model_id=str(Path(args.finetuned_model)),
         device_map="cuda",
@@ -135,8 +141,8 @@ def main() -> None:
             manager = ChronosForecastManager(cfg, wrapper_factory=_factory)
             if args.predict_batches_jointly:
                 manager._predict_kwargs = {"predict_batches_jointly": True}
-            logger.info("Generating forecasts for %s horizon=%dh", symbol, horizon)
-            manager.ensure_latest(start=start_ts, end=end_ts, cache_only=False)
+            logger.info("Generating forecasts for {} horizon={}h", symbol, horizon)
+            manager.ensure_latest(start=start_ts, end=end_ts, cache_only=False, force_rebuild=args.force_rebuild)
 
 
 if __name__ == "__main__":
