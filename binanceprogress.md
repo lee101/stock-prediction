@@ -141,6 +141,8 @@ Updated: 2026-02-06
   - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_fdusd_14sym_20260207_nocompile_full/epoch_005.pt`
   - Symbols: BTCFDUSD,ETHFDUSD,SOLFDUSD,BNBFDUSD,LINKFDUSD,ADAFDUSD,APTFDUSD,AVAXFDUSD,DOTFDUSD,POLFDUSD,ATOMFDUSD,LTCFDUSD,BCHFDUSD,UNIFDUSD
   - total_return=0.5626, sortino=102.3775, final_cash=15625.5828
+- Selector eval (shared cash, last 90d, same 14 symbols, initial_cash=10_000, maker_fee=0.0):
+  - total_return=1.3738, sortino=74.2324, final_cash=23739.8993, open_symbol=None
 
 ## Binance U (zero-fee) hourly
 
