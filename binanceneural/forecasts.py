@@ -73,6 +73,7 @@ class ChronosForecastManager:
         start: Optional[pd.Timestamp] = None,
         end: Optional[pd.Timestamp] = None,
         cache_only: bool = False,
+        force_rebuild: bool = False,
     ) -> pd.DataFrame:
         """Ensure forecasts exist for the requested range."""
 
@@ -82,6 +83,15 @@ class ChronosForecastManager:
         start_ts = self._coerce_timestamp(start) or history["timestamp"].min()
         end_ts = self._coerce_timestamp(end) or history["timestamp"].max()
         existing = self.cache.load(self.config.symbol)
+        if force_rebuild and cache_only:
+            raise ValueError("force_rebuild=True requires cache_only=False.")
+        if force_rebuild and not existing.empty:
+            existing = existing.copy()
+            if "timestamp" in existing.columns:
+                existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True, errors="coerce")
+                # Rebuild the same interval that the missing-index loop targets: (start_ts, end_ts].
+                keep_mask = (existing["timestamp"] <= start_ts) | (existing["timestamp"] > end_ts)
+                existing = existing.loc[keep_mask].reset_index(drop=True)
         existing_ts = set(pd.to_datetime(existing["timestamp"], utc=True)) if not existing.empty else set()
 
         min_idx = max(1, int(self.config.context_hours))

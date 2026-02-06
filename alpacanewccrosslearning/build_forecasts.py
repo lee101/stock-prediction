@@ -83,6 +83,12 @@ def main() -> None:
     parser.add_argument("--start", default=None, help="ISO timestamp for start of forecast window (UTC).")
     parser.add_argument("--end", default=None, help="ISO timestamp for end of forecast window (UTC).")
     parser.add_argument("--lookback-hours", type=float, default=None)
+    parser.add_argument(
+        "--force-rebuild",
+        action="store_true",
+        help="Recompute forecasts in the requested window even if cache rows already exist "
+        "(use after gap-fill/corporate actions).",
+    )
     args = parser.parse_args()
 
     require_cuda_device("chronos2 forecast generation", allow_fallback=False)
@@ -133,7 +139,7 @@ def main() -> None:
             if args.predict_batches_jointly:
                 manager._predict_kwargs = {"predict_batches_jointly": True}
             logger.info("Generating forecasts for {} horizon={}h", symbol, horizon)
-            manager.ensure_latest(start=start_ts, end=end_ts, cache_only=False)
+            manager.ensure_latest(start=start_ts, end=end_ts, cache_only=False, force_rebuild=args.force_rebuild)
 
 
 if __name__ == "__main__":
