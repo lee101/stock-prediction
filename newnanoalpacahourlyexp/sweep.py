@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from src.torch_load_utils import torch_load_compat
+
 from binanceneural.config import TrainingConfig
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
@@ -200,7 +202,7 @@ def main() -> None:
     data = AlpacaHourlyDataModule(data_cfg)
     frame = data.val_dataset.frame
 
-    payload = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    payload = torch_load_compat(args.checkpoint, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
     state_dict = align_state_dict_input_dim(state_dict, input_dim=len(data.feature_columns))
     cfg = payload.get("config", TrainingConfig(sequence_length=args.sequence_length))

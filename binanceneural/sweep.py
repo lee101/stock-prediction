@@ -11,6 +11,7 @@ from .inference import generate_actions_from_frame
 from .marketsimulator import BinanceMarketSimulator, SimulationConfig
 from .model import BinancePolicyBase, align_state_dict_input_dim, build_policy, policy_config_from_payload
 from .data import FeatureNormalizer
+from src.torch_load_utils import torch_load_compat
 
 
 @dataclass
@@ -100,7 +101,7 @@ def main() -> None:
     data = BinanceHourlyDataModule(data_cfg)
     frame = data.val_dataset.frame
 
-    payload = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    payload = torch_load_compat(args.checkpoint, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
     state_dict = align_state_dict_input_dim(state_dict, input_dim=len(data.feature_columns))
     cfg = payload.get("config", TrainingConfig(sequence_length=args.sequence_length))

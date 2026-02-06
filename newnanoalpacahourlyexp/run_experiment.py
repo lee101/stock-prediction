@@ -20,6 +20,7 @@ from .data import AlpacaHourlyDataModule, AlpacaMultiSymbolDataModule
 from .inference import blend_actions, generate_actions_multi_context
 from .marketsimulator import AlpacaMarketSimulator, SimulationConfig, save_trade_plot
 from src.torch_device_utils import require_cuda as require_cuda_device
+from src.torch_load_utils import torch_load_compat
 
 
 @dataclass
@@ -30,7 +31,7 @@ class ExperimentResult:
 
 
 def _load_model(checkpoint_path: Path, input_dim: int, sequence_length: int) -> torch.nn.Module:
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    payload = torch_load_compat(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
     state_dict = align_state_dict_input_dim(state_dict, input_dim=input_dim)
     cfg = payload.get("config", {})

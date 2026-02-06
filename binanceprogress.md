@@ -85,6 +85,51 @@ Updated: 2026-02-06
 | SOLFDUSD | differencing | 0.3930 | 0.8519 | 0.0040 | 0.0087 | `chronos2_finetuned/binance_lora_20260206_1142_fdusd_SOLFDUSD` |
 | BNBFDUSD | differencing | 0.2423 | 0.6669 | 0.0024 | 0.0068 | `chronos2_finetuned/binance_lora_20260206_1142_fdusd_BNBFDUSD` |
 
+### Chronos2 LoRA (FDUSD, multi-symbol pl=24)
+- Fine-tune (LoRA, multi-symbol, prediction_length=24, steps=600, context=1024, lr=5e-5, batch=64, val=168h):
+  - `binancecrosslearning/chronos_finetuned/chronos2_fdusd15_pl24_20260206_231800/finetuned`
+  - Note: finetune symbol list included `AAVEFDUSD` + `MATICFDUSD` (both status BREAK). The forecast cache below is built for the active FDUSD list (excludes BREAK pairs, includes `POLFDUSD`).
+- Forecast cache (prediction_length=24 finetune):
+  - Root: `binancecrosslearning/forecast_cache_fdusd_pl24_20260206_231800/`
+  - Horizons: h1/h4/h24
+  - Lookback: 5000h (up to 2026-02-06 11:00 UTC)
+- Forecast MAE% (close p50 vs realized close at the target horizon, over cache window):
+  - BTCFDUSD: h1 0.2792, h4 0.5672, h24 1.4879
+  - ETHFDUSD: h1 0.4931, h4 1.0040, h24 2.6177
+  - SOLFDUSD: h1 0.5778, h4 1.1514, h24 3.1174
+  - BNBFDUSD: h1 0.4446, h4 0.8582, h24 2.2679
+  - LINKFDUSD: h1 0.6685, h4 1.3456, h24 3.3521
+  - ADAFDUSD: h1 0.6533, h4 1.3112, h24 3.2017
+  - APTFDUSD: h1 0.7288, h4 1.3411, h24 3.3980
+  - ATOMFDUSD: h1 0.6011, h4 1.1229, h24 2.8131
+  - AVAXFDUSD: h1 0.6700, h4 1.2975, h24 3.3929
+  - BCHFDUSD: h1 0.5078, h4 0.9924, h24 2.5006
+  - DOTFDUSD: h1 0.6738, h4 1.2675, h24 3.2597
+  - LTCFDUSD: h1 0.5702, h4 1.0901, h24 2.7615
+  - POLFDUSD: h1 0.6740, h4 1.2668, h24 3.1431
+  - UNIFDUSD: h1 0.7671, h4 1.5197, h24 3.6638
+- Summary MAE%: h1 mean 0.5935 median 0.6272; h4 mean 1.1525 median 1.2091; h24 mean 2.9270 median 3.1303.
+
+### Chronos2 LoRA (per-symbol, Binance FDUSD)
+- Script: `scripts/retrain_chronos2_hourly_loras.py`
+- Fine-tune (LoRA, prediction_length=1, steps=2000, lr=1e-4, context=1024, val/test=168h):
+  - BTCFDUSD: `chronos2_finetuned/BTCFDUSD_lora_20260206_220610/finetuned-ckpt` → val_mae%=0.2840, test_mae%=0.6335 (preaug=differencing)
+  - ETHFDUSD: `chronos2_finetuned/ETHFDUSD_lora_20260206_221506/finetuned-ckpt` → val_mae%=0.3968, test_mae%=0.9089 (preaug=rolling_norm)
+  - SOLFDUSD: `chronos2_finetuned/SOLFDUSD_lora_20260206_222436/finetuned-ckpt` → val_mae%=0.4512, test_mae%=0.9942 (preaug=detrending)
+  - BNBFDUSD: `chronos2_finetuned/BNBFDUSD_lora_20260206_223329/finetuned-ckpt` → val_mae%=0.2783, test_mae%=0.8006 (preaug=baseline)
+- Updated `hyperparams/chronos2/hourly/{BTCFDUSD,ETHFDUSD,SOLFDUSD,BNBFDUSD}.json` to point `model_id` at the finetuned checkpoints.
+- Forecast cache (per-symbol LoRA models):
+  - Root: `binancecrosslearning/forecast_cache_fdusd_pslora/`
+  - Horizons: h1/h4/h24
+  - Lookback: 5000h (up to 2026-02-06 09:00 UTC)
+  - Built with `scripts/build_hourly_forecast_caches.py` (context=1024, batch=64, force_rebuild).
+- Forecast MAE% (close p50 vs realized close at the target horizon, over cache window):
+  - BTCFDUSD: h1 0.2784, h4 0.5665, h24 1.5039
+  - ETHFDUSD: h1 0.4752, h4 1.0161, h24 2.6343
+  - SOLFDUSD: h1 0.5845, h4 1.1497, h24 3.1117
+  - BNBFDUSD: h1 0.4434, h4 0.8622, h24 2.2718
+- Note: this per-symbol LoRA (trained with prediction_length=1) currently underperforms the multi-symbol FDUSD LoRA above on h4/h24; next step is retraining with prediction_length=24 (or multi-symbol covariate fine-tune) before using it for PnL.
+
 ### Per-symbol policy (binancechronossolexperiment2, FDUSD)
 - Forecast cache root: `binancechronossolexperiment2/forecast_cache_fdusd_lora_20260206_1142` (h1/h4/h24; ~97d lookback)
 
@@ -111,6 +156,30 @@ Updated: 2026-02-06
   - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_fdusd_shortma_h14_seq48_20260206_1311/epoch_006.pt`
   - Train script eval (BTCFDUSD, last 30d): total_return=0.5118, sortino=38.2844
   - Transfer selector eval on U (last 7d, BTCU/ETHU/SOLU/BNBU): total_return=-0.0023, sortino=-16.3569 (open_symbol=BTCU)
+
+- Train run (8 epochs, seq=96, nano, muon_mix, horizons 1/4/24, cache-only, no-compile; forecast_cache_fdusd_pl24_20260206_231800):
+  - `binance_cross_global_fdusd_pl24cache_20260206_231800_nocompile`
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_fdusd_pl24cache_20260206_231800_nocompile/epoch_004.pt`
+  - Train script eval (BTCFDUSD, last 30d): total_return=0.9125, sortino=169.3030
+- Selector per-symbol eval (last 30d, initial_cash=10_000, maker_fee=0.0; intensity=1.0 offset=0.0 min_edge=0.0 risk_weight=0.5):
+  - ETHFDUSD: total_return=0.2540, sortino=62.7863
+  - POLFDUSD: total_return=0.2479, sortino=75.1713
+  - SOLFDUSD: total_return=0.1841, sortino=172.4909
+  - LINKFDUSD: total_return=0.1806, sortino=34.3439
+  - ADAFDUSD: total_return=0.1698, sortino=93.8072
+  - DOTFDUSD: total_return=0.1513, sortino=27.5322
+  - LTCFDUSD: total_return=0.1501, sortino=92.7471
+  - BTCFDUSD: total_return=0.1453, sortino=195.7072
+  - BCHFDUSD: total_return=0.1065, sortino=187.6229
+  - AVAXFDUSD: total_return=0.0993, sortino=24.9872
+  - BNBFDUSD: total_return=0.0947, sortino=38.5976
+  - APTFDUSD: total_return=0.0503, sortino=4.3109
+  - ATOMFDUSD: total_return=0.0435, sortino=14.9628
+  - UNIFDUSD: total_return=0.0299, sortino=6.5480
+- Selector eval (shared cash, last 30d, 14 symbols, initial_cash=10_000, maker_fee=0.0; intensity=1.0 offset=0.0 min_edge=0.0 risk_weight=0.5):
+  - total_return=0.3305, sortino=51.1465, final_cash=6091.7925, open_symbol=SOLFDUSD
+- Selector sweep highlight (same 14 symbols, last 30d, maker_fee=0.0; min_edge=0.0 risk_weight=0.5):
+  - Best found: intensity=1.2 offset=0.0 → total_return=3.8566, sortino=67.4564, final_cash=16975.0014, open_symbol=SOLFDUSD
 
 ## Binance U (zero-fee) hourly
 

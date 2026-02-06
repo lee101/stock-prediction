@@ -11,6 +11,7 @@ import torch
 
 from src.price_guard import enforce_gap
 from src.process_utils import enforce_min_spread
+from src.torch_load_utils import torch_load_compat
 
 from .binance_watchers import WatcherPlan, spawn_watcher
 from .config import DatasetConfig, TrainingConfig
@@ -59,7 +60,7 @@ def _parse_checkpoint_map(raw: Optional[str]) -> Dict[str, Path]:
 
 
 def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConfig) -> BinancePolicyBase:
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    payload = torch_load_compat(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
     cfg = payload.get("config", default_cfg)
     if hasattr(cfg, "__dict__"):
