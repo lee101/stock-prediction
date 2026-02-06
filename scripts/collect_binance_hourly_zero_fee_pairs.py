@@ -27,6 +27,15 @@ DEFAULT_ZERO_FEE_PAIRS: Sequence[str] = (
     "AEUR/USDT",
 )
 
+DEFAULT_U_ZERO_FEE_PAIRS: Sequence[str] = (
+    "BTC/U",
+    "ETH/U",
+    "SOL/U",
+    "BNB/U",
+    # Stablecoin conversion for manual USDT -> U moves.
+    "U/USDT",
+)
+
 
 def _maybe_create_symlink(link_path: Path, target_path: Path) -> None:
     """Best-effort helper to keep `trainingdatahourlybinance` paths working."""
@@ -45,7 +54,7 @@ def _maybe_create_symlink(link_path: Path, target_path: Path) -> None:
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Download hourly Binance spot klines for the major zero-fee (FDUSD) pairs "
+            "Download hourly Binance spot klines for curated zero-fee pairs (FDUSD/U) "
             "into binancetrainingdatahourly/."
         )
     )
@@ -64,6 +73,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "Download the curated FDUSD list from binance_data_wrapper "
             "(plus FDUSD/USDT and AEUR/USDT). Ignored when --pairs is provided."
+        ),
+    )
+    parser.add_argument(
+        "--all-u",
+        action="store_true",
+        help=(
+            "Download the curated U list from binance_data_wrapper "
+            "(plus U/USDT). Ignored when --pairs is provided."
         ),
     )
     parser.add_argument(
@@ -110,6 +127,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         for extra in ("FDUSD/USDT", "AEUR/USDT"):
             if extra not in pairs:
                 pairs.append(extra)
+    elif args.all_u:
+        pairs = list(binance_data_wrapper.DEFAULT_BINANCE_U_PAIRS)
     else:
         pairs = list(DEFAULT_ZERO_FEE_PAIRS)
     output_dir = Path(args.output_dir)
