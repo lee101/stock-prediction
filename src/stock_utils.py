@@ -29,10 +29,18 @@ def remap_symbols(symbol: str) -> str:
     if normalized in crypto_symbols or normalized in all_crypto_symbols:
         return f"{normalized[:-3]}/{normalized[-3:]}"
 
+    stable_tokens = set(_STABLE_QUOTES)
     for quote in _STABLE_QUOTES:
         if normalized.endswith(quote) and len(normalized) > len(quote):
             base = normalized[: -len(quote)]
             if base.isalpha():
+                if quote == "U":
+                    # Binance's "U" quote is ambiguous with many stock tickers (e.g., MU, LULU, BIDU).
+                    # Only treat it as a crypto stable-quote when the base is a known crypto asset.
+                    if base in stable_tokens:
+                        return f"{base}/{quote}"
+                    if f"{base}USD" not in all_crypto_symbols and base not in supported_cryptos:
+                        continue
                 return f"{base}/{quote}"
 
     # Already a stock ticker, or an unsupported format.
@@ -60,6 +68,11 @@ def unmap_symbols(symbol: str) -> str:
     if candidate in crypto_symbols or candidate in all_crypto_symbols:
         return candidate
     if quote in _STABLE_QUOTES and base.isalpha():
+        if quote == "U":
+            # Mirror remap_symbols(): treat "*/U" as crypto only for known crypto bases.
+            stable_tokens = set(_STABLE_QUOTES)
+            if base not in stable_tokens and f"{base}USD" not in all_crypto_symbols and base not in supported_cryptos:
+                return symbol
         return candidate
     return symbol
 

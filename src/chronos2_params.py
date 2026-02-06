@@ -8,6 +8,8 @@ from typing import Any, Dict, Optional, Tuple
 
 from hyperparamstore import HyperparamStore, load_best_config
 
+from src.symbol_utils import is_crypto_symbol
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHRONOS_PREDICTION_LENGTH = 7
@@ -113,9 +115,9 @@ def resolve_chronos2_params(
     except (TypeError, ValueError):
         quantile_tuple = (0.1, 0.5, 0.9)
 
-    # Check if symbol is crypto to determine multivariate default
-    crypto_suffixes = ("USD", "BTC", "ETH", "USDT", "USDC", "U")
-    is_crypto = any(symbol.upper().endswith(suf) for suf in crypto_suffixes)
+    # Check if symbol is crypto to determine multivariate default.
+    # NOTE: do not rely on naive suffix matching (e.g., MU ends with "U" but is a stock ticker).
+    is_crypto = is_crypto_symbol(symbol)
 
     # Multivariate helps stocks (~80% MAE improvement) but not crypto
     # Check per-symbol tuned config first, then fall back to global setting

@@ -7,6 +7,9 @@ Updated: 2026-02-06
 - Fixed Chronos multi-step horizon alignment in `binanceneural/forecasts.py` (previously multi-horizon caches effectively used the 1-step prediction for every horizon). Any cached forecasts for horizons >1 generated before 2026-02-06 should be considered invalid and rebuilt before comparing multi-horizon PnL/MAE runs.
 - Added stable-quote symbol utilities + tests, plus a builder script for `trainingdatahourlybinance/`.
   - New: `src/binance_symbol_utils.py`, `tests/test_binance_symbol_utils.py`, `scripts/build_trainingdatahourlybinance.py`.
+- Fixed "U" stable-quote ambiguity so stock tickers like `MU`/`LULU`/`BIDU` are not misclassified as crypto or remapped into `*/U` pairs.
+  - Updated: `src/stock_utils.py`, `src/chronos2_params.py`, `src/preaug/forecast_config.py`
+  - New tests: `tests/test_stock_utils_remap_symbols_u_quote.py`, `tests/test_chronos2_params_crypto_detection_u_suffix.py`, `tests/test_forecast_config_asset_type_crypto_detection.py`
 - `binancecrosslearning/run_global_selector.py` now supports `--frame-split {val,full}` and `--val-fraction/--validation-days` overrides. This matters for short-history symbols (e.g. U pairs): selector sims use only timestamps where actions exist, so `val` split windows can collapse to ~1 day when `sequence_length` is large relative to available history.
 - Selector simulator now supports optional volume participation caps via `SelectionConfig.max_volume_fraction` (and CLI `--max-volume-fraction`). This is important for low-liquidity symbols like `BTCU` where bar volume can be far smaller than the notional implied by `initial_cash`.
 - Fixed `refresh_daily_inputs.py` / `update_key_forecasts.py` to run forecast refresh under the active venv interpreter (was calling system `python`, breaking `chronos` imports) and corrected log formatting.
