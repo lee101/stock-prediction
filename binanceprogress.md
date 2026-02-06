@@ -101,6 +101,10 @@ Updated: 2026-02-06
 - Selector eval (shared cash, last 30d, 4 symbols):
   - Output dir: `binancecrosslearning/outputs/binance_cross_global_fdusd_lora1142_20260206_1247_selector30d`
   - total_return=0.0893, sortino=41.5856 (open_symbol=SOLFDUSD)
+- Selector eval (shared cash, last 30d, 4 symbols, tuned threshold):
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_fdusd_lora1142_20260206_1247/epoch_005.pt`
+  - min_edge=0.0011, edge_mode=high_low, horizon=1
+  - total_return=0.2243, sortino=202.7667 (final_cash=12242.8095, open_symbol=SOLFDUSD)
 - Short-MA variant (to reuse the same feature set for U transfer tests; horizons 1/4, seq=48):
   - Train run: `binance_cross_global_fdusd_shortma_h14_seq48_20260206_1311`
   - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_fdusd_shortma_h14_seq48_20260206_1311/epoch_006.pt`
