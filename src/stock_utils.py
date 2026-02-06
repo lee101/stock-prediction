@@ -1,3 +1,5 @@
+import os
+
 from src.fixtures import crypto_symbols, all_crypto_symbols
 
 # keep the base tickers handy for downstream checks
@@ -63,6 +65,39 @@ def unmap_symbols(symbol: str) -> str:
 
 
 def binance_remap_symbols(symbol: str) -> str:
-    if symbol in crypto_symbols:
-        return f"{symbol[:-3]}USDT"
-    return symbol
+    """Map internal USD-quoted crypto symbols (e.g., BTCUSD) to a Binance spot pair.
+
+    Historical default is USDT. Override via BINANCE_DEFAULT_QUOTE (e.g., FDUSD).
+    When using Binance.US (BINANCE_TLD=us), keep USD pairs unchanged.
+    """
+    if not symbol:
+        return symbol
+
+    normalized = symbol.replace("/", "").replace("-", "").replace("_", "").strip().upper()
+    if not normalized:
+        return normalized
+    if normalized in _STABLE_QUOTES:
+        return normalized
+
+    # If a symbol already has a stable quote, keep it as-is.
+    for quote in ("USDT", "FDUSD", "USDC", "BUSD", "TUSD", "USDP", "DAI"):
+        if normalized.endswith(quote) and len(normalized) > len(quote):
+            return normalized
+
+    # On Binance.US, USD-quoted spot pairs are the norm (e.g., BTCUSD).
+    if os.getenv("BINANCE_TLD", "").strip().lower() == "us":
+        return normalized
+
+    # For our internal crypto fixtures (USD-quoted), map to a preferred stable quote.
+    if normalized in crypto_symbols or normalized in all_crypto_symbols:
+        if normalized.endswith("USD") and len(normalized) > 3:
+            base = normalized[:-3]
+            preferred = os.getenv("BINANCE_DEFAULT_QUOTE", "USDT").strip().upper() or "USDT"
+            if preferred == "USD":
+                return normalized
+            if preferred not in _STABLE_QUOTES:
+                preferred = "USDT"
+            return f"{base}{preferred}"
+
+    # Fallback: leave unchanged (stock tickers, already-normalized pairs, etc.).
+    return normalized

@@ -524,7 +524,7 @@ def recent_trades(
         _handle_cli_error(ValueError(f"Days must be positive, received {days}."))
     normalized = _normalize_symbols_filter(symbols)
     if not normalized:
-        normalized = ["BTCUSD", "ETHUSD", "LINKUSD"]
+        normalized = ["BTCUSD", "ETHUSD", "SOLUSD", "LINKUSD"]
 
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=days)
