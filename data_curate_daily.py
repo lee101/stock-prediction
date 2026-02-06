@@ -37,7 +37,8 @@ TEAM?
 PFE
 MRNA
 """
-crypto_client = CryptoHistoricalDataClient()
+# Use explicit credentials so crypto endpoints behave consistently across environments.
+crypto_client = CryptoHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
 
 
 def _load_cached_symbol(save_path: Path, symbol: str) -> DataFrame:
@@ -66,7 +67,7 @@ def _persist_cached_symbol(save_path: Path, symbol: str, df: DataFrame) -> None:
     df.to_csv(file_save_path)
 
 
-def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
+def download_daily_stock_data(path=None, all_data_force=False, symbols=None, *, strict: bool = True):
     symbols_provided = symbols is not None
     if symbols is None:
         symbols = [
@@ -159,7 +160,14 @@ def download_daily_stock_data(path=None, all_data_force=False, symbols=None):
             )
             daily_df = _load_cached_symbol(save_path, symbol)
             if daily_df.empty:
-                raise
+                if strict:
+                    raise
+                logger.error(
+                    "No historical data available for {}; skipping (strict={})",
+                    symbol,
+                    strict,
+                )
+                continue
         try:
             minute_df_last = download_exchange_latest_data(client, symbol)
         except Exception as e:
@@ -357,7 +365,7 @@ def crypto_get_bars(end, start, symbol):
     return crypto_client.get_crypto_bars(
         CryptoBarsRequest(symbol_or_symbols=remap_symbols(symbol), timeframe=TimeFrame(1, TimeFrameUnit.Day),
                           start=start, end=end,
-                          exchanges=['FTXU'])).df
+                          )).df
 
 
 def visualize_stock_data(df):
