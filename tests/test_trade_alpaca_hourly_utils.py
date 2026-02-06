@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from newnanoalpacahourlyexp.trade_alpaca_hourly import (
+    TradingPlan,
+    _build_order_intents,
     _allocation_usd,
     _ensure_valid_levels,
     _parse_checkpoint_map,
@@ -71,3 +74,166 @@ def test_allocation_usd_pct_falls_back_to_equity():
         equity = 400.0
 
     assert _allocation_usd(Account(), allocation_usd=None, allocation_pct=0.25) == 100.0
+
+
+def test_build_order_intents_flat_prefers_buy_when_equal_notional():
+    plan = TradingPlan(
+        symbol="NVDA",
+        buy_price=10.0,
+        sell_price=11.0,
+        buy_amount=50.0,
+        sell_amount=50.0,
+        timestamp=datetime.now(timezone.utc),
+    )
+    intents = _build_order_intents(
+        plan,
+        position_qty=0.0,
+        allocation_usd=1000.0,
+        buy_price=10.0,
+        sell_price=11.0,
+        can_long=True,
+        can_short=True,
+        allow_short=False,
+        exit_only=False,
+    )
+    assert [(i.kind, i.side, round(i.qty, 6)) for i in intents] == [("entry", "buy", 50.0)]
+
+
+def test_build_order_intents_flat_short_only_allows_short_entry_when_enabled():
+    plan = TradingPlan(
+        symbol="EBAY",
+        buy_price=10.0,
+        sell_price=11.0,
+        buy_amount=80.0,
+        sell_amount=20.0,
+        timestamp=datetime.now(timezone.utc),
+    )
+    intents = _build_order_intents(
+        plan,
+        position_qty=0.0,
+        allocation_usd=1000.0,
+        buy_price=10.0,
+        sell_price=11.0,
+        can_long=False,
+        can_short=True,
+        allow_short=True,
+        exit_only=False,
+    )
+    assert len(intents) == 1
+    assert intents[0].kind == "entry"
+    assert intents[0].side == "sell"
+    assert intents[0].qty == pytest.approx(1000.0 * 0.20 / 11.0, rel=1e-9)
+
+
+def test_build_order_intents_long_position_can_exit_and_add():
+    plan = TradingPlan(
+        symbol="NVDA",
+        buy_price=10.0,
+        sell_price=11.0,
+        buy_amount=50.0,
+        sell_amount=30.0,
+        timestamp=datetime.now(timezone.utc),
+    )
+    intents = _build_order_intents(
+        plan,
+        position_qty=10.0,
+        allocation_usd=1000.0,
+        buy_price=10.0,
+        sell_price=11.0,
+        can_long=True,
+        can_short=False,
+        allow_short=False,
+        exit_only=False,
+    )
+    assert [(i.kind, i.side, round(i.qty, 6)) for i in intents] == [
+        ("exit", "sell", 3.0),
+        ("entry", "buy", 50.0),
+    ]
+
+
+def test_build_order_intents_short_position_can_cover_and_add_short_when_enabled():
+    plan = TradingPlan(
+        symbol="EBAY",
+        buy_price=10.0,
+        sell_price=11.0,
+        buy_amount=25.0,
+        sell_amount=50.0,
+        timestamp=datetime.now(timezone.utc),
+    )
+    intents = _build_order_intents(
+        plan,
+        position_qty=-8.0,
+        allocation_usd=1000.0,
+        buy_price=10.0,
+        sell_price=11.0,
+        can_long=False,
+        can_short=True,
+        allow_short=True,
+        exit_only=False,
+    )
+    assert len(intents) == 2
+    assert intents[0].kind == "exit"
+    assert intents[0].side == "buy"
+    assert intents[0].qty == pytest.approx(2.0, rel=1e-12)
+    assert intents[1].kind == "entry"
+    assert intents[1].side == "sell"
+    assert intents[1].qty == pytest.approx(1000.0 * 0.50 / 11.0, rel=1e-9)
+
+
+def test_build_order_intents_short_position_blocks_new_short_when_disabled():
+    plan = TradingPlan(
+        symbol="EBAY",
+        buy_price=10.0,
+        sell_price=11.0,
+        buy_amount=25.0,
+        sell_amount=50.0,
+        timestamp=datetime.now(timezone.utc),
+    )
+    intents = _build_order_intents(
+        plan,
+        position_qty=-8.0,
+        allocation_usd=1000.0,
+        buy_price=10.0,
+        sell_price=11.0,
+        can_long=False,
+        can_short=True,
+        allow_short=False,
+        exit_only=False,
+    )
+    assert [(i.kind, i.side, round(i.qty, 6)) for i in intents] == [("exit", "buy", 2.0)]
+
+
+def test_build_order_intents_exit_only_flattens_long_and_short():
+    plan = TradingPlan(
+        symbol="NVDA",
+        buy_price=10.0,
+        sell_price=11.0,
+        buy_amount=99.0,
+        sell_amount=99.0,
+        timestamp=datetime.now(timezone.utc),
+    )
+    intents_long = _build_order_intents(
+        plan,
+        position_qty=10.0,
+        allocation_usd=1000.0,
+        buy_price=10.0,
+        sell_price=11.0,
+        can_long=True,
+        can_short=False,
+        allow_short=False,
+        exit_only=True,
+    )
+    assert [(i.kind, i.side, round(i.qty, 6)) for i in intents_long] == [("exit", "sell", 10.0)]
+
+    intents_short = _build_order_intents(
+        plan,
+        position_qty=-8.0,
+        allocation_usd=1000.0,
+        buy_price=10.0,
+        sell_price=11.0,
+        can_long=False,
+        can_short=True,
+        allow_short=True,
+        exit_only=True,
+    )
+    assert [(i.kind, i.side, round(i.qty, 6)) for i in intents_short] == [("exit", "buy", 8.0)]
