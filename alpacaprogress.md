@@ -6,6 +6,9 @@ Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
 
 | Date (UTC) | Run | Symbols | Eval window | total_return | sortino | ann_return_365 | ann_return_252 | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-02-06 | selector_mega21_novol_baseline_bestret_20260206_0025 | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,NFLX,MSFT,GOOG,AAPL,AMZN,META,TSLA,JPM,V,WMT,NWSA,BKNG,MTCH,EXPE,EBAY | 10d | 0.9773 | 28.6181 | 6.406e+10 | 2.891e+07 | Forecast cache `mega21_novol_baseline_20260205_2351_lb2400`; policy checkpoint `alpaca_cross_global_mega21_novol_baseline_seq128_cacheonly_20260206_0008/epoch_002.pt`; selector sweep best config intensity=2.0, min_edge=0.001, risk_weight=0.1, dip=0.0, edge_mode=high_low. Outputs: `alpacanewccrosslearning/outputs/global_selector_mega21_novol_baseline_20260206_0032/eval10_best`. |
+| 2026-02-06 | selector_mega21_novol_baseline_bestret_20260206_0025 | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,NFLX,MSFT,GOOG,AAPL,AMZN,META,TSLA,JPM,V,WMT,NWSA,BKNG,MTCH,EXPE,EBAY | 20d | 1.4347 | 25.5505 | 1.129e+07 | 7.399e+04 | Same config as 10d. Outputs: `alpacanewccrosslearning/outputs/global_selector_mega21_novol_baseline_20260206_0032/eval20_best`. |
+| 2026-02-06 | selector_mega21_novol_baseline_bestret_20260206_0025 | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,NFLX,MSFT,GOOG,AAPL,AMZN,META,TSLA,JPM,V,WMT,NWSA,BKNG,MTCH,EXPE,EBAY | 30d | 1.9947 | 26.2052 | 6.247e+05 | 1.003e+04 | Same config as 10d; 60d total_return=4.3993 sortino=24.7954; 90d total_return=6.1003 sortino=24.0604. Outputs: `alpacanewccrosslearning/outputs/global_selector_mega21_novol_baseline_20260206_0032`. |
 | 2026-02-05 | selector_mixed7_novol_baseline_rebuiltstocks_best_20260205_2310 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 1.4613 | 347.5836 | 1.895e+14 | 7.202e+09 | Forecast cache `mixed7_novol_baseline_20260205_2136_lb2400` with NVDA/NFLX forecasts rebuilt post gap-fill; policy checkpoint `alpaca_cross_global_mixed7_novol_baseline_seq128_rebuiltstocks_nocompile_20260205_2250/epoch_003.pt`; selector intensity=2.0 min_edge=0.001 risk_weight=0.15 dip=0.0025. |
 | 2026-02-05 | selector_mixed7_novol_baseline_rebuiltstocks_best_20260205_2310 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | 2.2006 | 225.4522 | 1.661e+09 | 2.322e+06 | Same config as 10d. |
 | 2026-02-05 | selector_mixed7_novol_baseline_rebuiltstocks_best_20260205_2310 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 30d | 3.6897 | 184.4416 | 1.464e+08 | 4.341e+05 | Same config as 10d; 60d total_return=10.9753 sortino=47.4376. |
@@ -50,6 +53,16 @@ Annualized returns use CAGR: `(1 + total_return) ** (basis_days / eval_days) - 1
 | 2026-02-05 | selector_sweep_constrained11_novol_baseline_20260205_2331 | Selector sweep (10d) | NVDA,MSFT,GOOG,BTCUSD,SOLUSD,ETHUSD,NWSA,BKNG,MTCH,EXPE,EBAY | 0.5264 | 15.2793 | Best total_return sweep config: intensity=2.0, min_edge=0.002, risk_weight=0.15, dip=0.0025. |
 | 2026-02-05 | global_selector_constrained11_novol_baseline_20260205_2340 | Selector eval (30d) | NVDA,MSFT,GOOG,BTCUSD,SOLUSD,ETHUSD,NWSA,BKNG,MTCH,EXPE,EBAY | 1.1620 | 14.5161 | Best sortino config (intensity=2.0, min_edge=0.001, risk_weight=0.15, dip=0.0025): 10d total_return=0.5092 sortino=16.1369; 20d total_return=0.6756 sortino=11.9047; 30d total_return=1.1620 sortino=14.5161; 60d total_return=3.4263 sortino=14.5699. Outputs: `alpacanewccrosslearning/outputs/global_selector_constrained11_novol_baseline_20260205_2340`. |
 
+## Mega21 (alpacanewccrosslearning)
+
+| Date (UTC) | Run | Stage | Symbols | total_return | sortino | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-02-05 | cross_lora_mega21_novol_baseline_20260205_2351 | Chronos2 LoRA | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,NFLX,MSFT,GOOG,AAPL,AMZN,META,TSLA,JPM,V,WMT,NWSA,BKNG,MTCH,EXPE,EBAY | (n/a) | (n/a) | Steps=1000, ctx=1024, lr=2e‑5, no volume/log_volume. Fine‑tuned model: `alpacanewccrosslearning/chronos_finetuned/cross_lora_mega21_novol_baseline_20260205_2351/finetuned`. |
+| 2026-02-05 | mega21_novol_baseline_20260205_2351_lb2400 | Forecast cache + MAE | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,NFLX,MSFT,GOOG,AAPL,AMZN,META,TSLA,JPM,V,WMT,NWSA,BKNG,MTCH,EXPE,EBAY | (n/a) | (n/a) | Forecast cache root: `alpacanewccrosslearning/forecast_cache/mega21_novol_baseline_20260205_2351_lb2400` (h1+h24). Forecast MAE (30d) CSV: `alpacanewccrosslearning/outputs/forecast_eval_mega21_novol_baseline_lb2400_20260206_eval30d.csv`. |
+| 2026-02-06 | alpaca_cross_global_mega21_novol_baseline_seq128_cacheonly_20260206_0008 | Global policy | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,NFLX,MSFT,GOOG,AAPL,AMZN,META,TSLA,JPM,V,WMT,NWSA,BKNG,MTCH,EXPE,EBAY | 1.3970 | 34.1090 | MA/EMA/ATR=24/72, min_history=200, sequence_length=128. Best checkpoint: `epoch_002.pt`. (Training-script metrics are target-symbol eval, not best-trade selector.) |
+| 2026-02-06 | selector_sweep_mega21_novol_baseline_20260206_0025 | Selector sweep (10d) | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,NFLX,MSFT,GOOG,AAPL,AMZN,META,TSLA,JPM,V,WMT,NWSA,BKNG,MTCH,EXPE,EBAY | 0.9773 | 28.6181 | Best config: intensity=2.0, min_edge=0.001, risk_weight=0.1, dip=0.0, edge_mode=high_low. Sweep CSV: `alpacanewccrosslearning/outputs/selector_sweep_mega21_novol_baseline_20260206_0025/selector_sweep.csv`. |
+| 2026-02-06 | global_selector_mega21_novol_baseline_20260206_0032 | Selector eval | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,NFLX,MSFT,GOOG,AAPL,AMZN,META,TSLA,JPM,V,WMT,NWSA,BKNG,MTCH,EXPE,EBAY | 1.9947 | 26.2052 | Best config carried forward: 10d total_return=0.9773 sortino=28.6181; 20d total_return=1.4347 sortino=25.5505; 30d total_return=1.9947 sortino=26.2052; 60d total_return=4.3993 sortino=24.7954; 90d total_return=6.1003 sortino=24.0604. Outputs: `alpacanewccrosslearning/outputs/global_selector_mega21_novol_baseline_20260206_0032`. |
+
 ## Chronos2 multi‑symbol fine‑tunes
 
 | Date (UTC) | Run | Symbols | Steps | Context | LR | Preaug | Notes |
@@ -82,6 +95,7 @@ Annualized returns use CAGR: `(1 + total_return) ** (basis_days / eval_days) - 1
 ## TODO
 
 - Always rebuild per-symbol forecast parquet caches after any hourly data gap-fill or corporate-action discontinuity (e.g., NFLX split on 2025-11-17) to avoid stale features.
+- When using lookback-limited forecast cache roots, avoid accidental full-history forecast backfills (use `--cache-only` or rely on the dataset auto-windowing).
 - Extend mixed7 window beyond 2025‑11‑12 (done: lb2400 cache `mixed7_robust_20260205_2209_lb2400`).
 - Run 30d selector evals on extended window (done: `selector_seq128_lb2400_best_20260205_2227`).
 - Try higher intensity grid (1.4/1.6) and alternate min_edge for mixed7 policy.
