@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from src.torch_load_utils import torch_load_compat
+
 from binanceneural.config import TrainingConfig
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.marketsimulator import BinanceMarketSimulator, SimulationConfig
@@ -188,7 +190,7 @@ def main() -> None:
     data = BinanceExp1DataModule(data_cfg)
     frame = data.val_dataset.frame
 
-    payload = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    payload = torch_load_compat(args.checkpoint, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
         payload = {"state_dict": payload}
     state_dict = payload.get("state_dict", payload)
