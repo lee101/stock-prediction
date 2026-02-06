@@ -18,10 +18,10 @@ from src.binan.binance_conversion import compute_spendable_quote
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Convert Binance USDT -> FDUSD (spot) via FDUSDUSDT.")
-    parser.add_argument("--pair", default="FDUSDUSDT", help="Conversion symbol (default: FDUSDUSDT).")
+    parser = argparse.ArgumentParser(description="Convert Binance USDT -> U (spot) via UUSDT.")
+    parser.add_argument("--pair", default="UUSDT", help="Conversion symbol (default: UUSDT).")
     parser.add_argument("--from-asset", default="USDT", help="Source asset (default: USDT).")
-    parser.add_argument("--to-asset", default="FDUSD", help="Target asset (default: FDUSD).")
+    parser.add_argument("--to-asset", default="U", help="Target asset (default: U).")
     parser.add_argument("--leave-usdt", type=float, default=10.0, help="Leave this much USDT unconverted (default: 10).")
     parser.add_argument("--max-spend-usdt", type=float, default=None, help="Cap conversion spend in USDT (default: no cap).")
     parser.add_argument("--min-spend-usdt", type=float, default=None, help="Skip if spendable < this (default: minNotional).")
@@ -107,3 +107,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

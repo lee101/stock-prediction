@@ -54,7 +54,9 @@ python -m binancecrosslearning.chronos_finetune_multi \
 Notes:
 - The stablecoin conversion pair is `FDUSDUSDT` (downloaded as `FDUSD/USDT`) for
   manual USDT -> FDUSD moves.
+  - Helper script (dry-run by default): `python scripts/convert_binance_usdt_to_fdusd.py`
 - The U conversion pair is `UUSDT` (downloaded as `U/USDT`) for manual USDT -> U moves.
+  - Helper script (dry-run by default): `python scripts/convert_binance_usdt_to_u.py`
 - If you run on Binance.US or a restricted endpoint, the downloader will fall back to Binance Vision
   for `*FDUSD` / `*U` pairs. If a symbol is missing from both Binance.US and Vision, it will be reported
   as `no_data`/`unavailable` in the download summary.

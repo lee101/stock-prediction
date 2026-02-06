@@ -371,6 +371,7 @@ marketsim_results_*/
 binance*/checkpoints/
 binance*/forecast_cache*/
 binance*/chronos_finetuned/
+binance*/outputs/
 binance*/marketsimulator/
 binance*/plots/
 binance*/results/
