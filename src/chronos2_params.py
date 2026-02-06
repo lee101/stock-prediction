@@ -114,7 +114,7 @@ def resolve_chronos2_params(
         quantile_tuple = (0.1, 0.5, 0.9)
 
     # Check if symbol is crypto to determine multivariate default
-    crypto_suffixes = ("USD", "BTC", "ETH", "USDT", "USDC")
+    crypto_suffixes = ("USD", "BTC", "ETH", "USDT", "USDC", "U")
     is_crypto = any(symbol.upper().endswith(suf) for suf in crypto_suffixes)
 
     # Multivariate helps stocks (~80% MAE improvement) but not crypto

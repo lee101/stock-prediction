@@ -73,6 +73,43 @@ Updated: 2026-02-06
 - Compile smoke test (post attention-mask fix):
   - `binance_cross_global_fdusd_20260206_compile_smoke` (epochs=1, dry_train_steps=5) succeeded.
 
+## Binance U (zero-fee) hourly
+
+### Data collection
+- Script: `scripts/collect_binance_hourly_zero_fee_pairs.py`
+- Output dir: `binance_spot_hourly/` (symlinks: `binancetrainingdatahourly/`, `trainingdatahourlybinance/`)
+- Download summary (UTC, 1h bars):
+  - BTCU: 410 bars, 2026-01-20 08:00 → 2026-02-06 09:00
+  - ETHU: 242 bars, 2026-01-27 08:00 → 2026-02-06 09:00
+  - SOLU: 242 bars, 2026-01-27 08:00 → 2026-02-06 09:00
+  - BNBU: 242 bars, 2026-01-27 08:00 → 2026-02-06 09:00
+  - UUSDT: 578 bars, 2026-01-13 08:00 → 2026-02-06 09:00
+
+### Account conversion (USDT → U)
+- 2026-02-06: executed market buy on `UUSDT` spending 38.35448968 USDT (left 10 USDT buffer) → received 38.0 U @ 1.0012 (fee=0.0).
+
+### Chronos2 forecasts (Binance U)
+- Forecast cache:
+  - Root: `binancecrosslearning/forecast_cache_u/`
+  - Horizons: h1/h4/h24
+  - Built with context=64 using the fine-tuned model: `binancecrosslearning/chronos_finetuned/chronos2_binance_multi_20260206_211605/finetuned`
+- Forecast MAE% (close p50 vs realized close at the target horizon, over cache window):
+  - BTCU: h1 0.4355, h4 0.9291, h24 3.3571
+  - ETHU: h1 0.9645, h4 1.7717, h24 6.7961
+  - SOLU: h1 0.9917, h4 1.8592, h24 7.6687
+  - BNBU: h1 0.6736, h4 1.4339, h24 5.8348
+
+### Global policy (multi-symbol, U)
+- Train run (20 epochs, seq=48, min_history=48, MA windows 24/72/168, horizons 1/4/24, cache-only):
+  - `binance_cross_global_u_20260206_nocompile2`
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_u_20260206_nocompile2/epoch_017.pt`
+  - Train script eval (BTCU, last 7d): total_return=0.0312, sortino=91.0843
+- Per-symbol eval (last 7d, horizon=1, aggregate=False):
+  - BTCU: total_return=0.0311, sortino=90.2581
+  - ETHU: total_return=0.0001, sortino=65.9701
+  - SOLU: total_return=-0.0146, sortino=-11.8264
+  - BNBU: total_return=0.0006, sortino=1.6576
+
 ## Chronos2 LoRA (hourly, Alpaca data)
 - BTCUSD LoRA: `chronos2_finetuned/BTCUSD_lora_20260203_051412` → Validation MAE% 0.2785, preaug=diff
 - ETHUSD LoRA: `chronos2_finetuned/ETHUSD_lora_20260203_051846` → Validation MAE% 0.4450, preaug=diff

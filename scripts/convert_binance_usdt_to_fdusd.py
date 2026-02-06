@@ -94,9 +94,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     last_price = binance_wrapper.get_symbol_price(pair, client=client)
     if last_price is not None and last_price > 0:
         est_to = spendable / last_price
-        logger.info(f"FDUSDUSDT price={last_price:.6f} => estimated {asset_to} bought ~= {est_to:.8f}")
+        logger.info(f"{pair} price={last_price:.6f} => estimated {asset_to} bought ~= {est_to:.8f}")
     else:
-        logger.info("Unable to fetch latest FDUSDUSDT price; proceeding without estimate.")
+        logger.info(f"Unable to fetch latest {pair} price; proceeding without estimate.")
 
     dry_run = not bool(args.execute)
     if dry_run:

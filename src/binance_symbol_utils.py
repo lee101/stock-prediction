@@ -10,6 +10,7 @@ DEFAULT_STABLE_QUOTES: Tuple[str, ...] = (
     "BUSD",
     "TUSD",
     "USDP",
+    "U",
     "USD",
 )
 
@@ -114,4 +115,3 @@ __all__ = [
     "stable_quote_aliases_from_usd",
     "unique_symbols",
 ]
-

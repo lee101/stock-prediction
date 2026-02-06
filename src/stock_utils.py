@@ -5,7 +5,7 @@ from src.fixtures import crypto_symbols, all_crypto_symbols
 # keep the base tickers handy for downstream checks
 supported_cryptos = sorted({symbol[:-3] for symbol in crypto_symbols})
 
-_STABLE_QUOTES = ("USD", "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI")
+_STABLE_QUOTES = ("USD", "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI", "U")
 
 
 def remap_symbols(symbol: str) -> str:
@@ -80,7 +80,7 @@ def binance_remap_symbols(symbol: str) -> str:
         return normalized
 
     # If a symbol already has a stable quote, keep it as-is.
-    for quote in ("USDT", "FDUSD", "USDC", "BUSD", "TUSD", "USDP", "DAI"):
+    for quote in ("USDT", "FDUSD", "USDC", "BUSD", "TUSD", "USDP", "DAI", "U"):
         if normalized.endswith(quote) and len(normalized) > len(quote):
             return normalized
 
