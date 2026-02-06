@@ -70,6 +70,8 @@ class BinanceExp1Dataset(Dataset):
         can_long: float | None = None,
         can_short: float | None = None,
         symbol_id: int | None = None,
+        maker_fee: float | None = None,
+        periods_per_year: float | None = None,
     ) -> None:
         if len(frame) != len(features):
             raise ValueError("Feature matrix must align with base frame")
@@ -88,6 +90,8 @@ class BinanceExp1Dataset(Dataset):
         self.can_long = float(can_long) if can_long is not None else None
         self.can_short = float(can_short) if can_short is not None else None
         self.symbol_id = int(symbol_id) if symbol_id is not None else None
+        self.maker_fee = float(maker_fee) if maker_fee is not None else None
+        self.periods_per_year = float(periods_per_year) if periods_per_year is not None else None
 
     def __len__(self) -> int:
         return len(self.frame) - self.seq_len + 1
@@ -108,6 +112,10 @@ class BinanceExp1Dataset(Dataset):
             payload["can_long"] = torch.as_tensor(self.can_long, dtype=torch.float32)
         if self.can_short is not None:
             payload["can_short"] = torch.as_tensor(self.can_short, dtype=torch.float32)
+        if self.maker_fee is not None:
+            payload["maker_fee"] = torch.as_tensor(self.maker_fee, dtype=torch.float32)
+        if self.periods_per_year is not None:
+            payload["periods_per_year"] = torch.as_tensor(self.periods_per_year, dtype=torch.float32)
         if self.symbol_id is not None:
             payload["symbol_id"] = torch.as_tensor(self.symbol_id, dtype=torch.long)
         return payload
