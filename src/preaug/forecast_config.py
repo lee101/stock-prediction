@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from src.symbol_utils import is_crypto_symbol
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,10 +40,10 @@ class ForecastTag:
         targets: Sequence[str] = ("open", "high", "low", "close"),
     ) -> "ForecastTag":
         """Create a tag from symbols and target columns."""
-        crypto_suffixes = ("USD", "BTC", "ETH", "USDT", "USDC", "U")
         symbol_list = [s.upper() for s in symbols]
 
-        n_crypto = sum(1 for s in symbol_list if any(s.endswith(suf) for suf in crypto_suffixes))
+        # Use robust crypto detection to avoid false positives like MU/LULU/BIDU (stock tickers ending in "U").
+        n_crypto = sum(1 for s in symbol_list if is_crypto_symbol(s))
         n_stock = len(symbol_list) - n_crypto
 
         if n_crypto == 0:
