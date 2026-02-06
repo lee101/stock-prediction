@@ -104,6 +104,12 @@ def main() -> None:
     parser.add_argument("--min-edge", type=float, default=0.0)
     parser.add_argument("--risk-weight", type=float, default=0.5)
     parser.add_argument("--edge-mode", default="high_low", choices=["high_low", "high", "close"])
+    parser.add_argument(
+        "--max-volume-fraction",
+        type=float,
+        default=None,
+        help="Optional cap on filled quantity per bar (fraction of bar volume). Set e.g. 0.1 for 10%%.",
+    )
     parser.add_argument("--max-hold-hours", type=int, default=None)
     parser.add_argument("--allow-reentry-same-bar", action="store_true")
     parser.add_argument("--no-enforce-market-hours", action="store_true")
@@ -203,6 +209,7 @@ def main() -> None:
         min_edge=args.min_edge,
         risk_weight=args.risk_weight,
         edge_mode=args.edge_mode,
+        max_volume_fraction=args.max_volume_fraction,
         max_hold_hours=args.max_hold_hours,
         allow_reentry_same_bar=args.allow_reentry_same_bar,
         enforce_market_hours=not args.no_enforce_market_hours,
