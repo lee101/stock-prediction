@@ -317,6 +317,8 @@ def build_forecast_bundle(
     quantile_levels: Sequence[float],
     batch_size: int,
     cache_only: bool = False,
+    start: Optional[pd.Timestamp | str] = None,
+    end: Optional[pd.Timestamp | str] = None,
 ) -> pd.DataFrame:
     """Build merged Chronos forecast frame with horizon-specific suffixes."""
 
@@ -333,7 +335,7 @@ def build_forecast_bundle(
             cache_dir=horizon_dir,
         )
         manager = ChronosForecastManager(cfg)
-        forecast = manager.ensure_latest(cache_only=cache_only)
+        forecast = manager.ensure_latest(start=start, end=end, cache_only=cache_only)
         if forecast.empty:
             continue
         suffix = f"_h{int(horizon)}"
@@ -361,6 +363,16 @@ def build_forecast_bundle(
         raise RuntimeError(
             f"No Chronos forecasts available for {symbol}. Generate caches first or disable cache_only."
         )
+    if start is not None or end is not None:
+        start_ts = ChronosForecastManager._coerce_timestamp(start) if start is not None else None
+        end_ts = ChronosForecastManager._coerce_timestamp(end) if end is not None else None
+        merged = merged.copy()
+        merged["timestamp"] = pd.to_datetime(merged["timestamp"], utc=True, errors="coerce")
+        merged = merged.dropna(subset=["timestamp"])
+        if start_ts is not None:
+            merged = merged[merged["timestamp"] > start_ts]
+        if end_ts is not None:
+            merged = merged[merged["timestamp"] <= end_ts]
     return merged.sort_values("timestamp").reset_index(drop=True)
 
 
