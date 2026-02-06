@@ -79,6 +79,16 @@ def main() -> None:
     parser.add_argument("--moving-average-windows", default=None)
     parser.add_argument("--min-history-hours", type=int, default=None)
     parser.add_argument(
+        "--feature-max-window-hours",
+        type=int,
+        default=None,
+        help=(
+            "Optional cap for rolling-window feature hours. "
+            "When set, the DatasetConfig windows are truncated and feature_columns are rebuilt "
+            "so short-history symbols (e.g., new Binance U pairs) don't collapse to a tiny frame."
+        ),
+    )
+    parser.add_argument(
         "--val-fraction",
         type=float,
         default=None,
@@ -159,6 +169,10 @@ def main() -> None:
             val_fraction=val_fraction,
             validation_days=validation_days,
         )
+        if args.feature_max_window_hours is not None:
+            from src.hourly_feature_windowing import apply_feature_max_window_hours
+
+            data_cfg = apply_feature_max_window_hours(data_cfg, max_window_hours=int(args.feature_max_window_hours))
         data = AlpacaHourlyDataModule(data_cfg)
         model = _load_model(Path(args.checkpoint), len(data.feature_columns), args.sequence_length)
 
