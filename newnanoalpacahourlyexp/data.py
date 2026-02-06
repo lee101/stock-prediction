@@ -108,7 +108,13 @@ class AlpacaHourlyDataModule:
 
     def _prepare_frame(self) -> pd.DataFrame:
         price_frame = self._load_price_history()
-        forecast_frame = self._load_forecasts()
+        end_ts = pd.to_datetime(price_frame["timestamp"], utc=True, errors="coerce").max()
+        start_ts = None
+        lookback_hours = int(self.config.max_feature_lookback_hours or 0)
+        if lookback_hours > 0 and end_ts is not None and not pd.isna(end_ts):
+            start_ts = end_ts - pd.Timedelta(hours=float(lookback_hours))
+
+        forecast_frame = self._load_forecasts(start=start_ts, end=end_ts)
         merged = price_frame.merge(forecast_frame, on=["timestamp", "symbol"], how="inner")
         merged = merged.sort_values("timestamp").reset_index(drop=True)
         max_lookback = int(self.config.max_feature_lookback_hours or 0)
@@ -135,7 +141,12 @@ class AlpacaHourlyDataModule:
         cols = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
         return frame[cols].sort_values("timestamp").reset_index(drop=True)
 
-    def _load_forecasts(self) -> pd.DataFrame:
+    def _load_forecasts(
+        self,
+        *,
+        start: Optional[pd.Timestamp],
+        end: Optional[pd.Timestamp],
+    ) -> pd.DataFrame:
         horizons = tuple(int(h) for h in self.config.forecast_horizons)
         return build_forecast_bundle(
             symbol=self.config.symbol.upper(),
@@ -146,6 +157,8 @@ class AlpacaHourlyDataModule:
             quantile_levels=(0.1, 0.5, 0.9),
             batch_size=128,
             cache_only=self.config.cache_only,
+            start=start,
+            end=end,
         )
 
     @staticmethod
