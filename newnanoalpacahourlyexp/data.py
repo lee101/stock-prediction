@@ -67,6 +67,8 @@ class AlpacaHourlyDataModule:
             short_only_symbols=list(config.short_only_symbols) if config.short_only_symbols else None,
         )
 
+        self.asset_meta = self._build_asset_meta(self.frame, config.symbol, directions=directions)
+
         self.train_dataset = BinanceExp1Dataset(
             train_frame,
             norm_train,
@@ -74,6 +76,8 @@ class AlpacaHourlyDataModule:
             primary_horizon=self.primary_horizon,
             can_long=float(directions.can_long),
             can_short=float(directions.can_short),
+            maker_fee=float(self.asset_meta.maker_fee),
+            periods_per_year=float(self.asset_meta.periods_per_year),
         )
         self.val_dataset = BinanceExp1Dataset(
             val_frame,
@@ -82,9 +86,9 @@ class AlpacaHourlyDataModule:
             primary_horizon=self.primary_horizon,
             can_long=float(directions.can_long),
             can_short=float(directions.can_short),
+            maker_fee=float(self.asset_meta.maker_fee),
+            periods_per_year=float(self.asset_meta.periods_per_year),
         )
-
-        self.asset_meta = self._build_asset_meta(self.frame, config.symbol, directions=directions)
 
     def train_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
         return DataLoader(
