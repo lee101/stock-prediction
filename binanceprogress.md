@@ -358,6 +358,14 @@ Using checkpoint `.../epoch_025.pt`, forecast cache `binancecrosslearning/foreca
   - Best: intensity=15 offset=0.00025 min_edge=0.003 risk_weight=0.5
     - full(7d): total_return=0.2785, sortino=33.8426, final_cash=319.64, open_symbol=None
 
+### U policy retrain attempt (post-refresh) — worse than existing checkpoint
+- Trained (120 epochs, seq=48, horizons 1/4, MA 24/72, feature_max_window=72, cache-only, no-compile):
+  - Run: `binance_cross_global_u_lora1539_featmax72_h14_seq48_refresh1700_20260206_183932`
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_u_lora1539_featmax72_h14_seq48_refresh1700_20260206_183932/epoch_056.pt`
+- Selector sweep (last 7d, max_hold_hours=6, edge_mode=close, volume caps 0.1/0.2):
+  - Sweep dir: `binancecrosslearning/outputs/sweep_newpolicy_refresh1700_20260206_184232`
+  - Best found: total_return=0.1288 (intensity=30 offset=0.00025 min_edge=0.004 max_volume_fraction=0.1; ends holding ETHU), well below the existing policy checkpoint’s ~0.2209 on the same window.
+
 ## Chronos2 LoRA (hourly, Alpaca data)
 - BTCUSD LoRA: `chronos2_finetuned/BTCUSD_lora_20260203_051412` → Validation MAE% 0.2785, preaug=diff
 - ETHUSD LoRA: `chronos2_finetuned/ETHUSD_lora_20260203_051846` → Validation MAE% 0.4450, preaug=diff
