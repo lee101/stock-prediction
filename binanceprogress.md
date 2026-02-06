@@ -194,12 +194,13 @@ Updated: 2026-02-06
 - Script: `scripts/collect_binance_hourly_zero_fee_pairs.py`
 - Output dir: `binance_spot_hourly/` (symlinks: `binancetrainingdatahourly/`, `trainingdatahourlybinance/`)
 - Binance Vision note (UTC): as of 2026-02-06, U hourly bars are current through **2026-02-05 23:00**.
+- Local refresh (UTC): `python scripts/binance_auto_pipeline.py --pair-list u --update-data` pulled bars through **2026-02-06 14:00**.
 - Download summary (UTC, 1h bars):
-  - BTCU: 400 bars, 2026-01-20 08:00 → 2026-02-05 23:00
-  - ETHU: 232 bars, 2026-01-27 08:00 → 2026-02-05 23:00
-  - SOLU: 232 bars, 2026-01-27 08:00 → 2026-02-05 23:00
-  - BNBU: 232 bars, 2026-01-27 08:00 → 2026-02-05 23:00
-  - UUSDT: 568 bars, 2026-01-13 08:00 → 2026-02-05 23:00
+  - BTCU: 415 bars, 2026-01-20 08:00 → 2026-02-06 14:00
+  - ETHU: 247 bars, 2026-01-27 08:00 → 2026-02-06 14:00
+  - SOLU: 247 bars, 2026-01-27 08:00 → 2026-02-06 14:00
+  - BNBU: 247 bars, 2026-01-27 08:00 → 2026-02-06 14:00
+  - UUSDT: 583 bars, 2026-01-13 08:00 → 2026-02-06 14:00
 
 ### Account conversion (USDT → U)
 - Script: `scripts/convert_binance_usdt_to_u.py` (dry-run by default; pass `--execute` for a live market order)
@@ -252,6 +253,19 @@ Updated: 2026-02-06
 **Full-frame backtest (train+val):**
 - Run selector with: `--frame-split full --edge-mode close --min-edge 0.0064 --intensity-scale 20 --price-offset-pct 0.00025`
 - BTCU (2026-01-31 15:00 → 2026-02-05 23:00, 106 hours): total_return=0.0986, sortino=11.3014, max_drawdown=-0.0159
+
+### U selector sweep (global U policy, base Chronos2 cache; last 7d)
+- Data refresh: `python scripts/binance_auto_pipeline.py --pair-list u --update-data` (U bars through 2026-02-06 14:00 UTC).
+- Forecast cache root (h1/h4; built from base `amazon/chronos-2` due to missing U hourly configs in this workspace):
+  - `binancecrosslearning/forecast_cache_u_pslora_20260206_151313_h14`
+  - MAE%: BTCU h1 0.3837 h4 0.8761; ETHU h1 1.0750 h4 2.5006; SOLU h1 0.9778 h4 1.9014; BNBU h1 0.7092 h4 1.5787
+- Policy checkpoint:
+  - `binancecrosslearning/checkpoints/binance_cross_global_u_20260206_nocompile2/epoch_017.pt`
+- Sim config:
+  - `--frame-split full --eval-days 7 --forecast-horizons 1,4 --moving-average-windows 24,72,168 --min-history-hours 48 --maker-fee 0.0 --edge-mode close --risk-weight 0.5`
+- Baseline (no volume cap): intensity=1 offset=0 min_edge=0 → total_return=0.0328, sortino=58.6975 (open_symbol=BTCU)
+- Best found (no volume cap): intensity=20 offset=0.00025 min_edge=0.002 → total_return=0.2118, sortino=32.8365 (open_symbol=BTCU; `final_cash=0` implies fully deployed, so treat as optimistic on illiquid pairs)
+- With `--max-volume-fraction 0.1` (more realistic fills): intensity=20 offset=0 min_edge=0.002 → total_return=0.1050, sortino=19.5354 (open_symbol=BTCU)
 
 ## Chronos2 LoRA (hourly, Alpaca data)
 - BTCUSD LoRA: `chronos2_finetuned/BTCUSD_lora_20260203_051412` → Validation MAE% 0.2785, preaug=diff
