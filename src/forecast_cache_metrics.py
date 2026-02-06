@@ -110,6 +110,14 @@ def compute_forecast_mae(
 
     if "target_timestamp" in forecast.columns:
         forecast["target_timestamp"] = pd.to_datetime(forecast["target_timestamp"], utc=True, errors="coerce")
+        # Older caches (or partially rebuilt caches) may contain the column but with
+        # missing values for some rows. Derive the target timestamp for those rows
+        # so evaluation remains usable without forcing a full cache rebuild.
+        missing_targets = forecast["target_timestamp"].isna()
+        if bool(missing_targets.any()):
+            forecast.loc[missing_targets, "target_timestamp"] = forecast.loc[
+                missing_targets, "timestamp"
+            ] + pd.Timedelta(hours=int(horizon_hours) - 1)
     else:
         forecast["target_timestamp"] = forecast["timestamp"] + pd.Timedelta(hours=int(horizon_hours) - 1)
 
@@ -170,4 +178,3 @@ __all__ = [
     "compute_forecast_mae",
     "compute_forecast_cache_mae_for_paths",
 ]
-
