@@ -67,6 +67,9 @@ class BinanceExp1Dataset(Dataset):
         sequence_length: int,
         *,
         primary_horizon: int,
+        can_long: float | None = None,
+        can_short: float | None = None,
+        symbol_id: int | None = None,
     ) -> None:
         if len(frame) != len(features):
             raise ValueError("Feature matrix must align with base frame")
@@ -82,6 +85,9 @@ class BinanceExp1Dataset(Dataset):
         self.primary_horizon = int(primary_horizon)
         self.chronos_high = frame[f"predicted_high_p50_h{self.primary_horizon}"].to_numpy(dtype=np.float32)
         self.chronos_low = frame[f"predicted_low_p50_h{self.primary_horizon}"].to_numpy(dtype=np.float32)
+        self.can_long = float(can_long) if can_long is not None else None
+        self.can_short = float(can_short) if can_short is not None else None
+        self.symbol_id = int(symbol_id) if symbol_id is not None else None
 
     def __len__(self) -> int:
         return len(self.frame) - self.seq_len + 1
@@ -89,7 +95,7 @@ class BinanceExp1Dataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         start = idx
         end = idx + self.seq_len
-        return {
+        payload: Dict[str, torch.Tensor] = {
             "features": torch.from_numpy(self.features[start:end]),
             "high": torch.from_numpy(self.highs[start:end]),
             "low": torch.from_numpy(self.lows[start:end]),
@@ -98,6 +104,13 @@ class BinanceExp1Dataset(Dataset):
             "chronos_high": torch.from_numpy(self.chronos_high[start:end]),
             "chronos_low": torch.from_numpy(self.chronos_low[start:end]),
         }
+        if self.can_long is not None:
+            payload["can_long"] = torch.as_tensor(self.can_long, dtype=torch.float32)
+        if self.can_short is not None:
+            payload["can_short"] = torch.as_tensor(self.can_short, dtype=torch.float32)
+        if self.symbol_id is not None:
+            payload["symbol_id"] = torch.as_tensor(self.symbol_id, dtype=torch.long)
+        return payload
 
 
 class BinanceExp1DataModule:

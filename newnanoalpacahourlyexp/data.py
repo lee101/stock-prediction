@@ -18,6 +18,7 @@ from binanceexp1.data import (
 from binanceneural.forecasts import build_forecast_bundle
 from src.fees import get_fee_for_symbol
 from src.symbol_utils import is_crypto_symbol
+from src.trade_directions import resolve_trade_directions
 
 from .config import DatasetConfig
 
@@ -28,6 +29,8 @@ class AssetMeta:
     asset_class: str
     maker_fee: float
     periods_per_year: float
+    can_long: bool = True
+    can_short: bool = False
 
 
 class AlpacaHourlyDataModule:
@@ -57,20 +60,31 @@ class AlpacaHourlyDataModule:
         norm_train = self.normalizer.transform(train_features)
         norm_val = self.normalizer.transform(val_frame[feature_cols].to_numpy(dtype=np.float32))
 
+        directions = resolve_trade_directions(
+            config.symbol,
+            allow_short=bool(config.allow_short),
+            long_only_symbols=list(config.long_only_symbols) if config.long_only_symbols else None,
+            short_only_symbols=list(config.short_only_symbols) if config.short_only_symbols else None,
+        )
+
         self.train_dataset = BinanceExp1Dataset(
             train_frame,
             norm_train,
             config.sequence_length,
             primary_horizon=self.primary_horizon,
+            can_long=float(directions.can_long),
+            can_short=float(directions.can_short),
         )
         self.val_dataset = BinanceExp1Dataset(
             val_frame,
             norm_val,
             config.sequence_length,
             primary_horizon=self.primary_horizon,
+            can_long=float(directions.can_long),
+            can_short=float(directions.can_short),
         )
 
-        self.asset_meta = self._build_asset_meta(self.frame, config.symbol)
+        self.asset_meta = self._build_asset_meta(self.frame, config.symbol, directions=directions)
 
     def train_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
         return DataLoader(
@@ -135,7 +149,7 @@ class AlpacaHourlyDataModule:
         )
 
     @staticmethod
-    def _build_asset_meta(frame: pd.DataFrame, symbol: str) -> AssetMeta:
+    def _build_asset_meta(frame: pd.DataFrame, symbol: str, *, directions) -> AssetMeta:
         symbol = symbol.upper()
         asset_class = "crypto" if is_crypto_symbol(symbol) else "stock"
         maker_fee = float(get_fee_for_symbol(symbol))
@@ -145,6 +159,8 @@ class AlpacaHourlyDataModule:
             asset_class=asset_class,
             maker_fee=maker_fee,
             periods_per_year=periods_per_year,
+            can_long=bool(getattr(directions, "can_long", True)),
+            can_short=bool(getattr(directions, "can_short", False)),
         )
 
 
@@ -218,6 +234,9 @@ class AlpacaMultiSymbolDataModule:
                 vol_regime_long=config.vol_regime_long,
                 rsi_window=config.rsi_window,
                 allow_mixed_asset_class=config.allow_mixed_asset_class,
+                allow_short=config.allow_short,
+                long_only_symbols=config.long_only_symbols,
+                short_only_symbols=config.short_only_symbols,
             )
             module = AlpacaHourlyDataModule(symbol_config)
             self.modules[symbol] = module
