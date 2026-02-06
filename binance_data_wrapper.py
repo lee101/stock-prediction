@@ -148,6 +148,14 @@ def fetch_binance_hourly_bars(
     client: Optional[Client] = None,
 ) -> pd.DataFrame:
     client = client or binance_wrapper.get_client()
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    else:
+        start = start.astimezone(timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    else:
+        end = end.astimezone(timezone.utc)
     start_ms = max(0, int(start.timestamp() * 1000))
     end_ms = max(0, int(end.timestamp() * 1000))
 
@@ -171,6 +179,11 @@ def fetch_binance_hourly_bars(
             continue
         try:
             open_time = datetime.fromtimestamp(row[0] / 1000, tz=timezone.utc)
+            close_time = datetime.fromtimestamp(row[6] / 1000, tz=timezone.utc) if len(row) > 6 else None
+            if close_time is not None and close_time > end:
+                # Binance may include the current in-progress candle when requesting up to "now".
+                # Persisting it causes look-ahead leakage for training and evaluation.
+                continue
             open_price = float(row[1])
             high_price = float(row[2])
             low_price = float(row[3])
@@ -225,6 +238,47 @@ def _resolve_window(
     return start_dt, end_dt
 
 
+def _drop_incomplete_current_hour(
+    frame: Optional[pd.DataFrame],
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[pd.DataFrame]:
+    """Drop the current-hour kline (open_time == current hour) if present.
+
+    Binance may return the current open candle when requesting up to "now". We only
+    want fully-closed hourly bars in persisted CSVs to avoid leakage.
+    """
+
+    if frame is None or frame.empty:
+        return frame
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    current_hour_ts = pd.Timestamp(current_hour)
+
+    if not isinstance(frame.index, pd.DatetimeIndex):
+        if "timestamp" not in frame.columns:
+            return frame
+        ts = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+        keep = ts != current_hour_ts
+        if keep.all():
+            return frame
+        return frame.loc[keep].copy()
+
+    idx = pd.to_datetime(frame.index, utc=True, errors="coerce")
+    keep_mask = idx != current_hour_ts
+    if keep_mask.all():
+        return frame
+    cleaned = frame.loc[keep_mask].copy()
+    cleaned.index = pd.to_datetime(cleaned.index, utc=True, errors="coerce")
+    cleaned = cleaned[~cleaned.index.isna()]
+    return cleaned
+
+
 def download_and_save_pair(
     pair: str,
     output_dir: Path,
@@ -252,6 +306,17 @@ def download_and_save_pair(
         except Exception as exc:
             logger.warning(f"Error reading existing Binance file for {resolved_symbol}: {exc}")
             existing_df = None
+    existing_df_before = existing_df
+    existing_df = _drop_incomplete_current_hour(existing_df)
+    if (
+        existing_df_before is not None
+        and existing_df is not None
+        and not existing_df_before.empty
+        and len(existing_df) < len(existing_df_before)
+    ):
+        # Persist cleanup even if we later decide the file is "up to date".
+        existing_df.index.name = "timestamp"
+        existing_df.to_csv(output_file)
 
     start_dt, end_dt = _resolve_window(None, None, history_years=history_years)
     update_mode = False
@@ -277,6 +342,7 @@ def download_and_save_pair(
 
     logger.info(f"Downloading Binance data for {resolved_symbol} from {start_dt} to {end_dt}")
     frame = fetch_binance_hourly_bars(resolved_symbol, start=start_dt, end=end_dt, client=client)
+    frame = _drop_incomplete_current_hour(frame, now=end_dt)
 
     if frame.empty and (existing_df is None or existing_df.empty) and fallback_quotes:
         base, _ = _split_pair(pair)
@@ -292,6 +358,7 @@ def download_and_save_pair(
             fallback_frame = fetch_binance_hourly_bars(
                 fallback_symbol, start=start_dt, end=end_dt, client=client
             )
+            fallback_frame = _drop_incomplete_current_hour(fallback_frame, now=end_dt)
             if not fallback_frame.empty:
                 resolved_symbol = fallback_symbol
                 output_file = output_dir / f"{resolved_symbol}.csv"
@@ -307,6 +374,16 @@ def download_and_save_pair(
                             f"Error reading existing Binance file for {resolved_symbol}: {exc}"
                         )
                         existing_df = None
+                existing_df_before = existing_df
+                existing_df = _drop_incomplete_current_hour(existing_df)
+                if (
+                    existing_df_before is not None
+                    and existing_df is not None
+                    and not existing_df_before.empty
+                    and len(existing_df) < len(existing_df_before)
+                ):
+                    existing_df.index.name = "timestamp"
+                    existing_df.to_csv(output_file)
                 update_mode = False
                 if existing_df is not None and not existing_df.empty:
                     existing_df.index = pd.to_datetime(
@@ -322,6 +399,7 @@ def download_and_save_pair(
                         frame = fetch_binance_hourly_bars(
                             resolved_symbol, start=start_dt, end=end_dt, client=client
                         )
+                        frame = _drop_incomplete_current_hour(frame, now=end_dt)
                 break
 
     if frame.empty:
@@ -339,6 +417,9 @@ def download_and_save_pair(
 
     if update_mode and existing_df is not None and not existing_df.empty:
         combined = _merge_and_dedup(existing_df, frame)
+        combined_clean = _drop_incomplete_current_hour(combined, now=end_dt)
+        if combined_clean is not None:
+            combined = combined_clean
         added = max(0, len(combined) - len(existing_df))
         combined.index.name = "timestamp"
         combined.to_csv(output_file)
@@ -353,6 +434,9 @@ def download_and_save_pair(
             resolved_symbol=resolved_symbol,
         )
 
+    frame_clean = _drop_incomplete_current_hour(frame, now=end_dt)
+    if frame_clean is not None:
+        frame = frame_clean
     frame.index.name = "timestamp"
     frame.to_csv(output_file)
     return DownloadResult(
