@@ -66,6 +66,26 @@ Updated: 2026-02-06
   - SOLFDUSD: h1 0.4973, h4 0.8903, h24 2.8363
   - BNBFDUSD: h1 0.3865, h4 0.7229, h24 2.1064
 
+### Chronos2 LoRA (per-symbol, Binance FDUSD)
+- Script: `scripts/retrain_chronos2_hourly_loras.py`
+- Fine-tune (LoRA, prediction_length=1, steps=2000, lr=1e-4, context=1024, val/test=168h):
+  - BTCFDUSD: `chronos2_finetuned/BTCFDUSD_lora_20260206_220610/finetuned-ckpt` → val_mae%=0.2840, test_mae%=0.6335 (preaug=differencing)
+  - ETHFDUSD: `chronos2_finetuned/ETHFDUSD_lora_20260206_221506/finetuned-ckpt` → val_mae%=0.3968, test_mae%=0.9089 (preaug=rolling_norm)
+  - SOLFDUSD: `chronos2_finetuned/SOLFDUSD_lora_20260206_222436/finetuned-ckpt` → val_mae%=0.4512, test_mae%=0.9942 (preaug=detrending)
+  - BNBFDUSD: `chronos2_finetuned/BNBFDUSD_lora_20260206_223329/finetuned-ckpt` → val_mae%=0.2783, test_mae%=0.8006 (preaug=baseline)
+- Updated `hyperparams/chronos2/hourly/{BTCFDUSD,ETHFDUSD,SOLFDUSD,BNBFDUSD}.json` to point `model_id` at the finetuned checkpoints.
+- Forecast cache (per-symbol LoRA models):
+  - Root: `binancecrosslearning/forecast_cache_fdusd_pslora/`
+  - Horizons: h1/h4/h24
+  - Lookback: 5000h (up to 2026-02-06 09:00 UTC)
+  - Built with `scripts/build_hourly_forecast_caches.py` (context=1024, batch=64, force_rebuild).
+- Forecast MAE% (close p50 vs realized close at the target horizon, over cache window):
+  - BTCFDUSD: h1 0.2784, h4 0.5665, h24 1.5039
+  - ETHFDUSD: h1 0.4752, h4 1.0161, h24 2.6343
+  - SOLFDUSD: h1 0.5845, h4 1.1497, h24 3.1117
+  - BNBFDUSD: h1 0.4434, h4 0.8622, h24 2.2718
+- Note: this per-symbol LoRA (trained with prediction_length=1) currently underperforms the multi-symbol FDUSD LoRA above on h4/h24; next step is retraining with prediction_length=24 (or multi-symbol covariate fine-tune) before using it for PnL.
+
 ### Global policy (multi-symbol, FDUSD)
 - Train run (6 epochs, seq=96, nano, muon_mix, horizons 1/4/24, cache-only):
   - `binance_cross_global_fdusd_20260206_nocompile`
