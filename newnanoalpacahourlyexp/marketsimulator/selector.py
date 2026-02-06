@@ -69,6 +69,31 @@ def run_best_trade_simulation(
 ) -> SelectorSimulationResult:
     cfg = config or SelectionConfig()
     merged = _prepare_frame(bars, actions, horizon=horizon, symbols=cfg.symbols)
+    return run_best_trade_simulation_merged(merged, cfg, horizon=horizon)
+
+
+def run_best_trade_simulation_merged(
+    merged_df: pd.DataFrame,
+    config: Optional[SelectionConfig] = None,
+    *,
+    horizon: int = 1,
+) -> SelectorSimulationResult:
+    """Run the selector simulation on a pre-merged bars/actions dataframe.
+
+    The input is expected to already contain both bar columns (high/low/close/etc)
+    and action columns (buy/sell prices and intensities) keyed by (timestamp, symbol),
+    matching the output shape of :func:`_prepare_frame`.
+    """
+    cfg = config or SelectionConfig()
+    merged = merged_df
+    if "timestamp" not in merged.columns:
+        raise ValueError("Merged dataframe must include a timestamp column.")
+    if "symbol" not in merged.columns:
+        merged = merged.assign(symbol="DEFAULT")
+    if not pd.api.types.is_datetime64_any_dtype(merged["timestamp"]):
+        merged = merged.assign(timestamp=pd.to_datetime(merged["timestamp"], utc=True))
+    _validate_merged_frame(merged, horizon=horizon)
+
     if merged.empty:
         raise ValueError("Merged dataframe is empty; ensure actions cover the provided bars.")
     max_volume_fraction: Optional[float]
@@ -81,6 +106,32 @@ def run_best_trade_simulation(
         if "volume" not in merged.columns:
             raise ValueError("max_volume_fraction requires a 'volume' column in bars/actions merge.")
 
+    return _run_best_trade_simulation_on_merged(merged, cfg, horizon=horizon)
+
+
+# ------------------------------------------------------------------
+
+
+def _validate_merged_frame(merged: pd.DataFrame, *, horizon: int) -> None:
+    required = {"high", "low", "close", "buy_price", "sell_price"}
+    missing = required - set(merged.columns)
+    if missing:
+        raise ValueError(f"Missing required columns in merged frame: {sorted(missing)}")
+
+    high_col = f"predicted_high_p50_h{int(horizon)}"
+    low_col = f"predicted_low_p50_h{int(horizon)}"
+    close_col = f"predicted_close_p50_h{int(horizon)}"
+    for col in (high_col, low_col, close_col):
+        if col not in merged.columns:
+            raise ValueError(f"Missing required forecast column {col}.")
+
+
+def _run_best_trade_simulation_on_merged(
+    merged: pd.DataFrame,
+    cfg: SelectionConfig,
+    *,
+    horizon: int,
+) -> SelectorSimulationResult:
     merged = merged.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
     groups = merged.groupby("timestamp", sort=True)
 
@@ -154,6 +205,12 @@ def run_best_trade_simulation(
             open_symbol = None
             open_ts = None
         _record_trade(ts=ts, symbol=symbol, side="sell", price=price, qty=qty, reason=reason)
+
+    max_volume_fraction: Optional[float]
+    if cfg.max_volume_fraction is None:
+        max_volume_fraction = None
+    else:
+        max_volume_fraction = float(cfg.max_volume_fraction)
 
     for ts, group in groups:
         remaining_volume: Dict[str, float] = {}
@@ -355,9 +412,6 @@ def run_best_trade_simulation(
     )
 
 
-# ------------------------------------------------------------------
-
-
 def _prepare_frame(
     bars: pd.DataFrame,
     actions: pd.DataFrame,
@@ -384,17 +438,7 @@ def _prepare_frame(
         actions = actions[actions["symbol"].isin(allowed)]
 
     merged = bars.merge(actions, on=["timestamp", "symbol"], how="inner")
-    required = {"high", "low", "close", "buy_price", "sell_price"}
-    missing = required - set(merged.columns)
-    if missing:
-        raise ValueError(f"Missing required columns in merged frame: {sorted(missing)}")
-
-    high_col = f"predicted_high_p50_h{int(horizon)}"
-    low_col = f"predicted_low_p50_h{int(horizon)}"
-    close_col = f"predicted_close_p50_h{int(horizon)}"
-    for col in (high_col, low_col, close_col):
-        if col not in merged.columns:
-            raise ValueError(f"Missing required forecast column {col}.")
+    _validate_merged_frame(merged, horizon=horizon)
     return merged
 
 
@@ -593,4 +637,5 @@ __all__ = [
     "SelectorSimulationResult",
     "SelectorTradeRecord",
     "run_best_trade_simulation",
+    "run_best_trade_simulation_merged",
 ]
