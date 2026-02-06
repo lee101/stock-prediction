@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -18,6 +19,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import binance_data_wrapper
 from src.binan import binance_wrapper
+from src.binance_symbol_utils import split_stable_quote_symbol
 from src.forecast_cache_metrics import compute_forecast_cache_mae_for_paths
 
 
@@ -165,9 +167,22 @@ def _append_progress(progress_path: Path, snippet: str) -> None:
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="End-to-end Binance Chronos2->policy->selector experiment runner.")
     parser.add_argument("--symbols", default=None, help="Comma-separated symbols (e.g. BTCFDUSD,ETHFDUSD,...)")
+    parser.add_argument(
+        "--pair-list",
+        choices=("auto", "fdusd", "u"),
+        default="auto",
+        help=(
+            "Default Binance symbol list to use when --symbols is omitted. "
+            "`auto` respects BINANCE_DEFAULT_QUOTE (U -> `u`, otherwise `fdusd`)."
+        ),
+    )
     parser.add_argument("--data-root", default="trainingdatahourlybinance")
 
-    parser.add_argument("--update-data", action="store_true", help="Refresh Binance hourly CSVs for FDUSD pairs.")
+    parser.add_argument(
+        "--update-data",
+        action="store_true",
+        help="Refresh Binance hourly CSVs for the selected stable-quote symbols (FDUSD/U/etc).",
+    )
     parser.add_argument("--update-data-years", type=int, default=10)
 
     parser.add_argument("--finetune", action="store_true", help="Run multi-symbol Chronos2 fine-tune.")
@@ -219,7 +234,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if args.symbols:
         symbols = [tok.strip().upper() for tok in str(args.symbols).split(",") if tok.strip()]
     else:
-        symbols = _pairs_to_symbols(binance_data_wrapper.DEFAULT_BINANCE_FDUSD_PAIRS)
+        pair_list = str(args.pair_list or "auto").strip().lower()
+        if pair_list == "auto":
+            preferred_quote = os.getenv("BINANCE_DEFAULT_QUOTE", "FDUSD").strip().upper() or "FDUSD"
+            pair_list = "u" if preferred_quote == "U" else "fdusd"
+        if pair_list == "u":
+            symbols = _pairs_to_symbols(binance_data_wrapper.DEFAULT_BINANCE_U_PAIRS)
+        else:
+            symbols = _pairs_to_symbols(binance_data_wrapper.DEFAULT_BINANCE_FDUSD_PAIRS)
 
     symbols = _filter_trading_symbols(symbols)
     if not symbols:
@@ -235,15 +257,28 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.update_data:
-        pairs = [f"{sym[:-5]}/{sym[-5:]}" for sym in symbols if sym.endswith("FDUSD")]
-        logger.info("Updating Binance hourly data for {} pair(s).", len(pairs))
-        binance_data_wrapper.download_all_pairs(
-            pairs=pairs,
-            output_dir=Path(args.data_root),
-            history_years=int(args.update_data_years),
-            skip_if_exists=True,
-            fallback_quotes=[],
-        )
+        pairs: List[str] = []
+        for sym in symbols:
+            base, quote = split_stable_quote_symbol(sym)
+            if not quote:
+                continue
+            pairs.append(f"{base}/{quote}")
+        if not pairs:
+            logger.warning("No stable-quote symbols selected; skipping Binance data refresh.")
+        else:
+            logger.info("Updating Binance hourly data for {} pair(s).", len(pairs))
+            binance_data_wrapper.download_all_pairs(
+                pairs=pairs,
+                output_dir=Path(args.data_root),
+                history_years=int(args.update_data_years),
+                skip_if_exists=True,
+                fallback_quotes=[],
+            )
+
+    needs_finetuned_model = bool(args.finetune or args.build_forecasts or args.train_policy or args.selector_sweep)
+    if not needs_finetuned_model:
+        # Allow running this script as a data-refresh utility without requiring a model.
+        return
 
     finetuned_model = args.finetuned_model
     if args.finetune:
