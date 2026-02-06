@@ -72,6 +72,17 @@ def main() -> None:
     parser.add_argument("--no-merge-lora", action="store_false", dest="merge_lora")
     parser.add_argument("--output-root", default="alpacaconstrainedexp/chronos_finetuned")
     parser.add_argument("--run-name", default=None)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume training from the latest checkpoint under the run output dir (if present).",
+    )
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        default=None,
+        help="Path (or name under the run output dir) of a specific checkpoint-* directory to resume from. "
+        "Use 'auto' to pick the latest checkpoint.",
+    )
     parser.add_argument("--no-volume", action="store_true")
     parser.add_argument("--no-log-volume", action="store_true")
     parser.add_argument("--no-return-1h", action="store_true")
@@ -136,12 +147,16 @@ def main() -> None:
 
     logger.info("Loading Chronos2 model %s", config.model_id)
     pipeline = _load_pipeline(config.model_id, config.device_map, config.torch_dtype)
+    resume_from_checkpoint = args.resume_from_checkpoint
+    if resume_from_checkpoint is None and args.resume:
+        resume_from_checkpoint = "auto"
     finetuned = _fit_pipeline(
         pipeline=pipeline,
         train_inputs=train_inputs,
         val_inputs=val_inputs,
         config=config,
         output_dir=output_dir,
+        resume_from_checkpoint=resume_from_checkpoint,
     )
     save_path = _save_pipeline(finetuned, output_dir, "finetuned")
     logger.info("Saved fine-tuned model to %s", save_path)

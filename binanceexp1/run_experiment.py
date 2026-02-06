@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 import torch
 
@@ -31,6 +31,20 @@ class ExperimentResult:
     sortino: float
 
 
+def _infer_max_len(state_dict: Mapping[str, torch.Tensor], cfg: TrainingConfig) -> int:
+    """Infer the model's maximum supported sequence length from a checkpoint.
+
+    Older checkpoints store the learned sinusoidal positional encoding buffer
+    under ``pos_encoding.pe``. When absent, fall back to the training config's
+    sequence length.
+    """
+
+    pe = state_dict.get("pos_encoding.pe")
+    if isinstance(pe, torch.Tensor) and pe.ndim >= 1:
+        return int(pe.shape[0])
+    return int(getattr(cfg, "sequence_length", 0) or 0)
+
+
 def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConfig) -> BinancePolicyBase:
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
@@ -45,6 +59,7 @@ def _load_model(checkpoint_path: Path, input_dim: int, default_cfg: TrainingConf
         input_dim=input_dim,
         state_dict=state_dict if isinstance(state_dict, dict) else None,
     )
+    policy_cfg.max_len = max(int(policy_cfg.max_len or 0), _infer_max_len(state_dict if isinstance(state_dict, dict) else {}, default_cfg))
     model = build_policy(policy_cfg)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
