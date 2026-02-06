@@ -200,6 +200,7 @@ def main() -> None:
 
     with csv_path.open("w", newline="") as handle:
         writer = csv.writer(handle)
+        rows_written = 0
         writer.writerow(
             [
                 "intensity",
@@ -215,6 +216,7 @@ def main() -> None:
                 "open_symbol",
             ]
         )
+        handle.flush()
 
         for intensity in intensity_list:
             for offset in offset_list:
@@ -280,6 +282,9 @@ def main() -> None:
                                             result.open_symbol,
                                         ]
                                     )
+                                    rows_written += 1
+                                    if rows_written % 25 == 0:
+                                        handle.flush()
 
     print(f"Saved sweep results to {csv_path}")
 
