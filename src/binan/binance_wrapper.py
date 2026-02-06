@@ -438,7 +438,7 @@ def get_asset_total_balance(asset: str, client: Client | None = None) -> float:
     return free + locked
 
 
-_STABLECOIN_ASSETS = {"USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USDP"}
+_STABLECOIN_ASSETS = {"USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USDP", "U"}
 
 
 def get_account_value_usdt(

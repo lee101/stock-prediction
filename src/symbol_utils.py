@@ -40,7 +40,7 @@ def is_crypto_symbol(symbol):
     if normalized in all_crypto_symbols:
         return True
 
-    stable_quotes = ("USD", "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI")
+    stable_quotes = ("USD", "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI", "U")
     if normalized in stable_quotes:
         return True
     for quote in stable_quotes:
