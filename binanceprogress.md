@@ -16,6 +16,7 @@ Updated: 2026-02-06
 - Added `--feature-max-window-hours` to global policy training + selector to cap rolling-window features for short-history symbols (like Binance U pairs) and avoid collapsing to a tiny usable frame.
   - New helper: `src/hourly_feature_windowing.py` (+ `tests/test_hourly_feature_windowing.py`).
   - New sweep helper (single inference pass): `binancecrosslearning/sweep_global_selector.py`.
+  - New full auto runner: `scripts/binance_zero_fee_full_auto.py` (data -> LoRA -> forecast cache -> policy -> selector sweep -> append to progress).
 - Fixed hourly volume features to handle bars with zero volume without producing inf/NaN gaps (common in illiquid markets):
   - Updated: `binanceexp1/data.py` (`volume_change_1h`, `volume_shock_*h`, `_zscore`).
 - Fixed `refresh_daily_inputs.py` / `update_key_forecasts.py` to run forecast refresh under the active venv interpreter (was calling system `python`, breaking `chronos` imports) and corrected log formatting.
