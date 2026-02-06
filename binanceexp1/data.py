@@ -375,7 +375,12 @@ def build_feature_frame(frame: pd.DataFrame, config: DatasetConfig) -> pd.DataFr
     frame["low_close_pct"] = (close - low) / close.replace(0.0, np.nan)
 
     frame["volume_z"] = _zscore(volume, window=max(2, int(config.volume_z_window)))
-    frame["volume_change_1h"] = volume.pct_change(1)
+    # Avoid inf/NaN when the previous bar has zero volume (common for illiquid markets).
+    prev_volume = volume.shift(1)
+    denom = prev_volume.replace(0.0, np.nan)
+    volume_change = (volume - prev_volume) / denom
+    volume_change = volume_change.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    frame["volume_change_1h"] = volume_change
 
     for window in config.trend_windows:
         window = int(window)
@@ -402,7 +407,13 @@ def build_feature_frame(frame: pd.DataFrame, config: DatasetConfig) -> pd.DataFr
 
     shock_window = max(2, int(config.volume_shock_window))
     volume_mean = volume.rolling(shock_window).mean()
-    frame[f"volume_shock_{shock_window}h"] = volume / volume_mean.replace(0.0, np.nan) - 1.0
+    # If the trailing mean volume is ~0, define shock as 0 instead of inf/NaN.
+    mean_zero = volume_mean.notna() & (volume_mean.abs() < 1e-12)
+    mean_safe = volume_mean.mask(mean_zero, np.nan)
+    shock = volume / mean_safe - 1.0
+    shock = shock.replace([np.inf, -np.inf], np.nan)
+    shock = shock.mask(mean_zero, 0.0)
+    frame[f"volume_shock_{shock_window}h"] = shock
     frame["volume_spike"] = (frame["volume_z"] > float(config.volume_spike_z)).astype(float)
 
     hours = frame["timestamp"].dt.hour
@@ -456,8 +467,14 @@ def build_feature_frame(frame: pd.DataFrame, config: DatasetConfig) -> pd.DataFr
 def _zscore(series: pd.Series, window: int) -> pd.Series:
     rolling_mean = series.rolling(window).mean()
     rolling_std = series.rolling(window).std()
-    rolling_std = rolling_std.replace(0.0, np.nan)
-    return (series - rolling_mean) / rolling_std
+    # When variance is exactly 0 (e.g. volume is constant 0), treat z-score as 0
+    # rather than NaN so downstream dropna() does not create gaps.
+    std_zero = rolling_std.notna() & (rolling_std.abs() < 1e-12)
+    std_safe = rolling_std.mask(std_zero, 1.0)
+    z = (series - rolling_mean) / std_safe
+    z = z.replace([np.inf, -np.inf], np.nan)
+    z = z.mask(std_zero, 0.0)
+    return z
 
 
 def _cycle_features(values: pd.Series, period: int) -> Tuple[pd.Series, pd.Series]:

@@ -12,6 +12,12 @@ Updated: 2026-02-06
   - New tests: `tests/test_stock_utils_remap_symbols_u_quote.py`, `tests/test_chronos2_params_crypto_detection_u_suffix.py`, `tests/test_forecast_config_asset_type_crypto_detection.py`
 - `binancecrosslearning/run_global_selector.py` now supports `--frame-split {val,full}` and `--val-fraction/--validation-days` overrides. This matters for short-history symbols (e.g. U pairs): selector sims use only timestamps where actions exist, so `val` split windows can collapse to ~1 day when `sequence_length` is large relative to available history.
 - Selector simulator now supports optional volume participation caps via `SelectionConfig.max_volume_fraction` (and CLI `--max-volume-fraction`). This is important for low-liquidity symbols like `BTCU` where bar volume can be far smaller than the notional implied by `initial_cash`.
+- Global policy training now supports `--val-fraction/--validation-days` to match selector split logic.
+- Added `--feature-max-window-hours` to global policy training + selector to cap rolling-window features for short-history symbols (like Binance U pairs) and avoid collapsing to a tiny usable frame.
+  - New helper: `src/hourly_feature_windowing.py` (+ `tests/test_hourly_feature_windowing.py`).
+  - New sweep helper (single inference pass): `binancecrosslearning/sweep_global_selector.py`.
+- Fixed hourly volume features to handle bars with zero volume without producing inf/NaN gaps (common in illiquid markets):
+  - Updated: `binanceexp1/data.py` (`volume_change_1h`, `volume_shock_*h`, `_zscore`).
 - Fixed `refresh_daily_inputs.py` / `update_key_forecasts.py` to run forecast refresh under the active venv interpreter (was calling system `python`, breaking `chronos` imports) and corrected log formatting.
 - Added `binancecrosslearning/` pipeline (multi-symbol Chronos2 fine-tune + global policy + selector) with Binance defaults.
 - Extended crypto symbol detection + fee heuristics for stable-quote pairs (USDT/FDUSD/USDC/etc); added tests.
@@ -266,6 +272,25 @@ Updated: 2026-02-06
 - Baseline (no volume cap): intensity=1 offset=0 min_edge=0 → total_return=0.0328, sortino=58.6975 (open_symbol=BTCU)
 - Best found (no volume cap): intensity=20 offset=0.00025 min_edge=0.002 → total_return=0.2118, sortino=32.8365 (open_symbol=BTCU; `final_cash=0` implies fully deployed, so treat as optimistic on illiquid pairs)
 - With `--max-volume-fraction 0.1` (more realistic fills): intensity=20 offset=0 min_edge=0.002 → total_return=0.1050, sortino=19.5354 (open_symbol=BTCU)
+
+### Chronos2 LoRA (U, per-symbol batch, short-history refresh)
+- Script: `scripts/retrain_chronos2_lora_binance_pairs.py`
+- Run id: `20260206_1539_u` (ctx=192, steps=600, val/test=48h)
+- Summary: `reports/chronos2_lora_binance/binance_lora_20260206_1539_u_summary.md`
+- Promoted configs: `hyperparams/chronos2/hourly/{BTCU,ETHU,SOLU,BNBU,UUSDT}.json`
+- Forecast cache (h1/h4, per-symbol LoRA models):
+  - Root: `binancecrosslearning/forecast_cache_u_lora_20260206_1539_u_h14`
+  - MAE%: BTCU h1 0.3403 h4 0.7859; ETHU h1 1.1207 h4 2.4433; SOLU h1 0.8900 h4 1.7502; BNBU h1 0.5777 h4 1.2902
+
+### Global policy (U, LoRA cache, feature_max_window=72)
+- Train run: `binance_cross_global_u_lora1539_featmax72_h14_seq48_20260206_161706` (80 epochs, seq=48, MA windows 24/72, horizons 1/4, cache-only, no-compile)
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_u_lora1539_featmax72_h14_seq48_20260206_161706/epoch_025.pt`
+  - Train script eval (BTCU val): total_return=0.1359, sortino=65.3642
+- Selector eval (shared cash, `--frame-split full --eval-days 7 --edge-mode close --maker-fee 0.0`):
+  - Baseline (no cap): intensity=1 offset=0 min_edge=0 → total_return=0.0306, sortino=24.1504 (open_symbol=BNBU)
+  - Best sweep (no cap): intensity=2 offset=0.00025 min_edge=0.006 → total_return=0.4352, sortino=32.8209 (open_symbol=BNBU; ends holding inventory so treat as optimistic on illiquid pairs)
+  - Best sweep (`--max-volume-fraction 0.1`): intensity=20 offset=0.0005 min_edge=0.004 → total_return=0.1822, sortino=53.5637, final_cash=11581.93 (open_symbol=BNBU)
+- Sweep artifacts: `binancecrosslearning/outputs/sweep_u_lora1539_featmax72_20260206_162416`
 
 ## Chronos2 LoRA (hourly, Alpaca data)
 - BTCUSD LoRA: `chronos2_finetuned/BTCUSD_lora_20260203_051412` → Validation MAE% 0.2785, preaug=diff

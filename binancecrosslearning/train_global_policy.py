@@ -102,6 +102,35 @@ def main() -> None:
         help="Override MA windows (comma-separated hours).",
     )
     parser.add_argument("--min-history-hours", type=int, default=None)
+    parser.add_argument(
+        "--feature-max-window-hours",
+        type=int,
+        default=None,
+        help=(
+            "Optional cap for rolling-window feature hours. "
+            "When set, the DatasetConfig windows are truncated and feature_columns are rebuilt "
+            "so short-history symbols (e.g., new Binance U pairs) don't collapse to a tiny frame."
+        ),
+    )
+    parser.add_argument(
+        "--val-fraction",
+        type=float,
+        default=None,
+        help=(
+            "Override the fraction of history reserved for validation (default: DatasetConfig.val_fraction). "
+            "Ignored when --validation-days produces a sufficiently-long trailing validation window."
+        ),
+    )
+    parser.add_argument(
+        "--validation-days",
+        type=int,
+        default=None,
+        help=(
+            "Override the validation window length in days (default: DatasetConfig.validation_days). "
+            "If set and enough history exists, the last N days are used for validation. "
+            "Otherwise falls back to --val-fraction."
+        ),
+    )
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--allow-mixed-asset", action="store_true")
     parser.add_argument("--eval-days", type=float, default=None)
@@ -123,6 +152,12 @@ def main() -> None:
         ma_windows = DatasetConfig().moving_average_windows
 
     min_history_hours = args.min_history_hours if args.min_history_hours is not None else DatasetConfig().min_history_hours
+    val_fraction = float(args.val_fraction) if args.val_fraction is not None else DatasetConfig().val_fraction
+    if not (0.0 < val_fraction < 1.0):
+        raise ValueError(f"--val-fraction must be in (0, 1), got {val_fraction}.")
+    validation_days = int(args.validation_days) if args.validation_days is not None else DatasetConfig().validation_days
+    if validation_days < 0:
+        raise ValueError(f"--validation-days must be >= 0, got {validation_days}.")
 
     data_cfg = DatasetConfig(
         symbol=target_symbol,
@@ -134,12 +169,18 @@ def main() -> None:
         forecast_cache_root=Path(args.forecast_cache_root),
         moving_average_windows=ma_windows,
         min_history_hours=min_history_hours,
+        val_fraction=val_fraction,
+        validation_days=validation_days,
         max_feature_lookback_hours=(
             args.max_feature_lookback_hours
             if args.max_feature_lookback_hours is not None
             else DatasetConfig().max_feature_lookback_hours
         ),
     )
+    if args.feature_max_window_hours is not None:
+        from src.hourly_feature_windowing import apply_feature_max_window_hours
+
+        data_cfg = apply_feature_max_window_hours(data_cfg, max_window_hours=int(args.feature_max_window_hours))
     data = AlpacaMultiSymbolDataModule(symbols, data_cfg)
 
     attention_window = None
