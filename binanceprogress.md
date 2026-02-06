@@ -101,6 +101,11 @@ Updated: 2026-02-06
 - Selector eval (shared cash, last 30d, 4 symbols):
   - Output dir: `binancecrosslearning/outputs/binance_cross_global_fdusd_lora1142_20260206_1247_selector30d`
   - total_return=0.0893, sortino=41.5856 (open_symbol=SOLFDUSD)
+- Short-MA variant (to reuse the same feature set for U transfer tests; horizons 1/4, seq=48):
+  - Train run: `binance_cross_global_fdusd_shortma_h14_seq48_20260206_1311`
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_fdusd_shortma_h14_seq48_20260206_1311/epoch_006.pt`
+  - Train script eval (BTCFDUSD, last 30d): total_return=0.5118, sortino=38.2844
+  - Transfer selector eval on U (last 7d, BTCU/ETHU/SOLU/BNBU): total_return=-0.0023, sortino=-16.3569 (open_symbol=BTCU)
 
 ## Binance U (zero-fee) hourly
 
@@ -144,6 +149,14 @@ Updated: 2026-02-06
 | ETHU | -0.006701 | -5.722986 | `ethu_lora1150_nano_v2_muon_short3_20260206_1232` |
 | SOLU | -0.053301 | -28.874740 | `solu_lora1150_nano_v2_muon_short3_20260206_1236` |
 | BNBU | -0.065375 | -32.911935 | `bnbu_lora1150_nano_v2_muon_short3_20260206_1244` |
+
+### Global policy (binancecrosslearning, U)
+- Prebuilt/filled forecast cache for h1/h4 now includes BTCU/ETHU/SOLU/BNBU:
+  - `binancechronossolexperiment2/forecast_cache_u_lora_20260206_1150_h14`
+- Train run: `binance_cross_global_u_shortma_h14_seq48_20260206_1314` (30 epochs, seq=48, MA windows 24/72/168, horizons 1/4, cache-only)
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_u_shortma_h14_seq48_20260206_1314/epoch_024.pt`
+  - Train script eval (BTCU, last 7d): total_return=-0.0269, sortino=-13.0422
+  - Selector eval (shared cash, last 7d, BTCU/ETHU/SOLU/BNBU): total_return=-0.0484, sortino=-17.1613 (open_symbol=SOLU)
 
 ## Chronos2 LoRA (hourly, Alpaca data)
 - BTCUSD LoRA: `chronos2_finetuned/BTCUSD_lora_20260203_051412` → Validation MAE% 0.2785, preaug=diff
