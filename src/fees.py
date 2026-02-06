@@ -14,7 +14,7 @@ from typing import Iterable, List
 
 def _is_crypto_symbol(symbol: str) -> bool:
     s = str(symbol).upper().replace("/", "").replace("-", "")
-    stable_quotes = ("USD", "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI")
+    stable_quotes = ("USD", "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI", "U")
     if s in stable_quotes:
         return True
     return any(s.endswith(quote) for quote in stable_quotes)
