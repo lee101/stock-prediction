@@ -52,8 +52,11 @@ def test_stock_utils_specifics():
     # remap known crypto symbols
     assert mod.remap_symbols('ETHUSD') == 'ETH/USD'
     assert mod.remap_symbols('BTCUSD') == 'BTC/USD'
+    # remap unknown stable-quote pairs to avoid invalid Alpaca symbols (e.g., AVAXUSD -> AVAX/USD)
+    assert mod.remap_symbols('AVAXUSD') == 'AVAX/USD'
     # pairs_equal normalizes both
     assert mod.pairs_equal('BTCUSD', 'BTC/USD')
     assert mod.pairs_equal('ETH/USD', 'ETHUSD')
     # unmap back
     assert mod.unmap_symbols('ETH/USD') == 'ETHUSD'
+    assert mod.unmap_symbols('AVAX/USD') == 'AVAXUSD'
