@@ -3,13 +3,15 @@
 Updated: 2026-02-06
 
 ## Notes / Fixes
-- Refreshed `trainingdatahourly/` via Alpaca (up to 2026-02-06) and rebuilt `trainingdatahourlybinance/` (Binance symbol aliases as symlinks to Alpaca hourly CSVs, while preserving any real Binance-downloaded files already present).
+- Binance hourly spot datasets are stored in `binance_spot_hourly/`; both `trainingdatahourlybinance/` and `binancetrainingdatahourly/` are symlinks to that directory (safety: avoids overwriting Alpaca CSVs via symlink aliasing).
 - Fixed Chronos multi-step horizon alignment in `binanceneural/forecasts.py` (previously multi-horizon caches effectively used the 1-step prediction for every horizon). Any cached forecasts for horizons >1 generated before 2026-02-06 should be considered invalid and rebuilt before comparing multi-horizon PnL/MAE runs.
 - Added stable-quote symbol utilities + tests, plus a builder script for `trainingdatahourlybinance/`.
   - New: `src/binance_symbol_utils.py`, `tests/test_binance_symbol_utils.py`, `scripts/build_trainingdatahourlybinance.py`.
 - Fixed `refresh_daily_inputs.py` / `update_key_forecasts.py` to run forecast refresh under the active venv interpreter (was calling system `python`, breaking `chronos` imports) and corrected log formatting.
 - Added `binancecrosslearning/` pipeline (multi-symbol Chronos2 fine-tune + global policy + selector) with Binance defaults.
 - Extended crypto symbol detection + fee heuristics for stable-quote pairs (USDT/FDUSD/USDC/etc); added tests.
+- Fixed `newnanoalpacahourlyexp.data.AlpacaHourlyDataModule` to compute rolling features on the full price history (forecasts are merged with `how="left"`) before applying lookback trimming.
+- Fixed torch.compile CUDAGraph overwrite crash in nano sliding-window attention (no longer caches the mask on module state; trainer marks step boundaries when supported).
 - Added `state_dict`-aware max_len inference when loading classic models so positional encoding buffers match checkpoint shapes.
   - Updated: `binanceneural/model.py`, `binancechronossolexperiment/inference.py`, `binanceneural/run_simulation.py`, `binanceneural/trade_binance_hourly.py`, `binanceneural/sweep.py`.
 - Added max_len inference for binanceexp1 checkpoint reloads (prevents positional encoding size mismatch).
@@ -22,6 +24,54 @@ Updated: 2026-02-06
 - Added multi-asset best-trade selector simulator + CLI + tests.
   - New: `binanceneural/marketsimulator/selector.py`, `binanceexp1/run_multiasset_selector.py`,
     `tests/test_binance_multiasset_selector.py`.
+
+## Binance FDUSD (zero-fee) hourly
+
+### Data collection
+- Script: `scripts/collect_binance_hourly_zero_fee_pairs.py`
+- Output dir: `binance_spot_hourly/` (symlinks: `binancetrainingdatahourly/`, `trainingdatahourlybinance/`)
+- Download summary (UTC, 1h bars):
+  - BTCFDUSD: 22010 bars, 2023-08-04 08:00 → 2026-02-06 09:00
+  - ETHFDUSD: 22010 bars, 2023-08-04 08:00 → 2026-02-06 09:00
+  - SOLFDUSD: 21194 bars, 2023-09-07 08:00 → 2026-02-06 09:00
+  - BNBFDUSD: 22222 bars, 2023-07-26 08:00 → 2026-02-06 09:00
+  - FDUSDUSDT: 22222 bars, 2023-07-26 08:00 → 2026-02-06 09:00
+  - AEURUSDT: 19012 bars, 2023-12-04 10:00 → 2026-02-06 09:00
+
+### Account conversion (USDT → FDUSD)
+- Script: `scripts/convert_binance_usdt_to_fdusd.py`
+- 2026-02-06: executed market buy on `FDUSDUSDT` spending 3741.45257034 USDT (left 10 USDT buffer) → received 3742.0 FDUSD (fee=0.0).
+
+### Chronos2 LoRA (multi-symbol, Binance FDUSD)
+- Fine-tune (LoRA, steps=300, context=1024):
+  - `binancecrosslearning/chronos_finetuned/chronos2_binance_multi_20260206_211605/finetuned`
+- Forecast cache:
+  - Root: `binancecrosslearning/forecast_cache_fdusd/`
+  - Horizons: h1/h4/h24
+  - Lookback: 5000h (up to 2026-02-06 09:00 UTC)
+- Forecast MAE% (close p50 vs realized close at the target horizon, over cache window):
+  - BTCFDUSD: h1 0.2581, h4 0.4728, h24 1.4424
+  - ETHFDUSD: h1 0.4346, h4 0.7831, h24 2.4953
+  - SOLFDUSD: h1 0.4973, h4 0.8903, h24 2.8363
+  - BNBFDUSD: h1 0.3865, h4 0.7229, h24 2.1064
+
+### Global policy (multi-symbol, FDUSD)
+- Train run (6 epochs, seq=96, nano, muon_mix, horizons 1/4/24, cache-only):
+  - `binance_cross_global_fdusd_20260206_nocompile`
+  - Checkpoint: `binancecrosslearning/checkpoints/binance_cross_global_fdusd_20260206_nocompile/epoch_005.pt`
+  - Train script eval (BTCFDUSD, last 30d): total_return=1.3427, sortino=203.3382
+- Per-symbol eval (last 30d, horizon=1, aggregate=False):
+  - BTCFDUSD: total_return=1.3209, sortino=213.4401
+  - ETHFDUSD: total_return=2.1288, sortino=195.1689
+  - SOLFDUSD: total_return=1.7546, sortino=115.8507
+  - BNBFDUSD: total_return=0.6553, sortino=94.1972
+- Per-symbol eval (last 30d, horizon=1, aggregate=True):
+  - BTCFDUSD: total_return=1.3233, sortino=213.4945
+  - ETHFDUSD: total_return=2.1359, sortino=195.8103
+  - SOLFDUSD: total_return=1.7585, sortino=113.6933
+  - BNBFDUSD: total_return=0.6562, sortino=93.1969
+- Compile smoke test (post attention-mask fix):
+  - `binance_cross_global_fdusd_20260206_compile_smoke` (epochs=1, dry_train_steps=5) succeeded.
 
 ## Chronos2 LoRA (hourly, Alpaca data)
 - BTCUSD LoRA: `chronos2_finetuned/BTCUSD_lora_20260203_051412` → Validation MAE% 0.2785, preaug=diff
