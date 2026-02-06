@@ -349,7 +349,10 @@ logs/pnl/
 exit_plans.json
 tradingdata/
 tradingdatahourly/
+trainingdatahourlybinance
 trainingdatahourlybinance/
+binancetrainingdatahourly
+binance_spot_hourly/
 bagsfm_state.json
 strategy_state/binance_holdings_snapshots.db
 
@@ -367,6 +370,8 @@ marketsim_results_*/
 # Experiment artifacts within modules
 binance*/checkpoints/
 binance*/forecast_cache/
+binance*/forecast_cache*/
+binance*/chronos_finetuned/
 binance*/marketsimulator/
 binance*/plots/
 binance*/results/
@@ -384,6 +389,7 @@ tests/test_alpaca_data_wrapper_backfill.py
 tests/test_bagsfm_*.py
 tests/test_bags*.py
 tests/test_binance*.py
+!tests/test_binance_symbol_utils.py
 tests/test_default_strategy_checkpoint.py
 tests/test_download_hourly_update.py
 tests/test_marketsim*.py

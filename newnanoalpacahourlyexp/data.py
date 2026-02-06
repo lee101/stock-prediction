@@ -119,15 +119,18 @@ class AlpacaHourlyDataModule:
             start_ts = end_ts - pd.Timedelta(hours=float(lookback_hours))
 
         forecast_frame = self._load_forecasts(start=start_ts, end=end_ts)
-        merged = price_frame.merge(forecast_frame, on=["timestamp", "symbol"], how="inner")
+        # Keep the full price history so long-window rolling features (e.g. 99d MAs)
+        # are computed using the preceding history, even if we only have forecasts for
+        # the most recent lookback window.
+        merged = price_frame.merge(forecast_frame, on=["timestamp", "symbol"], how="left")
         merged = merged.sort_values("timestamp").reset_index(drop=True)
-        max_lookback = int(self.config.max_feature_lookback_hours or 0)
-        if max_lookback > 0 and len(merged) > max_lookback:
-            merged = merged.iloc[-max_lookback:].reset_index(drop=True)
         enriched = build_feature_frame(
             merged,
             config=self.config,
         )
+        max_lookback = int(self.config.max_feature_lookback_hours or 0)
+        if max_lookback > 0 and len(enriched) > max_lookback:
+            enriched = enriched.iloc[-max_lookback:].reset_index(drop=True)
         enriched = enriched.dropna(subset=list(self.feature_columns))
         return enriched.reset_index(drop=True)
 

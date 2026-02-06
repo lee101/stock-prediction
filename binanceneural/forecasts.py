@@ -219,15 +219,20 @@ class ChronosForecastManager:
         quantiles: Mapping[float, pd.DataFrame] = batch.quantile_frames
         if not quantiles:
             return None
+        horizon = max(1, int(self.config.prediction_horizon_hours))
+        extract_ts = target_ts + pd.Timedelta(hours=horizon - 1)
         return {
             "timestamp": target_ts,
             "symbol": self.config.symbol,
             "issued_at": issued_at,
-            "predicted_close_p50": self._extract_quantile(quantiles, 0.5, "close", target_ts),
-            "predicted_close_p10": self._extract_quantile(quantiles, 0.1, "close", target_ts),
-            "predicted_close_p90": self._extract_quantile(quantiles, 0.9, "close", target_ts),
-            "predicted_high_p50": self._extract_quantile(quantiles, 0.5, "high", target_ts),
-            "predicted_low_p50": self._extract_quantile(quantiles, 0.5, "low", target_ts),
+            # For horizon>1, shift extraction forward so "_hN" represents N hours ahead from `issued_at`.
+            "target_timestamp": extract_ts,
+            "horizon_hours": horizon,
+            "predicted_close_p50": self._extract_quantile(quantiles, 0.5, "close", extract_ts),
+            "predicted_close_p10": self._extract_quantile(quantiles, 0.1, "close", extract_ts),
+            "predicted_close_p90": self._extract_quantile(quantiles, 0.9, "close", extract_ts),
+            "predicted_high_p50": self._extract_quantile(quantiles, 0.5, "high", extract_ts),
+            "predicted_low_p50": self._extract_quantile(quantiles, 0.5, "low", extract_ts),
         }
 
     def _build_batch_symbol(self, target_ts: pd.Timestamp, ordinal: int) -> str:
@@ -267,12 +272,17 @@ class ChronosForecastManager:
         close = float(recent["close"])
         high = float(recent.get("high", close))
         low = float(recent.get("low", close))
+        horizon = max(1, int(self.config.prediction_horizon_hours))
         move = float(context["close"].pct_change().dropna().tail(8).mean() or 0.0)
-        predicted_close = close * (1 + move)
+        # Approximate multi-step horizon by compounding the recent 1h drift.
+        step = max(1e-6, 1.0 + move)
+        predicted_close = close * (step ** horizon)
         return {
             "timestamp": target_ts,
             "symbol": self.config.symbol,
             "issued_at": recent["timestamp"],
+            "target_timestamp": target_ts + pd.Timedelta(hours=horizon - 1),
+            "horizon_hours": horizon,
             "predicted_close_p50": predicted_close,
             "predicted_close_p10": min(predicted_close, low),
             "predicted_close_p90": max(predicted_close, high),

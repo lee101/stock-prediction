@@ -224,7 +224,16 @@ class BinanceHourlyTrainer:
         total_return = 0.0
         steps = 0
 
+        # Torch compile may wrap forward in CUDAGraphs; mark the start of each step to
+        # avoid "overwritten output" errors when internal tensors are reused across runs.
+        mark_step_begin = None
+        if bool(self.config.use_compile):
+            compiler = getattr(torch, "compiler", None)
+            mark_step_begin = getattr(compiler, "cudagraph_mark_step_begin", None) if compiler is not None else None
+
         for batch in loader:
+            if mark_step_begin is not None:
+                mark_step_begin()
             features = batch["features"].to(self.device)
             highs = batch["high"].to(self.device)
             lows = batch["low"].to(self.device)
