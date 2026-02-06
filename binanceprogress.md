@@ -8,6 +8,7 @@ Updated: 2026-02-06
 - Added stable-quote symbol utilities + tests, plus a builder script for `trainingdatahourlybinance/`.
   - New: `src/binance_symbol_utils.py`, `tests/test_binance_symbol_utils.py`, `scripts/build_trainingdatahourlybinance.py`.
 - `binancecrosslearning/run_global_selector.py` now supports `--frame-split {val,full}` and `--val-fraction/--validation-days` overrides. This matters for short-history symbols (e.g. U pairs): selector sims use only timestamps where actions exist, so `val` split windows can collapse to ~1 day when `sequence_length` is large relative to available history.
+- Selector simulator now supports optional volume participation caps via `SelectionConfig.max_volume_fraction` (and CLI `--max-volume-fraction`). This is important for low-liquidity symbols like `BTCU` where bar volume can be far smaller than the notional implied by `initial_cash`.
 - Fixed `refresh_daily_inputs.py` / `update_key_forecasts.py` to run forecast refresh under the active venv interpreter (was calling system `python`, breaking `chronos` imports) and corrected log formatting.
 - Added `binancecrosslearning/` pipeline (multi-symbol Chronos2 fine-tune + global policy + selector) with Binance defaults.
 - Extended crypto symbol detection + fee heuristics for stable-quote pairs (USDT/FDUSD/USDC/etc); added tests.
@@ -243,6 +244,7 @@ Updated: 2026-02-06
 **Best BTCU sim so far (holdout-style val split):**
 - Run selector with: `--frame-split val --val-fraction 0.5 --edge-mode close --min-edge 0.0064 --intensity-scale 20 --price-offset-pct 0.00025`
 - BTCU (2026-02-02 00:00 → 2026-02-05 23:00, 78 hours): total_return=0.0757, sortino=22.8950, max_drawdown=-0.0060
+- Volume-capped variant (more realistic fills): add `--max-volume-fraction 0.2` → total_return=0.0462, sortino=12.2726 (same window; ends holding inventory; portfolio_end=10462.06)
 
 **Full-frame backtest (train+val):**
 - Run selector with: `--frame-split full --edge-mode close --min-edge 0.0064 --intensity-scale 20 --price-offset-pct 0.00025`

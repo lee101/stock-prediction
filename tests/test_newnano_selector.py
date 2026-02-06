@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import pandas as pd
+import pytest
 
 from newnanoalpacahourlyexp.marketsimulator.selector import SelectionConfig, run_best_trade_simulation
 
@@ -20,6 +21,8 @@ def _make_two_step_frames(
     high1: float,
     close0: float,
     close1: float,
+    volume0: float = 1e9,
+    volume1: float = 1e9,
     buy_amount0: float = 1.0,
     sell_amount0: float = 0.0,
     buy_amount1: float = 0.0,
@@ -34,6 +37,7 @@ def _make_two_step_frames(
             "high": [high0, high1],
             "low": [low0, low1],
             "close": [close0, close1],
+            "volume": [volume0, volume1],
             "predicted_high_p50_h1": [high0 + 10.0, high1 + 10.0],
             "predicted_low_p50_h1": [low0 - 10.0, low1 - 10.0],
             "predicted_close_p50_h1": [close0, close1],
@@ -79,6 +83,69 @@ def test_selector_executes_buy_then_sell_within_bars_no_fee():
     assert [t.side for t in result.trades] == ["buy", "sell"]
     assert math.isclose(result.final_cash, 11_200.0, rel_tol=0, abs_tol=1e-6)
     assert result.open_symbol is None
+
+
+def test_selector_caps_fills_by_volume_fraction() -> None:
+    bars, actions = _make_two_step_frames(
+        symbol="BTCUSD",
+        t0="2026-01-01T00:00:00Z",
+        t1="2026-01-01T01:00:00Z",
+        buy_price=100.0,
+        sell_price=112.0,
+        low0=99.0,
+        high0=101.0,
+        low1=100.0,
+        high1=115.0,
+        close0=100.0,
+        close1=114.0,
+        volume0=1.0,
+        volume1=1.0,
+        buy_amount0=1.0,
+        sell_amount1=1.0,
+    )
+    cfg = SelectionConfig(
+        initial_cash=10_000.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=True,
+        close_at_eod=False,
+        fee_by_symbol={"BTCUSD": 0.0},
+        max_volume_fraction=0.1,
+    )
+    result = run_best_trade_simulation(bars, actions, cfg, horizon=1)
+    assert [t.side for t in result.trades] == ["buy", "sell"]
+    assert math.isclose(result.trades[0].quantity, 0.1, rel_tol=0, abs_tol=1e-9)
+    assert math.isclose(result.final_cash, 10_001.2, rel_tol=0, abs_tol=1e-6)
+
+
+def test_selector_volume_cap_requires_volume_column() -> None:
+    bars, actions = _make_two_step_frames(
+        symbol="BTCUSD",
+        t0="2026-01-01T00:00:00Z",
+        t1="2026-01-01T01:00:00Z",
+        buy_price=100.0,
+        sell_price=112.0,
+        low0=99.0,
+        high0=101.0,
+        low1=100.0,
+        high1=115.0,
+        close0=100.0,
+        close1=114.0,
+    )
+    bars = bars.drop(columns=["volume"])
+    cfg = SelectionConfig(
+        initial_cash=10_000.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=True,
+        close_at_eod=False,
+        fee_by_symbol={"BTCUSD": 0.0},
+        max_volume_fraction=0.1,
+    )
+    with pytest.raises(ValueError, match="volume"):
+        run_best_trade_simulation(bars, actions, cfg, horizon=1)
 
 
 def test_selector_skips_buy_when_price_never_trades_through():

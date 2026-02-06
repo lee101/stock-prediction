@@ -26,6 +26,10 @@ class SelectionConfig:
     allow_reentry_same_bar: bool = False
     enforce_market_hours: bool = True
     close_at_eod: bool = True
+    # Optional realism control: cap fills to a fraction of bar volume (base units / shares).
+    # When set, each bar tracks remaining fillable volume per symbol so multiple trades in the same
+    # bar cannot exceed the cap.
+    max_volume_fraction: Optional[float] = None
     fee_by_symbol: Optional[Dict[str, float]] = None
     periods_per_year_by_symbol: Optional[Dict[str, float]] = None
     allow_short: bool = False
@@ -67,6 +71,15 @@ def run_best_trade_simulation(
     merged = _prepare_frame(bars, actions, horizon=horizon, symbols=cfg.symbols)
     if merged.empty:
         raise ValueError("Merged dataframe is empty; ensure actions cover the provided bars.")
+    max_volume_fraction: Optional[float]
+    if cfg.max_volume_fraction is None:
+        max_volume_fraction = None
+    else:
+        max_volume_fraction = float(cfg.max_volume_fraction)
+        if not np.isfinite(max_volume_fraction) or max_volume_fraction <= 0.0 or max_volume_fraction > 1.0:
+            raise ValueError(f"max_volume_fraction must be in (0, 1], got {cfg.max_volume_fraction}.")
+        if "volume" not in merged.columns:
+            raise ValueError("max_volume_fraction requires a 'volume' column in bars/actions merge.")
 
     merged = merged.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
     groups = merged.groupby("timestamp", sort=True)
@@ -143,6 +156,30 @@ def run_best_trade_simulation(
         _record_trade(ts=ts, symbol=symbol, side="sell", price=price, qty=qty, reason=reason)
 
     for ts, group in groups:
+        remaining_volume: Dict[str, float] = {}
+        if max_volume_fraction is not None:
+            # Remaining volume is tracked per symbol per bar. We cap each bar's fill volume in the
+            # same units as quantity (base units / shares).
+            for row in group.itertuples(index=False):
+                symbol = str(row.symbol).upper()
+                vol = _safe_float(getattr(row, "volume", None)) or 0.0
+                if not np.isfinite(vol) or vol <= 0.0:
+                    remaining_volume[symbol] = 0.0
+                else:
+                    remaining_volume[symbol] = float(vol) * float(max_volume_fraction)
+
+        def _cap_qty(symbol: str, desired_qty: float) -> float:
+            if desired_qty <= 0:
+                return 0.0
+            if max_volume_fraction is None:
+                return float(desired_qty)
+            avail = float(remaining_volume.get(symbol, 0.0))
+            if not np.isfinite(avail) or avail <= 0.0:
+                return 0.0
+            filled = min(float(desired_qty), avail)
+            remaining_volume[symbol] = avail - filled
+            return float(filled)
+
         buy_filled = 0.0
         sell_filled = 0.0
         selected_symbol = ""
@@ -159,10 +196,12 @@ def run_best_trade_simulation(
                 if row is not None:
                     fee_rate = symbol_meta[open_symbol]["fee"]
                     if inventory > 0:
-                        _execute_sell(ts, open_symbol, inventory, float(row.close), fee_rate, reason="max_hold")
+                        qty = _cap_qty(open_symbol, inventory)
+                        _execute_sell(ts, open_symbol, qty, float(row.close), fee_rate, reason="max_hold")
                         sell_filled = 1.0
                     elif inventory < 0:
-                        _execute_buy(ts, open_symbol, abs(inventory), float(row.close), fee_rate, reason="max_hold")
+                        qty = _cap_qty(open_symbol, abs(inventory))
+                        _execute_buy(ts, open_symbol, qty, float(row.close), fee_rate, reason="max_hold")
                         buy_filled = 1.0
                     forced_close = True
                     closed_this_step = True
@@ -177,6 +216,7 @@ def run_best_trade_simulation(
                     sell_fill = bool(row.high >= row.sell_price and sell_intensity > 0)
                     if sell_fill:
                         qty = sell_intensity * inventory
+                        qty = _cap_qty(open_symbol, qty)
                         fee_rate = symbol_meta[open_symbol]["fee"]
                         _execute_sell(ts, open_symbol, min(qty, inventory), float(row.sell_price), fee_rate)
                         sell_filled = 1.0
@@ -185,6 +225,7 @@ def run_best_trade_simulation(
                     buy_fill_condition = bool(row.low <= row.buy_price and buy_intensity > 0)
                     if buy_fill_condition:
                         qty = buy_intensity * abs(inventory)
+                        qty = _cap_qty(open_symbol, qty)
                         fee_rate = symbol_meta[open_symbol]["fee"]
                         _execute_buy(ts, open_symbol, min(qty, abs(inventory)), float(row.buy_price), fee_rate)
                         buy_filled = 1.0
@@ -235,6 +276,7 @@ def run_best_trade_simulation(
                 if direction == "long":
                     max_buy = cash / (row.buy_price * (1 + fee_rate)) if row.buy_price > 0 else 0.0
                     qty = intensity * max_buy
+                    qty = _cap_qty(selected_symbol, qty)
                     if qty > 0:
                         _execute_buy(ts, selected_symbol, qty, float(row.buy_price), fee_rate)
                         buy_filled = 1.0
@@ -243,6 +285,7 @@ def run_best_trade_simulation(
                     equity = cash  # flat at entry
                     max_short = equity / (row.sell_price * (1 + fee_rate)) if row.sell_price > 0 else 0.0
                     qty = intensity * max(0.0, max_short)
+                    qty = _cap_qty(selected_symbol, qty)
                     if qty > 0:
                         _execute_sell(ts, selected_symbol, qty, float(row.sell_price), fee_rate)
                         sell_filled = 1.0
@@ -261,7 +304,8 @@ def run_best_trade_simulation(
             fee_rate = symbol_meta[open_symbol]["fee"]
             row = _lookup_symbol_row(group, open_symbol)
             if row is not None:
-                _execute_sell(ts, open_symbol, inventory, float(row.close), fee_rate, reason="eod")
+                qty = _cap_qty(open_symbol, inventory)
+                _execute_sell(ts, open_symbol, qty, float(row.close), fee_rate, reason="eod")
                 sell_filled = 1.0
                 forced_close = True
                 current_price = float(row.close)
@@ -275,7 +319,8 @@ def run_best_trade_simulation(
             fee_rate = symbol_meta[open_symbol]["fee"]
             row = _lookup_symbol_row(group, open_symbol)
             if row is not None:
-                _execute_buy(ts, open_symbol, abs(inventory), float(row.close), fee_rate, reason="eod")
+                qty = _cap_qty(open_symbol, abs(inventory))
+                _execute_buy(ts, open_symbol, qty, float(row.close), fee_rate, reason="eod")
                 buy_filled = 1.0
                 forced_close = True
                 current_price = float(row.close)
