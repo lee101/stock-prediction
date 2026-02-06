@@ -256,14 +256,16 @@ class BinanceHourlyTrainer:
                     trade_intensity=trade_intensity,
                     buy_trade_intensity=buy_intensity,
                     sell_trade_intensity=sell_intensity,
-                    maker_fee=self.config.maker_fee,
+                    maker_fee=batch.get("maker_fee", self.config.maker_fee),
                     initial_cash=self.config.initial_cash,
                     can_short=batch.get("can_short", False),
                     can_long=batch.get("can_long", True),
                 )
 
             returns = sim.returns.float()
-            periods_per_year = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
+            periods_per_year = batch.get("periods_per_year", None)
+            if periods_per_year is None:
+                periods_per_year = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
             score, sortino, annual_return = compute_hourly_objective(
                 returns,
                 periods_per_year=periods_per_year,

@@ -416,7 +416,7 @@ def simulate_hourly_trades_binary(
 def compute_hourly_objective(
     hourly_returns: torch.Tensor,
     *,
-    periods_per_year: float = HOURLY_PERIODS_PER_YEAR,
+    periods_per_year: float | torch.Tensor = HOURLY_PERIODS_PER_YEAR,
     return_weight: float = 0.05,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return (score, sortino, annual_return) for hourly return series."""
@@ -427,8 +427,9 @@ def compute_hourly_objective(
     downside = torch.clamp(-hourly_returns, min=0.0)
     downside_std = torch.sqrt(torch.mean(downside**2, dim=-1) + _EPS)
     sortino = mean_return / _safe_denominator(downside_std)
-    sortino = sortino * math.sqrt(float(periods_per_year))
-    annual_return = mean_return * periods_per_year
+    periods = _as_tensor(periods_per_year, mean_return)
+    sortino = sortino * torch.sqrt(torch.clamp(periods, min=_EPS))
+    annual_return = mean_return * periods
     score = sortino + return_weight * annual_return
     return score, sortino, annual_return
 
@@ -437,7 +438,7 @@ def combined_sortino_pnl_loss(
     hourly_returns: torch.Tensor,
     *,
     target_sign: float = 1.0,
-    periods_per_year: float = HOURLY_PERIODS_PER_YEAR,
+    periods_per_year: float | torch.Tensor = HOURLY_PERIODS_PER_YEAR,
     return_weight: float = 0.05,
 ) -> torch.Tensor:
     """Loss function that encourages joint Sortino + return maximisation."""
