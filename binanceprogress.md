@@ -337,6 +337,27 @@ Using checkpoint `.../epoch_025.pt`, forecast cache `binancecrosslearning/foreca
   - full(7d): total_return=0.2778, sortino=34.1675, final_cash=319.45, open_symbol=None
   - val(3d): total_return=0.1580, sortino=47.3330, final_cash=289.58, open_symbol=None
 
+### U refresh (UTC 2026-02-06 18:23; bars through 17:00) + recache + resweep
+- Data refresh:
+  - `python scripts/binance_zero_fee_full_auto.py --pair-list u --update-data`
+  - BTCU rows=418 (end=2026-02-06 17:00 UTC); ETHU/SOLU/BNBU rows=250; UUSDT rows=586.
+- Forecast cache refresh:
+  - `python scripts/build_hourly_forecast_caches.py --symbols BTCU,ETHU,SOLU,BNBU,UUSDT --horizons 1,4 --forecast-cache-root binancecrosslearning/forecast_cache_u_lora_20260206_1539_u_h14`
+  - MAE summary: `binancecrosslearning/forecast_cache_u_lora_20260206_1539_u_h14/mae_summary_20260206_182912Z.json`
+  - MAE%: BTCU h1 0.3492 h4 0.8125; ETHU h1 1.1276 h4 2.4855; SOLU h1 0.9007 h4 1.7931; BNBU h1 0.5773 h4 1.3229.
+- Selector re-sweep (same policy checkpoint, `max_hold_hours=6`, edge_mode=close, last 7d window ending 2026-02-06 17:00 UTC):
+  - Sweep dir: `binancecrosslearning/outputs/sweep_u_after_refresh_20260206_183107`
+  - Best `max_volume_fraction=0.2`: intensity=30 offset=0.001 min_edge=0.006 risk_weight=0.5
+    - full(7d): total_return=0.2209, sortino=27.8422, final_cash=12209.36, open_symbol=None
+    - val(3d): total_return=0.1693, sortino=47.9113, final_cash=11692.98, open_symbol=None
+  - Best `max_volume_fraction=0.1`: intensity=30 offset=0.001 min_edge=0.006 risk_weight=0.5
+    - full(7d): total_return=0.1936, sortino=30.8784, final_cash=11936.08, open_symbol=None
+    - val(3d): total_return=0.1565, sortino=56.5542, final_cash=11564.99, open_symbol=None
+- Small-account resweep (`initial_cash=250`, `max_volume_fraction=0.1`, `max_hold_hours=6`):
+  - Sweep dir: `binancecrosslearning/outputs/sweep_u_after_refresh_cash250_20260206_183525`
+  - Best: intensity=15 offset=0.00025 min_edge=0.003 risk_weight=0.5
+    - full(7d): total_return=0.2785, sortino=33.8426, final_cash=319.64, open_symbol=None
+
 ## Chronos2 LoRA (hourly, Alpaca data)
 - BTCUSD LoRA: `chronos2_finetuned/BTCUSD_lora_20260203_051412` → Validation MAE% 0.2785, preaug=diff
 - ETHUSD LoRA: `chronos2_finetuned/ETHUSD_lora_20260203_051846` → Validation MAE% 0.4450, preaug=diff
