@@ -262,7 +262,10 @@ class HourlyDataRefresher:
             start = now - timedelta(hours=self.backfill_hours)
         else:
             start = last_timestamp - timedelta(hours=self.overlap_hours)
-        start = max(start, now - timedelta(hours=self.backfill_hours))
+        # Always fetch at least the last `backfill_hours` (to patch recent gaps),
+        # but if the local CSV is stale, extend the fetch window back to the last
+        # known timestamp so we don't create a multi-day hole in the series.
+        start = min(start, now - timedelta(hours=self.backfill_hours))
         end = now + timedelta(minutes=1)
         fetcher = self.crypto_fetcher if is_crypto_symbol(symbol) else self.stock_fetcher
         new_frame = fetcher(symbol, start, end)
