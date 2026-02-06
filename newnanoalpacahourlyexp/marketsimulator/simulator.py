@@ -223,23 +223,58 @@ class AlpacaMarketSimulator:
                 executed_buy = 0.0
                 executed_sell = 0.0
 
-                if buy_fill and not forced_close:
-                    max_buy = cash / (row.buy_price * (1 + maker_fee)) if row.buy_price > 0 else 0.0
-                    executed_buy = buy_intensity * max(0.0, float(max_buy))
-                    if not can_long:
-                        executed_buy = min(executed_buy, max(0.0, -inventory))
+                # Match live trading constraints:
+                # - Flat: allow at most one entry direction.
+                # - Long: can add long and/or exit long, but never open a short entry.
+                # - Short: can add short and/or cover short, but never open a long entry.
+                if not forced_close:
+                    inv = float(inventory)
+                    buy_price = float(row.buy_price)
+                    sell_price = float(row.sell_price)
+                    close_price = float(row.close)
 
-                if sell_fill and not forced_close:
-                    if can_short:
-                        equity = cash + inventory * float(row.close)
-                        max_short = max(0.0, float(equity)) / (row.sell_price * (1 + maker_fee)) if row.sell_price > 0 else 0.0
-                        current_short = max(0.0, -inventory)
-                        short_open_cap = max(0.0, float(max_short) - current_short)
-                        long_to_close = max(0.0, inventory)
-                        sell_capacity = long_to_close + short_open_cap
-                        executed_sell = sell_intensity * sell_capacity
+                    def _max_buy_qty(cash_available: float) -> float:
+                        if buy_price <= 0:
+                            return 0.0
+                        return max(0.0, float(cash_available) / (buy_price * (1 + maker_fee)))
+
+                    def _max_short_qty(cash_available: float, inv_qty: float) -> float:
+                        if sell_price <= 0:
+                            return 0.0
+                        equity = float(cash_available) + float(inv_qty) * close_price
+                        max_short = max(0.0, float(equity)) / (sell_price * (1 + maker_fee))
+                        current_short = max(0.0, -float(inv_qty))
+                        return max(0.0, float(max_short) - current_short)
+
+                    if inv > 0.0:
+                        # Long: buy is an add (if permitted), sell is an exit (always permitted).
+                        if buy_fill and can_long:
+                            executed_buy = buy_intensity * _max_buy_qty(cash)
+                        if sell_fill:
+                            executed_sell = sell_intensity * max(0.0, inv)
+                    elif inv < 0.0:
+                        # Short: buy is a cover (always permitted), sell is an add (if permitted).
+                        if buy_fill:
+                            executed_buy = buy_intensity * max(0.0, -inv)
+                        if sell_fill and can_short:
+                            executed_sell = sell_intensity * _max_short_qty(cash, inv)
                     else:
-                        executed_sell = sell_intensity * max(0.0, inventory)
+                        # Flat: compute entry candidates, then keep only one direction.
+                        buy_candidate = 0.0
+                        sell_candidate = 0.0
+                        if buy_fill and can_long:
+                            buy_candidate = buy_intensity * _max_buy_qty(cash)
+                        if sell_fill and can_short:
+                            sell_candidate = sell_intensity * _max_short_qty(cash, 0.0)
+                        if buy_candidate > 0.0 and sell_candidate > 0.0:
+                            buy_notional = buy_candidate * buy_price
+                            sell_notional = sell_candidate * sell_price
+                            if sell_notional > buy_notional:
+                                buy_candidate = 0.0
+                            else:
+                                sell_candidate = 0.0
+                        executed_buy = buy_candidate
+                        executed_sell = sell_candidate
 
                 if executed_buy > 0:
                     cash -= executed_buy * float(row.buy_price) * (1 + maker_fee)
