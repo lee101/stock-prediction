@@ -17,7 +17,11 @@ from src.torch_load_utils import torch_load_compat
 
 from newnanoalpacahourlyexp.config import DatasetConfig
 from newnanoalpacahourlyexp.data import AlpacaHourlyDataModule
-from newnanoalpacahourlyexp.marketsimulator.selector import SelectionConfig, run_best_trade_simulation
+from newnanoalpacahourlyexp.marketsimulator.selector import (
+    SelectionConfig,
+    _prepare_frame as _prepare_selector_frame,
+    run_best_trade_simulation_merged,
+)
 
 
 @dataclass(frozen=True)
@@ -264,6 +268,8 @@ def main() -> None:
                 intensity_scale=float(intensity),
                 price_offset_pct=float(offset),
             )
+            # Merge bars/actions once per (intensity, offset) pair; inner sweeps reuse this frame.
+            merged = _prepare_selector_frame(bars, adjusted_actions, horizon=args.horizon, symbols=symbols)
             for min_edge in min_edges:
                 for risk_weight in risk_weights:
                     for max_vol in max_volume_fracs:
@@ -281,7 +287,7 @@ def main() -> None:
                             periods_per_year_by_symbol=periods_by_symbol,
                             symbols=symbols,
                         )
-                        sim = run_best_trade_simulation(bars, adjusted_actions, cfg, horizon=args.horizon)
+                        sim = run_best_trade_simulation_merged(merged, cfg, horizon=args.horizon)
                         metrics = sim.metrics
                         row = SweepRow(
                             intensity_scale=float(intensity),
@@ -331,4 +337,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
