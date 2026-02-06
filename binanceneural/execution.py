@@ -44,7 +44,7 @@ def resolve_binance_symbol(symbol: str) -> str:
 
 def split_binance_symbol(symbol: str) -> Tuple[str, str]:
     normalized = symbol.replace("/", "").upper()
-    for quote in ("USDT", "FDUSD", "BUSD", "USDC"):
+    for quote in ("USDT", "FDUSD", "BUSD", "USDC", "U"):
         if normalized.endswith(quote):
             return normalized[: -len(quote)], quote
     if len(normalized) <= 3:
