@@ -89,6 +89,18 @@ def main() -> None:
     parser.add_argument("--val-days", type=int, default=20)
     parser.add_argument("--test-days", type=int, default=10)
     parser.add_argument("--max-history-days", type=int, default=None)
+    parser.add_argument(
+        "--max-feature-lookback-hours",
+        type=int,
+        default=24 * 7,
+        help="Feature lookback window used for rolling indicators (default: 168h).",
+    )
+    parser.add_argument(
+        "--min-history-hours",
+        type=int,
+        default=24 * 30,
+        help="Minimum number of hourly rows required to run the experiment (default: 720h).",
+    )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -151,6 +163,8 @@ def main() -> None:
         model_id=args.model_id,
         sequence_length=args.sequence_length,
         split_config=SplitConfig(val_days=args.val_days, test_days=args.test_days),
+        max_feature_lookback_hours=int(args.max_feature_lookback_hours),
+        min_history_hours=int(args.min_history_hours),
         max_history_days=args.max_history_days,
         cache_only=args.cache_only,
     )

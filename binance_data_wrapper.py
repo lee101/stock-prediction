@@ -12,7 +12,7 @@ from loguru import logger
 
 from binance import Client
 
-from src.binan import binance_wrapper
+from src.binan import binance_wrapper, binance_vision
 
 DEFAULT_HISTORY_YEARS = 10
 DEFAULT_SLEEP_SECONDS = 0.25
@@ -33,6 +33,15 @@ DEFAULT_BINANCE_FDUSD_PAIRS = [
     "LTC/FDUSD",
     "BCH/FDUSD",
     "UNI/FDUSD",
+]
+
+DEFAULT_BINANCE_U_PAIRS = [
+    "BTC/U",
+    "ETH/U",
+    "SOL/U",
+    "BNB/U",
+    # Stablecoin conversion for manual USDT -> U moves.
+    "U/USDT",
 ]
 
 _STABLECOIN_QUOTES = ["FDUSD", "USDT", "USDC", "BUSD", "TUSD", "USDP", "U", "USD"]
@@ -167,11 +176,26 @@ def fetch_binance_hourly_bars(
             end_ms,
         )
     except Exception as exc:
-        logger.error(f"Failed fetching Binance klines for {symbol}: {exc}")
-        return pd.DataFrame()
+        logger.warning(f"Failed fetching Binance klines for {symbol} via REST API: {exc}")
+        rows = []
 
     if not rows:
-        return pd.DataFrame()
+        # Fall back to Binance Vision (public dataset) when the live API is blocked
+        # or the symbol is unavailable on the configured endpoint (e.g., FDUSD/U pairs
+        # while using Binance.US).
+        try:
+            vision_frame = binance_vision.fetch_vision_hourly_klines(
+                symbol=symbol,
+                start=start,
+                end=end,
+                interval="1h",
+            )
+        except Exception as exc:
+            logger.error(f"Failed fetching Binance Vision klines for {symbol}: {exc}")
+            return pd.DataFrame()
+        if not vision_frame.empty:
+            logger.info(f"Fetched {len(vision_frame)} bars for {symbol} via Binance Vision.")
+        return vision_frame
 
     records = []
     for row in rows:
@@ -291,12 +315,15 @@ def download_and_save_pair(
     client = client or binance_wrapper.get_client()
 
     try:
+        requested_symbol = _normalize_pair(pair)
         resolved_symbol = resolve_pair_symbol(pair, client, fallback_quotes=fallback_quotes)
     except ValueError as exc:
         return DownloadResult(symbol=pair, status="invalid", bars=0, error=str(exc))
 
     if not resolved_symbol:
-        return DownloadResult(symbol=pair, status="unavailable", bars=0)
+        # Symbol is not available on the configured Binance endpoint (e.g. Binance.US)
+        # but may still be available in Binance Vision's public dataset.
+        resolved_symbol = requested_symbol
 
     output_file = output_dir / f"{resolved_symbol}.csv"
     existing_df: Optional[pd.DataFrame] = None
