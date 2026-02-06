@@ -65,17 +65,17 @@ def refresh_daily_inputs(
         if not selected_symbols:
             raise RuntimeError("No symbols available to refresh.")
 
-        logger.info("Refreshing %d symbols.", len(selected_symbols))
+        logger.info("Refreshing {} symbols.", len(selected_symbols))
         appended_map = download_and_sync(selected_symbols)
         total_new_rows = sum(appended_map.values())
-        logger.info("Data sync added %d new rows.", total_new_rows)
+        logger.info("Data sync added {} new rows.", total_new_rows)
 
         if skip_forecasts:
             logger.info("Skipping forecast refresh per --skip-forecasts.")
             return
 
         forecast_symbols = [_storage_symbol(symbol) for symbol in selected_symbols]
-        logger.info("Updating Chronos forecasts for %d symbols.", len(forecast_symbols))
+        logger.info("Updating Chronos forecasts for {} symbols.", len(forecast_symbols))
         rc = collect_forecasts(forecast_symbols)
         if rc != 0:
             raise RuntimeError(f"Chronos forecast refresh exited with status {rc}.")
@@ -108,7 +108,7 @@ def main() -> int:
     try:
         refresh_daily_inputs(symbols=args.symbols, skip_forecasts=args.skip_forecasts, use_lock=True)
     except Exception as exc:
-        logger.exception("Refresh failed: %s", exc)
+        logger.exception("Refresh failed: {}", exc)
         return 1
     return 0
 
