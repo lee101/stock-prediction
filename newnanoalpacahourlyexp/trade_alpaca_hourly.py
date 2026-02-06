@@ -17,6 +17,7 @@ from binanceneural.model import align_state_dict_input_dim, build_policy, policy
 from src.hourly_data_refresh import HourlyDataRefresher
 from src.hourly_data_utils import HourlyDataValidator
 from src.symbol_utils import is_crypto_symbol
+from src.trade_directions import resolve_trade_directions
 from src.torch_device_utils import require_cuda as require_cuda_device
 
 from .config import DatasetConfig, ExperimentConfig
@@ -35,6 +36,14 @@ class TradingPlan:
     buy_amount: float
     sell_amount: float
     timestamp: datetime
+
+
+@dataclass(frozen=True)
+class OrderIntent:
+    side: str  # "buy" or "sell"
+    qty: float
+    limit_price: float
+    kind: str  # "entry" or "exit"
 
 
 def _parse_symbols(raw: Optional[str]) -> list[str]:
@@ -218,6 +227,139 @@ def _find_position(positions, symbol: str):
     return None
 
 
+def _build_order_intents(
+    plan: TradingPlan,
+    *,
+    position_qty: float,
+    allocation_usd: Optional[float],
+    buy_price: float,
+    sell_price: float,
+    can_long: bool,
+    can_short: bool,
+    allow_short: bool,
+    exit_only: bool,
+) -> list[OrderIntent]:
+    intents: list[OrderIntent] = []
+
+    if exit_only:
+        if position_qty > 0:
+            intents.append(
+                OrderIntent(
+                    side="sell",
+                    qty=float(position_qty),
+                    limit_price=float(sell_price),
+                    kind="exit",
+                )
+            )
+        elif position_qty < 0:
+            intents.append(
+                OrderIntent(
+                    side="buy",
+                    qty=float(abs(position_qty)),
+                    limit_price=float(buy_price),
+                    kind="exit",
+                )
+            )
+        return intents
+
+    # Exits are always permitted (for safety), regardless of can_long/can_short.
+    if position_qty > 0 and plan.sell_amount > 0:
+        sell_qty_exit = float(position_qty) * (float(plan.sell_amount) / 100.0)
+        if sell_qty_exit > 0:
+            intents.append(
+                OrderIntent(
+                    side="sell",
+                    qty=sell_qty_exit,
+                    limit_price=float(sell_price),
+                    kind="exit",
+                )
+            )
+    elif position_qty < 0 and plan.buy_amount > 0:
+        buy_qty_cover = float(abs(position_qty)) * (float(plan.buy_amount) / 100.0)
+        if buy_qty_cover > 0:
+            intents.append(
+                OrderIntent(
+                    side="buy",
+                    qty=buy_qty_cover,
+                    limit_price=float(buy_price),
+                    kind="exit",
+                )
+            )
+
+    allocation = float(allocation_usd) if allocation_usd is not None else None
+    buy_notional = 0.0 if allocation is None else allocation * (float(plan.buy_amount) / 100.0)
+    sell_notional = 0.0 if allocation is None else allocation * (float(plan.sell_amount) / 100.0)
+
+    buy_qty_entry = (buy_notional / float(buy_price)) if buy_notional > 0 else 0.0
+    sell_qty_entry = (sell_notional / float(sell_price)) if sell_notional > 0 else 0.0
+
+    if position_qty > 0:
+        # While long, only allow long adds (no short entries).
+        if not can_long:
+            buy_qty_entry = 0.0
+        sell_qty_entry = 0.0
+        if buy_qty_entry > 0:
+            intents.append(
+                OrderIntent(
+                    side="buy",
+                    qty=buy_qty_entry,
+                    limit_price=float(buy_price),
+                    kind="entry",
+                )
+            )
+        return intents
+
+    if position_qty < 0:
+        # While short, only allow short adds (no long entries).
+        buy_qty_entry = 0.0
+        if not (allow_short and can_short):
+            sell_qty_entry = 0.0
+        if sell_qty_entry > 0:
+            intents.append(
+                OrderIntent(
+                    side="sell",
+                    qty=sell_qty_entry,
+                    limit_price=float(sell_price),
+                    kind="entry",
+                )
+            )
+        return intents
+
+    # Flat: allow at most one entry direction.
+    if not can_long:
+        buy_qty_entry = 0.0
+    if not (allow_short and can_short):
+        sell_qty_entry = 0.0
+
+    if buy_qty_entry <= 0 and sell_qty_entry <= 0:
+        return intents
+
+    if buy_qty_entry > 0 and sell_qty_entry > 0:
+        take_buy = buy_notional >= sell_notional
+    else:
+        take_buy = buy_qty_entry > 0
+
+    if take_buy and buy_qty_entry > 0:
+        intents.append(
+            OrderIntent(
+                side="buy",
+                qty=buy_qty_entry,
+                limit_price=float(buy_price),
+                kind="entry",
+            )
+        )
+    elif sell_qty_entry > 0:
+        intents.append(
+            OrderIntent(
+                side="sell",
+                qty=sell_qty_entry,
+                limit_price=float(sell_price),
+                kind="entry",
+            )
+        )
+    return intents
+
+
 def _run_cycle(
     symbols: Iterable[str],
     checkpoint_map: Dict[str, Path],
@@ -238,6 +380,9 @@ def _run_cycle(
     crypto_data_root: Optional[Path],
     stock_data_root: Optional[Path],
     forecast_cache_root: Path,
+    allow_short: bool,
+    long_only_symbols: Sequence[str],
+    short_only_symbols: Sequence[str],
     moving_average_windows: Tuple[int, ...],
     ema_windows: Tuple[int, ...],
     atr_windows: Tuple[int, ...],
@@ -262,6 +407,16 @@ def _run_cycle(
 
     for symbol in symbols:
         symbol = symbol.upper()
+        directions = resolve_trade_directions(
+            symbol,
+            allow_short=bool(allow_short),
+            long_only_symbols=long_only_symbols,
+            short_only_symbols=short_only_symbols,
+            use_default_groups=True,
+        )
+        direction_conflict = not directions.can_long and not directions.can_short
+        if direction_conflict:
+            logger.warning("Conflicting direction constraints for %s; forcing exit-only.", symbol)
         if not is_crypto_symbol(symbol):
             clock = alpaca_wrapper.get_clock()
             if not getattr(clock, "is_open", True):
@@ -322,36 +477,50 @@ def _run_cycle(
         buy_price, sell_price = adjusted
 
         position = _find_position(positions, symbol)
-        position_qty = abs(float(getattr(position, "qty", 0.0) or 0.0)) if position else 0.0
+        position_qty = float(getattr(position, "qty", 0.0) or 0.0) if position else 0.0
         allocation = _allocation_usd(account, allocation_usd=allocation_usd, allocation_pct=allocation_pct)
-        buy_notional = 0.0 if allocation is None else allocation * (plan.buy_amount / 100.0)
-        buy_qty = buy_notional / buy_price if buy_notional > 0 else 0.0
-        sell_qty = position_qty * (plan.sell_amount / 100.0) if position_qty > 0 else 0.0
+        exit_only = symbol in exit_only_set
+        if position_qty > 0 and not directions.can_long:
+            exit_only = True
+        if position_qty < 0 and not directions.can_short:
+            exit_only = True
+        if direction_conflict:
+            exit_only = True
 
-        if symbol in exit_only_set:
-            buy_qty = 0.0
-            if position_qty > 0:
-                sell_qty = position_qty
-            logger.info("Exit-only mode for %s: sell_qty=%.6f", symbol, sell_qty)
+        intents = _build_order_intents(
+            plan,
+            position_qty=position_qty,
+            allocation_usd=allocation,
+            buy_price=buy_price,
+            sell_price=sell_price,
+            can_long=bool(directions.can_long),
+            can_short=bool(directions.can_short),
+            allow_short=bool(allow_short),
+            exit_only=exit_only,
+        )
+        if exit_only:
+            logger.info("Exit-only mode for %s: %d intent(s)", symbol, len(intents))
 
         logger.info(
-            "%s action buy=%.4f sell=%.4f buy_amt=%.2f sell_amt=%.2f buy_qty=%.6f sell_qty=%.6f",
+            "%s action buy=%.4f sell=%.4f buy_amt=%.2f sell_amt=%.2f pos_qty=%.6f can_long=%s can_short=%s intents=%s",
             symbol,
             buy_price,
             sell_price,
             plan.buy_amount,
             plan.sell_amount,
-            buy_qty,
-            sell_qty,
+            position_qty,
+            directions.can_long,
+            directions.can_short,
+            [(i.kind, i.side, round(i.qty, 6)) for i in intents],
         )
 
         if dry_run:
             continue
 
-        if sell_qty > 0:
-            alpaca_wrapper.open_order_at_price_or_all(symbol, sell_qty, "sell", sell_price)
-        if buy_qty > 0:
-            alpaca_wrapper.open_order_at_price_or_all(symbol, buy_qty, "buy", buy_price)
+        for intent in intents:
+            if intent.qty <= 0:
+                continue
+            alpaca_wrapper.open_order_at_price_or_all(symbol, float(intent.qty), intent.side, float(intent.limit_price))
 
 
 def main() -> None:
@@ -389,6 +558,13 @@ def main() -> None:
     parser.add_argument("--vol-regime-long", type=int, default=None)
     parser.add_argument("--min-history-hours", type=int, default=None)
     parser.add_argument("--exit-only-symbols", default="", help="Comma-separated symbols to only exit/close.")
+    parser.add_argument(
+        "--allow-short",
+        action="store_true",
+        help="Allow opening short positions for stocks in live trading (crypto remains long-only).",
+    )
+    parser.add_argument("--long-only-symbols", default=None, help="Comma-separated symbols to restrict to long-only.")
+    parser.add_argument("--short-only-symbols", default=None, help="Comma-separated symbols to restrict to short-only.")
     parser.add_argument("--device", default=None, help="Override device (cuda/cuda:0).")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--buffer-seconds", type=int, default=30)
@@ -416,6 +592,8 @@ def main() -> None:
     vol_regime_short = args.vol_regime_short if args.vol_regime_short is not None else DatasetConfig().vol_regime_short
     vol_regime_long = args.vol_regime_long if args.vol_regime_long is not None else DatasetConfig().vol_regime_long
     min_history_hours = args.min_history_hours if args.min_history_hours is not None else DatasetConfig().min_history_hours
+    long_only_symbols = [token.strip().upper() for token in (args.long_only_symbols or "").split(",") if token.strip()]
+    short_only_symbols = [token.strip().upper() for token in (args.short_only_symbols or "").split(",") if token.strip()]
 
     device = _resolve_device(args.device)
 
@@ -454,6 +632,9 @@ def main() -> None:
             crypto_data_root=crypto_root,
             stock_data_root=stock_root,
             forecast_cache_root=forecast_cache_root,
+            allow_short=bool(args.allow_short),
+            long_only_symbols=long_only_symbols,
+            short_only_symbols=short_only_symbols,
             moving_average_windows=ma_windows,
             ema_windows=ema_windows,
             atr_windows=atr_windows,
