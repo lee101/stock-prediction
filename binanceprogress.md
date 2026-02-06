@@ -17,6 +17,9 @@ Updated: 2026-02-06
   - New helper: `src/hourly_feature_windowing.py` (+ `tests/test_hourly_feature_windowing.py`).
   - New sweep helper (single inference pass): `binancecrosslearning/sweep_global_selector.py`.
   - New full auto runner: `scripts/binance_zero_fee_full_auto.py` (data -> LoRA -> forecast cache -> policy -> selector sweep -> append to progress).
+- Sped up selector sweeps by reusing a pre-merged (bars+actions) frame instead of re-merging for every param combo.
+  - New: `newnanoalpacahourlyexp.marketsimulator.selector.run_best_trade_simulation_merged` (+ `tests/test_selector_merged_simulation.py`).
+  - Updated: `binancecrosslearning/sweep_global_selector.py` (merge once per intensity/offset; inner loops reuse merged frame).
 - Fixed hourly volume features to handle bars with zero volume without producing inf/NaN gaps (common in illiquid markets):
   - Updated: `binanceexp1/data.py` (`volume_change_1h`, `volume_shock_*h`, `_zscore`).
 - Fixed `refresh_daily_inputs.py` / `update_key_forecasts.py` to run forecast refresh under the active venv interpreter (was calling system `python`, breaking `chronos` imports) and corrected log formatting.
@@ -292,6 +295,47 @@ Updated: 2026-02-06
   - Best sweep (no cap): intensity=2 offset=0.00025 min_edge=0.006 → total_return=0.4352, sortino=32.8209 (open_symbol=BNBU; ends holding inventory so treat as optimistic on illiquid pairs)
   - Best sweep (`--max-volume-fraction 0.1`): intensity=20 offset=0.0005 min_edge=0.004 → total_return=0.1822, sortino=53.5637, final_cash=11581.93 (open_symbol=BNBU)
 - Sweep artifacts: `binancecrosslearning/outputs/sweep_u_lora1539_featmax72_20260206_162416`
+
+### U selector tuning follow-up (feature_max_window=72, horizon=1, edge_mode=close)
+Using checkpoint `.../epoch_025.pt`, forecast cache `binancecrosslearning/forecast_cache_u_lora_20260206_1539_u_h14`, shared-cash selector sim over the last 7d with `--frame-split full`, `--maker-fee 0.0`.
+
+**Dip-threshold sweep (kept baseline tuned config):**
+- Baseline config: intensity=20 offset=0.0005 min_edge=0.004 risk_weight=0.5 max_volume_fraction=0.1
+- DIP=0 → total_return=0.1822
+- DIP=0.001 → 0.1698
+- DIP=0.002 → 0.1371
+- DIP=0.004 → 0.1596
+- DIP=0.006 → 0.1468
+- DIP=0.008 → 0.0825
+- DIP=0.010 → 0.1281
+- Takeaway: dip filter reduced returns on this window; best DIP was 0.
+
+**max_hold_hours + volume-cap realism:**
+- Baseline (no max_hold, max_volume_fraction=0.1): total_return=0.1822, open_symbol=BNBU
+- max_hold_hours=6 (max_volume_fraction=0.1): total_return=0.1825, open_symbol=None (ends flat)
+- allow_reentry_same_bar reduced returns here (e.g. with max_hold_hours=6: total_return=0.1764).
+
+**Tuned configs (max_hold_hours=6):**
+- Sweep dir (local search): `binancecrosslearning/outputs/sweep_u_lora1539_featmax72_local_20260206_181058`
+- Best with `--max-volume-fraction 0.2`: intensity=20 offset=0.0005 min_edge=0.003 risk_weight=0.5
+  - full(7d): total_return=0.2198, sortino=58.8090, final_cash=12198.03, open_symbol=None
+  - val(3d): total_return=0.1406, sortino=84.9749, final_cash=11406.28, open_symbol=None
+- Best with `--max-volume-fraction 0.1`: intensity=25 offset=0.00075 min_edge=0.004 risk_weight=0.5
+  - full(7d): total_return=0.1907, sortino=28.7077, final_cash=11907.16, open_symbol=None
+  - val(3d): total_return=0.1306, sortino=42.3772, final_cash=11306.00, open_symbol=None
+
+**Capacity note (illiquid U pairs):** total_return drops sharply as `initial_cash` grows under volume participation caps, because fills become volume-limited and extra cash sits unused.
+- Example (max_volume_fraction=0.1, max_hold_hours=6, intensity=20 offset=0.0005 min_edge=0.004):
+  - initial_cash=250 → total_return=0.2574
+  - initial_cash=1_000 → 0.2342
+  - initial_cash=10_000 → 0.1825
+  - initial_cash=20_000 → 0.1065
+
+**Small-account tuned config (initial_cash=250, max_volume_fraction=0.1, max_hold_hours=6):**
+- Sweep dir: `binancecrosslearning/outputs/sweep_u_lora1539_cash250_20260206_181605`
+- Best: intensity=20 offset=0.00025 min_edge=0.003 risk_weight=0.5
+  - full(7d): total_return=0.2778, sortino=34.1675, final_cash=319.45, open_symbol=None
+  - val(3d): total_return=0.1580, sortino=47.3330, final_cash=289.58, open_symbol=None
 
 ## Chronos2 LoRA (hourly, Alpaca data)
 - BTCUSD LoRA: `chronos2_finetuned/BTCUSD_lora_20260203_051412` → Validation MAE% 0.2785, preaug=diff
