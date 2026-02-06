@@ -14,9 +14,13 @@ from src import fees
         ("ETHUSDT", True),
         ("BTCFDUSD", True),
         ("BTC/FDUSD", True),
+        ("BTCU", True),
+        ("UUSDT", True),
         ("SOLUSDT", True),
         ("AAPL", False),
         ("MSFT", False),
+        ("U", False),
+        ("MU", False),
         ("BTC/EUR", False),
     ],
 )
@@ -31,8 +35,11 @@ def test_is_crypto_symbol_stable_quotes(symbol, expected):
         ("BTCUSDT", True),
         ("BTC/USDT", True),
         ("BTCFDUSD", True),
+        ("BTCU", True),
         ("USDT", True),
         ("AAPL", False),
+        ("U", False),
+        ("MU", False),
     ],
 )
 def test_fee_crypto_detection(symbol, expected):

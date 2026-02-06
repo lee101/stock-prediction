@@ -1,6 +1,8 @@
 """Utility functions for symbol handling and identification."""
 
-from src.fixtures import all_crypto_symbols
+from __future__ import annotations
+
+from src.fixtures import all_crypto_symbols, all_stock_symbols
 
 
 def is_crypto_symbol(symbol):
@@ -30,22 +32,34 @@ def is_crypto_symbol(symbol):
     if not symbol:
         return False
 
-    # Direct match (e.g., "BTCUSD")
-    if symbol in all_crypto_symbols:
-        return True
-
     normalized = symbol.replace("/", "").replace("-", "").upper()
 
-    # Remove slash and try again (e.g., "BTC/USD" -> "BTCUSD")
+    # Known-stock override (prevents false positives like MU/U when supporting Binance's 'U' stable-quote).
+    if normalized in all_stock_symbols:
+        return False
+
+    # Direct match (e.g., "BTCUSD")
     if normalized in all_crypto_symbols:
         return True
 
-    stable_quotes = ("USD", "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI", "U")
-    if normalized in stable_quotes:
-        return True
+    # Stable-quote pairs: treat as crypto only when the base is a known crypto (e.g., BTCFDUSD -> BTCUSD exists).
+    stable_quotes = ("USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI", "U")
+    stable_tokens = set(stable_quotes)
     for quote in stable_quotes:
-        if normalized.endswith(quote) and len(normalized) > len(quote):
+        if normalized == quote:
+            # Quote tokens themselves (USDT/FDUSD/...) are crypto unless shadowed by a known stock above.
+            # NOTE: "U" is ambiguous with the Unity stock ticker; treat bare "U" as non-crypto.
+            if quote == "U":
+                continue
             return True
+        if normalized.endswith(quote) and len(normalized) > len(quote):
+            base = normalized[: -len(quote)]
+            if not base:
+                continue
+            if base in stable_tokens:
+                return True
+            if f"{base}USD" in all_crypto_symbols:
+                return True
 
     # Check if it ends with USD and the base is a known crypto
     # This handles cases like "BTC/USD" where we strip to "BTC" and check if "BTCUSD" exists

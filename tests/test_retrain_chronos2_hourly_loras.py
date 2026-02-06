@@ -41,6 +41,9 @@ def test_update_hourly_hparams_uses_proxy_template(tmp_path: Path) -> None:
     assert payload["config"]["model_id"] == "new-model"
     assert payload["metadata"]["source"] == "retrain_chronos2_hourly_loras"
     assert payload["metadata"]["finetuned_model_id"] == "new-model"
+    assert isinstance(payload.get("validation"), dict)
+    assert isinstance(payload.get("test"), dict)
+    assert isinstance(payload.get("windows"), dict)
 
 
 def test_update_hourly_hparams_falls_back_to_base_config(tmp_path: Path) -> None:
@@ -55,4 +58,6 @@ def test_update_hourly_hparams_falls_back_to_base_config(tmp_path: Path) -> None
     assert payload["config"]["model_id"] == "checkpoint-path"
     assert payload["config"]["context_length"] == 512
     assert payload["config"]["skip_rates"] == [1]
-
+    assert isinstance(payload.get("validation"), dict)
+    assert isinstance(payload.get("test"), dict)
+    assert isinstance(payload.get("windows"), dict)

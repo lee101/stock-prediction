@@ -56,6 +56,10 @@ def _base_hourly_config(symbol: str, model_id: str) -> Dict[str, Any]:
             "aggregation_method": "single",
             "use_multivariate": False,
         },
+        # HyperparamStore requires these keys even when we haven't run a full selection pass.
+        "validation": {},
+        "test": {},
+        "windows": {},
         "metadata": {
             "source": "retrain_chronos2_hourly_loras",
             "generated_at": _utc_now_iso(),
@@ -96,6 +100,11 @@ def update_hourly_hparams(
         payload.setdefault("config", {})
         if isinstance(payload.get("config"), dict):
             payload["config"]["model_id"] = model_id
+        # Ensure HyperparamStore-required keys exist even when templates come
+        # from ad-hoc/manual configs.
+        payload.setdefault("validation", {})
+        payload.setdefault("test", payload.get("validation", {}) if isinstance(payload.get("validation"), dict) else {})
+        payload.setdefault("windows", {})
         payload.setdefault("metadata", {})
         if isinstance(payload.get("metadata"), dict):
             payload["metadata"]["generated_at"] = _utc_now_iso()
