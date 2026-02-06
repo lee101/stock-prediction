@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover
     def find_hf_snapshot_dir(*_args, **_kwargs):
         return None
 from src.gpu_utils import should_offload_to_cpu as gpu_should_offload_to_cpu
-from src.preaug import PreAugmentationChoice, PreAugmentationSelector
+from src.preaug import PreAugmentationChoice, PreAugmentationSelector, candidate_preaug_symbols
 from src.preaug.multiscale import MultiscaleSelector, aggregate_forecasts
 from src.preaug.forecast_config import ForecastConfigSelector, ForecastTag, ForecastConfig
 from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
@@ -646,7 +646,11 @@ class Chronos2OHLCWrapper:
         if self._preaug_selector is None:
             return context_df, None
 
-        choice = self._preaug_selector.get_choice(symbol)
+        choice: Optional[PreAugmentationChoice] = None
+        for candidate in candidate_preaug_symbols(symbol):
+            choice = self._preaug_selector.get_choice(candidate)
+            if choice is not None:
+                break
         if choice is None or choice.strategy == "baseline":
             return context_df, None
 

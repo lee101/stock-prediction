@@ -11,13 +11,12 @@ from __future__ import annotations
 
 from typing import Iterable, List
 
+from src.symbol_utils import is_crypto_symbol as _is_crypto_symbol_canonical
+
 
 def _is_crypto_symbol(symbol: str) -> bool:
-    s = str(symbol).upper().replace("/", "").replace("-", "")
-    stable_quotes = ("USD", "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI", "U")
-    if s in stable_quotes:
-        return True
-    return any(s.endswith(quote) for quote in stable_quotes)
+    # Backwards-compatible alias for fee heuristics; use the canonical detector.
+    return bool(_is_crypto_symbol_canonical(symbol))
 
 
 def get_fee_for_symbol(symbol: str) -> float:

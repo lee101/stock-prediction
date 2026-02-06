@@ -180,4 +180,58 @@ class PreAugmentationSelector:
         return None
 
 
-__all__ = ["PreAugmentationChoice", "PreAugmentationSelector"]
+def candidate_preaug_symbols(symbol: str) -> list[str]:
+    """Return ordered symbol candidates used to look up pre-augmentation configs.
+
+    This is intentionally permissive because upstream callers sometimes pass
+    unique cache suffixes (e.g. `BTCFDUSD__...__0`). We strip those and then try
+    stable-quote proxies so crypto pairs can reuse USD/USDT configs.
+    """
+
+    raw = str(symbol or "").strip()
+    if not raw:
+        return []
+
+    # Strip wrapper-added uniqueness suffixes (anything after the first "__").
+    base = raw.split("__", 1)[0].strip()
+    if not base:
+        return []
+
+    candidates: list[str] = []
+
+    def _add(token: str) -> None:
+        token = str(token or "").strip()
+        if not token:
+            return
+        upper = token.upper()
+        if upper not in candidates:
+            candidates.append(upper)
+
+    _add(base)
+    _add(base.replace("/", "").replace("-", ""))
+
+    stable_quotes = ("USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI")
+    derived: list[str] = []
+    for token in candidates:
+        for quote in stable_quotes:
+            if token.endswith(quote) and len(token) > len(quote):
+                derived.append(f"{token[:-len(quote)]}USD")
+
+    # Treat "U" as a quote only for BTCU-style symbols (avoid MU->MUSD).
+    for token in candidates:
+        if token.endswith("U") and len(token) >= 4:
+            derived.append(f"{token[:-1]}USD")
+
+    for token in list(derived):
+        if token.endswith("USD") and len(token) > 3:
+            # Common preaug filenames for crypto use the hyphenated form (ADA-USD).
+            derived.append(f"{token[:-3]}-USD")
+            derived.append(f"{token[:-3]}USDT")
+
+    for token in derived:
+        _add(token)
+
+    return candidates
+
+
+__all__ = ["PreAugmentationChoice", "PreAugmentationSelector", "candidate_preaug_symbols"]
