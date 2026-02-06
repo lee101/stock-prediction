@@ -12,6 +12,7 @@ from src.date_utils import is_nyse_open_on_date
 from src.fees import get_fee_for_symbol
 from src.metrics_utils import annualized_sortino, compute_step_returns
 from src.symbol_utils import is_crypto_symbol
+from src.trade_directions import resolve_trade_directions
 
 NEW_YORK = ZoneInfo("America/New_York")
 
@@ -29,6 +30,9 @@ class SimulationConfig:
     close_at_eod: bool = True
     fee_by_symbol: Optional[Dict[str, float]] = None
     periods_per_year_by_symbol: Optional[Dict[str, float]] = None
+    allow_short: bool = False
+    long_only_symbols: Optional[Sequence[str]] = None
+    short_only_symbols: Optional[Sequence[str]] = None
 
 
 @dataclass
@@ -124,10 +128,18 @@ class AlpacaMarketSimulator:
             periods_per_year = float(periods_map[symbol])
         else:
             periods_per_year = _infer_periods_per_year(bars["timestamp"], asset_class)
+        directions = resolve_trade_directions(
+            symbol,
+            allow_short=bool(self.config.allow_short),
+            long_only_symbols=self.config.long_only_symbols,
+            short_only_symbols=self.config.short_only_symbols,
+        )
         return {
             "asset_class": asset_class,
             "maker_fee": maker_fee,
             "periods_per_year": periods_per_year,
+            "can_long": float(directions.can_long),
+            "can_short": float(directions.can_short),
         }
 
     def _run_single(
@@ -139,6 +151,155 @@ class AlpacaMarketSimulator:
         meta: Dict[str, float | str],
     ) -> SymbolSimulationResult:
         frame = self._prepare_frame(bars, actions)
+
+        if self.config.allow_short:
+            if self.config.enable_probe_mode:
+                raise ValueError("enable_probe_mode is not supported when allow_short=True (use long-only probe mode).")
+
+            cash = float(initial_cash)
+            inventory = 0.0
+            open_ts: Optional[pd.Timestamp] = None
+            equity_values: List[float] = []
+            per_hour_rows: List[Dict[str, float | str]] = []
+            trades: List[TradeRecord] = []
+
+            max_hold_delta = None
+            if self.config.max_hold_hours is not None and self.config.max_hold_hours > 0:
+                max_hold_delta = pd.Timedelta(hours=int(self.config.max_hold_hours))
+
+            maker_fee = float(meta["maker_fee"])
+            asset_class = str(meta["asset_class"])
+            is_stock = asset_class == "stock"
+
+            can_long = bool(float(meta.get("can_long", 1.0)) > 0.5)
+            can_short = bool(float(meta.get("can_short", 0.0)) > 0.5)
+
+            ny_timestamps = _to_new_york(frame["timestamp"]).reset_index(drop=True)
+            eod_mask = _end_of_day_mask(ny_timestamps) if is_stock else pd.Series(False, index=frame.index)
+            market_open_mask = (
+                _market_open_mask(ny_timestamps) if (is_stock and self.config.enforce_market_hours) else None
+            )
+
+            def _record_trade(side: str, price: float, quantity: float, reason: Optional[str] = None) -> None:
+                trades.append(
+                    TradeRecord(
+                        timestamp=row.timestamp,
+                        side=side,
+                        price=float(price),
+                        quantity=float(quantity),
+                        cash_after=cash,
+                        inventory_after=inventory,
+                        reason=reason,
+                    )
+                )
+
+            for idx, row in enumerate(frame.itertuples(index=False)):
+                forced_close = False
+                is_market_open = True
+                if market_open_mask is not None:
+                    is_market_open = bool(market_open_mask.iloc[idx])
+
+                if max_hold_delta is not None and self.config.force_close_on_max_hold:
+                    if inventory != 0.0 and open_ts is not None and (row.timestamp - open_ts) >= max_hold_delta:
+                        qty = abs(float(inventory))
+                        if inventory > 0:
+                            cash += qty * float(row.close) * (1 - maker_fee)
+                            inventory -= qty
+                            _record_trade("sell", float(row.close), qty, reason="max_hold")
+                        else:
+                            cash -= qty * float(row.close) * (1 + maker_fee)
+                            inventory += qty
+                            _record_trade("buy", float(row.close), qty, reason="max_hold")
+                        open_ts = None
+                        forced_close = True
+
+                buy_intensity, sell_intensity = self._extract_intensity(row)
+                if not is_market_open:
+                    buy_intensity = 0.0
+                    sell_intensity = 0.0
+
+                buy_fill = bool(row.low <= row.buy_price and buy_intensity > 0)
+                sell_fill = bool(row.high >= row.sell_price and sell_intensity > 0)
+                executed_buy = 0.0
+                executed_sell = 0.0
+
+                if buy_fill and not forced_close:
+                    max_buy = cash / (row.buy_price * (1 + maker_fee)) if row.buy_price > 0 else 0.0
+                    executed_buy = buy_intensity * max(0.0, float(max_buy))
+                    if not can_long:
+                        executed_buy = min(executed_buy, max(0.0, -inventory))
+
+                if sell_fill and not forced_close:
+                    if can_short:
+                        equity = cash + inventory * float(row.close)
+                        max_short = max(0.0, float(equity)) / (row.sell_price * (1 + maker_fee)) if row.sell_price > 0 else 0.0
+                        current_short = max(0.0, -inventory)
+                        short_open_cap = max(0.0, float(max_short) - current_short)
+                        long_to_close = max(0.0, inventory)
+                        sell_capacity = long_to_close + short_open_cap
+                        executed_sell = sell_intensity * sell_capacity
+                    else:
+                        executed_sell = sell_intensity * max(0.0, inventory)
+
+                if executed_buy > 0:
+                    cash -= executed_buy * float(row.buy_price) * (1 + maker_fee)
+                    inventory += executed_buy
+                    if open_ts is None and inventory != 0.0:
+                        open_ts = row.timestamp
+                    if inventory == 0.0:
+                        open_ts = None
+                    _record_trade("buy", float(row.buy_price), executed_buy)
+
+                if executed_sell > 0:
+                    cash += executed_sell * float(row.sell_price) * (1 - maker_fee)
+                    inventory -= executed_sell
+                    if open_ts is None and inventory != 0.0:
+                        open_ts = row.timestamp
+                    if inventory == 0.0:
+                        open_ts = None
+                    _record_trade("sell", float(row.sell_price), executed_sell)
+
+                if is_stock and self.config.close_at_eod and bool(eod_mask.iloc[idx]) and inventory != 0.0:
+                    qty = abs(float(inventory))
+                    if inventory > 0:
+                        cash += qty * float(row.close) * (1 - maker_fee)
+                        inventory -= qty
+                        _record_trade("sell", float(row.close), qty, reason="eod")
+                    else:
+                        cash -= qty * float(row.close) * (1 + maker_fee)
+                        inventory += qty
+                        _record_trade("buy", float(row.close), qty, reason="eod")
+                    open_ts = None
+                    forced_close = True
+
+                portfolio_value = cash + inventory * float(row.close)
+                equity_values.append(portfolio_value)
+                per_hour_rows.append(
+                    {
+                        "timestamp": row.timestamp,
+                        "portfolio_value": portfolio_value,
+                        "cash": cash,
+                        "inventory": inventory,
+                        "buy_filled": float(executed_buy > 0),
+                        "sell_filled": float(executed_sell > 0),
+                        "forced_close": float(forced_close),
+                        "market_open": float(is_market_open),
+                    }
+                )
+
+            equity_curve = pd.Series(equity_values, index=frame["timestamp"].values)
+            per_hour = pd.DataFrame(per_hour_rows)
+            metrics = self._compute_metrics(equity_curve, float(meta["periods_per_year"]))
+            return SymbolSimulationResult(
+                symbol=symbol,
+                equity_curve=equity_curve,
+                trades=trades,
+                per_hour=per_hour,
+                final_cash=cash,
+                final_inventory=inventory,
+                metrics=metrics,
+            )
+
         cash = float(initial_cash)
         normal_inventory = 0.0
         probe_inventory = 0.0

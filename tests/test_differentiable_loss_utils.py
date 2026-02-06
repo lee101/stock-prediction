@@ -6,6 +6,7 @@ from differentiable_loss_utils import (
     approx_sell_fill_probability,
     combined_sortino_pnl_loss,
     simulate_hourly_trades,
+    simulate_hourly_trades_binary,
 )
 
 
@@ -106,3 +107,32 @@ def test_simulation_caps_extreme_trade_intensity_by_leverage_limit() -> None:
 
     # 1.2x of equity at price 1 should keep position close to 1.2 units
     assert result.inventory <= 1.25
+
+
+def test_binary_simulation_supports_short_only_mode() -> None:
+    highs = torch.tensor([1.20, 1.00])
+    lows = torch.tensor([1.00, 0.80])
+    closes = torch.tensor([1.00, 0.90])
+    buy_prices = torch.tensor([0.90, 0.85])
+    # Second-hour sell_price deliberately above high so we don't re-short while covering.
+    sell_prices = torch.tensor([1.10, 1.50])
+    trade_intensity = torch.tensor([1.0, 1.0])
+
+    result = simulate_hourly_trades_binary(
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        buy_prices=buy_prices,
+        sell_prices=sell_prices,
+        trade_intensity=trade_intensity,
+        initial_cash=1.0,
+        maker_fee=DEFAULT_MAKER_FEE_RATE,
+        can_short=True,
+        can_long=False,
+    )
+
+    # Open short on hour 0 (sell fill), cover on hour 1 (buy fill), end flat with profit.
+    assert result.executed_sells[..., 0] > 0
+    assert result.executed_buys[..., 1] > 0
+    assert result.inventory.abs() < 1e-4
+    assert result.cash > 1.0

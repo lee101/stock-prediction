@@ -33,6 +33,9 @@ class DatasetConfig:
     vol_regime_long: int = 168
     rsi_window: int = 14
     allow_mixed_asset_class: bool = False
+    allow_short: bool = False
+    long_only_symbols: Tuple[str, ...] = ()
+    short_only_symbols: Tuple[str, ...] = ()
 
     def resolved_data_root(self) -> Path:
         if self.data_root is not None:

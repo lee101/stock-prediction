@@ -84,6 +84,9 @@ def main() -> None:
     parser.add_argument("--allow-reentry-same-bar", action="store_true")
     parser.add_argument("--no-enforce-market-hours", action="store_true")
     parser.add_argument("--no-close-at-eod", action="store_true")
+    parser.add_argument("--allow-short", action="store_true", help="Allow selector to open short positions (stocks only).")
+    parser.add_argument("--long-only-symbols", default=None, help="Comma-separated symbols to restrict to long-only.")
+    parser.add_argument("--short-only-symbols", default=None, help="Comma-separated symbols to restrict to short-only.")
     parser.add_argument("--eval-days", type=float, default=None)
     parser.add_argument("--eval-hours", type=float, default=None)
     parser.add_argument("--output-dir", default=None)
@@ -199,6 +202,9 @@ def main() -> None:
         fee_by_symbol=fee_by_symbol,
         periods_per_year_by_symbol=periods_by_symbol,
         symbols=symbols,
+        allow_short=bool(args.allow_short),
+        long_only_symbols=[token.strip().upper() for token in (args.long_only_symbols or "").split(",") if token.strip()],
+        short_only_symbols=[token.strip().upper() for token in (args.short_only_symbols or "").split(",") if token.strip()],
     )
 
     result = run_best_trade_simulation(bars, actions, cfg, horizon=args.horizon)

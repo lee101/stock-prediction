@@ -28,6 +28,9 @@ def _parse_symbols(raw: str) -> List[str]:
 def _parse_float_list(raw: str) -> List[float]:
     return [float(x) for x in raw.split(",") if x.strip()]
 
+def _parse_int_list(raw: str) -> List[int]:
+    return [int(x) for x in raw.split(",") if x.strip()]
+
 
 def _load_model(checkpoint_path: Path, input_dim: int, sequence_length: int) -> torch.nn.Module:
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -84,8 +87,16 @@ def main() -> None:
     parser.add_argument("--risk-weight-list", default="0.25,0.5,0.75")
     parser.add_argument("--edge-modes", default="high_low")
     parser.add_argument("--dip-threshold-list", default="0.0,0.005,0.01")
+    parser.add_argument(
+        "--max-hold-hours-list",
+        default="0",
+        help="Comma-separated max-hold hours (0 disables). Example: 0,6,12,24",
+    )
     parser.add_argument("--eval-days", type=float, default=10.0)
     parser.add_argument("--output-dir", default="alpacanewccrosslearning/outputs/selector_sweeps")
+    parser.add_argument("--allow-short", action="store_true", help="Allow selector to open short positions (stocks only).")
+    parser.add_argument("--long-only-symbols", default=None, help="Comma-separated symbols to restrict to long-only.")
+    parser.add_argument("--short-only-symbols", default=None, help="Comma-separated symbols to restrict to short-only.")
     args = parser.parse_args()
 
     device = require_cuda_device("selector sweep", allow_fallback=False)
@@ -172,12 +183,16 @@ def main() -> None:
     bars = pd.concat(bars_frames, ignore_index=True)
     base_actions = pd.concat(base_actions_frames, ignore_index=True)
 
+    long_only_symbols = [token.strip().upper() for token in (args.long_only_symbols or "").split(",") if token.strip()]
+    short_only_symbols = [token.strip().upper() for token in (args.short_only_symbols or "").split(",") if token.strip()]
+
     intensity_list = _parse_float_list(args.intensity_list)
     offset_list = _parse_float_list(args.offset_list)
     min_edge_list = _parse_float_list(args.min_edge_list)
     risk_weight_list = _parse_float_list(args.risk_weight_list)
     dip_list = _parse_float_list(args.dip_threshold_list)
     edge_modes = [mode.strip() for mode in args.edge_modes.split(",") if mode.strip()]
+    max_hold_list = _parse_int_list(args.max_hold_hours_list)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -193,6 +208,7 @@ def main() -> None:
                 "risk_weight",
                 "edge_mode",
                 "dip_threshold",
+                "max_hold_hours",
                 "total_return",
                 "sortino",
                 "final_cash",
@@ -221,42 +237,49 @@ def main() -> None:
                     else:
                         candidate_actions = actions
 
-                    for min_edge in min_edge_list:
-                        for risk_weight in risk_weight_list:
-                            for edge_mode in edge_modes:
-                                cfg = SelectionConfig(
-                                    initial_cash=10_000.0,
-                                    min_edge=float(min_edge),
-                                    risk_weight=float(risk_weight),
-                                    edge_mode=edge_mode,
-                                    allow_reentry_same_bar=False,
-                                    enforce_market_hours=True,
-                                    close_at_eod=True,
-                                    fee_by_symbol=fee_by_symbol,
-                                    periods_per_year_by_symbol=periods_by_symbol,
-                                    symbols=symbols,
-                                )
-                                result = run_best_trade_simulation(
-                                    bars,
-                                    candidate_actions,
-                                    cfg,
-                                    horizon=args.horizon,
-                                )
-                                metrics = result.metrics
-                                writer.writerow(
-                                    [
-                                        intensity,
-                                        offset,
-                                        min_edge,
-                                        risk_weight,
-                                        edge_mode,
-                                        dip_threshold,
-                                        metrics.get("total_return", 0.0),
-                                        metrics.get("sortino", 0.0),
-                                        result.final_cash,
-                                        result.open_symbol,
-                                    ]
-                                )
+                    for max_hold_hours_raw in max_hold_list:
+                        max_hold_hours = int(max_hold_hours_raw) if int(max_hold_hours_raw) > 0 else None
+                        for min_edge in min_edge_list:
+                            for risk_weight in risk_weight_list:
+                                for edge_mode in edge_modes:
+                                    cfg = SelectionConfig(
+                                        initial_cash=10_000.0,
+                                        min_edge=float(min_edge),
+                                        risk_weight=float(risk_weight),
+                                        edge_mode=edge_mode,
+                                        max_hold_hours=max_hold_hours,
+                                        allow_reentry_same_bar=False,
+                                        enforce_market_hours=True,
+                                        close_at_eod=True,
+                                        fee_by_symbol=fee_by_symbol,
+                                        periods_per_year_by_symbol=periods_by_symbol,
+                                        symbols=symbols,
+                                        allow_short=bool(args.allow_short),
+                                        long_only_symbols=long_only_symbols,
+                                        short_only_symbols=short_only_symbols,
+                                    )
+                                    result = run_best_trade_simulation(
+                                        bars,
+                                        candidate_actions,
+                                        cfg,
+                                        horizon=args.horizon,
+                                    )
+                                    metrics = result.metrics
+                                    writer.writerow(
+                                        [
+                                            intensity,
+                                            offset,
+                                            min_edge,
+                                            risk_weight,
+                                            edge_mode,
+                                            dip_threshold,
+                                            max_hold_hours or 0,
+                                            metrics.get("total_return", 0.0),
+                                            metrics.get("sortino", 0.0),
+                                            result.final_cash,
+                                            result.open_symbol,
+                                        ]
+                                    )
 
     print(f"Saved sweep results to {csv_path}")
 

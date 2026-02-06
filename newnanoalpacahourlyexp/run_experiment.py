@@ -130,6 +130,10 @@ def evaluate_model(
     device: Optional[torch.device] = None,
 ) -> ExperimentResult:
     val_frame = data.val_dataset.frame
+    cfg = getattr(data, "config", None) or getattr(data, "base_config", None)
+    seq_len = int(getattr(cfg, "sequence_length", 0) or 0)
+    if seq_len <= 0:
+        raise ValueError("Data module is missing a valid sequence_length; cannot run evaluation.")
 
     def _actions_for_horizon(target_horizon: int):
         if aggregate:
@@ -138,7 +142,7 @@ def evaluate_model(
                 frame=val_frame,
                 feature_columns=data.feature_columns,
                 normalizer=data.normalizer,
-                base_sequence_length=data.config.sequence_length,
+                base_sequence_length=seq_len,
                 horizon=target_horizon,
                 experiment=experiment_cfg,
                 device=device,
@@ -149,7 +153,7 @@ def evaluate_model(
             frame=val_frame,
             feature_columns=data.feature_columns,
             normalizer=data.normalizer,
-            sequence_length=data.config.sequence_length,
+            sequence_length=seq_len,
             horizon=target_horizon,
             device=device,
             require_gpu=True,
@@ -182,6 +186,9 @@ def evaluate_model(
             close_at_eod=close_at_eod,
             fee_by_symbol={data.asset_meta.symbol: fee_value},
             periods_per_year_by_symbol={data.asset_meta.symbol: data.asset_meta.periods_per_year},
+            allow_short=bool(getattr(cfg, "allow_short", False)),
+            long_only_symbols=list(getattr(cfg, "long_only_symbols", ()) or ()),
+            short_only_symbols=list(getattr(cfg, "short_only_symbols", ()) or ()),
         )
     )
     result = sim.run(val_frame, actions)

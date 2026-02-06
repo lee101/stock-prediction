@@ -95,3 +95,33 @@ def test_eod_close_forces_flat_position() -> None:
     assert result.final_inventory == 0.0
     reasons = {trade.reason for trade in result.trades if trade.side == "sell"}
     assert "eod" in reasons
+
+
+def test_simulator_allows_short_when_enabled_for_short_only_stock() -> None:
+    symbol = "EBAY"
+    ts = [
+        datetime(2025, 1, 2, 19, 30, tzinfo=timezone.utc),
+        datetime(2025, 1, 2, 20, 30, tzinfo=timezone.utc),
+    ]
+    bars = _bars(symbol, ts, prices=[100.0, 95.0])
+    # Make the first bar short-entry (sell fill), second bar cover (buy fill).
+    bars.loc[0, "high"] = 106.0
+    bars.loc[0, "low"] = 99.0
+    bars.loc[1, "high"] = 97.0
+    bars.loc[1, "low"] = 90.0
+
+    actions = _actions(symbol, ts, buy_price=92.0, sell_price=104.0)
+
+    sim = AlpacaMarketSimulator(
+        SimulationConfig(
+            initial_cash=1000.0,
+            enforce_market_hours=False,
+            close_at_eod=False,
+            allow_short=True,
+            fee_by_symbol={symbol: 0.0},
+        )
+    )
+    result = sim.run(bars, actions).per_symbol[symbol]
+    assert result.final_inventory == 0.0
+    assert result.final_cash > 1000.0
+    assert [t.side for t in result.trades] == ["sell", "buy"]
