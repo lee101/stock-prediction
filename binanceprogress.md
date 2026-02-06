@@ -1,8 +1,13 @@
 # Binance Progress Log
 
-Updated: 2026-02-05
+Updated: 2026-02-06
 
 ## Notes / Fixes
+- Refreshed `trainingdatahourly/` via Alpaca (up to 2026-02-06) and rebuilt `trainingdatahourlybinance/` (Binance symbol aliases as symlinks to Alpaca hourly CSVs, while preserving any real Binance-downloaded files already present).
+- Fixed Chronos multi-step horizon alignment in `binanceneural/forecasts.py` (previously multi-horizon caches effectively used the 1-step prediction for every horizon). Any cached forecasts for horizons >1 generated before 2026-02-06 should be considered invalid and rebuilt before comparing multi-horizon PnL/MAE runs.
+- Added stable-quote symbol utilities + tests, plus a builder script for `trainingdatahourlybinance/`.
+  - New: `src/binance_symbol_utils.py`, `tests/test_binance_symbol_utils.py`, `scripts/build_trainingdatahourlybinance.py`.
+- Fixed `refresh_daily_inputs.py` / `update_key_forecasts.py` to run forecast refresh under the active venv interpreter (was calling system `python`, breaking `chronos` imports) and corrected log formatting.
 - Added `binancecrosslearning/` pipeline (multi-symbol Chronos2 fine-tune + global policy + selector) with Binance defaults.
 - Extended crypto symbol detection + fee heuristics for stable-quote pairs (USDT/FDUSD/USDC/etc); added tests.
 - Added `state_dict`-aware max_len inference when loading classic models so positional encoding buffers match checkpoint shapes.

@@ -251,21 +251,15 @@ class MultiQueryAttention(nn.Module):
     def _sliding_window_mask(self, seq_len: int, device: torch.device) -> torch.Tensor | None:
         if self.attention_window is None:
             return None
-        if (
-            self._window_mask is None
-            or self._window_mask_len < seq_len
-            or self._window_mask_device != device
-        ):
-            idx = torch.arange(seq_len, device=device)
-            dist = idx[:, None] - idx[None, :]
-            if self.causal:
-                mask = (dist >= 0) & (dist < self.attention_window)
-            else:
-                mask = dist.abs() < self.attention_window
-            self._window_mask = mask
-            self._window_mask_len = seq_len
-            self._window_mask_device = device
-        return self._window_mask[:seq_len, :seq_len]
+        # NOTE: Do not cache this mask on the module during torch.compile() runs.
+        # Torch Inductor may wrap forward in CUDAGraphs and reuse output buffers
+        # between steps; holding onto an output tensor (e.g. via self._window_mask)
+        # can trigger "overwritten by a subsequent run" errors.
+        idx = torch.arange(seq_len, device=device)
+        dist = idx[:, None] - idx[None, :]
+        if self.causal:
+            return (dist >= 0) & (dist < self.attention_window)
+        return dist.abs() < self.attention_window
 
 
 class FeedForward(nn.Module):

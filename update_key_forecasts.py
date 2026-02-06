@@ -54,7 +54,7 @@ def collect_forecasts(
     print(f"Updating Chronos forecasts for {len(symbol_list)} symbols: {symbol_list}")
 
     cmd = [
-        "python",
+        sys.executable,
         "-m",
         "strategytrainingneural.collect_forecasts",
         "--data-dir",

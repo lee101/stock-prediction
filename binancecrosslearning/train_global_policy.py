@@ -88,6 +88,15 @@ def main() -> None:
     parser.add_argument("--forecast-cache-root", default="binancecrosslearning/forecast_cache")
     parser.add_argument("--data-root", default="trainingdatahourlybinance")
     parser.add_argument(
+        "--max-feature-lookback-hours",
+        type=int,
+        default=None,
+        help="Limit the number of most-recent hours used to build features. "
+        "Set to 0 to disable trimming. "
+        "Must be large enough to support your rolling windows (e.g. moving averages) "
+        "and min-history-hours.",
+    )
+    parser.add_argument(
         "--moving-average-windows",
         default=None,
         help="Override MA windows (comma-separated hours).",
@@ -125,6 +134,11 @@ def main() -> None:
         forecast_cache_root=Path(args.forecast_cache_root),
         moving_average_windows=ma_windows,
         min_history_hours=min_history_hours,
+        max_feature_lookback_hours=(
+            args.max_feature_lookback_hours
+            if args.max_feature_lookback_hours is not None
+            else DatasetConfig().max_feature_lookback_hours
+        ),
     )
     data = AlpacaMultiSymbolDataModule(symbols, data_cfg)
 

@@ -27,6 +27,7 @@ from loguru import logger
 from kronostraining.metrics_utils import compute_mae_percent
 from preaug_sweeps.augmentations import AUGMENTATION_REGISTRY, get_augmentation
 from src.preaug import PreAugmentationChoice, PreAugmentationSelector
+from src.binance_symbol_utils import proxy_symbol_to_usd
 
 DEFAULT_MODEL_ID = "amazon/chronos-2"
 DEFAULT_TARGET_COLS = ("open", "high", "low", "close")
@@ -375,14 +376,20 @@ def _resolve_preaug_choice(
         )
 
     selector = PreAugmentationSelector(best_dirs=preaug_dirs)
-    choice = selector.get_choice(symbol)
-    if choice is None and symbol.endswith("USDT"):
-        choice = selector.get_choice(symbol.replace("USDT", "USD"))
-    if choice is None and symbol.endswith("USD"):
-        choice = selector.get_choice(symbol.replace("USD", "USDT"))
-    if choice is None:
-        return None, None
-    return choice, str(choice.source_path)
+    candidates: List[str] = [symbol]
+    if symbol.endswith("USDT"):
+        candidates.append(symbol.replace("USDT", "USD"))
+    proxy = proxy_symbol_to_usd(symbol)
+    if proxy and proxy not in candidates:
+        candidates.append(proxy)
+    if symbol.endswith("USD"):
+        candidates.append(symbol.replace("USD", "USDT"))
+
+    for candidate in candidates:
+        choice = selector.get_choice(candidate)
+        if choice is not None:
+            return choice, str(choice.source_path)
+    return None, None
 
 
 def _select_best_preaug(
