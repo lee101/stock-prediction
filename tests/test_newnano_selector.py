@@ -237,6 +237,40 @@ def test_stock_market_hours_blocks_trades_outside_session():
     assert math.isclose(result.final_cash, 10_000.0, rel_tol=0, abs_tol=1e-9)
 
 
+def test_stock_market_hours_blocks_covering_short_outside_session() -> None:
+    bars, actions = _make_two_step_frames(
+        symbol="EBAY",
+        t0="2026-01-02T19:30:00Z",  # 14:30 NY time, within regular session
+        t1="2026-01-03T03:00:00Z",  # 22:00 NY time (previous day), outside regular session
+        buy_price=92.0,
+        sell_price=104.0,
+        low0=99.0,
+        high0=106.0,
+        low1=90.0,
+        high1=97.0,
+        close0=100.0,
+        close1=95.0,
+        buy_amount0=0.0,
+        sell_amount0=1.0,  # open short
+        buy_amount1=1.0,  # attempt to cover out-of-session
+        sell_amount1=0.0,
+    )
+    cfg = SelectionConfig(
+        initial_cash=1000.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=True,
+        close_at_eod=False,
+        fee_by_symbol={"EBAY": 0.0},
+        allow_short=True,
+    )
+    result = run_best_trade_simulation(bars, actions, cfg, horizon=1)
+    assert [t.side for t in result.trades] == ["sell"]
+    assert result.open_symbol == "EBAY"
+    assert result.final_inventory < 0.0
+
+
 def test_selector_force_closes_after_max_hold_hours():
     bars = pd.DataFrame(
         {
