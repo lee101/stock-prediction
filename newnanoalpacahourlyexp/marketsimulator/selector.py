@@ -35,6 +35,11 @@ class SelectionConfig:
     allow_short: bool = False
     long_only_symbols: Optional[Sequence[str]] = None
     short_only_symbols: Optional[Sequence[str]] = None
+    # Leverage/financing realism knobs (defaults preserve legacy behaviour).
+    max_leverage_stock: float = 1.0
+    max_leverage_crypto: float = 1.0
+    margin_interest_annual: float = 0.0
+    short_borrow_cost_annual: float = 0.0
 
 
 @dataclass
@@ -142,6 +147,8 @@ def _run_best_trade_simulation_on_merged(
     open_symbol: Optional[str] = None
     open_ts: Optional[pd.Timestamp] = None
     last_close: Dict[str, float] = {}
+    financing_cost_paid = 0.0
+    prev_ts: Optional[pd.Timestamp] = None
     equity_values: List[float] = []
     per_hour_rows: List[Dict[str, float | str]] = []
     trades: List[SelectorTradeRecord] = []
@@ -247,6 +254,30 @@ def _run_best_trade_simulation_on_merged(
         for row in group.itertuples(index=False):
             last_close[str(row.symbol)] = float(row.close)
 
+        if prev_ts is not None:
+            dt = ts - prev_ts
+            delta_hours = float(getattr(dt, "total_seconds", lambda: 0.0)() / 3600.0)
+            if np.isfinite(delta_hours) and delta_hours > 0.0:
+                if cfg.margin_interest_annual:
+                    debt = max(0.0, -float(cash))
+                    if debt > 0.0:
+                        rate_per_hour = float(cfg.margin_interest_annual) / (365.0 * 24.0)
+                        cost = debt * rate_per_hour * delta_hours
+                        if np.isfinite(cost) and cost > 0.0:
+                            cash -= float(cost)
+                            financing_cost_paid += float(cost)
+                if cfg.short_borrow_cost_annual and open_symbol is not None and inventory < 0.0:
+                    price = last_close.get(open_symbol)
+                    if price is None:
+                        price = last_close.get(str(open_symbol).upper())
+                    if price is not None and price > 0.0:
+                        borrow_notional = abs(float(inventory)) * float(price)
+                        rate_per_hour = float(cfg.short_borrow_cost_annual) / (365.0 * 24.0)
+                        cost = borrow_notional * rate_per_hour * delta_hours
+                        if np.isfinite(cost) and cost > 0.0:
+                            cash -= float(cost)
+                            financing_cost_paid += float(cost)
+
         if open_symbol and max_hold_delta is not None and cfg.force_close_on_max_hold and open_ts is not None:
             if ts - open_ts >= max_hold_delta:
                 row = _lookup_symbol_row(group, open_symbol)
@@ -331,7 +362,11 @@ def _run_best_trade_simulation_on_merged(
                 selected_score, selected_symbol, direction, row, intensity = candidates[0]
                 fee_rate = symbol_meta[selected_symbol]["fee"]
                 if direction == "long":
-                    max_buy = cash / (row.buy_price * (1 + fee_rate)) if row.buy_price > 0 else 0.0
+                    max_leverage = float(symbol_meta[selected_symbol].get("max_leverage", 1.0))
+                    max_buy_notional = max(0.0, float(cash) * max_leverage)
+                    max_buy = (
+                        max_buy_notional / (row.buy_price * (1 + fee_rate)) if row.buy_price > 0 else 0.0
+                    )
                     qty = intensity * max_buy
                     qty = _cap_qty(selected_symbol, qty)
                     if qty > 0:
@@ -339,8 +374,11 @@ def _run_best_trade_simulation_on_merged(
                         buy_filled = 1.0
                         current_price = float(row.close)
                 else:
-                    equity = cash  # flat at entry
-                    max_short = equity / (row.sell_price * (1 + fee_rate)) if row.sell_price > 0 else 0.0
+                    max_leverage = float(symbol_meta[selected_symbol].get("max_leverage", 1.0))
+                    max_short_notional = max(0.0, float(cash) * max_leverage)
+                    max_short = (
+                        max_short_notional / (row.sell_price * (1 + fee_rate)) if row.sell_price > 0 else 0.0
+                    )
                     qty = intensity * max(0.0, max_short)
                     qty = _cap_qty(selected_symbol, qty)
                     if qty > 0:
@@ -395,12 +433,15 @@ def _run_best_trade_simulation_on_merged(
                 "sell_filled": sell_filled,
                 "selected_symbol": selected_symbol,
                 "selected_score": selected_score,
+                "financing_cost_paid": float(financing_cost_paid),
             }
         )
+        prev_ts = ts
 
     equity_curve = pd.Series(equity_values, index=[row["timestamp"] for row in per_hour_rows])
     periods_per_year = _weighted_periods_per_year(symbol_meta, merged)
     metrics = _compute_metrics(equity_curve, periods_per_year)
+    metrics["financing_cost_paid"] = float(financing_cost_paid)
     return SelectorSimulationResult(
         equity_curve=equity_curve,
         per_hour=pd.DataFrame(per_hour_rows),
@@ -456,6 +497,9 @@ def _build_symbol_meta(merged: pd.DataFrame, cfg: SelectionConfig) -> Dict[str, 
             long_only_symbols=cfg.long_only_symbols,
             short_only_symbols=cfg.short_only_symbols,
         )
+        max_leverage = float(cfg.max_leverage_crypto) if asset_class == "crypto" else float(cfg.max_leverage_stock)
+        if not np.isfinite(max_leverage) or max_leverage <= 0.0:
+            raise ValueError(f"max_leverage must be > 0 for {symbol} (asset_class={asset_class}), got {max_leverage}.")
         if symbol in periods_map:
             periods_per_year = float(periods_map[symbol])
         else:
@@ -475,6 +519,7 @@ def _build_symbol_meta(merged: pd.DataFrame, cfg: SelectionConfig) -> Dict[str, 
             "eod_ts": eod_ts,
             "market_open_ts": market_open_ts,
             "directions": {"can_long": bool(dirs.can_long), "can_short": bool(dirs.can_short)},
+            "max_leverage": max_leverage,
         }
     return meta
 

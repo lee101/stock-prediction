@@ -316,3 +316,65 @@ def test_selector_can_short_when_enabled_for_short_only_stock() -> None:
     assert [t.side for t in result.trades] == ["sell", "buy"]
     assert result.open_symbol is None
     assert result.final_cash > 1000.0
+
+
+def test_selector_allows_stock_leverage_when_configured() -> None:
+    bars, actions = _make_two_step_frames(
+        symbol="NVDA",
+        t0="2026-01-01T00:00:00Z",
+        t1="2026-01-01T01:00:00Z",
+        buy_price=100.0,
+        sell_price=112.0,
+        low0=99.0,
+        high0=101.0,
+        low1=100.0,
+        high1=115.0,
+        close0=100.0,
+        close1=114.0,
+    )
+    cfg = SelectionConfig(
+        initial_cash=10_000.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=False,
+        close_at_eod=False,
+        fee_by_symbol={"NVDA": 0.0},
+        max_leverage_stock=2.0,
+    )
+    result = run_best_trade_simulation(bars, actions, cfg, horizon=1)
+    assert [t.side for t in result.trades] == ["buy", "sell"]
+    assert result.trades[0].quantity == pytest.approx(200.0, abs=1e-9)
+    assert result.final_cash == pytest.approx(12_400.0, abs=1e-6)
+
+
+def test_selector_charges_margin_interest_on_debit_cash() -> None:
+    bars, actions = _make_two_step_frames(
+        symbol="NVDA",
+        t0="2026-01-01T00:00:00Z",
+        t1="2026-01-01T01:00:00Z",
+        buy_price=100.0,
+        sell_price=112.0,
+        low0=99.0,
+        high0=101.0,
+        low1=100.0,
+        high1=115.0,
+        close0=100.0,
+        close1=114.0,
+    )
+    annual_rate = 0.0675
+    cfg = SelectionConfig(
+        initial_cash=10_000.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=False,
+        close_at_eod=False,
+        fee_by_symbol={"NVDA": 0.0},
+        max_leverage_stock=2.0,
+        margin_interest_annual=annual_rate,
+    )
+    result = run_best_trade_simulation(bars, actions, cfg, horizon=1)
+    expected_cost = 10_000.0 * annual_rate / (365.0 * 24.0)
+    assert result.metrics.get("financing_cost_paid") == pytest.approx(expected_cost, rel=0, abs=1e-6)
+    assert result.final_cash == pytest.approx(12_400.0 - expected_cost, rel=0, abs=1e-5)
