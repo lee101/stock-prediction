@@ -299,6 +299,9 @@ def _run_best_trade_simulation_on_merged(
             if row is not None and not forced_close:
                 buy_intensity, sell_intensity = _extract_intensity(row)
                 if not _is_tradable(symbol_meta, open_symbol, ts, cfg):
+                    # Treat out-of-session bars as non-tradable for both sides so we do not
+                    # accidentally cover shorts (buy) when market-hours enforcement is enabled.
+                    buy_intensity = 0.0
                     sell_intensity = 0.0
                 if inventory > 0:
                     sell_fill = bool(row.high >= row.sell_price and sell_intensity > 0)
