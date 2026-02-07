@@ -97,6 +97,20 @@ def main() -> None:
     parser.add_argument("--allow-short", action="store_true", help="Allow selector to open short positions (stocks only).")
     parser.add_argument("--long-only-symbols", default=None, help="Comma-separated symbols to restrict to long-only.")
     parser.add_argument("--short-only-symbols", default=None, help="Comma-separated symbols to restrict to short-only.")
+    parser.add_argument("--max-leverage-stock", type=float, default=1.0, help="Max gross leverage for stocks (default 1.0).")
+    parser.add_argument("--max-leverage-crypto", type=float, default=1.0, help="Max gross leverage for crypto (default 1.0).")
+    parser.add_argument(
+        "--margin-interest-annual",
+        type=float,
+        default=0.0,
+        help="Annualized margin interest rate applied to negative cash (default 0.0).",
+    )
+    parser.add_argument(
+        "--short-borrow-cost-annual",
+        type=float,
+        default=0.0,
+        help="Annualized borrow cost applied to short notional (default 0.0).",
+    )
     args = parser.parse_args()
 
     device = require_cuda_device("selector sweep", allow_fallback=False)
@@ -259,6 +273,10 @@ def main() -> None:
                                         allow_short=bool(args.allow_short),
                                         long_only_symbols=long_only_symbols,
                                         short_only_symbols=short_only_symbols,
+                                        max_leverage_stock=float(args.max_leverage_stock),
+                                        max_leverage_crypto=float(args.max_leverage_crypto),
+                                        margin_interest_annual=float(args.margin_interest_annual),
+                                        short_borrow_cost_annual=float(args.short_borrow_cost_annual),
                                     )
                                     result = run_best_trade_simulation(
                                         bars,
