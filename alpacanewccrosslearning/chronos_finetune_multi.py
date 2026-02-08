@@ -11,7 +11,7 @@ from loguru import logger
 from chronos2_trainer import TrainerConfig, _fit_pipeline, _load_pipeline, _save_pipeline
 from src.torch_device_utils import require_cuda as require_cuda_device
 
-from .data import CovariateConfig, build_inputs_for_symbols
+from .data import CovariateConfig, build_inputs_for_symbols, build_grouped_inputs_for_symbols
 
 
 def _parse_symbols(raw: str) -> List[str]:
@@ -72,6 +72,16 @@ def main() -> None:
     parser.add_argument("--no-body-pct", action="store_true")
     parser.add_argument("--preaug-strategy", default=None, help="Pre-augmentation strategy (baseline, percent_change, log_returns, etc).")
     parser.add_argument("--preaug-params", default=None, help="JSON dict of params for pre-augmentation.")
+    parser.add_argument(
+        "--group-symbols",
+        action="store_true",
+        help="Enable cross-attention: group correlated symbols into joint Chronos2 tasks.",
+    )
+    parser.add_argument(
+        "--symbol-groups",
+        default=None,
+        help='JSON list of symbol groups, e.g. \'[["BTCUSD","ETHUSD"],["SOLUSD","LINKUSD"]]\'.',
+    )
     args = parser.parse_args()
 
     require_cuda_device("chronos2 multi-symbol fine-tune", allow_fallback=False)
@@ -80,8 +90,8 @@ def main() -> None:
     cov_cfg = _build_covariate_config(args)
 
     preaug_params = json.loads(args.preaug_params) if args.preaug_params else None
-    train_inputs, val_inputs = build_inputs_for_symbols(
-        symbols,
+
+    _data_kwargs = dict(
         data_root=Path(args.data_root) if args.data_root else None,
         crypto_root=Path(args.crypto_data_root) if args.crypto_data_root else None,
         stock_root=Path(args.stock_data_root) if args.stock_data_root else None,
@@ -90,6 +100,15 @@ def main() -> None:
         preaug_strategy=args.preaug_strategy,
         preaug_params=preaug_params,
     )
+
+    if args.group_symbols:
+        groups = json.loads(args.symbol_groups) if args.symbol_groups else None
+        logger.info("Using grouped cross-attention with groups={}", groups or "default")
+        train_inputs, val_inputs = build_grouped_inputs_for_symbols(
+            symbols, groups=groups, **_data_kwargs,
+        )
+    else:
+        train_inputs, val_inputs = build_inputs_for_symbols(symbols, **_data_kwargs)
 
     run_name = args.run_name or time.strftime("chronos2_multi_%Y%m%d_%H%M%S")
     output_root = Path(args.output_root)
@@ -154,6 +173,8 @@ def main() -> None:
             "targets": [token.strip() for token in args.lora_targets.split(",") if token.strip()],
             "merge": bool(args.merge_lora),
         },
+        "group_symbols": bool(args.group_symbols),
+        "symbol_groups": json.loads(args.symbol_groups) if args.symbol_groups else None,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2))

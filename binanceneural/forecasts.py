@@ -369,13 +369,18 @@ def build_forecast_bundle(
                 "predicted_low_p50": f"predicted_low_p50{suffix}",
             }
         )
-        horizon_frame = horizon_frame[[
+        keep_cols = [
             "timestamp",
             "symbol",
             f"predicted_close_p50{suffix}",
             f"predicted_high_p50{suffix}",
             f"predicted_low_p50{suffix}",
-        ]]
+        ]
+        # Include quantile spread columns when available (for confidence features).
+        for extra in (f"predicted_close_p10{suffix}", f"predicted_close_p90{suffix}"):
+            if extra in horizon_frame.columns:
+                keep_cols.append(extra)
+        horizon_frame = horizon_frame[keep_cols]
         if merged is None:
             merged = horizon_frame
         else:

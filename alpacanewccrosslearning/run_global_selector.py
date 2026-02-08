@@ -101,6 +101,7 @@ def main() -> None:
         default=0.0,
         help="Annualized borrow cost applied to short notional (default 0.0).",
     )
+    parser.add_argument("--max-concurrent-positions", type=int, default=1, help="Hold up to N positions simultaneously (default 1 = legacy).")
     parser.add_argument("--eval-days", type=float, default=None)
     parser.add_argument("--eval-hours", type=float, default=None)
     parser.add_argument("--output-dir", default=None)
@@ -223,6 +224,7 @@ def main() -> None:
         max_leverage_crypto=float(args.max_leverage_crypto),
         margin_interest_annual=float(args.margin_interest_annual),
         short_borrow_cost_annual=float(args.short_borrow_cost_annual),
+        max_concurrent_positions=int(args.max_concurrent_positions),
     )
 
     result = run_best_trade_simulation(bars, actions, cfg, horizon=args.horizon)

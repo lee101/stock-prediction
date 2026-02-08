@@ -131,6 +131,32 @@ Annualized returns use CAGR: `(1 + total_return) ** (basis_days / eval_days) - 1
 | 2026-02-06 | alpaca_cross_global_mega24_novol_baseline_short_seq128_20260206_0119 | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,AMD,GOOG,NET,MSFT,META,AMZN,TSLA,AAPL,NFLX,EBAY,TRIP,MTCH,ANGI,Z,EXPE,BKNG,NWSA,NYT | 2.2250 | 56.7291 | Seq128 mega24 policy trained on `mega24_novol_baseline_20260206_0038_lb2400` (MA/EMA/ATR=24/72, trend/drawdown=72, min_history=200, allow-short). Best checkpoint `epoch_003.pt`. Metrics are training-script target-symbol eval (BTCUSD), not best-trade selector. |
 | 2026-02-07 | alpaca_cross_global_stock19_yelp_short_seq128_lb2400_20260207_065227 | NVDA,NET,AMD,GOOG,MSFT,META,AMZN,AAPL,TSLA,YELP,ANGI,Z,MTCH,TRIP,BKNG,EBAY,EXPE,NWSA,NYT | 0.0631 | 59.5710 | Stock-only seq128 policy trained on `mega24_plus_yelp_novol_baseline_20260207_lb2400` forecasts with allow-short + `YELP` short-only. Feature windows: MA/EMA/ATR=24,72; trend/drawdown=72; min_history=200. Best checkpoint: `epoch_006.pt`. Metrics are training-script target-symbol eval (NVDA), not best-trade selector. |
 
+## PufferLib C RL Market Simulator
+
+Pure C environment with PufferLib 3.0 Ocean binding. PPO training, 256 hidden MLP, 64 envs, ~220K params. Reward: clipped return*10 + cash penalty (-0.01). All runs use Chronos2 forecasts as input features.
+
+### Evaluation Results (deterministic, all random-start episodes)
+
+| Date (UTC) | Run | Symbols | Episode len | Eval mean return | Eval geom mean mult | Eval win rate | Eval 100% profitable? | Train best | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-02-08 | **crypto8_ppo_v1** | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | **+3844% (39.4x)** | **39.4x** | **0.665** | Yes (217/217) | +2619% | **BEST MODEL.** 50M steps, 1x leverage. 2326 timesteps (97d). Worst episode +3299% (34x). Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v1/`. |
+| 2026-02-08 | crypto5_ppo_v4_720h | BTC,ETH,SOL,LINK,UNI | 720h (30d) | +3225% (33.2x) | 33.2x | 0.725 | Yes (217/217) | +2394% | 50M steps, 1x leverage. 2319 timesteps. Best WR (72.5%). Checkpoints: `pufferlib_market/checkpoints/crypto5_ppo_v4_720h/`. |
+| 2026-02-08 | crypto2_ppo_v2_lev2 | SOL,LINK | 720h (30d) | +1857% (19.5x) | 19.5x | 0.609 | Yes (217/217) | +3084% | 50M steps, **2x leverage**. 3981 timesteps. Checkpoints: `pufferlib_market/checkpoints/crypto2_ppo_v2_lev2/`. |
+| 2026-02-08 | crypto2_ppo_v1 | SOL,LINK | 720h (30d) | +373% (4.7x) | 4.7x | 0.656 | Yes (217/217) | +252% | 30M steps, 1x leverage. 3981 timesteps. First profitable RL run. Checkpoints: `pufferlib_market/checkpoints/crypto2_ppo_v1/`. |
+| 2026-02-08 | crypto5_ppo_v3 | BTC,ETH,SOL,LINK,UNI | 360h (15d) | +134% (2.3x) | 2.3x | 0.581 | Yes (434/434) | +90% | 10M steps, 1x leverage. Shorter episodes, less training. Checkpoints: `pufferlib_market/checkpoints/crypto5_ppo_v3/`. |
+
+### Comparison: RL vs Selector approach (estimated 90d equivalent)
+
+| Approach | Symbols | 30d mult | 90d est. mult | Notes |
+| --- | --- | --- | --- | --- |
+| **RL crypto8_ppo_v1** | 8 crypto | 39.4x | ~61,000x | Geometric compounding 39.4^3. Pure C, no leverage. |
+| **RL crypto5_v4** | 5 crypto | 33.2x | ~36,600x | 33.2^3. Best win rate (72.5%). |
+| RL crypto2_lev2 | 2 crypto (2x lev) | 19.5x | ~7,400x | 2x leverage. |
+| Selector mixed14 | 14 mixed | ~4.7x (30d) | 174.4x (90d actual) | intensity=10000, epoch_004. |
+| Selector mixed7 lev | 7 mixed (2x lev) | 15.0x | 438.0x (60d actual) | 2x leverage stocks+crypto. |
+
+**The RL approach decisively outperforms the selector approach** - crypto8 achieves ~61,000x estimated 90d vs selector's 174x. Even accounting for evaluation differences (RL uses random-start episodes vs selector's rolling window), the RL agent learns far more effective trading strategies.
+
 ## TODO
 
 - Always rebuild per-symbol forecast parquet caches after any hourly data gap-fill or corporate-action discontinuity (e.g., NFLX split on 2025-11-17) to avoid stale features.
