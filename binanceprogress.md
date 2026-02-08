@@ -682,6 +682,56 @@ Best 30-day PnL so far: total_return=0.703753 (muon_momentum=0.975, skip_scale_i
 - Synced Chronos2 finetunes to R2:
   - `aws s3 sync chronos2_finetuned/ s3://models/stock/models/binance/chronos2_finetuned/ --endpoint-url "$R2_ENDPOINT"`
 
+## Crypto-to-Crypto Pairs (10bp maker fee)
+
+### Data collection
+- Pairs: ETHBTC, SOLETH, BNBETH, SOLBTC (non-zero-fee pairs, 10bp maker fee)
+- Output dir: `trainingdatahourlybinance/`
+- Download summary (UTC, 1h bars):
+  - ETHBTC: 26278 bars, 2023-02-08 22:00 -> 2026-02-07 20:00
+  - SOLETH: 26278 bars, 2023-02-08 22:00 -> 2026-02-07 20:00
+  - BNBETH: 26278 bars, 2023-02-08 22:00 -> 2026-02-07 20:00
+  - SOLBTC: 26278 bars, 2023-02-08 22:00 -> 2026-02-07 20:00
+
+### Chronos2 LoRA (crypto-cross, per-symbol)
+- Run id: `20260208_crypto_cross`
+- Summary: `reports/chronos2_lora_binance/binance_lora_20260208_crypto_cross_summary.md`
+
+| Symbol | Preaug | Val MAE% | Test MAE% | Val ret MAE | Test ret MAE | Output Dir |
+|---|---|---:|---:|---:|---:|---|
+| ETHBTC | differencing | 0.2525 | 0.4522 | 0.0025 | 0.0045 | `chronos2_finetuned/binance_lora_20260208_crypto_cross_ETHBTC` |
+| SOLETH | differencing | 0.2679 | 0.5023 | 0.0027 | 0.0050 | `chronos2_finetuned/binance_lora_20260208_crypto_cross_SOLETH` |
+| BNBETH | differencing | 0.3021 | 0.4460 | 0.0030 | 0.0044 | `chronos2_finetuned/binance_lora_20260208_crypto_cross_BNBETH` |
+| SOLBTC | differencing | 0.2993 | 0.5120 | 0.0030 | 0.0052 | `chronos2_finetuned/binance_lora_20260208_crypto_cross_SOLBTC` |
+
+### Forecast cache (crypto-cross)
+- Root: `binancecrosslearning/forecast_cache_crypto_cross_20260208/`
+- Horizons: h1/h4
+- Lookback: 5000h (up to 2026-02-07 20:00 UTC)
+- Forecast MAE%:
+  - ETHBTC: h1 0.3304, h4 0.6139
+  - SOLETH: h1 0.3475, h4 0.6456
+  - BNBETH: h1 0.3723, h4 0.7097
+  - SOLBTC: h1 0.4281, h4 0.7938
+
+### Global policy (crypto-cross, 10bp fee)
+- Train run: `crypto_cross_global_10bp_20260208` (10 epochs, seq=96, nano, muon_mix, horizons 1/4, cache-only, no-compile, maker_fee=0.001)
+- Best epoch: 6 (val sortino 243.26, val return 3.95)
+- Checkpoint: `binancecrosslearning/checkpoints/crypto_cross_global_10bp_20260208/epoch_006.pt`
+- Train script eval (ETHBTC): total_return=0.2772, sortino=13.32
+
+### Selector sweep (30d, 10bp fee, max_hold=6h, edge_mode=close)
+- Best: intensity=5.0 offset=0.00025 min_edge=0.002 risk_weight=0.0
+  - total_return=0.1817, sortino=24.91, final_cash=11817.22, open_symbol=None
+- Sweep dir: `binancecrosslearning/outputs/sweep_crypto_cross_10bp_20260208`
+- Top configs all clustered around intensity=2-10, offset=0-0.0005, min_edge=0.002
+
+### Selector sweep (90d, 10bp fee, max_hold=6h, edge_mode=close)
+- Best: intensity=5.0 offset=0.00025 min_edge=0.0 risk_weight=0.0
+  - total_return=0.4636, sortino=8.96, final_cash=14636.30, open_symbol=None
+- Sweep dir: `binancecrosslearning/outputs/sweep_crypto_cross_10bp_90d_20260208`
+- Note: 46.4% return over 90 days with 10bp fees per trade is solid given the fee drag.
+
 ## Next Experiments
 - Longer RL sweeps (e.g., 50k+ timesteps) with a grid over drawdown/volatility penalties.
 - Multi-horizon (1/4/24) variants with larger sequence length (96/128) and/or context_hours 2048 vs 3072.
@@ -839,3 +889,112 @@ Metrics (per-symbol)
 
 Combined (equal initial cash per symbol)
 - total_return 13.1723, sortino 97.3380
+
+## Binanceexp1 h1-only Fine-tuning (2026-02-07)
+
+### Training Summary
+
+All models trained with forecast_horizons=1 (h1-only), eliminating h24 cache dependency.
+
+| Symbol | Run | Epochs | Best Val Return | Test Return (i=1.0) |
+|--------|-----|--------|----------------|---------------------|
+| BTCUSD | btcusd_h1only_ft5_20260207 | 5 | 9.23 (ep4) | 2.26x, sortino 471 |
+| BTCUSD | btcusd_h1only_ft10_20260207 | 10 | ~similar | ~2.60x (no improvement) |
+| BTCUSD | btcusd_h1only_ft15_20260207 | 15 | 12.03 (ep15) | 13.7x (i=3.0 o=0.0), sortino 346 |
+| ETHUSD | ethusd_h1only_ft5_20260207 | 5 | 14.12 (ep5) | 4.72x, sortino 546 |
+| ETHUSD | ethusd_h1only_ft10_20260207 | 10 | 19.09 (ep10) | 12.95x, sortino 724 |
+| ETHUSD | ethusd_h1only_ft15_20260207 | 15 | 16.33 (ep15) | 76.3x (i=3.0 o=0.0003) |
+| SOLUSD | solusd_h1only_ft10_20260207 | 10 | 13.85 (ep10) | 11.56x, sortino 202 |
+| SOLUSD | solusd_h1only_ft15_20260207 | 15 | 11.50 (ep15) | 84.7x (i=3.0 o=0.0005) |
+
+### h1-only vs h1+h24 (same 30-day val window)
+
+| Symbol | h1+h24 Return | h1-only Return | Winner |
+|--------|--------------|----------------|--------|
+| BTCUSD | 2.59x sortino 123 | 2.69x sortino 348 | h1-only |
+| ETHUSD | 4.25x sortino 33 | 6.85x sortino 296 | h1-only |
+
+### Intensity/Offset Sweeps (val window, selected epochs)
+
+**BTCUSD ft5 ep5** (old, superseded by ft15 ep12):
+- i=3.0 o=0.0: 16.2x sortino 376
+
+**BTCUSD ft15 epoch comparison** (val sweep):
+- ft15 ep10 at i=3.0 o=0.0: 16.0x sortino 389
+- ft15 ep12 at i=3.0 o=0.0: **16.9x** sortino 373 (best return, deployed)
+- ft15 ep12 at i=5.0 o=0.0002: **19.1x** sortino 317
+- ft15 ep15 at i=3.0 o=0.0: 13.7x sortino 346 (overfit)
+
+**ETHUSD ft10 ep10** (val sweep, sorted by return at i=3.0):
+- i=3.0 o=0.0: 209.2x sortino 482
+- i=3.0 o=0.0002: 260.9x sortino 393
+- i=3.0 o=0.0003: 279.9x sortino 405
+- i=5.0 o=0.0003: 303.3x sortino 416
+- i=5.0 o=0.0005: 283.8x sortino 298
+
+**SOLUSD ft10 ep10** (val sweep, sorted by return at i=3.0):
+- i=3.0 o=0.0003: ~213x sortino ~77 (from top-10)
+- i=3.0 o=0.0005: 225.2x sortino 79.7
+- i=5.0 o=0.0005: 261.9x sortino 81.7
+
+**SOL epoch comparison (ft10, val sweep at best params)**:
+| Epoch | Best Return | Best Sortino |
+|-------|-----------|------------|
+| 5 | 58.0x (i=5.0 o=0.0005) | 71.1 |
+| 7 | 127.5x (i=5.0 o=0.0003) | 87.8 |
+| 9 | 137.1x (i=5.0 o=0.0005) | 71.8 |
+| 10 | 261.9x (i=5.0 o=0.0005) | 81.7 |
+
+**ETH epoch comparison (ft10, val sweep)**:
+| Epoch | Best Return | Best Sortino |
+|-------|-----------|------------|
+| 7 | 140.2x (i=5.0 o=0.0003) | 747.2 (i=5.0 o=0.0) |
+| 9 | 92.9x (i=5.0 o=0.0003) | 608.6 (i=5.0 o=0.0) |
+| 10 | 303.3x (i=5.0 o=0.0003) | 490.3 (i=5.0 o=0.0) |
+
+### ft20 Training (20 epochs, best results)
+
+| Symbol | Run | Best Val Return | Test Return |
+|--------|-----|----------------|-------------|
+| BTCUSD | btcusd_h1only_ft20_20260207 | 13.64 (ep20) | 25.3x (i=3.0 o=0.0), sortino 418 |
+| ETHUSD | ethusd_h1only_ft20_20260207 | 18.73 (ep20) | 309.9x (i=3.0 o=0.0003), sortino 547 |
+| SOLUSD | solusd_h1only_ft20_20260207 | 15.66 (ep19) | 70.4x (i=3.0 o=0.0005), sortino 127 |
+
+**BTC ft20 epoch sweep** (val window):
+- ep14: 13.3x sortino 340 (i=3.0 o=0.0)
+- **ep16: 32.1x sortino 414** (i=3.0 o=0.0) -- deployed
+- ep20: 25.3x sortino 418 (i=3.0 o=0.0)
+- ep16 best: 35.1x (i=5.0 o=0.0)
+
+**ETH ft20 epoch sweep** (val window, i=3.0 o=0.0003):
+- ep11: 148.1x sortino 406
+- ep14: 182.1x sortino 498
+- ep18: 274.4x sortino 400
+- **ep20: 309.4x sortino 547** -- deployed
+- ep20 best: 351.8x (i=5.0 o=0.0003)
+
+**SOL ft20** did not beat ft10 ep10 (225.2x vs 70.4x). ft10 ep10 retained.
+
+### ft15 Comparison (different random seed, did not beat ft10)
+
+- ETH ft15 ep12 at i=3.0 o=0.0003: 196.2x sortino 526 (vs ft10 ep10: 279.9x)
+- ETH ft15 ep15 at i=3.0 o=0.0003: 76.3x sortino 438
+- SOL ft15 ep15 at i=3.0 o=0.0005: 84.7x sortino 57 (vs ft10 ep10: 225.2x)
+
+### Deployed Configs (live on Binance, 2026-02-07)
+
+| Symbol | Checkpoint | Intensity | Offset | Mode |
+|--------|-----------|-----------|--------|------|
+| BTCUSD | btcusd_h1only_ft20_20260207/epoch_016.pt | 3.0 | 0.0 | cache-only |
+| ETHUSD | ethusd_h1only_ft20_20260207/epoch_020.pt | 3.0 | 0.0003 | cache-only |
+| SOLUSD | solusd_h1only_ft10_20260207/epoch_010.pt | 3.0 | 0.0005 | cache-only |
+
+All bots use `--cache-only` with dedicated `binanceexp1-cache-refresh` daemon handling Chronos2 inference.
+Environment: `BINANCE_DEFAULT_QUOTE="U"` (zero-fee U pairs).
+
+### Architecture (cache-only + refresh daemon)
+
+- Bots run `--cache-only` (no GPU needed, read forecast caches from disk)
+- Single `scripts/refresh_binanceexp1_caches.py` daemon refreshes price CSVs + forecast caches every 5 min
+- Eliminates GPU contention between multiple bot processes
+- Cache refresh supervisor: `supervisor/binanceexp1-cache-refresh.conf`
