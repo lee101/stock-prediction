@@ -348,8 +348,11 @@ def build_default_feature_columns(config: DatasetConfig) -> List[str]:
                 f"chronos_close_delta{suffix}",
                 f"chronos_high_delta{suffix}",
                 f"chronos_low_delta{suffix}",
+                f"forecast_confidence{suffix}",
             ]
         )
+    if len(config.forecast_horizons) >= 2:
+        columns.append("forecast_agreement")
     return columns
 
 
@@ -457,6 +460,24 @@ def build_feature_frame(frame: pd.DataFrame, config: DatasetConfig) -> pd.DataFr
             frame[f"chronos_high_delta{suffix}"] = (frame[high_col] - ref) / ref
         if low_col in frame.columns:
             frame[f"chronos_low_delta{suffix}"] = (frame[low_col] - ref) / ref
+        # Forecast confidence: inverse of quantile spread (narrow spread = high confidence).
+        p90_col = f"predicted_close_p90{suffix}"
+        p10_col = f"predicted_close_p10{suffix}"
+        if p90_col in frame.columns and p10_col in frame.columns:
+            spread = (frame[p90_col] - frame[p10_col]).abs()
+            frame[f"forecast_confidence{suffix}"] = ref / spread.clip(lower=1e-6)
+        else:
+            frame[f"forecast_confidence{suffix}"] = 0.0
+
+    # Multi-horizon forecast agreement: fraction of horizons agreeing on direction.
+    _close_deltas = []
+    for horizon in config.forecast_horizons:
+        col = f"chronos_close_delta_h{int(horizon)}"
+        if col in frame.columns:
+            _close_deltas.append(frame[col])
+    if len(_close_deltas) >= 2:
+        signs = pd.concat([d.apply(np.sign) for d in _close_deltas], axis=1)
+        frame["forecast_agreement"] = signs.mean(axis=1).abs()
 
     # Replace infinities so downstream normalization does not create NaNs.
     frame.replace([np.inf, -np.inf], np.nan, inplace=True)
