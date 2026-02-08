@@ -10,7 +10,7 @@ class DatasetConfig:
     symbol: str = "BTCUSD"
     data_root: Path = Path("trainingdatahourly") / "crypto"
     forecast_cache_root: Path = Path("binanceneural") / "forecast_cache"
-    forecast_horizons: Tuple[int, ...] = (1, 24)
+    forecast_horizons: Tuple[int, ...] = (1, 4, 12, 24)
     sequence_length: int = 96
     val_fraction: float = 0.15
     min_history_hours: int = 24 * 30

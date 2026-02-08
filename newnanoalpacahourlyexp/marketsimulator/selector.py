@@ -40,6 +40,8 @@ class SelectionConfig:
     max_leverage_crypto: float = 1.0
     margin_interest_annual: float = 0.0
     short_borrow_cost_annual: float = 0.0
+    # Multi-position: 1 = legacy single-position, 2+ = hold up to N simultaneously.
+    max_concurrent_positions: int = 1
 
 
 @dataclass
@@ -111,6 +113,8 @@ def run_best_trade_simulation_merged(
         if "volume" not in merged.columns:
             raise ValueError("max_volume_fraction requires a 'volume' column in bars/actions merge.")
 
+    if cfg.max_concurrent_positions > 1:
+        return _run_multi_position_simulation(merged, cfg, horizon=horizon)
     return _run_best_trade_simulation_on_merged(merged, cfg, horizon=horizon)
 
 
@@ -452,6 +456,226 @@ def _run_best_trade_simulation_on_merged(
         final_cash=cash,
         final_inventory=inventory,
         open_symbol=open_symbol,
+        metrics=metrics,
+    )
+
+
+def _run_multi_position_simulation(
+    merged: pd.DataFrame,
+    cfg: SelectionConfig,
+    *,
+    horizon: int,
+) -> SelectorSimulationResult:
+    """Multi-position variant: hold up to ``cfg.max_concurrent_positions`` simultaneously."""
+    merged = merged.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+    groups = merged.groupby("timestamp", sort=True)
+    symbol_meta = _build_symbol_meta(merged, cfg)
+
+    max_pos = max(1, int(cfg.max_concurrent_positions))
+    cash = float(cfg.initial_cash)
+    positions: Dict[str, float] = {}  # symbol -> signed qty
+    position_open_ts: Dict[str, pd.Timestamp] = {}
+    last_close: Dict[str, float] = {}
+    financing_cost_paid = 0.0
+    prev_ts: Optional[pd.Timestamp] = None
+    equity_values: List[float] = []
+    per_hour_rows: List[Dict[str, float | str]] = []
+    trades: List[SelectorTradeRecord] = []
+
+    max_hold_delta = None
+    if cfg.max_hold_hours is not None and cfg.max_hold_hours > 0:
+        max_hold_delta = pd.Timedelta(hours=int(cfg.max_hold_hours))
+
+    def _record(ts, symbol, side, price, qty, reason=None):
+        inv_after = positions.get(symbol, 0.0)
+        trades.append(SelectorTradeRecord(
+            timestamp=ts, symbol=symbol, side=side, price=float(price),
+            quantity=float(qty), cash_after=float(cash), inventory_after=float(inv_after),
+            reason=reason,
+        ))
+
+    for ts, group in groups:
+        for row in group.itertuples(index=False):
+            last_close[str(row.symbol)] = float(row.close)
+
+        # Financing costs.
+        if prev_ts is not None:
+            dt_hours = float((ts - prev_ts).total_seconds() / 3600.0)
+            if np.isfinite(dt_hours) and dt_hours > 0.0:
+                if cfg.margin_interest_annual:
+                    debt = max(0.0, -float(cash))
+                    if debt > 0.0:
+                        cost = debt * float(cfg.margin_interest_annual) / (365.0 * 24.0) * dt_hours
+                        if np.isfinite(cost) and cost > 0.0:
+                            cash -= cost
+                            financing_cost_paid += cost
+                if cfg.short_borrow_cost_annual:
+                    for sym, qty in positions.items():
+                        if qty < 0:
+                            price = last_close.get(sym, 0.0)
+                            if price > 0:
+                                notional = abs(qty) * price
+                                cost = notional * float(cfg.short_borrow_cost_annual) / (365.0 * 24.0) * dt_hours
+                                if np.isfinite(cost) and cost > 0.0:
+                                    cash -= cost
+                                    financing_cost_paid += cost
+
+        # --- Process exits for open positions ---
+        closed_symbols: List[str] = []
+        for sym in list(positions.keys()):
+            qty = positions[sym]
+            if abs(qty) < 1e-12:
+                closed_symbols.append(sym)
+                continue
+            row = _lookup_symbol_row(group, sym)
+            if row is None:
+                continue
+            fee_rate = symbol_meta[sym]["fee"]
+
+            # Max hold check.
+            if max_hold_delta is not None and cfg.force_close_on_max_hold:
+                open_at = position_open_ts.get(sym)
+                if open_at is not None and ts - open_at >= max_hold_delta:
+                    if qty > 0:
+                        cash += qty * float(row.close) * (1 - fee_rate)
+                        _record(ts, sym, "sell", float(row.close), qty, "max_hold")
+                    else:
+                        cash -= abs(qty) * float(row.close) * (1 + fee_rate)
+                        _record(ts, sym, "buy", float(row.close), abs(qty), "max_hold")
+                    closed_symbols.append(sym)
+                    continue
+
+            # EOD force-close for stocks.
+            if (
+                cfg.close_at_eod
+                and symbol_meta[sym]["asset_class"] == "stock"
+                and ts in symbol_meta[sym]["eod_ts"]
+            ):
+                if qty > 0:
+                    cash += qty * float(row.close) * (1 - fee_rate)
+                    _record(ts, sym, "sell", float(row.close), qty, "eod")
+                else:
+                    cash -= abs(qty) * float(row.close) * (1 + fee_rate)
+                    _record(ts, sym, "buy", float(row.close), abs(qty), "eod")
+                closed_symbols.append(sym)
+                continue
+
+            # Normal exit: check fill conditions.
+            if not _is_tradable(symbol_meta, sym, ts, cfg):
+                continue
+            buy_intensity, sell_intensity = _extract_intensity(row)
+            if qty > 0 and sell_intensity > 0 and row.high >= row.sell_price:
+                sell_qty = sell_intensity * qty
+                cash += sell_qty * float(row.sell_price) * (1 - fee_rate)
+                positions[sym] = qty - sell_qty
+                _record(ts, sym, "sell", float(row.sell_price), sell_qty)
+                if abs(positions[sym]) < 1e-12:
+                    closed_symbols.append(sym)
+            elif qty < 0 and buy_intensity > 0 and row.low <= row.buy_price:
+                cover_qty = buy_intensity * abs(qty)
+                cash -= cover_qty * float(row.buy_price) * (1 + fee_rate)
+                positions[sym] = qty + cover_qty
+                _record(ts, sym, "buy", float(row.buy_price), cover_qty)
+                if abs(positions[sym]) < 1e-12:
+                    closed_symbols.append(sym)
+
+        for sym in closed_symbols:
+            positions.pop(sym, None)
+            position_open_ts.pop(sym, None)
+
+        # --- Open new positions if slots available ---
+        n_slots = max_pos - len(positions)
+        if n_slots > 0:
+            candidates: List[Tuple[float, str, str, object, float]] = []
+            for row in group.itertuples(index=False):
+                symbol = str(row.symbol)
+                if symbol in positions:
+                    continue
+                if not _is_tradable(symbol_meta, symbol, ts, cfg):
+                    continue
+                fee_rate = symbol_meta[symbol]["fee"]
+                dirs = symbol_meta[symbol].get("directions") or {}
+
+                buy_intensity, sell_intensity = _extract_intensity(row)
+
+                if bool(dirs.get("can_long", True)) and buy_intensity > 0 and row.low <= row.buy_price:
+                    score = _edge_score_long(row, horizon=horizon, config=cfg, buy_intensity=buy_intensity, fee_rate=fee_rate)
+                    if score is not None and score >= cfg.min_edge:
+                        candidates.append((score, symbol, "long", row, buy_intensity))
+
+                if bool(dirs.get("can_short", False)) and sell_intensity > 0 and row.high >= row.sell_price:
+                    score = _edge_score_short(row, horizon=horizon, config=cfg, sell_intensity=sell_intensity, fee_rate=fee_rate)
+                    if score is not None and score >= cfg.min_edge:
+                        candidates.append((score, symbol, "short", row, sell_intensity))
+
+            candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            for score, symbol, direction, row, intensity in candidates[:n_slots]:
+                fee_rate = symbol_meta[symbol]["fee"]
+                # Size each new position using an equal share of available cash.
+                remaining_slots = max_pos - len(positions)
+                if remaining_slots <= 0:
+                    break
+                slot_cash = max(0.0, float(cash)) / remaining_slots
+                max_leverage = float(symbol_meta[symbol].get("max_leverage", 1.0))
+
+                if direction == "long":
+                    max_buy_notional = slot_cash * max_leverage
+                    max_buy = max_buy_notional / (row.buy_price * (1 + fee_rate)) if row.buy_price > 0 else 0.0
+                    qty = intensity * max_buy
+                    if qty > 0:
+                        cost = qty * float(row.buy_price) * (1 + fee_rate)
+                        cash -= cost
+                        positions[symbol] = positions.get(symbol, 0.0) + qty
+                        position_open_ts[symbol] = ts
+                        _record(ts, symbol, "buy", float(row.buy_price), qty)
+                else:
+                    max_short_notional = slot_cash * max_leverage
+                    max_short = max_short_notional / (row.sell_price * (1 + fee_rate)) if row.sell_price > 0 else 0.0
+                    qty = intensity * max(0.0, max_short)
+                    if qty > 0:
+                        proceeds = qty * float(row.sell_price) * (1 - fee_rate)
+                        cash += proceeds
+                        positions[symbol] = positions.get(symbol, 0.0) - qty
+                        position_open_ts[symbol] = ts
+                        _record(ts, symbol, "sell", float(row.sell_price), qty)
+
+        # --- Compute equity ---
+        portfolio_value = cash
+        for sym, qty in positions.items():
+            price = last_close.get(sym, 0.0)
+            portfolio_value += qty * price
+        equity_values.append(portfolio_value)
+
+        open_syms = ",".join(sorted(positions.keys())) if positions else ""
+        per_hour_rows.append({
+            "timestamp": ts,
+            "cash": cash,
+            "inventory": sum(positions.values()),
+            "open_symbol": open_syms,
+            "portfolio_value": portfolio_value,
+            "buy_filled": 0.0,
+            "sell_filled": 0.0,
+            "selected_symbol": "",
+            "selected_score": 0.0,
+            "financing_cost_paid": float(financing_cost_paid),
+            "num_positions": len(positions),
+        })
+        prev_ts = ts
+
+    equity_curve = pd.Series(equity_values, index=[row["timestamp"] for row in per_hour_rows])
+    periods_per_year = _weighted_periods_per_year(symbol_meta, merged)
+    metrics = _compute_metrics(equity_curve, periods_per_year)
+    metrics["financing_cost_paid"] = float(financing_cost_paid)
+
+    total_inv = sum(positions.values())
+    open_sym = ",".join(sorted(positions.keys())) if positions else None
+    return SelectorSimulationResult(
+        equity_curve=equity_curve,
+        per_hour=pd.DataFrame(per_hour_rows),
+        trades=trades,
+        final_cash=cash,
+        final_inventory=total_inv,
+        open_symbol=open_sym,
         metrics=metrics,
     )
 

@@ -197,6 +197,111 @@ def build_inputs_for_symbols(
     return train_inputs, (val_inputs if val_inputs else None)
 
 
+# ------------------------------------------------------------------
+# Grouped inputs: symbols in the same group share one Chronos2 task,
+# enabling cross-attention via shared group_ids.
+# ------------------------------------------------------------------
+
+_DEFAULT_CRYPTO_GROUPS: List[List[str]] = [
+    ["BTCUSD", "ETHUSD"],
+    ["SOLUSD", "LINKUSD", "UNIUSD", "AVAXUSD", "DOTUSD", "AAVEUSD"],
+]
+
+
+def build_grouped_inputs_for_symbols(
+    symbols: Iterable[str],
+    *,
+    groups: Optional[List[List[str]]] = None,
+    data_root: Optional[Path] = None,
+    crypto_root: Optional[Path] = None,
+    stock_root: Optional[Path] = None,
+    target_cols: Sequence[str] = DEFAULT_TARGET_COLS,
+    covariate_config: Optional[CovariateConfig] = None,
+    val_hours: int = 0,
+    preaug_strategy: Optional[str] = None,
+    preaug_params: Optional[Dict[str, object]] = None,
+) -> Tuple[List[Dict[str, np.ndarray | Dict[str, np.ndarray]]], Optional[List[Dict[str, np.ndarray | Dict[str, np.ndarray]]]]]:
+    """Build Chronos2 inputs where symbols in the same group share a single task.
+
+    Symbols within a group have their OHLC targets concatenated along the variate
+    axis so they receive the same ``group_id`` in Chronos2's ``GroupSelfAttention``,
+    enabling cross-series attention during fine-tuning.
+    """
+    all_symbols = list(symbols)
+    if groups is None:
+        groups = _DEFAULT_CRYPTO_GROUPS
+
+    # Assign any ungrouped symbols to their own singleton group.
+    grouped: set[str] = set()
+    for g in groups:
+        grouped.update(s.upper() for s in g)
+    effective_groups: List[List[str]] = [
+        [s for s in g if s.upper() in {sym.upper() for sym in all_symbols}] for g in groups
+    ]
+    for sym in all_symbols:
+        if sym.upper() not in grouped:
+            effective_groups.append([sym])
+    effective_groups = [g for g in effective_groups if g]
+
+    train_inputs: List[Dict[str, np.ndarray | Dict[str, np.ndarray]]] = []
+    val_inputs: List[Dict[str, np.ndarray | Dict[str, np.ndarray]]] = []
+
+    for group in effective_groups:
+        group_train_targets: List[np.ndarray] = []
+        group_val_targets: List[np.ndarray] = []
+        group_train_covs: Dict[str, np.ndarray] = {}
+        group_val_covs: Dict[str, np.ndarray] = {}
+
+        # Determine the common timestamp range so all targets have the same length.
+        frames: Dict[str, pd.DataFrame] = {}
+        for sym in group:
+            frames[sym] = load_symbol_frame(
+                sym, data_root=data_root, crypto_root=crypto_root, stock_root=stock_root,
+            )
+
+        # Intersect timestamps across the group.
+        common_ts: Optional[pd.Index] = None
+        for sym, frame in frames.items():
+            ts_idx = pd.DatetimeIndex(frame["timestamp"])
+            common_ts = ts_idx if common_ts is None else common_ts.intersection(ts_idx)
+        if common_ts is None or len(common_ts) < 8:
+            # Fall back to independent inputs if alignment fails.
+            for sym in group:
+                inp = build_chronos_input(frames[sym], target_cols=target_cols, covariate_config=covariate_config)
+                train_inputs.append(inp)
+            continue
+
+        for sym in group:
+            frame = frames[sym]
+            frame = frame[frame["timestamp"].isin(common_ts)].sort_values("timestamp").reset_index(drop=True)
+            train_frame, val_frame = split_frame(frame, val_hours)
+            if preaug_strategy:
+                train_frame = _apply_preaug(train_frame, preaug_strategy, preaug_params)
+                if val_frame is not None:
+                    val_frame = _apply_preaug(val_frame, preaug_strategy, preaug_params)
+
+            train_inp = build_chronos_input(train_frame, target_cols=target_cols, covariate_config=covariate_config)
+            group_train_targets.append(train_inp["target"])  # shape (4, T)
+            for k, v in train_inp.get("past_covariates", {}).items():
+                group_train_covs[f"{sym}_{k}"] = v
+
+            if val_frame is not None:
+                val_inp = build_chronos_input(val_frame, target_cols=target_cols, covariate_config=covariate_config)
+                group_val_targets.append(val_inp["target"])
+                for k, v in val_inp.get("past_covariates", {}).items():
+                    group_val_covs[f"{sym}_{k}"] = v
+
+        if group_train_targets:
+            combined = np.concatenate(group_train_targets, axis=0)  # (N*4, T)
+            train_inputs.append({"target": combined, "past_covariates": group_train_covs})
+
+        if group_val_targets:
+            combined_val = np.concatenate(group_val_targets, axis=0)
+            val_inputs.append({"target": combined_val, "past_covariates": group_val_covs})
+
+    return train_inputs, (val_inputs if val_inputs else None)
+
+
 __all__ = [
     "CovariateConfig",
     "DEFAULT_TARGET_COLS",
