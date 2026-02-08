@@ -10,16 +10,19 @@ import torch
 from src.torch_load_utils import torch_load_compat
 
 from binanceneural.inference import generate_actions_from_frame
-try:  # Optional selector simulation (may be unavailable in older builds).
-    from binanceneural.marketsimulator import SelectionConfig, run_best_trade_simulation
-except ImportError:  # pragma: no cover - fallback path for older simulators
-    SelectionConfig = None
-    run_best_trade_simulation = None
-    from binanceneural.marketsimulator import (
-        BinanceMarketSimulator,
-        SimulationConfig,
-        run_shared_cash_simulation,
-    )
+try:
+    from newnanoalpacahourlyexp.marketsimulator.selector import SelectionConfig, run_best_trade_simulation
+except ImportError:
+    try:
+        from binanceneural.marketsimulator import SelectionConfig, run_best_trade_simulation
+    except ImportError:
+        SelectionConfig = None
+        run_best_trade_simulation = None
+from binanceneural.marketsimulator import (
+    BinanceMarketSimulator,
+    SimulationConfig,
+    run_shared_cash_simulation,
+)
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
 
 from .config import DatasetConfig
