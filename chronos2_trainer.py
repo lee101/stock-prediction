@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Chronos2 fine-tuning and LoRA trainer for hourly crypto data.
+"""Chronos2 fine-tuning and LoRA trainer for hourly/daily OHLC data.
 
 Supports:
 - Full fine-tuning or LoRA adapters
@@ -31,9 +31,14 @@ from src.binance_symbol_utils import proxy_symbol_to_usd
 
 DEFAULT_MODEL_ID = "amazon/chronos-2"
 DEFAULT_TARGET_COLS = ("open", "high", "low", "close")
-DEFAULT_DATA_ROOTS = (
+DEFAULT_FREQUENCY = "hourly"
+DEFAULT_HOURLY_DATA_ROOTS = (
     Path("trainingdatahourlybinance"),
     Path("trainingdatahourly") / "crypto",
+)
+DEFAULT_DAILY_DATA_ROOTS = (
+    Path("trainingdatadailybinance"),
+    Path("trainingdatadaily"),
 )
 DEFAULT_OUTPUT_ROOT = Path("chronos2_finetuned")
 DEFAULT_PREAUG_DIRS = (
@@ -41,9 +46,12 @@ DEFAULT_PREAUG_DIRS = (
     Path("preaugstrategies") / "chronos2",
 )
 DEFAULT_PREAUG_HOURLY_DIR = Path("preaugstrategies") / "chronos2" / "hourly"
+DEFAULT_PREAUG_DAILY_DIR = Path("preaugstrategies") / "chronos2"
 DEFAULT_HYPERPARAM_ROOT = Path("hyperparams") / "chronos2"
 DEFAULT_HYPERPARAM_HOURLY_DIR = DEFAULT_HYPERPARAM_ROOT / "hourly_finetune"
 DEFAULT_HYPERPARAM_LORA_DIR = DEFAULT_HYPERPARAM_ROOT / "hourly_lora"
+DEFAULT_HYPERPARAM_DAILY_DIR = DEFAULT_HYPERPARAM_ROOT / "daily_finetune"
+DEFAULT_HYPERPARAM_DAILY_LORA_DIR = DEFAULT_HYPERPARAM_ROOT / "daily_lora"
 
 
 @dataclass
@@ -51,6 +59,7 @@ class TrainerConfig:
     symbol: str
     data_root: Optional[Path]
     output_root: Path
+    frequency: str = DEFAULT_FREQUENCY  # hourly|daily
     model_id: str = DEFAULT_MODEL_ID
     device_map: str = "cuda"
     torch_dtype: Optional[str] = None
@@ -131,8 +140,22 @@ def _parse_torch_dtype(value: Optional[str]):
 
 
 def _load_hourly_frame(csv_path: Path, target_cols: Sequence[str]) -> pd.DataFrame:
+    # Backwards-compatible wrapper for historical callers.
+    return _load_ohlc_frame(csv_path, target_cols, frequency="hourly")
+
+
+def _pandas_freq(frequency: str) -> str:
+    freq = str(frequency or "").strip().lower()
+    if freq == "hourly":
+        return "h"
+    if freq == "daily":
+        return "D"
+    raise ValueError(f"Unsupported frequency '{frequency}'. Expected 'hourly' or 'daily'.")
+
+
+def _load_ohlc_frame(csv_path: Path, target_cols: Sequence[str], *, frequency: str) -> pd.DataFrame:
     if not csv_path.exists():
-        raise FileNotFoundError(f"Hourly data not found: {csv_path}")
+        raise FileNotFoundError(f"OHLC data not found: {csv_path}")
 
     df = pd.read_csv(csv_path)
     if "timestamp" not in df.columns:
@@ -148,7 +171,7 @@ def _load_hourly_frame(csv_path: Path, target_cols: Sequence[str]) -> pd.DataFra
 
     df = df.set_index("timestamp")
     if len(df.index) > 1:
-        full_index = pd.date_range(df.index.min(), df.index.max(), freq="h", tz="UTC")
+        full_index = pd.date_range(df.index.min(), df.index.max(), freq=_pandas_freq(frequency), tz="UTC")
         df = df.reindex(full_index)
         df = df.ffill().bfill()
 
@@ -157,28 +180,44 @@ def _load_hourly_frame(csv_path: Path, target_cols: Sequence[str]) -> pd.DataFra
 
 
 def _resolve_data_path(symbol: str, data_root: Optional[Path]) -> Path:
+    # Backwards-compatible wrapper for historical callers.
+    return _resolve_data_path_v2(symbol, data_root, frequency="hourly")
+
+
+def _default_data_roots(frequency: str) -> Tuple[Path, ...]:
+    freq = str(frequency or "").strip().lower()
+    if freq == "daily":
+        return DEFAULT_DAILY_DATA_ROOTS
+    if freq == "hourly":
+        return DEFAULT_HOURLY_DATA_ROOTS
+    raise ValueError(f"Unsupported frequency '{frequency}'. Expected 'hourly' or 'daily'.")
+
+
+def _resolve_data_path_v2(symbol: str, data_root: Optional[Path], *, frequency: str) -> Path:
     if data_root is not None:
         candidate = data_root / f"{symbol}.csv"
         if candidate.exists():
             return candidate
         raise FileNotFoundError(f"No data for {symbol} under {data_root}")
 
-    for root in DEFAULT_DATA_ROOTS:
+    for root in _default_data_roots(frequency):
         candidate = root / f"{symbol}.csv"
         if candidate.exists():
             return candidate
-    raise FileNotFoundError(f"No data for {symbol} under {DEFAULT_DATA_ROOTS}")
+    raise FileNotFoundError(f"No data for {symbol} under {_default_data_roots(frequency)}")
 
 
-def _split_windows(df: pd.DataFrame, val_hours: int, test_hours: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    if val_hours <= 0 or test_hours <= 0:
-        raise ValueError("val_hours and test_hours must be positive")
-    if len(df) <= val_hours + test_hours:
+def _split_windows(
+    df: pd.DataFrame, val_steps: int, test_steps: int, *, frequency: str
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if val_steps <= 0 or test_steps <= 0:
+        raise ValueError("Validation and test window sizes must be positive.")
+    if len(df) <= val_steps + test_steps:
         raise ValueError(
-            f"Not enough rows ({len(df)}) for val_hours={val_hours} and test_hours={test_hours}"
+            f"Not enough rows ({len(df)}) for val={val_steps} and test={test_steps} ({frequency})."
         )
-    train_end = len(df) - (val_hours + test_hours)
-    val_end = len(df) - test_hours
+    train_end = len(df) - (val_steps + test_steps)
+    val_end = len(df) - test_steps
     train_df = df.iloc[:train_end].copy()
     val_df = df.iloc[train_end:val_end].copy()
     test_df = df.iloc[val_end:].copy()
@@ -700,9 +739,22 @@ def _write_report(report: FineTuneReport, output_dir: Path) -> Path:
 
 def run_finetune(config: TrainerConfig) -> FineTuneReport:
     symbol = config.symbol.upper()
-    data_path = _resolve_data_path(symbol, config.data_root)
-    df = _load_hourly_frame(data_path, config.target_cols)
-    train_df, val_df, test_df = _split_windows(df, config.val_hours, config.test_hours)
+    frequency = str(config.frequency or DEFAULT_FREQUENCY).strip().lower()
+    data_path = _resolve_data_path_v2(symbol, config.data_root, frequency=frequency)
+    df = _load_ohlc_frame(data_path, config.target_cols, frequency=frequency)
+
+    # Keep CLI compatibility: `--val-hours/--test-hours` are always interpreted as hours.
+    # For daily data, convert hours -> days (steps) so defaults like 168h become 7 days.
+    import math
+
+    if frequency == "daily":
+        val_steps = max(1, int(math.ceil(float(config.val_hours) / 24.0)))
+        test_steps = max(1, int(math.ceil(float(config.test_hours) / 24.0)))
+    else:
+        val_steps = int(config.val_hours)
+        test_steps = int(config.test_hours)
+
+    train_df, val_df, test_df = _split_windows(df, val_steps, test_steps, frequency=frequency)
 
     if config.finetune_mode == "lora" and config.learning_rate <= 1e-5:
         logger.warning(
@@ -730,12 +782,13 @@ def run_finetune(config: TrainerConfig) -> FineTuneReport:
         )
         preaug_choice = choice
         preaug_source = "sweep"
+        preaug_out_dir = DEFAULT_PREAUG_HOURLY_DIR if frequency == "hourly" else DEFAULT_PREAUG_DAILY_DIR
         _persist_preaug_choice(
             symbol,
             choice,
             metrics_map,
             config.preaug_selection_metric,
-            DEFAULT_PREAUG_HOURLY_DIR,
+            preaug_out_dir,
         )
 
     train_ready = _apply_preaugmentation_to_frame(train_df, config.target_cols, preaug_choice)
@@ -795,7 +848,14 @@ def run_finetune(config: TrainerConfig) -> FineTuneReport:
         preaug_source=preaug_source,
     )
 
-    hyperparam_dir = DEFAULT_HYPERPARAM_LORA_DIR if config.finetune_mode == "lora" else DEFAULT_HYPERPARAM_HOURLY_DIR
+    if frequency == "hourly":
+        hyperparam_dir = (
+            DEFAULT_HYPERPARAM_LORA_DIR if config.finetune_mode == "lora" else DEFAULT_HYPERPARAM_HOURLY_DIR
+        )
+    else:
+        hyperparam_dir = (
+            DEFAULT_HYPERPARAM_DAILY_LORA_DIR if config.finetune_mode == "lora" else DEFAULT_HYPERPARAM_DAILY_DIR
+        )
     hyperparam_dir.mkdir(parents=True, exist_ok=True)
     _write_report(report, hyperparam_dir)
 
@@ -829,6 +889,12 @@ def _expand_grid(base: TrainerConfig, grid: Dict[str, List[Any]]) -> List[Traine
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Chronos2 fine-tuning trainer")
     parser.add_argument("--symbol", required=True, help="Symbol to fine-tune, e.g. SOLUSDT")
+    parser.add_argument(
+        "--frequency",
+        default=DEFAULT_FREQUENCY,
+        choices=["hourly", "daily"],
+        help="Dataset frequency (default: hourly).",
+    )
     parser.add_argument("--data-root", type=Path, default=None, help="CSV root dir (defaults to trainingdatahourlybinance)")
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--model-id", type=str, default=DEFAULT_MODEL_ID)
@@ -841,6 +907,18 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--num-steps", type=int, default=1000)
     parser.add_argument("--val-hours", type=int, default=168)
     parser.add_argument("--test-hours", type=int, default=168)
+    parser.add_argument(
+        "--val-days",
+        type=int,
+        default=None,
+        help="Convenience alias for daily datasets. When set with --frequency daily, overrides --val-hours.",
+    )
+    parser.add_argument(
+        "--test-days",
+        type=int,
+        default=None,
+        help="Convenience alias for daily datasets. When set with --frequency daily, overrides --test-hours.",
+    )
     parser.add_argument("--finetune-mode", type=str, default="full", choices=["full", "lora", "none"])
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
@@ -871,12 +949,28 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parse_args(argv)
     target_cols = tuple(col.strip() for col in args.target_cols.split(",") if col.strip())
-    preaug_dirs = tuple(Path(p) for p in (args.preaug_dir or [])) if args.preaug_dir else DEFAULT_PREAUG_DIRS
+    if args.preaug_dir:
+        preaug_dirs = tuple(Path(p) for p in args.preaug_dir)
+    else:
+        # Daily preaug lives under preaugstrategies/chronos2, but we keep hourly as a fallback.
+        if str(args.frequency).strip().lower() == "daily":
+            preaug_dirs = (DEFAULT_PREAUG_DAILY_DIR, DEFAULT_PREAUG_HOURLY_DIR)
+        else:
+            preaug_dirs = DEFAULT_PREAUG_DIRS
+
+    val_hours = int(args.val_hours)
+    test_hours = int(args.test_hours)
+    if str(args.frequency).strip().lower() == "daily":
+        if args.val_days is not None:
+            val_hours = int(args.val_days) * 24
+        if args.test_days is not None:
+            test_hours = int(args.test_days) * 24
 
     config = TrainerConfig(
         symbol=args.symbol,
         data_root=args.data_root,
         output_root=args.output_root,
+        frequency=str(args.frequency).strip().lower(),
         model_id=args.model_id,
         device_map=args.device_map,
         torch_dtype=args.torch_dtype,
@@ -886,8 +980,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         num_steps=args.num_steps,
-        val_hours=args.val_hours,
-        test_hours=args.test_hours,
+        val_hours=val_hours,
+        test_hours=test_hours,
         finetune_mode=args.finetune_mode,
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,

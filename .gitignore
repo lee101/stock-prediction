@@ -353,6 +353,9 @@ trainingdatahourlybinance
 trainingdatahourlybinance/
 binancetrainingdatahourly
 binance_spot_hourly/
+binance_spot_daily/
+trainingdatadailybinance
+trainingdatadailybinance/
 bagsfm_state.json
 strategy_state/binance_holdings_snapshots.db
 
@@ -391,6 +394,7 @@ tests/test_bags*.py
 tests/test_binance*.py
 !tests/test_binance_symbol_utils.py
 !tests/test_binancechronossolexperiment_forecast_windowing.py
+!tests/test_binance_watcher_cli_fill_details.py
 tests/test_default_strategy_checkpoint.py
 tests/test_download_hourly_update.py
 tests/test_marketsim*.py
