@@ -1,0 +1,201 @@
+"""Hourly replay evaluation CLI for daily-trained pufferlib_market policies.
+
+This tool:
+1) Runs the policy on the daily MKTD (v2) file to generate a daily action trace.
+2) Replays that daily trace on aligned hourly bars to compute higher-resolution
+   risk metrics (hourly Sortino, intraday max drawdown) and order counts.
+
+It is meant to catch "looks good on daily close-to-close" artifacts where the
+equity path is much rougher intraday or where the policy flips too frequently
+if executed more often.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from pufferlib_market.evaluate import ResidualTradingPolicy, TradingPolicy
+from pufferlib_market.hourly_replay import (
+    load_hourly_market,
+    read_mktd,
+    replay_hourly_frozen_daily_actions,
+    simulate_hourly_policy,
+    simulate_daily_policy,
+)
+
+
+def _annualize(total_return: float, periods: float, periods_per_year: float) -> float:
+    if periods <= 0:
+        return 0.0
+    mult = 1.0 + float(total_return)
+    if mult <= 0:
+        return -1.0
+    years = float(periods) / float(periods_per_year)
+    if years <= 0:
+        return 0.0
+    return float(mult ** (1.0 / years) - 1.0)
+
+
+def _order_day_stats(orders_by_day: dict[str, int], num_days: int) -> dict[str, object]:
+    if num_days <= 0:
+        num_days = max(len(orders_by_day), 1)
+    counts = list(orders_by_day.values())
+    max_in_day = int(max(counts, default=0))
+    mean_per_day = float(sum(counts) / num_days) if num_days > 0 else 0.0
+    nonzero_days = int(sum(1 for v in counts if v > 0))
+    top = sorted(orders_by_day.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    return {
+        "max_orders_in_day": max_in_day,
+        "mean_orders_per_day": mean_per_day,
+        "nonzero_order_days": nonzero_days,
+        "top_order_days": [{"date": k, "orders": int(v)} for k, v in top],
+    }
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Replay daily RL actions on hourly prices")
+    p.add_argument("--checkpoint", required=True)
+    p.add_argument("--daily-data-path", required=True)
+    p.add_argument("--hourly-data-root", default="trainingdatahourly")
+    p.add_argument("--start-date", required=True, help="UTC date used to export the daily MKTD (inclusive)")
+    p.add_argument("--end-date", required=True, help="UTC date used to export the daily MKTD (inclusive)")
+    p.add_argument("--max-steps", type=int, required=True, help="Episode steps (days), e.g. 50")
+    p.add_argument("--fee-rate", type=float, default=0.001)
+    p.add_argument("--max-leverage", type=float, default=1.0)
+    p.add_argument("--daily-periods-per-year", type=float, default=365.0)
+    p.add_argument("--hourly-periods-per-year", type=float, default=8760.0)
+    p.add_argument("--arch", choices=["mlp", "resmlp"], default="mlp")
+    p.add_argument("--hidden-size", type=int, default=256)
+    p.add_argument("--deterministic", action="store_true")
+    p.add_argument("--cpu", action="store_true")
+    p.add_argument(
+        "--run-hourly-policy",
+        action="store_true",
+        help="Also run a stress-test where the daily-trained policy acts every hour "
+        "(daily features frozen per day; portfolio fields update hourly).",
+    )
+    p.add_argument("--output-json", default=None, help="Optional path to write a JSON report")
+    args = p.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+
+    daily_data = read_mktd(args.daily_data_path)
+    S = daily_data.num_symbols
+    obs_size = S * 16 + 5 + S
+    num_actions = 1 + 2 * S
+
+    if args.arch == "resmlp":
+        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
+    else:
+        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
+
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    policy.load_state_dict(ckpt["model"])
+    policy.eval()
+
+    def policy_fn(obs_np: np.ndarray) -> int:
+        obs = torch.from_numpy(obs_np.astype(np.float32, copy=False)).to(device).unsqueeze(0)
+        with torch.no_grad():
+            act = policy.get_action(obs, deterministic=bool(args.deterministic))
+        return int(act.item())
+
+    daily = simulate_daily_policy(
+        daily_data,
+        policy_fn,
+        max_steps=args.max_steps,
+        fee_rate=args.fee_rate,
+        max_leverage=args.max_leverage,
+        periods_per_year=args.daily_periods_per_year,
+    )
+
+    market = load_hourly_market(
+        daily_data.symbols,
+        args.hourly_data_root,
+        start=f"{args.start_date} 00:00",
+        end=f"{args.end_date} 23:00",
+    )
+
+    hourly = replay_hourly_frozen_daily_actions(
+        data=daily_data,
+        actions=daily.actions,
+        market=market,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        max_steps=args.max_steps,
+        fee_rate=args.fee_rate,
+        max_leverage=args.max_leverage,
+        periods_per_year=args.hourly_periods_per_year,
+    )
+
+    # Annualize using calendar days (max_steps) for comparability.
+    daily_ann = _annualize(daily.total_return, periods=args.max_steps, periods_per_year=args.daily_periods_per_year)
+    hourly_ann = _annualize(hourly.total_return, periods=args.max_steps, periods_per_year=args.daily_periods_per_year)
+
+    hourly_policy = None
+    if args.run_hourly_policy:
+        hourly_policy = simulate_hourly_policy(
+            data=daily_data,
+            policy_fn=policy_fn,
+            market=market,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            max_steps_days=args.max_steps,
+            fee_rate=args.fee_rate,
+            max_leverage=args.max_leverage,
+            periods_per_year=args.hourly_periods_per_year,
+        )
+
+    report = {
+        "checkpoint": str(args.checkpoint),
+        "daily_data_path": str(args.daily_data_path),
+        "hourly_data_root": str(args.hourly_data_root),
+        "date_range": {"start": args.start_date, "end": args.end_date},
+        "symbols": list(daily_data.symbols),
+        "daily": {
+            "total_return": daily.total_return,
+            "annualized_return": daily_ann,
+            "sortino": daily.sortino,
+            "max_drawdown": daily.max_drawdown,
+            "num_trades": daily.num_trades,
+            "win_rate": daily.win_rate,
+            "avg_hold_steps": daily.avg_hold_steps,
+        },
+        "hourly_replay": {
+            "total_return": hourly.total_return,
+            "annualized_return": hourly_ann,
+            "sortino": hourly.sortino,
+            "max_drawdown": hourly.max_drawdown,
+            "num_trades": hourly.num_trades,
+            "num_orders": hourly.num_orders,
+            "win_rate": hourly.win_rate,
+            **_order_day_stats(hourly.orders_by_day, num_days=args.max_steps + 1),
+        },
+    }
+    if hourly_policy is not None:
+        hourly_policy_ann = _annualize(hourly_policy.total_return, periods=args.max_steps, periods_per_year=args.daily_periods_per_year)
+        report["hourly_policy"] = {
+            "total_return": hourly_policy.total_return,
+            "annualized_return": hourly_policy_ann,
+            "sortino": hourly_policy.sortino,
+            "max_drawdown": hourly_policy.max_drawdown,
+            "num_trades": hourly_policy.num_trades,
+            "num_orders": hourly_policy.num_orders,
+            "win_rate": hourly_policy.win_rate,
+            **_order_day_stats(hourly_policy.orders_by_day, num_days=args.max_steps + 1),
+        }
+
+    print(json.dumps(report, indent=2, sort_keys=True))
+
+    if args.output_json:
+        out = Path(args.output_json)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report, indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
