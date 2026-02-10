@@ -259,7 +259,7 @@ static void open_short(TradingEnv* env, int t, int sym) {
 /*  Core PufferLib functions                                           */
 /* ------------------------------------------------------------------ */
 
-void c_reset(TradingEnv* env) {
+static void reset_agent_state(TradingEnv* env) {
     AgentState* ag = &env->agent;
     const MarketData* md = env->data;
 
@@ -281,6 +281,10 @@ void c_reset(TradingEnv* env) {
     ag->sum_neg_sq = 0.0f;
     ag->sum_ret = 0.0f;
     ag->ret_count = 0;
+}
+
+void c_reset(TradingEnv* env) {
+    reset_agent_state(env);
 
     env->rewards[0] = 0.0f;
     env->terminals[0] = 0;
@@ -294,6 +298,11 @@ void c_step(TradingEnv* env) {
     const int S = md->num_symbols;
     int action = env->actions[0];
     int t = ag->data_offset + ag->step;
+    int trade_events = 0;
+
+    /* Clear terminal flag; if episode ends this step, we'll set it to 1 below.
+       This is required so the vectorized wrapper can see terminal transitions. */
+    env->terminals[0] = 0;
 
     /* clamp timestep */
     if (t >= md->num_timesteps) t = md->num_timesteps - 1;
@@ -319,6 +328,7 @@ void c_step(TradingEnv* env) {
         if (ag->position_sym >= 0) {
             if (cur_tradable) {
                 close_position(env, t);
+                trade_events += 1;
             } else {
                 /* can't close when market closed: treat as hold */
                 ag->hold_hours++;
@@ -339,8 +349,14 @@ void c_step(TradingEnv* env) {
                 ag->hold_hours++;
             } else {
                 /* close current, open new long */
-                if (ag->position_sym >= 0) close_position(env, t);
+                if (ag->position_sym >= 0) {
+                    close_position(env, t);
+                    trade_events += 1;
+                }
                 open_long(env, t, target_sym);
+                if (ag->position_sym == target_sym) {
+                    trade_events += 1;
+                }
             }
         }
     } else if (action >= S + 1 && action <= 2 * S) {
@@ -356,8 +372,14 @@ void c_step(TradingEnv* env) {
             } else if (ag->position_sym >= 0 && !cur_tradable) {
                 ag->hold_hours++;
             } else {
-                if (ag->position_sym >= 0) close_position(env, t);
+                if (ag->position_sym >= 0) {
+                    close_position(env, t);
+                    trade_events += 1;
+                }
                 open_short(env, t, target_sym);
+                if (ag->position_sym == short_id) {
+                    trade_events += 1;
+                }
             }
         }
     }
@@ -410,6 +432,17 @@ void c_step(TradingEnv* env) {
         }
     }
 
+    /* downside penalty: penalize negative returns more than positive returns.
+       This encourages higher Sortino by shrinking downside deviation. */
+    if (env->downside_penalty > 0.0f && ret < 0.0f) {
+        reward -= env->downside_penalty * (ret * ret);
+    }
+
+    /* trade penalty: discourage churn (opens/closes) without changing accounting. */
+    if (env->trade_penalty > 0.0f && trade_events > 0) {
+        reward -= env->trade_penalty * (float)trade_events;
+    }
+
     env->rewards[0] = reward;
 
     /* check terminal */
@@ -452,10 +485,11 @@ void c_step(TradingEnv* env) {
 
         env->terminals[0] = 1;
 
-        /* auto-reset for next episode */
-        c_reset(env);
+        /* auto-reset for next episode: reset the agent state + refresh observations,
+           but do NOT clear terminals/rewards within this step. */
+        reset_agent_state(env);
+        fill_observations(env);
     } else {
-        env->terminals[0] = 0;
         fill_observations(env);
     }
 }

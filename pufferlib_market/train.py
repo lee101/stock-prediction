@@ -212,6 +212,8 @@ def train(args):
         reward_clip=args.reward_clip,
         cash_penalty=args.cash_penalty,
         drawdown_penalty=args.drawdown_penalty,
+        downside_penalty=args.downside_penalty,
+        trade_penalty=args.trade_penalty,
     )
 
     obs_size = num_symbols * 16 + 5 + num_symbols
@@ -238,6 +240,8 @@ def train(args):
         reward_clip=config.reward_clip,
         cash_penalty=config.cash_penalty,
         drawdown_penalty=config.drawdown_penalty,
+        downside_penalty=config.downside_penalty,
+        trade_penalty=config.trade_penalty,
     )
     binding.vec_reset(vec_handle, args.seed)
     print(f"  Created {num_envs} parallel envs")
@@ -467,6 +471,18 @@ def main():
     parser.add_argument("--reward-clip", type=float, default=5.0, help="Clip |reward| to this")
     parser.add_argument("--cash-penalty", type=float, default=0.01, help="Per-step flat penalty")
     parser.add_argument("--drawdown-penalty", type=float, default=0.0, help="Drawdown penalty scale")
+    parser.add_argument(
+        "--downside-penalty",
+        type=float,
+        default=0.0,
+        help="Penalty scale for negative returns: reward -= downside_penalty * ret^2 when ret < 0",
+    )
+    parser.add_argument(
+        "--trade-penalty",
+        type=float,
+        default=0.0,
+        help="Per-trade penalty (counts opens+closes executed by action); discourages churn",
+    )
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
 

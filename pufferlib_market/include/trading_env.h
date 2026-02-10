@@ -91,6 +91,8 @@ typedef struct {
     float          reward_clip;     /* clip abs(reward) to this (default 5) */
     float          cash_penalty;    /* per-step penalty for being flat (default 0.01) */
     float          drawdown_penalty;/* penalty scale for drawdown from peak (default 0) */
+    float          downside_penalty;/* penalty scale for negative returns (ret^2) (default 0) */
+    float          trade_penalty;   /* per-trade penalty (counting opens/closes) (default 0) */
 
     /* --- shared data (NOT owned, do not free) --- */
     MarketData*    data;
