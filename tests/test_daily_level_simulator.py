@@ -113,3 +113,174 @@ def test_daily_level_simulator_skips_inverted_levels():
     assert res.trades == []
     assert float(res.equity_curve.iloc[-1]) == 100.0
 
+
+def test_daily_level_simulator_widens_min_spread_when_configured():
+    ts = [
+        datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 2, 1, 1, 0, tzinfo=timezone.utc),
+    ]
+    bars = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "open": [10.0, 10.0],
+            "low": [9.0, 10.0],
+            "high": [10.2, 10.6],
+            "close": [10.0, 10.55],
+        }
+    )
+    levels = pd.DataFrame(
+        {
+            "timestamp": [datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc)],
+            "buy_price": [10.0],
+            "sell_price": [10.01],  # too tight if min_spread_pct=5%
+        }
+    )
+
+    widened = simulate_daily_levels_on_intraday_bars(
+        bars,
+        levels,
+        config=DailyLevelSimulationConfig(
+            initial_cash=100.0,
+            maker_fee=0.0,
+            min_spread_pct=0.05,
+            min_spread_mode="widen",
+            close_at_eod=False,
+        ),
+    )
+    assert [t.side for t in widened.trades] == ["buy", "sell"]
+    assert widened.trades[0].price == 10.0
+    assert widened.trades[1].price == 10.0 * (1.0 + 0.05)
+
+    skipped = simulate_daily_levels_on_intraday_bars(
+        bars,
+        levels,
+        config=DailyLevelSimulationConfig(
+            initial_cash=100.0,
+            maker_fee=0.0,
+            min_spread_pct=0.05,
+            min_spread_mode="skip",
+            close_at_eod=False,
+        ),
+    )
+    assert skipped.trades == []
+
+
+def test_daily_level_simulator_intrabar_ohlc_roundtrip_same_bar():
+    ts = [datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc)]
+    bars = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "open": [10.0],
+            "low": [9.0],
+            "high": [11.0],
+            "close": [10.5],  # close >= open => assume low then high
+        }
+    )
+    levels = pd.DataFrame(
+        {
+            "timestamp": [datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc)],
+            "buy_price": [9.5],
+            "sell_price": [10.5],
+        }
+    )
+
+    no_roundtrip = simulate_daily_levels_on_intraday_bars(
+        bars,
+        levels,
+        config=DailyLevelSimulationConfig(
+            initial_cash=100.0,
+            maker_fee=0.0,
+            close_at_eod=False,
+            intrabar_assumption="ohlc",
+            allow_roundtrip_same_bar=False,
+        ),
+    )
+    assert [t.side for t in no_roundtrip.trades] == ["buy"]
+
+    roundtrip = simulate_daily_levels_on_intraday_bars(
+        bars,
+        levels,
+        config=DailyLevelSimulationConfig(
+            initial_cash=100.0,
+            maker_fee=0.0,
+            close_at_eod=False,
+            intrabar_assumption="ohlc",
+            allow_roundtrip_same_bar=True,
+        ),
+    )
+    assert [t.side for t in roundtrip.trades] == ["buy", "sell"]
+
+
+def test_daily_level_simulator_stop_loss_fires_next_bar():
+    ts = [
+        datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 2, 1, 1, 0, tzinfo=timezone.utc),
+    ]
+    bars = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "open": [10.0, 10.0],
+            "low": [9.5, 8.5],
+            "high": [10.1, 10.1],
+            "close": [10.0, 9.0],
+        }
+    )
+    levels = pd.DataFrame(
+        {
+            "timestamp": [datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc)],
+            "buy_price": [10.0],
+            "sell_price": [100.0],  # unreachable; force stop-loss path
+        }
+    )
+
+    res = simulate_daily_levels_on_intraday_bars(
+        bars,
+        levels,
+        config=DailyLevelSimulationConfig(
+            initial_cash=100.0,
+            maker_fee=0.0,
+            close_at_eod=False,
+            stop_loss_pct=0.1,  # stop at 9.0
+        ),
+    )
+    assert [t.side for t in res.trades] == ["buy", "sell"]
+    assert res.trades[1].reason == "stop_loss"
+    assert res.trades[1].price == 9.0
+
+
+def test_daily_level_simulator_stop_loss_lockout_until_next_day():
+    ts = [
+        datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 2, 1, 1, 0, tzinfo=timezone.utc),
+        datetime(2026, 2, 1, 2, 0, tzinfo=timezone.utc),
+    ]
+    bars = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "open": [10.0, 10.0, 9.6],
+            "low": [9.5, 8.5, 9.4],  # bar2 hits stop, bar3 would otherwise re-buy
+            "high": [10.1, 10.1, 9.7],
+            "close": [10.0, 9.0, 9.6],
+        }
+    )
+    levels = pd.DataFrame(
+        {
+            "timestamp": [datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc)],
+            "buy_price": [10.0],
+            "sell_price": [100.0],
+        }
+    )
+
+    res = simulate_daily_levels_on_intraday_bars(
+        bars,
+        levels,
+        config=DailyLevelSimulationConfig(
+            initial_cash=100.0,
+            maker_fee=0.0,
+            close_at_eod=False,
+            stop_loss_pct=0.1,
+            stop_loss_lockout_until_next_day=True,
+        ),
+    )
+    assert [t.side for t in res.trades] == ["buy", "sell"]
+    assert res.trades[1].reason == "stop_loss"
