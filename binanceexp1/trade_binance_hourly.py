@@ -28,6 +28,41 @@ from binanceneural.trade_binance_hourly import _ensure_valid_levels, _parse_chec
 from .config import DatasetConfig
 from .data import BinanceExp1DataModule, build_default_feature_columns
 
+_USDT_FALLBACK = {"SOLUSD": "SOLUSDT", "BTCUSD": "BTCUSDT", "ETHUSD": "ETHUSDT", "LINKUSD": "LINKUSDT"}
+
+
+def _refresh_price_csv(symbol: str, data_root: Path) -> None:
+    """Append latest hourly candles from Binance to the price CSV."""
+    try:
+        from binance_data_wrapper import fetch_binance_hourly_bars
+    except ImportError:
+        return
+    csv_path = data_root / f"{symbol.upper()}.csv"
+    if not csv_path.exists():
+        return
+    existing = pd.read_csv(csv_path)
+    existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True)
+    last_ts = existing["timestamp"].max()
+    binance_pair = _USDT_FALLBACK.get(symbol.upper(), symbol.upper())
+    try:
+        end_ts = datetime.now(timezone.utc)
+        new = fetch_binance_hourly_bars(binance_pair, start=last_ts, end=end_ts)
+    except Exception:
+        return
+    if new is None or len(new) == 0:
+        return
+    new = new.reset_index()
+    new["symbol"] = symbol.upper()
+    new["timestamp"] = pd.to_datetime(new["timestamp"], utc=True)
+    new = new[new["timestamp"] > last_ts]
+    if len(new) == 0:
+        return
+    combined = pd.concat([existing, new], ignore_index=True)
+    combined = combined.drop_duplicates(subset="timestamp", keep="last")
+    combined = combined.sort_values("timestamp").reset_index(drop=True)
+    combined.to_csv(csv_path, index=False)
+    print(f"[data-refresh] {symbol}: +{len(new)} rows, last={combined['timestamp'].max()}")
+
 
 @dataclass
 class TradingPlan:
@@ -67,6 +102,12 @@ def _resolve_dataset_config(
         feature_cols = build_default_feature_columns(cfg)
         if len(feature_cols) == input_dim:
             return replace(cfg, feature_columns=feature_cols)
+        legacy_cols = [
+            c for c in feature_cols
+            if not c.startswith("forecast_confidence") and c != "forecast_agreement"
+        ]
+        if len(legacy_cols) == input_dim:
+            return replace(cfg, feature_columns=legacy_cols)
     raise RuntimeError(
         "Feature dimension mismatch: "
         f"checkpoint input_dim={input_dim} cannot be matched with forecast_horizons "
@@ -207,7 +248,10 @@ def _run_cycle(
     cache_only: bool,
     dry_run: bool,
 ) -> None:
-    for symbol in symbols:
+    symbol_list = list(symbols)
+    for symbol in symbol_list:
+        _refresh_price_csv(symbol, data_root)
+    for symbol in symbol_list:
         try:
             checkpoint_path = checkpoint_map.get(symbol) or default_checkpoint
             if checkpoint_path is None:

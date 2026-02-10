@@ -165,14 +165,7 @@ def watch(
             time.sleep(poll_seconds)
             continue
 
-        should_place = False
         if order_id is None:
-            if side.lower().startswith("b"):
-                should_place = current_price <= price * (1 + price_tolerance)
-            else:
-                should_place = current_price >= price * (1 - price_tolerance)
-
-        if order_id is None and should_place:
             try:
                 order = _place_limit_order(binance_symbol, side, qty, price)
                 order_id = _coerce_order_id(order.get("orderId")) if isinstance(order, dict) else None

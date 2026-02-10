@@ -42,6 +42,11 @@ class SelectionConfig:
     short_borrow_cost_annual: float = 0.0
     # Multi-position: 1 = legacy single-position, 2+ = hold up to N simultaneously.
     max_concurrent_positions: int = 1
+    # Work-stealing: sell profitable position to enter better opportunity.
+    work_steal_enabled: bool = False
+    work_steal_min_profit_pct: float = 0.001
+    work_steal_min_edge: float = 0.005
+    work_steal_edge_margin: float = 0.0
 
 
 @dataclass
@@ -150,6 +155,7 @@ def _run_best_trade_simulation_on_merged(
     inventory = 0.0  # signed: >0 long, <0 short
     open_symbol: Optional[str] = None
     open_ts: Optional[pd.Timestamp] = None
+    open_price: float = 0.0
     last_close: Dict[str, float] = {}
     financing_cost_paid = 0.0
     prev_ts: Optional[pd.Timestamp] = None
@@ -184,7 +190,7 @@ def _run_best_trade_simulation_on_merged(
         )
 
     def _execute_buy(ts: pd.Timestamp, symbol: str, qty: float, price: float, fee_rate: float, reason: Optional[str] = None) -> None:
-        nonlocal cash, inventory, open_symbol, open_ts
+        nonlocal cash, inventory, open_symbol, open_ts, open_price
         if qty <= 0:
             return
         cost = qty * price * (1 + fee_rate)
@@ -194,14 +200,16 @@ def _run_best_trade_simulation_on_merged(
         if was_flat and abs(inventory) > 1e-12:
             open_ts = ts
             open_symbol = symbol
+            open_price = price
         if abs(inventory) <= 1e-12:
             inventory = 0.0
             open_symbol = None
             open_ts = None
+            open_price = 0.0
         _record_trade(ts=ts, symbol=symbol, side="buy", price=price, qty=qty, reason=reason)
 
     def _execute_sell(ts: pd.Timestamp, symbol: str, qty: float, price: float, fee_rate: float, reason: Optional[str] = None) -> None:
-        nonlocal cash, inventory, open_symbol, open_ts
+        nonlocal cash, inventory, open_symbol, open_ts, open_price
         if qty <= 0:
             return
         proceeds = qty * price * (1 - fee_rate)
@@ -211,10 +219,12 @@ def _run_best_trade_simulation_on_merged(
         if was_flat and abs(inventory) > 1e-12:
             open_ts = ts
             open_symbol = symbol
+            open_price = price
         if abs(inventory) <= 1e-12:
             inventory = 0.0
             open_symbol = None
             open_ts = None
+            open_price = 0.0
         _record_trade(ts=ts, symbol=symbol, side="sell", price=price, qty=qty, reason=reason)
 
     max_volume_fraction: Optional[float]
@@ -298,7 +308,56 @@ def _run_best_trade_simulation_on_merged(
                     forced_close = True
                     closed_this_step = True
 
-        if open_symbol and inventory != 0:
+        work_stolen = False
+        if (
+            cfg.work_steal_enabled
+            and not forced_close
+            and open_symbol is not None
+            and inventory > 0
+            and open_price > 0
+        ):
+            cur_row = _lookup_symbol_row(group, open_symbol)
+            if cur_row is not None:
+                unrealized_pct = (float(cur_row.close) - open_price) / open_price
+                if unrealized_pct >= cfg.work_steal_min_profit_pct:
+                    steal_candidates: List[Tuple[float, str, object, float]] = []
+                    for srow in group.itertuples(index=False):
+                        ssym = str(srow.symbol)
+                        if ssym == open_symbol:
+                            continue
+                        if not _is_tradable(symbol_meta, ssym, ts, cfg):
+                            continue
+                        sfee = symbol_meta[ssym]["fee"]
+                        sdirs = symbol_meta[ssym].get("directions") or {}
+                        if not bool(sdirs.get("can_long", True)):
+                            continue
+                        sbuy_int, _ = _extract_intensity(srow)
+                        if sbuy_int <= 0 or srow.low > srow.buy_price:
+                            continue
+                        score = _edge_score_long(srow, horizon=horizon, config=cfg, buy_intensity=sbuy_int, fee_rate=sfee)
+                        if score is not None and score >= cfg.work_steal_min_edge:
+                            steal_candidates.append((score, ssym, srow, sbuy_int))
+                    if steal_candidates:
+                        steal_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+                        best_score, best_sym, best_row, best_int = steal_candidates[0]
+                        if best_score >= unrealized_pct + cfg.work_steal_edge_margin:
+                            exit_fee = symbol_meta[open_symbol]["fee"]
+                            qty_sell = _cap_qty(open_symbol, inventory)
+                            _execute_sell(ts, open_symbol, qty_sell, float(cur_row.close), exit_fee, reason="work_steal_exit")
+                            sell_filled = 1.0
+                            entry_fee = symbol_meta[best_sym]["fee"]
+                            max_lev = float(symbol_meta[best_sym].get("max_leverage", 1.0))
+                            max_notional = max(0.0, float(cash) * max_lev)
+                            max_buy = max_notional / (best_row.buy_price * (1 + entry_fee)) if best_row.buy_price > 0 else 0.0
+                            qty_buy = best_int * max_buy
+                            qty_buy = _cap_qty(best_sym, qty_buy)
+                            if qty_buy > 0:
+                                _execute_buy(ts, best_sym, qty_buy, float(best_row.buy_price), entry_fee, reason="work_steal_entry")
+                                buy_filled = 1.0
+                            work_stolen = True
+                            closed_this_step = True
+
+        if open_symbol and inventory != 0 and not work_stolen:
             row = _lookup_symbol_row(group, open_symbol)
             if row is not None and not forced_close:
                 buy_intensity, sell_intensity = _extract_intensity(row)
