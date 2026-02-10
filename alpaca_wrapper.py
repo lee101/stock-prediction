@@ -820,21 +820,75 @@ def open_order_at_price_or_all(symbol, qty, side, price):
     return None
 
 
-def open_order_at_price_allow_add_to_position(symbol, qty, side, price):
+def open_order_at_price_allow_add_to_position(symbol, qty, side, price, max_total_qty=None):
     """
     Similar to open_order_at_price_or_all but allows adding to existing positions.
     This is used when we want to increase position size to a target amount.
+
+    Args:
+        max_total_qty: Optional hard cap on total position size.  When set,
+            the order qty is reduced so the resulting position does not exceed
+            this limit.
     """
     logger.info(f"Starting order placement for {symbol} {side} {qty} @ {price}")
     result = None
     qty = _enforce_min_notional(symbol, qty, price)
     price = _passivize_limit_price(symbol, side, price)
+
+    # Optional hard cap on total position size
+    if max_total_qty is not None:
+        try:
+            current_positions = get_all_positions()
+            current_positions = filter_to_realistic_positions(current_positions)
+        except Exception as exc:
+            logger.error(
+                "Failed to fetch positions while enforcing max_total_qty cap for %s: %s",
+                symbol,
+                exc,
+            )
+            return None
+        current_qty = 0.0
+        for position in current_positions:
+            if pairs_equal(position.symbol, symbol):
+                pos_side = position.side
+                if (is_buy_side(pos_side) and is_buy_side(side)) or \
+                   (is_sell_side(pos_side) and is_sell_side(side)):
+                    current_qty = abs(float(position.qty))
+                    break
+        allowed = max(max_total_qty - current_qty, 0.0)
+        if allowed <= 0:
+            logger.info(
+                f"Position {symbol} at/above max_total_qty cap: "
+                f"{current_qty:.6f} >= {max_total_qty:.6f}"
+            )
+            return None
+        if qty > allowed:
+            logger.info(
+                f"Capping {symbol} order qty from {qty:.6f} to {allowed:.6f} "
+                f"(max_total={max_total_qty:.6f}, current={current_qty:.6f})"
+            )
+            qty = allowed
+        # If the cap makes the order too small, skip rather than submitting an order
+        # that is guaranteed to be rejected by broker min-notional checks.
+        if price and price > 0:
+            min_notional = _get_min_order_notional(symbol)
+            if min_notional > 0 and qty * price < min_notional:
+                logger.info(
+                    "Skipping %s %s: capped qty %.6f @ %.4f below min notional %.2f",
+                    symbol,
+                    side,
+                    qty,
+                    price,
+                    min_notional,
+                )
+                return None
+
     # Cancel existing orders for this symbol
     current_open_orders = get_orders()
     for order in current_open_orders:
         if pairs_equal(order.symbol, symbol):
             cancel_order(order)
-    
+
     max_retries = 3
     retry_count = 0
     

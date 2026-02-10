@@ -35,6 +35,7 @@ from src.process_utils import (
     spawn_close_position_at_maxdiff_takeprofit,
     spawn_open_position_at_maxdiff_takeprofit,
 )
+from src.position_cap import get_position_cap, set_position_cap
 from src.price_guard import enforce_gap, record_buy, record_sell
 
 logger = logging.getLogger("hourlycrypto")
@@ -921,6 +922,22 @@ def _spawn_watchers(plan: TradingPlan, dry_run: bool, symbol: str) -> None:
     if buy_qty > 0:
         try:
             target_buy_qty = buy_qty + inventory  # aim for current + new so remaining_qty equals desired add-on
+
+            # Per-signal position cap: freeze the target so watcher respawns
+            # and subsequent hourly cycles can't inflate it beyond the original
+            # signal intent.  Round-trips (buy→sell→rebuy) are still allowed
+            # because the cap limits the *total position*, not individual orders.
+            existing_cap = get_position_cap(symbol, "buy")
+            if existing_cap is not None and target_buy_qty > existing_cap:
+                logger.info(
+                    "Capping buy target from %.6f to per-signal cap %.6f to prevent stacking "
+                    "(inv=%.6f, buy_qty=%.6f)",
+                    target_buy_qty, existing_cap, inventory, buy_qty,
+                )
+                target_buy_qty = existing_cap
+            else:
+                set_position_cap(symbol, "buy", target_buy_qty, buy_signal_qty=buy_qty)
+
             logger.info(
                 "Launching entry watcher: target_total=%.6f (add=%.6f, inv=%.6f) @ %.4f",
                 target_buy_qty,

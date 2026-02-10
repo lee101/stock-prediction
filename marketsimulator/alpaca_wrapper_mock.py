@@ -205,7 +205,7 @@ def open_order_at_price_or_all(symbol: str, qty: float, side: str, price: float)
     return _execute_order(symbol, qty, side, price, replace_existing=True)
 
 
-def open_order_at_price_allow_add_to_position(symbol: str, qty: float, side: str, price: float) -> MockOrder:
+def open_order_at_price_allow_add_to_position(symbol: str, qty: float, side: str, price: float, max_total_qty=None) -> MockOrder:
     return _execute_order(symbol, qty, side, price, replace_existing=False)
 
 
