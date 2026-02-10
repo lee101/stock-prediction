@@ -25,6 +25,8 @@ class TradingEnvConfig:
         reward_clip: float = 5.0,
         cash_penalty: float = 0.01,
         drawdown_penalty: float = 0.0,
+        downside_penalty: float = 0.0,
+        trade_penalty: float = 0.0,
     ):
         self.data_path = str(Path(data_path).resolve())
         self.max_steps = max_steps
@@ -36,6 +38,8 @@ class TradingEnvConfig:
         self.reward_clip = reward_clip
         self.cash_penalty = cash_penalty
         self.drawdown_penalty = drawdown_penalty
+        self.downside_penalty = downside_penalty
+        self.trade_penalty = trade_penalty
 
 
 def _load_binding():
@@ -79,6 +83,8 @@ class TradingEnv(GymnasiumPufferEnv):
             reward_clip=config.reward_clip,
             cash_penalty=config.cash_penalty,
             drawdown_penalty=config.drawdown_penalty,
+            downside_penalty=config.downside_penalty,
+            trade_penalty=config.trade_penalty,
         )
 
     @staticmethod

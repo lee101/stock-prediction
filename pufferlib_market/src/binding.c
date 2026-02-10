@@ -78,6 +78,12 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     val = kwargs ? PyDict_GetItemString(kwargs, "drawdown_penalty") : NULL;
     env->drawdown_penalty = val ? (float)PyFloat_AsDouble(val) : 0.0f;
 
+    val = kwargs ? PyDict_GetItemString(kwargs, "downside_penalty") : NULL;
+    env->downside_penalty = val ? (float)PyFloat_AsDouble(val) : 0.0f;
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "trade_penalty") : NULL;
+    env->trade_penalty = val ? (float)PyFloat_AsDouble(val) : 0.0f;
+
     int S = g_shared_data->num_symbols;
     env->obs_size = S * FEATURES_PER_SYM + 5 + S;
     env->num_actions = 1 + 2 * S;
