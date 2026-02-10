@@ -384,6 +384,7 @@ binance*/results/
 hyperparams/chronos2/
 preaugstrategies/chronos2/
 experiments/*sweep*
+experiments/binance_daily_levels/
 
 # One-off/temporary scripts (keep utility scripts tracked)
 scripts/queue_followups.sh
