@@ -998,3 +998,30 @@ Environment: `BINANCE_DEFAULT_QUOTE="U"` (zero-fee U pairs).
 - Single `scripts/refresh_binanceexp1_caches.py` daemon refreshes price CSVs + forecast caches every 5 min
 - Eliminates GPU contention between multiple bot processes
 - Cache refresh supervisor: `supervisor/binanceexp1-cache-refresh.conf`
+
+## SOLUSD Daily Levels (Chronos2 Daily LoRA + Intraday Grid)
+
+Updated: 2026-02-10
+
+### Data (daily bars derived from hourly)
+- Source hourly: `binance_spot_hourly/SOLFDUSD.csv` updated through **2026-02-09 23:00 UTC** (Vision fallback on Binance.US).
+- Daily aggregation: `scripts/build_binance_spot_daily_from_hourly.py` → `binance_spot_daily/SOLUSD.csv` (887 rows through 2026-02-09). Alias: `trainingdatadailybinance/` → `binance_spot_daily/`.
+
+### Chronos2 LoRA (daily, SOLUSD)
+- Train run: `solusd_binance_daily_lora_20260210_1009`
+- Output: `chronos2_finetuned/solusd_binance_daily_lora_20260210_1009/finetuned-ckpt`
+- Holdouts: val=90d, test=90d
+- Preaug: `detrending` (from `preaugstrategies/chronos2/SOLUSD.json`)
+- Metrics (close p50 vs realized close): val MAE%=3.4564, test MAE%=3.1302
+- Promoted config: `hyperparams/chronos2/SOLUSD.json`
+
+### Daily Level Backtest (intraday fills on hourly bars, multi-cycle)
+- Script: `scripts/backtest_binance_daily_levels.py`
+- Intraday symbol: `SOLFDUSD` (maker_fee=0, close_at_eod)
+- Quantile sweep (buy=predicted low quantile, sell=predicted high quantile):
+  - Best (val): buy_q=0.35 sell_q=0.65 → val total_return=-0.0340 sortino=-0.091 (74 trades)
+  - Test (same params): total_return=0.0791 sortino=0.539 (70 trades)
+- Report: `reports/binance_daily_levels/SOLUSD_daily_levels_20260210_101515Z.json`
+
+### Live Trader (daily levels)
+- New: `binanceneural/trade_binance_daily_levels.py` (sequential `daily_entry`/`daily_exit` watcher cycles for the UTC day; respects `BINANCE_DEFAULT_QUOTE` via `binance_remap_symbols`).

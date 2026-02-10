@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -77,6 +78,38 @@ def _coerce_order_id(value: object) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_float(value: object) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(numeric):
+        return 0.0
+    return numeric
+
+
+def _extract_fill_details(order: dict) -> Optional[dict]:
+    """Extract executed quantity and average fill price from a Binance order payload.
+
+    Binance can mark an order as CANCELED/EXPIRED with a non-zero executedQty (partial fill).
+    We treat any executedQty > 0 as a fill event for PnL/accounting purposes.
+    """
+
+    if not isinstance(order, dict):
+        return None
+    qty = _coerce_float(order.get("executedQty"))
+    if qty <= 0:
+        return None
+    quote_qty = _coerce_float(order.get("cummulativeQuoteQty"))
+
+    # `price` is the limit price, not necessarily the average fill price. Prefer quote/qty when available.
+    limit_price = _coerce_float(order.get("price"))
+    fill_price = quote_qty / qty if quote_qty > 0 else limit_price
+    if fill_price <= 0:
+        return None
+    return {"fill_qty": qty, "fill_price": fill_price, "fill_quote": quote_qty}
 
 
 def _get_order_status(symbol: str, order_id: int):
@@ -188,27 +221,10 @@ def watch(
                 last_status = order.get("status")
                 status = _update_status(config_path, status, order_status=last_status)
                 if last_status in {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}:
-                    if last_status == "FILLED" and isinstance(order, dict):
-                        try:
-                            qty = float(order.get("executedQty", 0.0))
-                        except (TypeError, ValueError):
-                            qty = 0.0
-                        try:
-                            quote_qty = float(order.get("cummulativeQuoteQty", 0.0))
-                        except (TypeError, ValueError):
-                            quote_qty = 0.0
-                        fill_price = float(order.get("price", 0.0)) if qty > 0 else 0.0
-                        if qty > 0 and quote_qty > 0:
-                            fill_price = quote_qty / qty
-                        if qty > 0 and fill_price > 0:
-                            status = _update_status(
-                                config_path,
-                                status,
-                                fill_qty=qty,
-                                fill_price=fill_price,
-                                fill_quote=quote_qty,
-                            )
-                            record_fill(symbol, side, fill_price, qty)
+                    fill_details = _extract_fill_details(order) if isinstance(order, dict) else None
+                    if fill_details:
+                        status = _update_status(config_path, status, **fill_details)
+                        record_fill(symbol, side, float(fill_details["fill_price"]), float(fill_details["fill_qty"]))
                     status = _update_status(config_path, status, state=last_status.lower(), active=False)
                     return
 
@@ -220,6 +236,14 @@ def watch(
             client.cancel_order(symbol=binance_symbol, orderId=order_id)
         except Exception as exc:
             logger.warning("Failed to cancel expired order %s for %s: %s", order_id, binance_symbol, exc)
+        else:
+            # After cancellation, pull final executedQty to record partial fills if any.
+            order = _get_order_status(binance_symbol, order_id)
+            if isinstance(order, dict):
+                fill_details = _extract_fill_details(order)
+                if fill_details:
+                    status = _update_status(config_path, status, **fill_details)
+                    record_fill(symbol, side, float(fill_details["fill_price"]), float(fill_details["fill_qty"]))
     _update_status(config_path, status, state="expired", active=False)
 
 
