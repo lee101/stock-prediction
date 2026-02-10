@@ -135,6 +135,12 @@ Annualized returns use CAGR: `(1 + total_return) ** (basis_days / eval_days) - 1
 
 Pure C environment with PufferLib 3.0 Ocean binding. PPO training, 64 envs. Reward: clipped return*10 + cash penalty (-0.01). All runs use Chronos2 forecasts as input features.
 
+### 2026-02-10 Critical Fix (Hourly Selector Sim: Decision Lag)
+
+- Added `decision_lag_bars` support to the Alpaca hourly Python simulators so the selector can be evaluated **live-like**: decisions from the latest completed bar are executed on the next bar.
+- Without this lag, the simulator can implicitly trade using information from the same bar it fills on (optimistic / lookahead-like), inflating returns.
+- Use `--decision-lag-bars 1` in `newnanoalpacahourlyexp/run_multiasset_selector.py` (and `run_experiment.py` / `sweep.py`) for realistic reporting.
+
 ### 2026-02-10 Critical Fix (Short Accounting + Daily MKTD v2)
 
 - **Fixed a major short-position accounting bug** in `pufferlib_market/src/trading_env.c` where short-sale proceeds were effectively treated as profit on close, inflating episode `total_return` (and compounding into unrealistic multi-thousand-x runs).
