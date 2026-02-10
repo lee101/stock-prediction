@@ -24,6 +24,7 @@ from src.tradinglib.daily_level_simulator import (
     DailyLevelSimulationConfig,
     simulate_daily_levels_on_intraday_bars,
 )
+from src.tradinglib.direction_filter import filter_forecasts_by_predicted_close_return
 
 
 def _parse_floats(raw: str) -> List[float]:
@@ -319,6 +320,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
     parser.add_argument("--output-json", type=Path, default=None)
     parser.add_argument(
+        "--min-predicted-close-return-pct",
+        type=float,
+        default=None,
+        help="If set, only trade days where predicted_close_p50 >= prev_close*(1+threshold).",
+    )
+    parser.add_argument(
+        "--min-predicted-close-return-pcts",
+        default=None,
+        help="Comma-separated sweep values. Overrides --min-predicted-close-return-pct.",
+    )
+    parser.add_argument(
         "--objective",
         type=str,
         default="sortino_then_annualized",
@@ -387,6 +399,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not min_spreads:
         min_spreads = [0.0]
 
+    if args.min_predicted_close_return_pcts:
+        min_pred_close_returns: List[Optional[float]] = sorted(
+            {float(x) for x in _parse_floats(args.min_predicted_close_return_pcts)}
+        )
+    elif args.min_predicted_close_return_pct is not None:
+        min_pred_close_returns = [float(args.min_predicted_close_return_pct)]
+    else:
+        min_pred_close_returns = [None]
+    if not min_pred_close_returns:
+        min_pred_close_returns = [None]
+    for thr in min_pred_close_returns:
+        if thr is None:
+            continue
+        if not np.isfinite(float(thr)):
+            raise ValueError("--min-predicted-close-return-pct(s) must be finite when provided.")
+
     logger.info(
         "Backtest setup: symbol={} hourly_symbol={} daily_rows={} hourly_rows={} val_days={} test_days={}",
         symbol,
@@ -449,6 +477,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 forecasts.to_csv(out, index=False)
             logger.info("Wrote cached forecasts: {}", out)
 
+    forecasts_by_thr: Dict[Optional[float], pd.DataFrame] = {}
+    for thr in min_pred_close_returns:
+        norm_thr: Optional[float] = float(thr) if thr is not None else None
+        if norm_thr is None:
+            forecasts_by_thr[None] = forecasts
+            continue
+        filtered = filter_forecasts_by_predicted_close_return(
+            forecasts,
+            daily,
+            min_return_pct=float(norm_thr),
+        )
+        forecasts_by_thr[norm_thr] = filtered
+        logger.info(
+            "Predicted-close filter: kept {}/{} day(s) (min_return_pct={:.4f}).",
+            len(filtered),
+            len(forecasts),
+            float(norm_thr),
+        )
+
     val_start_day = pd.Timestamp(daily.iloc[val_start_idx]["timestamp"]).floor("D")
     test_start_day = pd.Timestamp(daily.iloc[test_start_idx]["timestamp"]).floor("D")
     end_day = pd.Timestamp(daily.iloc[-1]["timestamp"]).floor("D")
@@ -474,6 +521,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     bars_test = _slice_hourly_window(hourly, start_day=test_start_day, end_day=test_end_day)
 
     def _eval_window(
+        forecasts_win: pd.DataFrame,
         bars_win: pd.DataFrame,
         start_day: pd.Timestamp,
         end_day_inclusive: pd.Timestamp,
@@ -483,7 +531,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         min_spread: float,
         stop_loss_pct: float,
     ):
-        levels = _levels_from_forecasts(forecasts, buy_q=buy_q, sell_q=sell_q)
+        levels = _levels_from_forecasts(forecasts_win, buy_q=buy_q, sell_q=sell_q)
         levels = levels[(levels["timestamp"] >= start_day) & (levels["timestamp"] <= end_day_inclusive)].reset_index(drop=True)
         levels = _apply_price_offset(levels, price_offset_pct=price_offset)
 
@@ -499,68 +547,76 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     best = None
     best_key = None
     scores: List[Dict[str, object]] = []
-    for buy_q in buy_qs:
-        for sell_q in sell_qs:
-            if sell_q <= buy_q:
-                continue
-            for price_offset in offsets:
-                for min_spread in min_spreads:
-                    for stop_loss in stop_losses:
-                        res = _eval_window(
-                            bars_val,
-                            val_start_day,
-                            val_end_day,
-                            buy_q,
-                            sell_q,
-                            price_offset,
-                            min_spread,
-                            stop_loss,
-                        )
-                        metrics = res.metrics
-                        val_total_return = float(metrics.total_return)
-                        val_sortino = float(metrics.sortino)
-                        val_ann = float(metrics.annualized_return)
-                        val_mdd = float(metrics.max_drawdown)
-                        val_calmar = float(metrics.calmar)
-                        val_pf = float(metrics.profit_factor)
-                        rec = {
-                            "buy_q": buy_q,
-                            "sell_q": sell_q,
-                            "price_offset_pct": float(price_offset),
-                            "min_spread_pct": float(min_spread),
-                            "stop_loss_pct": float(stop_loss),
-                            "val_total_return": val_total_return,
-                            "val_annualized_return": val_ann,
-                            "val_sortino": val_sortino,
-                            "val_max_drawdown": val_mdd,
-                            "val_calmar": val_calmar,
-                            "val_profit_factor": val_pf,
-                            "val_final_equity": float(res.equity_curve.iloc[-1]),
-                            "val_trades": len(res.trades),
-                        }
-                        scores.append(rec)
+    for min_pred_close_return in min_pred_close_returns:
+        norm_thr: Optional[float] = float(min_pred_close_return) if min_pred_close_return is not None else None
+        forecasts_for_thr = forecasts_by_thr.get(norm_thr)
+        if forecasts_for_thr is None or forecasts_for_thr.empty:
+            continue
+        for buy_q in buy_qs:
+            for sell_q in sell_qs:
+                if sell_q <= buy_q:
+                    continue
+                for price_offset in offsets:
+                    for min_spread in min_spreads:
+                        for stop_loss in stop_losses:
+                            res = _eval_window(
+                                forecasts_for_thr,
+                                bars_val,
+                                val_start_day,
+                                val_end_day,
+                                buy_q,
+                                sell_q,
+                                price_offset,
+                                min_spread,
+                                stop_loss,
+                            )
+                            metrics = res.metrics
+                            val_total_return = float(metrics.total_return)
+                            val_sortino = float(metrics.sortino)
+                            val_ann = float(metrics.annualized_return)
+                            val_mdd = float(metrics.max_drawdown)
+                            val_calmar = float(metrics.calmar)
+                            val_pf = float(metrics.profit_factor)
+                            rec = {
+                                "min_predicted_close_return_pct": norm_thr,
+                                "buy_q": buy_q,
+                                "sell_q": sell_q,
+                                "price_offset_pct": float(price_offset),
+                                "min_spread_pct": float(min_spread),
+                                "stop_loss_pct": float(stop_loss),
+                                "val_total_return": val_total_return,
+                                "val_annualized_return": val_ann,
+                                "val_sortino": val_sortino,
+                                "val_max_drawdown": val_mdd,
+                                "val_calmar": val_calmar,
+                                "val_profit_factor": val_pf,
+                                "val_final_equity": float(res.equity_curve.iloc[-1]),
+                                "val_trades": len(res.trades),
+                            }
+                            scores.append(rec)
 
-                        if args.objective == "total_return":
-                            key = (val_total_return, val_sortino, val_ann)
-                        elif args.objective == "annualized_return":
-                            key = (val_ann, val_sortino, val_total_return)
-                        elif args.objective == "sortino":
-                            key = (val_sortino, val_ann, val_total_return)
-                        elif args.objective == "sortino_then_mdd_then_annualized":
-                            key = (val_sortino, val_mdd, val_ann, val_total_return)
-                        elif args.objective == "calmar_then_sortino":
-                            key = (val_calmar, val_sortino, val_ann, val_total_return)
-                        else:
-                            key = (val_sortino, val_ann, val_total_return)
+                            if args.objective == "total_return":
+                                key = (val_total_return, val_sortino, val_ann)
+                            elif args.objective == "annualized_return":
+                                key = (val_ann, val_sortino, val_total_return)
+                            elif args.objective == "sortino":
+                                key = (val_sortino, val_ann, val_total_return)
+                            elif args.objective == "sortino_then_mdd_then_annualized":
+                                key = (val_sortino, val_mdd, val_ann, val_total_return)
+                            elif args.objective == "calmar_then_sortino":
+                                key = (val_calmar, val_sortino, val_ann, val_total_return)
+                            else:
+                                key = (val_sortino, val_ann, val_total_return)
 
-                        if best is None or key > best_key:
-                            best = (buy_q, sell_q, float(price_offset), float(min_spread), float(stop_loss))
-                            best_key = key
+                            if best is None or key > best_key:
+                                best = (norm_thr, buy_q, sell_q, float(price_offset), float(min_spread), float(stop_loss))
+                                best_key = key
 
     assert best is not None
-    best_buy_q, best_sell_q, best_price_offset, best_min_spread, best_stop_loss = best
+    best_min_pred_close_return, best_buy_q, best_sell_q, best_price_offset, best_min_spread, best_stop_loss = best
     logger.info(
-        "Best on val: buy_q={} sell_q={} offset={} min_spread={} stop_loss={} objective={}",
+        "Best on val: min_predicted_close_return_pct={} buy_q={} sell_q={} offset={} min_spread={} stop_loss={} objective={}",
+        best_min_pred_close_return,
         best_buy_q,
         best_sell_q,
         best_price_offset,
@@ -569,7 +625,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.objective,
     )
 
+    best_forecasts = forecasts_by_thr.get(best_min_pred_close_return)
+    if best_forecasts is None:
+        raise RuntimeError(f"Internal error: missing forecasts for threshold={best_min_pred_close_return!r}")
+
     val_best_res = _eval_window(
+        best_forecasts,
         bars_val,
         val_start_day,
         val_end_day,
@@ -580,6 +641,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         best_stop_loss,
     )
     test_best_res = _eval_window(
+        best_forecasts,
         bars_test,
         test_start_day,
         test_end_day,
@@ -629,6 +691,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "allow_reentry_same_bar": bool(args.allow_reentry_same_bar),
             "allow_roundtrip_same_bar": bool(args.allow_roundtrip_same_bar),
             "intrabar_assumption": str(args.intrabar_assumption),
+            "min_predicted_close_return_pct": best_min_pred_close_return,
             "initial_cash": float(args.initial_cash),
         },
         "val_best": {
