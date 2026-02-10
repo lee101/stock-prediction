@@ -39,6 +39,7 @@ import argparse
 import struct
 import sys
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -171,9 +172,13 @@ def export_binary(
     data_root: Path,
     output_path: Path,
     min_rows: int = 200,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ):
     """Export all data to a single binary file."""
     print(f"Exporting data for {len(symbols)} symbols to {output_path}")
+    if start_date:
+        print(f"  Date filter: {start_date} to {end_date or 'end'}")
 
     # Load and align all data
     all_features = {}
@@ -212,6 +217,17 @@ def export_binary(
         sys.exit(1)
 
     common_index = common_index.sort_values()
+
+    # Apply date filtering
+    if start_date:
+        common_index = common_index[common_index >= pd.Timestamp(start_date, tz="UTC")]
+    if end_date:
+        common_index = common_index[common_index <= pd.Timestamp(end_date, tz="UTC")]
+
+    if len(common_index) < min_rows:
+        print(f"ERROR: Not enough timestamps after date filter ({len(common_index)})")
+        sys.exit(1)
+
     valid_symbols = [s for s in symbols if s in all_features]
     num_symbols = len(valid_symbols)
     num_timesteps = len(common_index)
@@ -269,6 +285,8 @@ def main():
     parser.add_argument("--data-root", default="trainingdatahourly", help="Path to hourly price data root")
     parser.add_argument("--output", default="pufferlib_market/data/market_data.bin", help="Output binary file")
     parser.add_argument("--min-rows", type=int, default=200, help="Minimum valid rows per symbol")
+    parser.add_argument("--start-date", default=None, help="Start date filter (e.g. 2025-08-25)")
+    parser.add_argument("--end-date", default=None, help="End date filter (e.g. 2025-10-31)")
     args = parser.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(",")]
@@ -278,6 +296,8 @@ def main():
         data_root=Path(args.data_root),
         output_path=Path(args.output),
         min_rows=args.min_rows,
+        start_date=args.start_date,
+        end_date=args.end_date,
     )
 
 
