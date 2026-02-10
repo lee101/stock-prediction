@@ -325,7 +325,15 @@ def main() -> None:
     ]
 
     results: List[Dict[str, Any]] = []
-    for run in runs:
+    for idx, run in enumerate(runs, 1):
+        print(f"\n=== [{idx}/{len(runs)}] {run.name} ===")
+        print(
+            "train_cfg: "
+            f"arch={run.arch} hidden={run.hidden_size} lr={run.lr:g} ent={run.ent_coef:g} "
+            f"anneal={int(run.anneal_lr)} "
+            f"cash_pen={run.cash_penalty:g} dd_pen={run.drawdown_penalty:g} "
+            f"downside_pen={run.downside_penalty:g} trade_pen={run.trade_penalty:g}"
+        )
         best_ckpt = _train_one(
             run,
             train_bin=paths["train_bin"],
@@ -374,6 +382,14 @@ def main() -> None:
         results.append(entry)
         (best_ckpt.parent / "eval_report.json").write_text(json.dumps(entry, indent=2, sort_keys=True))
 
+        hr = (replay.get("hourly_replay") or {}) if isinstance(replay, dict) else {}
+        print(
+            "holdout: "
+            f"daily_ret={daily_eval.get('total_return', 0.0):+.4f} daily_sort={daily_eval.get('sortino', 0.0):+.2f} "
+            f"| hourly_ret={hr.get('total_return', 0.0):+.4f} hourly_sort={hr.get('sortino', 0.0):+.2f} "
+            f"max_orders_in_day={hr.get('max_orders_in_day', 0)}"
+        )
+
     out_path = EXP_DIR / "sweep_results.json"
     out_path.write_text(json.dumps(results, indent=2, sort_keys=True))
 
@@ -402,4 +418,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
