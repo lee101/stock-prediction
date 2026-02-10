@@ -354,6 +354,7 @@ trainingdatahourlybinance/
 binancetrainingdatahourly
 binance_spot_hourly/
 binance_spot_daily/
+binance_spot_*/
 trainingdatadailybinance
 trainingdatadailybinance/
 bagsfm_state.json

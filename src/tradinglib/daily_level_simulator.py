@@ -17,9 +17,15 @@ class DailyLevelSimulationConfig:
     maker_fee: float = 0.0
     allocation_fraction: float = 1.0
     min_spread_pct: float = 0.0
+    min_spread_mode: str = "skip"  # skip|widen|none
     close_at_eod: bool = True
     allow_reentry_same_bar: bool = False
+    allow_roundtrip_same_bar: bool = False
+    intrabar_assumption: str = "none"  # none|ohlc
     periods_per_year: float = 24.0 * 365.0
+    record_per_bar: bool = True
+    stop_loss_pct: float = 0.0
+    stop_loss_lockout_until_next_day: bool = False
 
 
 @dataclass(frozen=True)
@@ -68,7 +74,9 @@ def _validate_hourly_bars(bars: pd.DataFrame) -> pd.DataFrame:
     frame = bars.copy()
     frame["timestamp"] = _coerce_ts(frame["timestamp"])
     frame = frame.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
-    for col in ("high", "low", "close"):
+    for col in ("open", "high", "low", "close"):
+        if col not in frame.columns:
+            continue
         frame[col] = pd.to_numeric(frame[col], errors="coerce")
     frame = frame.dropna(subset=["high", "low", "close"]).reset_index(drop=True)
     return frame
@@ -97,6 +105,14 @@ def simulate_daily_levels_on_intraday_bars(
         raise ValueError("maker_fee must be in [0, 1)")
     if cfg.min_spread_pct < 0:
         raise ValueError("min_spread_pct must be >= 0")
+    min_spread_mode = str(cfg.min_spread_mode or "skip").strip().lower()
+    if min_spread_mode not in {"skip", "widen", "none"}:
+        raise ValueError("min_spread_mode must be one of: skip, widen, none")
+    intrabar_assumption = str(cfg.intrabar_assumption or "none").strip().lower()
+    if intrabar_assumption not in {"none", "ohlc"}:
+        raise ValueError("intrabar_assumption must be one of: none, ohlc")
+    if cfg.stop_loss_pct < 0 or cfg.stop_loss_pct >= 1.0:
+        raise ValueError("stop_loss_pct must be in [0, 1)")
     if cfg.periods_per_year <= 0:
         raise ValueError("periods_per_year must be positive")
 
@@ -121,11 +137,19 @@ def simulate_daily_levels_on_intraday_bars(
 
     cash = float(cfg.initial_cash)
     base_qty = 0.0
+    entry_price: Optional[float] = None
+    entry_ts: Optional[pd.Timestamp] = None
+    stop_lockout_day: Optional[pd.Timestamp] = None
     trades: List[DailyLevelTrade] = []
 
+    record_per_bar = bool(cfg.record_per_bar)
     per_rows: List[Dict[str, object]] = []
     equity_values: List[float] = []
-    equity_index: List[pd.Timestamp] = []
+    if record_per_bar:
+        equity_index: List[pd.Timestamp] = []
+    else:
+        # Reuse validated timestamps to avoid per-iteration list appends during large sweeps.
+        equity_index = bars_frame["timestamp"].tolist()
 
     current_day: Optional[pd.Timestamp] = None
     last_bar_close: Optional[float] = None
@@ -145,17 +169,21 @@ def simulate_daily_levels_on_intraday_bars(
         )
 
     def _close_position(ts: pd.Timestamp, price: float, reason: str) -> None:
-        nonlocal cash, base_qty
+        nonlocal cash, base_qty, entry_price, entry_ts
         if base_qty <= 0:
             return
         qty = float(base_qty)
         proceeds = qty * float(price) * (1.0 - float(cfg.maker_fee))
         cash += proceeds
         base_qty = 0.0
+        entry_price = None
+        entry_ts = None
         _record_trade(ts, "sell", float(price), qty, reason)
 
     for row in bars_frame.itertuples(index=False):
-        ts = pd.Timestamp(row.timestamp)
+        ts = row.timestamp
+        if not isinstance(ts, pd.Timestamp):
+            ts = pd.Timestamp(ts)
         day = ts.floor("D")
 
         # Day boundary: optionally close at previous bar close.
@@ -164,57 +192,124 @@ def simulate_daily_levels_on_intraday_bars(
                 _close_position(last_bar_ts, float(last_bar_close), reason="eod")
         if current_day is None or day != current_day:
             current_day = day
+            if stop_lockout_day is not None and stop_lockout_day != current_day:
+                stop_lockout_day = None
 
         last_bar_close = float(row.close)
         last_bar_ts = ts
 
-        buy_price, sell_price = level_map.get(day, (np.nan, np.nan))
-        tradable_today = np.isfinite(buy_price) and np.isfinite(sell_price) and buy_price > 0 and sell_price > 0
-        if tradable_today and sell_price <= buy_price:
-            tradable_today = False
-        if tradable_today and cfg.min_spread_pct > 0:
-            spread = (sell_price - buy_price) / buy_price
-            if not np.isfinite(spread) or spread < cfg.min_spread_pct:
-                tradable_today = False
-
         opened = False
         closed = False
 
+        # Risk management: stop-loss based on the last entry price (armed starting the next bar).
+        if (
+            base_qty > 0
+            and cfg.stop_loss_pct > 0
+            and entry_price is not None
+            and np.isfinite(entry_price)
+            and entry_price > 0
+            and entry_ts is not None
+            and ts > entry_ts
+        ):
+            stop_price = float(entry_price) * (1.0 - float(cfg.stop_loss_pct))
+            if stop_price > 0 and float(row.low) <= stop_price:
+                _close_position(ts, stop_price, reason="stop_loss")
+                closed = True
+                if cfg.stop_loss_lockout_until_next_day:
+                    stop_lockout_day = day
+
+        buy_price, sell_price = level_map.get(day, (np.nan, np.nan))
+        tradable_today = np.isfinite(buy_price) and np.isfinite(sell_price) and buy_price > 0 and sell_price > 0
+        if tradable_today and sell_price <= buy_price:
+            if cfg.min_spread_pct > 0 and min_spread_mode == "widen":
+                sell_price = float(buy_price) * (1.0 + float(cfg.min_spread_pct))
+            else:
+                tradable_today = False
+        if tradable_today and cfg.min_spread_pct > 0 and min_spread_mode != "none":
+            spread = (sell_price - buy_price) / buy_price
+            if not np.isfinite(spread):
+                tradable_today = False
+            elif spread < float(cfg.min_spread_pct):
+                if min_spread_mode == "widen":
+                    sell_price = float(buy_price) * (1.0 + float(cfg.min_spread_pct))
+                else:
+                    tradable_today = False
+
         if tradable_today:
-            if base_qty > 0:
-                if float(row.high) >= sell_price:
-                    _close_position(ts, float(sell_price), reason="take_profit")
+            had_position_at_start = base_qty > 0
+
+            def _try_open() -> bool:
+                nonlocal cash, base_qty, entry_price, entry_ts, stop_lockout_day
+                if cfg.stop_loss_lockout_until_next_day and stop_lockout_day == day:
+                    return False
+                if base_qty > 0:
+                    return False
+                if float(row.low) > buy_price:
+                    return False
+                if closed and not cfg.allow_reentry_same_bar:
+                    return False
+
+                budget = float(cash) * float(cfg.allocation_fraction)
+                cost_per_unit = buy_price * (1.0 + float(cfg.maker_fee))
+                qty = budget / cost_per_unit if cost_per_unit > 0 else 0.0
+                qty = max(0.0, float(qty))
+                if qty > 0 and np.isfinite(qty):
+                    cash -= qty * cost_per_unit
+                    base_qty += qty
+                    entry_price = float(buy_price)
+                    entry_ts = ts
+                    _record_trade(ts, "buy", float(buy_price), qty, reason="entry")
+                    return True
+                return False
+
+            def _try_close() -> bool:
+                if base_qty <= 0:
+                    return False
+                if float(row.high) < sell_price:
+                    return False
+                if not had_position_at_start and opened and not cfg.allow_roundtrip_same_bar:
+                    return False
+                _close_position(ts, float(sell_price), reason="take_profit")
+                return True
+
+            if intrabar_assumption == "ohlc":
+                open_price = float(getattr(row, "open", np.nan))
+                if not np.isfinite(open_price) or open_price <= 0:
+                    open_price = float(row.close)
+                # Common OHLC path assumption: if candle closes up, low happens before high; else high before low.
+                order = ("low", "high") if float(row.close) >= open_price else ("high", "low")
+                for event in order:
+                    if event == "high":
+                        if _try_close():
+                            closed = True
+                    else:
+                        if _try_open():
+                            opened = True
+            else:
+                # Conservative default: at most one action per bar; sell before buy.
+                if _try_close():
                     closed = True
-            if base_qty <= 0:
-                if float(row.low) <= buy_price and (cfg.allow_reentry_same_bar or not closed):
-                    # Allocate fraction of current cash for this entry.
-                    budget = float(cash) * float(cfg.allocation_fraction)
-                    # Ensure we do not exceed cash after accounting for maker fees.
-                    cost_per_unit = buy_price * (1.0 + float(cfg.maker_fee))
-                    qty = budget / cost_per_unit if cost_per_unit > 0 else 0.0
-                    qty = max(0.0, float(qty))
-                    if qty > 0 and np.isfinite(qty):
-                        cash -= qty * cost_per_unit
-                        base_qty += qty
-                        opened = True
-                        _record_trade(ts, "buy", float(buy_price), qty, reason="entry")
+                if _try_open():
+                    opened = True
 
         equity = cash + base_qty * float(row.close)
         equity_values.append(float(equity))
-        equity_index.append(ts)
-        per_rows.append(
-            {
-                "timestamp": ts,
-                "cash": cash,
-                "base_qty": base_qty,
-                "equity": equity,
-                "day": day,
-                "buy_price": float(buy_price) if np.isfinite(buy_price) else np.nan,
-                "sell_price": float(sell_price) if np.isfinite(sell_price) else np.nan,
-                "opened": float(opened),
-                "closed": float(closed),
-            }
-        )
+        if record_per_bar:
+            equity_index.append(ts)
+        if record_per_bar:
+            per_rows.append(
+                {
+                    "timestamp": ts,
+                    "cash": cash,
+                    "base_qty": base_qty,
+                    "equity": equity,
+                    "day": day,
+                    "buy_price": float(buy_price) if np.isfinite(buy_price) else np.nan,
+                    "sell_price": float(sell_price) if np.isfinite(sell_price) else np.nan,
+                    "opened": float(opened),
+                    "closed": float(closed),
+                }
+            )
 
     # Close any remaining position at the end of the simulation (at last close).
     if cfg.close_at_eod and base_qty > 0 and last_bar_close is not None and last_bar_ts is not None:
@@ -223,26 +318,30 @@ def simulate_daily_levels_on_intraday_bars(
         # Update final equity point after the forced close.
         equity = cash
         equity_values.append(float(equity))
-        equity_index.append(last_bar_ts + pd.Timedelta(seconds=1))
-        per_rows.append(
-            {
-                "timestamp": last_bar_ts + pd.Timedelta(seconds=1),
-                "cash": cash,
-                "base_qty": base_qty,
-                "equity": equity,
-                "day": (last_bar_ts + pd.Timedelta(seconds=1)).floor("D"),
-                "buy_price": np.nan,
-                "sell_price": np.nan,
-                "opened": 0.0,
-                "closed": 1.0,
-            }
-        )
+        if record_per_bar:
+            equity_index.append(last_bar_ts + pd.Timedelta(seconds=1))
+        else:
+            equity_index.append(last_bar_ts + pd.Timedelta(seconds=1))
+        if record_per_bar:
+            per_rows.append(
+                {
+                    "timestamp": last_bar_ts + pd.Timedelta(seconds=1),
+                    "cash": cash,
+                    "base_qty": base_qty,
+                    "equity": equity,
+                    "day": (last_bar_ts + pd.Timedelta(seconds=1)).floor("D"),
+                    "buy_price": np.nan,
+                    "sell_price": np.nan,
+                    "opened": 0.0,
+                    "closed": 1.0,
+                }
+            )
 
     equity_curve = pd.Series(equity_values, index=pd.DatetimeIndex(equity_index, name="timestamp"))
     metrics = pnl_metrics(equity_curve=equity_curve.values, periods_per_year=float(cfg.periods_per_year))
     return DailyLevelSimulationResult(
         equity_curve=equity_curve,
-        per_bar=pd.DataFrame(per_rows),
+        per_bar=pd.DataFrame(per_rows) if record_per_bar else pd.DataFrame(),
         trades=trades,
         metrics=metrics,
     )
@@ -254,4 +353,3 @@ __all__ = [
     "DailyLevelTrade",
     "simulate_daily_levels_on_intraday_bars",
 ]
-

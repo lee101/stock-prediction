@@ -36,6 +36,24 @@ def _parse_floats(raw: str) -> List[float]:
     return items
 
 
+def _infer_periods_per_year(bars: pd.DataFrame, *, fallback: float = 24.0 * 365.0) -> float:
+    """Infer bar frequency from timestamp deltas and convert to periods/year."""
+    if bars is None or bars.empty or "timestamp" not in bars.columns:
+        return float(fallback)
+    ts = pd.to_datetime(bars["timestamp"], utc=True, errors="coerce").dropna().sort_values()
+    if len(ts) < 3:
+        return float(fallback)
+    deltas = ts.diff().dt.total_seconds().dropna()
+    deltas = deltas[deltas > 0]
+    if deltas.empty:
+        return float(fallback)
+    step = float(deltas.median())
+    if not np.isfinite(step) or step <= 0:
+        return float(fallback)
+    seconds_per_year = 365.0 * 24.0 * 60.0 * 60.0
+    return float(seconds_per_year / step)
+
+
 def _q_tag(q: float) -> str:
     pct = int(round(float(q) * 100))
     return f"p{pct:d}"
@@ -186,6 +204,56 @@ def _levels_from_forecasts(forecasts: pd.DataFrame, *, buy_q: float, sell_q: flo
     return levels
 
 
+def _apply_price_offset(levels: pd.DataFrame, *, price_offset_pct: float) -> pd.DataFrame:
+    pct = float(price_offset_pct)
+    if pct == 0.0:
+        return levels
+    frame = levels.copy()
+    frame["buy_price"] = pd.to_numeric(frame["buy_price"], errors="coerce") * (1.0 - pct)
+    frame["sell_price"] = pd.to_numeric(frame["sell_price"], errors="coerce") * (1.0 + pct)
+    return frame
+
+
+def _trade_stats(trades) -> Dict[str, float]:
+    if not trades:
+        return {
+            "trades_total": 0.0,
+            "buys_total": 0.0,
+            "sells_total": 0.0,
+            "cycles_total": 0.0,
+            "trades_per_day_mean": 0.0,
+            "trades_per_day_max": 0.0,
+            "cycles_per_day_mean": 0.0,
+            "cycles_per_day_max": 0.0,
+        }
+
+    df = pd.DataFrame({"timestamp": [t.timestamp for t in trades], "side": [t.side for t in trades]})
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df.dropna(subset=["timestamp"]).reset_index(drop=True)
+    df["day"] = df["timestamp"].dt.floor("D")
+
+    total = float(len(df))
+    buys = float((df["side"].astype(str).str.lower().str.startswith("b")).sum())
+    sells = float((df["side"].astype(str).str.lower().str.startswith("s")).sum())
+
+    trades_per_day = df.groupby("day", sort=True).size()
+    buys_per_day = df[df["side"].astype(str).str.lower().str.startswith("b")].groupby("day", sort=True).size()
+    sells_per_day = df[df["side"].astype(str).str.lower().str.startswith("s")].groupby("day", sort=True).size()
+    days = trades_per_day.index
+    cycles_per_day = np.minimum(buys_per_day.reindex(days, fill_value=0), sells_per_day.reindex(days, fill_value=0))
+
+    return {
+        "trades_total": total,
+        "buys_total": buys,
+        "sells_total": sells,
+        "cycles_total": float(cycles_per_day.sum()),
+        "trades_per_day_mean": float(trades_per_day.mean()) if not trades_per_day.empty else 0.0,
+        "trades_per_day_max": float(trades_per_day.max()) if not trades_per_day.empty else 0.0,
+        "cycles_per_day_mean": float(cycles_per_day.mean()) if len(cycles_per_day) else 0.0,
+        "cycles_per_day_max": float(cycles_per_day.max()) if len(cycles_per_day) else 0.0,
+    }
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Backtest daily Chronos2-derived buy/sell levels on Binance intraday bars (multiple cycles per day).",
@@ -194,9 +262,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--hourly-symbol",
         default="SOLFDUSD",
-        help="Hourly CSV symbol to use for intraday simulation (default: SOLFDUSD).",
+        help="CSV symbol to use for intraday simulation (default: SOLFDUSD).",
+    )
+    parser.add_argument(
+        "--intraday-symbol",
+        default=None,
+        help="Alias for --hourly-symbol (preferred name for non-hourly bars).",
     )
     parser.add_argument("--hourly-root", type=Path, default=Path("trainingdatahourlybinance"))
+    parser.add_argument(
+        "--intraday-root",
+        type=Path,
+        default=None,
+        help="Alias for --hourly-root (preferred name for non-hourly bars).",
+    )
     parser.add_argument("--daily-root", type=Path, default=Path("trainingdatadailybinance"))
     parser.add_argument("--val-days", type=int, default=60)
     parser.add_argument("--test-days", type=int, default=60)
@@ -208,17 +287,63 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--sell-quantiles", default="0.5,0.6,0.7,0.8,0.9")
     parser.add_argument("--maker-fee", type=float, default=0.0)
     parser.add_argument("--min-spread-pct", type=float, default=0.0)
+    parser.add_argument(
+        "--min-spread-mode",
+        type=str,
+        default="skip",
+        choices=["skip", "widen", "none"],
+        help="How to enforce min spread between buy/sell (default: skip).",
+    )
+    parser.add_argument("--min-spread-pcts", default=None, help="Comma-separated sweep values. Overrides --min-spread-pct.")
+    parser.add_argument("--price-offset-pcts", default="0.0", help="Comma-separated offsets (buy down, sell up).")
+    parser.add_argument("--allocation-fraction", type=float, default=1.0)
+    parser.add_argument("--close-at-eod", action="store_true", default=True)
+    parser.add_argument("--no-close-at-eod", action="store_false", dest="close_at_eod")
+    parser.add_argument("--allow-reentry-same-bar", action="store_true", default=False)
+    parser.add_argument("--allow-roundtrip-same-bar", action="store_true", default=False)
+    parser.add_argument(
+        "--intrabar-assumption",
+        type=str,
+        default="none",
+        choices=["none", "ohlc"],
+        help="Within-bar path assumption when only OHLC is known (default: none).",
+    )
+    parser.add_argument("--stop-loss-pcts", default="0.0", help="Comma-separated stop-loss percentages (0 disables).")
+    parser.add_argument(
+        "--stop-loss-lockout-until-next-day",
+        action="store_true",
+        default=False,
+        help="After a stop-loss, do not re-enter until the next UTC day (default: off).",
+    )
+    parser.add_argument("--record-per-bar", action="store_true", default=False, help="Include per-bar frame in results (slower).")
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
     parser.add_argument("--output-json", type=Path, default=None)
+    parser.add_argument(
+        "--objective",
+        type=str,
+        default="sortino_then_annualized",
+        choices=[
+            "total_return",
+            "annualized_return",
+            "sortino",
+            "sortino_then_annualized",
+            "sortino_then_mdd_then_annualized",
+            "calmar_then_sortino",
+        ],
+        help="Validation objective for selecting best parameters.",
+    )
+    parser.add_argument("--top-k", type=int, default=0, help="Print top-K parameter sets by validation objective.")
+    parser.add_argument("--forecasts-path", type=Path, default=None, help="Optional cache path for forecast frame (csv/parquet).")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     symbol = str(args.symbol).strip().upper()
-    hourly_symbol = str(args.hourly_symbol).strip().upper()
+    hourly_symbol = str(args.intraday_symbol or args.hourly_symbol).strip().upper()
+    hourly_root = Path(args.intraday_root) if args.intraday_root is not None else Path(args.hourly_root)
     val_days = max(1, int(args.val_days))
     test_days = max(1, int(args.test_days))
 
     daily_path = Path(args.daily_root) / f"{symbol}.csv"
-    hourly_path = Path(args.hourly_root) / f"{hourly_symbol}.csv"
+    hourly_path = hourly_root / f"{hourly_symbol}.csv"
     if not daily_path.exists():
         raise FileNotFoundError(f"Missing daily CSV: {daily_path}")
     if not hourly_path.exists():
@@ -249,6 +374,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     sell_qs = sorted({float(q) for q in _parse_floats(args.sell_quantiles)})
     quantiles = sorted({*buy_qs, *sell_qs, 0.5})
 
+    offsets = sorted({float(x) for x in _parse_floats(args.price_offset_pcts)})
+    if not offsets:
+        offsets = [0.0]
+    stop_losses = sorted({float(x) for x in _parse_floats(args.stop_loss_pcts)})
+    if not stop_losses:
+        stop_losses = [0.0]
+    if args.min_spread_pcts:
+        min_spreads = sorted({float(x) for x in _parse_floats(args.min_spread_pcts)})
+    else:
+        min_spreads = [float(args.min_spread_pct)]
+    if not min_spreads:
+        min_spreads = [0.0]
+
     logger.info(
         "Backtest setup: symbol={} hourly_symbol={} daily_rows={} hourly_rows={} val_days={} test_days={}",
         symbol,
@@ -261,60 +399,102 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logger.info("Chronos params: model_id={} device_map={} context_length={} batch_size={}", model_id, device_map, context_length, batch_size)
     logger.info("Quantile sweep: buy={} sell={}", buy_qs, sell_qs)
 
-    wrapper = Chronos2OHLCWrapper.from_pretrained(
-        model_id=model_id,
-        device_map=device_map,
-        default_context_length=context_length,
-        default_batch_size=batch_size,
-        quantile_levels=tuple(quantiles),
-        preaugmentation_dirs=[Path("preaugstrategies") / "chronos2"],
-    )
+    forecasts: pd.DataFrame
+    if args.forecasts_path and Path(args.forecasts_path).exists():
+        path = Path(args.forecasts_path)
+        if path.suffix.lower() == ".parquet":
+            forecasts = pd.read_parquet(path)
+        else:
+            forecasts = pd.read_csv(path)
+        forecasts["timestamp"] = pd.to_datetime(forecasts["timestamp"], utc=True, errors="coerce")
+        forecasts["issued_at"] = pd.to_datetime(forecasts["issued_at"], utc=True, errors="coerce")
+        forecasts = forecasts.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+        logger.info("Loaded cached forecasts: {} (rows={})", path, len(forecasts))
+    else:
+        wrapper = Chronos2OHLCWrapper.from_pretrained(
+            model_id=model_id,
+            device_map=device_map,
+            default_context_length=context_length,
+            default_batch_size=batch_size,
+            quantile_levels=tuple(quantiles),
+            preaugmentation_dirs=[Path("preaugstrategies") / "chronos2"],
+        )
 
-    specs = _build_forecast_specs(
-        daily,
-        symbol=symbol,
-        start_idx=forecast_start_idx,
-        end_idx=forecast_end_idx,
-        context_length=context_length,
-        min_context=max(16, min(64, context_length // 8)),
-    )
-    logger.info("Generating forecasts for {} day(s)...", len(specs))
-    forecasts = _build_forecast_frame(
-        wrapper,
-        specs,
-        prediction_length=1,
-        context_length=context_length,
-        quantile_levels=quantiles,
-        batch_size=batch_size,
-        predict_kwargs=predict_kwargs,
-    )
-    if forecasts.empty:
-        raise RuntimeError("No forecasts generated (empty forecast frame).")
+        specs = _build_forecast_specs(
+            daily,
+            symbol=symbol,
+            start_idx=forecast_start_idx,
+            end_idx=forecast_end_idx,
+            context_length=context_length,
+            min_context=max(16, min(64, context_length // 8)),
+        )
+        logger.info("Generating forecasts for {} day(s)...", len(specs))
+        forecasts = _build_forecast_frame(
+            wrapper,
+            specs,
+            prediction_length=1,
+            context_length=context_length,
+            quantile_levels=quantiles,
+            batch_size=batch_size,
+            predict_kwargs=predict_kwargs,
+        )
+        if forecasts.empty:
+            raise RuntimeError("No forecasts generated (empty forecast frame).")
+        if args.forecasts_path:
+            out = Path(args.forecasts_path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            if out.suffix.lower() == ".parquet":
+                forecasts.to_parquet(out, index=False)
+            else:
+                forecasts.to_csv(out, index=False)
+            logger.info("Wrote cached forecasts: {}", out)
 
     val_start_day = pd.Timestamp(daily.iloc[val_start_idx]["timestamp"]).floor("D")
     test_start_day = pd.Timestamp(daily.iloc[test_start_idx]["timestamp"]).floor("D")
     end_day = pd.Timestamp(daily.iloc[-1]["timestamp"]).floor("D")
 
     # Helper to evaluate a (buy_q, sell_q) pair on a window.
-    sim_cfg = DailyLevelSimulationConfig(
-        initial_cash=float(args.initial_cash),
-        maker_fee=float(args.maker_fee),
-        allocation_fraction=1.0,
-        min_spread_pct=float(args.min_spread_pct),
-        close_at_eod=True,
-        allow_reentry_same_bar=False,
-        periods_per_year=24.0 * 365.0,
-    )
-
-    def _eval_window(start_day: pd.Timestamp, end_day_inclusive: pd.Timestamp, buy_q: float, sell_q: float):
-        levels = _levels_from_forecasts(forecasts, buy_q=buy_q, sell_q=sell_q)
-        levels = levels[(levels["timestamp"] >= start_day) & (levels["timestamp"] <= end_day_inclusive)].reset_index(drop=True)
-        bars_win = _slice_hourly_window(hourly, start_day=start_day, end_day=end_day_inclusive)
-        result = simulate_daily_levels_on_intraday_bars(bars_win, levels, config=sim_cfg)
-        return result
+    inferred_periods = _infer_periods_per_year(hourly, fallback=24.0 * 365.0)
+    sim_base_cfg = {
+        "initial_cash": float(args.initial_cash),
+        "maker_fee": float(args.maker_fee),
+        "allocation_fraction": float(args.allocation_fraction),
+        "close_at_eod": bool(args.close_at_eod),
+        "allow_reentry_same_bar": bool(args.allow_reentry_same_bar),
+        "allow_roundtrip_same_bar": bool(args.allow_roundtrip_same_bar),
+        "intrabar_assumption": str(args.intrabar_assumption),
+        "periods_per_year": float(inferred_periods),
+        "record_per_bar": bool(args.record_per_bar),
+        "stop_loss_lockout_until_next_day": bool(args.stop_loss_lockout_until_next_day),
+    }
 
     val_end_day = (test_start_day - pd.Timedelta(days=1)).floor("D")
     test_end_day = end_day
+    bars_val = _slice_hourly_window(hourly, start_day=val_start_day, end_day=val_end_day)
+    bars_test = _slice_hourly_window(hourly, start_day=test_start_day, end_day=test_end_day)
+
+    def _eval_window(
+        bars_win: pd.DataFrame,
+        start_day: pd.Timestamp,
+        end_day_inclusive: pd.Timestamp,
+        buy_q: float,
+        sell_q: float,
+        price_offset: float,
+        min_spread: float,
+        stop_loss_pct: float,
+    ):
+        levels = _levels_from_forecasts(forecasts, buy_q=buy_q, sell_q=sell_q)
+        levels = levels[(levels["timestamp"] >= start_day) & (levels["timestamp"] <= end_day_inclusive)].reset_index(drop=True)
+        levels = _apply_price_offset(levels, price_offset_pct=price_offset)
+
+        sim_cfg = DailyLevelSimulationConfig(
+            **sim_base_cfg,
+            min_spread_pct=float(min_spread),
+            min_spread_mode=str(args.min_spread_mode),
+            stop_loss_pct=float(stop_loss_pct),
+        )
+        result = simulate_daily_levels_on_intraday_bars(bars_win, levels, config=sim_cfg)
+        return result
 
     best = None
     best_key = None
@@ -323,30 +503,92 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for sell_q in sell_qs:
             if sell_q <= buy_q:
                 continue
-            res = _eval_window(val_start_day, val_end_day, buy_q, sell_q)
-            score = float(res.metrics.total_return)
-            sortino = float(res.metrics.sortino)
-            scores.append(
-                {
-                    "buy_q": buy_q,
-                    "sell_q": sell_q,
-                    "val_total_return": score,
-                    "val_sortino": sortino,
-                    "val_final_equity": float(res.equity_curve.iloc[-1]),
-                    "val_trades": len(res.trades),
-                }
-            )
-            key = (score, sortino)
-            if best is None or key > best_key:
-                best = (buy_q, sell_q)
-                best_key = key
+            for price_offset in offsets:
+                for min_spread in min_spreads:
+                    for stop_loss in stop_losses:
+                        res = _eval_window(
+                            bars_val,
+                            val_start_day,
+                            val_end_day,
+                            buy_q,
+                            sell_q,
+                            price_offset,
+                            min_spread,
+                            stop_loss,
+                        )
+                        metrics = res.metrics
+                        val_total_return = float(metrics.total_return)
+                        val_sortino = float(metrics.sortino)
+                        val_ann = float(metrics.annualized_return)
+                        val_mdd = float(metrics.max_drawdown)
+                        val_calmar = float(metrics.calmar)
+                        val_pf = float(metrics.profit_factor)
+                        rec = {
+                            "buy_q": buy_q,
+                            "sell_q": sell_q,
+                            "price_offset_pct": float(price_offset),
+                            "min_spread_pct": float(min_spread),
+                            "stop_loss_pct": float(stop_loss),
+                            "val_total_return": val_total_return,
+                            "val_annualized_return": val_ann,
+                            "val_sortino": val_sortino,
+                            "val_max_drawdown": val_mdd,
+                            "val_calmar": val_calmar,
+                            "val_profit_factor": val_pf,
+                            "val_final_equity": float(res.equity_curve.iloc[-1]),
+                            "val_trades": len(res.trades),
+                        }
+                        scores.append(rec)
+
+                        if args.objective == "total_return":
+                            key = (val_total_return, val_sortino, val_ann)
+                        elif args.objective == "annualized_return":
+                            key = (val_ann, val_sortino, val_total_return)
+                        elif args.objective == "sortino":
+                            key = (val_sortino, val_ann, val_total_return)
+                        elif args.objective == "sortino_then_mdd_then_annualized":
+                            key = (val_sortino, val_mdd, val_ann, val_total_return)
+                        elif args.objective == "calmar_then_sortino":
+                            key = (val_calmar, val_sortino, val_ann, val_total_return)
+                        else:
+                            key = (val_sortino, val_ann, val_total_return)
+
+                        if best is None or key > best_key:
+                            best = (buy_q, sell_q, float(price_offset), float(min_spread), float(stop_loss))
+                            best_key = key
 
     assert best is not None
-    best_buy_q, best_sell_q = best
-    logger.info("Best on val: buy_q={} sell_q={} total_return={:.6f} sortino={:.3f}", best_buy_q, best_sell_q, best_key[0], best_key[1])
+    best_buy_q, best_sell_q, best_price_offset, best_min_spread, best_stop_loss = best
+    logger.info(
+        "Best on val: buy_q={} sell_q={} offset={} min_spread={} stop_loss={} objective={}",
+        best_buy_q,
+        best_sell_q,
+        best_price_offset,
+        best_min_spread,
+        best_stop_loss,
+        args.objective,
+    )
 
-    val_best_res = _eval_window(val_start_day, val_end_day, best_buy_q, best_sell_q)
-    test_best_res = _eval_window(test_start_day, test_end_day, best_buy_q, best_sell_q)
+    val_best_res = _eval_window(
+        bars_val,
+        val_start_day,
+        val_end_day,
+        best_buy_q,
+        best_sell_q,
+        best_price_offset,
+        best_min_spread,
+        best_stop_loss,
+    )
+    test_best_res = _eval_window(
+        bars_test,
+        test_start_day,
+        test_end_day,
+        best_buy_q,
+        best_sell_q,
+        best_price_offset,
+        best_min_spread,
+        best_stop_loss,
+    )
 
     payload = {
         "run_id": time.strftime("%Y%m%d_%H%M%SZ", time.gmtime()),
@@ -357,6 +599,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "hourly_path": str(hourly_path),
             "daily_rows": int(len(daily)),
             "hourly_rows": int(len(hourly)),
+            "intraday_periods_per_year": float(inferred_periods),
             "val_days": int(val_days),
             "test_days": int(test_days),
             "val_start_day": str(val_start_day),
@@ -376,21 +619,48 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "best_buy_q": best_buy_q,
             "best_sell_q": best_sell_q,
             "maker_fee": float(args.maker_fee),
-            "min_spread_pct": float(args.min_spread_pct),
+            "min_spread_mode": str(args.min_spread_mode),
+            "min_spread_pct": float(best_min_spread),
+            "price_offset_pct": float(best_price_offset),
+            "stop_loss_pct": float(best_stop_loss),
+            "stop_loss_lockout_until_next_day": bool(args.stop_loss_lockout_until_next_day),
+            "allocation_fraction": float(args.allocation_fraction),
+            "close_at_eod": bool(args.close_at_eod),
+            "allow_reentry_same_bar": bool(args.allow_reentry_same_bar),
+            "allow_roundtrip_same_bar": bool(args.allow_roundtrip_same_bar),
+            "intrabar_assumption": str(args.intrabar_assumption),
             "initial_cash": float(args.initial_cash),
         },
         "val_best": {
             **asdict(val_best_res.metrics),
             "trades": len(val_best_res.trades),
             "final_equity": float(val_best_res.equity_curve.iloc[-1]),
+            **_trade_stats(val_best_res.trades),
         },
         "test_best": {
             **asdict(test_best_res.metrics),
             "trades": len(test_best_res.trades),
             "final_equity": float(test_best_res.equity_curve.iloc[-1]),
+            **_trade_stats(test_best_res.trades),
         },
         "sweep": scores,
     }
+
+    if args.top_k and int(args.top_k) > 0 and scores:
+        if args.objective == "total_return":
+            sort_key = lambda r: (r["val_total_return"], r["val_sortino"], r["val_annualized_return"])
+        elif args.objective == "annualized_return":
+            sort_key = lambda r: (r["val_annualized_return"], r["val_sortino"], r["val_total_return"])
+        elif args.objective == "sortino":
+            sort_key = lambda r: (r["val_sortino"], r["val_annualized_return"], r["val_total_return"])
+        elif args.objective == "sortino_then_mdd_then_annualized":
+            sort_key = lambda r: (r["val_sortino"], r["val_max_drawdown"], r["val_annualized_return"], r["val_total_return"])
+        elif args.objective == "calmar_then_sortino":
+            sort_key = lambda r: (r["val_calmar"], r["val_sortino"], r["val_annualized_return"], r["val_total_return"])
+        else:
+            sort_key = lambda r: (r["val_sortino"], r["val_annualized_return"], r["val_total_return"])
+        top = sorted(scores, key=sort_key, reverse=True)[: int(args.top_k)]
+        print("TOP:", json.dumps(top, indent=2, sort_keys=True))
 
     if args.output_json:
         out_path = Path(args.output_json)
@@ -407,4 +677,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
