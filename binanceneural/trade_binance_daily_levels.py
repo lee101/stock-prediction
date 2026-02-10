@@ -15,6 +15,7 @@ from src.chronos2_params import resolve_chronos2_params
 from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 from src.price_guard import enforce_gap
 from src.process_utils import enforce_min_spread
+from src.tradinglib.direction_filter import compute_predicted_close_return, should_trade_predicted_close_return
 
 from .binance_watchers import WatcherPlan, spawn_watcher
 from .execution import (
@@ -31,6 +32,9 @@ class DailyLevels:
     issued_at: pd.Timestamp
     buy_price: float
     sell_price: float
+    predicted_close_p50: Optional[float] = None
+    prev_close: Optional[float] = None
+    predicted_close_return: Optional[float] = None
 
 
 def _utc_now() -> datetime:
@@ -128,6 +132,7 @@ def _forecast_today_levels(
     # Future timestamp should correspond to today (UTC day start) when context ends at yesterday.
     buy_frame = quantile_frames.get(float(buy_quantile))
     sell_frame = quantile_frames.get(float(sell_quantile))
+    p50_frame = quantile_frames.get(0.5)
     if buy_frame is None or sell_frame is None:
         raise RuntimeError("Requested quantiles missing from Chronos2 output.")
     # Defensive: pick the first row if alignment is off.
@@ -136,11 +141,28 @@ def _forecast_today_levels(
     buy_price = float(buy_row["low"])
     sell_price = float(sell_row["high"])
 
+    predicted_close_p50: Optional[float] = None
+    if p50_frame is not None and not p50_frame.empty and "close" in p50_frame.columns:
+        try:
+            predicted_close_p50 = float(p50_frame.iloc[0]["close"])
+        except (TypeError, ValueError):
+            predicted_close_p50 = None
+
+    prev_close: Optional[float] = None
+    try:
+        prev_close = float(context["close"].iloc[-1])
+    except Exception:
+        prev_close = None
+    predicted_close_return = compute_predicted_close_return(predicted_close_p50, prev_close)
+
     return DailyLevels(
         day_start=day_start,
         issued_at=issued_at,
         buy_price=buy_price,
         sell_price=sell_price,
+        predicted_close_p50=predicted_close_p50,
+        prev_close=prev_close,
+        predicted_close_return=predicted_close_return,
     )
 
 
@@ -193,6 +215,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--context-length", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--maker-fee", type=float, default=0.0)
+    parser.add_argument(
+        "--min-predicted-close-return-pct",
+        type=float,
+        default=None,
+        help="Optional direction filter: only open new entries if predicted_close_p50 >= prev_close*(1+threshold).",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -226,8 +254,22 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if sell_price <= buy_price:
         raise RuntimeError(f"Invalid quantized spread: buy={buy_price:.8f} sell={sell_price:.8f}")
 
+    trade_allowed = should_trade_predicted_close_return(
+        levels.predicted_close_return,
+        min_return_pct=args.min_predicted_close_return_pct,
+    )
+    if not trade_allowed and args.min_predicted_close_return_pct is not None:
+        logger.info(
+            "Direction filter: no new entries today for {} (predicted_close_return={} < threshold={} predicted_close_p50={} prev_close={})",
+            symbol,
+            levels.predicted_close_return,
+            float(args.min_predicted_close_return_pct),
+            levels.predicted_close_p50,
+            levels.prev_close,
+        )
+
     logger.info(
-        "Daily levels for %s (issued_at=%s day=%s): buy=%.6f sell=%.6f (q_low=%.2f q_high=%.2f)",
+        "Daily levels for {} (issued_at={} day={}): buy={:.6f} sell={:.6f} (q_low={:.2f} q_high={:.2f})",
         symbol,
         levels.issued_at,
         levels.day_start,
@@ -244,7 +286,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             logger.info("UTC day changed; exiting daily trader.")
             break
         if args.max_cycles and args.max_cycles > 0 and cycle >= int(args.max_cycles):
-            logger.info("Reached max_cycles=%d; exiting.", int(args.max_cycles))
+            logger.info("Reached max_cycles={}; exiting.", int(args.max_cycles))
             break
 
         remaining_minutes = _minutes_until_day_end(now)
@@ -260,7 +302,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if base_qty > 0 and (rules.min_qty is None or base_qty >= float(rules.min_qty)):
             if rules.min_notional is None or base_qty * sell_price >= float(rules.min_notional):
                 logger.info(
-                    "Existing base position detected for %s: qty=%.8f; selling @ %.6f (expiry_minutes=%d)",
+                    "Existing base position detected for {}: qty={:.8f}; selling @ {:.6f} (expiry_minutes={})",
                     symbol,
                     base_qty,
                     sell_price,
@@ -284,13 +326,17 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                     time.sleep(max(5, int(args.poll_seconds)))
                     continue
                 exit_status = _wait_for_watcher(exit_path, poll_seconds=int(args.poll_seconds))
-                logger.info("Exit watcher finished (state=%s).", exit_status.get("state"))
+                logger.info("Exit watcher finished (state={}).", exit_status.get("state"))
                 continue
+
+        if not trade_allowed:
+            logger.info("No existing base position and direction filter blocks new entries; exiting.")
+            break
 
         # Compute buy sizing (per-cycle) based on allocation_usdt and current free balances.
         max_quote = float(args.allocation_usdt) if args.allocation_usdt is not None else float(quote_free)
         if max_quote <= 0:
-            logger.warning("No free quote balance available for %s; sleeping.", symbol)
+            logger.warning("No free quote balance available for {}; sleeping.", symbol)
             time.sleep(max(5, int(args.poll_seconds)))
             continue
 
@@ -299,7 +345,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         buy_qty = quantize_qty(buy_qty, step_size=rules.step_size)
         if rules.min_qty and buy_qty < float(rules.min_qty):
             logger.warning(
-                "Buy quantity below min_qty for %s: qty=%.8f min_qty=%s",
+                "Buy quantity below min_qty for {}: qty={:.8f} min_qty={}",
                 symbol,
                 buy_qty,
                 rules.min_qty,
@@ -308,7 +354,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             continue
         if rules.min_notional and buy_qty * buy_price < float(rules.min_notional):
             logger.warning(
-                "Buy notional below min_notional for %s: qty=%.8f price=%.6f min_notional=%s",
+                "Buy notional below min_notional for {}: qty={:.8f} price={:.6f} min_notional={}",
                 symbol,
                 buy_qty,
                 buy_price,
@@ -318,7 +364,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             continue
 
         cycle += 1
-        logger.info("Cycle %d: waiting to buy %s qty=%.8f @ %.6f (expiry_minutes=%d)", cycle, symbol, buy_qty, buy_price, expiry_minutes)
+        logger.info(
+            "Cycle {}: waiting to buy {} qty={:.8f} @ {:.6f} (expiry_minutes={})",
+            cycle,
+            symbol,
+            buy_qty,
+            buy_price,
+            expiry_minutes,
+        )
 
         entry_path = spawn_watcher(
             WatcherPlan(
@@ -340,23 +393,23 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         entry_status = _wait_for_watcher(entry_path, poll_seconds=int(args.poll_seconds))
         filled_qty = _extract_fill_qty(entry_status)
         if filled_qty <= 0:
-            logger.info("Entry watcher finished without any fills (state=%s).", entry_status.get("state"))
+            logger.info("Entry watcher finished without any fills (state={}).", entry_status.get("state"))
             continue
 
         # Exit on the same filled quantity.
         filled_qty = quantize_qty(filled_qty, step_size=rules.step_size)
         if rules.min_qty and filled_qty < float(rules.min_qty):
-            logger.warning("Entry fill qty below min_qty; skipping exit. qty=%.8f min_qty=%s", filled_qty, rules.min_qty)
+            logger.warning("Entry fill qty below min_qty; skipping exit. qty={:.8f} min_qty={}", filled_qty, rules.min_qty)
             continue
         if rules.min_notional and filled_qty * sell_price < float(rules.min_notional):
             logger.warning(
-                "Exit notional below min_notional; skipping exit. qty=%.8f price=%.6f min_notional=%s",
+                "Exit notional below min_notional; skipping exit. qty={:.8f} price={:.6f} min_notional={}",
                 filled_qty,
                 sell_price,
                 rules.min_notional,
             )
             continue
-        logger.info("Cycle %d: filled buy qty=%.8f; waiting to sell @ %.6f", cycle, filled_qty, sell_price)
+        logger.info("Cycle {}: filled buy qty={:.8f}; waiting to sell @ {:.6f}", cycle, filled_qty, sell_price)
 
         exit_path = spawn_watcher(
             WatcherPlan(
@@ -375,7 +428,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             logger.warning("Failed to spawn exit watcher; continuing.")
             continue
         exit_status = _wait_for_watcher(exit_path, poll_seconds=int(args.poll_seconds))
-        logger.info("Exit watcher finished (state=%s).", exit_status.get("state"))
+        logger.info("Exit watcher finished (state={}).", exit_status.get("state"))
 
 
 if __name__ == "__main__":

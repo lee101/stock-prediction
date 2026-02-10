@@ -1025,6 +1025,7 @@ Updated: 2026-02-10
 
 ### Live Trader (daily levels)
 - New: `binanceneural/trade_binance_daily_levels.py` (sequential `daily_entry`/`daily_exit` watcher cycles for the UTC day; respects `BINANCE_DEFAULT_QUOTE` via `binance_remap_symbols`).
+- Optional direction filter: `--min-predicted-close-return-pct <thr>` only opens new entries when `predicted_close_p50 >= prev_close*(1+thr)` (still attempts to exit any existing base position).
 
 ### Intraday Resolution + Stop-Loss Lockout (5m Vision bars)
 - Downloaded higher-resolution intraday bars via Binance Vision:
@@ -1034,3 +1035,5 @@ Updated: 2026-02-10
 - Example (val=90d, test=50d on 5m bars, close_at_eod, buy=predicted low p35, sell=predicted high p50):
   - Baseline (no stop): **test total_return=-0.1120, sortino=-0.621, max_dd=-0.350**.
   - With stop + lockout (`stop_loss_pct=0.02`, lockout enabled): **test total_return=-0.00035, sortino=0.070, max_dd=-0.093** (near flat, much lower drawdown).
+- Adding a simple direction filter (only trade when `predicted_close_p50` >= previous day's close) improved the same setup on the last 50d:
+  - `stop_loss_pct=0.02` + lockout + `--min-predicted-close-return-pct 0.0` → **test total_return=0.0067, annualized_return=0.050, sortino=0.149, max_dd=-0.095**.
