@@ -70,16 +70,23 @@ def resolve_symbol_rules(symbol: str) -> SymbolRules:
     return rules
 
 
+def _step_decimals(step: float) -> int:
+    s = f"{step:.10f}".rstrip("0")
+    if "." in s:
+        return len(s.split(".")[1])
+    return 0
+
+
 def quantize_down(value: float, step: Optional[float]) -> float:
     if step is None or step <= 0:
         return value
-    return math.floor(value / step) * step
+    return round(math.floor(value / step) * step, _step_decimals(step))
 
 
 def quantize_up(value: float, step: Optional[float]) -> float:
     if step is None or step <= 0:
         return value
-    return math.ceil(value / step) * step
+    return round(math.ceil(value / step) * step, _step_decimals(step))
 
 
 def quantize_price(price: float, *, tick_size: Optional[float], side: str) -> float:
@@ -108,6 +115,17 @@ def get_free_balances(symbol: str) -> Tuple[float, float]:
     base_free = _coerce_float(base_entry.get("free"))
     quote_free = _coerce_float(quote_entry.get("free"))
     return quote_free, base_free
+
+
+def get_total_balances(symbol: str) -> Tuple[float, float]:
+    pair = resolve_binance_symbol(symbol)
+    base, quote = split_binance_symbol(pair)
+    balances = binance_wrapper.get_account_balances()
+    base_entry = binance_wrapper.get_asset_balance(base, balances=balances) or {}
+    quote_entry = binance_wrapper.get_asset_balance(quote, balances=balances) or {}
+    base_total = _coerce_float(base_entry.get("free")) + _coerce_float(base_entry.get("locked"))
+    quote_total = _coerce_float(quote_entry.get("free")) + _coerce_float(quote_entry.get("locked"))
+    return quote_total, base_total
 
 
 def compute_order_quantities(

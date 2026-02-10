@@ -127,6 +127,16 @@ class BinanceHourlyTrainer:
                 logger.info("Preloading weights from %s", preload_path)
                 checkpoint = torch_load_compat(preload_path, map_location="cpu", weights_only=False)
                 state_dict = checkpoint.get("state_dict", checkpoint)
+                # Strip _orig_mod. prefix from torch.compile'd checkpoints
+                if any(k.startswith("_orig_mod.") for k in state_dict):
+                    state_dict = {k.replace("_orig_mod.", "", 1): v for k, v in state_dict.items()}
+                # Handle input dim mismatch between pretrain and finetune
+                for key in list(state_dict.keys()):
+                    if state_dict[key].shape != model.state_dict().get(key, state_dict[key]).shape:
+                        logger.warning("Shape mismatch for %s: %s vs %s, skipping",
+                                       key, state_dict[key].shape,
+                                       model.state_dict()[key].shape)
+                        del state_dict[key]
                 missing, unexpected = model.load_state_dict(state_dict, strict=False)
                 if missing:
                     logger.warning("Missing keys during preload: %s", missing)
