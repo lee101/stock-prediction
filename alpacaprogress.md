@@ -149,6 +149,7 @@ Training/eval on daily `trainingdata/train` with a 50-calendar-day holdout windo
 | Date (UTC) | Run | Symbols | Train steps | Episode len | Holdout window | total_return | sortino | max_drawdown | trades | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2026-02-10 | daily_mix8_h256_lr3e4_ent001_noanneal | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,AAPL,TSLA | 250k | 50d | 2025-12-17..2026-02-05 | **+0.0497** | **+1.91** | 0.1194 | 7 | Best of 10-run sweep at 250k steps. Policy mostly alternates **NVDA/TSLA long** during the holdout. Checkpoint: `experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_noanneal/best.pt`. Data: `experiments/pufferlib_market_daily_20260210/eval50d_mktd_v2.bin`. |
+| 2026-02-10 | daily_mix8_h256_lr3e4_ent001_noanneal_2M | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,AAPL,TSLA | 2M | 50d | 2025-12-17..2026-02-05 | **+0.3773** | **+5.42** | 0.2848 | 26 | Extended training (2M steps, no anneal) massively improves holdout. Policy is very active, mostly trading **UNIUSD long/short** + some LINKUSD and TSLA long/short. Checkpoint: `experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_noanneal_2M/best.pt`. |
 
 ### Evaluation Results (deterministic, all random-start episodes)
 
