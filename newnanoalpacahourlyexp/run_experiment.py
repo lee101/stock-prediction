@@ -125,6 +125,7 @@ def evaluate_model(
     enforce_market_hours: bool = True,
     close_at_eod: bool = True,
     maker_fee: Optional[float] = None,
+    decision_lag_bars: int = 0,
     output_dir: Optional[Path] = None,
     eval_days: Optional[float] = None,
     eval_hours: Optional[float] = None,
@@ -190,6 +191,7 @@ def evaluate_model(
             allow_short=bool(getattr(cfg, "allow_short", False)),
             long_only_symbols=list(getattr(cfg, "long_only_symbols", ()) or ()),
             short_only_symbols=list(getattr(cfg, "short_only_symbols", ()) or ()),
+            decision_lag_bars=int(decision_lag_bars or 0),
         )
     )
     result = sim.run(val_frame, actions)
@@ -247,6 +249,12 @@ def main() -> None:
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--no-enforce-market-hours", action="store_true")
     parser.add_argument("--no-close-at-eod", action="store_true")
+    parser.add_argument(
+        "--decision-lag-bars",
+        type=int,
+        default=0,
+        help="Shift actions back by N bars before simulating fills (live-like execution delay).",
+    )
     parser.add_argument("--eval-days", type=float, default=None, help="Limit evaluation to last N days")
     parser.add_argument("--eval-hours", type=float, default=None, help="Limit evaluation to last N hours")
     parser.add_argument("--symbols", default=None, help="Optional comma-separated symbols for multi-symbol training")
@@ -312,6 +320,7 @@ def main() -> None:
         enforce_market_hours=not args.no_enforce_market_hours,
         close_at_eod=not args.no_close_at_eod,
         maker_fee=args.maker_fee,
+        decision_lag_bars=args.decision_lag_bars,
         output_dir=Path(args.output_dir) if args.output_dir else None,
         eval_days=args.eval_days,
         eval_hours=args.eval_hours,
