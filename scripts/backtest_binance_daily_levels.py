@@ -345,6 +345,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Validation objective for selecting best parameters.",
     )
     parser.add_argument("--top-k", type=int, default=0, help="Print top-K parameter sets by validation objective.")
+    parser.add_argument(
+        "--evaluate-top-k-on-test",
+        type=int,
+        default=0,
+        help="If >0, evaluate test metrics for top-K val configs (useful for analysis, but leaks test into selection).",
+    )
     parser.add_argument("--forecasts-path", type=Path, default=None, help="Optional cache path for forecast frame (csv/parquet).")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -748,7 +754,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "sweep": scores,
     }
 
-    if args.top_k and int(args.top_k) > 0 and scores:
+    top_val: List[Dict[str, object]] = []
+    want_top = max(int(args.top_k or 0), int(args.evaluate_top_k_on_test or 0))
+    if want_top > 0 and scores:
         if args.objective == "total_return":
             sort_key = lambda r: (r["val_total_return"], r["val_sortino"], r["val_annualized_return"])
         elif args.objective == "annualized_return":
@@ -761,8 +769,45 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             sort_key = lambda r: (r["val_calmar"], r["val_sortino"], r["val_annualized_return"], r["val_total_return"])
         else:
             sort_key = lambda r: (r["val_sortino"], r["val_annualized_return"], r["val_total_return"])
-        top = sorted(scores, key=sort_key, reverse=True)[: int(args.top_k)]
-        print("TOP:", json.dumps(top, indent=2, sort_keys=True))
+        top_val = sorted(scores, key=sort_key, reverse=True)[:want_top]
+
+    if int(args.top_k or 0) > 0 and top_val:
+        print("TOP:", json.dumps(top_val[: int(args.top_k)], indent=2, sort_keys=True))
+
+    if int(args.evaluate_top_k_on_test or 0) > 0 and top_val:
+        top_test: List[Dict[str, object]] = []
+        for rec in top_val[: int(args.evaluate_top_k_on_test)]:
+            thr = rec.get("min_predicted_close_return_pct")
+            forecasts_for_thr = forecasts_by_thr.get(float(thr) if thr is not None else None)
+            if forecasts_for_thr is None or forecasts_for_thr.empty:
+                continue
+            res_test = _eval_window(
+                forecasts_for_thr,
+                bars_test,
+                test_start_day,
+                test_end_day,
+                float(rec["buy_q"]),
+                float(rec["sell_q"]),
+                float(rec["price_offset_pct"]),
+                float(rec["min_spread_pct"]),
+                float(rec["stop_loss_pct"]),
+            )
+            m = res_test.metrics
+            enriched = dict(rec)
+            enriched.update(
+                {
+                    "test_total_return": float(m.total_return),
+                    "test_annualized_return": float(m.annualized_return),
+                    "test_sortino": float(m.sortino),
+                    "test_max_drawdown": float(m.max_drawdown),
+                    "test_profit_factor": float(m.profit_factor),
+                    "test_trades": len(res_test.trades),
+                    "test_final_equity": float(res_test.equity_curve.iloc[-1]),
+                }
+            )
+            top_test.append(enriched)
+        payload["top_k_test"] = top_test
+        print("TOP_TEST:", json.dumps(top_test, indent=2, sort_keys=True))
 
     if args.output_json:
         out_path = Path(args.output_json)
