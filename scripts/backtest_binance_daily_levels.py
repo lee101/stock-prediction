@@ -427,18 +427,58 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logger.info("Chronos params: model_id={} device_map={} context_length={} batch_size={}", model_id, device_map, context_length, batch_size)
     logger.info("Quantile sweep: buy={} sell={}", buy_qs, sell_qs)
 
-    forecasts: pd.DataFrame
-    if args.forecasts_path and Path(args.forecasts_path).exists():
-        path = Path(args.forecasts_path)
-        if path.suffix.lower() == ".parquet":
-            forecasts = pd.read_parquet(path)
+    need_close_p50 = any(thr is not None for thr in min_pred_close_returns)
+    required_cols = set()
+    for buy_q in buy_qs:
+        required_cols.add(f"predicted_low_{_q_tag(buy_q)}")
+    for sell_q in sell_qs:
+        required_cols.add(f"predicted_high_{_q_tag(sell_q)}")
+    if need_close_p50:
+        required_cols.add("predicted_close_p50")
+
+    min_context = max(16, min(64, context_length // 8))
+    required_days: set[pd.Timestamp] = set()
+    for idx in range(forecast_start_idx, forecast_end_idx):
+        ctx_end = idx
+        ctx_start = max(0, ctx_end - int(context_length))
+        if (ctx_end - ctx_start) < int(min_context):
+            continue
+        ts = pd.Timestamp(daily.iloc[idx]["timestamp"])
+        if pd.isna(ts):
+            continue
+        required_days.add(ts)
+
+    forecasts: pd.DataFrame = pd.DataFrame()
+    cache_path = Path(args.forecasts_path) if args.forecasts_path else None
+    if cache_path is not None and cache_path.exists():
+        if cache_path.suffix.lower() == ".parquet":
+            forecasts = pd.read_parquet(cache_path)
         else:
-            forecasts = pd.read_csv(path)
-        forecasts["timestamp"] = pd.to_datetime(forecasts["timestamp"], utc=True, errors="coerce")
-        forecasts["issued_at"] = pd.to_datetime(forecasts["issued_at"], utc=True, errors="coerce")
+            forecasts = pd.read_csv(cache_path)
+        if "timestamp" in forecasts.columns:
+            forecasts["timestamp"] = pd.to_datetime(forecasts["timestamp"], utc=True, errors="coerce")
+        if "issued_at" in forecasts.columns:
+            forecasts["issued_at"] = pd.to_datetime(forecasts["issued_at"], utc=True, errors="coerce")
         forecasts = forecasts.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
-        logger.info("Loaded cached forecasts: {} (rows={})", path, len(forecasts))
-    else:
+
+        missing_cols = sorted(required_cols - set(forecasts.columns))
+        have_days = set(pd.to_datetime(forecasts["timestamp"], utc=True, errors="coerce").dropna())
+        missing_days = sorted(required_days - have_days)
+        if missing_cols or missing_days:
+            missing_cols_preview = missing_cols[:10]
+            if len(missing_cols) > 10:
+                missing_cols_preview = [*missing_cols_preview, "..."]
+            logger.warning(
+                "Cached forecasts {} incomplete; regenerating (missing_cols={} missing_days={}).",
+                cache_path,
+                missing_cols_preview,
+                len(missing_days),
+            )
+            forecasts = pd.DataFrame()
+        else:
+            logger.info("Loaded cached forecasts: {} (rows={})", cache_path, len(forecasts))
+
+    if forecasts.empty:
         wrapper = Chronos2OHLCWrapper.from_pretrained(
             model_id=model_id,
             device_map=device_map,
@@ -454,7 +494,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             start_idx=forecast_start_idx,
             end_idx=forecast_end_idx,
             context_length=context_length,
-            min_context=max(16, min(64, context_length // 8)),
+            min_context=min_context,
         )
         logger.info("Generating forecasts for {} day(s)...", len(specs))
         forecasts = _build_forecast_frame(
@@ -468,14 +508,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         if forecasts.empty:
             raise RuntimeError("No forecasts generated (empty forecast frame).")
-        if args.forecasts_path:
-            out = Path(args.forecasts_path)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            if out.suffix.lower() == ".parquet":
-                forecasts.to_parquet(out, index=False)
+        if cache_path is not None:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            if cache_path.suffix.lower() == ".parquet":
+                forecasts.to_parquet(cache_path, index=False)
             else:
-                forecasts.to_csv(out, index=False)
-            logger.info("Wrote cached forecasts: {}", out)
+                forecasts.to_csv(cache_path, index=False)
+            logger.info("Wrote cached forecasts: {}", cache_path)
 
     forecasts_by_thr: Dict[Optional[float], pd.DataFrame] = {}
     for thr in min_pred_close_returns:
