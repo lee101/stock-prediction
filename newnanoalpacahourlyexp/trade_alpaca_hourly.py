@@ -4,7 +4,6 @@ import argparse
 import logging
 import math
 import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Sequence, Tuple
@@ -14,6 +13,14 @@ import torch
 import alpaca_wrapper
 from binanceneural.inference import generate_actions_from_frame, generate_latest_action
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
+from src.allocation_utils import allocation_usd_for_symbol
+from src.hourly_trader_utils import (
+    OrderIntent,
+    TradingPlan,
+    build_order_intents,
+    build_plan_from_action,
+    ensure_valid_levels,
+)
 from src.hourly_data_refresh import HourlyDataRefresher
 from src.hourly_data_utils import HourlyDataValidator
 from src.symbol_utils import is_crypto_symbol
@@ -27,24 +34,6 @@ from .inference import aggregate_actions, generate_actions_multi_context
 
 
 logger = logging.getLogger("alpaca_hourly_trader")
-
-
-@dataclass
-class TradingPlan:
-    symbol: str
-    buy_price: float
-    sell_price: float
-    buy_amount: float
-    sell_amount: float
-    timestamp: datetime
-
-
-@dataclass(frozen=True)
-class OrderIntent:
-    side: str  # "buy" or "sell"
-    qty: float
-    limit_price: float
-    kind: str  # "entry" or "exit"
 
 
 def _parse_symbols(raw: Optional[str]) -> list[str]:
@@ -103,29 +92,6 @@ def _seconds_until_next_hour(buffer_seconds: int = 30) -> float:
     next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
     delta = (next_hour + timedelta(seconds=buffer_seconds) - now).total_seconds()
     return max(1.0, delta)
-
-
-def _build_plan(action: dict, *, intensity_scale: float) -> TradingPlan:
-    buy_amount = max(0.0, min(100.0, float(action["buy_amount"]) * intensity_scale))
-    sell_amount = max(0.0, min(100.0, float(action["sell_amount"]) * intensity_scale))
-    return TradingPlan(
-        symbol=str(action["symbol"]).upper(),
-        buy_price=float(action["buy_price"]),
-        sell_price=float(action["sell_price"]),
-        buy_amount=buy_amount,
-        sell_amount=sell_amount,
-        timestamp=action["timestamp"],
-    )
-
-
-def _ensure_valid_levels(buy_price: float, sell_price: float, *, min_gap_pct: float) -> Optional[Tuple[float, float]]:
-    if buy_price <= 0 or sell_price <= 0:
-        return None
-    if sell_price <= buy_price:
-        sell_price = buy_price * (1.0 + min_gap_pct)
-        if sell_price <= buy_price:
-            return None
-    return buy_price, sell_price
 
 
 def _resolve_device(device_arg: Optional[str]) -> torch.device:
@@ -228,137 +194,6 @@ def _find_position(positions, symbol: str):
     return None
 
 
-def _build_order_intents(
-    plan: TradingPlan,
-    *,
-    position_qty: float,
-    allocation_usd: Optional[float],
-    buy_price: float,
-    sell_price: float,
-    can_long: bool,
-    can_short: bool,
-    allow_short: bool,
-    exit_only: bool,
-) -> list[OrderIntent]:
-    intents: list[OrderIntent] = []
-
-    if exit_only:
-        if position_qty > 0:
-            intents.append(
-                OrderIntent(
-                    side="sell",
-                    qty=float(position_qty),
-                    limit_price=float(sell_price),
-                    kind="exit",
-                )
-            )
-        elif position_qty < 0:
-            intents.append(
-                OrderIntent(
-                    side="buy",
-                    qty=float(abs(position_qty)),
-                    limit_price=float(buy_price),
-                    kind="exit",
-                )
-            )
-        return intents
-
-    # Exits are always permitted (for safety), regardless of can_long/can_short.
-    if position_qty > 0 and plan.sell_amount > 0:
-        sell_qty_exit = float(position_qty) * (float(plan.sell_amount) / 100.0)
-        if sell_qty_exit > 0:
-            intents.append(
-                OrderIntent(
-                    side="sell",
-                    qty=sell_qty_exit,
-                    limit_price=float(sell_price),
-                    kind="exit",
-                )
-            )
-    elif position_qty < 0 and plan.buy_amount > 0:
-        buy_qty_cover = float(abs(position_qty)) * (float(plan.buy_amount) / 100.0)
-        if buy_qty_cover > 0:
-            intents.append(
-                OrderIntent(
-                    side="buy",
-                    qty=buy_qty_cover,
-                    limit_price=float(buy_price),
-                    kind="exit",
-                )
-            )
-
-    allocation = float(allocation_usd) if allocation_usd is not None else None
-    buy_notional = 0.0 if allocation is None else allocation * (float(plan.buy_amount) / 100.0)
-    sell_notional = 0.0 if allocation is None else allocation * (float(plan.sell_amount) / 100.0)
-
-    buy_qty_entry = (buy_notional / float(buy_price)) if buy_notional > 0 else 0.0
-    sell_qty_entry = (sell_notional / float(sell_price)) if sell_notional > 0 else 0.0
-
-    if position_qty > 0:
-        # While long, only allow long adds (no short entries).
-        if not can_long:
-            buy_qty_entry = 0.0
-        sell_qty_entry = 0.0
-        if buy_qty_entry > 0:
-            intents.append(
-                OrderIntent(
-                    side="buy",
-                    qty=buy_qty_entry,
-                    limit_price=float(buy_price),
-                    kind="entry",
-                )
-            )
-        return intents
-
-    if position_qty < 0:
-        # While short, only allow short adds (no long entries).
-        buy_qty_entry = 0.0
-        if not (allow_short and can_short):
-            sell_qty_entry = 0.0
-        if sell_qty_entry > 0:
-            intents.append(
-                OrderIntent(
-                    side="sell",
-                    qty=sell_qty_entry,
-                    limit_price=float(sell_price),
-                    kind="entry",
-                )
-            )
-        return intents
-
-    # Flat: allow at most one entry direction.
-    if not can_long:
-        buy_qty_entry = 0.0
-    if not (allow_short and can_short):
-        sell_qty_entry = 0.0
-
-    if buy_qty_entry <= 0 and sell_qty_entry <= 0:
-        return intents
-
-    if buy_qty_entry > 0 and sell_qty_entry > 0:
-        take_buy = buy_notional >= sell_notional
-    else:
-        take_buy = buy_qty_entry > 0
-
-    if take_buy and buy_qty_entry > 0:
-        intents.append(
-            OrderIntent(
-                side="buy",
-                qty=buy_qty_entry,
-                limit_price=float(buy_price),
-                kind="entry",
-            )
-        )
-    elif sell_qty_entry > 0:
-        intents.append(
-            OrderIntent(
-                side="sell",
-                qty=sell_qty_entry,
-                limit_price=float(sell_price),
-                kind="entry",
-            )
-        )
-    return intents
 
 
 def _run_cycle(
@@ -373,6 +208,7 @@ def _run_cycle(
     min_gap_pct: float,
     allocation_usd: Optional[float],
     allocation_pct: Optional[float],
+    allocation_mode: str,
     forecast_horizons_default: Tuple[int, ...],
     forecast_horizons_map: Dict[str, Tuple[int, ...]],
     context_lengths: Tuple[int, ...],
@@ -399,14 +235,15 @@ def _run_cycle(
     exit_only_symbols: Sequence[str],
     dry_run: bool,
 ) -> None:
-    refresher.refresh(list(symbols))
+    symbols_list = [str(sym).upper() for sym in symbols]
+    refresher.refresh(list(symbols_list))
     account = alpaca_wrapper.get_account(use_cache=False)
     positions = alpaca_wrapper.get_all_positions()
 
     exit_only_set = {s.upper() for s in exit_only_symbols}
     experiment_cfg = ExperimentConfig(context_lengths=context_lengths, trim_ratio=trim_ratio)
 
-    for symbol in symbols:
+    for symbol in symbols_list:
         symbol = symbol.upper()
         directions = resolve_trade_directions(
             symbol,
@@ -468,10 +305,10 @@ def _run_cycle(
         else:
             action = _latest_action_single(model=model, data=data, horizon=horizon, device=device)
 
-        plan = _build_plan(action, intensity_scale=intensity_scale)
+        plan = build_plan_from_action(action, intensity_scale=intensity_scale)
         buy_price = plan.buy_price * (1.0 - price_offset_pct)
         sell_price = plan.sell_price * (1.0 + price_offset_pct)
-        adjusted = _ensure_valid_levels(buy_price, sell_price, min_gap_pct=min_gap_pct)
+        adjusted = ensure_valid_levels(buy_price, sell_price, min_gap_pct=min_gap_pct)
         if adjusted is None:
             logger.warning("Invalid price levels for %s (buy=%.4f sell=%.4f)", symbol, buy_price, sell_price)
             continue
@@ -479,7 +316,15 @@ def _run_cycle(
 
         position = _find_position(positions, symbol)
         position_qty = float(getattr(position, "qty", 0.0) or 0.0) if position else 0.0
-        allocation = _allocation_usd(account, allocation_usd=allocation_usd, allocation_pct=allocation_pct)
+        allocation = allocation_usd_for_symbol(
+            account,
+            symbol=symbol,
+            allocation_usd=allocation_usd,
+            allocation_pct=allocation_pct,
+            allocation_mode=allocation_mode,
+            symbols_count=len(symbols_list),
+            prefer_cash_for_crypto=True,
+        )
         exit_only = symbol in exit_only_set
         if position_qty > 0 and not directions.can_long:
             exit_only = True
@@ -488,7 +333,7 @@ def _run_cycle(
         if direction_conflict:
             exit_only = True
 
-        intents = _build_order_intents(
+        intents = build_order_intents(
             plan,
             position_qty=position_qty,
             allocation_usd=allocation,
@@ -544,6 +389,15 @@ def main() -> None:
     parser.add_argument("--min-gap-pct", type=float, default=0.001)
     parser.add_argument("--allocation-usd", type=float, default=None)
     parser.add_argument("--allocation-pct", type=float, default=0.05)
+    parser.add_argument(
+        "--allocation-mode",
+        choices=("per_symbol", "portfolio"),
+        default="per_symbol",
+        help=(
+            "How to interpret allocation_pct. 'per_symbol' applies allocation_pct to each symbol independently "
+            "(legacy). 'portfolio' applies allocation_pct to the account base and splits evenly across symbols."
+        ),
+    )
     parser.add_argument("--crypto-data-root", default=None)
     parser.add_argument("--stock-data-root", default=None)
     parser.add_argument("--forecast-cache-root", default=str(DatasetConfig().forecast_cache_root))
@@ -625,6 +479,7 @@ def main() -> None:
             min_gap_pct=args.min_gap_pct,
             allocation_usd=args.allocation_usd,
             allocation_pct=args.allocation_pct,
+            allocation_mode=args.allocation_mode,
             forecast_horizons_default=forecast_horizons_default,
             forecast_horizons_map=forecast_horizons_map,
             context_lengths=context_lengths,
