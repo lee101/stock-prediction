@@ -14,6 +14,7 @@ import torch
 import alpaca_wrapper
 from binanceneural.inference import generate_latest_action
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
+from src.allocation_utils import allocation_usd_for_symbol
 from src.hourly_data_refresh import HourlyDataRefresher
 from src.hourly_data_utils import HourlyDataValidator
 from src.symbol_utils import is_crypto_symbol
@@ -209,6 +210,7 @@ def _build_candidate(
     risk_weight: float,
     edge_mode: str,
     min_edge: float,
+    require_min_edge: bool = True,
 ) -> Optional[CandidatePlan]:
     buy_price = float(action.get("buy_price", 0.0)) * (1.0 - price_offset_pct)
     sell_price = float(action.get("sell_price", 0.0)) * (1.0 + price_offset_pct)
@@ -247,7 +249,9 @@ def _build_candidate(
         risk_weight=risk_weight,
         edge_mode=edge_mode,
     )
-    if edge is None or edge < min_edge:
+    if edge is None:
+        return None
+    if require_min_edge and edge < min_edge:
         return None
 
     return CandidatePlan(
@@ -384,6 +388,7 @@ def _run_cycle(
 
     clock = alpaca_wrapper.get_clock()
 
+    # Candidates contain all features needed for exits; entry selection applies min_edge filtering separately.
     candidates: Dict[str, CandidatePlan] = {}
     model: Optional[torch.nn.Module] = None
 
@@ -442,13 +447,61 @@ def _run_cycle(
             risk_weight=risk_weight,
             edge_mode=edge_mode,
             min_edge=min_edge,
+            require_min_edge=False,
         )
         if candidate is None:
             continue
         candidates[symbol] = candidate
 
-    if open_symbol and open_symbol in candidates and open_position is not None:
-        candidate = candidates[open_symbol]
+    # Enforce selector invariant: manage at most one tracked position at a time.
+    # If multiple positions are open, flatten the non-primary ones first.
+    if tracked_positions and len(tracked_positions) > 1 and open_symbol:
+        for pos in tracked_positions:
+            sym = str(getattr(pos, "symbol", "")).upper()
+            if not sym or sym == open_symbol:
+                continue
+            qty = abs(float(getattr(pos, "qty", 0.0) or 0.0))
+            if qty <= 0:
+                continue
+            pos_side_raw = str(getattr(pos, "side", "")).lower()
+            side = "sell" if pos_side_raw in {"long", "buy"} else "buy"
+            cand = candidates.get(sym)
+            price = None
+            if cand is not None:
+                price = cand.sell_price if side == "sell" else cand.buy_price
+            if price is None:
+                price = float(getattr(pos, "current_price", 0.0) or 0.0)
+            force_close = _should_force_eod_close(sym, clock, close_at_eod=close_at_eod)
+            logger.warning("Flattening extra position %s qty=%.6f side=%s force_eod=%s", sym, qty, side, force_close)
+            if dry_run:
+                continue
+            if force_close or price <= 0:
+                alpaca_wrapper.open_market_order_violently(sym, qty, side)
+            else:
+                alpaca_wrapper.open_order_at_price_or_all(sym, qty, side, float(price))
+
+    if open_symbol and open_position is not None:
+        # Always allow exits even if the open symbol no longer meets the entry edge filter.
+        candidate = candidates.get(open_symbol)
+        if candidate is None:
+            position_qty = abs(float(getattr(open_position, "qty", 0.0) or 0.0))
+            if position_qty <= 0:
+                return
+            force_close = _should_force_eod_close(open_symbol, clock, close_at_eod=close_at_eod)
+            logger.warning(
+                "No candidate features available for open position %s; closing at market=%s for safety.",
+                open_symbol,
+                force_close,
+            )
+            if dry_run:
+                return
+            fallback_price = float(getattr(open_position, "current_price", 0.0) or 0.0)
+            if force_close or fallback_price <= 0:
+                alpaca_wrapper.open_market_order_violently(open_symbol, position_qty, "sell")
+            else:
+                alpaca_wrapper.open_order_at_price_or_all(open_symbol, position_qty, "sell", fallback_price)
+            return
+
         position_qty = abs(float(getattr(open_position, "qty", 0.0) or 0.0))
         if position_qty <= 0:
             return
@@ -474,15 +527,24 @@ def _run_cycle(
         return
 
     if open_symbol:
-        logger.info("Holding %s; no candidate for exit.", open_symbol)
+        logger.info("Holding %s; open position does not have exit data.", open_symbol)
         return
 
-    if not candidates:
+    entry_candidates = {sym: cand for sym, cand in candidates.items() if float(cand.edge_score) >= float(min_edge)}
+    if not entry_candidates:
         logger.info("No trade candidates after filters.")
         return
 
-    best = max(candidates.values(), key=lambda item: item.edge_score)
-    allocation = _allocation_usd(account, allocation_usd=allocation_usd, allocation_pct=allocation_pct)
+    best = max(entry_candidates.values(), key=lambda item: item.edge_score)
+    allocation = allocation_usd_for_symbol(
+        account,
+        symbol=best.symbol,
+        allocation_usd=allocation_usd,
+        allocation_pct=allocation_pct,
+        allocation_mode="per_symbol",
+        symbols_count=1,
+        prefer_cash_for_crypto=True,
+    )
     if allocation is None or allocation <= 0:
         logger.info("No allocation available; skipping buy.")
         return

@@ -141,6 +141,19 @@ Pure C environment with PufferLib 3.0 Ocean binding. PPO training, 64 envs. Rewa
 - Without this lag, the simulator can implicitly trade using information from the same bar it fills on (optimistic / lookahead-like), inflating returns.
 - Use `--decision-lag-bars 1` in `newnanoalpacahourlyexp/run_multiasset_selector.py` (and `run_experiment.py` / `sweep.py`) for realistic reporting.
 
+### 2026-02-10 New: Live Hourly Trader vs Shared-Cash Backtest (Prod Mismatch)
+
+- Prod is running `newnanoalpacahourlyexp.trade_alpaca_hourly` (multi-symbol loop), but most historical results here were **selector** sims.
+- I added a new shared-cash simulator for the hourly trader loop: `newnanoalpacahourlyexp/marketsimulator/hourly_trader.py` + CLI `python -m newnanoalpacahourlyexp.run_hourly_trader_sim`.
+- With prod-style settings (Mixed7 `epoch_003.pt`, symbols `SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX`, `decision_lag_bars=1`, `intensity_scale=2.0`), the shared-cash sim is **negative over 30d**:
+  - 30d: `total_return=-0.1016`, `sortino=-5.8142` (outputs: `experiments/hourly_trader_sim_data_20260210_eval30d/`)
+  - Parameter tuning via `experiments/hourly_trader_sim_data_20260210_eval30d/run_sweep.py` improves losses but does not find a profitable config on this 30d window.
+- A realistic (lagged) selector with an edge threshold is much more robust in the same down window:
+  - Crypto5 (`BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD`), `decision_lag_bars=1`, `risk_weight=0.3`, `min_edge=0.01`, `intensity=2.0`:
+    - 30d: `total_return=+0.2119`, `sortino=+4.2898` (outputs: `experiments/selector_sim_crypto5_mixed7_epoch003_lag1_eval30d_rw03_int2_minedge01_20260210/`)
+    - 60d: `total_return=+0.0850`, `sortino=+0.9979`
+    - 90d: `total_return=+0.1265`, `sortino=+1.2238`
+
 ### 2026-02-10 Critical Fix (Short Accounting + Daily MKTD v2)
 
 - **Fixed a major short-position accounting bug** in `pufferlib_market/src/trading_env.c` where short-sale proceeds were effectively treated as profit on close, inflating episode `total_return` (and compounding into unrealistic multi-thousand-x runs).
