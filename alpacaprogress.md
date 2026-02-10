@@ -171,6 +171,10 @@ Holdout: 2025-12-17..2026-02-05 (50 steps / 51 calendar days), checkpoint `exper
   - num_orders **56**, max_orders_in_day **7** (shows real multi-execution/day thrash risk)
   - Report: `experiments/pufferlib_market_daily_hourly_replay_20260210/replay_report_with_hourly_policy.json`
 
+Additional checkpoint sanity check:
+
+- 250k sweep-best (`experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_noanneal/best.pt`): hourly_replay total_return **+0.0951**, hourly-sortino **+1.04**; hourly-policy stress test total_return **-0.1053**. Report: `experiments/pufferlib_market_daily_hourly_replay_20260210/replay_report_250k_with_hourly_policy.json`.
+
 ### Evaluation Results (deterministic, all random-start episodes)
 
 | Date (UTC) | Run | Symbols | Episode len | Eval mean return | Eval geom mean mult | Eval win rate | Eval 100% profitable? | Train best | Notes |
