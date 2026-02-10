@@ -15,13 +15,15 @@ from src.chronos2_params import resolve_chronos2_params
 from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 from src.price_guard import enforce_gap
 from src.process_utils import enforce_min_spread
+from src.binan import binance_wrapper
 from src.tradinglib.direction_filter import compute_predicted_close_return, should_trade_predicted_close_return
 
-from .binance_watchers import WatcherPlan, spawn_watcher
+from .binance_watchers import WatcherPlan, spawn_watcher, stop_existing_watcher
 from .execution import (
     get_free_balances,
     quantize_price,
     quantize_qty,
+    resolve_binance_symbol,
     resolve_symbol_rules,
 )
 
@@ -198,6 +200,16 @@ def _extract_fill_qty(status: dict) -> float:
     return max(0.0, qty)
 
 
+def _extract_fill_price(status: dict) -> Optional[float]:
+    try:
+        price = float(status.get("fill_price"))
+    except (TypeError, ValueError):
+        return None
+    if price <= 0:
+        return None
+    return price
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="Trade Binance spot using daily Chronos2 buy/sell levels (grid-like cycles).")
     parser.add_argument("--symbol", default="SOLUSD", help="Internal USD-quoted symbol (default: SOLUSD).")
@@ -221,6 +233,24 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         default=None,
         help="Optional direction filter: only open new entries if predicted_close_p50 >= prev_close*(1+threshold).",
     )
+    parser.add_argument(
+        "--stop-loss-pct",
+        type=float,
+        default=0.0,
+        help="Optional stop-loss from entry fill price (fractional, e.g. 0.02 == 2%%). 0 disables.",
+    )
+    parser.add_argument(
+        "--stop-loss-lockout-until-next-day",
+        action="store_true",
+        default=False,
+        help="After a stop-loss exit, stop trading until the next UTC day (default: off).",
+    )
+    parser.add_argument(
+        "--stop-loss-market-buffer-pct",
+        type=float,
+        default=0.02,
+        help="When stop-loss triggers, place a marketable limit sell at min(stop_price,current_price)*(1-buffer).",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -231,6 +261,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         raise ValueError("buy-quantile and sell-quantile must be in (0, 1).")
     if sell_q <= buy_q:
         raise ValueError("sell-quantile must be greater than buy-quantile.")
+    stop_loss_pct = float(args.stop_loss_pct)
+    if stop_loss_pct < 0.0 or stop_loss_pct >= 1.0:
+        raise ValueError("--stop-loss-pct must be in [0, 1).")
+    stop_loss_buffer_pct = float(args.stop_loss_market_buffer_pct)
+    if stop_loss_buffer_pct < 0.0 or stop_loss_buffer_pct >= 1.0:
+        raise ValueError("--stop-loss-market-buffer-pct must be in [0, 1).")
 
     levels = _forecast_today_levels(
         symbol=symbol,
@@ -392,6 +428,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             continue
         entry_status = _wait_for_watcher(entry_path, poll_seconds=int(args.poll_seconds))
         filled_qty = _extract_fill_qty(entry_status)
+        filled_price = _extract_fill_price(entry_status)
         if filled_qty <= 0:
             logger.info("Entry watcher finished without any fills (state={}).", entry_status.get("state"))
             continue
@@ -427,8 +464,77 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if exit_path is None:
             logger.warning("Failed to spawn exit watcher; continuing.")
             continue
-        exit_status = _wait_for_watcher(exit_path, poll_seconds=int(args.poll_seconds))
-        logger.info("Exit watcher finished (state={}).", exit_status.get("state"))
+
+        stop_price: Optional[float] = None
+        if stop_loss_pct > 0.0:
+            entry_price_for_stop = float(filled_price) if filled_price is not None else float(buy_price)
+            if entry_price_for_stop > 0:
+                stop_price = entry_price_for_stop * (1.0 - stop_loss_pct)
+                if stop_price <= 0:
+                    stop_price = None
+
+        if stop_price is None:
+            exit_status = _wait_for_watcher(exit_path, poll_seconds=int(args.poll_seconds))
+            logger.info("Exit watcher finished (state={}).", exit_status.get("state"))
+            continue
+
+        binance_symbol = resolve_binance_symbol(symbol)
+        poll = max(1, int(args.poll_seconds))
+        while True:
+            status = _load_watcher_status(exit_path)
+            if not status.get("active"):
+                logger.info("Exit watcher finished (state={}).", status.get("state"))
+                break
+
+            current_price = binance_wrapper.get_symbol_price(binance_symbol)
+            if current_price is not None and current_price > 0 and current_price <= float(stop_price):
+                logger.warning(
+                    "Stop-loss triggered for {}: current_price={:.6f} stop_price={:.6f} (stop_loss_pct={:.4f})",
+                    symbol,
+                    float(current_price),
+                    float(stop_price),
+                    float(stop_loss_pct),
+                )
+                stop_existing_watcher(exit_path, reason="stop_loss")
+
+                _, base_free2 = get_free_balances(symbol)
+                base_qty2 = quantize_qty(float(base_free2), step_size=rules.step_size)
+                if base_qty2 > 0 and (rules.min_qty is None or base_qty2 >= float(rules.min_qty)):
+                    if rules.min_notional is None or base_qty2 * float(current_price) >= float(rules.min_notional):
+                        marketable_price = min(float(current_price), float(stop_price)) * (1.0 - stop_loss_buffer_pct)
+                        marketable_price = max(0.0, float(marketable_price))
+                        logger.warning(
+                            "Placing stop-loss exit for {}: qty={:.8f} limit_price={:.6f} (buffer_pct={:.4f})",
+                            symbol,
+                            base_qty2,
+                            marketable_price,
+                            float(stop_loss_buffer_pct),
+                        )
+                        sl_path = spawn_watcher(
+                            WatcherPlan(
+                                symbol=symbol,
+                                side="sell",
+                                mode="stop_loss",
+                                limit_price=float(marketable_price),
+                                target_qty=float(base_qty2),
+                                expiry_minutes=int(expiry_minutes),
+                                poll_seconds=int(args.poll_seconds),
+                                price_tolerance=float(args.price_tolerance),
+                                dry_run=bool(args.dry_run),
+                            )
+                        )
+                        if sl_path is None:
+                            logger.warning("Failed to spawn stop-loss watcher.")
+                        else:
+                            sl_status = _wait_for_watcher(sl_path, poll_seconds=int(args.poll_seconds))
+                            logger.warning("Stop-loss watcher finished (state={}).", sl_status.get("state"))
+
+                if bool(args.stop_loss_lockout_until_next_day):
+                    logger.warning("Stop-loss lockout enabled; exiting for the day.")
+                    return
+                break
+
+            time.sleep(poll)
 
 
 if __name__ == "__main__":
