@@ -47,6 +47,12 @@ class SelectionConfig:
     work_steal_min_profit_pct: float = 0.001
     work_steal_min_edge: float = 0.005
     work_steal_edge_margin: float = 0.0
+    # Realism: when >0, shift decision inputs (actions + forecast columns) back by N bars per
+    # symbol so a decision made after bar t closes is executed on bar t+N.
+    #
+    # This matches the live hourly loop which computes an action on the latest completed bar
+    # then places orders for the next bar.
+    decision_lag_bars: int = 0
 
 
 @dataclass
@@ -108,6 +114,33 @@ def run_best_trade_simulation_merged(
 
     if merged.empty:
         raise ValueError("Merged dataframe is empty; ensure actions cover the provided bars.")
+
+    decision_lag_bars = int(getattr(cfg, "decision_lag_bars", 0) or 0)
+    if decision_lag_bars < 0:
+        raise ValueError(f"decision_lag_bars must be >= 0, got {cfg.decision_lag_bars}.")
+    if decision_lag_bars:
+        # Shift decision-time inputs back by N bars per symbol so the fill/mark-to-market
+        # uses the current bar while actions/forecasts reflect what was known N bars ago.
+        merged = merged.copy()
+        merged = merged.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+        horizon_int = int(horizon)
+        forecast_cols = [
+            f"predicted_high_p50_h{horizon_int}",
+            f"predicted_low_p50_h{horizon_int}",
+            f"predicted_close_p50_h{horizon_int}",
+        ]
+        action_cols = ["buy_price", "sell_price", "buy_amount", "sell_amount", "trade_amount"]
+        shift_cols = [c for c in action_cols + forecast_cols if c in merged.columns]
+        if shift_cols:
+            shifted = merged.groupby("symbol", sort=False)[shift_cols].shift(decision_lag_bars)
+            for col in shift_cols:
+                merged[col] = shifted[col]
+            merged = merged.dropna(subset=shift_cols).reset_index(drop=True)
+        if merged.empty:
+            raise ValueError(
+                "Merged dataframe is empty after applying decision_lag_bars; "
+                "ensure the evaluation window contains more bars."
+            )
     max_volume_fraction: Optional[float]
     if cfg.max_volume_fraction is None:
         max_volume_fraction = None
