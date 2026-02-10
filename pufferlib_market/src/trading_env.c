@@ -67,6 +67,25 @@ MarketData* market_data_load(const char* path) {
 
     /* price array */
     md->prices = (float*)ptr;
+    ptr += (size_t)md->num_timesteps * md->num_symbols * PRICE_FEATS * sizeof(float);
+
+    /* optional tradable mask (uint8[T][S]) appended after prices (v2+) */
+    md->tradable = NULL;
+    size_t mask_bytes = (size_t)md->num_timesteps * md->num_symbols * sizeof(unsigned char);
+    if (hdr->version >= 2) {
+        if ((size_t)(ptr - (char*)buf) + mask_bytes <= md->file_size) {
+            md->tradable = (unsigned char*)ptr;
+        } else {
+            fprintf(stderr, "market_data_load: v%u missing tradable mask in %s\n",
+                    hdr->version, path);
+            free(buf); free(md); return NULL;
+        }
+    } else {
+        if ((size_t)(ptr - (char*)buf) + mask_bytes <= md->file_size) {
+            /* Allow a mask to be present even for v1 files, for forward compatibility. */
+            md->tradable = (unsigned char*)ptr;
+        }
+    }
 
     fprintf(stderr, "market_data_load: %d symbols, %d timesteps from %s\n",
             md->num_symbols, md->num_timesteps, path);
@@ -100,7 +119,6 @@ static void fill_observations(TradingEnv* env) {
 
     /* portfolio state */
     int base = S * FEATURES_PER_SYM;
-    float equity = ag->cash;
     float pos_val = 0.0f;
     float unreal_pnl = 0.0f;
 
@@ -109,13 +127,14 @@ static void fill_observations(TradingEnv* env) {
         float cur_price = get_price(md, t, sym, P_CLOSE);
         int is_short = (ag->position_sym >= S);
         if (is_short) {
+            /* Short position is a liability: equity = cash - qty*price.
+               cash already includes the short-sale proceeds from open_short(). */
             pos_val = -(ag->position_qty * cur_price);
             unreal_pnl = ag->position_qty * (ag->entry_price - cur_price);
         } else {
             pos_val = ag->position_qty * cur_price;
             unreal_pnl = ag->position_qty * (cur_price - ag->entry_price);
         }
-        equity += pos_val + (is_short ? ag->position_qty * ag->entry_price : 0.0f);
     }
 
     env->observations[base + 0] = ag->cash / INITIAL_CASH;
@@ -150,9 +169,9 @@ static float compute_equity(const TradingEnv* env, int t) {
         float cur_price = get_price(md, t, sym, P_CLOSE);
         int is_short = (ag->position_sym >= S);
         if (is_short) {
-            /* short P&L = qty * (entry - current) */
-            equity += ag->position_qty * (ag->entry_price - cur_price);
-            /* plus the original short proceeds already in cash */
+            /* Short position equity: cash - qty*price.
+               (cash already contains the short-sale proceeds.) */
+            equity -= ag->position_qty * cur_price;
         } else {
             equity += ag->position_qty * cur_price;
         }
@@ -175,22 +194,12 @@ static void close_position(TradingEnv* env, int t) {
     float cur_price = get_price(md, t, sym, P_CLOSE);
     int is_short = (ag->position_sym >= S);
 
-    float proceeds;
     if (is_short) {
-        /* short: bought back at cur_price */
+        /* Buy back borrowed shares. Note: cash includes the short-sale proceeds from open_short(). */
         float cost = ag->position_qty * cur_price * (1.0f + env->fee_rate);
-        proceeds = ag->position_qty * ag->entry_price - cost;
-        /* cash already includes the short-sale proceeds (entry_price * qty) */
-        ag->cash += proceeds - ag->position_qty * ag->entry_price;
-        /* simplification: cash += pnl - fees on close */
-        /* Actually let's redo: on short open, cash += entry*qty*(1-fee).
-           On short close, cash -= cur*qty*(1+fee).
-           Net P&L = entry*qty*(1-fee) - cur*qty*(1+fee). */
-        /* We handle this by just computing equity directly. */
-        ag->cash = compute_equity(env, t);
-        ag->cash -= ag->position_qty * cur_price * env->fee_rate; /* close fee */
+        ag->cash -= cost;
     } else {
-        proceeds = ag->position_qty * cur_price * (1.0f - env->fee_rate);
+        float proceeds = ag->position_qty * cur_price * (1.0f - env->fee_rate);
         ag->cash += proceeds;
     }
 
@@ -289,6 +298,14 @@ void c_step(TradingEnv* env) {
     /* clamp timestep */
     if (t >= md->num_timesteps) t = md->num_timesteps - 1;
 
+    /* current position info */
+    int cur_sym = -1;
+    int cur_tradable = 1;
+    if (ag->position_sym >= 0) {
+        cur_sym = ag->position_sym % S;
+        cur_tradable = is_tradable(md, t, cur_sym);
+    }
+
     /* compute equity before action */
     float equity_before = compute_equity(env, t);
 
@@ -300,27 +317,48 @@ void c_step(TradingEnv* env) {
     if (action == 0) {
         /* close any open position */
         if (ag->position_sym >= 0) {
-            close_position(env, t);
+            if (cur_tradable) {
+                close_position(env, t);
+            } else {
+                /* can't close when market closed: treat as hold */
+                ag->hold_hours++;
+            }
         }
     } else if (action >= 1 && action <= S) {
         int target_sym = action - 1;
+        int target_tradable = is_tradable(md, t, target_sym);
         /* if already in this long position, hold */
         if (ag->position_sym == target_sym) {
             ag->hold_hours++;
         } else {
-            /* close current, open new long */
-            if (ag->position_sym >= 0) close_position(env, t);
-            open_long(env, t, target_sym);
+            /* If target market is closed, do nothing (avoid accidental closes). */
+            if (!target_tradable) {
+                if (ag->position_sym >= 0) ag->hold_hours++;
+            } else if (ag->position_sym >= 0 && !cur_tradable) {
+                /* can't close current position right now */
+                ag->hold_hours++;
+            } else {
+                /* close current, open new long */
+                if (ag->position_sym >= 0) close_position(env, t);
+                open_long(env, t, target_sym);
+            }
         }
     } else if (action >= S + 1 && action <= 2 * S) {
         int target_sym = action - S - 1;
         int short_id = S + target_sym;
+        int target_tradable = is_tradable(md, t, target_sym);
         /* if already in this short position, hold */
         if (ag->position_sym == short_id) {
             ag->hold_hours++;
         } else {
-            if (ag->position_sym >= 0) close_position(env, t);
-            open_short(env, t, target_sym);
+            if (!target_tradable) {
+                if (ag->position_sym >= 0) ag->hold_hours++;
+            } else if (ag->position_sym >= 0 && !cur_tradable) {
+                ag->hold_hours++;
+            } else {
+                if (ag->position_sym >= 0) close_position(env, t);
+                open_short(env, t, target_sym);
+            }
         }
     }
     /* else: invalid action, treat as hold */
@@ -351,20 +389,25 @@ void c_step(TradingEnv* env) {
         ag->peak_equity = equity_after;
     }
 
-    /* reward shaping:
-     * - base: clipped return * 10 (moderate scale)
-     * - cash penalty: small negative for being flat (encourages trading)
-     * - Sharpe-like: reward consistency, penalise volatility
-     */
-    float reward = ret * 10.0f;
+    /* reward shaping (configurable via env params) */
+    float reward = ret * env->reward_scale;
 
     /* clip extreme rewards to prevent gradient explosion */
-    if (reward > 5.0f) reward = 5.0f;
-    if (reward < -5.0f) reward = -5.0f;
+    float clip = env->reward_clip;
+    if (reward > clip) reward = clip;
+    if (reward < -clip) reward = -clip;
 
     /* small penalty for sitting in cash (opportunity cost) */
     if (ag->position_sym < 0) {
-        reward -= 0.01f;
+        reward -= env->cash_penalty;
+    }
+
+    /* drawdown penalty: penalize equity dropping below peak */
+    if (env->drawdown_penalty > 0.0f && ag->peak_equity > 0.0f) {
+        float dd = (ag->peak_equity - equity_after) / ag->peak_equity;
+        if (dd > 0.0f) {
+            reward -= env->drawdown_penalty * dd;
+        }
     }
 
     env->rewards[0] = reward;
@@ -390,7 +433,9 @@ void c_step(TradingEnv* env) {
         if (ag->ret_count > 1 && ag->sum_neg_sq > 0.0f) {
             float mean_ret = ag->sum_ret / ag->ret_count;
             float downside_dev = sqrtf(ag->sum_neg_sq / ag->ret_count);
-            sortino = mean_ret / downside_dev * sqrtf(8760.0f);  /* annualised */
+            float ppy = env->periods_per_year;
+            if (ppy <= 0.0f) ppy = 8760.0f;
+            sortino = mean_ret / downside_dev * sqrtf(ppy);  /* annualised */
         }
 
         env->log.total_return += total_return;

@@ -46,6 +46,7 @@ typedef struct {
     /* pointers into mmapped / malloced data */
     float*    features;         /* [T][S][FEATURES_PER_SYM] */
     float*    prices;           /* [T][S][PRICE_FEATS] */
+    unsigned char* tradable;    /* optional [T][S] uint8 mask (1=tradable, 0=market closed) */
 
     /* owned memory (free on close) */
     void*     file_buf;         /* raw file buffer */
@@ -83,6 +84,13 @@ typedef struct {
     int            max_steps;       /* episode length in hours */
     float          fee_rate;        /* transaction cost (e.g. 0.001) */
     float          max_leverage;    /* 1.0 = no leverage */
+    float          periods_per_year;/* annualisation factor for metrics (e.g. 8760 for hourly, 365 for daily) */
+
+    /* --- reward shaping config --- */
+    float          reward_scale;    /* multiply return by this (default 10) */
+    float          reward_clip;     /* clip abs(reward) to this (default 5) */
+    float          cash_penalty;    /* per-step penalty for being flat (default 0.01) */
+    float          drawdown_penalty;/* penalty scale for drawdown from peak (default 0) */
 
     /* --- shared data (NOT owned, do not free) --- */
     MarketData*    data;
@@ -131,6 +139,11 @@ static inline float get_feature(const MarketData* md, int t, int s, int f) {
 
 static inline float get_price(const MarketData* md, int t, int s, int p) {
     return md->prices[(t * md->num_symbols + s) * PRICE_FEATS + p];
+}
+
+static inline int is_tradable(const MarketData* md, int t, int s) {
+    if (md->tradable == NULL) return 1;
+    return md->tradable[t * md->num_symbols + s] != 0;
 }
 
 /* price indices */

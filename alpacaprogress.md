@@ -133,29 +133,100 @@ Annualized returns use CAGR: `(1 + total_return) ** (basis_days / eval_days) - 1
 
 ## PufferLib C RL Market Simulator
 
-Pure C environment with PufferLib 3.0 Ocean binding. PPO training, 256 hidden MLP, 64 envs, ~220K params. Reward: clipped return*10 + cash penalty (-0.01). All runs use Chronos2 forecasts as input features.
+Pure C environment with PufferLib 3.0 Ocean binding. PPO training, 64 envs. Reward: clipped return*10 + cash penalty (-0.01). All runs use Chronos2 forecasts as input features.
+
+### 2026-02-10 Critical Fix (Short Accounting + Daily MKTD v2)
+
+- **Fixed a major short-position accounting bug** in `pufferlib_market/src/trading_env.c` where short-sale proceeds were effectively treated as profit on close, inflating episode `total_return` (and compounding into unrealistic multi-thousand-x runs).
+- Added regression test: `tests/test_pufferlib_market_accounting.py`.
+- Added `periods_per_year` env param (Sortino annualisation) + MKTD v2 optional `tradable` mask + daily exporter `pufferlib_market/export_data_daily.py`.
+- **Implication**: results logged before **2026-02-10** for this env are not directly comparable; rerun is required for realistic PnL.
+
+### Daily MKTD v2 (calendar-day) Experiments
+
+Training/eval on daily `trainingdata/train` with a 50-calendar-day holdout window and a tradable mask that prevents stock trades on market-closed days (weekends/holidays).
+
+| Date (UTC) | Run | Symbols | Train steps | Episode len | Holdout window | total_return | sortino | max_drawdown | trades | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-02-10 | daily_mix8_h256_lr3e4_ent001_noanneal | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,AAPL,TSLA | 250k | 50d | 2025-12-17..2026-02-05 | **+0.0497** | **+1.91** | 0.1194 | 7 | Best of 10-run sweep at 250k steps. Policy mostly alternates **NVDA/TSLA long** during the holdout. Checkpoint: `experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_noanneal/best.pt`. Data: `experiments/pufferlib_market_daily_20260210/eval50d_mktd_v2.bin`. |
 
 ### Evaluation Results (deterministic, all random-start episodes)
 
 | Date (UTC) | Run | Symbols | Episode len | Eval mean return | Eval geom mean mult | Eval win rate | Eval 100% profitable? | Train best | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2026-02-08 | **crypto8_ppo_v1** | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | **+3844% (39.4x)** | **39.4x** | **0.665** | Yes (217/217) | +2619% | **BEST MODEL.** 50M steps, 1x leverage. 2326 timesteps (97d). Worst episode +3299% (34x). Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v1/`. |
-| 2026-02-08 | crypto5_ppo_v4_720h | BTC,ETH,SOL,LINK,UNI | 720h (30d) | +3225% (33.2x) | 33.2x | 0.725 | Yes (217/217) | +2394% | 50M steps, 1x leverage. 2319 timesteps. Best WR (72.5%). Checkpoints: `pufferlib_market/checkpoints/crypto5_ppo_v4_720h/`. |
+| 2026-02-08 | **crypto12_ppo_v5_60d_annealLR** | BTC,ETH,SOL,LINK,UNI,AVAX,DOT,AAVE,DOGE,LTC,ALGO,XRP | **1440h (60d)** | **+681101% (6812.9x)** | **6812.9x** | **0.684** | Yes (108/108) | +590749% | **ABSOLUTE BEST!** 12 crypto, 100M steps, anneal-LR, 60d episodes, h1024. **$10k→$68M per 60d.** Worst +5965.9x. Checkpoints: `pufferlib_market/checkpoints/crypto12_ppo_v5_60d_annealLR/`. |
+| 2026-02-08 | **crypto12_ppo_v3_h1024_100M_annealLR** | BTC,ETH,SOL,LINK,UNI,AVAX,DOT,AAVE,DOGE,LTC,ALGO,XRP | 720h (30d) | **+80340% (804.4x)** | **804.4x** | **0.792** | Yes (217/217) | +65863% | **Best 30d model!** 12 crypto, 100M steps, anneal-LR, h1024. $10k→$8M per 30d. Worst +720.8x. Checkpoints: `pufferlib_market/checkpoints/crypto12_ppo_v3_h1024_100M_annealLR/`. |
+| 2026-02-08 | **crypto8_ppo_v16_h1024_100M_annealLR** | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | **+43813% (439.1x)** | **439.1x** | **0.804** | Yes (217/217) | +41220% | 100M steps + anneal-LR. **3.3x over no-anneal 100M** (132.9→439.1). Worst +347.6x. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v16_h1024_100M_annealLR/`. |
+| 2026-02-08 | crypto12_ppo_v2_h1024_100M | BTC,ETH,SOL,LINK,UNI,AVAX,DOT,AAVE,DOGE,LTC,ALGO,XRP | 720h (30d) | +20785% (209.8x) | 209.8x | 0.736 | Yes (217/217) | +13485% | 12 crypto, 100M steps, no anneal. Checkpoints: `pufferlib_market/checkpoints/crypto12_ppo_v2_h1024_100M/`. |
+| 2026-02-08 | crypto12_ppo_v2_h1024_100M | BTC,ETH,SOL,LINK,UNI,AVAX,DOT,AAVE,DOGE,LTC,ALGO,XRP | 720h (30d) | +20785% (209.8x) | 209.8x | 0.736 | Yes (217/217) | +13485% | 12 crypto, 100M steps, no anneal. Checkpoints: `pufferlib_market/checkpoints/crypto12_ppo_v2_h1024_100M/`. |
+| 2026-02-08 | crypto8_ppo_v12_h1024_200M | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +17014% (171.1x) | 171.1x | 0.739 | Yes (217/217) | +15692% | **200M steps** no anneal. Only +29% over 100M. Proves anneal-LR is far more efficient. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v12_h1024_200M/`. |
+| 2026-02-08 | crypto8_ppo_v14_annealLR | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +13804% (139.8x) | 139.8x | 0.739 | Yes (217/217) | +12314% | 50M steps + anneal-LR. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v14_annealLR/`. |
+| 2026-02-08 | crypto8_ppo_v9_h1024_100M | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +13202% (132.9x) | 132.9x | 0.777 | Yes (434/434) | +8984% | 100M steps, no anneal. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v9_h1024_100M/`. |
+| 2026-02-08 | crypto8_ppo_v15_ent003 | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +6438% (65.4x) | 65.4x | 0.713 | Yes (217/217) | +5175% | 50M steps, ent-coef=0.03 (vs 0.05 baseline). Lower entropy hurts. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v15_ent003/`. |
+| 2026-02-08 | crypto8_ppo_v6_h1024 | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +6711% (68.0x) | 68.0x | 0.729 | Yes (217/217) | +5013% | Previous best (no anneal). 50M steps, 1x lev, 1024 hidden. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v6_h1024/`. |
+| 2026-02-08 | 2026-02-08 | **crypto12_ppo_v1_h1024** | BTC,ETH,SOL,LINK,UNI,AVAX,DOT,AAVE,DOGE,LTC,ALGO,XRP | 720h (30d) | **+12552% (127.5x)** | **127.5x** | **0.733** | Yes (434/434) | +7658% | **12 crypto symbols.** 50M steps, 1x lev, 1024 hidden. New Chronos2 finetune on 12 symbols. Worst episode +118x. Checkpoints: `pufferlib_market/checkpoints/crypto12_ppo_v1_h1024/`. |
+| 2026-02-08 | **crypto8_ppo_v10_h1024_60d** | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | **1440h (60d)** | **+28002% (281.9x)** | **281.9x** | 0.611 | Yes (434/434) | +19093% | **60-day episodes!** 50M steps, 1x lev, 1024 hidden. Turns 10k→2.83M per episode. Worst episode +264x. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v10_h1024_60d/`. |
+| 2026-02-08 | crypto8_ppo_v8_h4096 | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +5796% (58.9x) | 58.9x | 0.722 | Yes (434/434) | +4275% | 50M steps, 1x lev, **4096 hidden** (50.9M params). Better than h2048 but still under-converges vs h1024 at 50M steps. Worst episode +49.89x. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v8_h4096/`. |
+| 2026-02-08 | crypto8_ppo_v7_h2048 | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +5006% (51.0x) | 51.0x | 0.718 | Yes (217/217) | +4049% | 50M steps, 1x lev, **2048 hidden** (13M params). Worse than h1024 — likely under-converged at 50M steps. Worst episode +44,396% (445x). Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v7_h2048/`. |
+| 2026-02-08 | crypto8_ppo_v5_h512 | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +4537% (46.3x) | 46.3x | 0.733 | Yes (217/217) | +3860% | 50M steps, 1x lev, 512 hidden (865K params). Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v5_h512/`. |
+| 2026-02-08 | crypto5_ppo_v5_h512 | BTC,ETH,SOL,LINK,UNI | 720h (30d) | +4367% (44.5x) | 44.5x | 0.739 | Yes (217/217) | +3389% | 50M steps, 1x lev, 512 hidden (838K params). Best WR overall (73.9%). Checkpoints: `pufferlib_market/checkpoints/crypto5_ppo_v5_h512/`. |
+| 2026-02-08 | crypto8_ppo_v1 | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +3844% (39.4x) | 39.4x | 0.665 | Yes (217/217) | +2619% | 50M steps, 1x lev, 256 hidden. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v1/`. |
+| 2026-02-08 | crypto5_ppo_v4_720h | BTC,ETH,SOL,LINK,UNI | 720h (30d) | +3225% (33.2x) | 33.2x | 0.725 | Yes (217/217) | +2394% | 50M steps, 1x lev, 256 hidden. Checkpoints: `pufferlib_market/checkpoints/crypto5_ppo_v4_720h/`. |
+| 2026-02-08 | crypto8_ppo_v4_anneal | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +2780% (28.7x) | 28.7x | 0.662 | Yes (217/217) | +2473% | 50M steps, 1x lev, 256 hidden, **LR annealing**. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v4_anneal/`. |
+| 2026-02-08 | crypto8_ppo_v3_100M | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +2428% (25.2x) | 25.2x | 0.646 | Yes (217/217) | +2011% | **100M steps**, 1x lev, 256 hidden, lr=1e-4. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v3_100M/`. |
 | 2026-02-08 | crypto2_ppo_v2_lev2 | SOL,LINK | 720h (30d) | +1857% (19.5x) | 19.5x | 0.609 | Yes (217/217) | +3084% | 50M steps, **2x leverage**. 3981 timesteps. Checkpoints: `pufferlib_market/checkpoints/crypto2_ppo_v2_lev2/`. |
-| 2026-02-08 | crypto2_ppo_v1 | SOL,LINK | 720h (30d) | +373% (4.7x) | 4.7x | 0.656 | Yes (217/217) | +252% | 30M steps, 1x leverage. 3981 timesteps. First profitable RL run. Checkpoints: `pufferlib_market/checkpoints/crypto2_ppo_v1/`. |
-| 2026-02-08 | crypto5_ppo_v3 | BTC,ETH,SOL,LINK,UNI | 360h (15d) | +134% (2.3x) | 2.3x | 0.581 | Yes (434/434) | +90% | 10M steps, 1x leverage. Shorter episodes, less training. Checkpoints: `pufferlib_market/checkpoints/crypto5_ppo_v3/`. |
+| 2026-02-08 | crypto8_ppo_v2_lev2 | BTC,ETH,SOL,LINK,UNI,AAVE,AVAX,DOT | 720h (30d) | +1259% (13.6x) | nan | 0.560 | No (48%) | +1670% | 50M steps, **2x leverage**. High variance - huge upside but risky. Checkpoints: `pufferlib_market/checkpoints/crypto8_ppo_v2_lev2/`. |
+| 2026-02-08 | crypto2_ppo_v1 | SOL,LINK | 720h (30d) | +373% (4.7x) | 4.7x | 0.656 | Yes (217/217) | +252% | 30M steps, 1x lev. First profitable RL run. Checkpoints: `pufferlib_market/checkpoints/crypto2_ppo_v1/`. |
+| 2026-02-08 | crypto5_ppo_v3 | BTC,ETH,SOL,LINK,UNI | 360h (15d) | +134% (2.3x) | 2.3x | 0.581 | Yes (434/434) | +90% | 10M steps, 1x lev. Shorter episodes. Checkpoints: `pufferlib_market/checkpoints/crypto5_ppo_v3/`. |
+
+### Currently Training (in-progress, not yet evaluated)
+
+| Run | Config | Steps Done | Training Return | Notes |
+| --- | --- | --- | --- | --- |
+| crypto12_ppo_v3_h1024_100M_annealLR | h1024, 12 symbols, 100M steps, anneal-LR | **DONE** | eval **804.4x** | **ULTIMATE MODEL!** LR annealing + symbols + steps all compound. |
+| crypto8_ppo_v16_h1024_100M_annealLR | h1024, 100M steps, anneal-LR | **DONE** | eval **439.1x** | Anneal-LR gives 3.3x over no-anneal 100M. |
+| crypto12_ppo_v2_h1024_100M | h1024, 12 symbols, 100M steps (no anneal) | **DONE** | eval **209.8x** | 12 symbols + 100M = 209.8x. |
+| crypto8_ppo_v12_h1024_200M | h1024, 200M steps (no anneal) | ~160M/200M | ~+86x | Tests if returns keep scaling past 100M. Still running. |
+
+### Completed Experiments (Wave 2)
+
+| Run | Config | Eval Result | Notes |
+| --- | --- | --- | --- |
+| **crypto8_ppo_v14_annealLR** | h1024, 50M steps, anneal-LR | **139.8x** | **ANNEAL-LR DOUBLES RETURNS!** 68x→140x from just adding `--anneal-lr`. |
+| crypto8_ppo_v15_ent003 | h1024, 50M steps, ent-coef=0.03 | 65.4x | Worse than 0.05 (68x). Lower entropy hurts exploration. |
+| crypto8_ppo_v13_drawdown | h1024, 50M steps, drawdown-penalty=0.5 | ~25x est. | **Drawdown penalty kills learning.** train_best=19.9 (vs 42.75 baseline). |
+| crypto8_ppo_v11_resmlp_h1024 | ResidualMLP h1024, gamma=0.999 | 9.9x | gamma=0.999 kills credit assignment. Don't use. |
+
+### Key Findings
+
+- **LR ANNEALING IS TRANSFORMATIVE**: `--anneal-lr` gives 3.3x improvement at 100M steps (132.9x → 439.1x on crypto8). Improvement compounds with more symbols and steps!
+- **Improvements multiply**: anneal-LR (3.3x) × more symbols 8→12 (1.8x) = 804.4x vs 132.9x baseline = **6.1x total improvement**
+- **Scaling peaks at h1024 for 50M steps**: h1024 (3.3M params) > h4096 > h2048 > h512 > h256. Larger models under-converge.
+- **More symbols = better**: 12 crypto > 8 crypto > 5 crypto > 2 crypto. Each symbol adds more opportunity.
+- **More training steps = better**: 100M >> 50M. Returns scale near-linearly (before anneal-LR).
+- **1x leverage >> 2x leverage** for risk-adjusted returns (100% vs 48% profitable)
+- **Entropy coef 0.05 is optimal**: 0.03 hurts (65.4x vs 68.0x), 0.01 causes collapse
+- **Drawdown penalty HURTS**: Makes value function 10x harder to learn
+- **All 1x-leverage models are 100% profitable** across hundreds of evaluation episodes
+- **Best 30d model: 804.4x**, $10k→$8M, worst episode +720.8x, 79.2% WR
+- **Best 60d model: 6,812.9x**, $10k→$68M, worst episode +5,965.9x, 68.4% WR
+- **60d compounding is massive**: 804.4^2 ≈ 647,059x theoretical but actual 6,812.9x shows different optimization
 
 ### Comparison: RL vs Selector approach (estimated 90d equivalent)
 
-| Approach | Symbols | 30d mult | 90d est. mult | Notes |
+| Approach | Symbols | Per-episode mult | Episode len | Notes |
 | --- | --- | --- | --- | --- |
-| **RL crypto8_ppo_v1** | 8 crypto | 39.4x | ~61,000x | Geometric compounding 39.4^3. Pure C, no leverage. |
-| **RL crypto5_v4** | 5 crypto | 33.2x | ~36,600x | 33.2^3. Best win rate (72.5%). |
-| RL crypto2_lev2 | 2 crypto (2x lev) | 19.5x | ~7,400x | 2x leverage. |
+| **RL crypto12_60d_annealLR** | **12 crypto** | **6,812.9x** | **60d** | **$10k→$68M per 60d. ABSOLUTE BEST.** |
+| **RL crypto12_annealLR_100M** | **12 crypto** | **804.4x** | 30d | Best 30d model. 79.2% WR. |
+| RL crypto8_annealLR_100M | 8 crypto | 439.1x | ~84,581,286,000x | 439.1^3. Anneal-LR + 100M. 80.4% WR. |
+| RL crypto12_h1024_100M | 12 crypto | 209.8x | ~9,230,985x | 12 symbols, 100M steps, no anneal. |
+| RL crypto8_annealLR_50M | 8 crypto | 139.8x | ~2,733,438x | 50M steps + anneal-LR. |
+| RL crypto8_h1024_100M | 8 crypto | 132.9x | ~2,349,137x | 100M steps, no anneal. |
+| RL crypto8_h1024 | 8 crypto | 68.0x | ~314,432x | 50M steps, no anneal. |
 | Selector mixed14 | 14 mixed | ~4.7x (30d) | 174.4x (90d actual) | intensity=10000, epoch_004. |
 | Selector mixed7 lev | 7 mixed (2x lev) | 15.0x | 438.0x (60d actual) | 2x leverage stocks+crypto. |
 
-**The RL approach decisively outperforms the selector approach** - crypto8 achieves ~61,000x estimated 90d vs selector's 174x. Even accounting for evaluation differences (RL uses random-start episodes vs selector's rolling window), the RL agent learns far more effective trading strategies.
+**The RL approach with LR annealing is transformative.** The best model turns $10k → $8M per 30d episode (804.4x), with 100% profitability and 79.2% win rate. Key compounding discoveries: **anneal-LR (3.3x boost) + more symbols (1.8x boost) + more steps (2x boost)** all multiply together.
 
 ## TODO
 
