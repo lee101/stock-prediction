@@ -87,6 +87,7 @@ def sweep_action_overrides(
     close_at_eod: bool = True,
     maker_fee: Optional[float] = None,
     periods_per_year: Optional[float] = None,
+    decision_lag_bars: int = 0,
     symbol: str = "",
     eval_days: Optional[float] = None,
     eval_hours: Optional[float] = None,
@@ -134,6 +135,7 @@ def sweep_action_overrides(
             close_at_eod=close_at_eod,
             fee_by_symbol=fee_by_symbol,
             periods_per_year_by_symbol=periods_by_symbol,
+            decision_lag_bars=int(decision_lag_bars or 0),
         )
     )
     for intensity in intensity_scales:
@@ -177,6 +179,12 @@ def main() -> None:
     parser.add_argument("--periods-per-year", type=float, default=None)
     parser.add_argument("--no-enforce-market-hours", action="store_true")
     parser.add_argument("--no-close-at-eod", action="store_true")
+    parser.add_argument(
+        "--decision-lag-bars",
+        type=int,
+        default=0,
+        help="Shift actions back by N bars before simulating fills (live-like execution delay).",
+    )
     parser.add_argument("--eval-days", type=float, default=None, help="Limit evaluation to last N days")
     parser.add_argument("--eval-hours", type=float, default=None, help="Limit evaluation to last N hours")
     parser.add_argument("--device", default=None, help="Override inference device (e.g., cuda, cuda:0).")
@@ -238,6 +246,7 @@ def main() -> None:
         close_at_eod=not args.no_close_at_eod,
         maker_fee=args.maker_fee or data.asset_meta.maker_fee,
         periods_per_year=args.periods_per_year or data.asset_meta.periods_per_year,
+        decision_lag_bars=args.decision_lag_bars,
         symbol=data.asset_meta.symbol,
         eval_days=args.eval_days,
         eval_hours=args.eval_hours,
