@@ -93,6 +93,76 @@ class TradingPolicy(nn.Module):
         return self.critic(h).squeeze(-1)
 
 
+class ResidualBlock(nn.Module):
+    """Pre-norm residual block: LayerNorm → Linear → GELU → Linear → Add."""
+    def __init__(self, dim):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.net = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.GELU(),
+            nn.Linear(dim, dim),
+        )
+
+    def forward(self, x):
+        return x + self.net(self.norm(x))
+
+
+class ResidualTradingPolicy(nn.Module):
+    """Residual MLP with LayerNorm for more stable training of larger models."""
+
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, num_blocks: int = 3):
+        super().__init__()
+        self.obs_size = obs_size
+        self.num_actions = num_actions
+
+        self.input_proj = nn.Linear(obs_size, hidden)
+        self.blocks = nn.Sequential(*[ResidualBlock(hidden) for _ in range(num_blocks)])
+        self.out_norm = nn.LayerNorm(hidden)
+
+        self.actor = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            nn.GELU(),
+            nn.Linear(hidden // 2, num_actions),
+        )
+        self.critic = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            nn.GELU(),
+            nn.Linear(hidden // 2, 1),
+        )
+
+        # Init
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.zeros_(m.bias)
+        nn.init.orthogonal_(self.actor[-1].weight, gain=0.01)
+        nn.init.orthogonal_(self.critic[-1].weight, gain=1.0)
+
+    def forward(self, x):
+        h = self.input_proj(x)
+        h = self.blocks(h)
+        h = self.out_norm(h)
+        logits = self.actor(h)
+        value = self.critic(h).squeeze(-1)
+        return logits, value
+
+    def get_action_and_value(self, x, action=None):
+        logits, value = self.forward(x)
+        dist = Categorical(logits=logits)
+        if action is None:
+            action = dist.sample()
+        log_prob = dist.log_prob(action)
+        entropy = dist.entropy()
+        return action, log_prob, entropy, value
+
+    def get_value(self, x):
+        h = self.input_proj(x)
+        h = self.blocks(h)
+        h = self.out_norm(h)
+        return self.critic(h).squeeze(-1)
+
+
 # ─── PPO Training Loop ────────────────────────────────────────────────
 
 def compute_gae(rewards, values, dones, gamma=0.99, gae_lambda=0.95):
@@ -136,7 +206,12 @@ def train(args):
         max_steps=args.max_steps,
         fee_rate=args.fee_rate,
         max_leverage=args.max_leverage,
+        periods_per_year=args.periods_per_year,
         num_symbols=num_symbols,
+        reward_scale=args.reward_scale,
+        reward_clip=args.reward_clip,
+        cash_penalty=args.cash_penalty,
+        drawdown_penalty=args.drawdown_penalty,
     )
 
     obs_size = num_symbols * 16 + 5 + num_symbols
@@ -158,12 +233,20 @@ def train(args):
         max_steps=config.max_steps,
         fee_rate=config.fee_rate,
         max_leverage=config.max_leverage,
+        periods_per_year=config.periods_per_year,
+        reward_scale=config.reward_scale,
+        reward_clip=config.reward_clip,
+        cash_penalty=config.cash_penalty,
+        drawdown_penalty=config.drawdown_penalty,
     )
     binding.vec_reset(vec_handle, args.seed)
     print(f"  Created {num_envs} parallel envs")
 
     # ── Policy ──
-    policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
+    if args.arch == "resmlp":
+        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
+    else:
+        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
     optimizer = optim.Adam(policy.parameters(), lr=args.lr, eps=1e-5)
     total_params = sum(p.numel() for p in policy.parameters())
     print(f"  Policy: {total_params:,} params ({total_params * 4 / 1e6:.1f} MB)")
@@ -378,11 +461,19 @@ def main():
     parser.add_argument("--max-steps", type=int, default=720, help="Episode length (hours)")
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--max-leverage", type=float, default=1.0)
+    parser.add_argument("--periods-per-year", type=float, default=8760.0,
+                        help="Annualisation factor for Sortino (8760=hourly, 365=daily, 252=trading days)")
+    parser.add_argument("--reward-scale", type=float, default=10.0, help="Reward = ret * scale")
+    parser.add_argument("--reward-clip", type=float, default=5.0, help="Clip |reward| to this")
+    parser.add_argument("--cash-penalty", type=float, default=0.01, help="Per-step flat penalty")
+    parser.add_argument("--drawdown-penalty", type=float, default=0.0, help="Drawdown penalty scale")
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
 
     # Policy
     parser.add_argument("--hidden-size", type=int, default=256)
+    parser.add_argument("--arch", choices=["mlp", "resmlp"], default="mlp",
+                        help="Architecture: mlp (default) or resmlp (residual+LayerNorm)")
 
     # PPO
     parser.add_argument("--total-timesteps", type=int, default=10_000_000)

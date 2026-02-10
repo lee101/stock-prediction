@@ -1,0 +1,28 @@
+{
+  "symbols": [
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "LINKUSD",
+    "UNIUSD",
+    "NVDA",
+    "AAPL",
+    "TSLA"
+  ],
+  "data_root": "trainingdata/train",
+  "train": {
+    "start_date": "2022-02-08",
+    "end_date": "2025-12-16"
+  },
+  "eval": {
+    "start_date": "2025-12-17",
+    "end_date": "2026-02-05",
+    "episode_steps": 50
+  },
+  "env": {
+    "fee_rate": 0.001,
+    "max_leverage": 1.0,
+    "periods_per_year": 365
+  }
+}
+
