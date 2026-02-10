@@ -6,14 +6,12 @@ from pathlib import Path
 import pytest
 
 from newnanoalpacahourlyexp.trade_alpaca_hourly import (
-    TradingPlan,
-    _build_order_intents,
     _allocation_usd,
-    _ensure_valid_levels,
     _parse_checkpoint_map,
     _parse_horizon_map,
     _parse_symbols,
 )
+from src.hourly_trader_utils import TradingPlan, build_order_intents, ensure_valid_levels
 
 
 def test_parse_symbols_default():
@@ -44,11 +42,11 @@ def test_parse_horizon_map():
 
 
 def test_ensure_valid_levels_rejects_nonpositive():
-    assert _ensure_valid_levels(-1.0, 2.0, min_gap_pct=0.01) is None
+    assert ensure_valid_levels(-1.0, 2.0, min_gap_pct=0.01) is None
 
 
 def test_ensure_valid_levels_enforces_gap():
-    buy, sell = _ensure_valid_levels(100.0, 99.0, min_gap_pct=0.01)
+    buy, sell = ensure_valid_levels(100.0, 99.0, min_gap_pct=0.01)
     assert sell > buy
 
 
@@ -85,7 +83,7 @@ def test_build_order_intents_flat_prefers_buy_when_equal_notional():
         sell_amount=50.0,
         timestamp=datetime.now(timezone.utc),
     )
-    intents = _build_order_intents(
+    intents = build_order_intents(
         plan,
         position_qty=0.0,
         allocation_usd=1000.0,
@@ -108,7 +106,7 @@ def test_build_order_intents_flat_short_only_allows_short_entry_when_enabled():
         sell_amount=20.0,
         timestamp=datetime.now(timezone.utc),
     )
-    intents = _build_order_intents(
+    intents = build_order_intents(
         plan,
         position_qty=0.0,
         allocation_usd=1000.0,
@@ -134,7 +132,7 @@ def test_build_order_intents_long_position_can_exit_and_add():
         sell_amount=30.0,
         timestamp=datetime.now(timezone.utc),
     )
-    intents = _build_order_intents(
+    intents = build_order_intents(
         plan,
         position_qty=10.0,
         allocation_usd=1000.0,
@@ -160,7 +158,7 @@ def test_build_order_intents_short_position_can_cover_and_add_short_when_enabled
         sell_amount=50.0,
         timestamp=datetime.now(timezone.utc),
     )
-    intents = _build_order_intents(
+    intents = build_order_intents(
         plan,
         position_qty=-8.0,
         allocation_usd=1000.0,
@@ -189,7 +187,7 @@ def test_build_order_intents_short_position_blocks_new_short_when_disabled():
         sell_amount=50.0,
         timestamp=datetime.now(timezone.utc),
     )
-    intents = _build_order_intents(
+    intents = build_order_intents(
         plan,
         position_qty=-8.0,
         allocation_usd=1000.0,
@@ -212,7 +210,7 @@ def test_build_order_intents_exit_only_flattens_long_and_short():
         sell_amount=99.0,
         timestamp=datetime.now(timezone.utc),
     )
-    intents_long = _build_order_intents(
+    intents_long = build_order_intents(
         plan,
         position_qty=10.0,
         allocation_usd=1000.0,
@@ -225,7 +223,7 @@ def test_build_order_intents_exit_only_flattens_long_and_short():
     )
     assert [(i.kind, i.side, round(i.qty, 6)) for i in intents_long] == [("exit", "sell", 10.0)]
 
-    intents_short = _build_order_intents(
+    intents_short = build_order_intents(
         plan,
         position_qty=-8.0,
         allocation_usd=1000.0,
