@@ -468,3 +468,16 @@ Best total_return config extra evals (same selector config + checkpoint `epoch_0
 - 20d: total_return=1.602473 sortino=72.0240 (`alpacanewccrosslearning/outputs/selector_best_mixed14_seq128_lb4000_20260205_2336_bestret_eval20d`)
 - 30d: total_return=2.762574 sortino=76.5497 (`alpacanewccrosslearning/outputs/selector_best_mixed14_seq128_lb4000_20260205_2336_bestret_eval30d`)
 - 60d: total_return=11.501177 sortino=54.1330 (printed run; no output dir)
+
+## 2026-02-10: pufferlib_market daily RL correctness + reward shaping
+
+Key fixes + improvements:
+- Fixed `pufferlib_market` C env terminal flags: `term_buf` now correctly exposes episode boundaries to PPO/GAE (was being cleared by an internal reset).
+- Added reward-shaping knobs for joint PnL/Sortino optimization:
+  - `downside_penalty`: penalize negative returns via `ret^2`
+  - `trade_penalty`: per open/close penalty to discourage churn
+- Cash penalty edge-case: when *no symbols are tradable* (e.g., stock-only weekends/holidays), we now skip `cash_penalty` to avoid penalizing unavoidable flat exposure.
+- Added regression tests:
+  - `tests/test_pufferlib_market_terminals.py`
+  - `tests/test_pufferlib_market_reward_shaping.py`
+- Exposed `--decision-lag-bars` in `newnanoalpacahourlyexp` eval+sweep CLIs for more live-like hourly execution delay.
