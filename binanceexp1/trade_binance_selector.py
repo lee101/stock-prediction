@@ -18,11 +18,12 @@ from src.torch_load_utils import torch_load_compat
 from src.binan import binance_wrapper
 from src.fees import get_fee_for_symbol
 
-from binanceneural.binance_watchers import WatcherPlan, spawn_watcher
+from binanceneural.binance_watchers import WatcherPlan, spawn_watcher, cancel_entry_watchers
 from binanceneural.config import TrainingConfig
 from binanceneural.execution import (
     compute_order_quantities,
     get_free_balances,
+    get_total_balances,
     resolve_symbol_rules,
     split_binance_symbol,
 )
@@ -197,6 +198,10 @@ def _run_selector_cycle(
     cache_only: bool,
     dry_run: bool,
     state_path: Path,
+    work_steal: bool = False,
+    work_steal_min_profit_pct: float = 0.001,
+    work_steal_min_edge: float = 0.005,
+    work_steal_edge_margin: float = 0.0,
 ) -> None:
     for symbol in symbols:
         _refresh_price_csv(symbol, data_root)
@@ -238,6 +243,11 @@ def _run_selector_cycle(
         state.open_symbol = held_symbol
         if not state.open_ts:
             state.open_ts = datetime.now(timezone.utc).isoformat()
+        if state.open_price <= 0:
+            try:
+                state.open_price = float(binance_wrapper.get_symbol_price(held_symbol))
+            except Exception:
+                pass
         state.save(state_path)
     elif len(holdings) == 1:
         held_symbol, held_qty, _ = holdings[0]
@@ -246,7 +256,19 @@ def _run_selector_cycle(
             state.open_symbol = held_symbol
             if not state.open_ts:
                 state.open_ts = datetime.now(timezone.utc).isoformat()
+            if state.open_price <= 0:
+                try:
+                    state.open_price = float(binance_wrapper.get_symbol_price(held_symbol))
+                except Exception:
+                    pass
             state.save(state_path)
+            cancel_entry_watchers(exclude_symbol=held_symbol)
+        elif state.open_price <= 0:
+            try:
+                state.open_price = float(binance_wrapper.get_symbol_price(held_symbol))
+                state.save(state_path)
+            except Exception:
+                pass
     elif state.open_symbol:
         print(f"[selector] state says {state.open_symbol} but no balance detected, clearing")
         state = SelectorState()
@@ -275,19 +297,36 @@ def _run_selector_cycle(
         return
 
     if state.open_symbol:
-        _handle_exit(
-            state, actions, symbols,
-            intensity_scale=intensity_scale,
-            price_offset_map=price_offset_map,
-            default_offset=default_offset,
-            min_gap_pct=min_gap_pct,
-            max_hold_hours=max_hold_hours,
-            poll_seconds=poll_seconds,
-            expiry_minutes=expiry_minutes,
-            price_tolerance=price_tolerance,
-            dry_run=dry_run,
-            state_path=state_path,
-        )
+        stolen = False
+        if work_steal:
+            stolen = _handle_work_steal(
+                state, actions, symbols,
+                horizon=horizon,
+                risk_weight=risk_weight,
+                work_steal_min_profit_pct=work_steal_min_profit_pct,
+                work_steal_min_edge=work_steal_min_edge,
+                work_steal_edge_margin=work_steal_edge_margin,
+                min_gap_pct=min_gap_pct,
+                poll_seconds=poll_seconds,
+                expiry_minutes=expiry_minutes,
+                price_tolerance=price_tolerance,
+                dry_run=dry_run,
+                state_path=state_path,
+            )
+        if not stolen:
+            _handle_exit(
+                state, actions, symbols,
+                intensity_scale=intensity_scale,
+                price_offset_map=price_offset_map,
+                default_offset=default_offset,
+                min_gap_pct=min_gap_pct,
+                max_hold_hours=max_hold_hours,
+                poll_seconds=poll_seconds,
+                expiry_minutes=expiry_minutes,
+                price_tolerance=price_tolerance,
+                dry_run=dry_run,
+                state_path=state_path,
+            )
     else:
         _handle_entry(
             state, actions, symbols,
@@ -329,11 +368,11 @@ def _handle_exit(
     if force_close:
         print(f"[selector] FORCE CLOSE {symbol} after {hours:.1f}h (max={max_hold_hours}h)")
         try:
-            _, base_free = get_free_balances(symbol)
+            _, base_total = get_total_balances(symbol)
         except Exception as exc:
             print(f"[selector] failed to get balances for {symbol}: {exc}")
             return
-        if base_free <= 0:
+        if base_total <= 0:
             state.open_symbol = None
             state.open_ts = None
             state.save(state_path)
@@ -361,7 +400,7 @@ def _handle_exit(
             buy_price=sell_price,
             sell_price=sell_price,
             quote_free=0,
-            base_free=base_free,
+            base_free=base_total,
             rules=rules,
         )
         if sizing.sell_qty > 0:
@@ -384,12 +423,12 @@ def _handle_exit(
     sell_price = plan.sell_price * (1.0 + offset)
 
     try:
-        _, base_free = get_free_balances(symbol)
+        quote_free, base_total = get_total_balances(symbol)
     except Exception as exc:
         print(f"[selector] failed to get balances for {symbol}: {exc}")
         return
 
-    if base_free <= 0:
+    if base_total <= 0:
         print(f"[selector] no {symbol} balance, clearing state")
         state.open_symbol = None
         state.open_ts = None
@@ -408,7 +447,7 @@ def _handle_exit(
     sizing = compute_order_quantities(
         symbol=symbol, buy_amount=0, sell_amount=plan.sell_amount,
         buy_price=buy_price, sell_price=sell_price,
-        quote_free=0, base_free=base_free, rules=rules,
+        quote_free=0, base_free=base_total, rules=rules,
     )
     if sizing.sell_qty > 0:
         spawn_watcher(WatcherPlan(
@@ -421,6 +460,90 @@ def _handle_exit(
         f"[selector] hold {symbol} ({hours:.1f}h) sell={sell_price:.4f}({sizing.sell_qty:.6f}) "
         f"amt={plan.sell_amount:.2f}"
     )
+
+
+def _handle_work_steal(
+    state: SelectorState,
+    actions: Dict[str, dict],
+    symbols: List[str],
+    *,
+    horizon: int,
+    risk_weight: float,
+    work_steal_min_profit_pct: float,
+    work_steal_min_edge: float,
+    work_steal_edge_margin: float,
+    min_gap_pct: float,
+    poll_seconds: int,
+    expiry_minutes: int,
+    price_tolerance: float,
+    dry_run: bool,
+    state_path: Path,
+) -> bool:
+    symbol = state.open_symbol
+    if not symbol or state.open_price <= 0:
+        return False
+    try:
+        ticker = {"price": binance_wrapper.get_symbol_price(symbol)}
+        market_price = float(ticker.get("price", 0))
+    except Exception:
+        return False
+    if market_price <= 0:
+        return False
+    unrealized_pct = (market_price - state.open_price) / state.open_price
+    if unrealized_pct < work_steal_min_profit_pct:
+        return False
+
+    candidates: List[Tuple[float, str]] = []
+    for sym, action in actions.items():
+        if sym == symbol:
+            continue
+        fee_rate = get_fee_for_symbol(sym)
+        edge = _compute_edge(action, horizon=horizon, fee_rate=fee_rate, risk_weight=risk_weight)
+        if edge >= work_steal_min_edge and edge >= unrealized_pct + work_steal_edge_margin:
+            candidates.append((edge, sym))
+
+    if not candidates:
+        return False
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best_edge, best_sym = candidates[0]
+    print(
+        f"[selector] WORK STEAL: selling {symbol} (profit={unrealized_pct:.4f}) "
+        f"to enter {best_sym} (edge={best_edge:.4f})"
+    )
+
+    try:
+        _, base_free = get_free_balances(symbol)
+    except Exception as exc:
+        print(f"[selector] work-steal failed to get balances for {symbol}: {exc}")
+        return False
+    if base_free <= 0:
+        return False
+
+    rules = resolve_symbol_rules(symbol)
+    sell_price = market_price * 0.999
+    validated = _ensure_valid_levels(symbol, sell_price * 0.99, sell_price, min_gap_pct=min_gap_pct, rules=rules)
+    if validated is None:
+        return False
+    _, sell_price = validated
+    sizing = compute_order_quantities(
+        symbol=symbol, buy_amount=0, sell_amount=100.0,
+        buy_price=sell_price, sell_price=sell_price,
+        quote_free=0, base_free=base_free, rules=rules,
+    )
+    if sizing.sell_qty > 0:
+        spawn_watcher(WatcherPlan(
+            symbol=symbol, side="sell", mode="exit",
+            limit_price=sell_price, target_qty=sizing.sell_qty,
+            expiry_minutes=min(5, expiry_minutes), poll_seconds=poll_seconds,
+            price_tolerance=price_tolerance * 3, dry_run=dry_run,
+        ))
+        print(f"[selector] work-steal exit {symbol} sell={sell_price:.4f} qty={sizing.sell_qty:.6f}")
+    state.open_symbol = None
+    state.open_ts = None
+    state.open_price = 0.0
+    state.save(state_path)
+    return True
 
 
 def _handle_entry(
@@ -457,6 +580,17 @@ def _handle_entry(
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     best_edge, best_symbol = candidates[0]
+
+    cancel_entry_watchers()
+    time.sleep(1)
+
+    try:
+        quote_free, _ = get_free_balances(best_symbol)
+    except Exception as exc:
+        print(f"[selector] failed to get balances: {exc}")
+        return
+
+    # Enter only the single best asset (matches simulator behavior)
     action = actions[best_symbol]
     plan = _build_plan(action, intensity_scale=intensity_scale)
     offset = price_offset_map.get(best_symbol, default_offset)
@@ -466,19 +600,13 @@ def _handle_entry(
     buy_price, sell_price = enforce_gap(best_symbol, buy_price, sell_price, min_gap_pct=min_gap_pct)
 
     if buy_price <= 0 or sell_price <= 0 or buy_price >= sell_price:
-        print(f"[selector] invalid prices for {best_symbol}: buy={buy_price:.4f} sell={sell_price:.4f}")
-        return
-
-    try:
-        quote_free, base_free = get_free_balances(best_symbol)
-    except Exception as exc:
-        print(f"[selector] failed to get balances for {best_symbol}: {exc}")
+        print(f"[selector] invalid prices for {best_symbol}")
         return
 
     rules = resolve_symbol_rules(best_symbol)
     validated = _ensure_valid_levels(best_symbol, buy_price, sell_price, min_gap_pct=min_gap_pct, rules=rules)
     if validated is None:
-        print(f"[selector] invalid quantized prices for {best_symbol}")
+        print(f"[selector] invalid levels for {best_symbol}")
         return
     buy_price, sell_price = validated
     sizing = compute_order_quantities(
@@ -493,14 +621,14 @@ def _handle_entry(
             expiry_minutes=expiry_minutes, poll_seconds=poll_seconds,
             price_tolerance=price_tolerance, dry_run=dry_run,
         ))
-        state.open_symbol = best_symbol
-        state.open_ts = datetime.now(timezone.utc).isoformat()
         state.open_price = buy_price
         state.save(state_path)
-    print(
-        f"[selector] ENTER {best_symbol} edge={best_edge:.6f} buy={buy_price:.4f}({sizing.buy_qty:.6f}) "
-        f"amt={plan.buy_amount:.2f} quote_free={quote_free:.2f}"
-    )
+        print(
+            f"[selector] ENTER {best_symbol} edge={best_edge:.6f} buy={buy_price:.4f}({sizing.buy_qty:.6f}) "
+            f"alloc={quote_free:.2f}"
+        )
+    else:
+        print("[selector] no valid entry order placed")
 
 
 def main() -> None:
@@ -525,6 +653,10 @@ def main() -> None:
     parser.add_argument("--log-metrics", action="store_true")
     parser.add_argument("--metrics-log-path", default=None)
     parser.add_argument("--state-path", default=str(STATE_FILE))
+    parser.add_argument("--work-steal", action="store_true")
+    parser.add_argument("--work-steal-min-profit-pct", type=float, default=0.001)
+    parser.add_argument("--work-steal-min-edge", type=float, default=0.005)
+    parser.add_argument("--work-steal-edge-margin", type=float, default=0.0)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -568,6 +700,10 @@ def main() -> None:
                 cache_only=args.cache_only,
                 dry_run=args.dry_run,
                 state_path=state_path,
+                work_steal=args.work_steal,
+                work_steal_min_profit_pct=args.work_steal_min_profit_pct,
+                work_steal_min_edge=args.work_steal_min_edge,
+                work_steal_edge_margin=args.work_steal_edge_margin,
             )
         except Exception as exc:
             print(f"[selector] cycle error: {exc}")

@@ -137,6 +137,10 @@ def main() -> None:
         choices=["independent", "shared_cash"],
         help="Simulation strategy when selector is unavailable.",
     )
+    parser.add_argument("--work-steal", action="store_true")
+    parser.add_argument("--work-steal-min-profit-pct", type=float, default=0.001)
+    parser.add_argument("--work-steal-min-edge", type=float, default=0.005)
+    parser.add_argument("--work-steal-edge-margin", type=float, default=0.0)
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
 
@@ -215,6 +219,10 @@ def main() -> None:
             max_hold_hours=args.max_hold_hours,
             symbols=symbols,
             allow_reentry_same_bar=args.allow_reentry_same_bar,
+            work_steal_enabled=args.work_steal,
+            work_steal_min_profit_pct=args.work_steal_min_profit_pct,
+            work_steal_min_edge=args.work_steal_min_edge,
+            work_steal_edge_margin=args.work_steal_edge_margin,
         )
         result = run_best_trade_simulation(bars, actions, sim_config, horizon=args.horizon)
 
@@ -224,6 +232,9 @@ def main() -> None:
         print(f"final_cash: {result.final_cash:.4f}")
         print(f"final_inventory: {result.final_inventory:.6f}")
         print(f"open_symbol: {result.open_symbol}")
+        n_trades = len(result.trades)
+        n_steals = sum(1 for t in result.trades if t.reason == "work_steal_exit")
+        print(f"n_trades: {n_trades}  n_work_steals: {n_steals}")
 
         if args.output_dir:
             output_dir = Path(args.output_dir)

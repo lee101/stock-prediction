@@ -239,4 +239,14 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
     return config_path
 
 
-__all__ = ["WatcherPlan", "spawn_watcher", "stop_existing_watcher", "watcher_config_path"]
+def cancel_entry_watchers(*, exclude_symbol: Optional[str] = None) -> None:
+    for path in WATCHERS_DIR.glob("*_buy_entry_*.json"):
+        metadata = _load_metadata(path)
+        if not metadata or not metadata.get("active"):
+            continue
+        if exclude_symbol and metadata.get("symbol") == exclude_symbol:
+            continue
+        stop_existing_watcher(path, reason="symbol_switched")
+
+
+__all__ = ["WatcherPlan", "spawn_watcher", "stop_existing_watcher", "watcher_config_path", "cancel_entry_watchers"]
