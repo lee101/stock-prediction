@@ -33,6 +33,12 @@ class SimulationConfig:
     allow_short: bool = False
     long_only_symbols: Optional[Sequence[str]] = None
     short_only_symbols: Optional[Sequence[str]] = None
+    # Realism: when >0, shift decision inputs (action columns) back by N bars per symbol so an
+    # action computed on bar t is executed on bar t+N.
+    #
+    # This matches the live hourly loop which computes an action on the latest completed bar
+    # then places orders for the next bar.
+    decision_lag_bars: int = 0
 
 
 @dataclass
@@ -537,7 +543,24 @@ class AlpacaMarketSimulator:
         missing = required - set(merged.columns)
         if missing:
             raise ValueError(f"Missing required columns in merged frame: {sorted(missing)}")
-        return merged.sort_values("timestamp").reset_index(drop=True)
+        merged = merged.sort_values("timestamp").reset_index(drop=True)
+        decision_lag_bars = int(getattr(self.config, "decision_lag_bars", 0) or 0)
+        if decision_lag_bars < 0:
+            raise ValueError(f"decision_lag_bars must be >= 0, got {self.config.decision_lag_bars}.")
+        if decision_lag_bars:
+            action_cols = ["buy_price", "sell_price", "buy_amount", "sell_amount", "trade_amount"]
+            shift_cols = [c for c in action_cols if c in merged.columns]
+            if shift_cols:
+                shifted = merged.groupby("symbol", sort=False)[shift_cols].shift(decision_lag_bars)
+                for col in shift_cols:
+                    merged[col] = shifted[col]
+                merged = merged.dropna(subset=shift_cols).reset_index(drop=True)
+            if merged.empty:
+                raise ValueError(
+                    "Merged dataframe is empty after applying decision_lag_bars; "
+                    "ensure the evaluation window contains more bars."
+                )
+        return merged
 
     def _extract_intensity(self, row: object) -> tuple[float, float]:
         buy_amount = getattr(row, "buy_amount", None)

@@ -74,6 +74,42 @@ def test_market_hours_block_trades_outside_session() -> None:
     assert len(result.trades) == 0
 
 
+def test_simulator_decision_lag_bars_shifts_actions_forward_one_bar() -> None:
+    symbol = "BTCUSD"
+    ts = [
+        datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 2, 0, tzinfo=timezone.utc),
+    ]
+    bars = _bars(symbol, ts, prices=[100.0, 100.0, 114.0])
+    actions = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "symbol": [symbol, symbol, symbol],
+            "buy_price": [100.0, 100.0, 100.0],
+            "sell_price": [112.0, 112.0, 112.0],
+            "buy_amount": [1.0, 0.0, 0.0],
+            "sell_amount": [0.0, 1.0, 0.0],
+        }
+    )
+
+    sim = AlpacaMarketSimulator(
+        SimulationConfig(
+            initial_cash=10_000.0,
+            enforce_market_hours=True,
+            close_at_eod=False,
+            fee_by_symbol={symbol: 0.0},
+            decision_lag_bars=1,
+        )
+    )
+    result = sim.run(bars, actions).per_symbol[symbol]
+    assert [t.side for t in result.trades] == ["buy", "sell"]
+    assert result.trades[0].timestamp == pd.to_datetime(ts[1], utc=True)
+    assert result.trades[1].timestamp == pd.to_datetime(ts[2], utc=True)
+    assert result.final_inventory == 0.0
+    assert result.final_cash == 11_200.0
+
+
 def test_eod_close_forces_flat_position() -> None:
     symbol = "AAPL"
     ts = [

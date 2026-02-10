@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 import torch
@@ -49,6 +49,15 @@ def _parse_float_map(raw: Optional[str]) -> Dict[str, float]:
     return parsed
 
 
+def _parse_int_tuple(raw: Optional[str]) -> Optional[Tuple[int, ...]]:
+    if raw is None:
+        return None
+    values = [token.strip() for token in raw.split(",") if token.strip()]
+    if not values:
+        return None
+    return tuple(int(v) for v in values)
+
+
 def _load_model(checkpoint_path: Path, input_dim: int, sequence_length: int) -> torch.nn.Module:
     payload = torch_load_compat(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = payload.get("state_dict", payload)
@@ -84,6 +93,16 @@ def _load_symbol_data(
     sequence_length: int,
     forecast_horizons: Sequence[int],
     cache_only: bool,
+    moving_average_windows: Tuple[int, ...],
+    ema_windows: Tuple[int, ...],
+    atr_windows: Tuple[int, ...],
+    trend_windows: Tuple[int, ...],
+    drawdown_windows: Tuple[int, ...],
+    volume_z_window: int,
+    volume_shock_window: int,
+    vol_regime_short: int,
+    vol_regime_long: int,
+    min_history_hours: int,
 ) -> AlpacaHourlyDataModule:
     data_root = crypto_root if is_crypto_symbol(symbol) else stock_root
     config = DatasetConfig(
@@ -93,6 +112,16 @@ def _load_symbol_data(
         sequence_length=sequence_length,
         forecast_horizons=tuple(int(h) for h in forecast_horizons),
         cache_only=cache_only,
+        moving_average_windows=moving_average_windows,
+        ema_windows=ema_windows,
+        atr_windows=atr_windows,
+        trend_windows=trend_windows,
+        drawdown_windows=drawdown_windows,
+        volume_z_window=volume_z_window,
+        volume_shock_window=volume_shock_window,
+        vol_regime_short=vol_regime_short,
+        vol_regime_long=vol_regime_long,
+        min_history_hours=min_history_hours,
     )
     return AlpacaHourlyDataModule(config)
 
@@ -129,6 +158,22 @@ def main() -> None:
     parser.add_argument("--allow-reentry-same-bar", action="store_true")
     parser.add_argument("--no-enforce-market-hours", action="store_true")
     parser.add_argument("--no-close-at-eod", action="store_true")
+    parser.add_argument(
+        "--decision-lag-bars",
+        type=int,
+        default=0,
+        help="Shift actions+forecast inputs back by N bars (live-like execution delay).",
+    )
+    parser.add_argument("--moving-average-windows", default=None)
+    parser.add_argument("--ema-windows", default=None)
+    parser.add_argument("--atr-windows", default=None)
+    parser.add_argument("--trend-windows", default=None)
+    parser.add_argument("--drawdown-windows", default=None)
+    parser.add_argument("--volume-z-window", type=int, default=None)
+    parser.add_argument("--volume-shock-window", type=int, default=None)
+    parser.add_argument("--vol-regime-short", type=int, default=None)
+    parser.add_argument("--vol-regime-long", type=int, default=None)
+    parser.add_argument("--min-history-hours", type=int, default=None)
     parser.add_argument("--eval-days", type=float, default=None, help="Limit evaluation to last N days")
     parser.add_argument("--eval-hours", type=float, default=None, help="Limit evaluation to last N hours")
     parser.add_argument("--output-dir", default=None)
@@ -151,6 +196,19 @@ def main() -> None:
     crypto_root = Path(args.crypto_data_root) if args.crypto_data_root else None
     stock_root = Path(args.stock_data_root) if args.stock_data_root else None
     forecast_cache_root = Path(args.forecast_cache_root)
+    base_cfg = DatasetConfig()
+    ma_windows = _parse_int_tuple(args.moving_average_windows) or base_cfg.moving_average_windows
+    ema_windows = _parse_int_tuple(args.ema_windows) or base_cfg.ema_windows
+    atr_windows = _parse_int_tuple(args.atr_windows) or base_cfg.atr_windows
+    trend_windows = _parse_int_tuple(args.trend_windows) or base_cfg.trend_windows
+    drawdown_windows = _parse_int_tuple(args.drawdown_windows) or base_cfg.drawdown_windows
+    volume_z_window = args.volume_z_window if args.volume_z_window is not None else base_cfg.volume_z_window
+    volume_shock_window = (
+        args.volume_shock_window if args.volume_shock_window is not None else base_cfg.volume_shock_window
+    )
+    vol_regime_short = args.vol_regime_short if args.vol_regime_short is not None else base_cfg.vol_regime_short
+    vol_regime_long = args.vol_regime_long if args.vol_regime_long is not None else base_cfg.vol_regime_long
+    min_history_hours = args.min_history_hours if args.min_history_hours is not None else base_cfg.min_history_hours
 
     bars_frames: List[pd.DataFrame] = []
     actions_frames: List[pd.DataFrame] = []
@@ -166,6 +224,16 @@ def main() -> None:
             sequence_length=args.sequence_length,
             forecast_horizons=forecast_horizons,
             cache_only=args.cache_only,
+            moving_average_windows=ma_windows,
+            ema_windows=ema_windows,
+            atr_windows=atr_windows,
+            trend_windows=trend_windows,
+            drawdown_windows=drawdown_windows,
+            volume_z_window=volume_z_window,
+            volume_shock_window=volume_shock_window,
+            vol_regime_short=vol_regime_short,
+            vol_regime_long=vol_regime_long,
+            min_history_hours=min_history_hours,
         )
         frame = data.val_dataset.frame.copy()
         if "symbol" not in frame.columns:
@@ -217,6 +285,7 @@ def main() -> None:
         allow_reentry_same_bar=args.allow_reentry_same_bar,
         enforce_market_hours=not args.no_enforce_market_hours,
         close_at_eod=not args.no_close_at_eod,
+        decision_lag_bars=args.decision_lag_bars,
         fee_by_symbol=fee_by_symbol,
         periods_per_year_by_symbol=periods_by_symbol,
     )
