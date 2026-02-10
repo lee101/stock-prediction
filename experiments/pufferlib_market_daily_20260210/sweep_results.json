@@ -1,0 +1,222 @@
+[
+  {
+    "run": "daily_mix8_h256_lr3e4_ent001_anneal",
+    "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_anneal/best.pt",
+    "metrics": {
+      "total_return": -0.015338574536144733,
+      "sortino": -0.2746567130088806,
+      "max_drawdown": 0.12391558289527893,
+      "num_trades": 1.0,
+      "win_rate": 0.0,
+      "avg_hold_hours": 49.999996185302734
+    },
+    "config": {
+      "name": "daily_mix8_h256_lr3e4_ent001_anneal",
+      "hidden_size": 256,
+      "arch": "mlp",
+      "lr": 0.0003,
+      "ent_coef": 0.01,
+      "anneal_lr": true,
+      "cash_penalty": 0.01,
+      "drawdown_penalty": 0.0
+    }
+  },
+  {
+    "run": "daily_mix8_h256_lr1e4_ent001_anneal",
+    "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr1e4_ent001_anneal/best.pt",
+    "metrics": {
+      "total_return": -0.015338574536144733,
+      "sortino": -0.2746567130088806,
+      "max_drawdown": 0.12391558289527893,
+      "num_trades": 1.0,
+      "win_rate": 0.0,
+      "avg_hold_hours": 49.999996185302734
+    },
+    "config": {
+      "name": "daily_mix8_h256_lr1e4_ent001_anneal",
+      "hidden_size": 256,
+      "arch": "mlp",
+      "lr": 0.0001,
+      "ent_coef": 0.01,
+      "anneal_lr": true,
+      "cash_penalty": 0.01,
+      "drawdown_penalty": 0.0
+    }
+  },
+  {
+    "run": "daily_mix8_h256_lr5e4_ent001_anneal",
+    "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr5e4_ent001_anneal/best.pt",
+    "metrics": {
+      "total_return": -0.348951131105423,
+      "sortino": -4.562211990356445,
+      "max_drawdown": 0.4365640878677368,
+      "num_trades": 22.0,
+      "win_rate": 0.3636363446712494,
+      "avg_hold_hours": 2.2727272510528564
+    },
+    "config": {
+      "name": "daily_mix8_h256_lr5e4_ent001_anneal",
+      "hidden_size": 256,
+      "arch": "mlp",
+      "lr": 0.0005,
+      "ent_coef": 0.01,
+      "anneal_lr": true,
+      "cash_penalty": 0.01,
+      "drawdown_penalty": 0.0
+    }
+  },
+  {
+    "run": "daily_mix8_h512_lr3e4_ent001_anneal",
+    "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h512_lr3e4_ent001_anneal/best.pt",
+    "metrics": {
+      "total_return": -0.0453556627035141,
+      "sortino": -1.4518710374832153,
+      "max_drawdown": 0.09316287189722061,
+      "num_trades": 12.0,
+      "win_rate": 0.5833333134651184,
+      "avg_hold_hours": 4.166666507720947
+    },
+    "config": {
+      "name": "daily_mix8_h512_lr3e4_ent001_anneal",
+      "hidden_size": 512,
+      "arch": "mlp",
+      "lr": 0.0003,
+      "ent_coef": 0.01,
+      "anneal_lr": true,
+      "cash_penalty": 0.01,
+      "drawdown_penalty": 0.0
+    }
+  },
+  {
+    "run": "daily_mix8_h1024_lr3e4_ent001_anneal",
+    "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h1024_lr3e4_ent001_anneal/best.pt",
+    "metrics": {
+      "total_return": -0.16000361740589142,
+      "sortino": -4.14082670211792,
+      "max_drawdown": 0.1952970176935196,
+      "num_trades": 15.0,
+      "win_rate": 0.46666663885116577,
+      "avg_hold_hours": 3.3333330154418945
+    },
+    "config": {
+      "name": "daily_mix8_h1024_lr3e4_ent001_anneal",
+      "hidden_size": 1024,
+      "arch": "mlp",
+      "lr": 0.0003,
+      "ent_coef": 0.01,
+      "anneal_lr": true,
+      "cash_penalty": 0.01,
+      "drawdown_penalty": 0.0
+    }
+  },
+  {
+    "run": "daily_mix8_h256_lr3e4_ent005_anneal",
+    "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent005_anneal/best.pt",
+    "metrics": {
+      "total_return": -0.015338574536144733,
+      "sortino": -0.2746567130088806,
+      "max_drawdown": 0.12391558289527893,
+      "num_trades": 1.0,
+      "win_rate": 0.0,
+      "avg_hold_hours": 49.999996185302734
+    },
+    "config": {
+      "name": "daily_mix8_h256_lr3e4_ent005_anneal",
+      "hidden_size": 256,
+      "arch": "mlp",
+      "lr": 0.0003,
+      "ent_coef": 0.05,
+      "anneal_lr": true,
+      "cash_penalty": 0.01,
+      "drawdown_penalty": 0.0
+    }
+  },
+  {
+    "run": "daily_mix8_h256_lr3e4_ent0005_anneal",
+    "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent0005_anneal/best.pt",
+    "metrics": {
+      "total_return": -0.3359743654727936,
+      "sortino": -4.7221360206604,
+      "max_drawdown": 0.4332508444786072,
+      "num_trades": 7.0,
+      "win_rate": 0.4285714030265808,
+      "avg_hold_hours": 7.142856597900391
+    },
+    "config": {
+      "name": "daily_mix8_h256_lr3e4_ent0005_anneal",
+      "hidden_size": 256,
+      "arch": "mlp",
+      "lr": 0.0003,
+      "ent_coef": 0.005,
+      "anneal_lr": true,
+      "cash_penalty": 0.01,
+      "drawdown_penalty": 0.0
+    }
+  },
+  {
+    "run": "daily_mix8_h256_lr3e4_ent001_noanneal",
+    "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_noanneal/best.pt",
+    "metrics": {
+      "total_return": 0.049748145043849945,
+      "sortino": 1.9067375659942627,
+      "max_drawdown": 0.11941598355770111,
+      "num_trades": 7.0,
+      "win_rate": 0.5714285373687744,
+      "avg_hold_hours": 7.142856597900391
+    },
+    "config": {
+      "name": "daily_mix8_h256_lr3e4_ent001_noanneal",
+      "hidden_size": 256,
+      "arch": "mlp",
+      "lr": 0.0003,
+      "ent_coef": 0.01,
+      "anneal_lr": false,
+      "cash_penalty": 0.01,
+      "drawdown_penalty": 0.0
+    }
+  },
+  {
+    "run": "daily_mix8_h256_lr3e4_ent001_dd01",
+    "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_dd01/best.pt",
+    "metrics": {
+      "total_return": -0.2894264757633209,
+      "sortino": -3.5827796459198,
+      "max_drawdown": 0.42744624614715576,
+      "num_trades": 25.0,
+      "win_rate": 0.47999998927116394,
+      "avg_hold_hours": 2.0
+    },
+    "config": {
+      "name": "daily_mix8_h256_lr3e4_ent001_dd01",
+      "hidden_size": 256,
+      "arch": "mlp",
+      "lr": 0.0003,
+      "ent_coef": 0.01,
+      "anneal_lr": true,
+      "cash_penalty": 0.01,
+      "drawdown_penalty": 0.1
+    }
+  },
+  {
+    "run": "daily_mix8_h256_lr3e4_ent001_cash0",
+    "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_cash0/best.pt",
+    "metrics": {
+      "total_return": -0.39278143644332886,
+      "sortino": -5.620905876159668,
+      "max_drawdown": 0.4397611618041992,
+      "num_trades": 3.0,
+      "win_rate": 0.0,
+      "avg_hold_hours": 16.66666603088379
+    },
+    "config": {
+      "name": "daily_mix8_h256_lr3e4_ent001_cash0",
+      "hidden_size": 256,
+      "arch": "mlp",
+      "lr": 0.0003,
+      "ent_coef": 0.01,
+      "anneal_lr": true,
+      "cash_penalty": 0.0,
+      "drawdown_penalty": 0.0
+    }
+  }
+]

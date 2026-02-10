@@ -63,6 +63,21 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     val = kwargs ? PyDict_GetItemString(kwargs, "max_leverage") : NULL;
     env->max_leverage = val ? (float)PyFloat_AsDouble(val) : 1.0f;
 
+    val = kwargs ? PyDict_GetItemString(kwargs, "periods_per_year") : NULL;
+    env->periods_per_year = val ? (float)PyFloat_AsDouble(val) : 8760.0f;
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "reward_scale") : NULL;
+    env->reward_scale = val ? (float)PyFloat_AsDouble(val) : 10.0f;
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "reward_clip") : NULL;
+    env->reward_clip = val ? (float)PyFloat_AsDouble(val) : 5.0f;
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "cash_penalty") : NULL;
+    env->cash_penalty = val ? (float)PyFloat_AsDouble(val) : 0.01f;
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "drawdown_penalty") : NULL;
+    env->drawdown_penalty = val ? (float)PyFloat_AsDouble(val) : 0.0f;
+
     int S = g_shared_data->num_symbols;
     env->obs_size = S * FEATURES_PER_SYM + 5 + S;
     env->num_actions = 1 + 2 * S;

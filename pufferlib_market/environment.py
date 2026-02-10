@@ -19,13 +19,23 @@ class TradingEnvConfig:
         max_steps: int = 720,       # 30 days
         fee_rate: float = 0.001,
         max_leverage: float = 1.0,
+        periods_per_year: float = 8760.0,
         num_symbols: int = 14,      # read from binary header, but needed for space defs
+        reward_scale: float = 10.0,
+        reward_clip: float = 5.0,
+        cash_penalty: float = 0.01,
+        drawdown_penalty: float = 0.0,
     ):
         self.data_path = str(Path(data_path).resolve())
         self.max_steps = max_steps
         self.fee_rate = fee_rate
         self.max_leverage = max_leverage
+        self.periods_per_year = float(periods_per_year)
         self.num_symbols = num_symbols
+        self.reward_scale = reward_scale
+        self.reward_clip = reward_clip
+        self.cash_penalty = cash_penalty
+        self.drawdown_penalty = drawdown_penalty
 
 
 def _load_binding():
@@ -64,6 +74,11 @@ class TradingEnv(GymnasiumPufferEnv):
             max_steps=config.max_steps,
             fee_rate=config.fee_rate,
             max_leverage=config.max_leverage,
+            periods_per_year=config.periods_per_year,
+            reward_scale=config.reward_scale,
+            reward_clip=config.reward_clip,
+            cash_penalty=config.cash_penalty,
+            drawdown_penalty=config.drawdown_penalty,
         )
 
     @staticmethod
