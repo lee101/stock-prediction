@@ -151,6 +151,26 @@ Training/eval on daily `trainingdata/train` with a 50-calendar-day holdout windo
 | 2026-02-10 | daily_mix8_h256_lr3e4_ent001_noanneal | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,AAPL,TSLA | 250k | 50d | 2025-12-17..2026-02-05 | **+0.0497** | **+1.91** | 0.1194 | 7 | Best of 10-run sweep at 250k steps. Policy mostly alternates **NVDA/TSLA long** during the holdout. Checkpoint: `experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_noanneal/best.pt`. Data: `experiments/pufferlib_market_daily_20260210/eval50d_mktd_v2.bin`. |
 | 2026-02-10 | daily_mix8_h256_lr3e4_ent001_noanneal_2M | BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD,NVDA,AAPL,TSLA | 2M | 50d | 2025-12-17..2026-02-05 | **+0.3773** | **+5.42** | 0.2848 | 26 | Extended training (2M steps, no anneal) massively improves holdout. Policy is very active, mostly trading **UNIUSD long/short** + some LINKUSD and TSLA long/short. Checkpoint: `experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_noanneal_2M/best.pt`. |
 
+### Daily → Hourly Replay (Execution + Double-Execution Stress Test)
+
+To catch “looks good on daily close-to-close” artifacts and measure higher-resolution risk, I added a replay evaluator:
+
+- CLI: `python -m pufferlib_market.replay_eval`
+- Core utils: `pufferlib_market/hourly_replay.py`
+- Experiment dir: `experiments/pufferlib_market_daily_hourly_replay_20260210/`
+
+Holdout: 2025-12-17..2026-02-05 (50 steps / 51 calendar days), checkpoint `experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_noanneal_2M/best.pt`.
+
+- **Daily eval (baseline, daily C-env dynamics)**: total_return **+0.3773**, sortino **+5.42**, max_drawdown **0.2848**, trades **26**.
+- **Hourly replay (frozen daily action trace, execute once/day at NYSE close; mark-to-market hourly)**:
+  - total_return **+0.2692**, hourly-sortino **+2.42**, max_drawdown **0.2856**
+  - num_orders **52** (open+close counted), max_orders_in_day **2**
+  - Report: `experiments/pufferlib_market_daily_hourly_replay_20260210/replay_report.json`
+- **Hourly policy stress test (call the *daily-trained* policy every hour; daily features frozen per day; portfolio fields update hourly)**:
+  - total_return **-0.1037**, hourly-sortino **-0.67**, max_drawdown **0.2786**
+  - num_orders **56**, max_orders_in_day **7** (shows real multi-execution/day thrash risk)
+  - Report: `experiments/pufferlib_market_daily_hourly_replay_20260210/replay_report_with_hourly_policy.json`
+
 ### Evaluation Results (deterministic, all random-start episodes)
 
 | Date (UTC) | Run | Symbols | Episode len | Eval mean return | Eval geom mean mult | Eval win rate | Eval 100% profitable? | Train best | Notes |
