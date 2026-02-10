@@ -51,6 +51,21 @@ def _write_mktd_v1_binary_single_symbol(path: Path, *, prices: list[float]) -> N
         f.write(prices_arr.tobytes(order="C"))
 
 
+def _write_mktd_v1_binary_single_symbol_with_tradable_mask(
+    path: Path,
+    *,
+    prices: list[float],
+    tradable_mask: list[int],
+) -> None:
+    """Write a v1 file with an appended tradable mask (supported for forward-compatibility)."""
+    if len(prices) != len(tradable_mask):
+        raise ValueError("prices and tradable_mask must have the same length")
+    _write_mktd_v1_binary_single_symbol(path, prices=prices)
+    mask = np.asarray(tradable_mask, dtype=np.uint8).reshape(len(tradable_mask), 1)
+    with open(path, "ab") as f:
+        f.write(mask.tobytes(order="C"))
+
+
 def test_downside_penalty_applies_on_negative_return(tmp_path: Path) -> None:
     data_path = tmp_path / "down_move.bin"
     _write_mktd_v1_binary_single_symbol(data_path, prices=[100.0, 90.0])
@@ -188,3 +203,70 @@ print(json.dumps(payload))
     assert payload["terminal"] == 1
     assert payload["reward"] == pytest.approx(-0.25, rel=0, abs=1e-8)
 
+
+def test_cash_penalty_not_applied_when_no_symbol_tradable(tmp_path: Path) -> None:
+    data_path = tmp_path / "not_tradable.bin"
+    _write_mktd_v1_binary_single_symbol_with_tradable_mask(data_path, prices=[100.0, 100.0], tradable_mask=[0, 0])
+
+    repo_root = Path(__file__).resolve().parents[1]
+    script = f"""
+import json
+import numpy as np
+
+import pufferlib_market.binding as binding
+
+data_path = {json.dumps(str(data_path))}
+binding.shared(data_path=data_path)
+
+num_envs = 1
+num_symbols = 1
+obs_size = num_symbols * 16 + 5 + num_symbols
+
+obs_buf = np.zeros((num_envs, obs_size), dtype=np.float32)
+act_buf = np.zeros((num_envs,), dtype=np.int32)
+rew_buf = np.zeros((num_envs,), dtype=np.float32)
+term_buf = np.zeros((num_envs,), dtype=np.uint8)
+trunc_buf = np.zeros((num_envs,), dtype=np.uint8)
+
+vec_handle = binding.vec_init(
+    obs_buf,
+    act_buf,
+    rew_buf,
+    term_buf,
+    trunc_buf,
+    num_envs,
+    123,
+    max_steps=1,
+    fee_rate=0.0,
+    max_leverage=1.0,
+    periods_per_year=365.0,
+    reward_scale=1.0,
+    reward_clip=100.0,
+    cash_penalty=0.5,
+    drawdown_penalty=0.0,
+    downside_penalty=0.0,
+    trade_penalty=0.0,
+)
+binding.vec_reset(vec_handle, 123)
+
+# action=0 => try to stay flat
+act_buf[:] = np.asarray([0], dtype=np.int32)
+binding.vec_step(vec_handle)
+
+payload = {{
+    "reward": float(rew_buf[0]),
+    "terminal": int(term_buf[0]),
+}}
+binding.vec_close(vec_handle)
+print(json.dumps(payload))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(repo_root),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(completed.stdout.strip())
+    assert payload["terminal"] == 1
+    assert payload["reward"] == pytest.approx(0.0, rel=0, abs=1e-9)

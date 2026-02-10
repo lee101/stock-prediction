@@ -314,6 +314,16 @@ void c_step(TradingEnv* env) {
         cur_sym = ag->position_sym % S;
         cur_tradable = is_tradable(md, t, cur_sym);
     }
+    int any_tradable = 1;
+    if (md->tradable != NULL) {
+        any_tradable = 0;
+        for (int i = 0; i < S; i++) {
+            if (is_tradable(md, t, i)) {
+                any_tradable = 1;
+                break;
+            }
+        }
+    }
 
     /* compute equity before action */
     float equity_before = compute_equity(env, t);
@@ -420,7 +430,7 @@ void c_step(TradingEnv* env) {
     if (reward < -clip) reward = -clip;
 
     /* small penalty for sitting in cash (opportunity cost) */
-    if (ag->position_sym < 0) {
+    if (ag->position_sym < 0 && any_tradable) {
         reward -= env->cash_penalty;
     }
 
