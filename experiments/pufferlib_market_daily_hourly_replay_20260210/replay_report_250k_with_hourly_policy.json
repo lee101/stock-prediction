@@ -1,0 +1,96 @@
+{
+  "checkpoint": "experiments/pufferlib_market_daily_20260210/checkpoints/daily_mix8_h256_lr3e4_ent001_noanneal/best.pt",
+  "daily": {
+    "annualized_return": 0.4253486348375133,
+    "avg_hold_steps": 7.142857142857143,
+    "max_drawdown": 0.11941604358339246,
+    "num_trades": 7,
+    "sortino": 1.90673619202464,
+    "total_return": 0.0497480649492516,
+    "win_rate": 0.5714285714285714
+  },
+  "daily_data_path": "experiments/pufferlib_market_daily_20260210/eval50d_mktd_v2.bin",
+  "date_range": {
+    "end": "2026-02-05",
+    "start": "2025-12-17"
+  },
+  "hourly_data_root": "trainingdatahourly",
+  "hourly_policy": {
+    "annualized_return": -0.5561048142961166,
+    "max_drawdown": 0.1499445208249081,
+    "max_orders_in_day": 3,
+    "mean_orders_per_day": 0.35294117647058826,
+    "nonzero_order_days": 9,
+    "num_orders": 18,
+    "num_trades": 9,
+    "sortino": -0.9393170381725817,
+    "top_order_days": [
+      {
+        "date": "2025-12-17",
+        "orders": 3
+      },
+      {
+        "date": "2025-12-18",
+        "orders": 2
+      },
+      {
+        "date": "2026-01-02",
+        "orders": 2
+      },
+      {
+        "date": "2026-01-05",
+        "orders": 2
+      },
+      {
+        "date": "2026-01-21",
+        "orders": 2
+      }
+    ],
+    "total_return": -0.10529008249265007,
+    "win_rate": 0.3333333333333333
+  },
+  "hourly_replay": {
+    "annualized_return": 0.9405140360494375,
+    "max_drawdown": 0.0885359357666187,
+    "max_orders_in_day": 2,
+    "mean_orders_per_day": 0.27450980392156865,
+    "nonzero_order_days": 8,
+    "num_orders": 14,
+    "num_trades": 7,
+    "sortino": 1.042111668744275,
+    "top_order_days": [
+      {
+        "date": "2026-01-02",
+        "orders": 2
+      },
+      {
+        "date": "2026-01-05",
+        "orders": 2
+      },
+      {
+        "date": "2026-01-21",
+        "orders": 2
+      },
+      {
+        "date": "2026-01-22",
+        "orders": 2
+      },
+      {
+        "date": "2026-01-30",
+        "orders": 2
+      }
+    ],
+    "total_return": 0.09506691001723756,
+    "win_rate": 0.5714285714285714
+  },
+  "symbols": [
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "LINKUSD",
+    "UNIUSD",
+    "NVDA",
+    "AAPL",
+    "TSLA"
+  ]
+}
