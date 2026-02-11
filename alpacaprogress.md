@@ -141,6 +141,20 @@ Pure C environment with PufferLib 3.0 Ocean binding. PPO training, 64 envs. Rewa
 - Without this lag, the simulator can implicitly trade using information from the same bar it fills on (optimistic / lookahead-like), inflating returns.
 - Use `--decision-lag-bars 1` in `newnanoalpacahourlyexp/run_multiasset_selector.py` (and `run_experiment.py` / `sweep.py`) for realistic reporting.
 
+### 2026-02-11 Critical Fix (Hourly Selector Sim: Fillability Lookahead)
+
+- Fixed optimistic candidate selection in `newnanoalpacahourlyexp/marketsimulator/selector.py`: the legacy simulator filtered entry candidates by same-bar fillability (`low <= buy_price` / `high >= sell_price`) before ranking by edge. This uses future bar high/low at decision time and can materially inflate reported selector returns.
+- Added `SelectionConfig.select_fillable_only` (default True for backwards-compat) and `--realistic-selection` in `newnanoalpacahourlyexp/run_multiasset_selector.py` so sims can select purely by edge score, then simulate whether the chosen limit order actually fills.
+- Under realistic selection (Crypto5 + Mixed7 `epoch_003.pt`, `decision_lag_bars=1`), the old prod-style config is negative:
+  - `intensity=2.0`, `min_edge=0.01`, `risk_weight=0.3`: 30d `total_return=-0.0357`, 60d `-0.1503`, 90d `-0.1591`
+- Re-tuned config under realistic selection:
+  - `intensity=2.0`, `price_offset_pct=-0.0005`, `min_edge=0.02`, `risk_weight=0.15`, `edge_mode=high_low`
+  - 30d: `total_return=+0.0517`, `sortino=+1.2249` (outputs: `experiments/selector_sim_crypto5_mixed7_epoch003_lag1_eval30d_rw015_int2_offn0005_minedge02_mh24_realistic_20260211/`)
+  - 60d: `total_return=+0.0516`, `sortino=+0.6266` (outputs: `experiments/selector_sim_crypto5_mixed7_epoch003_lag1_eval60d_rw015_int2_offn0005_minedge02_mh24_realistic_20260211/`)
+  - 90d: `total_return=+0.0514`, `sortino=+0.5323` (outputs: `experiments/selector_sim_crypto5_mixed7_epoch003_lag1_eval90d_rw015_int2_offn0005_minedge02_mh24_realistic_20260211/`)
+- Updated live `alpaca-hourly-trader.service` (2026-02-11) to use: `--min-edge 0.02 --risk-weight 0.15 --price-offset-pct=-0.0005`.
+- Fixed live Alpaca order/position symbol normalization (`BTCUSD` vs Alpaca `BTC/USD`) so stale tracked orders are canceled correctly (prevents cash being locked by old orders and avoids "insufficient balance" loops).
+
 ### 2026-02-10 New: Live Hourly Trader vs Shared-Cash Backtest (Prod Mismatch)
 
 - Prod is running `newnanoalpacahourlyexp.trade_alpaca_hourly` (multi-symbol loop), but most historical results here were **selector** sims.
@@ -148,7 +162,7 @@ Pure C environment with PufferLib 3.0 Ocean binding. PPO training, 64 envs. Rewa
 - With prod-style settings (Mixed7 `epoch_003.pt`, symbols `SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX`, `decision_lag_bars=1`, `intensity_scale=2.0`), the shared-cash sim is **negative over 30d**:
   - 30d: `total_return=-0.1016`, `sortino=-5.8142` (outputs: `experiments/hourly_trader_sim_data_20260210_eval30d/`)
   - Parameter tuning via `experiments/hourly_trader_sim_data_20260210_eval30d/run_sweep.py` improves losses but does not find a profitable config on this 30d window.
-- A realistic (lagged) selector with an edge threshold is much more robust in the same down window:
+- A lagged selector with an edge threshold looked much more robust in the same down window under the legacy (fillable-only) selector sim (optimistic; see 2026-02-11 fix above):
   - Crypto5 (`BTCUSD,ETHUSD,SOLUSD,LINKUSD,UNIUSD`), `decision_lag_bars=1`, `risk_weight=0.3`, `min_edge=0.01`, `intensity=2.0`:
     - 30d: `total_return=+0.2119`, `sortino=+4.2898` (outputs: `experiments/selector_sim_crypto5_mixed7_epoch003_lag1_eval30d_rw03_int2_minedge01_20260210/`)
     - 60d: `total_return=+0.0850`, `sortino=+0.9979`

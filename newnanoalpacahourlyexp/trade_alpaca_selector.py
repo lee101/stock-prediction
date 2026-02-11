@@ -17,6 +17,8 @@ from binanceneural.model import align_state_dict_input_dim, build_policy, policy
 from src.allocation_utils import allocation_usd_for_symbol
 from src.hourly_data_refresh import HourlyDataRefresher
 from src.hourly_data_utils import HourlyDataValidator
+from src.comparisons import normalize_side
+from src.stock_utils import unmap_symbols
 from src.symbol_utils import is_crypto_symbol
 from src.torch_device_utils import require_cuda as require_cuda_device
 from src.torch_load_utils import torch_load_compat
@@ -61,6 +63,11 @@ def _parse_int_tuple(raw: Optional[str]) -> Optional[Tuple[int, ...]]:
     if not values:
         return None
     return tuple(int(v) for v in values)
+
+
+def _canonical_symbol(raw: object) -> str:
+    """Normalize Alpaca symbols so BTCUSD and BTC/USD compare equal."""
+    return unmap_symbols(str(raw or "")).replace("-", "").replace("/", "").strip().upper()
 
 
 def _seconds_until_next_hour(buffer_seconds: int = 30) -> float:
@@ -194,6 +201,33 @@ def _should_force_eod_close(symbol: str, clock, *, close_at_eod: bool, buffer_mi
     if ts is None or next_close is None:
         return False
     return (next_close - ts) <= timedelta(minutes=buffer_minutes)
+
+
+def _infer_close_side(position, *, symbol: str) -> str:
+    """Infer the order side needed to close a position.
+
+    Alpaca position objects typically expose a ``side`` field ("long"/"short"), but we have
+    observed cases (notably crypto) where the attribute can be missing or empty. This helper
+    falls back to market_value sign and crypto constraints so the selector can safely enforce
+    its "one tracked position at a time" invariant.
+    """
+    sym = (symbol or str(getattr(position, "symbol", "") or "")).upper()
+    side_raw = normalize_side(getattr(position, "side", None))
+    if side_raw in {"short", "sell"}:
+        return "buy"
+    if side_raw in {"long", "buy"}:
+        return "sell"
+
+    # Fallback: crypto cannot be short in Alpaca; treat as long and close with sell.
+    if is_crypto_symbol(sym):
+        return "sell"
+
+    # Last resort: infer from signed market_value if available.
+    try:
+        mv = float(getattr(position, "market_value", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        mv = 0.0
+    return "buy" if mv < 0 else "sell"
 
 
 def _build_candidate(
@@ -362,8 +396,8 @@ def _run_cycle(
     positions = alpaca_wrapper.get_all_positions()
     open_orders = alpaca_wrapper.get_orders()
 
-    tracked = {sym.upper() for sym in symbols}
-    tracked_positions = [pos for pos in positions if str(getattr(pos, "symbol", "")).upper() in tracked]
+    tracked = {_canonical_symbol(sym) for sym in symbols}
+    tracked_positions = [pos for pos in positions if _canonical_symbol(getattr(pos, "symbol", "")) in tracked]
 
     open_symbol = None
     open_position = None
@@ -372,7 +406,7 @@ def _run_cycle(
             tracked_positions,
             key=lambda pos: abs(float(getattr(pos, "market_value", 0.0) or 0.0)),
         )
-        open_symbol = str(getattr(open_position, "symbol", "")).upper()
+        open_symbol = _canonical_symbol(getattr(open_position, "symbol", ""))
         if len(tracked_positions) > 1:
             logger.warning(
                 "Multiple open positions detected (%s). Managing %s only.",
@@ -381,10 +415,16 @@ def _run_cycle(
             )
 
     if open_orders:
+        # Avoid unnecessarily canceling the current symbol's working exit order.
+        # We still aggressively clear stale orders for other tracked symbols so cash is free
+        # for the selector's next decision.
         for order in open_orders:
-            symbol = str(getattr(order, "symbol", "")).upper()
-            if symbol in tracked:
-                alpaca_wrapper.cancel_order(order)
+            symbol = _canonical_symbol(getattr(order, "symbol", ""))
+            if symbol not in tracked:
+                continue
+            if open_symbol and symbol == open_symbol:
+                continue
+            alpaca_wrapper.cancel_order(order)
 
     clock = alpaca_wrapper.get_clock()
 
@@ -393,7 +433,7 @@ def _run_cycle(
     model: Optional[torch.nn.Module] = None
 
     for symbol in symbols:
-        symbol = symbol.upper()
+        symbol = _canonical_symbol(symbol)
         if not is_crypto_symbol(symbol) and not getattr(clock, "is_open", True):
             logger.info("Market closed; skipping %s", symbol)
             continue
@@ -457,14 +497,13 @@ def _run_cycle(
     # If multiple positions are open, flatten the non-primary ones first.
     if tracked_positions and len(tracked_positions) > 1 and open_symbol:
         for pos in tracked_positions:
-            sym = str(getattr(pos, "symbol", "")).upper()
+            sym = _canonical_symbol(getattr(pos, "symbol", ""))
             if not sym or sym == open_symbol:
                 continue
             qty = abs(float(getattr(pos, "qty", 0.0) or 0.0))
             if qty <= 0:
                 continue
-            pos_side_raw = str(getattr(pos, "side", "")).lower()
-            side = "sell" if pos_side_raw in {"long", "buy"} else "buy"
+            side = _infer_close_side(pos, symbol=sym)
             cand = candidates.get(sym)
             price = None
             if cand is not None:
@@ -475,7 +514,9 @@ def _run_cycle(
             logger.warning("Flattening extra position %s qty=%.6f side=%s force_eod=%s", sym, qty, side, force_close)
             if dry_run:
                 continue
-            if force_close or price <= 0:
+            if is_crypto_symbol(sym):
+                alpaca_wrapper.open_market_order_violently(sym, qty, side)
+            elif force_close or price <= 0:
                 alpaca_wrapper.open_market_order_violently(sym, qty, side)
             else:
                 alpaca_wrapper.open_order_at_price_or_all(sym, qty, side, float(price))
