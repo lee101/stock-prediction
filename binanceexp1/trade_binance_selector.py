@@ -590,45 +590,79 @@ def _handle_entry(
         print(f"[selector] failed to get balances: {exc}")
         return
 
-    # Enter only the single best asset (matches simulator behavior)
-    action = actions[best_symbol]
-    plan = _build_plan(action, intensity_scale=intensity_scale)
-    offset = price_offset_map.get(best_symbol, default_offset)
-    buy_price = plan.buy_price * (1.0 - offset)
-    sell_price = plan.sell_price * (1.0 + offset)
-    buy_price, sell_price = enforce_min_spread(buy_price, sell_price, min_spread_pct=min_gap_pct)
-    buy_price, sell_price = enforce_gap(best_symbol, buy_price, sell_price, min_gap_pct=min_gap_pct)
-
-    if buy_price <= 0 or sell_price <= 0 or buy_price >= sell_price:
-        print(f"[selector] invalid prices for {best_symbol}")
+    # Place entry orders for all candidates, splitting quote balance across them.
+    # This avoids relying on ex-post fillability and improves fill odds vs single-symbol entry.
+    quote_free_total = float(quote_free or 0.0)
+    per_candidate_quote = quote_free_total / float(len(candidates)) if quote_free_total > 0 and candidates else 0.0
+    if per_candidate_quote <= 0:
+        print("[selector] no quote balance available, staying flat")
         return
 
-    rules = resolve_symbol_rules(best_symbol)
-    validated = _ensure_valid_levels(best_symbol, buy_price, sell_price, min_gap_pct=min_gap_pct, rules=rules)
-    if validated is None:
-        print(f"[selector] invalid levels for {best_symbol}")
-        return
-    buy_price, sell_price = validated
-    sizing = compute_order_quantities(
-        symbol=best_symbol, buy_amount=plan.buy_amount, sell_amount=0,
-        buy_price=buy_price, sell_price=sell_price,
-        quote_free=quote_free, base_free=0, rules=rules,
-    )
-    if sizing.buy_qty > 0:
-        spawn_watcher(WatcherPlan(
-            symbol=best_symbol, side="buy", mode="entry",
-            limit_price=buy_price, target_qty=sizing.buy_qty,
-            expiry_minutes=expiry_minutes, poll_seconds=poll_seconds,
-            price_tolerance=price_tolerance, dry_run=dry_run,
-        ))
-        state.open_price = buy_price
-        state.save(state_path)
-        print(
-            f"[selector] ENTER {best_symbol} edge={best_edge:.6f} buy={buy_price:.4f}({sizing.buy_qty:.6f}) "
-            f"alloc={quote_free:.2f}"
+    best_buy_price = 0.0
+    placed = 0
+
+    for edge, symbol in candidates:
+        action = actions.get(symbol)
+        if not action:
+            continue
+        plan = _build_plan(action, intensity_scale=intensity_scale)
+        offset = price_offset_map.get(symbol, default_offset)
+        buy_price = plan.buy_price * (1.0 - offset)
+        sell_price = plan.sell_price * (1.0 + offset)
+        buy_price, sell_price = enforce_min_spread(buy_price, sell_price, min_spread_pct=min_gap_pct)
+        buy_price, sell_price = enforce_gap(symbol, buy_price, sell_price, min_gap_pct=min_gap_pct)
+
+        if buy_price <= 0 or sell_price <= 0 or buy_price >= sell_price:
+            print(f"[selector] invalid prices for {symbol}")
+            continue
+
+        rules = resolve_symbol_rules(symbol)
+        validated = _ensure_valid_levels(symbol, buy_price, sell_price, min_gap_pct=min_gap_pct, rules=rules)
+        if validated is None:
+            print(f"[selector] invalid levels for {symbol}")
+            continue
+        buy_price, sell_price = validated
+
+        sizing = compute_order_quantities(
+            symbol=symbol,
+            buy_amount=plan.buy_amount,
+            sell_amount=0,
+            buy_price=buy_price,
+            sell_price=sell_price,
+            quote_free=per_candidate_quote,
+            base_free=0,
+            rules=rules,
         )
-    else:
-        print("[selector] no valid entry order placed")
+        if sizing.buy_qty <= 0:
+            continue
+        spawn_watcher(
+            WatcherPlan(
+                symbol=symbol,
+                side="buy",
+                mode="entry",
+                limit_price=buy_price,
+                target_qty=sizing.buy_qty,
+                expiry_minutes=expiry_minutes,
+                poll_seconds=poll_seconds,
+                price_tolerance=price_tolerance,
+                dry_run=dry_run,
+            )
+        )
+        placed += 1
+        if symbol == best_symbol:
+            best_buy_price = buy_price
+        print(
+            f"[selector] ENTER {symbol} edge={edge:.6f} buy={buy_price:.4f}({sizing.buy_qty:.6f}) "
+            f"alloc={per_candidate_quote:.2f}"
+        )
+
+    if placed <= 0:
+        print("[selector] no valid entry orders placed")
+        return
+
+    if best_buy_price > 0:
+        state.open_price = best_buy_price
+        state.save(state_path)
 
 
 def main() -> None:

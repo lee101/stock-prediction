@@ -228,6 +228,130 @@ def test_selector_skips_buy_when_price_never_trades_through():
     assert math.isclose(result.final_cash, 10_000.0, rel_tol=0, abs_tol=1e-9)
 
 
+def test_selector_realistic_mode_does_not_use_fillability_for_symbol_selection() -> None:
+    ts = pd.to_datetime(
+        [
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T01:00:00Z",
+        ],
+        utc=True,
+    )
+    bars = pd.DataFrame(
+        [
+            # t0: AAA has higher edge but does not fill (low above buy_price).
+            {
+                "timestamp": ts[0],
+                "symbol": "AAAUSD",
+                "open": 130.0,
+                "high": 140.0,
+                "low": 120.0,
+                "close": 130.0,
+                "volume": 1e9,
+                "predicted_high_p50_h1": 200.0,
+                "predicted_low_p50_h1": 90.0,
+                "predicted_close_p50_h1": 130.0,
+            },
+            # t0: BBB has lower edge but would fill.
+            {
+                "timestamp": ts[0],
+                "symbol": "BBBUSD",
+                "open": 130.0,
+                "high": 140.0,
+                "low": 99.0,
+                "close": 130.0,
+                "volume": 1e9,
+                "predicted_high_p50_h1": 105.0,
+                "predicted_low_p50_h1": 95.0,
+                "predicted_close_p50_h1": 130.0,
+            },
+            # t1: allow BBB to exit if it entered; disable entries.
+            {
+                "timestamp": ts[1],
+                "symbol": "AAAUSD",
+                "open": 130.0,
+                "high": 140.0,
+                "low": 120.0,
+                "close": 130.0,
+                "volume": 1e9,
+                "predicted_high_p50_h1": 200.0,
+                "predicted_low_p50_h1": 90.0,
+                "predicted_close_p50_h1": 130.0,
+            },
+            {
+                "timestamp": ts[1],
+                "symbol": "BBBUSD",
+                "open": 130.0,
+                "high": 115.0,
+                "low": 100.0,
+                "close": 114.0,
+                "volume": 1e9,
+                "predicted_high_p50_h1": 105.0,
+                "predicted_low_p50_h1": 95.0,
+                "predicted_close_p50_h1": 114.0,
+            },
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "timestamp": ts[0],
+                "symbol": "AAAUSD",
+                "buy_price": 100.0,
+                "sell_price": 150.0,
+                "buy_amount": 1.0,
+                "sell_amount": 0.0,
+            },
+            {
+                "timestamp": ts[0],
+                "symbol": "BBBUSD",
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 1.0,
+                "sell_amount": 0.0,
+            },
+            {
+                "timestamp": ts[1],
+                "symbol": "AAAUSD",
+                "buy_price": 100.0,
+                "sell_price": 150.0,
+                "buy_amount": 0.0,
+                "sell_amount": 0.0,
+            },
+            {
+                "timestamp": ts[1],
+                "symbol": "BBBUSD",
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 0.0,
+                "sell_amount": 1.0,
+            },
+        ]
+    )
+
+    base_cfg = SelectionConfig(
+        initial_cash=10_000.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=False,
+        close_at_eod=False,
+        fee_by_symbol={"AAAUSD": 0.0, "BBBUSD": 0.0},
+        periods_per_year_by_symbol={"AAAUSD": 24 * 365, "BBBUSD": 24 * 365},
+        symbols=["AAAUSD", "BBBUSD"],
+    )
+
+    legacy = run_best_trade_simulation(bars, actions, base_cfg, horizon=1)
+    assert [t.side for t in legacy.trades] == ["buy", "sell"]
+    assert legacy.open_symbol is None
+    assert legacy.final_cash > 10_000.0
+
+    realistic_cfg = SelectionConfig(**{**base_cfg.__dict__, "select_fillable_only": False})
+    realistic = run_best_trade_simulation(bars, actions, realistic_cfg, horizon=1)
+    assert realistic.trades == []
+    assert realistic.open_symbol is None
+    assert math.isclose(realistic.final_cash, 10_000.0, rel_tol=0, abs_tol=1e-9)
+
+
 def test_selector_applies_fees_on_round_trip():
     fee = 0.001
     bars, actions = _make_two_step_frames(
