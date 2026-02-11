@@ -21,9 +21,10 @@ ExecStart=/nvme0n1-disk/code/stock-prediction/.venv313/bin/python -m newnanoalpa
   --forecast-cache-root /nvme0n1-disk/code/stock-prediction/binanceneural/forecast_cache \
   --allocation-pct 1.0 \
   --intensity-scale 2.0 \
+  --price-offset-pct=-0.0005 \
   --min-gap-pct 0.001 \
-  --min-edge 0.01 \
-  --risk-weight 0.3 \
+  --min-edge 0.02 \
+  --risk-weight 0.15 \
   --edge-mode high_low \
   --moving-average-windows 24,72 \
   --ema-windows 24,72 \

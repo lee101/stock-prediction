@@ -164,6 +164,14 @@ def main() -> None:
         default=0,
         help="Shift actions+forecast inputs back by N bars (live-like execution delay).",
     )
+    parser.add_argument(
+        "--realistic-selection",
+        action="store_true",
+        help=(
+            "Select entry candidates by edge score only, then simulate whether the chosen limit order fills. "
+            "When omitted, the legacy simulator only considers 'fillable' candidates (optimistic)."
+        ),
+    )
     parser.add_argument("--moving-average-windows", default=None)
     parser.add_argument("--ema-windows", default=None)
     parser.add_argument("--atr-windows", default=None)
@@ -286,6 +294,7 @@ def main() -> None:
         enforce_market_hours=not args.no_enforce_market_hours,
         close_at_eod=not args.no_close_at_eod,
         decision_lag_bars=args.decision_lag_bars,
+        select_fillable_only=not bool(args.realistic_selection),
         fee_by_symbol=fee_by_symbol,
         periods_per_year_by_symbol=periods_by_symbol,
     )
@@ -301,6 +310,25 @@ def main() -> None:
     if args.output_dir:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        horizon_int = int(args.horizon)
+        forecast_cols = [
+            f"predicted_high_p50_h{horizon_int}",
+            f"predicted_low_p50_h{horizon_int}",
+            f"predicted_close_p50_h{horizon_int}",
+        ]
+        bar_cols = ["timestamp", "symbol", "high", "low", "close"]
+        if "volume" in bars.columns:
+            bar_cols.append("volume")
+        for col in forecast_cols:
+            if col in bars.columns:
+                bar_cols.append(col)
+        bars[bar_cols].to_csv(output_dir / "bars.csv", index=False)
+
+        action_cols = ["timestamp", "symbol", "buy_price", "sell_price", "buy_amount", "sell_amount"]
+        if "trade_amount" in actions.columns:
+            action_cols.append("trade_amount")
+        actions[action_cols].to_csv(output_dir / "actions.csv", index=False)
+
         result.per_hour.to_csv(output_dir / "selector_per_hour.csv", index=False)
         trades_df = pd.DataFrame([t.__dict__ for t in result.trades])
         trades_df.to_csv(output_dir / "selector_trades.csv", index=False)
