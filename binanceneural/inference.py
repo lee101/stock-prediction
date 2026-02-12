@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
@@ -20,7 +20,7 @@ def generate_actions_from_frame(
     normalizer: FeatureNormalizer,
     sequence_length: int,
     horizon: int = 1,
-    device: Optional[torch.device] = None,
+    device: torch.device | None = None,
     require_gpu: bool = False,
 ) -> pd.DataFrame:
     """Generate per-hour trading actions from a prepared feature frame."""
@@ -50,7 +50,7 @@ def generate_actions_from_frame(
     chronos_low = frame[low_col].to_numpy(dtype=np.float32)
 
     actions = []
-    with torch.no_grad():
+    with torch.inference_mode():
         for idx in range(sequence_length - 1, len(frame)):
             start = idx - sequence_length + 1
             end = idx + 1
@@ -90,7 +90,7 @@ def generate_latest_action(
     normalizer: FeatureNormalizer,
     sequence_length: int,
     horizon: int = 1,
-    device: Optional[torch.device] = None,
+    device: torch.device | None = None,
     require_gpu: bool = False,
 ) -> dict:
     """Generate a single latest action from the most recent sequence window."""
