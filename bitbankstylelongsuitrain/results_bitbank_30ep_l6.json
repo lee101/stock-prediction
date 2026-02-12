@@ -1,0 +1,163 @@
+{
+  "epochs": 30,
+  "hidden_dim": 256,
+  "n_layers": 6,
+  "run_name": "bitbank_30ep_l6",
+  "result": {
+    "total_return": 0.40975516650362165,
+    "sortino": 215.60869223143825,
+    "final_equity": 14097.59603928099
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "val_sortino": 255.33330281575522,
+      "val_return": 4.544771194458008
+    },
+    {
+      "epoch": 2,
+      "val_sortino": 324.5904184977214,
+      "val_return": 3.355692148208618
+    },
+    {
+      "epoch": 3,
+      "val_sortino": 374.2820638020833,
+      "val_return": 4.194223880767822
+    },
+    {
+      "epoch": 4,
+      "val_sortino": 335.632817586263,
+      "val_return": 3.6124404271443686
+    },
+    {
+      "epoch": 5,
+      "val_sortino": 368.2146708170573,
+      "val_return": 4.805986245473226
+    },
+    {
+      "epoch": 6,
+      "val_sortino": 360.51475524902344,
+      "val_return": 6.219224611918132
+    },
+    {
+      "epoch": 7,
+      "val_sortino": 188.76965840657553,
+      "val_return": 4.458405335744222
+    },
+    {
+      "epoch": 8,
+      "val_sortino": 293.10879770914715,
+      "val_return": 6.836119969685872
+    },
+    {
+      "epoch": 9,
+      "val_sortino": 331.26967366536456,
+      "val_return": 9.938836415608725
+    },
+    {
+      "epoch": 10,
+      "val_sortino": 333.6593526204427,
+      "val_return": 7.114018599192302
+    },
+    {
+      "epoch": 11,
+      "val_sortino": 281.8311360677083,
+      "val_return": 8.468566099802652
+    },
+    {
+      "epoch": 12,
+      "val_sortino": 272.95656331380206,
+      "val_return": 8.717264652252197
+    },
+    {
+      "epoch": 13,
+      "val_sortino": 217.36215209960938,
+      "val_return": 6.722592035929362
+    },
+    {
+      "epoch": 14,
+      "val_sortino": 290.09193420410156,
+      "val_return": 8.181538422902426
+    },
+    {
+      "epoch": 15,
+      "val_sortino": 370.58414459228516,
+      "val_return": 8.567659378051758
+    },
+    {
+      "epoch": 16,
+      "val_sortino": 274.89515431722003,
+      "val_return": 8.183349132537842
+    },
+    {
+      "epoch": 17,
+      "val_sortino": 270.9654032389323,
+      "val_return": 8.551199913024902
+    },
+    {
+      "epoch": 18,
+      "val_sortino": 267.17454020182294,
+      "val_return": 10.448164463043213
+    },
+    {
+      "epoch": 19,
+      "val_sortino": 248.65221150716147,
+      "val_return": 12.418359756469727
+    },
+    {
+      "epoch": 20,
+      "val_sortino": 340.1200358072917,
+      "val_return": 7.711266994476318
+    },
+    {
+      "epoch": 21,
+      "val_sortino": 323.5841827392578,
+      "val_return": 12.843138058980307
+    },
+    {
+      "epoch": 22,
+      "val_sortino": 456.8641001383464,
+      "val_return": 12.219161987304688
+    },
+    {
+      "epoch": 23,
+      "val_sortino": 361.3000793457031,
+      "val_return": 11.445123672485352
+    },
+    {
+      "epoch": 24,
+      "val_sortino": 312.7232411702474,
+      "val_return": 8.20726744333903
+    },
+    {
+      "epoch": 25,
+      "val_sortino": 220.1565144856771,
+      "val_return": 12.393423557281494
+    },
+    {
+      "epoch": 26,
+      "val_sortino": 229.66851298014322,
+      "val_return": 12.160414059956869
+    },
+    {
+      "epoch": 27,
+      "val_sortino": 272.8407440185547,
+      "val_return": 10.6149320602417
+    },
+    {
+      "epoch": 28,
+      "val_sortino": 362.8195622762044,
+      "val_return": 10.446332772572836
+    },
+    {
+      "epoch": 29,
+      "val_sortino": 333.8682352701823,
+      "val_return": 11.986935138702393
+    },
+    {
+      "epoch": 30,
+      "val_sortino": 204.6601104736328,
+      "val_return": 11.845196882883707
+    }
+  ]
+}
