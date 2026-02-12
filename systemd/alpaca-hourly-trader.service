@@ -20,6 +20,7 @@ ExecStart=/nvme0n1-disk/code/stock-prediction/.venv313/bin/python -m newnanoalpa
   --stock-data-root /nvme0n1-disk/code/stock-prediction/trainingdatahourly/stocks \
   --forecast-cache-root /nvme0n1-disk/code/stock-prediction/binanceneural/forecast_cache \
   --allocation-pct 1.0 \
+  --allocation-mode portfolio \
   --intensity-scale 2.0 \
   --price-offset-pct=-0.0005 \
   --min-gap-pct 0.001 \

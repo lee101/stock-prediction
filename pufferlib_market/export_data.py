@@ -241,7 +241,7 @@ def export_binary(
 
     for si, sym in enumerate(valid_symbols):
         f = all_features[sym].reindex(common_index).fillna(0.0)
-        p = all_prices[sym].reindex(common_index).fillna(method="ffill").fillna(method="bfill")
+        p = all_prices[sym].reindex(common_index).ffill().bfill()
         feature_arr[:, si, :] = f.values.astype(np.float32)
         price_arr[:, si, :] = p.values.astype(np.float32)
 

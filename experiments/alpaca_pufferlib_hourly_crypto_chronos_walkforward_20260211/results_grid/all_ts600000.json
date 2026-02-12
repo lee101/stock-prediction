@@ -1,0 +1,145 @@
+{
+  "all_results": [
+    {
+      "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/alpaca_pufferlib_hourly_crypto_chronos_walkforward_20260211/folds/wf4_202602/checkpoints/r1_chronos_longshort_cash01_down5/best.pt",
+      "config": {
+        "anneal_lr": true,
+        "arch": "resmlp",
+        "cash_penalty": 0.01,
+        "disable_shorts": false,
+        "downside_penalty": 5.0,
+        "drawdown_penalty": 0.0,
+        "ent_coef": 0.01,
+        "hidden_size": 256,
+        "lr": 0.0003,
+        "name": "r1_chronos_longshort_cash01_down5",
+        "smooth_downside_penalty": 0.0,
+        "smooth_downside_temperature": 0.02,
+        "trade_penalty": 0.0
+      },
+      "fold": "wf4_202602",
+      "metrics": {
+        "annualized_return": -0.0004561543294826498,
+        "avg_hold_hours": 719.9999389648438,
+        "episodes": 384.0,
+        "max_drawdown": 0.0015000490238890052,
+        "num_trades": 1.0,
+        "sortino": -0.08208991587162018,
+        "total_return": -3.7499987229239196e-05,
+        "win_rate": 0.9999999403953552
+      },
+      "run": "r1_chronos_longshort_cash01_down5",
+      "symbols": [
+        "AAVEUSD",
+        "ALGOUSD",
+        "AVAXUSD",
+        "BTCUSD",
+        "DOTUSD",
+        "ETHUSD",
+        "LINKUSD",
+        "LTCUSD",
+        "SOLUSD",
+        "XRPUSD"
+      ]
+    },
+    {
+      "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/alpaca_pufferlib_hourly_crypto_chronos_walkforward_20260211/folds/wf4_202602/checkpoints/r4_chronos_longshort_cash01_down5_smooth2_t01/best.pt",
+      "config": {
+        "anneal_lr": true,
+        "arch": "resmlp",
+        "cash_penalty": 0.01,
+        "disable_shorts": false,
+        "downside_penalty": 5.0,
+        "drawdown_penalty": 0.0,
+        "ent_coef": 0.01,
+        "hidden_size": 256,
+        "lr": 0.0003,
+        "name": "r4_chronos_longshort_cash01_down5_smooth2_t01",
+        "smooth_downside_penalty": 2.0,
+        "smooth_downside_temperature": 0.01,
+        "trade_penalty": 0.0
+      },
+      "fold": "wf4_202602",
+      "metrics": {
+        "annualized_return": 43.43694238071833,
+        "avg_hold_hours": 239.99998474121094,
+        "episodes": 384.0,
+        "max_drawdown": 0.010526583530008793,
+        "num_trades": 3.0,
+        "sortino": 8.277471780776978,
+        "total_return": 0.36593812704086304,
+        "win_rate": 0.9999999403953552
+      },
+      "run": "r4_chronos_longshort_cash01_down5_smooth2_t01",
+      "symbols": [
+        "AAVEUSD",
+        "ALGOUSD",
+        "AVAXUSD",
+        "BTCUSD",
+        "DOTUSD",
+        "ETHUSD",
+        "LINKUSD",
+        "LTCUSD",
+        "SOLUSD",
+        "XRPUSD"
+      ]
+    }
+  ],
+  "config_path": "/nvme0n1-disk/code/stock-prediction/experiments/alpaca_pufferlib_hourly_crypto_chronos_walkforward_20260211/config.json",
+  "device": "cuda",
+  "fold_best": [
+    {
+      "checkpoint": "/nvme0n1-disk/code/stock-prediction/experiments/alpaca_pufferlib_hourly_crypto_chronos_walkforward_20260211/folds/wf4_202602/checkpoints/r4_chronos_longshort_cash01_down5_smooth2_t01/best.pt",
+      "config": {
+        "anneal_lr": true,
+        "arch": "resmlp",
+        "cash_penalty": 0.01,
+        "disable_shorts": false,
+        "downside_penalty": 5.0,
+        "drawdown_penalty": 0.0,
+        "ent_coef": 0.01,
+        "hidden_size": 256,
+        "lr": 0.0003,
+        "name": "r4_chronos_longshort_cash01_down5_smooth2_t01",
+        "smooth_downside_penalty": 2.0,
+        "smooth_downside_temperature": 0.01,
+        "trade_penalty": 0.0
+      },
+      "fold": "wf4_202602",
+      "metrics": {
+        "annualized_return": 43.43694238071833,
+        "avg_hold_hours": 239.99998474121094,
+        "episodes": 384.0,
+        "max_drawdown": 0.010526583530008793,
+        "num_trades": 3.0,
+        "sortino": 8.277471780776978,
+        "total_return": 0.36593812704086304,
+        "win_rate": 0.9999999403953552
+      },
+      "run": "r4_chronos_longshort_cash01_down5_smooth2_t01",
+      "symbols": [
+        "AAVEUSD",
+        "ALGOUSD",
+        "AVAXUSD",
+        "BTCUSD",
+        "DOTUSD",
+        "ETHUSD",
+        "LINKUSD",
+        "LTCUSD",
+        "SOLUSD",
+        "XRPUSD"
+      ]
+    }
+  ],
+  "num_envs": 96,
+  "rollout_len": 256,
+  "summary": {
+    "mean_annualized_return": 43.43694238071833,
+    "mean_max_drawdown": 0.010526583530008793,
+    "mean_return": 0.36593812704086304,
+    "mean_sortino": 8.277471780776978,
+    "num_folds": 1.0,
+    "positive_folds": 1.0
+  },
+  "total_timesteps": 600000
+}

@@ -1,0 +1,3 @@
+checkpoints/
+*.bin
+sweep_results.json
