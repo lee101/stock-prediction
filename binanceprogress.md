@@ -999,44 +999,69 @@ Environment: `BINANCE_DEFAULT_QUOTE="U"` (zero-fee U pairs).
 - Eliminates GPU contention between multiple bot processes
 - Cache refresh supervisor: `supervisor/binanceexp1-cache-refresh.conf`
 
-## SOLUSD Daily Levels (Chronos2 Daily LoRA + Intraday Grid)
+## SUI/USDT Neural Policy (10bp fee)
 
-Updated: 2026-02-10
+### Data
+- Download: 24,371 hourly bars (2023-05-03 → 2026-02-11)
+- Symbol: SUIUSDT
 
-### Data (daily bars derived from hourly)
-- Source hourly: `binance_spot_hourly/SOLFDUSD.csv` updated through **2026-02-09 23:00 UTC** (Vision fallback on Binance.US).
-- Daily aggregation: `scripts/build_binance_spot_daily_from_hourly.py` → `binance_spot_daily/SOLUSD.csv` (887 rows through 2026-02-09). Alias: `trainingdatadailybinance/` → `binance_spot_daily/`.
+### Chronos2 LoRA
+- Model: `chronos2_finetuned/binance_lora_20260208_newpairs_SUIUSDT/finetuned-ckpt`
+- Forecast cache: `binancechronossolexperiment/forecast_cache_sui_10bp`
+- Forecast MAE%: h1=0.7353, h4=1.3906, h24=3.6512
 
-### Chronos2 LoRA (daily, SOLUSD)
-- Train run: `solusd_binance_daily_lora_20260210_1009`
-- Output: `chronos2_finetuned/solusd_binance_daily_lora_20260210_1009/finetuned-ckpt`
-- Holdouts: val=90d, test=90d
-- Preaug: `detrending` (from `preaugstrategies/chronos2/SOLUSD.json`)
-- Metrics (close p50 vs realized close): val MAE%=3.4564, test MAE%=3.1302
-- Promoted config: `hyperparams/chronos2/SOLUSD.json`
+### Neural Policy Training
+- Run: `sui_10bp_neural`
+- Checkpoint: `binancechronossolexperiment/checkpoints/sui_10bp_neural/policy_checkpoint.pt`
+- Config: epochs=10, batch=64, seq=72, lr=3e-4, optimizer=muon_mix, arch=nano
+- Training metrics (0% fee during training):
+  - Val Sortino (best): 517.4 (epoch 5)
+  - Test return: 42.1%, Sortino: 181
+  - Final equity: $14,211 from $10,000
 
-### Daily Level Backtest (intraday fills on hourly bars, multi-cycle)
-- Script: `scripts/backtest_binance_daily_levels.py`
-- Intraday symbol: `SOLFDUSD` (maker_fee=0, close_at_eod)
-- Quantile sweep (buy=predicted low quantile, sell=predicted high quantile):
-  - Best (val): buy_q=0.35 sell_q=0.65 → val total_return=-0.0340 sortino=-0.091 (74 trades)
-  - Test (same params): total_return=0.0791 sortino=0.539 (70 trades)
-- Report: `reports/binance_daily_levels/SOLUSD_daily_levels_20260210_101515Z.json`
+### Backtest Comparison (7d holdout, 10bp fee)
 
-### Live Trader (daily levels)
-- New: `binanceneural/trade_binance_daily_levels.py` (sequential `daily_entry`/`daily_exit` watcher cycles for the UTC day; respects `BINANCE_DEFAULT_QUOTE` via `binance_remap_symbols`).
-- Optional direction filter: `--min-predicted-close-return-pct <thr>` only opens new entries when `predicted_close_p50 >= prev_close*(1+thr)` (still attempts to exit any existing base position).
-- Optional stop-loss: `--stop-loss-pct <pct>` monitors live price while an exit watcher is active and triggers a marketable limit sell when price <= stop (supports `--stop-loss-lockout-until-next-day` to stop trading for the rest of the UTC day).
+| Strategy | Return | Sortino | Max DD | Trades | Final Equity |
+|----------|--------|---------|--------|--------|--------------|
+| Momentum (24h lookback, 0.3% threshold) | -1.42% | -1.72 | -5.35% | 5 | $9,858 |
+| Neural Policy (with 10bp fee) | +40.73% | 171.18 | -0.41% | 126 | $14,074 |
 
-### Intraday Resolution + Stop-Loss Lockout (5m Vision bars)
-- Downloaded higher-resolution intraday bars via Binance Vision:
-  - `scripts/collect_binance_vision_klines.py --symbols SOLFDUSD --interval 5m --days 200` → `binance_spot_5m/SOLFDUSD.csv` (gitignored).
-  - Backtest now supports `--intraday-root`/`--intraday-symbol` and infers `periods_per_year` from bar deltas.
-- Added stop-loss + day lockout support in simulator/backtest (`stop_loss_pct`, `stop_loss_lockout_until_next_day`) to avoid churn after a stop is hit.
-- Example (val=90d, test=50d on 5m bars, close_at_eod, buy=predicted low p35, sell=predicted high p50):
-  - Baseline (no stop): **test total_return=-0.1120, sortino=-0.621, max_dd=-0.350**.
-  - With stop + lockout (`stop_loss_pct=0.02`, lockout enabled): **test total_return=-0.00035, sortino=0.070, max_dd=-0.093** (near flat, much lower drawdown).
-- Adding a simple direction filter (only trade when `predicted_close_p50` >= previous day's close) improved the same setup on the last 50d:
-  - `stop_loss_pct=0.02` + lockout + `--min-predicted-close-return-pct 0.0` → **test total_return=0.0067, annualized_return=0.050, sortino=0.149, max_dd=-0.095**.
-- Further hyperparam search (still 5m bars, close_at_eod, min_spread=0.0003 skip) found a better last-50d config:
-  - buy=predicted low p30, sell=predicted high p55, `stop_loss_pct=0.02` + lockout + `--min-predicted-close-return-pct 0.0` → **test total_return=0.0407, annualized_return=0.338, sortino=0.543, max_dd=-0.088** (30 trades).
+- Neural strategy significantly outperforms momentum baseline
+- High Sortino (171) indicates strong risk-adjusted returns
+- Low max drawdown (-0.41%) with active trading (126 trades in 7 days)
+- Even with 10bp trading fee, neural achieves 40.7% return on unseen 7-day data
+
+
+
+## SUI Clamped Forecast Experiment (2026-02-12 03:38 UTC)
+
+### Approach
+- Generate 1-step daily forecast as envelope (high/low bounds)
+- Generate 24-step hourly forecast
+- Warp/clamp hourly forecast to fit within daily bounds
+- Train trading policy using clamped forecasts
+
+### MAE Comparison Results
+
+| Mode | Horizon | Unclamped MAE% | Clamped MAE% | Improvement |
+|------|---------|----------------|--------------|-------------|
+| scale | 1h | 0.759 | 4.770 | -528.4% |
+| scale | 4h | 1.158 | 3.023 | -161.1% |
+| scale | 8h | 0.969 | 3.004 | -209.9% |
+| scale | 12h | 2.416 | 5.069 | -109.8% |
+| scale | 24h | 2.095 | 3.079 | -46.9% |
+| clamp | 1h | 0.759 | 0.748 | 1.5% |
+| clamp | 4h | 1.158 | 0.938 | 18.9% |
+| clamp | 8h | 0.969 | 0.915 | 5.6% |
+| clamp | 12h | 2.416 | 2.949 | -22.1% |
+| clamp | 24h | 2.095 | 3.079 | -46.9% |
+| affine | 1h | 0.759 | 4.770 | -528.4% |
+| affine | 4h | 1.158 | 3.023 | -161.1% |
+| affine | 8h | 0.969 | 3.004 | -209.9% |
+| affine | 12h | 2.416 | 5.069 | -109.8% |
+| affine | 24h | 2.095 | 3.079 | -46.9% |
+
+### Backtest Results
+- Final Value: $7424.79
+- PnL: -25.75%
+- Trades: 27
