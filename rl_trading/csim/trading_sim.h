@@ -234,8 +234,8 @@ void c_step(TradingSim* env) {
     env->rewards[0] = reward * 100.0f;
 
     if (eq > env->peak_equity) env->peak_equity = eq;
-    float dd = (eq - env->peak_equity) / env->peak_equity;
-    if (dd < env->max_dd) env->max_dd = dd;
+    float dd = (env->peak_equity - eq) / env->peak_equity;  // positive drawdown
+    if (dd > env->max_dd) env->max_dd = dd;
     env->prev_equity = eq;
 
     bool truncated = (env->current_bar >= env->start_bar + env->episode_length) ||

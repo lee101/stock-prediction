@@ -117,7 +117,10 @@ func (t *Trader) currentPositionQty(symbol string, side alpaca.Side) float64 {
 	if err != nil {
 		return 0
 	}
-	qty, _ := pos.Qty.Float64()
+	qty, exact := pos.Qty.Float64()
+	if !exact {
+		log.Printf("[ramp] qty conversion inexact for %s", symbol)
+	}
 	qty = math.Abs(qty)
 
 	// Check side matches
@@ -188,6 +191,9 @@ func (t *Trader) RampByAllocationPct(ctx context.Context, symbol string, side al
 	}
 
 	equity, _ := acct.Equity.Float64()
+	if equity <= 0 {
+		return fmt.Errorf("invalid equity: %v", equity)
+	}
 	notional := equity * pct / 100.0
 
 	log.Printf("[ramp] %s %.1f%% of $%.2f equity = $%.2f notional",
@@ -208,6 +214,9 @@ func (t *Trader) MaxLeverageOrder(symbol string, qty float64, side alpaca.Side,
 	}
 
 	equity, _ := acct.Equity.Float64()
+	if equity <= 0 {
+		return nil, fmt.Errorf("invalid equity: %v", equity)
+	}
 	maxExposure := equity * maxLeverage
 
 	// Sum current exposure
@@ -227,6 +236,9 @@ func (t *Trader) MaxLeverageOrder(symbol string, qty float64, side alpaca.Side,
 	}
 
 	if orderNotional > available {
+		if price <= 0 {
+			return nil, fmt.Errorf("invalid price %.4f for leverage calc", price)
+		}
 		qty = available / price
 		log.Printf("[leverage] Capped order to qty=%.6f (available $%.0f)", qty, available)
 	}
