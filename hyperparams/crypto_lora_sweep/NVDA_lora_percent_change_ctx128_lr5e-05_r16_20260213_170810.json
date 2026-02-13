@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "NVDA",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 500,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "percent_change",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "NVDA_lora_percent_change_ctx128_lr5e-05_r16_20260213_170810",
+  "output_dir": "chronos2_finetuned/NVDA_lora_percent_change_ctx128_lr5e-05_r16_20260213_170810",
+  "val": {
+    "mae_mean": 2.7980029185613,
+    "mae_std": 1.790387096043185,
+    "mae_max": 7.1991424560546875,
+    "mae_p90": 4.302115178108216,
+    "mae_percent_mean": 1.514173469816645,
+    "mae_percent_std": 0.9742120032482137,
+    "mae_percent_max": 3.915014863014221,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 5.056836873292923,
+    "mae_std": 2.3909082932081094,
+    "mae_max": 10.385952949523926,
+    "mae_p90": 8.32671856880188,
+    "mae_percent_mean": 2.7498016289124885,
+    "mae_percent_std": 1.3220204303602348,
+    "mae_percent_max": 5.536751821637154,
+    "count": 12
+  },
+  "val_consistency_score": 2.7215318894000244,
+  "test_consistency_score": 4.246896901910006
+}
