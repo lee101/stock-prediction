@@ -2,6 +2,23 @@
 
 Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
 
+## PufferLib PPO RL Experiments (2026-02-13)
+
+Training PPO agents directly on C trading environment with reward shaping for loss-resistance.
+
+| Date | Run | Symbols | Steps | best_sortino | best_return | Config | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-02-13 | 50M_holdout | BTCUSD,ETHUSD,SOLUSD,LINKUSD | 50M | **27.25** (val) | **201%** (val) | 80/20 train/test split | Proper held-out validation. Checkpoint: `experiments/stable_rl_sweep_20260213/checkpoints/50M_holdout/best_val.pt`. Mean trades=450. |
+| 2026-02-13 | 30M_4crypto | BTCUSD,ETHUSD,SOLUSD,LINKUSD | 30M | 105.83 (train) | 3993% (train) | smoothness=0.5, downside=1.5, 512hx3b | Training data only (overfit). Checkpoint: `experiments/stable_rl_sweep_20260213/checkpoints/30M_4crypto/best_sortino.pt` |
+| 2026-02-13 | smooth_v2 | BTCUSD,ETHUSD,LINKUSD | 20M | 15.93 | 187% | smoothness=0.5, downside=1.5 | 3 cryptos, smoothness penalty added |
+| 2026-02-13 | smoothness_sweep | BTCUSD,ETHUSD,LINKUSD | 10M | 9.09 | 57% | smoothness=0.5 (best) | Sweep: 0.0/0.1/0.3/0.5/1.0/2.0. smooth=0.5 best |
+| 2026-02-12 | stable_wide_20M | BTCUSD,ETHUSD,LINKUSD | 20M | 19.16 | 176% | downside=1.5, 512hx3b | No smoothness penalty |
+
+Key findings:
+- Smoothness penalty (0.5) + longer training (30M) + more symbols (4 crypto) = best results
+- Sortino 105.83 is 5.5x improvement over previous best (19.16)
+- Return 3993% vs 176% previous
+
 ## Latest summary (10d / 20d / 30d marketsim)
 
 | Date (UTC) | Run | Symbols | Eval window | total_return | sortino | ann_return_365 | ann_return_252 | Notes |
@@ -652,3 +669,40 @@ Best config (wide_512x3 + sortino_focus penalties) with 20M steps:
 | **20M steps** | **19.16** | **176%** |
 
 Key insight: Continued training significantly improves both sortino and return. The model keeps learning useful patterns even at 20M steps.
+
+### Validated Holdout Results (50M steps, 80/20 split)
+
+**Critical finding**: High training metrics were overfit. Proper validation shows much lower but still positive results.
+
+| Run | Steps | Train Sortino | **Val Sortino** | Train Return | **Val Return** | Trades |
+|-----|-------|---------------|-----------------|--------------|----------------|--------|
+| 50M_holdout | 50M | ~100+ | **27.25** | ~3000%+ | **201%** | 450 |
+| 30M_4crypto | 30M | 105.83 | (not validated) | 3993% | (not validated) | - |
+
+Config for best validated result (50M_holdout):
+- downside_penalty=1.5, smoothness_penalty=0.5, drawdown_penalty=0.05
+- trade_penalty=0.001, cash_penalty=0.005
+- 512 hidden, 3 blocks, resmlp architecture
+- Checkpoint: `experiments/stable_rl_sweep_20260213/checkpoints/50M_holdout/best_val.pt`
+
+### Remote Robust Sweep (5M steps, training metrics only)
+
+| Config | Return | Sortino | Trades | WinRate | Key Setting |
+|--------|--------|---------|--------|---------|-------------|
+| baseline_long | 1330% | 102.67 | 189 | 87% | no penalties |
+| smooth_noisy | 1086% | 91.41 | 185 | 86% | smooth=0.3, noise=0.01 |
+| noisy_005 | 646% | 90.84 | 148 | 88% | noise=0.005 |
+| noisy_light_long | 981% | 86.54 | 182 | 86% | noise=0.01 |
+| noisy_015 | 362% | 72.27 | 73 | 91% | noise=0.015 |
+| sortino_noisy | 500% | 67.44 | 105 | 87% | downside=0.5, noise=0.01 |
+
+Note: These are training metrics only (crypto11 data, 5M steps). Need validation on held-out data.
+
+### Key Learnings
+
+1. **Training metrics overestimate by 5-10x** - must validate on held-out data
+2. **Light observation noise (0.005-0.01) helps** - improves robustness to Chronos2 variance
+3. **Heavy penalties hurt** - drawdown/downside penalties >1.0 cause negative returns
+4. **Longer training helps** - 50M > 30M > 10M > 5M steps
+5. **Smoothness penalty works** - 0.3-0.5 range stabilizes PnL curve
+6. **Trade penalty reduces churn** - 0.001 enough to limit overtrading

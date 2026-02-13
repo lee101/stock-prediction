@@ -1102,3 +1102,25 @@ Previous training (`sui_10bp_neural`) used **SOL forecasts** by mistake. This ru
 ### Improvement Summary
 - Using SUI-specific forecasts instead of SOL: **+81% return improvement** (40.73% -> 73.88%)
 - Sortino improvement: **+71%** (171 -> 293)
+
+### Deployed Config (2026-02-13)
+- **Checkpoint**: `sui_neural_rw004` (Sortino-optimized)
+- **Parameters**: return_weight=0.04, horizons=1,4,24, sequence_length=72
+- **Expected Performance**: 60.53% return, Sortino 386
+
+## ETH Performance (binanceexp1, 2026-02-13)
+
+Sweep on existing h1only checkpoint with 30-day fine-tuning:
+- **Checkpoint**: `binanceneural/checkpoints/ethusd_h1only_ft30_20260208/epoch_027.pt`
+- **Parameters**: intensity=6.0, offset=0.0003, sequence_length=96
+- **Results**: 480.75% return, Sortino 515.89
+
+Note: ETH shows exceptionally strong performance. Consider similar SUI-specific forecast treatment for ETH.
+
+## Sortino Optimization Experiments (in progress, 2026-02-13)
+
+Training additional Sortino-optimized variants:
+- `sui_sortino_rw001`: return_weight=0.01 (pending)
+- `sui_sortino_rw0005`: return_weight=0.005 (pending)
+
+Lower return_weight should push model toward risk-averse (high Sortino) behavior.
