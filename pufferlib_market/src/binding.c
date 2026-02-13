@@ -66,6 +66,18 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     val = kwargs ? PyDict_GetItemString(kwargs, "periods_per_year") : NULL;
     env->periods_per_year = val ? (float)PyFloat_AsDouble(val) : 8760.0f;
 
+    val = kwargs ? PyDict_GetItemString(kwargs, "action_allocation_bins") : NULL;
+    env->action_allocation_bins = val ? (int)PyLong_AsLong(val) : 1;
+    if (env->action_allocation_bins < 1) env->action_allocation_bins = 1;
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "action_level_bins") : NULL;
+    env->action_level_bins = val ? (int)PyLong_AsLong(val) : 1;
+    if (env->action_level_bins < 1) env->action_level_bins = 1;
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "action_max_offset_bps") : NULL;
+    env->action_max_offset_bps = val ? (float)PyFloat_AsDouble(val) : 0.0f;
+    if (env->action_max_offset_bps < 0.0f) env->action_max_offset_bps = 0.0f;
+
     val = kwargs ? PyDict_GetItemString(kwargs, "reward_scale") : NULL;
     env->reward_scale = val ? (float)PyFloat_AsDouble(val) : 10.0f;
 
@@ -81,12 +93,19 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     val = kwargs ? PyDict_GetItemString(kwargs, "downside_penalty") : NULL;
     env->downside_penalty = val ? (float)PyFloat_AsDouble(val) : 0.0f;
 
+    val = kwargs ? PyDict_GetItemString(kwargs, "smooth_downside_penalty") : NULL;
+    env->smooth_downside_penalty = val ? (float)PyFloat_AsDouble(val) : 0.0f;
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "smooth_downside_temperature") : NULL;
+    env->smooth_downside_temperature = val ? (float)PyFloat_AsDouble(val) : 0.02f;
+
     val = kwargs ? PyDict_GetItemString(kwargs, "trade_penalty") : NULL;
     env->trade_penalty = val ? (float)PyFloat_AsDouble(val) : 0.0f;
 
     int S = g_shared_data->num_symbols;
+    int side_block = S * env->action_allocation_bins * env->action_level_bins;
     env->obs_size = S * FEATURES_PER_SYM + 5 + S;
-    env->num_actions = 1 + 2 * S;
+    env->num_actions = 1 + 2 * side_block;
 
     return 0;
 }

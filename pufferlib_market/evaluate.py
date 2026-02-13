@@ -106,6 +106,9 @@ def evaluate_random(args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
         fee_rate=args.fee_rate,
         max_leverage=args.max_leverage,
         periods_per_year=args.periods_per_year,
+        action_allocation_bins=args.action_allocation_bins,
+        action_level_bins=args.action_level_bins,
+        action_max_offset_bps=args.action_max_offset_bps,
     )
     binding.vec_reset(vec_handle, args.seed)
 
@@ -192,6 +195,9 @@ def evaluate_sequential(args, policy, binding, obs_size, num_actions, device):
         fee_rate=args.fee_rate,
         max_leverage=args.max_leverage,
         periods_per_year=args.periods_per_year,
+        action_allocation_bins=args.action_allocation_bins,
+        action_level_bins=args.action_level_bins,
+        action_max_offset_bps=args.action_max_offset_bps,
     )
     binding.vec_reset(vec_handle, args.seed)
 
@@ -232,6 +238,9 @@ def main():
     parser.add_argument("--max-leverage", type=float, default=1.0)
     parser.add_argument("--periods-per-year", type=float, default=8760.0,
                         help="Annualisation factor for Sortino (8760=hourly, 365=daily, 252=trading days)")
+    parser.add_argument("--action-allocation-bins", type=int, default=1)
+    parser.add_argument("--action-level-bins", type=int, default=1)
+    parser.add_argument("--action-max-offset-bps", type=float, default=0.0)
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--num-episodes", type=int, default=500,
                         help="Target number of episodes for random mode")
@@ -254,11 +263,27 @@ def main():
     _, _, num_symbols, num_timesteps, _, _ = struct.unpack("<4sIIIII", header[:24])
 
     obs_size = num_symbols * 16 + 5 + num_symbols
-    num_actions = 1 + 2 * num_symbols
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    if "action_allocation_bins" in ckpt:
+        args.action_allocation_bins = max(1, int(ckpt["action_allocation_bins"]))
+    if "action_level_bins" in ckpt:
+        args.action_level_bins = max(1, int(ckpt["action_level_bins"]))
+    if "action_max_offset_bps" in ckpt:
+        args.action_max_offset_bps = max(0.0, float(ckpt["action_max_offset_bps"]))
+
+    per_symbol_actions = max(1, int(args.action_allocation_bins)) * max(1, int(args.action_level_bins))
+    num_actions = 1 + 2 * num_symbols * per_symbol_actions
 
     print(f"Data: {num_symbols} symbols, {num_timesteps} timesteps")
     print(f"obs_size={obs_size}, num_actions={num_actions}")
     print(f"Episode length: {args.max_steps}h, leverage: {args.max_leverage}x")
+    print(
+        "Action grid: alloc_bins={} level_bins={} max_offset_bps={:.1f}".format(
+            int(args.action_allocation_bins),
+            int(args.action_level_bins),
+            float(args.action_max_offset_bps),
+        )
+    )
     print(f"Device: {device}, deterministic: {args.deterministic}, arch: {args.arch}")
 
     # Load policy
@@ -266,7 +291,6 @@ def main():
         policy = ResidualTradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     policy.load_state_dict(ckpt["model"])
     policy.eval()
     print(f"Loaded checkpoint: update={ckpt.get('update', '?')}, "

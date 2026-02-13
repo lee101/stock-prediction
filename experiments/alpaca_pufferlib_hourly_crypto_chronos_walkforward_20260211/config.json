@@ -1,0 +1,61 @@
+{
+  "forecast_cache_root": "alpacanewccrosslearning/forecast_cache/crypto13_novol_20260208_lb4000",
+  "data_root": "trainingdatahourly",
+  "symbols": [
+    "AAVEUSD",
+    "ALGOUSD",
+    "AVAXUSD",
+    "BTCUSD",
+    "DOTUSD",
+    "ETHUSD",
+    "LINKUSD",
+    "LTCUSD",
+    "SOLUSD",
+    "XRPUSD"
+  ],
+  "env": {
+    "fee_rate": 0.0015,
+    "max_leverage": 1.0,
+    "periods_per_year": 8760.0,
+    "reward_scale": 10.0,
+    "reward_clip": 5.0,
+    "action_allocation_bins": 5,
+    "action_level_bins": 5,
+    "action_max_offset_bps": 60.0
+  },
+  "folds": [
+    {
+      "name": "wf1_202511",
+      "train_start": "2025-08-26 00:00:00+00:00",
+      "train_end": "2025-10-31 23:00:00+00:00",
+      "eval_start": "2025-11-01 00:00:00+00:00",
+      "eval_end": "2025-12-01 23:00:00+00:00",
+      "episode_steps": 720
+    },
+    {
+      "name": "wf2_202512",
+      "train_start": "2025-08-26 00:00:00+00:00",
+      "train_end": "2025-11-30 23:00:00+00:00",
+      "eval_start": "2025-12-01 00:00:00+00:00",
+      "eval_end": "2025-12-31 23:00:00+00:00",
+      "episode_steps": 720
+    },
+    {
+      "name": "wf3_202601",
+      "train_start": "2025-08-26 00:00:00+00:00",
+      "train_end": "2025-12-30 23:00:00+00:00",
+      "eval_start": "2025-12-31 00:00:00+00:00",
+      "eval_end": "2026-01-30 23:00:00+00:00",
+      "episode_steps": 720
+    },
+    {
+      "name": "wf4_202602",
+      "train_start": "2025-08-26 00:00:00+00:00",
+      "train_end": "2026-01-06 23:00:00+00:00",
+      "eval_start": "2026-01-07 00:00:00+00:00",
+      "eval_end": "2026-02-06 12:00:00+00:00",
+      "episode_steps": 720
+    }
+  ],
+  "eval_episodes": 384
+}
