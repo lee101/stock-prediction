@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "AVAXUSD",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "percent_change",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "AVAXUSD_lora_percent_change_ctx128_lr5e-05_r16_20260213_121245",
+  "output_dir": "chronos2_finetuned/AVAXUSD_lora_percent_change_ctx128_lr5e-05_r16_20260213_121245",
+  "val": {
+    "mae_mean": 0.18726333075513443,
+    "mae_std": 0.13442361199853328,
+    "mae_max": 0.5036606192588806,
+    "mae_p90": 0.35002349466085436,
+    "mae_percent_mean": 1.6160686888421576,
+    "mae_percent_std": 1.1992770027068567,
+    "mae_percent_max": 4.569374397397041,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 0.23879949562251568,
+    "mae_std": 0.1697858432200534,
+    "mae_max": 0.6557615399360657,
+    "mae_p90": 0.5202451914548875,
+    "mae_percent_mean": 2.4881922407075763,
+    "mae_percent_std": 1.9284238753567264,
+    "mae_percent_max": 7.67202153801918,
+    "count": 12
+  },
+  "val_consistency_score": 3.101698902762051,
+  "test_consistency_score": 5.007552967579421
+}

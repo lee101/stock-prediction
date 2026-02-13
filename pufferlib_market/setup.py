@@ -15,7 +15,7 @@ from setuptools import setup, Extension
 # Paths
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
-PUFFERLIB_OCEAN = REPO / "external" / "pufferlib-3.0.0" / "pufferlib" / "ocean"
+PUFFERLIB_OCEAN = REPO / "PufferLib" / "pufferlib" / "ocean"
 
 # Find numpy include
 import numpy as np

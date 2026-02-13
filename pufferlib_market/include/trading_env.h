@@ -67,6 +67,7 @@ typedef struct {
     float  sum_neg_sq;          /* for sortino */
     float  sum_ret;
     int    ret_count;
+    float  prev_ret;            /* previous return for smoothness calc */
     int    data_offset;         /* starting row in the data (randomised) */
     int    step;                /* current step within episode */
 } AgentState;
@@ -106,6 +107,7 @@ typedef struct {
     float          smooth_downside_penalty;  /* smooth downside penalty scale (softplus-ret proxy)^2 */
     float          smooth_downside_temperature; /* temperature for smooth downside penalty */
     float          trade_penalty;   /* per-trade penalty (counting opens/closes) (default 0) */
+    float          smoothness_penalty;/* penalty for return volatility (ret - prev_ret)^2 (default 0) */
 
     /* --- shared data (NOT owned, do not free) --- */
     MarketData*    data;

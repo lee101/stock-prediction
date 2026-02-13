@@ -585,3 +585,70 @@ Key fixes + improvements:
 ### Chronos WalkForward Hourly Crypto Success (2026-02-11 07:09 UTC)
 - Symbols: AAVEUSD, ALGOUSD, AVAXUSD, BTCUSD, DOTUSD, ETHUSD, LINKUSD, LTCUSD, SOLUSD, XRPUSD
 - wf4_202602/r4_chronos_longshort_cash01_down5_smooth2_t01: ret=+0.9080 ann=+259182.36% sortino=+34.842 mdd=+0.047 trades=162.0
+
+## 2026-02-13: Stable RL Sweep - Loss-Resistant Trading
+
+Goal: Build a loss-resistant RL trading algorithm with:
+- High Sharpe/Sortino ratios
+- Low drawdowns
+- Consistent returns (low variance)
+- Smooth equity curves
+
+Experiment: `experiments/stable_rl_sweep_20260213/`
+Symbols: BTCUSD, ETHUSD, SOLUSD, LINKUSD (hourly crypto)
+Architecture: ResidualMLP (LayerNorm + residual blocks)
+
+Stability knobs in C environment:
+- `downside_penalty`: Extra penalty for negative returns (ret^2 when ret < 0) - Sortino-like
+- `drawdown_penalty`: Penalty proportional to equity below peak
+- `trade_penalty`: Per-trade penalty to reduce churn
+- `cash_penalty`: Penalty for being flat
+
+Sweep configurations:
+
+| Config | downside_penalty | drawdown_penalty | trade_penalty | Sortino | Return |
+|--------|------------------|------------------|---------------|---------|--------|
+| **sortino_focus** | 1.5 | 0.05 | 0.001 | **4.28** | **19.1%** |
+| baseline | 0.0 | 0.0 | 0.0 | 3.76 | 16.2% |
+| stable_light | 0.3 | 0.05 | 0.001 | 3.62 | 12.5% |
+| stable_medium | 0.5 | 0.1 | 0.002 | 2.93 | 12.1% |
+| low_volatility | 0.8 | 0.15 | 0.003 | 2.84 | 11.3% |
+| downside_0.5 | 0.5 | 0.0 | 0.0 | 2.81 | 12.6% |
+| drawdown_0.1 | 0.0 | 0.1 | 0.0 | 2.22 | 9.6% |
+| stable_heavy | 1.0 | 0.2 | 0.005 | 1.77 | 8.6% |
+
+Key findings:
+- **sortino_focus** (high downside_penalty=1.5, low drawdown_penalty=0.05) achieves best results
+- Heavy penalties hurt performance - stable_heavy is worst
+- Light drawdown penalty + strong downside penalty is optimal
+- Penalizing losses more than drawdowns focuses learning on avoiding bad trades
+
+### Architecture Sweep (10M steps, sortino_focus hyperparams)
+
+| Config | Params | Hidden | Blocks | Sortino | Return |
+|--------|--------|--------|--------|---------|--------|
+| **wide_512x3** | 1.87M | 512 | 3 | **16.89** | 135% |
+| deep_256x5 | 742K | 256 | 5 | 14.93 | 129% |
+| base_256x3 | 478K | 256 | 3 | 14.55 | 352% |
+| narrow_128x7 | 287K | 128 | 7 | 8.14 | 40% |
+| vdeep_256x7 | 1.1M | 256 | 7 | 5.70 | 32% |
+| xwide_768x3 | 4M | 768 | 3 | 5.14 | 28% |
+| widedeep_512x5 | 3.1M | 512 | 5 | 4.72 | 26% |
+
+Key architecture findings:
+- **512 hidden x 3 blocks is the sweet spot** - highest sortino (16.89)
+- Too wide (768) hurts - overparameterized, harder to train
+- Too deep (5+ blocks) hurts - gradient issues, slower convergence
+- Longer training (10M vs 5M) significantly improves results
+- base_256x3 has highest raw return (352%) but lower sortino - more aggressive but less consistent
+
+### Extended Training (20M steps)
+
+Best config (wide_512x3 + sortino_focus penalties) with 20M steps:
+
+| Training | Sortino | Return |
+|----------|---------|--------|
+| 10M steps | 16.89 | 135% |
+| **20M steps** | **19.16** | **176%** |
+
+Key insight: Continued training significantly improves both sortino and return. The model keeps learning useful patterns even at 20M steps.
