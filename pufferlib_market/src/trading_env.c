@@ -573,7 +573,9 @@ void c_step(TradingEnv* env) {
             float downside_dev = sqrtf(ag->sum_neg_sq / ag->ret_count);
             float ppy = env->periods_per_year;
             if (ppy <= 0.0f) ppy = 8760.0f;
-            sortino = mean_ret / downside_dev * sqrtf(ppy);  /* annualised */
+            if (downside_dev > 1e-8f) {
+                sortino = mean_ret / downside_dev * sqrtf(ppy);  /* annualised */
+            }
         }
 
         env->log.total_return += total_return;

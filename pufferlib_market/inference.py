@@ -67,7 +67,7 @@ class PPOTrader:
         self.checkpoint_path = checkpoint_path
 
         # Load checkpoint
-        ckpt = torch.load(checkpoint_path, map_location=self.device)
+        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         config = ckpt.get("config", {})
 
         self.num_symbols = len(self.SYMBOLS)

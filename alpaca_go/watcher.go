@@ -196,6 +196,13 @@ func (wm *WatcherManager) runWatcher(ctx context.Context, cfg WatcherConfig,
 			refPrice = quote.AskPrice
 		}
 
+		if cfg.LimitPrice <= 0 {
+			log.Printf("[watcher] %s invalid limit price %.4f", key, cfg.LimitPrice)
+			status.State = WatcherError
+			status.Error = "invalid limit price"
+			wm.saveState(key, status)
+			return
+		}
 		priceDiff := math.Abs(refPrice-cfg.LimitPrice) / cfg.LimitPrice
 		if priceDiff > cfg.TolerancePct {
 			// Price not within tolerance, keep waiting

@@ -133,9 +133,10 @@ void execute_trade(MarketEnv* env, int agent_idx, int action) {
     float max_trade_value = portfolio_value * env->max_position_size;
 
     if (is_buy) {
-        // Buy
-        float max_shares = (env->cash[agent_idx] * (1.0f - env->transaction_cost)) / current_price;
-        float shares_to_buy = fminf(max_shares, max_trade_value / current_price);
+        // Buy - apply fee once: cost = shares * price * (1 + fee)
+        float max_spend = env->cash[agent_idx];
+        float shares_to_buy = fminf(max_spend / (current_price * (1.0f + env->transaction_cost)),
+                                    max_trade_value / current_price);
 
         if (shares_to_buy > 0.0f) {
             float cost = shares_to_buy * current_price * (1.0f + env->transaction_cost);
@@ -218,7 +219,7 @@ void c_step(MarketEnv* env) {
         env->portfolio_values[agent_idx] = new_value;
 
         // Reward is the percentage change in portfolio value
-        float return_pct = (new_value - old_value) / old_value;
+        float return_pct = (old_value > 1e-6f) ? (new_value - old_value) / old_value : 0.0f;
         env->rewards[agent_idx] = return_pct * 100.0f;  // Scale reward
 
         // Update peak for drawdown calculation
