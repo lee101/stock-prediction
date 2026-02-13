@@ -1,0 +1,44 @@
+[
+  {
+    "name": "ethusdt_sortino_rw0005",
+    "error": "No metrics file",
+    "stdout": "",
+    "stderr": "load_forecasts\n    return build_forecast_bundle(\n        symbol=self.symbol,\n    ...<11 lines>...\n        preaugmentation_dirs=self.preaugmentation_dirs,\n    )\n  File \"/home/lee/code/stock/binancechronossolexperiment/forecasts.py\", line 80, in build_forecast_bundle\n    raise RuntimeError(\n        f\"No Chronos forecasts available for {symbol}. Generate caches first or disable cache_only.\"\n    )\nRuntimeError: No Chronos forecasts available for ETHUSDT. Generate caches first or disable cache_only.\n"
+  },
+  {
+    "name": "ethusdt_sortino_rw001",
+    "error": "No metrics file",
+    "stdout": "",
+    "stderr": "load_forecasts\n    return build_forecast_bundle(\n        symbol=self.symbol,\n    ...<11 lines>...\n        preaugmentation_dirs=self.preaugmentation_dirs,\n    )\n  File \"/home/lee/code/stock/binancechronossolexperiment/forecasts.py\", line 80, in build_forecast_bundle\n    raise RuntimeError(\n        f\"No Chronos forecasts available for {symbol}. Generate caches first or disable cache_only.\"\n    )\nRuntimeError: No Chronos forecasts available for ETHUSDT. Generate caches first or disable cache_only.\n"
+  },
+  {
+    "name": "ethusdt_sortino_rw002",
+    "error": "No metrics file",
+    "stdout": "",
+    "stderr": "load_forecasts\n    return build_forecast_bundle(\n        symbol=self.symbol,\n    ...<11 lines>...\n        preaugmentation_dirs=self.preaugmentation_dirs,\n    )\n  File \"/home/lee/code/stock/binancechronossolexperiment/forecasts.py\", line 80, in build_forecast_bundle\n    raise RuntimeError(\n        f\"No Chronos forecasts available for {symbol}. Generate caches first or disable cache_only.\"\n    )\nRuntimeError: No Chronos forecasts available for ETHUSDT. Generate caches first or disable cache_only.\n"
+  },
+  {
+    "name": "ethusdt_sortino_rw004",
+    "error": "No metrics file",
+    "stdout": "",
+    "stderr": "load_forecasts\n    return build_forecast_bundle(\n        symbol=self.symbol,\n    ...<11 lines>...\n        preaugmentation_dirs=self.preaugmentation_dirs,\n    )\n  File \"/home/lee/code/stock/binancechronossolexperiment/forecasts.py\", line 80, in build_forecast_bundle\n    raise RuntimeError(\n        f\"No Chronos forecasts available for {symbol}. Generate caches first or disable cache_only.\"\n    )\nRuntimeError: No Chronos forecasts available for ETHUSDT. Generate caches first or disable cache_only.\n"
+  },
+  {
+    "name": "ethusdt_sortino_rw001",
+    "error": "No metrics file",
+    "stdout": "",
+    "stderr": "load_forecasts\n    return build_forecast_bundle(\n        symbol=self.symbol,\n    ...<11 lines>...\n        preaugmentation_dirs=self.preaugmentation_dirs,\n    )\n  File \"/home/lee/code/stock/binancechronossolexperiment/forecasts.py\", line 80, in build_forecast_bundle\n    raise RuntimeError(\n        f\"No Chronos forecasts available for {symbol}. Generate caches first or disable cache_only.\"\n    )\nRuntimeError: No Chronos forecasts available for ETHUSDT. Generate caches first or disable cache_only.\n"
+  },
+  {
+    "name": "ethusdt_sortino_rw001",
+    "error": "No metrics file",
+    "stdout": "",
+    "stderr": "load_forecasts\n    return build_forecast_bundle(\n        symbol=self.symbol,\n    ...<11 lines>...\n        preaugmentation_dirs=self.preaugmentation_dirs,\n    )\n  File \"/home/lee/code/stock/binancechronossolexperiment/forecasts.py\", line 80, in build_forecast_bundle\n    raise RuntimeError(\n        f\"No Chronos forecasts available for {symbol}. Generate caches first or disable cache_only.\"\n    )\nRuntimeError: No Chronos forecasts available for ETHUSDT. Generate caches first or disable cache_only.\n"
+  },
+  {
+    "name": "ethusdt_sortino_rw001",
+    "error": "No metrics file",
+    "stdout": "",
+    "stderr": "load_forecasts\n    return build_forecast_bundle(\n        symbol=self.symbol,\n    ...<11 lines>...\n        preaugmentation_dirs=self.preaugmentation_dirs,\n    )\n  File \"/home/lee/code/stock/binancechronossolexperiment/forecasts.py\", line 80, in build_forecast_bundle\n    raise RuntimeError(\n        f\"No Chronos forecasts available for {symbol}. Generate caches first or disable cache_only.\"\n    )\nRuntimeError: No Chronos forecasts available for ETHUSDT. Generate caches first or disable cache_only.\n"
+  }
+]

@@ -32,6 +32,7 @@ class TradingEnvConfig:
         smooth_downside_penalty: float = 0.0,
         smooth_downside_temperature: float = 0.02,
         trade_penalty: float = 0.0,
+        long_only: bool = False,
     ):
         self.data_path = str(Path(data_path).resolve())
         self.max_steps = max_steps
@@ -50,6 +51,7 @@ class TradingEnvConfig:
         self.smooth_downside_penalty = smooth_downside_penalty
         self.smooth_downside_temperature = smooth_downside_temperature
         self.trade_penalty = trade_penalty
+        self.long_only = long_only
 
 
 def _load_binding():
@@ -79,7 +81,10 @@ class TradingEnv(GymnasiumPufferEnv):
         per_symbol_actions = config.action_allocation_bins * config.action_level_bins
 
         obs_size = S * 16 + 5 + S   # features + portfolio + position encoding
-        num_actions = 1 + 2 * S * per_symbol_actions
+        if config.long_only:
+            num_actions = 1 + S * per_symbol_actions  # flat + longs only
+        else:
+            num_actions = 1 + 2 * S * per_symbol_actions  # flat + longs + shorts
 
         super().__init__(
             env_creator=None,
