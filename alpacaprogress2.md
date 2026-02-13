@@ -251,3 +251,28 @@ sudo supervisorctl start pufferlib-stocks-live
 - Keep existing SOL position sell order active
 - IEX data feed (no SIP subscription required)
 
+---
+
+## 2026-02-13 23:17 - LIVE DEPLOYMENT
+
+### Live Account Status
+- Equity: $55,935
+- Buying Power: $5,085
+- SOL sell order: 667.9 @ $81.19 (preserved)
+- NVDA: 2.15 shares
+
+### Live Bot Started
+```
+Connected to Alpaca (live)
+Starting hourly trading loop
+Market closed, skipping
+```
+
+### Monitoring Schedule (cron, UTC times)
+- 14:35 (9:35 AM ET) - market open check
+- 16:00 (11:00 AM ET) - mid-morning
+- 18:00 (1:00 PM ET) - midday
+- 20:00 (3:00 PM ET) - pre-close
+
+Monitor script: `scripts/monitor_trading.sh` (gitignored, has sudo pw)
+
