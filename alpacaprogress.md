@@ -706,3 +706,35 @@ Note: These are training metrics only (crypto11 data, 5M steps). Need validation
 4. **Longer training helps** - 50M > 30M > 10M > 5M steps
 5. **Smoothness penalty works** - 0.3-0.5 range stabilizes PnL curve
 6. **Trade penalty reduces churn** - 0.001 enough to limit overtrading
+
+### 100M Robust Training (Local)
+
+Combining best findings from all experiments:
+
+| Run | Steps | Best Val Sortino | Best Val Return | Config |
+|-----|-------|------------------|-----------------|--------|
+| **100M_robust** | **100M** | **58.79** | **951%** | obs_noise=0.01, smooth=0.5, downside=1.5 |
+
+Training progression:
+- 20M steps: val_sortino=2.24
+- 40M steps: val_sortino=32.20 
+- 60M steps: val_sortino=44.43
+- 80M steps: val_sortino=52.02
+- 100M steps: val_sortino=58.79
+
+Config:
+```python
+obs_noise_std=0.01      # Chronos2 robustness
+smoothness_penalty=0.5  # Stable PnL
+downside_penalty=1.5    # Sortino focus
+drawdown_penalty=0.05   # Light DD penalty
+trade_penalty=0.001     # Reduce churn
+hidden_size=512, num_blocks=3, train_split=0.8
+```
+
+Checkpoint: `experiments/stable_rl_sweep_20260213/checkpoints/100M_robust/best_val.pt`
+
+**Key insight**: 2x improvement over 50M_holdout (27.25 sortino) by:
+1. 2x more training (100M vs 50M)
+2. Observation noise for robustness
+3. Combined penalty tuning

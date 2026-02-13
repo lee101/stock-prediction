@@ -68,7 +68,14 @@ class PPOTrader:
 
         # Load checkpoint
         ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-        config = ckpt.get("config", {})
+
+        # Handle both formats: raw state dict or dict with "model" key
+        if "model" in ckpt:
+            state_dict = ckpt["model"]
+            config = ckpt.get("config", {})
+        else:
+            state_dict = ckpt
+            config = {}
 
         self.num_symbols = len(self.SYMBOLS)
         self.obs_size = self.num_symbols * 16 + 5 + self.num_symbols
@@ -78,11 +85,10 @@ class PPOTrader:
         blocks = config.get("num_blocks", 3)
 
         self.policy = Policy(self.obs_size, self.num_actions, hidden, blocks)
-        self.policy.load_state_dict(ckpt["model"])
+        self.policy.load_state_dict(state_dict)
         self.policy.to(self.device)
         self.policy.eval()
 
-        # Track state
         self.current_position = None
         self.cash = 10000.0
         self.position_qty = 0.0
@@ -92,8 +98,6 @@ class PPOTrader:
         self.max_steps = config.get("max_steps", 720)
 
         print(f"Loaded model from {checkpoint_path}")
-        print(f"  Val sortino: {ckpt.get('val_sortino', 'N/A')}")
-        print(f"  Val return: {ckpt.get('val_return', 'N/A')}")
 
     def build_observation(self, features: np.ndarray, prices: dict) -> np.ndarray:
         """
