@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "MSFT",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 500,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "robust_scaling",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "MSFT_lora_robust_scaling_ctx128_lr5e-05_r16_20260213_172258",
+  "output_dir": "chronos2_finetuned/MSFT_lora_robust_scaling_ctx128_lr5e-05_r16_20260213_172258",
+  "val": {
+    "mae_mean": 4.681824614604314,
+    "mae_std": 2.6978581645262083,
+    "mae_max": 10.386969566345215,
+    "mae_p90": 8.087853002548218,
+    "mae_percent_mean": 0.9773656337832412,
+    "mae_percent_std": 0.5723399782877858,
+    "mae_percent_max": 2.2032514214515686,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 13.268450736999512,
+    "mae_std": 8.268466337376555,
+    "mae_max": 32.681671142578125,
+    "mae_p90": 21.162849617004394,
+    "mae_percent_mean": 3.074320040953656,
+    "mae_percent_std": 1.9216034515726297,
+    "mae_percent_max": 7.581295818090439,
+    "count": 12
+  },
+  "val_consistency_score": 1.6313013592276322,
+  "test_consistency_score": 5.387214499881006
+}

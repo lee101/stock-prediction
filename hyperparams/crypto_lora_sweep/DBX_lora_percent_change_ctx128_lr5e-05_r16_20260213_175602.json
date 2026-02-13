@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "DBX",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 500,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "percent_change",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "DBX_lora_percent_change_ctx128_lr5e-05_r16_20260213_175602",
+  "output_dir": "chronos2_finetuned/DBX_lora_percent_change_ctx128_lr5e-05_r16_20260213_175602",
+  "val": {
+    "mae_mean": 0.5399318461616834,
+    "mae_std": 0.2460677966166618,
+    "mae_max": 0.910312831401825,
+    "mae_p90": 0.8971766769886017,
+    "mae_percent_mean": 1.924476547477146,
+    "mae_percent_std": 0.892871758749173,
+    "mae_percent_max": 3.383776545524597,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 0.5134924252827963,
+    "mae_std": 0.17583805646204417,
+    "mae_max": 0.7787628769874573,
+    "mae_p90": 0.7203878045082093,
+    "mae_percent_mean": 1.9806992534237604,
+    "mae_percent_std": 0.665896239524519,
+    "mae_percent_max": 2.9146796092391014,
+    "count": 12
+  },
+  "val_consistency_score": 2.8087024262659677,
+  "test_consistency_score": 2.593841479930622
+}
