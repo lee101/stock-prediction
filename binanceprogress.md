@@ -1117,10 +1117,20 @@ Sweep on existing h1only checkpoint with 30-day fine-tuning:
 
 Note: ETH shows exceptionally strong performance. Consider similar SUI-specific forecast treatment for ETH.
 
-## Sortino Optimization Experiments (in progress, 2026-02-13)
+## Sortino Optimization Experiments (2026-02-13)
 
-Training additional Sortino-optimized variants:
-- `sui_sortino_rw001`: return_weight=0.01 (pending)
-- `sui_sortino_rw0005`: return_weight=0.005 (pending)
+| Run | return_weight | Test Return | Test Sortino | Final Equity |
+|-----|---------------|-------------|--------------|--------------|
+| sui_neural_rw008 | 0.08 | 73.88% | 293 | $17,388 |
+| sui_neural_rw004 | 0.04 | 60.53% | 386 | $16,053 |
+| **sui_sortino_rw001** | **0.01** | **201.68%** | **623.24** | **$30,168** |
+| sui_sortino_rw0005 | 0.005 | 266.61% | 102.03 | $37,094 |
 
-Lower return_weight should push model toward risk-averse (high Sortino) behavior.
+### Key Finding
+- **return_weight=0.01 achieves best Sortino (623.24)** with excellent return (201.68%)
+- Lower return_weight (0.005) increases return but reduces Sortino significantly
+
+### Best Sortino Config
+- **Checkpoint**: `binancechronossolexperiment/checkpoints/sui_sortino_rw001/policy_checkpoint.pt`
+- **Parameters**: return_weight=0.01, horizons=1,4,24, sequence_length=72, epochs=15
+- **Performance**: 201.68% return, Sortino 623.24, Final equity $30,168
