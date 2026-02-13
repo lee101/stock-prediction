@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "ETHUSD",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "percent_change",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "ETHUSD_lora_percent_change_ctx128_lr5e-05_r16_20260212_224553",
+  "output_dir": "chronos2_finetuned/ETHUSD_lora_percent_change_ctx128_lr5e-05_r16_20260212_224553",
+  "val": {
+    "mae_mean": 75.46176671981812,
+    "mae_std": 40.92159457847572,
+    "mae_max": 162.6776580810547,
+    "mae_p90": 132.36986083984377,
+    "mae_percent_mean": 3.0966796136150756,
+    "mae_percent_std": 1.6112558485054445,
+    "mae_percent_max": 6.695141643285751,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 60.98301307360331,
+    "mae_std": 47.312514123392496,
+    "mae_max": 162.19866943359375,
+    "mae_p90": 144.23656539916996,
+    "mae_percent_mean": 3.0378408497199416,
+    "mae_percent_std": 2.4099847901639007,
+    "mae_percent_max": 7.955137640237808,
+    "count": 12
+  },
+  "val_consistency_score": 4.9818461467690005,
+  "test_consistency_score": 5.718022281957252
+}

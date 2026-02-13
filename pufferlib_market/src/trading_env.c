@@ -350,6 +350,7 @@ static void reset_agent_state(TradingEnv* env) {
     ag->sum_neg_sq = 0.0f;
     ag->sum_ret = 0.0f;
     ag->ret_count = 0;
+    ag->prev_ret = 0.0f;
 }
 
 void c_reset(TradingEnv* env) {
@@ -539,6 +540,13 @@ void c_step(TradingEnv* env) {
     if (env->trade_penalty > 0.0f && trade_events > 0) {
         reward -= env->trade_penalty * (float)trade_events;
     }
+
+    /* smoothness penalty: penalize large changes in returns (encourages steady PnL curve) */
+    if (env->smoothness_penalty > 0.0f && ag->ret_count > 0) {
+        float ret_diff = ret - ag->prev_ret;
+        reward -= env->smoothness_penalty * (ret_diff * ret_diff);
+    }
+    ag->prev_ret = ret;
 
     env->rewards[0] = reward;
 
