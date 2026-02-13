@@ -130,6 +130,9 @@ def main():
     parser.add_argument("--stock-cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
     parser.add_argument("--crypto-cache-root", type=Path, default=Path("binanceneural/forecast_cache"))
     parser.add_argument("--dry-run", action="store_true", help="Print signals only, no trading")
+    parser.add_argument("--min-edge", type=float, default=0.012, help="Min edge to execute trade")
+    parser.add_argument("--fee-rate", type=float, default=0.001, help="Trading fee rate")
+    parser.add_argument("--ignore-market-hours", action="store_true", help="Generate signals even outside market hours")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -154,7 +157,7 @@ def main():
 
     # Generate stock signals
     for symbol in stocks:
-        if not market_open:
+        if not market_open and not args.ignore_market_hours:
             logger.info("{}: Market closed, skipping", symbol)
             continue
 
@@ -163,9 +166,15 @@ def main():
             args.stock_data_root, args.stock_cache_root, device
         )
         if action:
-            signals[symbol] = action
-            logger.info("{}: buy={:.2f} sell={:.2f} amount={:.4f}",
-                       symbol, action["buy_price"], action["sell_price"], action["trade_amount"])
+            pred_high = action.get("predicted_high", 0)
+            buy_price = action.get("buy_price", 0)
+            edge = (pred_high - buy_price) / buy_price - args.fee_rate if buy_price > 0 else 0
+            if edge >= args.min_edge:
+                signals[symbol] = action
+                logger.info("{}: buy={:.2f} sell={:.2f} amount={:.4f} edge={:.4f}",
+                           symbol, action["buy_price"], action["sell_price"], action["trade_amount"], edge)
+            else:
+                logger.info("{}: edge={:.4f} below threshold {:.4f}", symbol, edge, args.min_edge)
 
     # Generate crypto signals
     for symbol in cryptos:
@@ -174,9 +183,15 @@ def main():
             args.crypto_data_root, args.crypto_cache_root, device
         )
         if action:
-            signals[symbol] = action
-            logger.info("{}: buy={:.2f} sell={:.2f} amount={:.4f}",
-                       symbol, action["buy_price"], action["sell_price"], action["trade_amount"])
+            pred_high = action.get("predicted_high", 0)
+            buy_price = action.get("buy_price", 0)
+            edge = (pred_high - buy_price) / buy_price - args.fee_rate if buy_price > 0 else 0
+            if edge >= args.min_edge:
+                signals[symbol] = action
+                logger.info("{}: buy={:.2f} sell={:.2f} amount={:.4f} edge={:.4f}",
+                           symbol, action["buy_price"], action["sell_price"], action["trade_amount"], edge)
+            else:
+                logger.info("{}: edge={:.4f} below threshold {:.4f}", symbol, edge, args.min_edge)
 
     if args.dry_run:
         logger.info("Dry run - would execute signals: {}", list(signals.keys()))
