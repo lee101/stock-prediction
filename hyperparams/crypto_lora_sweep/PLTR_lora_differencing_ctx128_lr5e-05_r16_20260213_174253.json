@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "PLTR",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 500,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "differencing",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "PLTR_lora_differencing_ctx128_lr5e-05_r16_20260213_174253",
+  "output_dir": "chronos2_finetuned/PLTR_lora_differencing_ctx128_lr5e-05_r16_20260213_174253",
+  "val": {
+    "mae_mean": 5.632683114369866,
+    "mae_std": 3.341677990962612,
+    "mae_max": 13.70617511530718,
+    "mae_p90": 9.356853783863281,
+    "mae_percent_mean": 3.1050996483554107,
+    "mae_percent_std": 1.86802828106907,
+    "mae_percent_max": 7.628661199318949,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 5.837532753783482,
+    "mae_std": 4.228220178621649,
+    "mae_max": 17.935711271191625,
+    "mae_p90": 8.02150492664303,
+    "mae_percent_mean": 3.9737502662025785,
+    "mae_percent_std": 3.235587649728118,
+    "mae_percent_max": 13.372920389713292,
+    "count": 12
+  },
+  "val_consistency_score": 5.396182254179007,
+  "test_consistency_score": 8.411295128119852
+}

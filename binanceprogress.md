@@ -1134,3 +1134,35 @@ Note: ETH shows exceptionally strong performance. Consider similar SUI-specific 
 - **Checkpoint**: `binancechronossolexperiment/checkpoints/sui_sortino_rw001/policy_checkpoint.pt`
 - **Parameters**: return_weight=0.01, horizons=1,4,24, sequence_length=72, epochs=15
 - **Performance**: 201.68% return, Sortino 623.24, Final equity $30,168
+
+## Code Bug Fixes (2026-02-13)
+
+Critical math bugs fixed in C/Go trading code:
+
+| File | Bug | Fix |
+|------|-----|-----|
+| market_sim_c/market_env.c:221 | Division by zero in return calc | Added `old_value > 1e-6f` guard |
+| market_sim_c/market_env.c:137 | Double fee bug (~2x fees on buys) | Fixed max_shares calculation |
+| trading_sim.h:237 | Drawdown sign error (never updated) | Changed to positive drawdown |
+| pufferlib trading_env.c:576 | Sortino div/zero | Added `downside_dev > 1e-8f` guard |
+| alpaca_go/watcher.go:199 | LimitPrice div/zero | Added validation |
+| alpaca_go/ramp.go | Silent Float64 errors | Added equity/price validation |
+
+**Impact**: Training with double fee bug was pessimistic. Retrained models should perform better.
+
+## 7-Day Validation (2026-02-13, 10bp fee)
+
+| Asset | Checkpoint | Return | Sortino | Trades |
+|-------|------------|--------|---------|--------|
+| ETH | ethusd_h1only_ft30 | **+41.3%** | **283** | 126 |
+| SUI | sui_neural_rw004 | +30.9% | 134 | 125 |
+
+**Finding**: ETH outperforms SUI on recent 7-day validation. Consider ETH deployment.
+
+## Active Sweeps (2026-02-13)
+
+Running Sortino optimization sweeps:
+- `binancechronossolexperiment/run_sortino_sweep.py --symbol SUIUSDT`
+- `binancechronossolexperiment/run_sortino_sweep.py --symbol ETHUSDT`
+
+Varying: return_weight (0.005, 0.01, 0.02, 0.04), epochs (15, 30, 60), sequence_length (72, 96)
