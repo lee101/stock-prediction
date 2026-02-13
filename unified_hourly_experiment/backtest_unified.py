@@ -146,6 +146,8 @@ def main():
         enforce_market_hours=True,
         close_at_eod=True,
         symbols=symbols,
+        max_leverage_stock=1.0,
+        max_leverage_crypto=1.0,
     )
 
     result = run_unified_simulation(bars, actions, sim_config, horizon=args.horizon)

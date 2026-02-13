@@ -134,6 +134,7 @@ def generate_latest_action(
         )
 
     take = -1
+    close_col = f"predicted_close_p50_h{int(horizon)}"
     return {
         "timestamp": frame["timestamp"].iloc[-1],
         "symbol": frame["symbol"].iloc[-1],
@@ -142,6 +143,9 @@ def generate_latest_action(
         "buy_amount": float(decoded["buy_amount"][0, take].cpu().item()),
         "sell_amount": float(decoded["sell_amount"][0, take].cpu().item()),
         "trade_amount": float(decoded["trade_amount"][0, take].cpu().item()),
+        "predicted_high": float(frame[high_col].iloc[-1]),
+        "predicted_low": float(frame[low_col].iloc[-1]),
+        "predicted_close": float(frame[close_col].iloc[-1]) if close_col in frame.columns else 0.0,
     }
 
 
