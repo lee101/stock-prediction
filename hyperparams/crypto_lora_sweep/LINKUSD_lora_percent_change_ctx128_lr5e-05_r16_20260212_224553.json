@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "LINKUSD",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "percent_change",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "LINKUSD_lora_percent_change_ctx128_lr5e-05_r16_20260212_224553",
+  "output_dir": "chronos2_finetuned/LINKUSD_lora_percent_change_ctx128_lr5e-05_r16_20260212_224553",
+  "val": {
+    "mae_mean": 0.1460475573937098,
+    "mae_std": 0.10949131737784429,
+    "mae_max": 0.39731624722480774,
+    "mae_p90": 0.24912979155778886,
+    "mae_percent_mean": 1.2610598098641883,
+    "mae_percent_std": 0.9829766022418073,
+    "mae_percent_max": 3.6084849387407303,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 0.27852842522164184,
+    "mae_std": 0.15707082335956735,
+    "mae_max": 0.6000915765762329,
+    "mae_p90": 0.5323386609554291,
+    "mae_percent_mean": 2.977059160669645,
+    "mae_percent_std": 1.7637431909069614,
+    "mae_percent_max": 6.691356748342514,
+    "count": 12
+  },
+  "val_consistency_score": 2.4567756496480544,
+  "test_consistency_score": 4.973220032424987
+}

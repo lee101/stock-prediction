@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "SOLUSD",
+    "context_length": 256,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 0.0001,
+    "num_steps": 1000,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "percent_change",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "SOLUSD_lora_percent_change_ctx256_lr1e-04_r16_20260212_224521",
+  "output_dir": "chronos2_finetuned/SOLUSD_lora_percent_change_ctx256_lr1e-04_r16_20260212_224521",
+  "val": {
+    "mae_mean": 3.793839563926061,
+    "mae_std": 1.9703196028865295,
+    "mae_max": 9.037035942077637,
+    "mae_p90": 4.907060384750366,
+    "mae_percent_mean": 3.631131025031209,
+    "mae_percent_std": 1.9173197292011166,
+    "mae_percent_max": 8.639293164014816,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 3.0359377960364022,
+    "mae_std": 2.5252041186069394,
+    "mae_max": 8.470062255859375,
+    "mae_p90": 7.7587924957275405,
+    "mae_percent_mean": 3.6122325342148542,
+    "mae_percent_std": 3.0747690619874968,
+    "mae_percent_max": 10.646656900644302,
+    "count": 12
+  },
+  "val_consistency_score": 6.092239531326849,
+  "test_consistency_score": 7.259944375137437
+}

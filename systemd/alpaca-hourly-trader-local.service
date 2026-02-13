@@ -1,0 +1,44 @@
+[Unit]
+Description=Alpaca hourly trader (live) - mixed14 crypto5 best config
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/lee/code/stock
+Environment=PYTHONPATH=/home/lee/code/stock
+Environment=PYTHONUNBUFFERED=1
+Environment=PAPER=0
+Environment=TRADE_STATE_SUFFIX=hourly
+ExecStart=/home/lee/code/stock/.venv/bin/python -m newnanoalpacahourlyexp.trade_alpaca_selector \
+  --symbols SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD \
+  --checkpoint /home/lee/code/stock/binanceneural/checkpoints/alpaca_cross_global_mixed14_robust_short_seq128_lb4000_20260205_2319/epoch_002.pt \
+  --sequence-length 128 \
+  --horizon 1 \
+  --forecast-horizons 1,24 \
+  --crypto-data-root /home/lee/code/stock/trainingdatahourly/crypto \
+  --stock-data-root /home/lee/code/stock/trainingdatahourly/stocks \
+  --forecast-cache-root /home/lee/code/stock/alpacanewccrosslearning/forecast_cache/mixed14_robust_20260205_2301_lb4000 \
+  --allocation-pct 1.0 \
+  --intensity-scale 10000.0 \
+  --min-edge 0.001 \
+  --risk-weight 0.05 \
+  --dip-threshold-pct 0.0025 \
+  --edge-mode high_low \
+  --moving-average-windows 24,72 \
+  --ema-windows 24,72 \
+  --atr-windows 24,72 \
+  --trend-windows 72 \
+  --drawdown-windows 72 \
+  --volume-z-window 72 \
+  --volume-shock-window 24 \
+  --vol-regime-short 24 \
+  --vol-regime-long 72 \
+  --min-history-hours 200 \
+  --cache-only \
+  --buffer-seconds 30
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1065,3 +1065,40 @@ Environment: `BINANCE_DEFAULT_QUOTE="U"` (zero-fee U pairs).
 - Final Value: $7424.79
 - PnL: -25.75%
 - Trades: 27
+
+## SUI Neural Policy v2 (2026-02-13) - SUI-Specific Forecasts
+
+### Key Fix
+Previous training (`sui_10bp_neural`) used **SOL forecasts** by mistake. This run uses the correct **SUI-specific LoRA forecasts**.
+
+### Forecast Cache
+- Model: `chronos2_finetuned/binance_lora_20260208_newpairs_SUIUSDT/finetuned-ckpt`
+- Cache: `binancechronossolexperiment/forecast_cache_sui_10bp`
+- MAE%: h1=0.74%, h4=1.39%, h24=3.65%
+
+### Training Sweep (7-day test window, 10bp fee)
+
+| Run | return_weight | Horizons | Epochs | Return | Sortino | Final Equity |
+|-----|---------------|----------|--------|--------|---------|--------------|
+| Baseline (SOL forecasts) | 0.08 | 1,4,24 | 10 | 40.73% | 171 | $14,074 |
+| **sui_neural_v2_rw008** | **0.08** | 1,4,24 | 15 | **73.88%** | **293** | **$17,388** |
+| sui_neural_rw015 | 0.15 | 1,4,24 | 15 | 63.84% | 67 | $16,384 |
+| sui_neural_rw004 | 0.04 | 1,4,24 | 15 | 60.53% | **386** | $16,053 |
+| sui_neural_rw002 | 0.02 | 1,4,24 | 15 | 73.79% | 127 | $17,379 |
+| sui_h1only_rw008 | 0.08 | 1 | 15 | 61.38% | 95 | $16,138 |
+| sui_neural_25ep | 0.08 | 1,4,24 | 25 | 73.88% | 293 | $17,388 |
+
+### Key Findings
+1. **Multi-horizon (1,4,24) >> h1-only**: 73.88% vs 61.38% return
+2. **Optimal return_weight=0.08**: Best balance of return + Sortino
+3. **return_weight=0.04 for max Sortino**: 386 Sortino (best), 60.53% return
+4. **25 epochs = 15 epochs**: Model converges by epoch 15
+
+### Best Configs
+- **Best Return**: `sui_neural_v2_rw008` (return_weight=0.08, horizons=1,4,24) - 73.88% return, Sortino 293
+- **Best Sortino**: `sui_neural_rw004` (return_weight=0.04, horizons=1,4,24) - 60.53% return, Sortino 386
+- Checkpoint: `binancechronossolexperiment/checkpoints/sui_neural_v2_rw008/policy_checkpoint.pt`
+
+### Improvement Summary
+- Using SUI-specific forecasts instead of SOL: **+81% return improvement** (40.73% -> 73.88%)
+- Sortino improvement: **+71%** (171 -> 293)

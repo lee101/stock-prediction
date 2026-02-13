@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "UNIUSD",
+    "context_length": 256,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 0.0001,
+    "num_steps": 1000,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "percent_change",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "UNIUSD_lora_percent_change_ctx256_lr1e-04_r16_20260212_224544",
+  "output_dir": "chronos2_finetuned/UNIUSD_lora_percent_change_ctx256_lr1e-04_r16_20260212_224544",
+  "val": {
+    "mae_mean": 0.07680920418351889,
+    "mae_std": 0.06167017290824501,
+    "mae_max": 0.20574678480625153,
+    "mae_p90": 0.18071556463837626,
+    "mae_percent_mean": 1.6658917961952586,
+    "mae_percent_std": 1.3888501701121525,
+    "mae_percent_max": 4.71431128680706,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 0.1092605022713542,
+    "mae_std": 0.0826718263204208,
+    "mae_max": 0.3318222165107727,
+    "mae_p90": 0.215344350039959,
+    "mae_percent_mean": 2.957586346504589,
+    "mae_percent_std": 2.501878403183139,
+    "mae_percent_max": 10.181576013565063,
+    "count": 12
+  },
+  "val_consistency_score": 3.2748427284348756,
+  "test_consistency_score": 6.375722448214301
+}

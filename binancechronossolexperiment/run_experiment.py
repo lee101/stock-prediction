@@ -100,6 +100,7 @@ def main() -> None:
     parser.add_argument("--causal-attn", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--rms-norm-eps", type=float, default=1e-5)
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
+    parser.add_argument("--return-weight", type=float, default=0.08, help="Weight for return term in loss")
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--no-compile", action="store_true")
     parser.add_argument("--no-plot", action="store_true")
@@ -136,6 +137,7 @@ def main() -> None:
         sequence_length=args.sequence_length,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
+        return_weight=args.return_weight,
         optimizer_name=args.optimizer,
         model_arch=args.model_arch,
         num_kv_heads=args.num_kv_heads,

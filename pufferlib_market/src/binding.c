@@ -13,7 +13,7 @@ static MarketData* g_shared_data = NULL;
 #define MY_SHARED
 
 #define Env TradingEnv
-#include "../../external/pufferlib-3.0.0/pufferlib/ocean/env_binding.h"
+#include "../../PufferLib/pufferlib/ocean/env_binding.h"
 
 /* ---------- shared market data (one per worker process) ---------- */
 
@@ -101,6 +101,9 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
 
     val = kwargs ? PyDict_GetItemString(kwargs, "trade_penalty") : NULL;
     env->trade_penalty = val ? (float)PyFloat_AsDouble(val) : 0.0f;
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "smoothness_penalty") : NULL;
+    env->smoothness_penalty = val ? (float)PyFloat_AsDouble(val) : 0.0f;
 
     int S = g_shared_data->num_symbols;
     int side_block = S * env->action_allocation_bins * env->action_level_bins;
