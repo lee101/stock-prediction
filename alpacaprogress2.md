@@ -46,6 +46,35 @@ Config: Alpaca fees 0.15%, 7d val/test split, h1+h24 Chronos forecasts
 
 ---
 
+## 2026-02-13 21:06 - Stock Sortino Training (No Forecasts Baseline)
+
+**Tech Stocks (50 epochs, 128 hidden, 3 layers):**
+
+| Symbol | 5d Return | Sortino | Final Equity |
+|--------|-----------|---------|--------------|
+| **NET** | **88.09%** | 0.0 | $19,302 |
+| **META** | **34.71%** | 6141.8 | $13,471 |
+| PLTR | 21.56% | 647k | $12,247 |
+| MSFT | 19.59% | 97.6 | $11,962 |
+| GOOG | 18.24% | 5682.5 | $11,961 |
+| NVDA | 14.14% | nan | $11,414 |
+
+Config: bf16 AMP, batch_size=32, seq_len=48, fee=0.0001
+Note: High Sortino values due to few/no down days in test period
+
+**Shortable Stocks (50 epochs, 128 hidden, 3 layers):**
+
+| Symbol | 5d Return | Sortino | Final Equity |
+|--------|-----------|---------|--------------|
+| **TRIP** | **63.13%** | 0.0 | $16,553 |
+| **DBX** | **34.65%** | 0.0 | $13,565 |
+| YELP | 25.73% | 9376.6 | $12,768 |
+| NYT | 25.08% | nan | $12,749 |
+
+**Combined best performers:** NET(88%), TRIP(63%), META(34%), DBX(34%)
+
+---
+
 ## 2026-02-13: Stock LoRA + Unified Neural Policy
 
 ### Preaug Strategy Sweep (10 Stocks)
