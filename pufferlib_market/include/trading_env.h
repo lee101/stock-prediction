@@ -86,12 +86,25 @@ typedef struct {
     float          max_leverage;    /* 1.0 = no leverage */
     float          periods_per_year;/* annualisation factor for metrics (e.g. 8760 for hourly, 365 for daily) */
 
+    /* --- action-space config ---
+       Action layout:
+         0 = go flat
+         1..K = long actions
+         K+1..2K = short actions
+       where K = num_symbols * action_allocation_bins * action_level_bins.
+       Within each side, action factors as (symbol, allocation_bin, level_bin). */
+    int            action_allocation_bins;  /* >=1, target exposure bins (e.g. 5 => 20/40/60/80/100%) */
+    int            action_level_bins;       /* >=1, execution level bins around close */
+    float          action_max_offset_bps;   /* max abs level offset in bps (e.g. 50 => +/-0.50%) */
+
     /* --- reward shaping config --- */
     float          reward_scale;    /* multiply return by this (default 10) */
     float          reward_clip;     /* clip abs(reward) to this (default 5) */
     float          cash_penalty;    /* per-step penalty for being flat (default 0.01) */
     float          drawdown_penalty;/* penalty scale for drawdown from peak (default 0) */
     float          downside_penalty;/* penalty scale for negative returns (ret^2) (default 0) */
+    float          smooth_downside_penalty;  /* smooth downside penalty scale (softplus-ret proxy)^2 */
+    float          smooth_downside_temperature; /* temperature for smooth downside penalty */
     float          trade_penalty;   /* per-trade penalty (counting opens/closes) (default 0) */
 
     /* --- shared data (NOT owned, do not free) --- */
@@ -102,7 +115,7 @@ typedef struct {
 
     /* --- derived sizes --- */
     int            obs_size;
-    int            num_actions;     /* 1 + 2*num_symbols */
+    int            num_actions;     /* 1 + 2*(num_symbols*allocation_bins*level_bins) */
 } TradingEnv;
 
 /* ---------- observation layout ----------

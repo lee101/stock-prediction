@@ -29,6 +29,15 @@ from pufferlib_market.environment import TradingEnvConfig, TradingEnv
 
 # ─── Policy Network ───────────────────────────────────────────────────
 
+def _mask_short_logits(logits: torch.Tensor, num_actions: int) -> torch.Tensor:
+    """Mask short-action branch in discrete action logits."""
+    num_symbols = (int(num_actions) - 1) // 2
+    if num_symbols <= 0:
+        return logits
+    masked = logits.clone()
+    masked[:, 1 + num_symbols :] = torch.finfo(masked.dtype).min
+    return masked
+
 class TradingPolicy(nn.Module):
     """
     Small MLP policy + value head for trading.
@@ -79,8 +88,10 @@ class TradingPolicy(nn.Module):
         value = self.critic(h).squeeze(-1)
         return logits, value
 
-    def get_action_and_value(self, x, action=None):
+    def get_action_and_value(self, x, action=None, *, disable_shorts: bool = False):
         logits, value = self.forward(x)
+        if disable_shorts:
+            logits = _mask_short_logits(logits, self.num_actions)
         dist = Categorical(logits=logits)
         if action is None:
             action = dist.sample()
@@ -147,8 +158,10 @@ class ResidualTradingPolicy(nn.Module):
         value = self.critic(h).squeeze(-1)
         return logits, value
 
-    def get_action_and_value(self, x, action=None):
+    def get_action_and_value(self, x, action=None, *, disable_shorts: bool = False):
         logits, value = self.forward(x)
+        if disable_shorts:
+            logits = _mask_short_logits(logits, self.num_actions)
         dist = Categorical(logits=logits)
         if action is None:
             action = dist.sample()
@@ -210,15 +223,28 @@ def train(args):
         num_symbols=num_symbols,
         reward_scale=args.reward_scale,
         reward_clip=args.reward_clip,
+        action_allocation_bins=args.action_allocation_bins,
+        action_level_bins=args.action_level_bins,
+        action_max_offset_bps=args.action_max_offset_bps,
         cash_penalty=args.cash_penalty,
         drawdown_penalty=args.drawdown_penalty,
         downside_penalty=args.downside_penalty,
+        smooth_downside_penalty=args.smooth_downside_penalty,
+        smooth_downside_temperature=args.smooth_downside_temperature,
         trade_penalty=args.trade_penalty,
     )
 
     obs_size = num_symbols * 16 + 5 + num_symbols
-    num_actions = 1 + 2 * num_symbols
+    per_symbol_actions = config.action_allocation_bins * config.action_level_bins
+    num_actions = 1 + 2 * num_symbols * per_symbol_actions
     print(f"  obs_size={obs_size}, num_actions={num_actions}")
+    print(
+        "  action_grid: alloc_bins={} level_bins={} max_offset_bps={:.1f}".format(
+            int(config.action_allocation_bins),
+            int(config.action_level_bins),
+            float(config.action_max_offset_bps),
+        )
+    )
 
     # ── Create vectorised envs ──
     # PufferLib vec_init handles batched numpy buffers
@@ -238,9 +264,14 @@ def train(args):
         periods_per_year=config.periods_per_year,
         reward_scale=config.reward_scale,
         reward_clip=config.reward_clip,
+        action_allocation_bins=config.action_allocation_bins,
+        action_level_bins=config.action_level_bins,
+        action_max_offset_bps=config.action_max_offset_bps,
         cash_penalty=config.cash_penalty,
         drawdown_penalty=config.drawdown_penalty,
         downside_penalty=config.downside_penalty,
+        smooth_downside_penalty=config.smooth_downside_penalty,
+        smooth_downside_temperature=config.smooth_downside_temperature,
         trade_penalty=config.trade_penalty,
     )
     binding.vec_reset(vec_handle, args.seed)
@@ -274,6 +305,11 @@ def train(args):
     num_updates = args.total_timesteps // (T * N)
     start_time = time.time()
     best_return = -float("inf")
+    action_meta = {
+        "action_allocation_bins": int(config.action_allocation_bins),
+        "action_level_bins": int(config.action_level_bins),
+        "action_max_offset_bps": float(config.action_max_offset_bps),
+    }
 
     print(f"\nTraining: {num_updates} updates, {args.total_timesteps:,} total steps")
     print(f"  rollout_len={T}, num_envs={N}, batch_size={T * N}")
@@ -295,7 +331,10 @@ def train(args):
             buf_obs[step] = obs_tensor
 
             with torch.no_grad():
-                action, logprob, _, value = policy.get_action_and_value(obs_tensor)
+                action, logprob, _, value = policy.get_action_and_value(
+                    obs_tensor,
+                    disable_shorts=args.disable_shorts,
+                )
 
             buf_act[step] = action.cpu()
             buf_logprob[step] = logprob.cpu()
@@ -357,7 +396,9 @@ def train(args):
                 mb_idx = indices[start:end]
 
                 _, new_logprob, entropy, new_value = policy.get_action_and_value(
-                    b_obs[mb_idx], b_act[mb_idx]
+                    b_obs[mb_idx],
+                    b_act[mb_idx],
+                    disable_shorts=args.disable_shorts,
                 )
 
                 # PPO clipped objective
@@ -413,6 +454,8 @@ def train(args):
                     "update": update,
                     "global_step": global_step,
                     "best_return": best_return,
+                    "disable_shorts": bool(args.disable_shorts),
+                    **action_meta,
                 }, ckpt_path)
 
             print(
@@ -440,6 +483,8 @@ def train(args):
                 "update": update,
                 "global_step": global_step,
                 "best_return": best_return,
+                "disable_shorts": bool(args.disable_shorts),
+                **action_meta,
             }, ckpt_path)
 
     # ── Final save ──
@@ -451,6 +496,8 @@ def train(args):
         "update": num_updates,
         "global_step": global_step,
         "best_return": best_return,
+        "disable_shorts": bool(args.disable_shorts),
+        **action_meta,
     }, ckpt_path)
 
     binding.vec_close(vec_handle)
@@ -469,6 +516,24 @@ def main():
                         help="Annualisation factor for Sortino (8760=hourly, 365=daily, 252=trading days)")
     parser.add_argument("--reward-scale", type=float, default=10.0, help="Reward = ret * scale")
     parser.add_argument("--reward-clip", type=float, default=5.0, help="Clip |reward| to this")
+    parser.add_argument(
+        "--action-allocation-bins",
+        type=int,
+        default=1,
+        help="Discrete exposure bins per symbol/side (1 keeps legacy full-allocation actions).",
+    )
+    parser.add_argument(
+        "--action-level-bins",
+        type=int,
+        default=1,
+        help="Discrete execution-level bins around close per symbol/side (1 keeps market-at-close behavior).",
+    )
+    parser.add_argument(
+        "--action-max-offset-bps",
+        type=float,
+        default=0.0,
+        help="Max absolute limit-offset in bps for action levels (e.g. 50 => +/-0.50%%).",
+    )
     parser.add_argument("--cash-penalty", type=float, default=0.01, help="Per-step flat penalty")
     parser.add_argument("--drawdown-penalty", type=float, default=0.0, help="Drawdown penalty scale")
     parser.add_argument(
@@ -483,6 +548,18 @@ def main():
         default=0.0,
         help="Per-trade penalty (counts opens+closes executed by action); discourages churn",
     )
+    parser.add_argument(
+        "--smooth-downside-penalty",
+        type=float,
+        default=0.0,
+        help="Smooth downside penalty scale using softplus(-ret/temp)^2.",
+    )
+    parser.add_argument(
+        "--smooth-downside-temperature",
+        type=float,
+        default=0.02,
+        help="Temperature for smooth downside shaping (smaller -> sharper downside proxy).",
+    )
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
 
@@ -490,6 +567,7 @@ def main():
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--arch", choices=["mlp", "resmlp"], default="mlp",
                         help="Architecture: mlp (default) or resmlp (residual+LayerNorm)")
+    parser.add_argument("--disable-shorts", action="store_true", help="Mask short actions (long/flat only)")
 
     # PPO
     parser.add_argument("--total-timesteps", type=int, default=10_000_000)
