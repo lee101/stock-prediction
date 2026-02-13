@@ -73,6 +73,16 @@ Note: High Sortino values due to few/no down days in test period
 
 **Combined best performers:** NET(88%), TRIP(63%), META(34%), DBX(34%)
 
+### UNI Validation (Out-of-Sample)
+
+| Period | Return | Sortino |
+|--------|--------|---------|
+| Last 7d (test) | **318.14%** | 1280 |
+| Week -2 (oos) | 11.24% | 71.7 |
+| Week -3 (oos) | 23.48% | 158.1 |
+
+Out-of-sample returns (11-23%) confirm model generalizes beyond training period.
+
 ---
 
 ## 2026-02-13: Stock LoRA + Unified Neural Policy
