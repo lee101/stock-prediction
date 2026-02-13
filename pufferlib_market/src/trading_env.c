@@ -218,40 +218,109 @@ static void close_position(TradingEnv* env, int t) {
     ag->hold_hours = 0;
 }
 
-static void open_long(TradingEnv* env, int t, int sym) {
+static int resolve_limit_fill_price(const MarketData* md, int t, int sym, float target_price, float* fill_price) {
+    float low = get_price(md, t, sym, P_LOW);
+    float high = get_price(md, t, sym, P_HIGH);
+    if (low > high) {
+        float tmp = low;
+        low = high;
+        high = tmp;
+    }
+    if (target_price < low || target_price > high) {
+        return 0;
+    }
+    *fill_price = target_price;
+    return 1;
+}
+
+static float action_allocation_pct(const TradingEnv* env, int alloc_idx) {
+    int bins = env->action_allocation_bins;
+    if (bins <= 1) return 1.0f;
+    if (alloc_idx < 0) alloc_idx = 0;
+    if (alloc_idx >= bins) alloc_idx = bins - 1;
+    float pct = (float)(alloc_idx + 1) / (float)bins;
+    if (pct < 0.01f) pct = 0.01f;
+    if (pct > 1.0f) pct = 1.0f;
+    return pct;
+}
+
+static float action_level_offset_bps(const TradingEnv* env, int level_idx) {
+    int bins = env->action_level_bins;
+    float max_bps = env->action_max_offset_bps;
+    if (bins <= 1 || max_bps <= 0.0f) return 0.0f;
+    if (level_idx < 0) level_idx = 0;
+    if (level_idx >= bins) level_idx = bins - 1;
+    float frac = (float)level_idx / (float)(bins - 1);  /* [0,1] */
+    return (2.0f * frac - 1.0f) * max_bps;              /* [-max,+max] */
+}
+
+static void open_long(TradingEnv* env, int t, int sym, float allocation_pct, float level_offset_bps) {
     AgentState* ag = &env->agent;
     const MarketData* md = env->data;
-    float price = get_price(md, t, sym, P_CLOSE);
+    float ref_price = get_price(md, t, sym, P_CLOSE);
 
-    if (price <= 0.0f || ag->cash <= 0.0f) return;
+    if (ref_price <= 0.0f || ag->cash <= 0.0f) return;
 
-    float buy_budget = ag->cash * env->max_leverage;
-    float qty = buy_budget / (price * (1.0f + env->fee_rate));
-    float cost = qty * price * (1.0f + env->fee_rate);
+    float target_price = ref_price * (1.0f + level_offset_bps / 10000.0f);
+    float fill_price = 0.0f;
+    if (target_price <= 0.0f || !resolve_limit_fill_price(md, t, sym, target_price, &fill_price)) {
+        return;
+    }
+
+    if (allocation_pct <= 0.0f) return;
+    if (allocation_pct > 1.0f) allocation_pct = 1.0f;
+    float buy_budget = ag->cash * env->max_leverage * allocation_pct;
+    if (buy_budget <= 0.0f) return;
+
+    float denom = fill_price * (1.0f + env->fee_rate);
+    if (denom <= 0.0f) return;
+    float qty = buy_budget / denom;
+    if (qty <= 0.0f) return;
+    float cost = qty * denom;
+    if (cost <= 0.0f) return;
+
+    if (cost > ag->cash) {
+        cost = ag->cash;
+        qty = cost / denom;
+        if (qty <= 0.0f) return;
+    }
 
     ag->cash -= cost;
     ag->position_sym = sym;
     ag->position_qty = qty;
-    ag->entry_price = price;
+    ag->entry_price = fill_price;
     ag->hold_hours = 0;
 }
 
-static void open_short(TradingEnv* env, int t, int sym) {
+static void open_short(TradingEnv* env, int t, int sym, float allocation_pct, float level_offset_bps) {
     AgentState* ag = &env->agent;
     const MarketData* md = env->data;
     const int S = md->num_symbols;
-    float price = get_price(md, t, sym, P_CLOSE);
+    float ref_price = get_price(md, t, sym, P_CLOSE);
 
-    if (price <= 0.0f || ag->cash <= 0.0f) return;
+    if (ref_price <= 0.0f || ag->cash <= 0.0f) return;
 
-    float sell_budget = ag->cash * env->max_leverage;
-    float qty = sell_budget / (price * (1.0f + env->fee_rate));
+    float target_price = ref_price * (1.0f + level_offset_bps / 10000.0f);
+    float fill_price = 0.0f;
+    if (target_price <= 0.0f || !resolve_limit_fill_price(md, t, sym, target_price, &fill_price)) {
+        return;
+    }
 
-    /* short proceeds go to cash (minus borrow fee) */
-    ag->cash += qty * price * (1.0f - env->fee_rate);
+    if (allocation_pct <= 0.0f) return;
+    if (allocation_pct > 1.0f) allocation_pct = 1.0f;
+    float sell_budget = ag->cash * env->max_leverage * allocation_pct;
+    if (sell_budget <= 0.0f) return;
+
+    float denom = fill_price * (1.0f + env->fee_rate);
+    if (denom <= 0.0f) return;
+    float qty = sell_budget / denom;
+    if (qty <= 0.0f) return;
+
+    /* short proceeds go to cash (minus fee) */
+    ag->cash += qty * fill_price * (1.0f - env->fee_rate);
     ag->position_sym = S + sym;  /* S..2S-1 = short */
     ag->position_qty = qty;
-    ag->entry_price = price;
+    ag->entry_price = fill_price;
     ag->hold_hours = 0;
 }
 
@@ -328,10 +397,18 @@ void c_step(TradingEnv* env) {
     /* compute equity before action */
     float equity_before = compute_equity(env, t);
 
+    int alloc_bins = env->action_allocation_bins;
+    int level_bins = env->action_level_bins;
+    if (alloc_bins < 1) alloc_bins = 1;
+    if (level_bins < 1) level_bins = 1;
+    int per_symbol_actions = alloc_bins * level_bins;
+    int side_block = S * per_symbol_actions;
+
     /* decode action:
-     *   0         = go flat (close position)
-     *   1..S      = go long symbol (action-1)
-     *   S+1..2S   = go short symbol (action-S-1)
+     *   0            = go flat (close position)
+     *   1..side_block         = long actions
+     *   side_block+1..2*side_block = short actions
+     * with each side action decoded into (symbol, allocation_bin, level_bin).
      */
     if (action == 0) {
         /* close any open position */
@@ -344,11 +421,23 @@ void c_step(TradingEnv* env) {
                 ag->hold_hours++;
             }
         }
-    } else if (action >= 1 && action <= S) {
-        int target_sym = action - 1;
+    } else if (action >= 1 && action <= 2 * side_block) {
+        int action_idx = action - 1;
+        int is_short_target = (action_idx >= side_block);
+        if (is_short_target) action_idx -= side_block;
+
+        int target_sym = action_idx / per_symbol_actions;
+        int rem = action_idx % per_symbol_actions;
+        int alloc_idx = rem / level_bins;
+        int level_idx = rem % level_bins;
+        float target_alloc = action_allocation_pct(env, alloc_idx);
+        float level_bps = action_level_offset_bps(env, level_idx);
+
+        int target_pos_id = is_short_target ? (S + target_sym) : target_sym;
         int target_tradable = is_tradable(md, t, target_sym);
-        /* if already in this long position, hold */
-        if (ag->position_sym == target_sym) {
+
+        /* if already in this exact position, hold */
+        if (ag->position_sym == target_pos_id) {
             ag->hold_hours++;
         } else {
             /* If target market is closed, do nothing (avoid accidental closes). */
@@ -358,36 +447,16 @@ void c_step(TradingEnv* env) {
                 /* can't close current position right now */
                 ag->hold_hours++;
             } else {
-                /* close current, open new long */
                 if (ag->position_sym >= 0) {
                     close_position(env, t);
                     trade_events += 1;
                 }
-                open_long(env, t, target_sym);
-                if (ag->position_sym == target_sym) {
-                    trade_events += 1;
+                if (is_short_target) {
+                    open_short(env, t, target_sym, target_alloc, level_bps);
+                } else {
+                    open_long(env, t, target_sym, target_alloc, level_bps);
                 }
-            }
-        }
-    } else if (action >= S + 1 && action <= 2 * S) {
-        int target_sym = action - S - 1;
-        int short_id = S + target_sym;
-        int target_tradable = is_tradable(md, t, target_sym);
-        /* if already in this short position, hold */
-        if (ag->position_sym == short_id) {
-            ag->hold_hours++;
-        } else {
-            if (!target_tradable) {
-                if (ag->position_sym >= 0) ag->hold_hours++;
-            } else if (ag->position_sym >= 0 && !cur_tradable) {
-                ag->hold_hours++;
-            } else {
-                if (ag->position_sym >= 0) {
-                    close_position(env, t);
-                    trade_events += 1;
-                }
-                open_short(env, t, target_sym);
-                if (ag->position_sym == short_id) {
+                if (ag->position_sym == target_pos_id) {
                     trade_events += 1;
                 }
             }
@@ -446,6 +515,24 @@ void c_step(TradingEnv* env) {
        This encourages higher Sortino by shrinking downside deviation. */
     if (env->downside_penalty > 0.0f && ret < 0.0f) {
         reward -= env->downside_penalty * (ret * ret);
+    }
+
+    /* smooth downside penalty: uses a softplus approximation of max(0, -ret)
+       so the shaping term is differentiable around zero returns. */
+    if (env->smooth_downside_penalty > 0.0f) {
+        float temp = env->smooth_downside_temperature;
+        if (temp <= 1e-6f) temp = 1e-6f;
+        float x = -ret / temp;
+        float softplus_x;
+        if (x > 20.0f) {
+            softplus_x = x;
+        } else if (x < -20.0f) {
+            softplus_x = expf(x);
+        } else {
+            softplus_x = log1pf(expf(x));
+        }
+        float smooth_neg = temp * softplus_x;
+        reward -= env->smooth_downside_penalty * (smooth_neg * smooth_neg);
     }
 
     /* trade penalty: discourage churn (opens/closes) without changing accounting. */

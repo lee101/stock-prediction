@@ -429,3 +429,10 @@ trainingdata.local_backup_20260204_222309/
 binanceneural/binanceneural/forecast_cache/
 alpacanewccrosslearning/forecast_cache
 alpacanewccrosslearning/forecast_cache_grouped
+alpaca_go/alpaca_go_bin
+alpaca_go/.env
+alpaca_go/.watcher_state/
+experiments/**/folds/
+experiments/**/*.bin
+experiments/**/checkpoints/
+backtest_*/
