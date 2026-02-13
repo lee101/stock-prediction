@@ -33,6 +33,12 @@ class SweepConfig:
 def run_experiment(cfg: SweepConfig) -> dict:
     run_name = f"{cfg.symbol.lower()}_sortino_rw{str(cfg.return_weight).replace('.', '')}"
 
+    # Use existing forecast cache
+    if cfg.symbol == "SUIUSDT":
+        cache_root = "binancechronossolexperiment/forecast_cache_sui_10bp"
+    else:
+        cache_root = "binanceneural/forecast_cache"
+
     cmd = [
         sys.executable, "-m", "binancechronossolexperiment.run_experiment",
         "--symbol", cfg.symbol,
@@ -42,6 +48,7 @@ def run_experiment(cfg: SweepConfig) -> dict:
         "--horizons", cfg.horizons,
         "--batch-size", str(cfg.batch_size),
         "--learning-rate", str(cfg.learning_rate),
+        "--forecast-cache-root", cache_root,
         "--cache-only",
         "--no-compile",
         "--run-name", run_name,
