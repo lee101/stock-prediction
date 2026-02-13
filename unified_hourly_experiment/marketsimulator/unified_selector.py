@@ -262,7 +262,8 @@ def run_unified_simulation(
                     if row.low <= order.price:
                         max_lev = symbol_meta[order.symbol]["max_leverage"]
                         max_notional = max(0, cash * max_lev)
-                        qty = min(order.intensity * max_notional / order.price, max_notional / order.price)
+                        intensity = min(1.0, max(0.0, order.intensity))
+                        qty = intensity * max_notional / order.price
                         if qty > 0 and open_symbol is None:
                             _execute_buy(ts, order.symbol, qty, order.price, fee, "deferred")
                             executed.append(i)
@@ -344,7 +345,8 @@ def run_unified_simulation(
                     max_lev = meta["max_leverage"]
                     max_notional = max(0, cash * max_lev)
                     buy_price = cand["buy_price"]
-                    qty = cand["buy_int"] * max_notional / buy_price
+                    intensity = min(1.0, max(0.0, cand["buy_int"]))
+                    qty = intensity * max_notional / buy_price
                     if qty > 0:
                         _execute_buy(ts, sym, qty, buy_price, meta["fee"])
                         per_hour_rows.append({"timestamp": ts, "equity": equity, "action": f"buy_{sym}"})

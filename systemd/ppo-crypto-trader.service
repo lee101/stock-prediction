@@ -1,5 +1,5 @@
 [Unit]
-Description=PPO Crypto Trader (paper)
+Description=PPO Long-Only Crypto Trader
 After=network-online.target
 Wants=network-online.target
 
@@ -10,7 +10,8 @@ Environment=PYTHONPATH=/home/lee/code/stock
 Environment=PYTHONUNBUFFERED=1
 Environment=PAPER=1
 ExecStart=/home/lee/code/stock/.venv/bin/python -m pufferlib_market.trade_ppo_alpaca \
-  --checkpoint /home/lee/code/stock/experiments/stable_rl_sweep_20260213/checkpoints/100M_robust/best_val.pt \
+  --checkpoint /home/lee/code/stock/experiments/stable_rl_sweep_20260213/checkpoints/100M_long_only/best_val.pt \
+  --long-only \
   --allocation-usd 1000.0 \
   --paper
 Restart=always

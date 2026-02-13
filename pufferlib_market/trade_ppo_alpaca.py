@@ -82,26 +82,25 @@ def execute_signal(api, signal, prices: dict, allocation_usd: float = 1000.0):
     """Execute trading signal via Alpaca."""
     import alpaca_wrapper
 
+    cur_sym, cur_side, cur_qty = get_current_position(api)
+
     if signal.action == "flat":
-        cur_sym, cur_side, cur_qty = get_current_position(api)
-        if cur_sym:
+        if cur_sym and cur_qty > 0:
             logger.info(f"Closing position: {cur_side} {cur_qty} {cur_sym}")
-            alpaca_wrapper.exit_position(cur_sym)
+            alpaca_wrapper.open_market_order_violently(cur_sym, cur_qty, "sell")
         return
 
     if signal.confidence < 0.6:
         logger.info(f"Low confidence ({signal.confidence:.1%}), skipping")
         return
 
-    cur_sym, cur_side, cur_qty = get_current_position(api)
-
     if cur_sym == signal.symbol and cur_side == signal.direction:
         logger.info(f"Already in {signal.direction} {signal.symbol}")
         return
 
-    if cur_sym and cur_sym != signal.symbol:
+    if cur_sym and cur_sym != signal.symbol and cur_qty > 0:
         logger.info(f"Closing {cur_side} {cur_sym} before entering {signal.symbol}")
-        alpaca_wrapper.exit_position(cur_sym)
+        alpaca_wrapper.open_market_order_violently(cur_sym, cur_qty, "sell")
         time.sleep(1)
 
     price = prices.get(signal.symbol, 0)
@@ -114,9 +113,9 @@ def execute_signal(api, signal, prices: dict, allocation_usd: float = 1000.0):
     logger.info(f"Entering {signal.direction} {signal.symbol}: {qty:.6f} @ {price:.2f}")
 
     if signal.direction == "long":
-        alpaca_wrapper.buy_crypto(signal.symbol, qty)
+        alpaca_wrapper.open_market_order_violently(signal.symbol, qty, "buy")
     else:
-        alpaca_wrapper.sell_crypto(signal.symbol, qty)
+        logger.warning("Short not supported for crypto spot trading")
 
 
 def run_once(trader: PPOTrader, api, allocation_usd: float):
