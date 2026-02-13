@@ -62,9 +62,10 @@ class PPOTrader:
 
     SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "LINKUSD"]
 
-    def __init__(self, checkpoint_path: str, device: str = "cpu"):
+    def __init__(self, checkpoint_path: str, device: str = "cpu", long_only: bool = False):
         self.device = torch.device(device)
         self.checkpoint_path = checkpoint_path
+        self.long_only = long_only
 
         # Load checkpoint
         ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
@@ -79,7 +80,10 @@ class PPOTrader:
 
         self.num_symbols = len(self.SYMBOLS)
         self.obs_size = self.num_symbols * 16 + 5 + self.num_symbols
-        self.num_actions = 1 + 2 * self.num_symbols  # flat + long + short
+        if long_only:
+            self.num_actions = 1 + self.num_symbols  # flat + longs only
+        else:
+            self.num_actions = 1 + 2 * self.num_symbols  # flat + long + short
 
         hidden = config.get("hidden_size", 512)
         blocks = config.get("num_blocks", 3)
@@ -167,13 +171,18 @@ class PPOTrader:
         if action == 0:
             return TradingSignal("flat", None, None, confidence, value_est)
         else:
-            action_idx = action - 1
-            is_short = action_idx >= self.num_symbols
-            sym_idx = action_idx % self.num_symbols
-            symbol = self.SYMBOLS[sym_idx]
-            direction = "short" if is_short else "long"
-            action_str = f"{direction}_{symbol}"
-            return TradingSignal(action_str, symbol, direction, confidence, value_est)
+            if self.long_only:
+                sym_idx = action - 1
+                symbol = self.SYMBOLS[sym_idx]
+                return TradingSignal(f"long_{symbol}", symbol, "long", confidence, value_est)
+            else:
+                action_idx = action - 1
+                is_short = action_idx >= self.num_symbols
+                sym_idx = action_idx % self.num_symbols
+                symbol = self.SYMBOLS[sym_idx]
+                direction = "short" if is_short else "long"
+                action_str = f"{direction}_{symbol}"
+                return TradingSignal(action_str, symbol, direction, confidence, value_est)
 
     def update_state(self, action: int, fill_price: float, symbol: str):
         """Update internal state after trade execution."""

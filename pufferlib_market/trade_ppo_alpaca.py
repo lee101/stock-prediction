@@ -162,6 +162,7 @@ def main():
     parser.add_argument("--allocation-usd", type=float, default=1000.0)
     parser.add_argument("--once", action="store_true", help="Run once and exit")
     parser.add_argument("--paper", action="store_true", help="Use paper trading")
+    parser.add_argument("--long-only", action="store_true", help="Long-only model (no shorts)")
     args = parser.parse_args()
 
     if args.paper:
@@ -177,7 +178,7 @@ def main():
     api = TradingClient(key_id, secret, paper=paper)
     logger.info(f"Connected to Alpaca ({'paper' if paper else 'live'})")
 
-    trader = PPOTrader(args.checkpoint, args.device)
+    trader = PPOTrader(args.checkpoint, args.device, long_only=args.long_only)
 
     if args.once:
         run_once(trader, api, args.allocation_usd)
