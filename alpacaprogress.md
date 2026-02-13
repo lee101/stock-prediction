@@ -6,6 +6,10 @@ Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
 
 | Date (UTC) | Run | Symbols | Eval window | total_return | sortino | ann_return_365 | ann_return_252 | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-02-11 | hourly_trader_sim_mixed7_seq128_portfolio_20260211 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | -0.0193 | -3.2504 | -0.509 | -0.388 | Hourly trader sim (shared cash, allocation_mode=portfolio). Checkpoint `alpaca_cross_global_mixed7_robust_short_seq128_20260205_043448/epoch_003.pt`; intensity=2.0; short-window features. Output: `newnanoalpacahourlyexp/outputs/hourly_trader_sim_mixed7_seq128_portfolio_20260211_084706_10d`. |
+| 2026-02-11 | hourly_trader_sim_mixed7_seq128_persymbol_20260211 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | -0.0697 | -4.7153 | -0.928 | -0.838 | Hourly trader sim (allocation_mode=per_symbol, over-allocates). Same checkpoint/features as portfolio run. Output: `newnanoalpacahourlyexp/outputs/hourly_trader_sim_mixed7_seq128_persymbol_20260211_084803_10d`. |
+| 2026-02-11 | hourly_trader_sim_mixed7_seq128_portfolio_20260211 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 20d | -0.0933 | -9.3443 | -0.833 | -0.709 | Hourly trader sim (shared cash, allocation_mode=portfolio). Same checkpoint/features as 10d. Output: `newnanoalpacahourlyexp/outputs/hourly_trader_sim_mixed7_seq128_portfolio_20260211_085109_20d`. |
+| 2026-02-11 | selector_mixed7_seq128_livecache_20260211 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 10d | 0.2240 | 21.6605 | 1.599e+03 | 1.620e+02 | Global selector on current live caches (`binanceneural/forecast_cache`), same checkpoint/features; intensity=2.0, min_edge=0.004, risk_weight=0.2, dip=0.005. Output: `alpacanewccrosslearning/outputs/global_selector_selector_mixed7_seq128_20260211_084904_10d`. |
 | 2026-02-07 | selector_mixed14_crypto5_tsla_int10000_minedge001_dip0025_eval70d_20260207 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,TSLA | 70d | 54.8285 | 104.5562 | -- | -- | **NEW BEST (70d val window)** Mixed14 policy epoch_002 + selector tuned: `intensity=10000, min_edge=0.001, risk_weight=0.05, dip=0.0025, edge_mode=high_low`. Leverage realism: `max_leverage_crypto=1.0`, `max_leverage_stock=2.0`, `margin_interest_annual=0.0675` (financing_cost_paid=$0; cash-only end). Policy checkpoint: `binanceneural/checkpoints/alpaca_cross_global_mixed14_robust_short_seq128_lb4000_20260205_2319/epoch_002.pt`. Forecast cache: `alpacanewccrosslearning/forecast_cache/mixed14_robust_20260205_2301_lb4000`. Outputs: `alpacanewccrosslearning/outputs/global_selector_mixed14_crypto5_tsla_int10000_minedge001_rw005_dip0025_eval70d_minh400_20260207`. |
 | 2026-02-07 | selector_mixed14_crypto5_tsla_int10000_minedge001_dip0025_eval60d_20260207 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,TSLA | 60d | 29.6487 | 101.8694 | -- | -- | Same config as 70d (above). Outputs: `alpacanewccrosslearning/outputs/global_selector_mixed14_crypto5_tsla_int10000_minedge001_rw005_dip0025_eval60d_minh400_20260207`. |
 | 2026-02-07 | selector_mixed7_novol_baseline_rebuiltstocks_2xboth_int675_minh480_minedge0005_dip0025_20260207 | SOLUSD,LINKUSD,UNIUSD,BTCUSD,ETHUSD,NVDA,NFLX | 60d | 438.0321 | 66.3432 | -- | -- | **Experimental leverage** (stocks+crypto), same tuned selector thresholds as 30d: `intensity=2.0, min_edge=0.0005, risk_weight=0.15, dip=0.0025, edge_mode=high_low`, `max_leverage_stock=2.0`, `max_leverage_crypto=2.0`, `margin_interest_annual=0.0675` (financing_cost_paid=$1744.10). Uses `--min-history-hours 480` because lb2400 stock validation slices are <720 rows (NVDA=494, NFLX=482). Policy checkpoint: `binanceneural/checkpoints/alpaca_cross_global_mixed7_novol_baseline_seq128_rebuiltstocks_nocompile_20260205_2250/epoch_003.pt`. Outputs: `alpacanewccrosslearning/outputs/global_selector_mixed7_novol_baseline_rebuiltstocks_20260207_eval60d_2xboth_int675_minh480_minedge0005_dip0025`. |
@@ -59,6 +63,8 @@ Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
 | 2026-02-05 | selector_robust_best_20260205 | SOLUSD,LINKUSD,UNIUSD | 20d | 0.7482 | 21.3372 | 2.675e+04 | 1138 | Robust_scaling policy; best sweep config carried to 20d eval. |
 | 2026-02-05 | selector_cross_lora_20260205_013206 | SOLUSD,LINKUSD,UNIUSD | 10d | 0.0379 | 510.2498 | 2.888 | 1.553 | Global policy checkpoint epoch_001. |
 | 2026-02-05 | selector_cross_lora_20260205_013206 | SOLUSD,LINKUSD,UNIUSD | 20d | 0.0379 | 510.2498 | 0.9717 | 0.5979 | Same as 10d (limited window in current cache). |
+
+Note: attempting to re-run the mixed7 window cache `mixed7_robust_20260205_022709_window20250901_20251112` with sequence_length=128 failed (frame shorter than sequence length for at least one symbol). That window cache is now too short for seq128 without trimming symbols or shortening seq length.
 
 Annualized returns use CAGR: `(1 + total_return) ** (basis_days / eval_days) - 1`. Short windows will inflate annualized values; use them only for relative comparison across runs.
 
@@ -508,3 +514,74 @@ Key fixes + improvements:
   - `tests/test_pufferlib_market_terminals.py`
   - `tests/test_pufferlib_market_reward_shaping.py`
 - Exposed `--decision-lag-bars` in `newnanoalpacahourlyexp` eval+sweep CLIs for more live-like hourly execution delay.
+
+### Chronos WalkForward Hourly Crypto Success (2026-02-11 05:14 UTC)
+- Symbols: AAVEUSD, ALGOUSD, AVAXUSD, BTCUSD, DOGEUSD, DOTUSD, ETHUSD, LINKUSD, LTCUSD, SOLUSD, XRPUSD
+- wf1_202511/r1_chronos_longshort_cash01_down5: ret=+0.1275 ann=+330.43% sortino=+4.621 mdd=+0.057 trades=1.0
+- wf2_202512/r1_chronos_longshort_cash01_down5: ret=+0.2691 ann=+1717.18% sortino=+8.930 mdd=+0.004 trades=1.0
+- wf3_202601/r2_chronos_longonly_cash005_down5: ret=+0.0504 ann=+81.95% sortino=+6.355 mdd=+0.002 trades=1.0
+- wf4_202602/r0_chronos_longshort_cash005: ret=+0.0000 ann=+0.00% sortino=+0.000 mdd=+0.000 trades=0.0
+
+### Chronos WalkForward Hourly Crypto Success (2026-02-11 06:54 UTC)
+- Symbols: AAVEUSD, ALGOUSD, AVAXUSD, BTCUSD, DOTUSD, ETHUSD, LINKUSD, LTCUSD, SOLUSD, XRPUSD
+- wf4_202602/r4_chronos_longshort_cash01_down5_smooth2_t01: ret=+0.3659 ann=+4343.69% sortino=+8.277 mdd=+0.011 trades=3.0
+
+### Chronos WalkForward Hourly Crypto Success (2026-02-11 06:55 UTC)
+- Symbols: AAVEUSD, ALGOUSD, AVAXUSD, BTCUSD, DOTUSD, ETHUSD, LINKUSD, LTCUSD, SOLUSD, XRPUSD
+- wf4_202602/r4_chronos_longshort_cash01_down5_smooth2_t01: ret=+0.2211 ann=+1036.27% sortino=+8.074 mdd=+0.025 trades=10.0
+
+### Chronos WalkForward Hourly Crypto Success (2026-02-11 06:56 UTC)
+- Symbols: AAVEUSD, ALGOUSD, AVAXUSD, BTCUSD, DOTUSD, ETHUSD, LINKUSD, LTCUSD, SOLUSD, XRPUSD
+- wf4_202602/r4_chronos_longshort_cash01_down5_smooth2_t01: ret=+0.1585 ann=+498.82% sortino=+4.266 mdd=+0.108 trades=8.0
+
+### Chronos WalkForward Hourly Crypto Success (2026-02-11 06:56 UTC)
+- Symbols: BTCUSD
+- wf4_202602/r4_chronos_longshort_cash01_down5_smooth2_t01: ret=+0.2911 ann=+2139.29% sortino=+12.118 mdd=+0.020 trades=1.0
+
+### Chronos WalkForward Hourly Crypto Success (2026-02-11 06:57 UTC)
+- Symbols: BTCUSD
+- wf4_202602/r4_chronos_longshort_cash01_down5_smooth2_t01: ret=+0.2911 ann=+2139.29% sortino=+12.118 mdd=+0.020 trades=1.0
+
+### Chronos WalkForward Hourly Crypto Success (2026-02-11 06:58 UTC)
+- Symbols: BTCUSD
+- wf4_202602/r4_chronos_longshort_cash01_down5_smooth2_t01: ret=+0.2911 ann=+2139.29% sortino=+12.118 mdd=+0.020 trades=1.0
+
+### Chronos WalkForward Hourly Crypto Plateau Check (2026-02-11 06:59 UTC)
+- Fold: `wf4_202602` (train: 2025-08-26 -> 2026-01-06, eval: 2026-01-07 -> 2026-02-06)
+- Symbols (multi-asset): AAVEUSD, ALGOUSD, AVAXUSD, BTCUSD, DOTUSD, ETHUSD, LINKUSD, LTCUSD, SOLUSD, XRPUSD (DOGE removed)
+- Fee model for these runs: fixed `fee_rate=0.0015` from experiment config. Also patched `src.fees.get_fee_for_symbol` so alias symbols like `LINKUSD`/`DOGEUSD` resolve crypto metadata correctly when explicit fee is omitted.
+- Baseline vs smooth at 600k timesteps (multi-asset):
+  - `r1_chronos_longshort_cash01_down5`: ret=-0.0000 ann=-0.05% sortino=-0.082 mdd=+0.002 trades=1.0
+  - `r4_chronos_longshort_cash01_down5_smooth2_t01`: ret=+0.3659 ann=+4343.69% sortino=+8.277 mdd=+0.011 trades=3.0
+- Multi-asset `r4` unseen holdout curve:
+  - 200k: ret=+0.2211 ann=+1036.27% sortino=+8.074 mdd=+0.025
+  - 600k: ret=+0.3659 ann=+4343.69% sortino=+8.277 mdd=+0.011
+  - 1200k: ret=+0.1585 ann=+498.82% sortino=+4.266 mdd=+0.108
+- Single-pair (`BTCUSD`) `r4` unseen holdout curve:
+  - 200k: ret=+0.2911 ann=+2139.29% sortino=+12.118 mdd=+0.020
+  - 600k: ret=+0.2911 ann=+2139.29% sortino=+12.118 mdd=+0.020
+  - 1200k: ret=+0.2911 ann=+2139.29% sortino=+12.118 mdd=+0.020
+- Conclusion: unseen PnL still improved from 200k -> 600k for multi-asset, then regressed at 1200k (overtraining signal). `BTCUSD` plateaued by 200k. Best unseen return on this fold so far is multi-asset `r4` at 600k timesteps.
+
+### Chronos WalkForward Hourly Crypto Success (2026-02-11 07:07 UTC)
+- Symbols: AAVEUSD, ALGOUSD, AVAXUSD, BTCUSD, DOTUSD, ETHUSD, LINKUSD, LTCUSD, SOLUSD, XRPUSD
+- wf4_202602/r4_chronos_longshort_cash01_down5_smooth2_t01: ret=+0.2325 ann=+1171.75% sortino=+9.712 mdd=+0.016 trades=122.3
+
+### Chronos WalkForward Risk-Control Action Grid (2026-02-11 07:07 UTC)
+- New action parameterization enabled in C env and training/eval pipeline:
+  - `action_allocation_bins=5` (20/40/60/80/100% target exposure)
+  - `action_level_bins=5` (limit-entry levels around close)
+  - `action_max_offset_bps=60` (±0.60% max offset)
+- Behavior:
+  - Agent learns both position sizing and execution level choices per symbol/side.
+  - Limit entries only fill if target price lies within bar `[low, high]`, otherwise no fill.
+- First walk-forward smoke run (unseen fold `wf4_202602`, 120k steps, run `r4`):
+  - ret=+0.2325 ann=+1171.75% sortino=+9.712 mdd=+0.016 trades=122.3
+
+### Chronos WalkForward Hourly Crypto Success (2026-02-11 07:08 UTC)
+- Symbols: BTCUSD
+- wf4_202602/r4_chronos_longshort_cash01_down5_smooth2_t01: ret=+0.1168 ann=+283.37% sortino=+12.325 mdd=+0.009 trades=1.0
+
+### Chronos WalkForward Hourly Crypto Success (2026-02-11 07:09 UTC)
+- Symbols: AAVEUSD, ALGOUSD, AVAXUSD, BTCUSD, DOTUSD, ETHUSD, LINKUSD, LTCUSD, SOLUSD, XRPUSD
+- wf4_202602/r4_chronos_longshort_cash01_down5_smooth2_t01: ret=+0.9080 ann=+259182.36% sortino=+34.842 mdd=+0.047 trades=162.0
