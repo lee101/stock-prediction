@@ -160,3 +160,94 @@ python unified_hourly_experiment/trade_unified_hourly.py \
 - Backtest: +36.34% return, Sortino 1.69 (holdout period)
 - Ready for paper trading during market hours
 
+---
+
+## 2026-02-13 22:36 - Paper Trading Bot Deployed
+
+### Bot Configuration
+```bash
+python unified_hourly_experiment/trade_unified_hourly.py \
+  --checkpoint-dir unified_hourly_experiment/checkpoints/unified_v3_moredata \
+  --crypto-symbols ETHUSD,SOLUSD,UNIUSD \
+  --crypto-cache-root binanceneural/forecast_cache \
+  --paper --loop
+```
+
+### Current Positions (Alpaca Paper)
+| Symbol | Qty | Notes |
+|--------|-----|-------|
+| UNIUSD | 681.21 | 25.58% edge signal |
+| LINKUSD | 279.66 | Prior position |
+| SOLUSD | 35.38 | Prior position |
+| NVDA | 92.0 | Stock position |
+| Buying Power | $123,535 | Available |
+
+### Bot Status
+- Running in continuous loop mode
+- Checks signals hourly
+- min_edge=0.012 filtering
+- Supervisor config: `supervisor/unified-hourly-paper.conf`
+- Log: `unified_paper_trading.log`
+
+---
+
+## 2026-02-13 23:12 - Pufferlib Stock PPO Training
+
+### Training Results (50M steps, ~30 min)
+- **Sortino: 135** (peak)
+- **Return: +160%** per episode (30-day simulation)
+- **Win Rate: 92-93%**
+- ~62-64 trades per episode
+- Symbols: NVDA, MSFT, META, GOOG, PLTR, DBX, TRIP
+
+### Config
+```bash
+python pufferlib_market/train.py \
+  --data-path pufferlib_market/data/stocks10_data.bin \
+  --total-timesteps 50000000 \
+  --hidden-size 256 --arch resmlp \
+  --downside-penalty 1.5 --trade-penalty 0.001 \
+  --checkpoint-dir experiments/pufferlib_stocks7_50M
+```
+
+### Checkpoint
+- Path: `experiments/pufferlib_stocks7_50M/best.pt`
+- Actions: 15 (flat + 7 longs + 7 shorts)
+- Hidden: 256, ResidualMLP with 3 blocks
+
+### Trading Bot
+```bash
+python -m pufferlib_market.trade_ppo_stocks \
+  --checkpoint experiments/pufferlib_stocks7_50M/best.pt \
+  --paper --allocation-usd 1000
+```
+
+### Stock Categories
+**Long-only (AI/Tech):** NVDA, MSFT, META, GOOG, PLTR (+ NFLX, AAPL, AMZN, etc.)
+**Shortable:** YELP, EBAY, TRIP, MTCH, KIND, ANGI, Z, EXPE, BKNG, NWSA, NYT, DBX
+
+### Production Deployment
+1. Supervisor config: `supervisor/pufferlib-stocks-live.conf`
+2. Monitor script: `scripts/check_trading_status.sh`
+3. Cron schedule: `scripts/cron_trading_monitor.txt`
+
+**Start live trading:**
+```bash
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl start pufferlib-stocks-live
+```
+
+**Monitoring (cron during market hours):**
+- 9:35 AM ET: Market open check
+- 12:00 PM ET: Midday check
+- 3:30 PM ET: Pre-close check
+- 4:05 PM ET: End of day summary
+
+**Safety notes:**
+- Bot only trades during market hours (9:30 AM - 4:00 PM ET)
+- Uses market orders (no limit price issues)
+- 60% confidence threshold for trades
+- Keep existing SOL position sell order active
+- IEX data feed (no SIP subscription required)
+
