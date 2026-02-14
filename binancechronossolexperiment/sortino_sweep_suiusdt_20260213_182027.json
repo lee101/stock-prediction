@@ -1,0 +1,30 @@
+[
+  {
+    "name": "suiusdt_sortino_rw0005",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.005', '--epochs', '15', '--sequence-length', '72', '--horizons', '1,4,24', '--batch-size', '16', '--learning-rate', '0.0003', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-compile', '--run-name', 'suiusdt_sortino_rw0005']' timed out after 3600 seconds"
+  },
+  {
+    "name": "suiusdt_sortino_rw001",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.01', '--epochs', '15', '--sequence-length', '72', '--horizons', '1,4,24', '--batch-size', '16', '--learning-rate', '0.0003', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-compile', '--run-name', 'suiusdt_sortino_rw001']' timed out after 3600 seconds"
+  },
+  {
+    "name": "suiusdt_sortino_rw002",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.02', '--epochs', '15', '--sequence-length', '72', '--horizons', '1,4,24', '--batch-size', '16', '--learning-rate', '0.0003', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-compile', '--run-name', 'suiusdt_sortino_rw002']' timed out after 3600 seconds"
+  },
+  {
+    "name": "suiusdt_sortino_rw004",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.04', '--epochs', '15', '--sequence-length', '72', '--horizons', '1,4,24', '--batch-size', '16', '--learning-rate', '0.0003', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-compile', '--run-name', 'suiusdt_sortino_rw004']' timed out after 3600 seconds"
+  },
+  {
+    "name": "suiusdt_sortino_rw001",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.01', '--epochs', '30', '--sequence-length', '72', '--horizons', '1,4,24', '--batch-size', '16', '--learning-rate', '0.0003', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-compile', '--run-name', 'suiusdt_sortino_rw001']' timed out after 3600 seconds"
+  },
+  {
+    "name": "suiusdt_sortino_rw001",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.01', '--epochs', '60', '--sequence-length', '72', '--horizons', '1,4,24', '--batch-size', '16', '--learning-rate', '0.0003', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-compile', '--run-name', 'suiusdt_sortino_rw001']' timed out after 3600 seconds"
+  },
+  {
+    "name": "suiusdt_sortino_rw001",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.01', '--epochs', '15', '--sequence-length', '96', '--horizons', '1,4,24', '--batch-size', '16', '--learning-rate', '0.0003', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-compile', '--run-name', 'suiusdt_sortino_rw001']' timed out after 3600 seconds"
+  }
+]

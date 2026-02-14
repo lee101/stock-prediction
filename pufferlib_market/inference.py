@@ -55,6 +55,7 @@ class TradingSignal:
     direction: Optional[str]  # "long" or "short"
     confidence: float  # softmax probability
     value_estimate: float  # critic value
+    allocation_pct: float = 1.0  # allocation as fraction of account
 
 
 class PPOTrader:
@@ -67,10 +68,8 @@ class PPOTrader:
         self.checkpoint_path = checkpoint_path
         self.long_only = long_only
 
-        # Load checkpoint
         ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
 
-        # Handle both formats: raw state dict or dict with "model" key
         if "model" in ckpt:
             state_dict = ckpt["model"]
             config = ckpt.get("config", {})
@@ -80,12 +79,33 @@ class PPOTrader:
 
         self.num_symbols = len(self.SYMBOLS)
         self.obs_size = self.num_symbols * 16 + 5 + self.num_symbols
-        if long_only:
-            self.num_actions = 1 + self.num_symbols  # flat + longs only
-        else:
-            self.num_actions = 1 + 2 * self.num_symbols  # flat + long + short
 
-        hidden = config.get("hidden_size", 512)
+        # Infer num_actions from checkpoint
+        actor_bias_key = [k for k in state_dict if 'actor' in k and 'bias' in k and '2' in k]
+        if actor_bias_key:
+            self.num_actions = state_dict[actor_bias_key[0]].shape[0]
+        elif long_only:
+            self.num_actions = 1 + self.num_symbols
+        else:
+            self.num_actions = 1 + 2 * self.num_symbols
+
+        # Check for allocation bins
+        basic_actions = 1 + 2 * self.num_symbols
+        if self.num_actions > basic_actions:
+            self.alloc_bins = (self.num_actions - 1) // (2 * self.num_symbols)
+            self.per_symbol_actions = self.alloc_bins
+            self.side_block = self.num_symbols * self.per_symbol_actions
+        else:
+            self.alloc_bins = 0
+            self.per_symbol_actions = 1
+            self.side_block = self.num_symbols
+
+        # Infer hidden size
+        input_proj_key = [k for k in state_dict if 'input_proj' in k and 'weight' in k]
+        if input_proj_key:
+            hidden = state_dict[input_proj_key[0]].shape[0]
+        else:
+            hidden = config.get("hidden_size", 512)
         blocks = config.get("num_blocks", 3)
 
         self.policy = Policy(self.obs_size, self.num_actions, hidden, blocks)
@@ -101,7 +121,7 @@ class PPOTrader:
         self.step = 0
         self.max_steps = config.get("max_steps", 720)
 
-        print(f"Loaded model from {checkpoint_path}")
+        print(f"Loaded model from {checkpoint_path} (actions={self.num_actions}, alloc_bins={self.alloc_bins})")
 
     def build_observation(self, features: np.ndarray, prices: dict) -> np.ndarray:
         """
@@ -169,12 +189,25 @@ class PPOTrader:
 
         # Decode action
         if action == 0:
-            return TradingSignal("flat", None, None, confidence, value_est)
+            return TradingSignal("flat", None, None, confidence, value_est, 0.0)
         else:
-            if self.long_only:
+            if self.alloc_bins > 0:
+                # Allocation bins mode
+                action_idx = action - 1
+                is_short = action_idx >= self.side_block
+                if is_short:
+                    action_idx -= self.side_block
+                sym_idx = action_idx // self.per_symbol_actions
+                alloc_idx = action_idx % self.per_symbol_actions
+                alloc_pct = (alloc_idx + 1) / self.alloc_bins
+                symbol = self.SYMBOLS[sym_idx]
+                direction = "short" if is_short else "long"
+                action_str = f"{direction}_{symbol}"
+                return TradingSignal(action_str, symbol, direction, confidence, value_est, alloc_pct)
+            elif self.long_only:
                 sym_idx = action - 1
                 symbol = self.SYMBOLS[sym_idx]
-                return TradingSignal(f"long_{symbol}", symbol, "long", confidence, value_est)
+                return TradingSignal(f"long_{symbol}", symbol, "long", confidence, value_est, 1.0)
             else:
                 action_idx = action - 1
                 is_short = action_idx >= self.num_symbols
@@ -182,7 +215,7 @@ class PPOTrader:
                 symbol = self.SYMBOLS[sym_idx]
                 direction = "short" if is_short else "long"
                 action_str = f"{direction}_{symbol}"
-                return TradingSignal(action_str, symbol, direction, confidence, value_est)
+                return TradingSignal(action_str, symbol, direction, confidence, value_est, 1.0)
 
     def update_state(self, action: int, fill_price: float, symbol: str):
         """Update internal state after trade execution."""
