@@ -1159,6 +1159,39 @@ Critical math bugs fixed in C/Go trading code:
 
 **Finding**: ETH outperforms SUI on recent 7-day validation. Consider ETH deployment.
 
+## SUI Sweep Results (2026-02-14)
+
+### Return Weight Sweep (20 epochs, seq=72, horizons=1,4,24)
+
+| Run | return_weight | Test Return | Test Sortino | Final Equity |
+|-----|---------------|-------------|--------------|--------------|
+| sui_sortino_rw001 | 0.01 | 201.68% | 623.24 | $30,168 |
+| **sui_sortino_rw0012_ep20** | **0.012** | **295.10%** | **648.27** | **$39,511** |
+| sui_sortino_rw0008_ep20 | 0.008 | 232.26% | 546.54 | $33,227 |
+| sui_sortino_rw0015_ep20 | 0.015 | 179.15% | 99.22 | $27,915 |
+
+### Extended Sweep (2026-02-14)
+
+| Run | return_weight | Epochs | Test Return | Test Sortino |
+|-----|---------------|--------|-------------|--------------|
+| **sui_sortino_rw0012_ep20** | **0.012** | 20 | **295.10%** | **648.27** |
+| sui_sortino_rw0012_ep30 | 0.012 | 30 | 401.02% | 293.68 |
+| sui_sortino_rw0008_ep20 | 0.008 | 20 | 232.26% | 546.54 |
+| sui_sortino_rw0011_ep20 | 0.011 | 20 | 167.39% | 354.10 |
+| sui_sortino_rw0013_ep20 | 0.013 | 20 | 290.63% | 197.42 |
+| sui_sortino_rw0015_ep20 | 0.015 | 20 | 179.15% | 99.22 |
+
+### Key Findings
+- Optimal return_weight=0.012 beats previous best (0.01)
+- Higher return_weight (0.013+) hurts Sortino significantly
+- Lower return_weight (0.008-0.011) trades off return for stability
+- Longer training (30 epochs) increases return but reduces Sortino
+
+### Deployed Config (2026-02-14)
+- **Checkpoint**: `sui_sortino_rw0012_ep20`
+- **Parameters**: return_weight=0.012, epochs=20, horizons=1,4,24, sequence_length=72
+- **Performance**: 295.10% return, Sortino 648.27
+
 ## Active Sweeps (2026-02-13)
 
 Running Sortino optimization sweeps:

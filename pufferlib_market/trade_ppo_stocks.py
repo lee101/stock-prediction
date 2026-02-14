@@ -53,6 +53,17 @@ class StockPPOTrader(PPOTrader):
         else:
             self.num_actions = 1 + 2 * self.num_symbols
 
+        # Check for allocation bins
+        basic_actions = 1 + 2 * self.num_symbols
+        if self.num_actions > basic_actions:
+            self.alloc_bins = (self.num_actions - 1) // (2 * self.num_symbols)
+            self.per_symbol_actions = self.alloc_bins
+            self.side_block = self.num_symbols * self.per_symbol_actions
+        else:
+            self.alloc_bins = 0
+            self.per_symbol_actions = 1
+            self.side_block = self.num_symbols
+
         # Infer hidden size from checkpoint
         input_proj_key = [k for k in state_dict if 'input_proj' in k and 'weight' in k]
         if input_proj_key:
@@ -181,12 +192,15 @@ def execute_signal(api, signal, prices: dict, allocation_usd: float = 1000.0):
         logger.error("Invalid price for {}", signal.symbol)
         return
 
-    qty = int(allocation_usd / price)
+    # Apply allocation percentage from model
+    alloc_pct = getattr(signal, 'allocation_pct', 1.0)
+    effective_alloc = allocation_usd * alloc_pct
+    qty = int(effective_alloc / price)
     if qty <= 0:
-        logger.warning("Qty too small for {} @ ${:.2f}", signal.symbol, price)
+        logger.warning("Qty too small for {} @ ${:.2f} (alloc={:.0%})", signal.symbol, price, alloc_pct)
         return
 
-    logger.info("Entering {} {}: {} shares @ ${:.2f}", signal.direction, signal.symbol, qty, price)
+    logger.info("Entering {} {}: {} shares @ ${:.2f} (alloc={:.0%})", signal.direction, signal.symbol, qty, price, alloc_pct)
     order = MarketOrderRequest(
         symbol=signal.symbol,
         qty=qty,
