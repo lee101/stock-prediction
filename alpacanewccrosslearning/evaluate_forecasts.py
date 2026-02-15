@@ -25,6 +25,10 @@ def _load_forecasts(cache_root: Path, symbol: str, horizon: int) -> pd.DataFrame
     if frame.empty:
         return frame
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+    if "target_timestamp" in frame.columns:
+        frame["target_timestamp"] = pd.to_datetime(frame["target_timestamp"], utc=True, errors="coerce")
+    if "issued_at" in frame.columns:
+        frame["issued_at"] = pd.to_datetime(frame["issued_at"], utc=True, errors="coerce")
     return frame.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
 
 
@@ -96,18 +100,31 @@ def _evaluate_symbol(
             )
             continue
 
+        # Horizon-aware evaluation: compare predictions to the realized OHLC at the forecast target timestamp.
+        #
+        # Caches store `timestamp` as the issuance / decision timestamp and `target_timestamp` as the timestamp
+        # the prediction is for (e.g. horizon=24 => target = timestamp + 23h). For robust MAE, align on target.
+        if "target_timestamp" in forecast.columns:
+            join_ts = pd.to_datetime(forecast["target_timestamp"], utc=True, errors="coerce")
+        else:
+            base_ts = pd.to_datetime(forecast["timestamp"], utc=True, errors="coerce")
+            join_ts = base_ts + pd.Timedelta(hours=max(0, int(horizon) - 1))
+        forecast_eval = forecast.assign(target_timestamp=join_ts)
+        forecast_eval = forecast_eval.dropna(subset=["target_timestamp"]).copy()
+
         merged = price.merge(
-            forecast[
+            forecast_eval[
                 [
-                    "timestamp",
+                    "target_timestamp",
                     "predicted_close_p50",
                     "predicted_high_p50",
                     "predicted_low_p50",
                 ]
             ],
-            on="timestamp",
+            left_on="timestamp",
+            right_on="target_timestamp",
             how="inner",
-        )
+        ).drop(columns=["target_timestamp"])
         merged = _maybe_filter_window(merged, eval_days=eval_days, eval_hours=eval_hours)
         merged = merged.dropna(
             subset=[
@@ -193,4 +210,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

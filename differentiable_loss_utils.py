@@ -440,6 +440,7 @@ def combined_sortino_pnl_loss(
     target_sign: float = 1.0,
     periods_per_year: float | torch.Tensor = HOURLY_PERIODS_PER_YEAR,
     return_weight: float = 0.05,
+    smoothness_penalty: float | torch.Tensor = 0.0,
 ) -> torch.Tensor:
     """Loss function that encourages joint Sortino + return maximisation."""
 
@@ -448,4 +449,12 @@ def combined_sortino_pnl_loss(
         periods_per_year=periods_per_year,
         return_weight=return_weight,
     )
-    return -target_sign * score.mean()
+    loss = -target_sign * score.mean()
+
+    smooth_weight = _as_tensor(smoothness_penalty, hourly_returns)
+    if torch.any(smooth_weight != 0):
+        if hourly_returns.shape[-1] > 1:
+            diffs = hourly_returns[..., 1:] - hourly_returns[..., :-1]
+            smoothness = diffs.abs().mean(dim=-1)
+            loss = loss + (smooth_weight * smoothness).mean()
+    return loss

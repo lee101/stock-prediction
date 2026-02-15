@@ -155,6 +155,8 @@ def fetch_binance_hourly_bars(
     start: datetime,
     end: datetime,
     client: Optional[Client] = None,
+    *,
+    allow_vision_fallback: bool = True,
 ) -> pd.DataFrame:
     client = client or binance_wrapper.get_client()
     if start.tzinfo is None:
@@ -180,6 +182,8 @@ def fetch_binance_hourly_bars(
         rows = []
 
     if not rows:
+        if not allow_vision_fallback:
+            return pd.DataFrame()
         # Fall back to Binance Vision (public dataset) when the live API is blocked
         # or the symbol is unavailable on the configured endpoint (e.g., FDUSD/U pairs
         # while using Binance.US).
@@ -368,7 +372,22 @@ def download_and_save_pair(
                 start_dt = max(start_dt, latest_ts - timedelta(hours=2))
 
     logger.info(f"Downloading Binance data for {resolved_symbol} from {start_dt} to {end_dt}")
-    frame = fetch_binance_hourly_bars(resolved_symbol, start=start_dt, end=end_dt, client=client)
+    # When quote fallbacks are provided and there is no existing history, try the
+    # live REST API first so we can fall back to alternate quotes before taking a
+    # Binance Vision dependency.
+    allow_vision = not bool(fallback_quotes) or (existing_df is not None and not existing_df.empty)
+    try:
+        frame = fetch_binance_hourly_bars(
+            resolved_symbol,
+            start=start_dt,
+            end=end_dt,
+            client=client,
+            allow_vision_fallback=allow_vision,
+        )
+    except TypeError:
+        # Some unit tests monkeypatch `fetch_binance_hourly_bars` with a simplified
+        # stub signature that doesn't accept `allow_vision_fallback`.
+        frame = fetch_binance_hourly_bars(resolved_symbol, start=start_dt, end=end_dt, client=client)
     frame = _drop_incomplete_current_hour(frame, now=end_dt)
 
     if frame.empty and (existing_df is None or existing_df.empty) and fallback_quotes:

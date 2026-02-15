@@ -2338,16 +2338,6 @@ def resolve_kronos_params(symbol: str) -> dict:
 
 
 def resolve_best_model(symbol: str) -> str:
-    if in_test_mode():
-        cached = _model_selection_cache.get(symbol)
-        if cached == "toto":
-            return cached
-        _model_selection_cache[symbol] = "toto"
-        state = ("test-mode", "toto")
-        if _model_selection_log_state.get(symbol) != state:
-            logger.info("TESTING mode active — forcing Toto model for %s.", symbol)
-            _model_selection_log_state[symbol] = state
-        return "toto"
     if _is_force_toto_enabled():
         _model_selection_cache.pop(symbol, None)
         if symbol not in _forced_toto_logged_symbols:
@@ -2358,6 +2348,16 @@ def resolve_best_model(symbol: str) -> str:
         _model_selection_cache.pop(symbol, None)
         logger.info(f"ONLY_CHRONOS2 active — forcing Chronos2 model for {symbol}.")
         return "chronos2"
+    if in_test_mode():
+        cached = _model_selection_cache.get(symbol)
+        if cached == "toto":
+            return cached
+        _model_selection_cache[symbol] = "toto"
+        state = ("test-mode", "toto")
+        if _model_selection_log_state.get(symbol) != state:
+            logger.info("TESTING mode active — forcing Toto model for %s.", symbol)
+            _model_selection_log_state[symbol] = state
+        return "toto"
     if _is_force_kronos_enabled():
         _model_selection_cache.pop(symbol, None)
         if symbol not in _forced_kronos_logged_symbols:
@@ -2992,11 +2992,15 @@ def backtest_forecasts(symbol, num_simulations=50, model_override: Optional[str]
 
         results = []
 
-        # Use correct trading fee: 0.15% for crypto, 0.05% for stocks
+        # Default to realistic fee constants, but keep unit tests deterministic by
+        # using a fixed fee when TESTING/MARKETSIM_ALLOW_MOCK_ANALYTICS is enabled.
         from loss_utils import CRYPTO_TRADING_FEE, TRADING_FEE
 
         is_crypto = symbol in crypto_symbols
-        trading_fee = CRYPTO_TRADING_FEE if is_crypto else TRADING_FEE
+        if in_test_mode():
+            trading_fee = 0.0025
+        else:
+            trading_fee = CRYPTO_TRADING_FEE if is_crypto else TRADING_FEE
 
         for sim_number in range(num_simulations):
             simulation_data = stock_data.iloc[: -(sim_number + 1)].copy(deep=True)

@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
+from src.preaug import PreAugmentationChoice, PreAugmentationSelector, candidate_preaug_symbols
+
 DEFAULT_MODEL_ID = "amazon/chronos-2"
 DEFAULT_TARGET_COLS = ("open", "high", "low", "close")
 DEFAULT_DATA_ROOT = Path("trainingdata/csv")
@@ -32,6 +34,35 @@ def compute_mae_percent(forecasts, actuals):
     forecasts = np.asarray(forecasts, dtype=np.float64)
     actuals = np.asarray(actuals, dtype=np.float64)
     return float((np.abs(forecasts - actuals) / np.clip(np.abs(actuals), 1e-8, None)).mean() * 100)
+
+
+def _resolve_preaug_choice(
+    symbol: str,
+    preferred_choice: Optional[PreAugmentationChoice],
+    best_dirs: Sequence[Path],
+) -> tuple[Optional[PreAugmentationChoice], Optional[str]]:
+    """Resolve a pre-augmentation strategy choice for the requested symbol.
+
+    Args:
+        symbol: The requested trading symbol.
+        preferred_choice: Optional already-resolved choice (returned as-is).
+        best_dirs: Ordered directories containing per-symbol JSON choice payloads.
+
+    Returns:
+        (choice, source_path). Source path is a string for compatibility with older
+        trainer codepaths/tests.
+    """
+
+    if preferred_choice is not None:
+        return preferred_choice, str(getattr(preferred_choice, "source_path", "")) or None
+
+    selector = PreAugmentationSelector(best_dirs)
+    for candidate in candidate_preaug_symbols(symbol):
+        choice = selector.get_choice(candidate)
+        if choice is not None:
+            return choice, str(choice.source_path)
+
+    return None, None
 
 
 @dataclass
@@ -156,6 +187,7 @@ def _evaluate_pipeline(
     prediction_length: int,
     start_idx: int,
     end_idx: int,
+    preaug_choice: Optional[PreAugmentationChoice] = None,
 ) -> WindowMetrics:
     if start_idx < context_length:
         start_idx = context_length

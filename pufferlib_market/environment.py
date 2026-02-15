@@ -32,6 +32,7 @@ class TradingEnvConfig:
         smooth_downside_penalty: float = 0.0,
         smooth_downside_temperature: float = 0.02,
         trade_penalty: float = 0.0,
+        smoothness_penalty: float = 0.0,
         long_only: bool = False,
     ):
         self.data_path = str(Path(data_path).resolve())
@@ -51,6 +52,7 @@ class TradingEnvConfig:
         self.smooth_downside_penalty = smooth_downside_penalty
         self.smooth_downside_temperature = smooth_downside_temperature
         self.trade_penalty = trade_penalty
+        self.smoothness_penalty = smoothness_penalty
         self.long_only = long_only
 
 
@@ -107,6 +109,7 @@ class TradingEnv(GymnasiumPufferEnv):
             smooth_downside_penalty=config.smooth_downside_penalty,
             smooth_downside_temperature=config.smooth_downside_temperature,
             trade_penalty=config.trade_penalty,
+            smoothness_penalty=config.smoothness_penalty,
         )
 
     @staticmethod

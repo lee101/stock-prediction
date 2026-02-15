@@ -50,7 +50,8 @@ def test_marketsimulator_kronos_cache_fp32(monkeypatch):
         wrapper = real_forecasting.forecasting_wrapper
         assert wrapper is not None
 
-        payload = window[["timestamp", "Open", "High", "Low", "Close", "Volume"]]
+        volume_col = "Volume" if "Volume" in window.columns else "volume"
+        payload = window[["timestamp", "Open", "High", "Low", "Close", volume_col]]
 
         torch.cuda.synchronize()
         start = time.perf_counter()
@@ -130,7 +131,8 @@ def test_marketsimulator_kronos_cache_multi_symbol(monkeypatch):
 
         def _payload(symbol: str):
             frame = state.prices[symbol].frame.copy()
-            return frame[["timestamp", "Open", "High", "Low", "Close", "Volume"]].tail(256)
+            volume_col = "Volume" if "Volume" in frame.columns else "volume"
+            return frame[["timestamp", "Open", "High", "Low", "Close", volume_col]].tail(256)
 
         first_durations = []
         first_outputs = {}

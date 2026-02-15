@@ -15,6 +15,7 @@ from differentiable_loss_utils import (
     combined_sortino_pnl_loss,
     compute_hourly_objective,
     simulate_hourly_trades,
+    simulate_hourly_trades_binary,
 )
 from src.serialization_utils import serialize_for_checkpoint
 from src.torch_load_utils import torch_load_compat
@@ -75,17 +76,19 @@ class BinanceHourlyTrainer:
 
     def train(self) -> TrainingArtifacts:
         torch.manual_seed(self.config.seed)
+        if float(self.config.fill_temperature) <= 0.0:
+            raise ValueError(
+                f"fill_temperature must be > 0 for differentiable fills (got {self.config.fill_temperature})."
+            )
         if self.config.use_tf32:
             if hasattr(torch, "set_float32_matmul_precision"):
                 torch.set_float32_matmul_precision("high")
-            if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
-                torch.backends.cuda.matmul.fp32_precision = "tf32"
-            if hasattr(torch.backends.cudnn, "conv") and hasattr(torch.backends.cudnn.conv, "fp32_precision"):
-                torch.backends.cudnn.conv.fp32_precision = "tf32"
-            if not hasattr(torch.backends.cuda.matmul, "fp32_precision") and hasattr(torch.backends.cuda.matmul, "allow_tf32"):
-                torch.backends.cuda.matmul.allow_tf32 = True
-            if not hasattr(torch.backends.cudnn, "conv") and hasattr(torch.backends.cudnn, "allow_tf32"):
-                torch.backends.cudnn.allow_tf32 = True
+            try:  # pragma: no cover - best-effort perf toggle
+                from src.torch_backend import configure_tf32_backends
+
+                configure_tf32_backends(torch, logger=logger)
+            except Exception:
+                pass
         if self.config.use_flash_attention and self.device.type == "cuda":
             if hasattr(torch.backends.cuda, "enable_flash_sdp"):
                 torch.backends.cuda.enable_flash_sdp(True)
@@ -268,20 +271,27 @@ class BinanceHourlyTrainer:
                 buy_intensity = actions["buy_amount"] / scale
                 sell_intensity = actions["sell_amount"] / scale
 
-                sim = simulate_hourly_trades(
-                    highs=highs,
-                    lows=lows,
-                    closes=closes,
-                    buy_prices=actions["buy_price"],
-                    sell_prices=actions["sell_price"],
-                    trade_intensity=trade_intensity,
-                    buy_trade_intensity=buy_intensity,
-                    sell_trade_intensity=sell_intensity,
-                    maker_fee=batch.get("maker_fee", self.config.maker_fee),
-                    initial_cash=self.config.initial_cash,
-                    can_short=batch.get("can_short", False),
-                    can_long=batch.get("can_long", True),
-                )
+                sim_kwargs = {
+                    "highs": highs,
+                    "lows": lows,
+                    "closes": closes,
+                    "buy_prices": actions["buy_price"],
+                    "sell_prices": actions["sell_price"],
+                    "trade_intensity": trade_intensity,
+                    "buy_trade_intensity": buy_intensity,
+                    "sell_trade_intensity": sell_intensity,
+                    "maker_fee": batch.get("maker_fee", self.config.maker_fee),
+                    "initial_cash": self.config.initial_cash,
+                    "can_short": batch.get("can_short", False),
+                    "can_long": batch.get("can_long", True),
+                }
+                if (not train) and bool(self.config.validation_use_binary_fills):
+                    sim = simulate_hourly_trades_binary(**sim_kwargs)
+                else:
+                    sim = simulate_hourly_trades(
+                        **sim_kwargs,
+                        temperature=float(self.config.fill_temperature),
+                    )
 
             returns = sim.returns.float()
             periods_per_year = batch.get("periods_per_year", None)
@@ -291,12 +301,14 @@ class BinanceHourlyTrainer:
                 returns,
                 periods_per_year=periods_per_year,
                 return_weight=self.config.return_weight,
+                smoothness_penalty=self.config.smoothness_penalty,
             )
             loss = combined_sortino_pnl_loss(
                 returns,
                 target_sign=self.config.sortino_target_sign,
                 periods_per_year=periods_per_year,
                 return_weight=self.config.return_weight,
+                smoothness_penalty=self.config.smoothness_penalty,
             )
 
             if train and optimizer is not None:

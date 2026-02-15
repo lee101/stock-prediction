@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -36,6 +37,75 @@ CONTEXT_LENGTH = 1024
 PREDICTION_LENGTH = 32
 MAE_TOLERANCE = 5e-3
 BASELINE_PATH = Path(__file__).parent / "chronos_mae_baseline.txt"
+
+@contextmanager
+def _torch_backend_guard() -> None:
+    """Force deterministic, full-precision backend settings for compile accuracy checks.
+
+    Other tests in the suite may toggle TF32 / cuDNN benchmarking for performance.
+    Those knobs can introduce numerical drift between eager kernels and Inductor
+    generated kernels. We snapshot+restore the relevant flags here so this test
+    stays stable regardless of execution order.
+    """
+
+    if not torch.cuda.is_available():
+        yield
+        return
+
+    cuda_backend = getattr(torch.backends, "cuda", None)
+    cudnn_backend = getattr(torch.backends, "cudnn", None)
+    matmul = getattr(cuda_backend, "matmul", None) if cuda_backend is not None else None
+    cudnn_conv = getattr(cudnn_backend, "conv", None) if cudnn_backend is not None else None
+
+    snapshot: Dict[str, object] = {}
+
+    def _safe_get(name: str, obj: object, attr: str) -> None:
+        try:
+            snapshot[name] = getattr(obj, attr)
+        except Exception:
+            snapshot[name] = None
+
+    def _safe_set(obj: object, attr: str, value: object) -> None:
+        try:
+            setattr(obj, attr, value)
+        except Exception:
+            pass
+
+    # NOTE: On PyTorch 2.9, reading `torch.backends.cuda.matmul.allow_tf32` can raise a
+    # RuntimeError if earlier code mixed the legacy and new TF32 APIs. Prefer the new
+    # `fp32_precision` knobs here for test stability.
+    if matmul is not None and hasattr(matmul, "fp32_precision"):
+        _safe_get("cuda.matmul.fp32_precision", matmul, "fp32_precision")
+    if cudnn_backend is not None and hasattr(cudnn_backend, "benchmark"):
+        _safe_get("cudnn.benchmark", cudnn_backend, "benchmark")
+    if cudnn_backend is not None and hasattr(cudnn_backend, "deterministic"):
+        _safe_get("cudnn.deterministic", cudnn_backend, "deterministic")
+    if cudnn_conv is not None and hasattr(cudnn_conv, "fp32_precision"):
+        _safe_get("cudnn.conv.fp32_precision", cudnn_conv, "fp32_precision")
+
+    try:
+        # Prefer the new fp32_precision knobs when available.
+        if matmul is not None and hasattr(matmul, "fp32_precision"):
+            _safe_set(matmul, "fp32_precision", "ieee")
+        if cudnn_conv is not None and hasattr(cudnn_conv, "fp32_precision"):
+            _safe_set(cudnn_conv, "fp32_precision", "ieee")
+
+        if cudnn_backend is not None and hasattr(cudnn_backend, "benchmark"):
+            _safe_set(cudnn_backend, "benchmark", False)
+        if cudnn_backend is not None and hasattr(cudnn_backend, "deterministic"):
+            _safe_set(cudnn_backend, "deterministic", True)
+
+        yield
+    finally:
+        # Restore previous backend state best-effort.
+        if matmul is not None and snapshot.get("cuda.matmul.fp32_precision") is not None:
+            _safe_set(matmul, "fp32_precision", snapshot["cuda.matmul.fp32_precision"])
+        if cudnn_conv is not None and snapshot.get("cudnn.conv.fp32_precision") is not None:
+            _safe_set(cudnn_conv, "fp32_precision", snapshot["cudnn.conv.fp32_precision"])
+        if cudnn_backend is not None and snapshot.get("cudnn.benchmark") is not None:
+            _safe_set(cudnn_backend, "benchmark", snapshot["cudnn.benchmark"])
+        if cudnn_backend is not None and snapshot.get("cudnn.deterministic") is not None:
+            _safe_set(cudnn_backend, "deterministic", snapshot["cudnn.deterministic"])
 
 
 def _load_symbol_frames(symbol: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -77,29 +147,30 @@ def _prepare_wrapper(compiled: bool) -> Chronos2OHLCWrapper:
 
 def _run_inference(symbol: str, compiled: bool) -> Dict[str, float]:
     context, holdout = _load_symbol_frames(symbol)
-    wrapper = _prepare_wrapper(compiled)
+    with _torch_backend_guard():
+        wrapper = _prepare_wrapper(compiled)
 
-    start = time.perf_counter()
-    batch = wrapper.predict_ohlc(
-        context_df=context,
-        symbol=symbol,
-        prediction_length=PREDICTION_LENGTH,
-        context_length=CONTEXT_LENGTH,
-        evaluation_df=holdout,
-    )
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    latency_ms = (time.perf_counter() - start) * 1000.0
+        start = time.perf_counter()
+        batch = wrapper.predict_ohlc(
+            context_df=context,
+            symbol=symbol,
+            prediction_length=PREDICTION_LENGTH,
+            context_length=CONTEXT_LENGTH,
+            evaluation_df=holdout,
+        )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        latency_ms = (time.perf_counter() - start) * 1000.0
 
-    median = batch.median
-    target_index = pd.to_datetime(holdout["timestamp"], utc=True)
-    preds = median.loc[target_index, "close"].to_numpy(dtype=np.float64)
-    actual = holdout["close"].to_numpy(dtype=np.float64)
-    mae = float(np.mean(np.abs(preds - actual)))
+        median = batch.median
+        target_index = pd.to_datetime(holdout["timestamp"], utc=True)
+        preds = median.loc[target_index, "close"].to_numpy(dtype=np.float64)
+        actual = holdout["close"].to_numpy(dtype=np.float64)
+        mae = float(np.mean(np.abs(preds - actual)))
 
-    wrapper.unload()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        wrapper.unload()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     return {"mae": mae, "latency_ms": latency_ms}
 

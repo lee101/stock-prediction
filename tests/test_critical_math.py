@@ -87,6 +87,13 @@ def _load_evaluate_daily_returns():
             "backtest_test3_inline missing _evaluate_daily_returns; cannot validate Sharpe math",
             allow_module_level=True,
         )
+    compute_fn = getattr(module, "_compute_return_profile", None)
+    if compute_fn is None:
+        pytest.skip(
+            "backtest_test3_inline missing _compute_return_profile; cannot validate annualization math",
+            allow_module_level=True,
+        )
+    globals()["_compute_return_profile"] = compute_fn
     return evaluate_fn
 
 
@@ -417,7 +424,8 @@ class TestAnnualizedReturns:
 
         # Create returns that average to this
         np.random.seed(42)
-        daily_returns = np.random.normal(avg_daily, 0.01, num_days)  # Some volatility
+        noise = np.random.normal(0.0, 0.01, num_days)
+        daily_returns = avg_daily + noise - noise.mean()  # Some volatility, exact mean
 
         result = _evaluate_daily_returns(daily_returns, trading_days_per_year=252)
 

@@ -134,17 +134,18 @@ def setup_environment(config: ExperimentConfig):
             try:
                 matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
                 if matmul is not None:
-                    if hasattr(matmul, "fp32_precision"):
-                        matmul.fp32_precision = "ieee"
-                    elif hasattr(matmul, "allow_tf32"):
+                    if hasattr(matmul, "allow_tf32"):
                         matmul.allow_tf32 = False
+                    elif hasattr(matmul, "fp32_precision"):
+                        matmul.fp32_precision = "ieee"
                 cudnn_backend = getattr(torch.backends, "cudnn", None)
                 if cudnn_backend is not None:
-                    conv = getattr(cudnn_backend, "conv", None)
-                    if conv is not None and hasattr(conv, "fp32_precision"):
-                        conv.fp32_precision = "ieee"
-                    elif hasattr(cudnn_backend, "allow_tf32"):
+                    if hasattr(cudnn_backend, "allow_tf32"):
                         cudnn_backend.allow_tf32 = False
+                    else:
+                        conv = getattr(cudnn_backend, "conv", None)
+                        if conv is not None and hasattr(conv, "fp32_precision"):
+                            conv.fp32_precision = "ieee"
                 print("TF32 fast paths disabled per configuration")
             except Exception:
                 pass

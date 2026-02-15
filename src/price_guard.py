@@ -6,7 +6,13 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 
-DEFAULT_PATH = Path("strategy_state/price_guard.json")
+from stock.state import get_paper_suffix, get_state_dir, resolve_state_suffix
+
+
+def _default_path() -> Path:
+    # Keep price-guard state isolated across paper/live + trade state suffixes.
+    suffix = f"{get_paper_suffix()}{resolve_state_suffix()}"
+    return get_state_dir() / f"price_guard{suffix}.json"
 
 
 @dataclass
@@ -17,7 +23,9 @@ class GuardState:
     last_sell_ts: Optional[datetime] = None
 
     @classmethod
-    def load(cls, symbol: str, path: Path = DEFAULT_PATH) -> "GuardState":
+    def load(cls, symbol: str, path: Optional[Path] = None) -> "GuardState":
+        if path is None:
+            path = _default_path()
         try:
             data = json.loads(path.read_text())
         except Exception:
@@ -30,7 +38,9 @@ class GuardState:
             last_sell_ts=_parse_iso(rec.get("last_sell_ts")),
         )
 
-    def save(self, symbol: str, path: Path = DEFAULT_PATH) -> None:
+    def save(self, symbol: str, path: Optional[Path] = None) -> None:
+        if path is None:
+            path = _default_path()
         try:
             data = json.loads(path.read_text())
         except Exception:

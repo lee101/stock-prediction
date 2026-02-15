@@ -16,7 +16,7 @@ from pandas import DataFrame
 from pandas.plotting import register_matplotlib_converters
 from retry import retry
 
-from alpaca_wrapper import latest_data
+import alpaca_wrapper
 from data_utils import is_fp_close_to_zero
 from env_real import ALP_SECRET_KEY, ALP_KEY_ID, ALP_ENDPOINT, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ADD_LATEST
 from src.fixtures import crypto_symbols, all_crypto_symbols, active_crypto_symbols
@@ -231,7 +231,7 @@ def download_exchange_latest_data(api, symbol):
         
         while retry_count < max_retries:
             try:
-                very_latest_data = latest_data(symbol)
+                very_latest_data = alpaca_wrapper.latest_data(symbol)
                 ask_price = float(very_latest_data.ask_price)
                 bid_price = float(very_latest_data.bid_price)
                 logger.info(f"Latest {symbol} bid: {bid_price}, ask: {ask_price} (attempt {retry_count + 1})")

@@ -26,6 +26,10 @@ def test_setup_src_imports_updates_conversion_utils():
     torch_stub = _make_stub_torch()
     numpy_stub = _make_stub_numpy()
 
+    original_torch = sys.modules.get("torch")
+    original_numpy = sys.modules.get("numpy")
+    original_conversion = sys.modules.get("src.conversion_utils")
+
     sys.modules["torch"] = torch_stub
     sys.modules["numpy"] = numpy_stub
     sys.modules.pop("src.conversion_utils", None)
@@ -37,6 +41,15 @@ def test_setup_src_imports_updates_conversion_utils():
     assert getattr(module, "torch") is torch_stub
 
     # Clean up sys.modules to avoid leaking stubs into other tests.
-    sys.modules.pop("torch", None)
-    sys.modules.pop("numpy", None)
-    sys.modules.pop("src.conversion_utils", None)
+    if original_torch is not None:
+        sys.modules["torch"] = original_torch
+    else:
+        sys.modules.pop("torch", None)
+    if original_numpy is not None:
+        sys.modules["numpy"] = original_numpy
+    else:
+        sys.modules.pop("numpy", None)
+    if original_conversion is not None:
+        sys.modules["src.conversion_utils"] = original_conversion
+    else:
+        sys.modules.pop("src.conversion_utils", None)
