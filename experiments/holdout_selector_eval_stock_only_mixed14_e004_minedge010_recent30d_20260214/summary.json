@@ -1,0 +1,95 @@
+{
+  "symbols": [
+    "AAPL",
+    "AMZN",
+    "DBX",
+    "GOOG",
+    "META",
+    "MSFT",
+    "NET",
+    "NVDA",
+    "NYT",
+    "PLTR",
+    "TRIP",
+    "TSLA",
+    "YELP"
+  ],
+  "checkpoint": "binanceneural/checkpoints/alpaca_cross_global_mixed14_robust_short_seq128_lb4000_20260205_2319/epoch_004.pt",
+  "config": {
+    "sequence_length": 128,
+    "horizon": 1,
+    "forecast_horizons": [
+      1,
+      24
+    ],
+    "window_hours": 720.0,
+    "num_windows": 20,
+    "seed": 1337,
+    "decision_lag_bars": 1,
+    "select_fillable_only": false,
+    "work_steal_enabled": false,
+    "allow_short": true,
+    "long_only_symbols": [
+      "AAPL",
+      "AMZN",
+      "GOOG",
+      "META",
+      "MSFT",
+      "NET",
+      "NVDA",
+      "PLTR",
+      "TSLA"
+    ],
+    "short_only_symbols": [
+      "NYT",
+      "YELP",
+      "DBX",
+      "TRIP"
+    ]
+  },
+  "metrics": {
+    "total_return": {
+      "mean": -0.04259237993521054,
+      "median": -0.038911886168199,
+      "p10": -0.053830510026127196,
+      "p25": -0.05130219471766301,
+      "p75": -0.036734142145180296,
+      "p90": -0.030287372318041173
+    },
+    "sortino_hourly": {
+      "mean": -2.6259839934118276,
+      "median": -2.167049623119988,
+      "p10": -4.215310379702719,
+      "p25": -3.71994647625541,
+      "p75": -1.5885487497780548,
+      "p90": -1.5330483069802368
+    },
+    "max_drawdown": {
+      "mean": -0.060800584225726415,
+      "median": -0.0564764824663397,
+      "p10": -0.08482511911290395,
+      "p25": -0.08479639254639829,
+      "p75": -0.04763959739845868,
+      "p90": -0.0403170034128145
+    },
+    "pct_profitable_days": {
+      "mean": 0.41308479532163744,
+      "median": 0.4392857142857143,
+      "p10": 0.2777777777777778,
+      "p25": 0.3414473684210526,
+      "p75": 0.47431077694235585,
+      "p90": 0.5238095238095238
+    },
+    "sortino_daily_365": {
+      "mean": -6.152422534909154,
+      "median": -5.736579313103414,
+      "p10": -10.08489956158699,
+      "p25": -8.428511318452172,
+      "p75": -3.5665587276233666,
+      "p90": -3.2149291511526603
+    }
+  },
+  "artifacts": {
+    "windows_csv": "experiments/holdout_selector_eval_stock_only_mixed14_e004_minedge010_recent30d_20260214/windows.csv"
+  }
+}
