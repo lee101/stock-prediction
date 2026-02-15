@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
 import torch
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
@@ -63,6 +68,15 @@ def main() -> None:
     parser.add_argument("--forecast-cache-root", default=str(DatasetConfig().forecast_cache_root))
     parser.add_argument("--data-root", default=None)
     parser.add_argument("--cache-only", action="store_true")
+    parser.add_argument(
+        "--max-feature-lookback-hours",
+        type=int,
+        default=None,
+        help=(
+            "Max lookback window for feature construction. Note: for Alpaca hourly datasets this is treated as a "
+            "row cap (not literal hours), but it also controls the forecast start timestamp via end_ts - hours."
+        ),
+    )
     parser.add_argument("--moving-average-windows", default=None)
     parser.add_argument("--ema-windows", default=None)
     parser.add_argument("--atr-windows", default=None)
@@ -84,6 +98,26 @@ def main() -> None:
     parser.add_argument("--allow-reentry-same-bar", action="store_true")
     parser.add_argument("--no-enforce-market-hours", action="store_true")
     parser.add_argument("--no-close-at-eod", action="store_true")
+    parser.add_argument(
+        "--decision-lag-bars",
+        type=int,
+        default=0,
+        help="Shift actions+forecast inputs back by N bars per symbol (live-like execution delay).",
+    )
+    parser.add_argument(
+        "--realistic-selection",
+        action="store_true",
+        help=(
+            "Select entry candidates by edge score only, then simulate whether the chosen limit order fills. "
+            "When omitted, the legacy simulator only considers 'fillable' candidates (optimistic)."
+        ),
+    )
+    parser.add_argument(
+        "--max-volume-fraction",
+        type=float,
+        default=None,
+        help="Optional realism: cap fills to a fraction of bar volume (requires volume column).",
+    )
     parser.add_argument("--allow-short", action="store_true", help="Allow selector to open short positions (stocks only).")
     parser.add_argument("--long-only-symbols", default=None, help="Comma-separated symbols to restrict to long-only.")
     parser.add_argument("--short-only-symbols", default=None, help="Comma-separated symbols to restrict to short-only.")
@@ -102,6 +136,10 @@ def main() -> None:
         help="Annualized borrow cost applied to short notional (default 0.0).",
     )
     parser.add_argument("--max-concurrent-positions", type=int, default=1, help="Hold up to N positions simultaneously (default 1 = legacy).")
+    parser.add_argument("--work-steal-enabled", action="store_true", help="Enable work-stealing: exit a winner to enter a better edge.")
+    parser.add_argument("--work-steal-min-profit-pct", type=float, default=0.001, help="Minimum unrealized profit to consider work-steal.")
+    parser.add_argument("--work-steal-min-edge", type=float, default=0.005, help="Minimum candidate edge to consider work-steal.")
+    parser.add_argument("--work-steal-edge-margin", type=float, default=0.0, help="Require candidate edge >= unrealized + margin.")
     parser.add_argument("--eval-days", type=float, default=None)
     parser.add_argument("--eval-hours", type=float, default=None)
     parser.add_argument("--output-dir", default=None)
@@ -145,6 +183,11 @@ def main() -> None:
     vol_regime_short = args.vol_regime_short if args.vol_regime_short is not None else DatasetConfig().vol_regime_short
     vol_regime_long = args.vol_regime_long if args.vol_regime_long is not None else DatasetConfig().vol_regime_long
     min_history_hours = args.min_history_hours if args.min_history_hours is not None else DatasetConfig().min_history_hours
+    max_lookback = (
+        int(args.max_feature_lookback_hours)
+        if args.max_feature_lookback_hours is not None
+        else DatasetConfig().max_feature_lookback_hours
+    )
 
     for symbol in symbols:
         data_cfg = DatasetConfig(
@@ -164,6 +207,7 @@ def main() -> None:
             vol_regime_short=vol_regime_short,
             vol_regime_long=vol_regime_long,
             min_history_hours=min_history_hours,
+            max_feature_lookback_hours=max_lookback,
         )
         data = AlpacaHourlyDataModule(data_cfg)
         model = _load_model(Path(args.checkpoint), len(data.feature_columns), args.sequence_length)
@@ -225,6 +269,13 @@ def main() -> None:
         margin_interest_annual=float(args.margin_interest_annual),
         short_borrow_cost_annual=float(args.short_borrow_cost_annual),
         max_concurrent_positions=int(args.max_concurrent_positions),
+        work_steal_enabled=bool(args.work_steal_enabled),
+        work_steal_min_profit_pct=float(args.work_steal_min_profit_pct),
+        work_steal_min_edge=float(args.work_steal_min_edge),
+        work_steal_edge_margin=float(args.work_steal_edge_margin),
+        decision_lag_bars=int(args.decision_lag_bars or 0),
+        select_fillable_only=not bool(args.realistic_selection),
+        max_volume_fraction=float(args.max_volume_fraction) if args.max_volume_fraction is not None else None,
     )
 
     result = run_best_trade_simulation(bars, actions, cfg, horizon=args.horizon)

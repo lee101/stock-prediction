@@ -5,6 +5,20 @@ from datetime import datetime, timedelta
 
 import pytest
 
+# Keep local-module stubs from leaking into unrelated tests (e.g. src.stock_utils).
+_ORIGINAL_LOCAL_MODULES = {
+    name: sys.modules.get(name)
+    for name in (
+        "data_curate_daily",
+        "env_real",
+        "jsonshelve",
+        "src.fixtures",
+        "src.logging_utils",
+        "src.stock_utils",
+        "src.trading_obj_utils",
+    )
+}
+
 # Create dummy modules so alpaca_cli can be imported without real dependencies
 sys.modules.setdefault("alpaca_trade_api", types.ModuleType("alpaca_trade_api"))
 sys.modules.setdefault("alpaca_trade_api.rest", types.ModuleType("alpaca_trade_api.rest"))
@@ -102,7 +116,8 @@ env_real.ALP_KEY_ID_PROD = "key"
 env_real.ALP_SECRET_KEY_PROD = "secret"
 env_real.ALP_ENDPOINT = "paper"
 sys.modules.setdefault("env_real", env_real)
-sys.modules.setdefault("data_curate_daily", types.ModuleType("data_curate_daily"))
+# Always override: never mutate a real module that may have been imported earlier.
+sys.modules["data_curate_daily"] = types.ModuleType("data_curate_daily")
 data_curate_daily = sys.modules["data_curate_daily"]
 data_curate_daily.download_exchange_latest_data = lambda *a, **k: None
 data_curate_daily.get_bid = lambda *a, **k: 0
@@ -115,8 +130,9 @@ class FlatShelf(dict):
         pass
 jsonshelve_mod.FlatShelf = FlatShelf
 sys.modules.setdefault("jsonshelve", jsonshelve_mod)
-sys.modules.setdefault("src.fixtures", types.ModuleType("fixtures"))
-sys.modules["src.fixtures"].crypto_symbols = []
+fixtures_mod = types.ModuleType("src.fixtures")
+fixtures_mod.crypto_symbols = []
+sys.modules["src.fixtures"] = fixtures_mod
 logging_utils_mod = types.ModuleType("logging_utils")
 
 def _stub_logger(*args, **kwargs):
@@ -128,14 +144,26 @@ def _stub_logger(*args, **kwargs):
     )
 
 logging_utils_mod.setup_logging = _stub_logger
-sys.modules.setdefault("src.logging_utils", logging_utils_mod)
-sys.modules.setdefault("src.stock_utils", types.ModuleType("stock_utils"))
-sys.modules["src.stock_utils"].pairs_equal = lambda a,b: a==b
-sys.modules["src.stock_utils"].remap_symbols = lambda s: s
-sys.modules.setdefault("src.trading_obj_utils", types.ModuleType("trading_obj_utils"))
-sys.modules["src.trading_obj_utils"].filter_to_realistic_positions = lambda x: x
+logging_utils_mod.get_log_filename = lambda base_name, *a, **k: base_name
+sys.modules["src.logging_utils"] = logging_utils_mod
+
+stock_utils_mod = types.ModuleType("src.stock_utils")
+stock_utils_mod.pairs_equal = lambda a, b: a == b
+stock_utils_mod.remap_symbols = lambda s: s
+sys.modules["src.stock_utils"] = stock_utils_mod
+
+trading_obj_mod = types.ModuleType("src.trading_obj_utils")
+trading_obj_mod.filter_to_realistic_positions = lambda x: x
+sys.modules["src.trading_obj_utils"] = trading_obj_mod
 
 import scripts.alpaca_cli as alpaca_cli
+
+# Restore real/local modules so the stubs above do not impact other tests.
+for _name, _original in _ORIGINAL_LOCAL_MODULES.items():
+    if _original is None:
+        sys.modules.pop(_name, None)
+    else:
+        sys.modules[_name] = _original
 
 
 class DummyData:

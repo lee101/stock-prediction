@@ -16,6 +16,12 @@ def apply(verbose: bool = True) -> int:
     """Apply Chronos2-specific compilation heuristics."""
 
     tweaks = []
+    running_pytest = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    aggressive_env = os.environ.get("CHRONOS_COMPILE_AGGRESSIVE")
+    if aggressive_env is None:
+        aggressive = not running_pytest
+    else:
+        aggressive = aggressive_env.strip().lower() in {"1", "true", "yes", "on"}
 
     if os.environ.get("TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS") != "1":
         os.environ["TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS"] = "1"
@@ -37,9 +43,16 @@ def apply(verbose: bool = True) -> int:
     try:
         import torch._inductor.config as inductor_config  # type: ignore
 
-        inductor_config.max_autotune = True
-        inductor_config.triton.cudagraphs = True
-        tweaks.append("Inductor autotune + cudagraphs")
+        if aggressive:
+            inductor_config.max_autotune = True
+            inductor_config.triton.cudagraphs = True
+            tweaks.append("Inductor autotune + cudagraphs")
+        else:
+            # Keep unit tests deterministic and avoid global CUDA graph state
+            # leaking across the suite (can break RNG usage in later tests).
+            inductor_config.max_autotune = False
+            inductor_config.triton.cudagraphs = False
+            tweaks.append("Inductor stable mode (no autotune/cudagraphs)")
     except Exception as exc:  # pragma: no cover - optional
         warnings.warn(f"Unable to configure torch._inductor optimizations: {exc}")
 
@@ -47,8 +60,12 @@ def apply(verbose: bool = True) -> int:
         import torch._dynamo.config as dynamo_config  # type: ignore
 
         dynamo_config.recompile_limit = 64
-        dynamo_config.automatic_dynamic_shapes = True
-        tweaks.append("Dynamo dynamic shapes")
+        if aggressive:
+            dynamo_config.automatic_dynamic_shapes = True
+            tweaks.append("Dynamo dynamic shapes")
+        else:
+            dynamo_config.automatic_dynamic_shapes = False
+            tweaks.append("Dynamo static shapes")
     except Exception:  # pragma: no cover
         pass
 

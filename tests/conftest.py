@@ -12,6 +12,19 @@ os.environ.setdefault("MARKETSIM_ALLOW_MOCK_ANALYTICS", "1")
 os.environ.setdefault("MARKETSIM_SKIP_REAL_IMPORT", "1")
 os.environ.setdefault("MARKETSIM_ALLOW_CPU_FALLBACK", "1")
 
+# Avoid cross-test/process contamination from a shared, persistent diskcache
+# directory that may also be used by real bots running on the same machine.
+if "ALPACA_ACCOUNT_DISKCACHE_DIR" not in os.environ:
+    _repo_root = Path(__file__).resolve().parent.parent
+    os.environ["ALPACA_ACCOUNT_DISKCACHE_DIR"] = str(
+        _repo_root / ".cache" / f"pytest_alpaca_account_{os.getpid()}"
+    )
+
+# Avoid cross-test contamination from persistent strategy_state artifacts.
+if "STATE_DIR" not in os.environ:
+    _repo_root = Path(__file__).resolve().parent.parent
+    os.environ["STATE_DIR"] = str(_repo_root / ".cache" / f"pytest_strategy_state_{os.getpid()}")
+
 import pytest
 
 # Provide a harmless env_real stub during tests so we never import the real
@@ -113,6 +126,9 @@ if "retry" not in sys.modules:
 
 if "alpaca" not in sys.modules:
     alpaca_mod = types.ModuleType("alpaca")
+    alpaca_common = types.ModuleType("alpaca.common")
+    alpaca_common_exceptions = types.ModuleType("alpaca.common.exceptions")
+    alpaca_common_exceptions.APIError = Exception
     alpaca_data = types.ModuleType("alpaca.data")
     alpaca_data_enums = types.ModuleType("alpaca.data.enums")
     alpaca_trading = types.ModuleType("alpaca.trading")
@@ -144,6 +160,8 @@ if "alpaca" not in sys.modules:
     alpaca_trading.requests.MarketOrderRequest = MagicMock()
 
     sys.modules["alpaca"] = alpaca_mod
+    sys.modules["alpaca.common"] = alpaca_common
+    sys.modules["alpaca.common.exceptions"] = alpaca_common_exceptions
     sys.modules["alpaca.data"] = alpaca_data
     sys.modules["alpaca.data.enums"] = alpaca_data_enums
     sys.modules["alpaca.trading"] = alpaca_trading
@@ -341,52 +359,6 @@ def pytest_ignore_collect(path, config):
         return True
 
     return False
-
-if "data_curate_daily" not in sys.modules:
-    data_curate_daily_stub = types.ModuleType("data_curate_daily")
-    _latest_prices = {}
-
-    def download_exchange_latest_data(client, symbol):
-        # store deterministic bid/ask defaults for tests
-        _latest_prices[symbol] = {
-            "bid": _latest_prices.get(symbol, {}).get("bid", 99.0),
-            "ask": _latest_prices.get(symbol, {}).get("ask", 101.0),
-        }
-
-    def get_bid(symbol):
-        return _latest_prices.get(symbol, {}).get("bid", 99.0)
-
-    def get_ask(symbol):
-        return _latest_prices.get(symbol, {}).get("ask", 101.0)
-
-    def get_spread(symbol):
-        prices = _latest_prices.get(symbol, {})
-        bid = prices.get("bid", 99.0)
-        ask = prices.get("ask", 101.0)
-        return ask - bid
-
-    def download_daily_stock_data(current_time, symbols):
-        import pandas as pd
-
-        dates = pd.date_range(start="2023-01-01", periods=30, freq="D")
-        data = {
-            "Open": [100.0] * len(dates),
-            "High": [101.0] * len(dates),
-            "Low": [99.0] * len(dates),
-            "Close": [100.5] * len(dates),
-        }
-        return pd.DataFrame(data, index=dates)
-
-    def fetch_spread(symbol):
-        return 1.001
-
-    data_curate_daily_stub.download_exchange_latest_data = download_exchange_latest_data
-    data_curate_daily_stub.get_bid = get_bid
-    data_curate_daily_stub.get_ask = get_ask
-    data_curate_daily_stub.get_spread = get_spread
-    data_curate_daily_stub.download_daily_stock_data = download_daily_stock_data
-    data_curate_daily_stub.fetch_spread = fetch_spread
-    sys.modules["data_curate_daily"] = data_curate_daily_stub
 
 if "backtest_test3_inline" not in sys.modules:
     try:

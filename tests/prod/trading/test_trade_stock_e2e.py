@@ -63,8 +63,18 @@ def stub_trading_env(
         mocks["get_all_positions"] = stack.enter_context(
             patch("trade_stock_e2e.alpaca_wrapper.get_all_positions", return_value=positions)
         )
+        # Avoid hitting live Alpaca API paths when manage_positions records risk snapshots.
+        mocks["get_account"] = stack.enter_context(
+            patch(
+                "trade_stock_e2e.alpaca_wrapper.get_account",
+                return_value=types.SimpleNamespace(equity=250000.0, last_equity=250000.0),
+            )
+        )
         mocks["filter_positions"] = stack.enter_context(
             patch("trade_stock_e2e.filter_to_realistic_positions", return_value=positions)
+        )
+        mocks["cancel_orders"] = stack.enter_context(
+            patch("trade_stock_e2e._cancel_non_crypto_orders_out_of_hours", return_value=None)
         )
         mocks["client_cls"] = stack.enter_context(
             patch("trade_stock_e2e.StockHistoricalDataClient")
@@ -95,6 +105,62 @@ def stub_trading_env(
         )
         mocks["open_order"] = stack.enter_context(
             patch("trade_stock_e2e.alpaca_wrapper.open_order_at_price_or_all")
+        )
+        mocks["risk_snapshot"] = stack.enter_context(
+            patch(
+                "trade_stock_e2e.record_portfolio_snapshot",
+                return_value=types.SimpleNamespace(risk_threshold=1.0),
+            )
+        )
+        mocks["record_day_pl"] = stack.enter_context(
+            patch("trade_stock_e2e.record_day_pl", return_value=None)
+        )
+        # Avoid touching on-disk FlatShelf stores while unit testing position logic.
+        mocks["update_active_trade"] = stack.enter_context(
+            patch("trade_stock_e2e._update_active_trade", return_value=None)
+        )
+        mocks["tag_active_trade_strategy"] = stack.enter_context(
+            patch("trade_stock_e2e._tag_active_trade_strategy", return_value=None)
+        )
+        mocks["normalize_active_trade_patch"] = stack.enter_context(
+            patch("trade_stock_e2e._normalize_active_trade_patch", return_value=None)
+        )
+        if not isinstance(getattr(trade_module, "_mark_probe_active", None), MagicMock):
+            mocks["mark_probe_active"] = stack.enter_context(
+                patch("trade_stock_e2e._mark_probe_active", return_value={})
+            )
+        mocks["get_active_trade"] = stack.enter_context(
+            patch("trade_stock_e2e._get_active_trade", return_value={})
+        )
+        mocks["evaluate_trade_block"] = stack.enter_context(
+            patch(
+                "trade_stock_e2e._evaluate_trade_block",
+                return_value={
+                    "probe_expired": False,
+                    "probe_active": False,
+                    "pending_probe": False,
+                    "trade_mode": "normal",
+                    "blocked": False,
+                },
+            )
+        )
+        mocks["record_outcome"] = stack.enter_context(
+            patch("trade_stock_e2e._record_trade_outcome", return_value=None)
+        )
+        mocks["resolve_probe_state"] = stack.enter_context(
+            patch(
+                "trade_stock_e2e.resolve_probe_state",
+                return_value=ProbeState(force_probe=False, reason=None, probe_date=None, state={}),
+            )
+        )
+        mocks["sim_state"] = stack.enter_context(
+            patch("trade_stock_e2e.get_state", return_value=None)
+        )
+        mocks["drawdown"] = stack.enter_context(
+            patch("trade_stock_e2e._handle_live_drawdown", return_value=None)
+        )
+        stack.enter_context(
+            patch("trade_stock_e2e.ENABLE_PROBE_TRADES", True)
         )
         stack.enter_context(
             patch("trade_stock_e2e.PROBE_SYMBOLS", set())

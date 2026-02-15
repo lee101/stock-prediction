@@ -618,7 +618,8 @@ def _format_float(value: float, precision: int = 6) -> str:
     key_func=lambda symbol,
     side,
     limit_price,
-    target_qty,
+    target_qty=None,
+    qty=None,
     tolerance_pct=None,
     expiry_minutes=1440,
     poll_seconds=MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS,
@@ -626,19 +627,20 @@ def _format_float(value: float, precision: int = 6) -> str:
     force_immediate=False,
     priority_rank=None,
     crypto_rank=None: (
-        f"{symbol}_{side}_{limit_price}_{target_qty}_{tolerance_pct or 'auto'}_{expiry_minutes}_{poll_seconds}_{entry_strategy or ''}_{int(bool(force_immediate))}_{priority_rank if priority_rank is not None else 'none'}_{crypto_rank or 'none'}"
+        f"{symbol}_{side}_{limit_price}_{target_qty if target_qty is not None else qty}_{tolerance_pct or 'auto'}_{expiry_minutes}_{poll_seconds}_{entry_strategy or ''}_{int(bool(force_immediate))}_{priority_rank if priority_rank is not None else 'none'}_{crypto_rank or 'none'}"
     ),
 )
 def spawn_open_position_at_maxdiff_takeprofit(
     symbol: str,
     side: str,
     limit_price: float,
-    target_qty: float,
+    target_qty: Optional[float] = None,
     tolerance_pct: Optional[float] = None,
     expiry_minutes: int = 60 * 24,
     poll_seconds: int = MAXDIFF_ENTRY_DEFAULT_POLL_SECONDS,
     entry_strategy: Optional[str] = None,
     *,
+    qty: Optional[float] = None,
     force_immediate: bool = False,
     priority_rank: Optional[int] = None,
     crypto_rank: Optional[int] = None,
@@ -660,10 +662,30 @@ def spawn_open_position_at_maxdiff_takeprofit(
         expiry_minutes: Watcher lifetime in minutes
         poll_seconds: Polling interval
         entry_strategy: Strategy name
+        qty: Backwards-compatible alias for ``target_qty`` (keyword-only).
         force_immediate: Ignore tolerance, enter immediately
         priority_rank: Priority for always-on strategies
         crypto_rank: Crypto rank for out-of-hours tolerance (1=best)
     """
+    if target_qty is None:
+        if qty is None:
+            raise TypeError(
+                "spawn_open_position_at_maxdiff_takeprofit() missing required argument: "
+                "'target_qty' (or keyword alias 'qty')"
+            )
+        target_qty = qty
+    elif qty is not None:
+        try:
+            target_qty_f = float(target_qty)
+            qty_f = float(qty)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("spawn_open_position_at_maxdiff_takeprofit() qty arguments must be numeric") from exc
+        if abs(target_qty_f - qty_f) > 1e-12:
+            raise ValueError(
+                "spawn_open_position_at_maxdiff_takeprofit() received both 'target_qty' and "
+                f"'qty' but they differ (target_qty={target_qty!r}, qty={qty!r})"
+            )
+
     # Auto-calculate tolerance for crypto based on rank and market hours
     if tolerance_pct is None:
         is_top_crypto = crypto_rank == 1 if crypto_rank is not None else False

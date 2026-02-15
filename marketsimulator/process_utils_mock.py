@@ -70,14 +70,33 @@ def spawn_open_position_at_maxdiff_takeprofit(
     symbol: str,
     side: str,
     limit_price: float,
-    target_qty: float,
+    target_qty: Optional[float] = None,
     tolerance_pct: float = 0.0066,
     expiry_minutes: int = 60 * 24,
     poll_seconds: int = 45,
     *,
+    qty: Optional[float] = None,
     force_immediate: bool = False,
     priority_rank: Optional[int] = None,
 ):
+    if target_qty is None:
+        if qty is None:
+            raise TypeError(
+                "spawn_open_position_at_maxdiff_takeprofit() missing required argument: "
+                "'target_qty' (or keyword alias 'qty')"
+            )
+        target_qty = qty
+    elif qty is not None:
+        try:
+            target_qty_f = float(target_qty)
+            qty_f = float(qty)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("spawn_open_position_at_maxdiff_takeprofit() qty arguments must be numeric") from exc
+        if abs(target_qty_f - qty_f) > 1e-12:
+            raise ValueError(
+                "spawn_open_position_at_maxdiff_takeprofit() received both 'target_qty' and "
+                f"'qty' but they differ (target_qty={target_qty!r}, qty={qty!r})"
+            )
     logger.info(
         "[sim] Maxdiff staged entry for %s side=%s qty=%s limit=%.4f tol=%.4f expiry=%s poll=%s force_immediate=%s priority=%s",
         symbol,

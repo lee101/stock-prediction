@@ -12,7 +12,9 @@ def test_ensure_compilation_artifacts_normalises_cache_paths(monkeypatch, tmp_pa
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("COMPILED_MODELS_DIR", "cache_root")
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "cache_root/torch_inductor_rel")
-    sys.modules.pop("backtest_test3_inline", None)
+    # Ensure we re-import the module under the test-specific env/cwd, but restore
+    # sys.modules afterwards so other tests can safely reload the module.
+    monkeypatch.delitem(sys.modules, "backtest_test3_inline", raising=False)
 
     module = importlib.import_module("backtest_test3_inline")
     module._ensure_compilation_artifacts()

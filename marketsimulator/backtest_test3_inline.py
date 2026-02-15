@@ -581,12 +581,15 @@ def backtest_forecasts(
 ) -> pd.DataFrame:
     num_simulations = num_simulations or _DEFAULT_NUM_SIMULATIONS
     if _REAL_BACKTEST_MODULE and hasattr(_REAL_BACKTEST_MODULE, "backtest_forecasts"):
+        call_kwargs = {"num_simulations": num_simulations, **kwargs}
+        # Older backtest modules may not accept `model_override`; only pass it when
+        # explicitly requested so the wrapper stays backward compatible.
+        if model_override is not None:
+            call_kwargs["model_override"] = model_override
         try:
             return _REAL_BACKTEST_MODULE.backtest_forecasts(  # type: ignore[return-value]
                 symbol,
-                num_simulations=num_simulations,
-                model_override=model_override,
-                **kwargs,
+                **call_kwargs,
             )
         except TypeError as exc:  # pragma: no cover - guard older signatures
             if model_override is not None and "unexpected keyword" in str(exc):

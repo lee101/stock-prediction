@@ -121,6 +121,7 @@ def test_resolve_best_model_cached(monkeypatch):
         return {"model": "toto"}
 
     monkeypatch.delenv("MARKETSIM_FORCE_KRONOS", raising=False)
+    monkeypatch.delenv("ONLY_CHRONOS2", raising=False)
     monkeypatch.setattr(module, "in_test_mode", lambda: False)
     monkeypatch.setattr(module, "load_model_selection", fake_load_model_selection)
 
@@ -132,6 +133,7 @@ def test_resolve_best_model_cached(monkeypatch):
 def test_resolve_best_model_prefers_chronos(monkeypatch):
     monkeypatch.setenv("FAST_TESTING", "0")
     monkeypatch.delenv("MARKETSIM_FORCE_KRONOS", raising=False)
+    monkeypatch.delenv("ONLY_CHRONOS2", raising=False)
     module = _fresh_module()
     module._model_selection_cache.clear()
 

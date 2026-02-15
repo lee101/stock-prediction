@@ -14,10 +14,6 @@ import torch
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Set environment variable BEFORE importing backtest module
-os.environ["ONLY_CHRONOS2"] = "1"
-os.environ["REAL_TESTING"] = "1"
-
 from backtest_test3_inline import (
     load_chronos2_wrapper,
     resolve_best_model,
@@ -59,8 +55,9 @@ def aapl_data():
     return df
 
 
-def test_resolve_best_model_returns_chronos2():
+def test_resolve_best_model_returns_chronos2(monkeypatch):
     """Test that resolve_best_model returns 'chronos2' when ONLY_CHRONOS2 is set."""
+    monkeypatch.setenv("ONLY_CHRONOS2", "1")
     model = resolve_best_model("BTCUSD")
     assert model == "chronos2", f"Expected 'chronos2', got '{model}'"
 

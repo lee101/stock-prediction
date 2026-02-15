@@ -69,8 +69,10 @@ class TestMetricsUtils:
         """Test Sortino with no negative returns (all positive)."""
         returns = np.array([0.01, 0.02, 0.015, 0.025, 0.018])
         sortino = annualized_sortino(returns, periods_per_year=252)
-        # Should be high since no downside volatility
-        assert sortino > 100  # Very high sortino
+        # With no downside deviation, Sortino falls back to Sharpe's denominator so the
+        # metrics stay comparable (no infinite / NaN ratios).
+        sharpe = annualized_sharpe(returns, periods_per_year=252)
+        assert sortino == pytest.approx(sharpe, rel=1e-12, abs=1e-12)
 
     def test_annualized_sortino_empty(self):
         """Test with empty returns."""

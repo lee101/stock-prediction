@@ -7,7 +7,6 @@ Simulates live trading conditions with real market patterns
 import pytest
 import numpy as np
 import pandas as pd
-import yfinance as yf
 from datetime import datetime, timedelta
 from pathlib import Path
 import sys
@@ -21,10 +20,8 @@ from hfinference.production_engine import ProductionTradingEngine
 def test_production_engine_with_real_data():
     """Test production engine with real market data"""
     
-    # Download real data for testing
+    # Use bundled historical data to keep the test deterministic/offline.
     symbols = ['AAPL', 'MSFT', 'GOOGL']
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=365)
     
     print("\n=== Production Engine Test with Real Data ===")
     
@@ -113,13 +110,15 @@ def test_production_engine_with_real_data():
             print(f"\nProcessing {symbol}...")
             
             try:
-                # Get historical data
-                data = yf.download(
-                    symbol, 
-                    start=start_date, 
-                    end=end_date, 
-                    progress=False
-                )
+                csv_path = Path("trainingdata") / f"{symbol}.csv"
+                if not csv_path.exists():
+                    print(f"  Missing local dataset for {symbol}: {csv_path}")
+                    continue
+                data = pd.read_csv(csv_path)
+                if "timestamp" in data.columns:
+                    data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True, errors="coerce")
+                    data = data.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+                data = data.tail(400).reset_index(drop=True)
                 
                 if len(data) < 100:
                     print(f"  Insufficient data for {symbol}")

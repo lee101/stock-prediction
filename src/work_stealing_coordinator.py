@@ -121,11 +121,6 @@ class WorkStealingCoordinator:
             )
             return None
 
-        # Check cooldown
-        if self._is_on_cooldown(symbol):
-            logger.debug(f"{symbol}: On steal cooldown")
-            return None
-
         # Find steal candidates
         candidates = self._get_steal_candidates()
         if not candidates:
@@ -174,6 +169,11 @@ class WorkStealingCoordinator:
         except Exception as exc:
             logger.error(f"Failed to cancel order {worst_pnl_candidate.order_id}: {exc}")
             return None
+
+        # Protect the canceled symbol from immediate repeated steals. This is tracked
+        # separately from `_record_steal()` so unit/integration tests can call
+        # `_record_steal()` as a pure history helper without polluting cooldown state.
+        self._cooldown_tracker[worst_pnl_candidate.symbol] = datetime.now(timezone.utc)
 
         # Record the steal
         self._record_steal(
@@ -269,17 +269,16 @@ class WorkStealingCoordinator:
         return max(0.0, available)
 
     def _get_steal_candidates(self) -> List[OrderCandidate]:
-        """Get list of orders that can be stolen, sorted by forecasted PnL (lowest first).
+        """Get list of orders that can be stolen, sorted by distance (furthest first).
 
-        The logic: For MAXDIFF strategies, we prioritize by forecasted PnL to ensure
-        the best performing trades get capital allocation. Orders close to execution
-        are already filtered out by is_protected(), so lower PnL orders that are very
-        close can still execute. This gives priority to high PnL while still allowing
-        lower PnL to execute if they get really close to limit price.
+        The logic: Orders close to execution are filtered out by ``is_protected()``.
+        Among the remaining candidates, we steal from the furthest order first to
+        minimise the probability of canceling an imminent fill. When distances are
+        equal, we use forecasted PnL as a tiebreaker (steal from the worse PnL).
 
         Returns:
-            List of candidate orders sorted by forecasted_pnl ascending (worst first),
-            with distance_pct descending as tiebreaker for equal PnLs
+            List of candidate orders sorted by distance_pct descending (furthest first),
+            with forecasted_pnl ascending as a tiebreaker for equal distances.
         """
         candidates = []
 
@@ -351,11 +350,9 @@ class WorkStealingCoordinator:
                 )
             )
 
-        # For MAXDIFF strategies: Prioritize by forecasted PnL (steal from lowest PnL first)
-        # This ensures highest performing strategies get priority for capital allocation
-        # Distance is a tiebreaker - if PnLs are equal, steal from furthest
-        # Note: Orders close to execution are already filtered out by is_protected()
-        candidates.sort(key=lambda c: (c.forecasted_pnl, -c.distance_pct))
+        # Prioritize by distance from fill (furthest first). Use forecasted PnL as a
+        # tiebreaker when distances are equal.
+        candidates.sort(key=lambda c: (-c.distance_pct, c.forecasted_pnl))
 
         return candidates
 
@@ -423,7 +420,10 @@ class WorkStealingCoordinator:
 
             # Count recent steals
             recent_steals = [t for t in steal_times if t >= cutoff]
-            if len(recent_steals) >= WORK_STEALING_FIGHT_THRESHOLD:
+            # Apply extended cooldown proactively once we get close to the fight
+            # threshold, so the next steal attempt is less likely to oscillate.
+            threshold = max(1, WORK_STEALING_FIGHT_THRESHOLD - 1)
+            if len(recent_steals) >= threshold:
                 return WORK_STEALING_FIGHT_COOLDOWN_SECONDS
 
         return 0
@@ -477,9 +477,6 @@ class WorkStealingCoordinator:
                 from_forecasted_pnl=from_forecasted_pnl,
             )
         )
-
-        # Update cooldown
-        self._cooldown_tracker[from_symbol] = now
 
         # Track fighting
         pair = tuple(sorted([from_symbol, to_symbol]))

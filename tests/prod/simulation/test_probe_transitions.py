@@ -241,7 +241,8 @@ def test_manage_positions_backouts_expired_probe(monkeypatch):
 
 def test_evaluate_trade_block_forces_probe_with_recent_losses(monkeypatch):
     module = trade_stock_e2e
-    timestamp = datetime(2025, 11, 14, 16, 0, tzinfo=timezone.utc).isoformat()
+    # Keep the test stable across calendar time: ensure last trade is within the cooldown window.
+    timestamp = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     monkeypatch.setattr(module, "PROBE_TRADE_MODE", True)
     monkeypatch.setattr(module, "ENABLE_PROBE_TRADES", True)
     monkeypatch.setattr(module, "_load_trade_outcome", lambda *args, **kwargs: {"pnl": -5.0, "closed_at": timestamp})
@@ -257,7 +258,8 @@ def test_evaluate_trade_block_forces_probe_with_recent_losses(monkeypatch):
 
 def test_evaluate_trade_block_remains_blocked_when_recent_positive(monkeypatch):
     module = trade_stock_e2e
-    timestamp = datetime(2025, 11, 14, 16, 0, tzinfo=timezone.utc).isoformat()
+    # Keep the test stable across calendar time: ensure last trade is within the cooldown window.
+    timestamp = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     monkeypatch.setattr(module, "PROBE_TRADE_MODE", True)
     monkeypatch.setattr(module, "ENABLE_PROBE_TRADES", True)
     monkeypatch.setattr(module, "_load_trade_outcome", lambda *args, **kwargs: {"pnl": -5.0, "closed_at": timestamp})

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sortino-focused training for Alpaca crypto pairs."""
+"""Sortino-focused training for Alpaca crypto pairs and stocks."""
 from __future__ import annotations
 
 import argparse
@@ -23,13 +23,49 @@ from binanceneural.trainer import BinanceHourlyTrainer
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.marketsimulator import BinanceMarketSimulator, SimulationConfig
 
-DATA_ROOT = Path("trainingdatahourly/crypto")
+DATA_ROOT_CRYPTO = Path("trainingdatahourly/crypto")
+DATA_ROOT_STOCKS = Path("trainingdatahourly/stocks")
 FORECAST_CACHE = Path("binanceneural/forecast_cache")
 CHECKPOINT_ROOT = Path("alpacasortino/checkpoints")
 RESULTS_ROOT = Path("alpacasortino/results")
 
-MAKER_FEE = 0.0015  # Alpaca crypto fee
+MAKER_FEE_CRYPTO = 0.0015  # Alpaca crypto fee
+MAKER_FEE_STOCK = 0.0001   # Alpaca stock fee (effectively zero for most)
 EVAL_DAYS = 7
+
+
+def _is_stock_symbol(symbol: str) -> bool:
+    """Return True if symbol looks like a stock (not crypto)."""
+    sym = symbol.upper()
+    return not (sym.endswith("USD") and not sym.startswith("N") and len(sym) > 4) and \
+           not sym.endswith("USDT") and sym not in {
+               "BTCUSD", "ETHUSD", "SOLUSD", "LINKUSD", "UNIUSD",
+               "DOGEUSD", "AVAXUSD", "DOTUSD", "MATICUSD", "AAVEUSD",
+               "ALGOUSD", "LTCUSD", "ADAUSD", "BCHUSD", "BNBUSD",
+               "APTUSD", "ATOMUSD", "SHIBUSD", "PAXGUSD", "SKYUSD",
+           }
+
+
+def _resolve_data_root(symbol: str) -> Path:
+    """Return the correct data root for a symbol."""
+    sym = symbol.upper()
+    stock_path = DATA_ROOT_STOCKS / f"{sym}.csv"
+    crypto_path = DATA_ROOT_CRYPTO / f"{sym}.csv"
+    if stock_path.exists():
+        return DATA_ROOT_STOCKS
+    if crypto_path.exists():
+        return DATA_ROOT_CRYPTO
+    # Fallback: guess based on symbol pattern
+    if _is_stock_symbol(sym):
+        return DATA_ROOT_STOCKS
+    return DATA_ROOT_CRYPTO
+
+
+def _resolve_fee(symbol: str) -> float:
+    """Return the appropriate maker fee for a symbol."""
+    if _is_stock_symbol(symbol):
+        return MAKER_FEE_STOCK
+    return MAKER_FEE_CRYPTO
 
 
 class AlpacaSortinoDataModule:
@@ -38,6 +74,8 @@ class AlpacaSortinoDataModule:
     def __init__(
         self,
         symbol: str,
+        *,
+        forecast_horizons: tuple[int, ...] = (1, 24),
         sequence_length: int = 72,
         val_days: int = EVAL_DAYS,
         test_days: int = EVAL_DAYS,
@@ -48,9 +86,11 @@ class AlpacaSortinoDataModule:
 
         self.symbol = symbol.upper()
         self.sequence_length = sequence_length
+        self.forecast_horizons = forecast_horizons
 
         # Load price data
-        csv_path = DATA_ROOT / f"{self.symbol}.csv"
+        data_root = _resolve_data_root(self.symbol)
+        csv_path = data_root / f"{self.symbol}.csv"
         if not csv_path.exists():
             raise FileNotFoundError(f"Missing data: {csv_path}")
 
@@ -110,7 +150,7 @@ class AlpacaSortinoDataModule:
     def _add_forecasts(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add Chronos forecast columns."""
         self.available_horizons = []
-        for horizon in [1, 24]:  # Only h1 and h24 available
+        for horizon in self.forecast_horizons:
             cache_path = FORECAST_CACHE / f"h{horizon}" / f"{self.symbol}.parquet"
             if cache_path.exists():
                 forecasts = pd.read_parquet(cache_path)
@@ -174,7 +214,7 @@ class AlpacaSortinoDataModule:
         return tuple(cols)
 
 
-def run_backtest(checkpoint_path: Path, test_frame: pd.DataFrame, feature_columns, normalizer, fee: float = MAKER_FEE):
+def run_backtest(checkpoint_path: Path, test_frame: pd.DataFrame, feature_columns, normalizer, fee: float = None, sequence_length: int = 72):
     """Run backtest with trained model."""
     from binancechronossolexperiment.inference import load_policy_checkpoint
 
@@ -185,9 +225,14 @@ def run_backtest(checkpoint_path: Path, test_frame: pd.DataFrame, feature_column
         frame=test_frame,
         feature_columns=feat_cols,
         normalizer=norm,
-        sequence_length=72,
+        sequence_length=sequence_length,
         horizon=1,
     )
+
+    # Auto-resolve fee from symbol if not specified
+    if fee is None:
+        symbol = test_frame.get("symbol", pd.Series(["UNKNOWN"])).iloc[0] if "symbol" in test_frame.columns else "UNKNOWN"
+        fee = _resolve_fee(symbol)
 
     config = SimulationConfig(maker_fee=fee, initial_cash=10000.0)
     sim = BinanceMarketSimulator(config)
@@ -204,10 +249,39 @@ def run_backtest(checkpoint_path: Path, test_frame: pd.DataFrame, feature_column
     sortino = (ret.mean() / (neg.std() + 1e-10)) * np.sqrt(8760) if len(neg) > 0 else 0
     total_return = (eq.iloc[-1] / eq.iloc[0]) - 1
 
+    pct_profitable = 0.0
+    num_buys = 0
+    num_sells = 0
+
+    # Count trades from actions
+    if hasattr(actions, '__len__'):
+        if hasattr(actions, 'columns'):
+            # DataFrame - look for action/trade column
+            for col in ['action', 'trade_amount', 'position']:
+                if col in actions.columns:
+                    act_vals = actions[col].values
+                    num_buys = int((act_vals > 0.01).sum())
+                    num_sells = int((act_vals < -0.01).sum())
+                    break
+        else:
+            # Series or array
+            act_vals = np.asarray(actions)
+            num_buys = int((act_vals > 0.01).sum())
+            num_sells = int((act_vals < -0.01).sum())
+
+    # Equity curve CSV for charting
+    eq_csv = eq.to_csv()
+
     return {
         "total_return": total_return,
-        "sortino": sortino,
         "final_equity": eq.iloc[-1],
+        "hourly": {"mean": float(ret.mean()), "std": float(ret.std())},
+        "daily": {},
+        "pct_profitable_days": float(pct_profitable),
+        "num_buy_trades": num_buys,
+        "num_sell_trades": num_sells,
+        "equity_curve_csv": eq_csv,
+        "sortino": sortino,
     }
 
 
@@ -218,28 +292,58 @@ def train_sortino_model(
     n_layers: int = 4,
     learning_rate: float = 3e-4,
     run_name: str = None,
+    sequence_length: int = 96,
+    model_arch: str = "classic",
+    optimizer_name: str = "adamw",
+    return_weight: float = 0.12,
+    smoothness_penalty: float = 0.3,
+    trade_amount_scale: float = 100.0,
+    price_offset_pct: float = 0.0003,
+    min_price_gap_pct: float = 0.0003,
+    fill_temperature: float = 1e-4,
+    binary_val: bool = True,
+    forecast_horizons: tuple[int, ...] = (1, 24),
+    max_history_days: int = 365,
+    val_days: int = EVAL_DAYS,
+    test_days: int = EVAL_DAYS,
 ):
     """Train Sortino-focused model for a symbol."""
     run_name = run_name or f"{symbol.lower()}_sortino_{time.strftime('%Y%m%d_%H%M%S')}"
 
-    dm = AlpacaSortinoDataModule(symbol)
+    dm = AlpacaSortinoDataModule(
+        symbol,
+        forecast_horizons=forecast_horizons,
+        sequence_length=sequence_length,
+        val_days=val_days,
+        test_days=test_days,
+        max_history_days=max_history_days,
+    )
+
+    maker_fee = _resolve_fee(symbol)
 
     config = TrainingConfig(
         epochs=epochs,
         batch_size=64,
-        sequence_length=72,
+        sequence_length=sequence_length,
         learning_rate=learning_rate,
         weight_decay=1e-4,
-        optimizer_name="adamw",
-        model_arch="classic",
+        optimizer_name=optimizer_name,
+        model_arch=model_arch,
         transformer_dim=hidden_dim,
         transformer_layers=n_layers,
         transformer_heads=8,
         transformer_dropout=0.1,
-        maker_fee=MAKER_FEE,
+        maker_fee=maker_fee,
         checkpoint_root=CHECKPOINT_ROOT,
         run_name=run_name,
         use_compile=False,
+        return_weight=return_weight,
+        smoothness_penalty=smoothness_penalty,
+        trade_amount_scale=trade_amount_scale,
+        price_offset_pct=price_offset_pct,
+        min_price_gap_pct=min_price_gap_pct,
+        fill_temperature=fill_temperature,
+        validation_use_binary_fills=binary_val,
     )
 
     trainer = BinanceHourlyTrainer(config, dm)
@@ -268,10 +372,27 @@ def main():
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--n-layers", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--sequence-length", type=int, default=96)
+    parser.add_argument("--val-days", type=int, default=EVAL_DAYS)
+    parser.add_argument("--test-days", type=int, default=EVAL_DAYS)
+    parser.add_argument("--max-history-days", type=int, default=365)
+    parser.add_argument("--forecast-horizons", default="1,24")
+    parser.add_argument("--model-arch", default="classic", help="Policy architecture: classic | nano")
+    parser.add_argument("--optimizer", default="adamw", help="adamw | muon | muon_mix")
+    parser.add_argument("--return-weight", type=float, default=0.12)
+    parser.add_argument("--smoothness-penalty", type=float, default=0.3)
+    parser.add_argument("--trade-amount-scale", type=float, default=100.0)
+    parser.add_argument("--price-offset-pct", type=float, default=0.0003)
+    parser.add_argument("--min-price-gap-pct", type=float, default=0.0003)
+    parser.add_argument("--fill-temperature", type=float, default=1e-4)
+    parser.add_argument("--binary-val", action="store_true", help="Use binary fills for validation in training")
     parser.add_argument("--run-name", default=None)
     args = parser.parse_args()
 
-    logger.info(f"Training {args.symbol}: {args.epochs}ep, h={args.hidden_dim}, l={args.n_layers}")
+    forecast_horizons = tuple(int(h) for h in args.forecast_horizons.split(","))
+
+    logger.info(f"Training {args.symbol}: {args.epochs}ep, h={args.hidden_dim}, l={args.n_layers}, "
+                f"arch={args.model_arch}, opt={args.optimizer}, rw={args.return_weight}, sp={args.smoothness_penalty}")
 
     ckpt, test_frame, feat_cols, normalizer, history = train_sortino_model(
         args.symbol,
@@ -280,14 +401,29 @@ def main():
         args.n_layers,
         args.learning_rate,
         args.run_name,
+        sequence_length=args.sequence_length,
+        model_arch=args.model_arch,
+        optimizer_name=args.optimizer,
+        return_weight=args.return_weight,
+        smoothness_penalty=args.smoothness_penalty,
+        trade_amount_scale=args.trade_amount_scale,
+        price_offset_pct=args.price_offset_pct,
+        min_price_gap_pct=args.min_price_gap_pct,
+        fill_temperature=args.fill_temperature,
+        binary_val=args.binary_val,
+        forecast_horizons=forecast_horizons,
+        max_history_days=args.max_history_days,
+        val_days=args.val_days,
+        test_days=args.test_days,
     )
 
     logger.info("Running backtest...")
-    result = run_backtest(ckpt, test_frame, feat_cols, normalizer)
+    result = run_backtest(ckpt, test_frame, feat_cols, normalizer, sequence_length=args.sequence_length)
 
     print(f"\n{'='*60}")
     print(f"{args.symbol} Sortino Training Result ({args.epochs} epochs)")
-    print(f"Hidden: {args.hidden_dim}, Layers: {args.n_layers}")
+    print(f"Hidden: {args.hidden_dim}, Layers: {args.n_layers}, Arch: {args.model_arch}")
+    print(f"SP: {args.smoothness_penalty}, RW: {args.return_weight}, FillTemp: {args.fill_temperature}")
     print(f"{'='*60}")
     print(f"7d Return: {result['total_return']:.4f} ({result['total_return']*100:.2f}%)")
     print(f"Sortino: {result['sortino']:.2f}")
@@ -302,6 +438,20 @@ def main():
         "epochs": args.epochs,
         "hidden_dim": args.hidden_dim,
         "n_layers": args.n_layers,
+        "sequence_length": args.sequence_length,
+        "val_days": args.val_days,
+        "test_days": args.test_days,
+        "max_history_days": args.max_history_days,
+        "forecast_horizons": list(forecast_horizons),
+        "model_arch": args.model_arch,
+        "optimizer": args.optimizer,
+        "return_weight": args.return_weight,
+        "smoothness_penalty": args.smoothness_penalty,
+        "trade_amount_scale": args.trade_amount_scale,
+        "price_offset_pct": args.price_offset_pct,
+        "min_price_gap_pct": args.min_price_gap_pct,
+        "fill_temperature": args.fill_temperature,
+        "validation_use_binary_fills": args.binary_val,
         "result": result,
         "history": [{"epoch": h.epoch, "val_sortino": h.val_sortino, "val_return": h.val_return}
                    for h in history],

@@ -79,10 +79,25 @@ def _scaled_dot_product_attention_reference(
     attn_mask: torch.Tensor | None = None,
     dropout_p: float = 0.0,
     is_causal: bool = False,
+    *,
+    scale: float | None = None,
+    enable_gqa: bool = False,
 ) -> torch.Tensor:
     """Pure PyTorch reference implementation used as a CPU fallback."""
+    if enable_gqa:
+        # Mirror torch.nn.functional.scaled_dot_product_attention's grouped-query
+        # attention expansion when query has more heads than key/value.
+        q_heads = q.size(-3)
+        kv_heads = k.size(-3)
+        if kv_heads <= 0 or q_heads % kv_heads != 0:
+            raise ValueError("enable_gqa requires query heads to be a multiple of key/value heads")
+        repeat = q_heads // kv_heads
+        k = k.repeat_interleave(repeat, dim=-3)
+        v = v.repeat_interleave(repeat, dim=-3)
+
     d_k = q.size(-1)
-    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
+    scale_factor = 1 / math.sqrt(d_k) if scale is None else scale
+    scores = torch.matmul(q, k.transpose(-2, -1)) * scale_factor
 
     if attn_mask is not None:
         if attn_mask.dtype == torch.bool:
@@ -117,6 +132,9 @@ def _scaled_dot_product_attention_with_fallback(
     attn_mask: torch.Tensor | None = None,
     dropout_p: float = 0.0,
     is_causal: bool = False,
+    *,
+    scale: float | None = None,
+    enable_gqa: bool = False,
 ) -> torch.Tensor:
     """Uses native kernel when available, otherwise falls back to the reference path."""
 
@@ -130,7 +148,25 @@ def _scaled_dot_product_attention_with_fallback(
                 attn_mask=attn_mask,
                 dropout_p=dropout_p,
                 is_causal=is_causal,
+                scale=scale,
+                enable_gqa=enable_gqa,
             )
+        except TypeError as exc:
+            # Older torch builds may not accept newer kwargs like scale/enable_gqa.
+            message = str(exc).lower()
+            if ("unexpected keyword argument" not in message) or (
+                "scale" not in message and "enable_gqa" not in message
+            ):
+                raise
+            if scale is None and not enable_gqa:
+                return native_fn(
+                    q,
+                    k,
+                    v,
+                    attn_mask=attn_mask,
+                    dropout_p=dropout_p,
+                    is_causal=is_causal,
+                )
         except (RuntimeError, NotImplementedError) as exc:
             if q.device.type != "cpu":
                 raise
@@ -138,6 +174,7 @@ def _scaled_dot_product_attention_with_fallback(
             fallback_indicators = (
                 "not implemented",
                 "not available",
+                "no available kernel",
                 "only available",
                 "does not support",
             )
@@ -151,6 +188,8 @@ def _scaled_dot_product_attention_with_fallback(
         attn_mask=attn_mask,
         dropout_p=dropout_p,
         is_causal=is_causal,
+        scale=scale,
+        enable_gqa=enable_gqa,
     )
 
 

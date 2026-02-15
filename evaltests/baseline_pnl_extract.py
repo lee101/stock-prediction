@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Dict, Iterable, Iterator, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -22,37 +22,6 @@ import pandas as pd
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-
-try:
-    import alpaca_wrapper as _alpaca_wrapper  # type: ignore  # noqa: WPS433
-except Exception:
-    _alpaca_wrapper: ModuleType | None = None
-else:
-    if hasattr(_alpaca_wrapper, "get_all_positions"):
-        setattr(_alpaca_wrapper, "get_all_positions", lambda: [])
-    if hasattr(_alpaca_wrapper, "get_account"):
-        setattr(
-            _alpaca_wrapper,
-            "get_account",
-            lambda: SimpleNamespace(
-                equity=10_000.0,
-                cash=8_000.0,
-                buying_power=12_000.0,
-                multiplier=1.0,
-            ),
-        )
-    if hasattr(_alpaca_wrapper, "get_clock"):
-        setattr(
-            _alpaca_wrapper,
-            "get_clock",
-            lambda: SimpleNamespace(
-                is_open=True,
-                next_open=None,
-                next_close=None,
-            ),
-        )
-    if hasattr(_alpaca_wrapper, "re_setup_vars"):
-        setattr(_alpaca_wrapper, "re_setup_vars", lambda *_, **__: None)
 
 from deepseek_wrapper import call_deepseek_chat  # type: ignore
 from stockagent.agentsimulator.data_models import AccountPosition, AccountSnapshot, TradingPlan

@@ -313,7 +313,7 @@ class CombinedForecastGenerator:
 
         forecasts: Dict[str, float] = {}
         batched_outputs: Optional[Sequence[Any]] = None
-        if contexts:
+        if contexts and self._toto_supports_batch_inference(pipeline):
             unique_lengths = {ctx.shape[0] for ctx in contexts}
             if len(unique_lengths) == 1:
                 try:
@@ -348,6 +348,21 @@ class CombinedForecastGenerator:
             aggregated = aggregate_with_spec(forecast.samples, aggregate_spec)
             forecasts[column] = float(np.asarray(aggregated, dtype=np.float64).ravel()[0])
         return forecasts
+
+    @staticmethod
+    def _toto_supports_batch_inference(pipeline: Any) -> bool:
+        """Return True when the Toto pipeline can accept a (batch, seq) context.
+
+        The native `TotoPipeline` implementation supports batched tensors/arrays, but
+        lightweight stubs in unit tests often assume a 1D context. Feature-detect
+        first so tests (and downstream wrappers) don't pay a failed call penalty.
+        """
+
+        if bool(getattr(pipeline, "supports_batch_inference", False)):
+            return True
+        if TotoPipeline is not None and isinstance(pipeline, TotoPipeline):
+            return True
+        return False
 
     def _forecast_with_kronos(
         self,

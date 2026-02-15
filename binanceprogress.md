@@ -1199,3 +1199,64 @@ Running Sortino optimization sweeps:
 - `binancechronossolexperiment/run_sortino_sweep.py --symbol ETHUSDT`
 
 Varying: return_weight (0.005, 0.01, 0.02, 0.04), epochs (15, 30, 60), sequence_length (72, 96)
+
+## Learning Rate & Horizon Sweep (2026-02-14)
+
+| Run | Parameter Change | Test Return | Test Sortino |
+|-----|------------------|-------------|--------------|
+| **sui_sortino_rw0012_lr1e4** | lr=1e-4 | **318.70%** | **785.76** |
+| sui_sortino_rw0012_ep20 | baseline | 295.10% | 648.27 |
+| sui_sortino_rw00125_ep20 | rw=0.0125 | 197.63% | 505.43 |
+| sui_sortino_rw0012_lr5e4 | lr=5e-4 | 114.71% | 401.76 |
+| sui_sortino_rw0012_h1_24 | horizons=1,24 | 155.67% | 200.53 |
+| sui_sortino_rw0012_h1only | horizons=1 | 182.95% | 74.87 |
+
+**Key Finding**: Lower learning rate (1e-4 vs 3e-4) significantly improves both return AND Sortino!
+
+### Deployed Config (2026-02-14 20:30)
+- **Checkpoint**: `sui_sortino_rw0012_lr1e4`
+- **Parameters**: return_weight=0.012, epochs=20, lr=1e-4, horizons=1,4,24, sequence_length=72
+- **Performance**: 318.70% return, Sortino 785.76
+
+### Batch 5: Extended LR Sweep (2026-02-14)
+
+| Run | Learning Rate | Epochs | Test Return | Test Sortino |
+|-----|---------------|--------|-------------|--------------|
+| **sui_sortino_rw0012_lr1e4** | **1e-4** | 20 | **318.70%** | **785.76** |
+| sui_sortino_rw0012_lr1e4_ep25 | 1e-4 | 25 | 395.81% | 726.15 |
+| sui_sortino_rw0012_lr5e5 | 5e-5 | 20 | 220.92% | 605.14 |
+| sui_sortino_rw0012_lr7e5 | 7e-5 | 20 | 280.57% | 255.72 |
+| sui_sortino_rw0012_seq96_ep25 | 3e-4 | 25 | 256.28% | 422.28 |
+
+**Conclusions**:
+- lr=1e-4 with 20 epochs is optimal (best Sortino 786)
+- Longer training (25 epochs) increases return but reduces Sortino
+- Very low lr (5e-5) trades return for moderate Sortino
+- Sequence length 96 did not help
+
+### Batch 6: Return Weight + LR Combination (2026-02-14)
+
+| Run | return_weight | lr | Test Return | Test Sortino |
+|-----|---------------|-----|-------------|--------------|
+| **sui_sortino_rw0012_lr1e4** | **0.012** | **1e-4** | **318.70%** | **785.76** |
+| sui_sortino_rw0008_lr1e4 | 0.008 | 1e-4 | 345.31% | 539.55 |
+| sui_sortino_rw001_lr1e4 | 0.010 | 1e-4 | 229.46% | 551.71 |
+| sui_sortino_rw0014_lr1e4 | 0.014 | 1e-4 | 339.09% | 210.10 |
+
+**Conclusion**: rw=0.012 with lr=1e-4 remains optimal. Both higher and lower return_weights hurt Sortino.
+
+### Full SUI Sweep Summary
+
+Best config found after 6 batches of experiments:
+- **return_weight**: 0.012
+- **learning_rate**: 1e-4 (vs default 3e-4)
+- **epochs**: 20
+- **horizons**: 1,4,24
+- **sequence_length**: 72
+- **Performance**: 318.70% return, Sortino 785.76
+
+Key insights:
+1. Lower learning rate (1e-4) dramatically improves Sortino (+21% vs 3e-4)
+2. return_weight=0.012 is optimal (not 0.01 or 0.008)
+3. All horizons (1,4,24) outperform single horizon
+4. Longer training (25-30 epochs) increases return but reduces Sortino

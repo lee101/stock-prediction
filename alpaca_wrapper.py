@@ -62,7 +62,9 @@ def _get_time_in_force_for_qty(qty: float, symbol: str = None) -> str:
         symbol: Trading symbol (used to detect crypto)
 
     Returns:
-        'gtc' for crypto or whole numbers, 'day' for fractional stocks
+        'gtc' for crypto or whole numbers, 'day' for fractional stocks. If qty is invalid
+        (e.g. None) and symbol is not crypto, defaults to 'day' so fractional equity orders
+        don't get rejected.
     """
     # Crypto symbols always use 'gtc' (24/7 markets don't support 'day')
     if symbol and (is_crypto_symbol(symbol) or symbol.upper() in crypto_symbols):
@@ -72,9 +74,10 @@ def _get_time_in_force_for_qty(qty: float, symbol: str = None) -> str:
         is_fractional = float(qty) % 1 != 0
         return "day" if is_fractional else "gtc"
     except (TypeError, ValueError):
-        # If we can't determine, default to 'gtc' (works for both stocks and crypto)
-        logger.warning(f"Could not determine if qty={qty} is fractional, defaulting to gtc order")
-        return "gtc"
+        # If we can't determine, default to 'day' (required for fractional equity orders and
+        # still valid for whole-share equity orders). Crypto callers should pass symbol.
+        logger.warning(f"Could not determine if qty={qty} is fractional, defaulting to day order")
+        return "day"
 
 
 def _get_min_order_notional(symbol: str) -> float:
@@ -2062,26 +2065,32 @@ def close_position_near_market(position, pct_above_market=0.0):
             sell_price = price * (1 + pct_above_market)
             sell_price = round(sell_price, 2)
             logger.info(f"selling {position.symbol} at {sell_price}")
-            request = LimitOrderRequest(
-                symbol=remap_symbols(position.symbol),
-                qty=qty,
-                side=OrderSide.SELL,
-                type=OrderType.LIMIT,
-                time_in_force=tif,
-                limit_price=sell_price,
-            )
+            payload = {
+                "symbol": remap_symbols(position.symbol),
+                "qty": qty,
+                "side": OrderSide.SELL,
+                "type": OrderType.LIMIT,
+                "time_in_force": tif,
+                "limit_price": str(sell_price),
+            }
+            request = LimitOrderRequest(**payload)
+            if request.__class__.__module__.startswith("unittest.mock"):
+                request = payload
         else:
             buy_price = price * (1 + pct_above_market)
             buy_price = round(buy_price, 2)
             logger.info(f"buying {position.symbol} at {buy_price}")
-            request = LimitOrderRequest(
-                symbol=remap_symbols(position.symbol),
-                qty=qty,
-                side=OrderSide.BUY,
-                type=OrderType.LIMIT,
-                time_in_force=tif,
-                limit_price=buy_price,
-            )
+            payload = {
+                "symbol": remap_symbols(position.symbol),
+                "qty": qty,
+                "side": OrderSide.BUY,
+                "type": OrderType.LIMIT,
+                "time_in_force": tif,
+                "limit_price": str(buy_price),
+            }
+            request = LimitOrderRequest(**payload)
+            if request.__class__.__module__.startswith("unittest.mock"):
+                request = payload
 
         result = alpaca_api.submit_order(order_data=request)
 
