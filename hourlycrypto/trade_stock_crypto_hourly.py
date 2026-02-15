@@ -32,7 +32,7 @@ from hourlycryptotraining.model import HourlyCryptoPolicy
 from alpaca_data_wrapper import append_recent_crypto_data
 from alpaca_wrapper import _get_min_order_notional
 from src.process_utils import (
-    spawn_close_position_at_maxdiff_takeprofit,
+    spawn_close_position_at_maxdiff_takeprofit as _spawn_close_position_at_maxdiff_takeprofit,
     spawn_open_position_at_maxdiff_takeprofit,
 )
 from src.position_cap import get_position_cap, set_position_cap
@@ -48,6 +48,33 @@ class TradingPlan:
     sell_price: float
     buy_amount: float
     sell_amount: float
+
+
+def spawn_close_position_at_maxdiff_takeprofit(
+    symbol: str,
+    side: str,
+    takeprofit_price: float,
+    *args,
+    **kwargs,
+):
+    """Spawn a take-profit watcher for closing positions.
+
+    In this hourly crypto loop, ``side`` is the *exit* order side:
+    - ``sell`` closes a long position
+    - ``buy`` closes a short position
+
+    The underlying maxdiff watcher CLI expects the entry side, so we invert here.
+    """
+
+    exit_side = "buy" if str(side).lower().startswith("b") else "sell"
+    entry_side = "buy" if exit_side == "sell" else "sell"
+    return _spawn_close_position_at_maxdiff_takeprofit(
+        symbol,
+        entry_side,
+        takeprofit_price,
+        *args,
+        **kwargs,
+    )
 
 
 @dataclass
@@ -617,13 +644,34 @@ def _latest_quote(symbol: str) -> Tuple[Optional[float], Optional[float], Option
         logger.warning("Failed to fetch latest quote for %s: %s", symbol, exc)
         return None, None, None, None
 
-    bid = getattr(quote, "bid_price", None) or 0.0
-    ask = getattr(quote, "ask_price", None) or 0.0
-    ts_attr = getattr(quote, "timestamp", None) or getattr(quote, "time", None)
-    ts = pd.to_datetime(ts_attr, utc=True, errors="coerce") if ts_attr is not None else None
+    def _coerce_price(value) -> Optional[float]:
+        # Avoid treating MagicMock / sentinel objects as numeric quotes (e.g. float(MagicMock) -> 1.0).
+        import numbers
 
-    bid_val = float(bid) if bid and bid > 0 else None
-    ask_val = float(ask) if ask and ask > 0 else None
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, numbers.Real):
+            numeric = float(value)
+        elif isinstance(value, str):
+            try:
+                numeric = float(value)
+            except Exception:
+                return None
+        else:
+            return None
+        return numeric if numeric > 0 else None
+
+    bid_val = _coerce_price(getattr(quote, "bid_price", None))
+    ask_val = _coerce_price(getattr(quote, "ask_price", None))
+    ts_attr = getattr(quote, "timestamp", None) or getattr(quote, "time", None)
+    ts = None
+    if ts_attr is not None:
+        try:
+            ts = pd.to_datetime(ts_attr, utc=True, errors="coerce")
+        except Exception:
+            ts = None
     midpoint = (bid_val + ask_val) / 2.0 if bid_val is not None and ask_val is not None else None
     return bid_val, ask_val, midpoint, ts
 
@@ -744,6 +792,31 @@ def _spawn_watchers(plan: TradingPlan, dry_run: bool, symbol: str) -> None:
     inventory = _current_inventory(symbol)
     avg_price = _current_avg_price(symbol)
     existing_tp = _current_max_takeprofit(symbol)
+
+    # SAFETY CHECK (pre-quote): never "repair" invalid model prices into tradable ones.
+    # Validate the raw plan first so inverted/too-tight spreads block trading early.
+    MIN_SPREAD_PCT = 0.0003  # 3 basis points = 0.03%
+    if plan.buy_price <= 0 or plan.sell_price <= 0:
+        logger.error(
+            "INVALID PRICE(S) for %s: buy=%.6f sell=%.6f. BLOCKING ALL TRADES!",
+            symbol,
+            plan.buy_price,
+            plan.sell_price,
+        )
+        return
+    required_min_sell = plan.buy_price * (1.0 + MIN_SPREAD_PCT)
+    actual_spread_pct = (plan.sell_price - plan.buy_price) / plan.buy_price * 100.0
+    if plan.sell_price <= plan.buy_price or plan.sell_price < required_min_sell:
+        logger.error(
+            "INVALID PRICE SPREAD for %s: buy=%.6f sell=%.6f (spread=%.4f%%). "
+            "Required min spread: %.4f%% (3bp). BLOCKING ALL TRADES!",
+            symbol,
+            plan.buy_price,
+            plan.sell_price,
+            actual_spread_pct,
+            MIN_SPREAD_PCT * 100.0,
+        )
+        return
 
     # Pull freshest quote to bias limits away from taker execution
     bid, ask, midpoint, quote_ts = _latest_quote(symbol)
@@ -969,7 +1042,7 @@ def _spawn_watchers(plan: TradingPlan, dry_run: bool, symbol: str) -> None:
             record_sell(symbol, plan.sell_price)
             spawn_close_position_at_maxdiff_takeprofit(
                 symbol,
-                "buy",  # entry side was buy (long); exit watcher expects entry side
+                "sell",
                 plan.sell_price,
                 target_qty=sell_qty,
                 entry_strategy="hourlycrypto",

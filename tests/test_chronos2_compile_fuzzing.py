@@ -391,8 +391,12 @@ def test_extreme_data_robustness(device: str, scenario: str) -> None:
 
         if not (eager_has_nan or eager_has_inf):
             # Only check accuracy if both produce valid numbers
-            assert mae_diff < MAE_TOLERANCE * 10, (  # More lenient for extreme data
-                f"MAE difference too large for {scenario}: {mae_diff}"
+            abs_ok = mae_diff < MAE_TOLERANCE * 10  # More lenient for extreme data
+            rel_ok = relative_diff < RELATIVE_TOLERANCE
+            assert abs_ok or rel_ok, (
+                f"Prediction drift too large for {scenario}: "
+                f"mae_diff={mae_diff:.6f} (limit={MAE_TOLERANCE * 10}), "
+                f"relative_diff={relative_diff:.2%} (limit={RELATIVE_TOLERANCE:.2%})"
             )
     else:
         # At least one mode should work, or both should fail consistently

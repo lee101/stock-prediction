@@ -18,10 +18,25 @@ def get_paper_suffix() -> str:
     return "_paper" if is_paper_mode() else "_live"
 
 
-@lru_cache(maxsize=1)
-def get_state_dir() -> Path:
-    """Location for persistent trading state artifacts."""
+@lru_cache(maxsize=16)
+def _state_dir_for(override: str | None) -> Path:
+    if override:
+        return Path(override).expanduser()
     return Path(__file__).resolve().parents[1] / STATE_DIRNAME
+
+
+def get_state_dir() -> Path:
+    """Location for persistent trading state artifacts.
+
+    Honours the `STATE_DIR` environment variable when set so tests and
+    deployments can isolate state without mutating the repo checkout.
+    """
+    return _state_dir_for(os.getenv("STATE_DIR") or None)
+
+
+# Backwards-compatible access for tests/utilities which previously relied on
+# `functools.lru_cache` being applied directly to `get_state_dir`.
+get_state_dir.cache_clear = _state_dir_for.cache_clear  # type: ignore[attr-defined]
 
 
 def resolve_state_suffix(raw_suffix: str | None = None) -> str:

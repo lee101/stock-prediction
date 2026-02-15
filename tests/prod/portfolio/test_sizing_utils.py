@@ -2,6 +2,7 @@
 
 import pytest
 from unittest.mock import Mock, patch
+import src.sizing_utils as sizing_utils
 from src.sizing_utils import get_qty, get_current_symbol_exposure
 
 
@@ -9,6 +10,13 @@ class MockPosition:
     def __init__(self, symbol, market_value):
         self.symbol = symbol
         self.market_value = market_value
+
+
+@pytest.fixture(autouse=True)
+def _disable_enhanced_kelly_sizing(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These unit tests assert the legacy sizing math; keep them deterministic
+    # regardless of correlation-matrix contents and environment variables.
+    monkeypatch.setattr(sizing_utils, "USE_ENHANCED_KELLY_SIZING", False, raising=False)
 
 
 @patch('src.sizing_utils.alpaca_wrapper')
@@ -151,3 +159,33 @@ def test_get_qty_zero_equity(mock_filter, mock_alpaca, mock_risk_threshold):
     qty = get_qty("AAPL", 100.0, [])
     # Should still calculate based on buying power since equity check is only for exposure limits
     assert qty == 50.0
+
+
+@patch("src.sizing_utils.alpaca_wrapper")
+def test_get_qty_enhanced_kelly_path_is_deterministic(mock_alpaca, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Smoke-test enhanced sizing without depending on external correlation data."""
+    monkeypatch.setattr(sizing_utils, "USE_ENHANCED_KELLY_SIZING", True, raising=False)
+    monkeypatch.setattr(sizing_utils, "MAX_INTRADAY_LEVERAGE_STOCKS", 1.0, raising=False)
+
+    class DummySizingResult:
+        def __init__(self, position_fraction: float) -> None:
+            self.position_fraction = position_fraction
+
+    class DummyKellyStrategy:
+        def calculate_size(self, context):  # noqa: ANN001 - test helper
+            assert getattr(context, "symbol", None) == "AAPL"
+            return DummySizingResult(position_fraction=0.5)
+
+    monkeypatch.setattr(sizing_utils, "_load_kelly_strategy", lambda: DummyKellyStrategy(), raising=False)
+
+    mock_alpaca.total_buying_power = 10000
+    mock_alpaca.equity = 20000
+
+    qty = get_qty(
+        "AAPL",
+        100.0,
+        [],
+        predicted_return=0.01,
+        predicted_volatility=0.02,
+    )
+    assert qty == 100.0

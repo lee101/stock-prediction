@@ -27,10 +27,6 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
-# Enforce Chronos2 forecasting for dataset generation unless explicitly overridden.
-os.environ.setdefault("ONLY_CHRONOS2", "1")
-os.environ.setdefault("CHRONOS2_FREQUENCY", "daily")
-
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -750,6 +746,11 @@ class StrategyPnLCollector:
 
 
 def main():
+    # Enforce Chronos2 forecasting for dataset generation unless explicitly overridden.
+    # Important: do this at runtime, not import time, so unit tests don't inherit it.
+    os.environ.setdefault("ONLY_CHRONOS2", "1")
+    os.environ.setdefault("CHRONOS2_FREQUENCY", "daily")
+
     import argparse
 
     parser = argparse.ArgumentParser(

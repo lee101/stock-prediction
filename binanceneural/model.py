@@ -11,6 +11,88 @@ import torch.nn.functional as F
 from .config import PolicyConfig
 
 
+def _scaled_dot_product_attention_reference(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+) -> torch.Tensor:
+    """Reference attention implementation used when SDPA kernels are unavailable."""
+
+    d_k = q.size(-1)
+    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
+
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            scores = scores.masked_fill(attn_mask, float("-inf"))
+        else:
+            scores = scores + attn_mask
+
+    if is_causal:
+        causal_mask = torch.triu(
+            torch.ones(
+                scores.size(-2),
+                scores.size(-1),
+                dtype=torch.bool,
+                device=scores.device,
+            ),
+            diagonal=1,
+        )
+        scores = scores.masked_fill(causal_mask, float("-inf"))
+
+    attn = torch.softmax(scores, dim=-1)
+    if dropout_p > 0.0:
+        attn = F.dropout(attn, p=dropout_p, training=torch.is_grad_enabled())
+    return torch.matmul(attn, v)
+
+
+def _scaled_dot_product_attention_with_fallback(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+) -> torch.Tensor:
+    """Call torch SDPA when available, otherwise fall back to the reference path."""
+
+    native_fn = getattr(F, "scaled_dot_product_attention", None)
+    if native_fn is not None:
+        try:
+            return native_fn(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                dropout_p=dropout_p,
+                is_causal=is_causal,
+            )
+        except (RuntimeError, NotImplementedError) as exc:
+            message = str(exc).lower()
+            fallback_indicators = (
+                "not implemented",
+                "not available",
+                "no available kernel",
+                "only available",
+                "does not support",
+            )
+            if not any(indicator in message for indicator in fallback_indicators):
+                raise
+
+    return _scaled_dot_product_attention_reference(
+        q,
+        k,
+        v,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+    )
+
+
 class PositionalEncoding(nn.Module):
     def __init__(self, dim: int, dropout: float = 0.0, max_len: int = 2048) -> None:
         super().__init__()
@@ -237,7 +319,7 @@ class MultiQueryAttention(nn.Module):
             k = k.repeat_interleave(n_rep, dim=1)
             v = v.repeat_interleave(n_rep, dim=1)
         attn_mask = self._sliding_window_mask(T, x.device)
-        y = F.scaled_dot_product_attention(
+        y = _scaled_dot_product_attention_with_fallback(
             q,
             k,
             v,

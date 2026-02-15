@@ -276,3 +276,65 @@ Market closed, skipping
 
 Monitor script: `scripts/monitor_trading.sh` (gitignored, has sudo pw)
 
+---
+
+## 2026-02-15: Status Review & Cleanup
+
+### What's Running on This Machine (5090)
+
+**Active trading process (1 only):**
+- `maxdiff_cli.py close-position LINKUSD` - exit watcher for 279.66 LINKUSD, take-profit @ $103, expires 12:12 UTC today. Paper account.
+
+**NOT running (all stopped/removed):**
+- Unified hourly trading bot - NOT running, no log file exists
+- Pufferlib stock PPO trading bot - NOT running
+- Stock sortino training (META, NVDA) - STOPPED in supervisor
+- Binance bots (SUI, BTC, ETH, SOL, selector) - configs reference `/home/lee/code/stock/` (different machine), not deployed here
+- Monitoring cron jobs - all commented out
+- Referenced scripts (`scripts/check_trading_status.sh`, `scripts/monitor_trading.sh`, `scripts/cron_trading_monitor.txt`) - do not exist
+
+**Non-trading services on this machine (unrelated):**
+- text-generator.io (gunicorn :8083 + inference :9080, uses 7.4GB GPU)
+- websim (uvicorn :8000 + :7322)
+- codex-infinity monitor + token manager
+- news-crawler, news-server
+- Various cloudflared tunnels
+
+### Supervisor Configs in `supervisor/` Directory
+
+Most configs are stale and reference `/home/lee/code/stock/` (a different machine):
+- `binance-sui.conf`, `binanceexp1-*.conf`, `binanceexp1-selector.conf` - wrong paths
+- `alpaca-exit-nflx.conf` - one-off exit watcher, expired Feb 6
+- `unified-stock-trader.conf` - wrong paths
+
+Configs that reference this machine's paths but are NOT running:
+- `neural-trader-v3.conf` - old neural trader, dry-run mode
+- `bags-data-collector.conf` - data collector
+- `/etc/supervisor/conf.d/stock-sortino.conf` - training (STOPPED)
+
+### Summary
+
+No active stock/crypto trading bots are running on this machine. The only
+trading-related process is a LINKUSD paper exit watcher that expires today.
+The live deployment from Feb 13 was short-lived and is no longer active.
+All cron monitoring is disabled.
+
+### Key Artifacts That Remain
+
+| Artifact | Path | Status |
+|----------|------|--------|
+| Sortino crypto checkpoints | `alpacasortino/checkpoints/` | Trained, not deployed |
+| Unified v3 checkpoint | `unified_hourly_experiment/checkpoints/unified_v3_moredata` | Trained, not deployed |
+| Pufferlib stocks checkpoint | `experiments/pufferlib_stocks7_50M/best.pt` | Trained, not deployed |
+| PufferLib crypto12 300M (best) | various `experiments/` dirs | Trained, not deployed |
+| Crypto data exports | `pufferlib_market/data/*.bin` | Available |
+| Stale supervisor configs | `supervisor/*.conf` | Most reference wrong machine |
+
+### What Was Accomplished (Feb 13)
+
+1. **Sortino RL training** - trained crypto models (ETH, UNI, LINK, BTC, SOL) and stock models (NET, META, TRIP, DBX, etc.)
+2. **Unified neural policy** - v3 achieved +36% backtest return, Sortino 1.69
+3. **Pufferlib stock PPO** - 50M steps, +160% per 30d episode, 92% WR
+4. **Brief live deployment** - started on live account ($55k equity) but stopped same day
+5. **PufferLib crypto scaling** - continued to show crypto12 h1024 300M anneal-LR as best at 2,659x per 30d
+

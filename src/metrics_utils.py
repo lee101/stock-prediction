@@ -88,8 +88,9 @@ def annualized_sortino(returns: Iterable[float], periods_per_year: float = 252.0
     # Downside deviation: only consider negative returns
     downside_returns = returns_arr[returns_arr < 0.0]
     if downside_returns.size == 0:
-        # No downside = infinite Sortino, return a large value
-        return float(mean_return * periods_per_year * 100.0) if mean_return > 0 else 0.0
+        # No downside deviation: fall back to Sharpe's denominator so Sortino
+        # matches Sharpe for all-positive return streams.
+        return annualized_sharpe(returns_arr, periods_per_year=periods_per_year, risk_free_rate=risk_free_rate)
     
     downside_std = np.std(downside_returns, ddof=1) if downside_returns.size > 1 else np.abs(downside_returns[0])
     

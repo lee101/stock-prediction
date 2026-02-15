@@ -449,21 +449,30 @@ def build_feature_frame(frame: pd.DataFrame, config: DatasetConfig) -> pd.DataFr
 
     for horizon in config.forecast_horizons:
         suffix = f"_h{int(horizon)}"
+        ref = frame["reference_close"].replace(0.0, np.nan)
         close_col = f"predicted_close_p50{suffix}"
         high_col = f"predicted_high_p50{suffix}"
         low_col = f"predicted_low_p50{suffix}"
-        if close_col not in frame.columns:
-            continue
-        ref = frame["reference_close"].replace(0.0, np.nan)
-        frame[f"chronos_close_delta{suffix}"] = (frame[close_col] - ref) / ref
+
+        # Always materialise the forecast-derived feature columns so callers can
+        # rely on build_default_feature_columns() even when some horizons are
+        # unavailable (e.g. offline runs or partial forecast bundles).
+        if close_col in frame.columns:
+            frame[f"chronos_close_delta{suffix}"] = (frame[close_col] - ref) / ref
+        else:
+            frame[f"chronos_close_delta{suffix}"] = 0.0
         if high_col in frame.columns:
             frame[f"chronos_high_delta{suffix}"] = (frame[high_col] - ref) / ref
+        else:
+            frame[f"chronos_high_delta{suffix}"] = 0.0
         if low_col in frame.columns:
             frame[f"chronos_low_delta{suffix}"] = (frame[low_col] - ref) / ref
+        else:
+            frame[f"chronos_low_delta{suffix}"] = 0.0
         # Forecast confidence: inverse of quantile spread (narrow spread = high confidence).
         p90_col = f"predicted_close_p90{suffix}"
         p10_col = f"predicted_close_p10{suffix}"
-        if p90_col in frame.columns and p10_col in frame.columns:
+        if close_col in frame.columns and p90_col in frame.columns and p10_col in frame.columns:
             spread = (frame[p90_col] - frame[p10_col]).abs()
             frame[f"forecast_confidence{suffix}"] = ref / spread.clip(lower=1e-6)
         else:

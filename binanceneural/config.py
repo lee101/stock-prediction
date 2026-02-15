@@ -82,10 +82,12 @@ class TrainingConfig:
     grad_clip: float = 1.0
     maker_fee: float = 0.0
     return_weight: float = 0.08
+    smoothness_penalty: float = 0.0
     periods_per_year: Optional[float] = None
     price_offset_pct: float = 0.0003
     min_price_gap_pct: float = 0.0003
     trade_amount_scale: float = 100.0
+    fill_temperature: float = 5e-4
     initial_cash: float = 1.0
     sortino_target_sign: float = 1.0
     transformer_dim: int = 256
@@ -118,6 +120,7 @@ class TrainingConfig:
     weight_decay_schedule: str = "none"
     weight_decay_end: float = 0.0
     ema_decay: float = 0.0
+    validation_use_binary_fills: bool = False
     dry_train_steps: Optional[int] = None
     device: Optional[str] = None
     run_name: Optional[str] = None

@@ -30,12 +30,10 @@ def test_spawn_open_replaces_existing_watcher(tmp_watchers_dir, monkeypatch):
 
     killed = []
 
-    def fake_kill(pid, sig):
-        if sig == 0:  # Process alive check
-            return
+    def fake_killpg(pid, sig):
         killed.append((pid, sig))
 
-    monkeypatch.setattr(process_utils.os, "kill", fake_kill)
+    monkeypatch.setattr(process_utils.os, "killpg", fake_killpg)
     # Mock data freshness to always return True
     monkeypatch.setattr(process_utils, "_is_data_bar_fresh", lambda symbol, current_time=None: True)
 
@@ -102,12 +100,10 @@ def test_spawn_close_replaces_existing_watcher(tmp_watchers_dir, monkeypatch):
 
     killed = []
 
-    def fake_kill(pid, sig):
-        if sig == 0:  # Process alive check
-            return
+    def fake_killpg(pid, sig):
         killed.append((pid, sig))
 
-    monkeypatch.setattr(process_utils.os, "kill", fake_kill)
+    monkeypatch.setattr(process_utils.os, "killpg", fake_killpg)
     # Mock data freshness to always return True
     monkeypatch.setattr(process_utils, "_is_data_bar_fresh", lambda symbol, current_time=None: True)
 
@@ -319,6 +315,7 @@ def test_spawn_open_replaces_different_strategy(tmp_watchers_dir, monkeypatch):
         killed.append((pid, sig))
 
     monkeypatch.setattr(process_utils.os, "kill", fake_kill)
+    monkeypatch.setattr(process_utils.os, "killpg", fake_kill)
     # Mock data freshness to always return True
     monkeypatch.setattr(process_utils, "_is_data_bar_fresh", lambda symbol, current_time=None: True)
 
@@ -406,6 +403,7 @@ def test_spawn_open_prunes_conflicting_watchers(tmp_watchers_dir, monkeypatch):
         killed.append((pid, sig))
 
     monkeypatch.setattr(process_utils.os, "kill", fake_kill)
+    monkeypatch.setattr(process_utils.os, "killpg", fake_kill)
     monkeypatch.setattr(process_utils, "_is_data_bar_fresh", lambda symbol, current_time=None: True)
 
     dummy_process = SimpleNamespace(pid=44444)
@@ -501,6 +499,7 @@ def test_spawn_open_prunes_conflicts_with_matching_watcher(tmp_watchers_dir, mon
         killed.append((pid, sig))
 
     monkeypatch.setattr(process_utils.os, "kill", fake_kill)
+    monkeypatch.setattr(process_utils.os, "killpg", fake_kill)
 
     spawned = []
 
@@ -634,6 +633,7 @@ def test_spawn_close_prunes_strategy_conflicts(tmp_watchers_dir, monkeypatch):
         killed.append((pid, sig))
 
     monkeypatch.setattr(process_utils.os, "kill", fake_kill)
+    monkeypatch.setattr(process_utils.os, "killpg", fake_kill)
     monkeypatch.setattr(process_utils, "_is_data_bar_fresh", lambda symbol, current_time=None: True)
 
     dummy_process = SimpleNamespace(pid=11111)

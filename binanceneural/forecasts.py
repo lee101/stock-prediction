@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -165,6 +166,49 @@ class ChronosForecastManager:
         frame = frame.sort_values("timestamp").reset_index(drop=True)
         return frame
 
+    @staticmethod
+    def _is_invalid_price(value: object) -> bool:
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return True
+        return (not math.isfinite(out)) or out <= 0.0
+
+    @classmethod
+    def _row_is_plausible(
+        cls,
+        row: Mapping[str, object],
+        *,
+        last_close: float,
+        min_ratio: float = 0.01,
+        max_ratio: float = 100.0,
+    ) -> bool:
+        """Return True when extracted forecast values look numerically safe.
+
+        Chronos2 (especially with pre-augmentation + multi-step prediction) can occasionally
+        emit extreme or negative prices. These values are unusable for feature construction
+        and can poison backtests/trading. We treat them as invalid and fall back to a
+        deterministic heuristic forecast.
+        """
+        close = row.get("predicted_close_p50")
+        high = row.get("predicted_high_p50")
+        low = row.get("predicted_low_p50")
+        if cls._is_invalid_price(close) or cls._is_invalid_price(high) or cls._is_invalid_price(low):
+            return False
+
+        if last_close > 0.0 and math.isfinite(last_close):
+            ratio_bounds = (float(min_ratio), float(max_ratio))
+            for key in ("predicted_close_p50", "predicted_high_p50", "predicted_low_p50"):
+                value = float(row[key])
+                ratio = value / last_close
+                if ratio < ratio_bounds[0] or ratio > ratio_bounds[1]:
+                    return False
+
+        # Sanity: ensure high/low ordering (leave stricter enforcement to consumers).
+        if float(row["predicted_low_p50"]) > float(row["predicted_high_p50"]):
+            return False
+        return True
+
     def _generate_forecast_chunk(self, history: pd.DataFrame, target_indices: Sequence[int]) -> Optional[pd.DataFrame]:
         if not target_indices:
             return pd.DataFrame()
@@ -213,13 +257,47 @@ class ChronosForecastManager:
             return pd.DataFrame(rows)
 
         rows: List[Dict[str, object]] = []
+        invalid_rows = 0
         for rec, batch in zip(records, batches):
             row = self._forecast_row_from_batch(batch, rec["target_ts"], rec["issued_at"])
-            if row is not None:
-                rows.append(row)
+            context = rec["context"]
+            if row is None:
+                invalid_rows += 1
+                rows.append(self._heuristic_forecast(context, rec["target_ts"]))
+                continue
+
+            # Fail safe: reject non-finite / non-positive / wildly out-of-range predictions.
+            try:
+                last_close = float(context.iloc[-1]["close"])
+            except Exception:
+                last_close = 0.0
+
+            if not self._row_is_plausible(row, last_close=last_close):
+                invalid_rows += 1
+                rows.append(self._heuristic_forecast(context, rec["target_ts"]))
+                continue
+
+            # Ensure ordering before persisting.
+            close = float(row["predicted_close_p50"])
+            high = float(row["predicted_high_p50"])
+            low = float(row["predicted_low_p50"])
+            high_adj = max(high, close, low)
+            low_adj = min(low, close, high)
+            row["predicted_high_p50"] = high_adj
+            row["predicted_low_p50"] = low_adj
+            rows.append(row)
         if not rows:
             return pd.DataFrame()
-        return pd.DataFrame(rows).dropna(subset=["predicted_close_p50", "predicted_high_p50", "predicted_low_p50"])
+        if invalid_rows:
+            logger.warning(
+                "Used heuristic fallback for %d/%d forecasts for %s (horizon=%dh) due to invalid Chronos outputs.",
+                invalid_rows,
+                len(records),
+                self.config.symbol,
+                int(self.config.prediction_horizon_hours),
+            )
+        frame = pd.DataFrame(rows)
+        return frame.dropna(subset=["predicted_close_p50", "predicted_high_p50", "predicted_low_p50"])
 
     def _forecast_row_from_batch(
         self,

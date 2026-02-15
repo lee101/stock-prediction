@@ -86,6 +86,20 @@ def create_test_data(batch_size: int, num_variates: int, seq_len: int):
     return data, padding, id_mask
 
 
+def maybe_mark_cudagraph_step_begin() -> None:
+    """Mark CUDA graph step boundaries when supported.
+
+    Inductor may wrap compiled models in CUDA graph capture/replay. Marking step
+    boundaries keeps stateful components (e.g. RNG offsets / buffer reuse) from
+    leaking across repeated invocations.
+    """
+
+    compiler = getattr(torch, "compiler", None)
+    mark = getattr(compiler, "cudagraph_mark_step_begin", None)
+    if callable(mark):
+        mark()
+
+
 class TestCompilationCorrectness:
     """Test that compilation maintains numerical correctness."""
 
@@ -100,7 +114,7 @@ class TestCompilationCorrectness:
         set_seed(100)
         data, padding, id_mask = create_test_data(batch_size, num_variates, seq_len)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             _, loc_nc, scale_nc = model_nc(data, padding, id_mask)
 
         # Compiled
@@ -109,7 +123,8 @@ class TestCompilationCorrectness:
         set_seed(100)
         data, padding, id_mask = create_test_data(batch_size, num_variates, seq_len)
 
-        with torch.no_grad():
+        with torch.inference_mode():
+            maybe_mark_cudagraph_step_begin()
             _, loc_c, scale_c = model_c(data, padding, id_mask)
 
         # Strict comparison
@@ -147,7 +162,7 @@ class TestCompilationCorrectness:
         )
 
         locs_nc = []
-        with torch.no_grad():
+        with torch.inference_mode():
             _, loc, _ = model_nc(data, padding, id_mask, kv_cache_nc)
             locs_nc.append(loc.clone())  # Clone for consistency
 
@@ -174,17 +189,14 @@ class TestCompilationCorrectness:
         )
 
         locs_c = []
-        with torch.no_grad():
+        with torch.inference_mode():
             # Mark CUDAGraph step boundaries for autoregressive generation
-            if hasattr(torch.compiler, 'cudagraph_mark_step_begin'):
-                torch.compiler.cudagraph_mark_step_begin()
-
+            maybe_mark_cudagraph_step_begin()
             _, loc, _ = model_c(data, padding, id_mask, kv_cache_c)
             locs_c.append(loc.clone())  # Clone to prevent overwriting
 
             for _ in range(num_steps):
-                if hasattr(torch.compiler, 'cudagraph_mark_step_begin'):
-                    torch.compiler.cudagraph_mark_step_begin()
+                maybe_mark_cudagraph_step_begin()
 
                 next_data, next_padding, next_id = create_test_data(batch_size, num_variates, 4)
                 data = torch.cat([data, next_data], dim=-1)
@@ -214,7 +226,7 @@ class TestCompilationCorrectness:
         set_seed(300 + seq_len)
         data, padding, id_mask = create_test_data(batch_size, num_variates, seq_len)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             _, loc_nc, _ = model_nc(data, padding, id_mask)
 
         set_seed()
@@ -222,7 +234,8 @@ class TestCompilationCorrectness:
         set_seed(300 + seq_len)
         data, padding, id_mask = create_test_data(batch_size, num_variates, seq_len)
 
-        with torch.no_grad():
+        with torch.inference_mode():
+            maybe_mark_cudagraph_step_begin()
             _, loc_c, _ = model_c(data, padding, id_mask)
 
         mae = torch.abs(loc_c - loc_nc).mean().item()
@@ -249,8 +262,9 @@ class TestCompilationPerformance:
 
         # Warmup both
         for _ in range(warmup_runs):
-            with torch.no_grad():
+            with torch.inference_mode():
                 model_nc(data, padding, id_mask)
+                maybe_mark_cudagraph_step_begin()
                 model_c(data, padding, id_mask)
 
         torch.cuda.synchronize()
@@ -259,7 +273,7 @@ class TestCompilationPerformance:
         times_nc = []
         for _ in range(benchmark_runs):
             start = perf_counter()
-            with torch.no_grad():
+            with torch.inference_mode():
                 model_nc(data, padding, id_mask)
             torch.cuda.synchronize()
             times_nc.append(perf_counter() - start)
@@ -268,7 +282,8 @@ class TestCompilationPerformance:
         times_c = []
         for _ in range(benchmark_runs):
             start = perf_counter()
-            with torch.no_grad():
+            with torch.inference_mode():
+                maybe_mark_cudagraph_step_begin()
                 model_c(data, padding, id_mask)
             torch.cuda.synchronize()
             times_c.append(perf_counter() - start)
@@ -295,7 +310,7 @@ class TestCompilationPerformance:
         model_nc = create_test_model(compile=False)
         data, padding, id_mask = create_test_data(batch_size, num_variates, seq_len)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             model_nc(data, padding, id_mask)
 
         torch.cuda.synchronize()
@@ -306,7 +321,8 @@ class TestCompilationPerformance:
         torch.cuda.reset_peak_memory_stats()
 
         model_c = create_test_model(compile=True)
-        with torch.no_grad():
+        with torch.inference_mode():
+            maybe_mark_cudagraph_step_begin()
             model_c(data, padding, id_mask)
 
         torch.cuda.synchronize()
@@ -352,7 +368,8 @@ class TestCompilationStability:
             data, padding, id_mask = create_test_data(batch, variates, seq_len)
 
             try:
-                with torch.no_grad():
+                with torch.inference_mode():
+                    maybe_mark_cudagraph_step_begin()
                     _, loc, _ = model(data, padding, id_mask)
                 assert loc.shape[0] == batch, f"Unexpected batch size for {(batch, variates, seq_len)}"
             except Exception as e:
@@ -375,8 +392,10 @@ class TestProductionReadiness:
         set_seed(1000)
         data, padding, id_mask = create_test_data(batch_size, num_variates, seq_len)
 
-        with torch.no_grad():
+        with torch.inference_mode():
+            maybe_mark_cudagraph_step_begin()
             _, loc1, _ = model(data, padding, id_mask)
+            loc1 = loc1.clone()
 
         # Run 2 - same seed
         set_seed(999)
@@ -384,8 +403,10 @@ class TestProductionReadiness:
         set_seed(1000)
         data, padding, id_mask = create_test_data(batch_size, num_variates, seq_len)
 
-        with torch.no_grad():
+        with torch.inference_mode():
+            maybe_mark_cudagraph_step_begin()
             _, loc2, _ = model(data, padding, id_mask)
+            loc2 = loc2.clone()
 
         diff = torch.abs(loc1 - loc2).max().item()
         assert diff == 0.0, f"Non-deterministic: max diff {diff:.2e}"

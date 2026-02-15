@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import List, Optional
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from src.torch_device_utils import require_cuda as require_cuda_device
 
+from binanceneural.config import TrainingConfig
 from newnanoalpacahourlyexp.config import DatasetConfig, ExperimentConfig
 from newnanoalpacahourlyexp.data import AlpacaMultiSymbolDataModule
 from newnanoalpacahourlyexp.run_experiment import evaluate_model, train_model, _load_model
@@ -28,6 +34,21 @@ def main() -> None:
     parser.add_argument("--sequence-length", type=int, default=96)
     parser.add_argument("--dry-train-steps", type=int, default=300)
     parser.add_argument("--use-compile", action="store_true")
+    parser.add_argument("--optimizer", default="adamw", help="adamw | muon | muon_mix | dual")
+    parser.add_argument("--model-arch", default="classic", help="classic | nano")
+    parser.add_argument("--transformer-dim", type=int, default=TrainingConfig().transformer_dim)
+    parser.add_argument("--transformer-layers", type=int, default=TrainingConfig().transformer_layers)
+    parser.add_argument("--transformer-heads", type=int, default=TrainingConfig().transformer_heads)
+    parser.add_argument("--transformer-dropout", type=float, default=TrainingConfig().transformer_dropout)
+    parser.add_argument("--return-weight", type=float, default=TrainingConfig().return_weight)
+    parser.add_argument("--smoothness-penalty", type=float, default=0.0)
+    parser.add_argument("--fill-temperature", type=float, default=TrainingConfig().fill_temperature)
+    parser.add_argument("--binary-val", action="store_true", help="Use binary fills for validation (checkpoint selection).")
+    parser.add_argument(
+        "--preload-checkpoint",
+        default=None,
+        help="Optional checkpoint path to warm-start training (speeds up convergence).",
+    )
     parser.add_argument("--maker-fee", type=float, default=None)
     parser.add_argument("--periods-per-year", type=float, default=None)
     parser.add_argument("--device", default=None)
@@ -54,6 +75,15 @@ def main() -> None:
     parser.add_argument("--vol-regime-short", type=int, default=None, help="Override short vol regime window (hours).")
     parser.add_argument("--vol-regime-long", type=int, default=None, help="Override long vol regime window (hours).")
     parser.add_argument("--min-history-hours", type=int, default=None)
+    parser.add_argument(
+        "--max-feature-lookback-hours",
+        type=int,
+        default=None,
+        help=(
+            "Max lookback window for feature construction. Note: for Alpaca hourly datasets this is treated as a "
+            "row cap (not literal hours), but it also controls the forecast start timestamp via end_ts - hours."
+        ),
+    )
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--allow-mixed-asset", action="store_true")
     parser.add_argument(
@@ -113,6 +143,11 @@ def main() -> None:
     vol_regime_long = args.vol_regime_long if args.vol_regime_long is not None else DatasetConfig().vol_regime_long
 
     min_history_hours = args.min_history_hours if args.min_history_hours is not None else DatasetConfig().min_history_hours
+    max_lookback = (
+        int(args.max_feature_lookback_hours)
+        if args.max_feature_lookback_hours is not None
+        else DatasetConfig().max_feature_lookback_hours
+    )
 
     data_cfg = DatasetConfig(
         symbol=target_symbol,
@@ -122,6 +157,7 @@ def main() -> None:
         forecast_horizons=forecast_horizons,
         allow_mixed_asset_class=args.allow_mixed_asset,
         forecast_cache_root=Path(args.forecast_cache_root),
+        max_feature_lookback_hours=max_lookback,
         moving_average_windows=ma_windows,
         ema_windows=ema_windows,
         atr_windows=atr_windows,

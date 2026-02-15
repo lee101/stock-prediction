@@ -59,6 +59,15 @@ def test_combined_sortino_prefers_positive_returns() -> None:
     assert good_loss < bad_loss
 
 
+def test_smoothness_penalty_prefers_smoother_returns() -> None:
+    # Same mean return / downside profile, but different step-to-step variance.
+    smooth = torch.full((24,), 0.001)
+    jagged = torch.tensor([0.002, 0.0] * 12)
+    smooth_loss = combined_sortino_pnl_loss(smooth, smoothness_penalty=1.0)
+    jagged_loss = combined_sortino_pnl_loss(jagged, smoothness_penalty=1.0)
+    assert smooth_loss < jagged_loss
+
+
 def test_simulation_respects_max_leverage_above_one() -> None:
     highs = torch.tensor([1.0, 1.0])
     lows = torch.tensor([0.5, 0.5])

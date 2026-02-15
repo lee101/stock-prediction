@@ -79,6 +79,7 @@ from src.trade_stock_env_utils import (
 
 _TRUTHY = TRUTHY_ENV_VALUES
 from src.trade_stock_forecast_snapshot import load_latest_forecast_snapshot as _load_forecast_snapshot
+import src.trade_stock_forecast_snapshot as _forecast_snapshot_mod
 from src.trade_stock_gate_utils import (
     DISABLE_TRADE_GATES,
     coerce_positive_int,
@@ -430,8 +431,9 @@ MAX_MAXDIFFS = coerce_positive_int(
 DEFAULT_PROBE_SYMBOLS = {"AAPL", "MSFT", "NVDA"}
 PROBE_SYMBOLS = set() if SIMPLIFIED_MODE or not ENABLE_PROBE_TRADES else set(DEFAULT_PROBE_SYMBOLS)
 
-MAXDIFF_STRATEGIES = {"maxdiff", "maxdiffalwayson"}  # Disabled pctdiff - needs debugging
-MAXDIFF_LIMIT_STRATEGIES = MAXDIFF_STRATEGIES.union({"highlow"})
+MAXDIFF_STRATEGIES = {"maxdiff", "maxdiffalwayson"}
+# "pctdiff" and "highlow" also use staged limit-order entry/exit watchers.
+MAXDIFF_LIMIT_STRATEGIES = MAXDIFF_STRATEGIES.union({"highlow", "pctdiff"})
 
 
 _DRAW_SUSPENDED: Dict[Tuple[str, str], bool] = {}
@@ -466,6 +468,11 @@ def _lookup_entry_price(data: Dict, strategy: Optional[str], side: str) -> Optio
     if normalized == "pctdiff":
         return data.get("pctdiff_entry_low_price" if is_buy else "pctdiff_entry_high_price")
     if normalized == "highlow":
+        # High/low staging should prefer the precomputed maxdiffprofit levels when available,
+        # falling back to the raw predicted high/low bands.
+        preferred = data.get("maxdiffprofit_low_price" if is_buy else "maxdiffprofit_high_price")
+        if preferred is not None:
+            return preferred
         return data.get("predicted_low" if is_buy else "predicted_high")
     return None
 
@@ -480,6 +487,9 @@ def _lookup_takeprofit_price(data: Dict, strategy: Optional[str], side: str) -> 
     if normalized == "pctdiff":
         return data.get("pctdiff_takeprofit_high_price" if is_buy else "pctdiff_takeprofit_low_price")
     if normalized == "highlow":
+        preferred = data.get("maxdiffprofit_high_price" if is_buy else "maxdiffprofit_low_price")
+        if preferred is not None:
+            return preferred
         return data.get("predicted_high" if is_buy else "predicted_low")
     return None
 
@@ -628,13 +638,32 @@ def _results_dir() -> Path:
     return Path(__file__).resolve().parent / "results"
 
 
+_LATEST_FORECAST_CACHE: Dict[str, Dict[str, object]] = {}
+_LATEST_FORECAST_PATH: Optional[Path] = None
+
+
+def _find_latest_prediction_file() -> Optional[Path]:
+    """Return the newest `predictions-*.csv` file in the results directory."""
+    return _forecast_snapshot_mod.find_latest_prediction_file(_results_dir())
+
+
 def _load_latest_forecast_snapshot() -> Dict[str, Dict[str, object]]:
-    return _load_forecast_snapshot(
+    # Backwards-compatible cache mirrors `src.trade_stock_forecast_snapshot` but lives in this module
+    # so callers/tests can reset and introspect via `trade_stock_e2e._LATEST_FORECAST_*`.
+    global _LATEST_FORECAST_CACHE, _LATEST_FORECAST_PATH
+
+    _forecast_snapshot_mod._LATEST_FORECAST_CACHE = _LATEST_FORECAST_CACHE
+    _forecast_snapshot_mod._LATEST_FORECAST_PATH = _LATEST_FORECAST_PATH
+
+    snapshot = _load_forecast_snapshot(
         _results_dir(),
         logger=logger,
         parse_float_list=parse_float_list,
         coerce_optional_float=coerce_optional_float,
     )
+    _LATEST_FORECAST_CACHE = _forecast_snapshot_mod._LATEST_FORECAST_CACHE
+    _LATEST_FORECAST_PATH = _forecast_snapshot_mod._LATEST_FORECAST_PATH
+    return snapshot
 
 
 def _normalize_series(series: pd.Series) -> pd.Series:
@@ -653,7 +682,7 @@ def _get_quote_client() -> Optional[StockHistoricalDataClient]:
     return _quote_client
 
 
-def fetch_bid_ask(symbol: str) -> Tuple[Optional[float], Optional[float]]:
+def fetch_bid_ask(symbol: str, *, allow_synthetic: bool = False) -> Tuple[Optional[float], Optional[float]]:
     client = _get_quote_client()
     if client is None:
         return None, None
@@ -661,7 +690,17 @@ def fetch_bid_ask(symbol: str) -> Tuple[Optional[float], Optional[float]]:
         download_exchange_latest_data(client, symbol)
     except Exception as exc:
         logger.warning("Unable to refresh quotes for %s: %s", symbol, exc)
-    return get_bid(symbol), get_ask(symbol)
+    bid, ask = get_bid(symbol), get_ask(symbol)
+
+    # data_curate_daily populates synthetic bid/ask values when ADD_LATEST is False (e.g. in tests).
+    # Those values are last-close placeholders and should not be treated as real quotes when scoring.
+    try:
+        import data_curate_daily as _data_curate_daily  # noqa: WPS433
+    except Exception:
+        _data_curate_daily = None
+    if not getattr(_data_curate_daily, "ADD_LATEST", False) and not allow_synthetic:
+        return None, None
+    return bid, ask
 
 
 def _record_loss_timestamp(symbol: str, closed_at: Optional[str]) -> None:
@@ -3101,14 +3140,17 @@ def build_portfolio(
             strategy = data.get("strategy", "simple")
             strategy_return_key = f"{strategy}_return"
             strategy_return = data.get(strategy_return_key, 0)
-            strategy_forecast = get_selected_strategy_forecast(data)
+            composite_score = data.get("composite_score", 0)
 
             logger.debug(
                 f"Portfolio fallback {symbol}: strategy={strategy} {strategy_return_key}={strategy_return:.4f} "
-                f"forecast={strategy_forecast:.4f} passed={strategy_return > 0 and strategy_forecast > 0}"
+                f"composite={composite_score:.4f} passed={strategy_return > 0 and composite_score > 0}"
             )
 
-            if strategy_return > 0 and strategy_forecast > 0:
+            # Fallback is intentionally less strict than core selection: we want to reach the
+            # minimum portfolio size even when forecasted PnL is missing/neutral, as long as the
+            # chosen strategy itself is profitable and composite ranking is positive.
+            if strategy_return > 0 and composite_score > 0:
                 picks[symbol] = data
 
     # Optionally expand with high-price-edge opportunities to keep broader exposure.
@@ -3136,26 +3178,25 @@ def build_portfolio(
                 picks[symbol] = data
 
     # Ensure probe-mode symbols are represented even if they fell outside the ranking filters.
-    if ENABLE_PROBE_TRADES:
-        probe_candidates = [(symbol, data) for symbol, data in all_results.items() if data.get("trade_mode") == "probe"]
+    # This is a risk-control override: probe trades can be required even when the immediate
+    # forecast is weak/negative.
+    probe_candidates = [(symbol, data) for symbol, data in all_results.items() if data.get("trade_mode") == "probe"]
+    if probe_candidates:
+        capacity = max_expanded or max_positions
         for symbol, data in probe_candidates:
             if symbol in picks:
                 continue
-            strategy_forecast = get_selected_strategy_forecast(data)
-            if strategy_forecast <= 0:
+            if len(picks) < capacity:
+                picks[symbol] = data
                 continue
-            if max_expanded and len(picks) < max_expanded:
-                picks[symbol] = data
-            elif len(picks) < max_positions:
-                picks[symbol] = data
-            else:
-                weakest_symbol, weakest_data = min(
-                    picks.items(), key=lambda item: item[1].get("composite_score", float("-inf"))
-                )
-                weakest_forecast = get_selected_strategy_forecast(weakest_data)
-                if weakest_forecast <= 0:
-                    picks.pop(weakest_symbol, None)
-                    picks[symbol] = data
+            non_probe = [(sym, row) for sym, row in picks.items() if row.get("trade_mode") != "probe"]
+            if not non_probe:
+                continue
+            weakest_symbol, _weakest_data = min(
+                non_probe, key=lambda item: item[1].get("composite_score", float("-inf"))
+            )
+            picks.pop(weakest_symbol, None)
+            picks[symbol] = data
 
     _apply_forced_probe_annotations(picks)
     return picks
@@ -3495,7 +3536,7 @@ def manage_positions(
         entry_strategy = stored_entry_strategy
 
         # Get current bid/ask for sizing
-        bid_price, ask_price = fetch_bid_ask(symbol)
+        bid_price, ask_price = fetch_bid_ask(symbol, allow_synthetic=True)
         if bid_price is None or ask_price is None:
             logger.debug(f"Skipping watcher refresh for {symbol} - no bid/ask available")
             continue
@@ -3857,7 +3898,7 @@ def manage_positions(
             logger.info(f"{symbol}: Probe mode enabled; minimum trade quantity set to {min_trade_qty}")
 
         # Calculate target position size
-        bid_price, ask_price = fetch_bid_ask(symbol)
+        bid_price, ask_price = fetch_bid_ask(symbol, allow_synthetic=True)
         entry_price = None
         target_qty = 0.0
 
