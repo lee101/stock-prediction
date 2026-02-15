@@ -1,0 +1,110 @@
+[
+  {
+    "model_name": "Toto",
+    "compile_mode": "max-autotune",
+    "iteration": 0,
+    "accuracy": {
+      "mae": 0.1811084546312287,
+      "rmse": 0.1811084546312287,
+      "mape": 0.1644618749874599,
+      "prediction_mean": 110.3029556274414,
+      "prediction_std": 0.0,
+      "target_mean": 110.12184717281018
+    },
+    "performance": {
+      "inference_time_ms": 147736.8378418032,
+      "peak_memory_mb": 805.75439453125,
+      "recompilations": 0
+    }
+  },
+  {
+    "model_name": "Toto",
+    "compile_mode": "max-autotune",
+    "iteration": 1,
+    "accuracy": {
+      "mae": 6.04819299800549,
+      "rmse": 6.04819299800549,
+      "mape": 5.492273470961926,
+      "prediction_mean": 104.07365417480469,
+      "prediction_std": 0.0,
+      "target_mean": 110.12184717281018
+    },
+    "performance": {
+      "inference_time_ms": 61305.11001800187,
+      "peak_memory_mb": 771.63037109375,
+      "recompilations": 0
+    }
+  },
+  {
+    "model_name": "Toto",
+    "compile_mode": "max-autotune",
+    "iteration": 2,
+    "accuracy": {
+      "mae": 5.4023952685133025,
+      "rmse": 5.4023952685133025,
+      "mape": 4.905834225642367,
+      "prediction_mean": 104.71945190429688,
+      "prediction_std": 0.0,
+      "target_mean": 110.12184717281018
+    },
+    "performance": {
+      "inference_time_ms": 31206.478170119226,
+      "peak_memory_mb": 771.63134765625,
+      "recompilations": 0
+    }
+  },
+  {
+    "model_name": "Toto",
+    "compile_mode": "eager",
+    "iteration": 0,
+    "accuracy": {
+      "mae": 0.5066852368577912,
+      "rmse": 0.5066852368577912,
+      "mape": 0.4601132744010993,
+      "prediction_mean": 110.62853240966797,
+      "prediction_std": 0.0,
+      "target_mean": 110.12184717281018
+    },
+    "performance": {
+      "inference_time_ms": 3487.3816270846874,
+      "peak_memory_mb": 1004.5595703125,
+      "recompilations": 0
+    }
+  },
+  {
+    "model_name": "Toto",
+    "compile_mode": "eager",
+    "iteration": 1,
+    "accuracy": {
+      "mae": 0.49931909663830254,
+      "rmse": 0.49931909663830254,
+      "mape": 0.4534241927986727,
+      "prediction_mean": 109.62252807617188,
+      "prediction_std": 0.0,
+      "target_mean": 110.12184717281018
+    },
+    "performance": {
+      "inference_time_ms": 1339.4144498743117,
+      "peak_memory_mb": 948.59765625,
+      "recompilations": 0
+    }
+  },
+  {
+    "model_name": "Toto",
+    "compile_mode": "eager",
+    "iteration": 2,
+    "accuracy": {
+      "mae": 0.02583887202892754,
+      "rmse": 0.02583887202892754,
+      "mape": 0.02346389267188694,
+      "prediction_mean": 110.09600830078125,
+      "prediction_std": 0.0,
+      "target_mean": 110.12184717281018
+    },
+    "performance": {
+      "inference_time_ms": 1351.4164290390909,
+      "peak_memory_mb": 948.59765625,
+      "recompilations": 0
+    }
+  }
+]
