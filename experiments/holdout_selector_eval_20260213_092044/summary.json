@@ -1,0 +1,90 @@
+{
+  "symbols": [
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "LINKUSD",
+    "UNIUSD",
+    "MSFT",
+    "GOOG",
+    "NVDA",
+    "META",
+    "NET",
+    "NYT",
+    "YELP",
+    "DBX"
+  ],
+  "checkpoint": "binanceneural/checkpoints/alpaca_cross_global_mixed13_ls_v1_nano_muonmix_seq128_sp02_binval_20260213_0849/epoch_007.pt",
+  "config": {
+    "sequence_length": 128,
+    "horizon": 1,
+    "forecast_horizons": [
+      1,
+      24
+    ],
+    "window_hours": 720.0,
+    "num_windows": 20,
+    "seed": 1337,
+    "decision_lag_bars": 1,
+    "select_fillable_only": false,
+    "work_steal_enabled": false,
+    "allow_short": true,
+    "long_only_symbols": [
+      "MSFT",
+      "GOOG",
+      "NVDA",
+      "META",
+      "NET"
+    ],
+    "short_only_symbols": [
+      "NYT",
+      "YELP",
+      "DBX"
+    ]
+  },
+  "metrics": {
+    "total_return": {
+      "mean": 0.01185496552347531,
+      "median": -0.0009114868137519807,
+      "p10": -0.0009674812992150839,
+      "p25": -0.0009639565533417226,
+      "p75": 0.013240928790489189,
+      "p90": 0.049265635996160836
+    },
+    "sortino_hourly": {
+      "mean": -0.9998776917407609,
+      "median": -4.205528120800201,
+      "p10": -4.5282499501925555,
+      "p25": -4.471903043399872,
+      "p75": 4.25516852257699,
+      "p90": 4.499721860663207
+    },
+    "max_drawdown": {
+      "mean": -0.006425998202834837,
+      "median": -0.0009971108144392745,
+      "p10": -0.023355681115782685,
+      "p25": -0.006592158452445883,
+      "p75": -0.0009717232920276664,
+      "p90": -6.45193594202444e-05
+    },
+    "pct_profitable_days": {
+      "mean": 0.4166666666666667,
+      "median": 0.4,
+      "p10": 0.36666666666666664,
+      "p25": 0.36666666666666664,
+      "p75": 0.4666666666666667,
+      "p90": 0.47000000000000003
+    },
+    "sortino_daily_365": {
+      "mean": 48.46825907892928,
+      "median": -2.674397410009272,
+      "p10": -2.8671072159938165,
+      "p25": -2.7780022454545725,
+      "p75": 51.733711268502915,
+      "p90": 201.16704836967682
+    }
+  },
+  "artifacts": {
+    "windows_csv": "experiments/holdout_selector_eval_20260213_092044/windows.csv"
+  }
+}
