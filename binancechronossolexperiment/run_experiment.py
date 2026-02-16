@@ -101,6 +101,11 @@ def main() -> None:
     parser.add_argument("--rms-norm-eps", type=float, default=1e-5)
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
     parser.add_argument("--return-weight", type=float, default=0.08, help="Weight for return term in loss")
+    parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--transformer-dim", type=int, default=256)
+    parser.add_argument("--transformer-layers", type=int, default=4)
+    parser.add_argument("--transformer-heads", type=int, default=8)
+    parser.add_argument("--maker-fee", type=float, default=0.0)
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--no-compile", action="store_true")
     parser.add_argument("--no-plot", action="store_true")
@@ -150,6 +155,11 @@ def main() -> None:
         use_qk_norm=args.qk_norm,
         use_causal_attention=args.causal_attn,
         rms_norm_eps=args.rms_norm_eps,
+        seed=args.seed,
+        transformer_dim=args.transformer_dim,
+        transformer_layers=args.transformer_layers,
+        transformer_heads=args.transformer_heads,
+        maker_fee=args.maker_fee,
         checkpoint_root=checkpoint_root,
         log_dir=Path("tensorboard_logs") / "binancechronossolexperiment",
         use_compile=not args.no_compile,
