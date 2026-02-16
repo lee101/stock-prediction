@@ -418,6 +418,7 @@ def compute_hourly_objective(
     *,
     periods_per_year: float | torch.Tensor = HOURLY_PERIODS_PER_YEAR,
     return_weight: float = 0.05,
+    smoothness_penalty: float | torch.Tensor = 0.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return (score, sortino, annual_return) for hourly return series."""
 
@@ -431,6 +432,10 @@ def compute_hourly_objective(
     sortino = sortino * torch.sqrt(torch.clamp(periods, min=_EPS))
     annual_return = mean_return * periods
     score = sortino + return_weight * annual_return
+    if smoothness_penalty > 0:
+        returns_diff = hourly_returns[..., 1:] - hourly_returns[..., :-1]
+        volatility_penalty = returns_diff.std(dim=-1) * smoothness_penalty
+        score = score - volatility_penalty
     return score, sortino, annual_return
 
 
