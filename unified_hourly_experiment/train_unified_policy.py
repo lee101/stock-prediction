@@ -30,9 +30,18 @@ def main():
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--checkpoint-root", type=Path, default=Path("unified_hourly_experiment/checkpoints"))
     parser.add_argument("--preload", type=Path, default=None, help="Preload checkpoint")
+    parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument("--num-layers", type=int, default=3)
+    parser.add_argument("--num-heads", type=int, default=4)
+    parser.add_argument("--checkpoint-name", type=str, default=None)
+    parser.add_argument("--symbols", type=str, default=None, help="Override stock symbols")
+    parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
     args = parser.parse_args()
 
-    stocks = [s.strip().upper() for s in args.stock_symbols.split(",") if s.strip()]
+    if args.symbols:
+        stocks = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    else:
+        stocks = [s.strip().upper() for s in args.stock_symbols.split(",") if s.strip()]
     cryptos = [s.strip().upper() for s in args.crypto_symbols.split(",") if s.strip()]
 
     logger.info("Training unified policy on {} stocks + {} crypto", len(stocks), len(cryptos))
@@ -84,14 +93,15 @@ def main():
         learning_rate=args.lr,
         sequence_length=args.sequence_length,
         checkpoint_root=args.checkpoint_root,
-        run_name=args.run_name,
+        run_name=args.checkpoint_name or args.run_name,
         warmup_steps=100,
         weight_decay=0.01,
-        transformer_dim=128,
-        transformer_heads=4,
-        transformer_layers=3,
+        transformer_dim=args.hidden_dim,
+        transformer_heads=args.num_heads,
+        transformer_layers=args.num_layers,
         model_arch="gemma",
         preload_checkpoint_path=str(args.preload) if args.preload else None,
+        use_compile=not args.no_compile,
     )
 
     trainer = BinanceHourlyTrainer(train_config, data_module)
@@ -117,6 +127,9 @@ def main():
             "lr": args.lr,
             "sequence_length": args.sequence_length,
             "feature_columns": data_module.feature_columns,
+            "transformer_dim": args.hidden_dim,
+            "transformer_heads": args.num_heads,
+            "transformer_layers": args.num_layers,
         }, f, indent=2)
 
     logger.info("Config saved to {}", config_path)
