@@ -13,7 +13,7 @@ from typing import Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from env_real import ALP_KEY_ID, ALP_SECRET_KEY
+from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 
 import pandas as pd
 import torch
@@ -27,13 +27,17 @@ from src.torch_load_utils import torch_load_compat
 from src.symbol_utils import is_crypto_symbol
 
 
-def load_model(checkpoint_dir: Path):
+def load_model(checkpoint_dir: Path, epoch: int = None):
     """Load model from checkpoint directory."""
-    checkpoints = sorted(checkpoint_dir.glob("epoch_*.pt"), key=lambda p: int(p.stem.split("_")[1]))
-    if not checkpoints:
-        raise ValueError(f"No checkpoints found in {checkpoint_dir}")
-
-    best_ckpt = checkpoints[-1]
+    if epoch is not None:
+        best_ckpt = checkpoint_dir / f"epoch_{epoch:03d}.pt"
+        if not best_ckpt.exists():
+            raise ValueError(f"Checkpoint not found: {best_ckpt}")
+    else:
+        checkpoints = sorted(checkpoint_dir.glob("epoch_*.pt"), key=lambda p: int(p.stem.split("_")[1]))
+        if not checkpoints:
+            raise ValueError(f"No checkpoints found in {checkpoint_dir}")
+        best_ckpt = checkpoints[-1]
     logger.info("Loading checkpoint: {}", best_ckpt.name)
 
     ckpt = torch_load_compat(best_ckpt, map_location="cpu", weights_only=False)
@@ -80,9 +84,10 @@ def is_market_open_now() -> bool:
 
 
 def get_alpaca_client(paper: bool = True):
-    """Get Alpaca trading client."""
     from alpaca.trading.client import TradingClient
-    return TradingClient(ALP_KEY_ID, ALP_SECRET_KEY, paper=paper)
+    key_id = ALP_KEY_ID if paper else ALP_KEY_ID_PROD
+    secret = ALP_SECRET_KEY if paper else ALP_SECRET_KEY_PROD
+    return TradingClient(key_id, secret, paper=paper)
 
 
 def get_current_positions(api) -> Dict[str, float]:
@@ -258,12 +263,13 @@ def main():
     parser.add_argument("--allocation-per-symbol", type=float, default=1000.0, help="USD allocation per symbol")
     parser.add_argument("--ignore-market-hours", action="store_true", help="Generate signals even outside market hours")
     parser.add_argument("--loop", action="store_true", help="Run in continuous loop")
+    parser.add_argument("--epoch", type=int, default=None, help="Specific epoch to load")
     args = parser.parse_args()
 
     paper = not args.live
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, feature_columns, sequence_length = load_model(args.checkpoint_dir)
+    model, feature_columns, sequence_length = load_model(args.checkpoint_dir, epoch=args.epoch)
     model = model.to(device)
 
     stocks = [s.strip().upper() for s in args.stock_symbols.split(",") if s.strip()]
