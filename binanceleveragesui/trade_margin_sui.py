@@ -256,6 +256,13 @@ def _run_cycle(
     buy_amount = max(0.0, min(100.0, float(action.get("buy_amount", 0)) * intensity_scale))
     sell_amount = max(0.0, min(100.0, float(action.get("sell_amount", 0)) * intensity_scale))
 
+    MIN_SPREAD_BP = 0.002  # 20bp minimum spread
+    if buy_price > 0 and sell_price > 0 and sell_price <= buy_price * (1 + MIN_SPREAD_BP):
+        mid = (buy_price + sell_price) / 2
+        buy_price = mid * (1 - MIN_SPREAD_BP / 2)
+        sell_price = mid * (1 + MIN_SPREAD_BP / 2)
+        print(f"[margin-sui] WARNING: sell<=buy, forced 20bp spread buy={buy_price:.4f} sell={sell_price:.4f}")
+
     current_leverage = sui_value / equity if equity > 0 else 0.0
     print(
         f"[margin-sui] eq=${equity:.2f} usdt_free=${bal['usdt_free']:.2f} usdt_borrow=${bal['usdt_borrowed']:.2f} "
