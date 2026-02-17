@@ -256,6 +256,13 @@ def _run_cycle(
     buy_amount = max(0.0, min(100.0, float(action.get("buy_amount", 0)) * intensity_scale))
     sell_amount = max(0.0, min(100.0, float(action.get("sell_amount", 0)) * intensity_scale))
 
+    MIN_SPREAD_BP = 0.002  # 20bp minimum spread
+    if buy_price > 0 and sell_price > 0 and sell_price <= buy_price * (1 + MIN_SPREAD_BP):
+        mid = (buy_price + sell_price) / 2
+        buy_price = mid * (1 - MIN_SPREAD_BP / 2)
+        sell_price = mid * (1 + MIN_SPREAD_BP / 2)
+        print(f"[margin-sui] WARNING: sell<=buy, forced 20bp spread buy={buy_price:.4f} sell={sell_price:.4f}")
+
     current_leverage = sui_value / equity if equity > 0 else 0.0
     print(
         f"[margin-sui] eq=${equity:.2f} usdt_free=${bal['usdt_free']:.2f} usdt_borrow=${bal['usdt_borrowed']:.2f} "
@@ -275,6 +282,16 @@ def _run_cycle(
             price_tolerance=price_tolerance, dry_run=dry_run,
             state_path=state_path,
         )
+        if current_leverage < max_leverage and buy_amount > 0 and buy_price > 0:
+            remaining_power = equity * max_leverage - sui_value
+            if remaining_power > rules.min_notional:
+                _handle_add(
+                    remaining_power, rules,
+                    buy_price=buy_price, sell_price=sell_price,
+                    min_gap_pct=min_gap_pct,
+                    poll_seconds=poll_seconds, expiry_minutes=expiry_minutes,
+                    price_tolerance=price_tolerance, dry_run=dry_run,
+                )
     else:
         _handle_entry(
             equity, rules,
@@ -357,6 +374,40 @@ def _handle_exit(
         margin=True, side_effect_type="AUTO_REPAY",
     ))
     print(f"[margin-sui] EXIT sell={sp:.4f} qty={sell_qty:.4f} amt={sell_amount:.1f}%")
+
+
+def _handle_add(
+    remaining_power: float,
+    rules,
+    *,
+    buy_price: float,
+    sell_price: float,
+    min_gap_pct: float,
+    poll_seconds: int,
+    expiry_minutes: int,
+    price_tolerance: float,
+    dry_run: bool,
+):
+    bp, sp = enforce_min_spread(buy_price, sell_price, min_spread_pct=min_gap_pct)
+    bp, sp = enforce_gap(SYMBOL, bp, sp, min_gap_pct=min_gap_pct)
+    if bp <= 0 or sp <= 0 or bp >= sp:
+        return
+    validated = _ensure_valid_levels(SYMBOL, bp, sp, min_gap_pct=min_gap_pct, rules=rules)
+    if validated is None:
+        return
+    bp, _ = validated
+    buy_qty = quantize_qty(remaining_power / bp, step_size=rules.step_size)
+    if buy_qty <= 0 or (rules.min_notional and buy_qty * bp < rules.min_notional):
+        return
+    spawn_watcher(WatcherPlan(
+        symbol=SYMBOL, side="buy", mode="entry",
+        limit_price=bp, target_qty=buy_qty,
+        expiry_minutes=expiry_minutes, poll_seconds=poll_seconds,
+        price_tolerance=price_tolerance, dry_run=dry_run,
+        margin=True, side_effect_type="MARGIN_BUY",
+    ))
+    notional = buy_qty * bp
+    print(f"[margin-sui] ADD buy={bp:.4f} qty={buy_qty:.2f} notional=${notional:.2f} (remaining leverage)")
 
 
 def _handle_entry(
