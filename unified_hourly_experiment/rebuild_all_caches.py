@@ -16,7 +16,7 @@ BEST_MODELS = {
     "YELP": "YELP_lora_percent_change_ctx128_lr5e-05_r16_20260213_175101",
     "DBX": "DBX_lora_differencing_ctx128_lr5e-05_r16_20260213_175824",
     "TRIP": "TRIP_lora_percent_change_ctx128_lr5e-05_r16_20260213_180128",
-    "KIND": "KIND_lora_differencing_ctx128_lr5e-05_r16_20260215_223432",
+    "KIND": "KIND_lora_differencing_ctx128_lr5e-05_r16_20260215_225721",
     "EBAY": "EBAY_lora_differencing_ctx128_lr5e-05_r16_20260215_223717",
     "MTCH": "MTCH_lora_differencing_ctx128_lr5e-05_r16_20260215_224012",
     "ANGI": "ANGI_lora_differencing_ctx128_lr5e-05_r16_20260215_224308",
@@ -24,6 +24,8 @@ BEST_MODELS = {
     "EXPE": "EXPE_lora_differencing_ctx128_lr5e-05_r16_20260215_224859",
     "BKNG": "BKNG_lora_differencing_ctx128_lr5e-05_r16_20260215_225148",
     "NWSA": "NWSA_lora_differencing_ctx128_lr5e-05_r16_20260215_225432",
+    "TSLA": "TSLA_lora_differencing_ctx128_lr5e-05_r16_20260218_102822",
+    "AAPL": "AAPL_lora_differencing_ctx128_lr5e-05_r16_20260218_102824",
 }
 
 CACHE_ROOT = Path("unified_hourly_experiment/forecast_cache")

@@ -68,6 +68,8 @@ class PolicyConfig:
     use_value_embedding: bool = False
     value_embedding_every: int = 2
     value_embedding_scale: float = 1.0
+    num_outputs: int = 4
+    max_hold_hours: float = 24.0
 
 
 @dataclass
@@ -133,6 +135,8 @@ class TrainingConfig:
     force_retrain: bool = False
     seed: int = 1337
     num_workers: int = 0
+    num_outputs: int = 4
+    max_hold_hours: float = 24.0
     use_compile: bool = True
     use_amp: bool = False
     amp_dtype: str = "bfloat16"

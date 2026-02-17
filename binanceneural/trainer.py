@@ -121,6 +121,8 @@ class BinanceHourlyTrainer:
             value_embedding_every=self.config.value_embedding_every,
             value_embedding_scale=self.config.value_embedding_scale,
             use_midpoint_offsets=True,
+            num_outputs=self.config.num_outputs,
+            max_hold_hours=self.config.max_hold_hours,
         )
         model = build_policy(policy_cfg).to(self.device)
 
