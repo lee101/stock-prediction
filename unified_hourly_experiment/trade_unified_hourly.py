@@ -21,7 +21,7 @@ from loguru import logger
 
 from binanceneural.data import BinanceHourlyDataModule, FeatureNormalizer
 from binanceneural.config import DatasetConfig
-from binanceneural.model import build_policy, PolicyConfig
+from binanceneural.model import build_policy, policy_config_from_payload
 from binanceneural.inference import generate_latest_action
 from src.torch_load_utils import torch_load_compat
 from src.symbol_utils import is_crypto_symbol
@@ -64,30 +64,30 @@ def load_model(checkpoint_dir: Path, epoch: int = None):
     state_dict = ckpt.get("state_dict", ckpt)
 
     config_path = checkpoint_dir / "config.json"
-    with open(config_path) as f:
-        config = json.load(f)
+    meta_path = checkpoint_dir / "training_meta.json"
+    if meta_path.exists():
+        with open(meta_path) as f:
+            config = json.load(f)
+    elif config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+    else:
+        config = ckpt.get("config", {})
+
     feature_columns = config.get("feature_columns", [])
     sequence_length = config.get("sequence_length", 32)
-
-    input_dim = len(feature_columns)
-    hidden_dim = config.get("transformer_dim", 128)
-    num_heads = config.get("transformer_heads", 4)
-    num_layers = config.get("transformer_layers", 3)
-    policy_cfg = PolicyConfig(
-        input_dim=input_dim,
-        hidden_dim=hidden_dim,
-        num_heads=num_heads,
-        num_layers=num_layers,
-        model_arch="gemma",
-        max_len=sequence_length,
-    )
-    model = build_policy(policy_cfg)
 
     if any(k.startswith("_orig_mod.") for k in state_dict):
         state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
 
+    policy_cfg = policy_config_from_payload(config, input_dim=len(feature_columns), state_dict=state_dict)
+    model = build_policy(policy_cfg)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
+
+    num_outputs = config.get("num_outputs", 4)
+    max_hold = config.get("max_hold_hours", MAX_HOLD_HOURS)
+    logger.info("Model: {} outputs, max_hold={}h", num_outputs, max_hold)
     return model, feature_columns, sequence_length
 
 
@@ -230,9 +230,10 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS):
 
         entry_time = datetime.fromisoformat(info["entry_time"])
         hours_held = (now - entry_time).total_seconds() / 3600
+        pos_hold_limit = info.get("hold_hours", max_hold_hours)
 
-        if hours_held >= max_hold_hours:
-            logger.info("{}: hold timeout ({:.1f}h >= {}h), force closing", symbol, hours_held, max_hold_hours)
+        if hours_held >= pos_hold_limit:
+            logger.info("{}: hold timeout ({:.1f}h >= {:.1f}h), force closing", symbol, hours_held, pos_hold_limit)
             cancel_symbol_orders(api, symbol, orders_by_symbol)
             force_close_position(api, symbol, qty)
             removed.append(symbol)
@@ -355,14 +356,29 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
         if buy_price <= 0 or trade_amount <= 0:
             continue
 
-        is_long = symbol in LONG_ONLY or symbol not in SHORT_ONLY
+        alloc_frac = action.get("allocation_fraction", 0.5)
+        hold_hours = action.get("hold_hours", MAX_HOLD_HOURS)
 
-        if symbol in SHORT_ONLY:
-            logger.info("{}: SHORT_ONLY, skipping long signal (short model not trained yet)", symbol)
+        is_long = symbol in LONG_ONLY or symbol not in SHORT_ONLY
+        is_short = symbol in SHORT_ONLY
+
+        if is_short:
+            entry_price = sell_price
+            exit_price = buy_price
+            entry_side = OrderSide.SELL
+            exit_side = "buy"
+        else:
+            entry_price = buy_price
+            exit_price = sell_price
+            entry_side = OrderSide.BUY
+            exit_side = "sell"
+
+        if entry_price <= 0:
             continue
 
-        target_value = min(per_position * trade_amount, buying_power * 0.9)
-        target_qty = int(target_value / buy_price)
+        position_alloc = per_position * trade_amount * alloc_frac
+        target_value = min(position_alloc, buying_power * 0.9)
+        target_qty = int(target_value / entry_price)
 
         if target_qty <= 0:
             continue
@@ -376,27 +392,30 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
             order = LimitOrderRequest(
                 symbol=symbol,
                 qty=target_qty,
-                side=OrderSide.BUY,
-                limit_price=round(buy_price, 2),
+                side=entry_side,
+                limit_price=round(entry_price, 2),
                 time_in_force=TimeInForce.DAY,
             )
             result = api.submit_order(order)
-            logger.info("{}: entry limit {} shares @ ${:.2f} (id={})",
-                       symbol, target_qty, buy_price, result.id)
+            side_str = "short" if is_short else "long"
+            logger.info("{}: {} entry {} shares @ ${:.2f} (alloc={:.2f}, hold={:.1f}h)",
+                       symbol, side_str, target_qty, entry_price, alloc_frac, hold_hours)
 
             now = datetime.now(timezone.utc)
             tracked[symbol] = {
-                "qty": target_qty,
-                "side": "long",
-                "entry_price": buy_price,
+                "qty": target_qty if not is_short else -target_qty,
+                "side": side_str,
+                "entry_price": entry_price,
                 "entry_time": now.isoformat(),
                 "entry_order_id": str(result.id),
-                "exit_price": sell_price,
+                "exit_price": exit_price,
                 "exit_order_id": None,
-                "max_hold_until": (now + timedelta(hours=MAX_HOLD_HOURS)).isoformat(),
+                "hold_hours": hold_hours,
+                "max_hold_until": (now + timedelta(hours=hold_hours)).isoformat(),
             }
 
-            exit_oid = place_exit_order(api, symbol, target_qty, sell_price, side="sell")
+            exit_qty = target_qty
+            exit_oid = place_exit_order(api, symbol, exit_qty, exit_price, side=exit_side)
             if exit_oid:
                 tracked[symbol]["exit_order_id"] = exit_oid
 
@@ -426,24 +445,30 @@ def run_cycle(
 
     signals = {}
     for symbol in stocks:
-        if symbol in SHORT_ONLY:
-            continue
-
         action = generate_signal_for_symbol(
             symbol, model, feature_columns, sequence_length,
             args.stock_data_root, args.stock_cache_root, device
         )
         if action:
             pred_high = action.get("predicted_high", 0)
+            pred_low = action.get("predicted_low", 0)
             buy_price = action.get("buy_price", 0)
-            edge = (pred_high - buy_price) / buy_price - args.fee_rate if buy_price > 0 else 0
+            sell_price = action.get("sell_price", 0)
+
+            if symbol in SHORT_ONLY:
+                edge = (sell_price - pred_low) / sell_price - args.fee_rate if sell_price > 0 else 0
+            else:
+                edge = (pred_high - buy_price) / buy_price - args.fee_rate if buy_price > 0 else 0
+
             if edge >= args.min_edge:
                 action["edge"] = edge
                 signals[symbol] = action
-                logger.info("{}: buy={:.2f} sell={:.2f} amount={:.4f} edge={:.4f}",
-                           symbol, action["buy_price"], action["sell_price"], action["trade_amount"], edge)
+                side = "short" if symbol in SHORT_ONLY else "long"
+                logger.info("{}: {} buy={:.2f} sell={:.2f} edge={:.4f} hold={:.1f}h alloc={:.3f}",
+                           symbol, side, buy_price, sell_price, edge,
+                           action.get("hold_hours", 0), action.get("allocation_fraction", 0))
             else:
-                logger.info("{}: edge={:.4f} below {:.4f}", symbol, edge, args.min_edge)
+                logger.debug("{}: edge={:.4f} below {:.4f}", symbol, edge, args.min_edge)
 
     if not args.dry_run and signals:
         execute_trades(api, signals, state, max_positions=max_positions)
