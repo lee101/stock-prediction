@@ -16,8 +16,8 @@ from binanceneural.inference import generate_actions_from_frame
 from unified_hourly_experiment.marketsimulator import UnifiedSelectionConfig, run_unified_simulation
 from src.torch_load_utils import torch_load_compat
 
-SYMBOLS = ["NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "NYT", "YELP", "DBX", "TRIP"]
-CHECKPOINT_DIR = Path("unified_hourly_experiment/checkpoints/unified_v3_moredata")
+SYMBOLS = ["NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "NYT", "YELP", "DBX", "TRIP", "KIND", "EBAY", "MTCH", "ANGI", "Z", "EXPE", "BKNG", "NWSA"]
+CHECKPOINT_DIR = Path("unified_hourly_experiment/checkpoints/nas_512h_4L")
 DATA_ROOT = Path("trainingdatahourly/stocks")
 CACHE_ROOT = Path("unified_hourly_experiment/forecast_cache")
 
@@ -30,7 +30,10 @@ def load_model(checkpoint_dir: Path):
     feature_columns = config.get("feature_columns", [])
     input_dim = len(feature_columns)
     sequence_length = config.get("sequence_length", 32)
-    policy_cfg = PolicyConfig(input_dim=input_dim, hidden_dim=128, num_heads=4, num_layers=3, model_arch="gemma", max_len=sequence_length)
+    hidden_dim = config.get("transformer_dim", 128)
+    num_heads = config.get("transformer_heads", 4)
+    num_layers = config.get("transformer_layers", 3)
+    policy_cfg = PolicyConfig(input_dim=input_dim, hidden_dim=hidden_dim, num_heads=num_heads, num_layers=num_layers, model_arch="gemma", max_len=sequence_length)
     model = build_policy(policy_cfg)
     if any(k.startswith("_orig_mod.") for k in state_dict):
         state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
