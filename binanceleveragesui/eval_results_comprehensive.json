@@ -1,0 +1,338 @@
+{
+  "3d_test": {
+    "1x": {
+      "total_return": 0.29009398497429384,
+      "sortino": 203.30790508717362,
+      "max_drawdown": -0.008654936238607774,
+      "final_equity": 6450.469924871469,
+      "num_trades": 106,
+      "margin_cost_total": 0.0013672891039309659,
+      "margin_cost_pct": 2.7345782078619317e-05
+    },
+    "2x": {
+      "total_return": 0.6630551897129449,
+      "sortino": 205.28816310138825,
+      "max_drawdown": -0.017228372913701433,
+      "final_equity": 8315.275948564724,
+      "num_trades": 103,
+      "margin_cost_total": 0.38939219753385523,
+      "margin_cost_pct": 0.007787843950677104
+    },
+    "3x": {
+      "total_return": 1.1421598253001979,
+      "sortino": 207.30591126697738,
+      "max_drawdown": -0.025716511642824333,
+      "final_equity": 10710.79912650099,
+      "num_trades": 104,
+      "margin_cost_total": 0.8828303330546354,
+      "margin_cost_pct": 0.017656606661092707
+    },
+    "4x": {
+      "total_return": 1.7571161556026365,
+      "sortino": 209.34084439170144,
+      "max_drawdown": -0.034120618830413715,
+      "final_equity": 13785.580778013182,
+      "num_trades": 104,
+      "margin_cost_total": 1.5042483949087297,
+      "margin_cost_pct": 0.030084967898174594
+    },
+    "5x": {
+      "total_return": 2.545440675762292,
+      "sortino": 211.36355900761487,
+      "max_drawdown": -0.04244193618316463,
+      "final_equity": 17727.20337881146,
+      "num_trades": 104,
+      "margin_cost_total": 2.2808675082523644,
+      "margin_cost_pct": 0.04561735016504729
+    },
+    "4x_0fee": {
+      "total_return": 2.152041425401449,
+      "sortino": 201.31748141276282,
+      "max_drawdown": -0.03402066415780585,
+      "final_equity": 15760.207127007245,
+      "num_trades": 104,
+      "margin_cost_total": 1.5929168719114908,
+      "margin_cost_pct": 0.031858337438229814
+    }
+  },
+  "7d_test": {
+    "1x": {
+      "total_return": 0.696852039756779,
+      "sortino": 142.49855649457297,
+      "max_drawdown": -0.009413148436975681,
+      "final_equity": 8484.260198783895,
+      "num_trades": 235,
+      "margin_cost_total": 0.003946483479717907,
+      "margin_cost_pct": 7.892966959435814e-05
+    },
+    "2x": {
+      "total_return": 1.8738505679693804,
+      "sortino": 143.86317499656204,
+      "max_drawdown": -0.0187374971293157,
+      "final_equity": 14369.252839846902,
+      "num_trades": 231,
+      "margin_cost_total": 1.1603141012807352,
+      "margin_cost_pct": 0.023206282025614706
+    },
+    "3x": {
+      "total_return": 3.85899248759162,
+      "sortino": 145.27070957197049,
+      "max_drawdown": -0.027971826934841824,
+      "final_equity": 24294.9624379581,
+      "num_trades": 232,
+      "margin_cost_total": 3.1541362019766077,
+      "margin_cost_pct": 0.06308272403953215
+    },
+    "4x": {
+      "total_return": 7.200384729165032,
+      "sortino": 146.68943514198253,
+      "max_drawdown": -0.03711743395475102,
+      "final_equity": 41001.92364582516,
+      "num_trades": 233,
+      "margin_cost_total": 6.514929490051386,
+      "margin_cost_pct": 0.1302985898010277
+    },
+    "5x": {
+      "total_return": 12.812753215160512,
+      "sortino": 148.11062157878658,
+      "max_drawdown": -0.04617559073910226,
+      "final_equity": 69063.76607580256,
+      "num_trades": 233,
+      "margin_cost_total": 12.111420152759353,
+      "margin_cost_pct": 0.24222840305518703
+    },
+    "4x_0fee": {
+      "total_return": 10.13269593643578,
+      "sortino": 144.97856326537192,
+      "max_drawdown": -0.03700871469686606,
+      "final_equity": 55663.4796821789,
+      "num_trades": 233,
+      "margin_cost_total": 7.912612398306841,
+      "margin_cost_pct": 0.15825224796613682
+    }
+  },
+  "10d_test": {
+    "1x": {
+      "total_return": 1.1415270078052062,
+      "sortino": 163.11879827458588,
+      "max_drawdown": -0.009413148436975672,
+      "final_equity": 10707.63503902603,
+      "num_trades": 345,
+      "margin_cost_total": 0.005574278772721655,
+      "margin_cost_pct": 0.00011148557545443311
+    },
+    "2x": {
+      "total_return": 3.567617573509626,
+      "sortino": 164.47113101390244,
+      "max_drawdown": -0.018737497129315887,
+      "final_equity": 22838.08786754813,
+      "num_trades": 340,
+      "margin_cost_total": 2.184105056230083,
+      "margin_cost_pct": 0.043682101124601656
+    },
+    "3x": {
+      "total_return": 8.705708446360426,
+      "sortino": 165.87145273878528,
+      "max_drawdown": -0.027971826934842167,
+      "final_equity": 48528.54223180213,
+      "num_trades": 341,
+      "margin_cost_total": 7.075913411087494,
+      "margin_cost_pct": 0.14151826822174987
+    },
+    "4x": {
+      "total_return": 19.54470599344726,
+      "sortino": 167.28510007903375,
+      "max_drawdown": -0.0371174339547508,
+      "final_equity": 102723.52996723629,
+      "num_trades": 342,
+      "margin_cost_total": 17.642326175416848,
+      "margin_cost_pct": 0.35284652350833695
+    },
+    "5x": {
+      "total_return": 42.31896349178864,
+      "sortino": 168.70373048203103,
+      "max_drawdown": -0.04617559073910274,
+      "final_equity": 216594.81745894317,
+      "num_trades": 342,
+      "margin_cost_total": 39.981053889908736,
+      "margin_cost_pct": 0.7996210777981747
+    },
+    "4x_0fee": {
+      "total_return": 31.68018851101335,
+      "sortino": 169.51393126421826,
+      "max_drawdown": -0.03700871469686641,
+      "final_equity": 163400.94255506675,
+      "num_trades": 342,
+      "margin_cost_total": 24.658954826626452,
+      "margin_cost_pct": 0.493179096532529
+    }
+  },
+  "14d_test": {
+    "1x": {
+      "total_return": 2.1968859352531034,
+      "sortino": 188.65684431957627,
+      "max_drawdown": -0.009413148436975619,
+      "final_equity": 15984.429676265516,
+      "num_trades": 503,
+      "margin_cost_total": 0.008333539683095456,
+      "margin_cost_pct": 0.00016667079366190912
+    },
+    "2x": {
+      "total_return": 9.090083129702796,
+      "sortino": 192.70898835299317,
+      "max_drawdown": -0.018737497129315907,
+      "final_equity": 50450.415648513976,
+      "num_trades": 497,
+      "margin_cost_total": 4.966527291775173,
+      "margin_cost_pct": 0.09933054583550346
+    },
+    "3x": {
+      "total_return": 30.465704138869246,
+      "sortino": 196.53560920104815,
+      "max_drawdown": -0.02797182693484176,
+      "final_equity": 157328.52069434623,
+      "num_trades": 498,
+      "margin_cost_total": 23.313043601658045,
+      "margin_cost_pct": 0.4662608720331609
+    },
+    "4x": {
+      "total_return": 95.98388300770638,
+      "sortino": 200.11678373819717,
+      "max_drawdown": -0.037117433954750916,
+      "final_equity": 484919.4150385319,
+      "num_trades": 499,
+      "margin_cost_total": 84.00041385103525,
+      "margin_cost_pct": 1.6800082770207048
+    },
+    "5x": {
+      "total_return": 294.5402280395402,
+      "sortino": 203.4615444841684,
+      "max_drawdown": -0.04617559073910224,
+      "final_equity": 1477701.1401977008,
+      "num_trades": 499,
+      "margin_cost_total": 273.99068227634376,
+      "margin_cost_pct": 5.479813645526875
+    },
+    "4x_0fee": {
+      "total_return": 181.42688970008243,
+      "sortino": 207.84320914943947,
+      "max_drawdown": -0.03700871469686635,
+      "final_equity": 912134.4485004122,
+      "num_trades": 499,
+      "margin_cost_total": 138.4478971242517,
+      "margin_cost_pct": 2.7689579424850344
+    }
+  },
+  "30d_test": {
+    "1x": {
+      "total_return": 5.655134270268786,
+      "sortino": 150.72541896807112,
+      "max_drawdown": -0.010713232920499529,
+      "final_equity": 33275.67135134393,
+      "num_trades": 1084,
+      "margin_cost_total": 0.019486099236283982,
+      "margin_cost_pct": 0.0003897219847256796
+    },
+    "2x": {
+      "total_return": 42.52044416049828,
+      "sortino": 152.7940199651253,
+      "max_drawdown": -0.021299210036620688,
+      "final_equity": 217602.22080249139,
+      "num_trades": 1070,
+      "margin_cost_total": 23.156411039407274,
+      "margin_cost_pct": 0.4631282207881455
+    },
+    "3x": {
+      "total_return": 278.8857128102417,
+      "sortino": 154.78494842484452,
+      "max_drawdown": -0.03175564001489698,
+      "final_equity": 1399428.5640512086,
+      "num_trades": 1071,
+      "margin_cost_total": 212.43672125633964,
+      "margin_cost_pct": 4.248734425126792
+    },
+    "4x": {
+      "total_return": 1769.4005853437748,
+      "sortino": 156.67955978723032,
+      "max_drawdown": -0.04208524445378975,
+      "final_equity": 8852002.926718874,
+      "num_trades": 1072,
+      "margin_cost_total": 1544.7428153230917,
+      "margin_cost_pct": 30.894856306461833
+    },
+    "5x": {
+      "total_return": 11015.377346524923,
+      "sortino": 158.48286812117306,
+      "max_drawdown": -0.05229066925582501,
+      "final_equity": 55081886.73262461,
+      "num_trades": 1072,
+      "margin_cost_total": 10236.25241810488,
+      "margin_cost_pct": 204.72504836209757
+    },
+    "4x_0fee": {
+      "total_return": 6465.091601990688,
+      "sortino": 164.58644945127884,
+      "max_drawdown": -0.04197252973150683,
+      "final_equity": 32330458.00995344,
+      "num_trades": 1073,
+      "margin_cost_total": 4924.649242627129,
+      "margin_cost_pct": 98.49298485254258
+    }
+  },
+  "70d_test": {
+    "1x": {
+      "total_return": 83.27039865790395,
+      "sortino": 137.5762785382134,
+      "max_drawdown": -0.01441552841201475,
+      "final_equity": 421351.99328951974,
+      "num_trades": 2454,
+      "margin_cost_total": 0.29977809209143613,
+      "margin_cost_pct": 0.005995561841828723
+    },
+    "2x": {
+      "total_return": 6935.19114647932,
+      "sortino": 139.15620932609406,
+      "max_drawdown": -0.02878903302500752,
+      "final_equity": 34680955.7323966,
+      "num_trades": 2427,
+      "margin_cost_total": 3842.9594722355987,
+      "margin_cost_pct": 76.85918944471197
+    },
+    "3x": {
+      "total_return": 558263.4520261503,
+      "sortino": 140.72950277436817,
+      "max_drawdown": -0.04311495147035926,
+      "final_equity": 2791322260.1307516,
+      "num_trades": 2427,
+      "margin_cost_total": 426572.7271274884,
+      "margin_cost_pct": 8531.454542549769
+    },
+    "4x": {
+      "total_return": 43904304.263751686,
+      "sortino": 142.27737519898292,
+      "max_drawdown": -0.05739119597504988,
+      "final_equity": 219521526318.75842,
+      "num_trades": 2427,
+      "margin_cost_total": 38351651.024951614,
+      "margin_cost_pct": 767033.0204990323
+    },
+    "5x": {
+      "total_return": 3370968955.62262,
+      "sortino": 143.79515698025565,
+      "max_drawdown": -0.07161733390803668,
+      "final_equity": 16854844783113.102,
+      "num_trades": 2425,
+      "margin_cost_total": 3132869251.544307,
+      "margin_cost_pct": 62657385.03088614
+    },
+    "4x_0fee": {
+      "total_return": 1064328225.5481498,
+      "sortino": 149.669935654366,
+      "max_drawdown": -0.054837746708027345,
+      "final_equity": 5321641132740.749,
+      "num_trades": 2431,
+      "margin_cost_total": 810848661.447482,
+      "margin_cost_pct": 16216973.22894964
+    }
+  }
+}
