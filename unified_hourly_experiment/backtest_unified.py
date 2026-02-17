@@ -44,11 +44,14 @@ def load_model(checkpoint_dir: Path):
 
     input_dim = len(feature_columns)
     sequence_length = config.get("sequence_length", 32)
+    hidden_dim = config.get("transformer_dim", 128)
+    num_heads = config.get("transformer_heads", 4)
+    num_layers = config.get("transformer_layers", 3)
     policy_cfg = PolicyConfig(
         input_dim=input_dim,
-        hidden_dim=128,
-        num_heads=4,
-        num_layers=3,
+        hidden_dim=hidden_dim,
+        num_heads=num_heads,
+        num_layers=num_layers,
         model_arch="gemma",
         max_len=sequence_length,
     )
@@ -73,6 +76,7 @@ def main():
     parser.add_argument("--initial-cash", type=float, default=10000)
     parser.add_argument("--sequence-length", type=int, default=32)
     parser.add_argument("--horizon", type=int, default=1)
+    parser.add_argument("--min-edge", type=float, default=0.001)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -142,7 +146,7 @@ def main():
     # Run simulation
     sim_config = UnifiedSelectionConfig(
         initial_cash=args.initial_cash,
-        min_edge=0.001,
+        min_edge=args.min_edge,
         enforce_market_hours=True,
         close_at_eod=True,
         symbols=symbols,

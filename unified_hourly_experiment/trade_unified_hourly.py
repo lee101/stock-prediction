@@ -46,11 +46,14 @@ def load_model(checkpoint_dir: Path):
     sequence_length = config.get("sequence_length", 32)
 
     input_dim = len(feature_columns)
+    hidden_dim = config.get("transformer_dim", 128)
+    num_heads = config.get("transformer_heads", 4)
+    num_layers = config.get("transformer_layers", 3)
     policy_cfg = PolicyConfig(
         input_dim=input_dim,
-        hidden_dim=128,
-        num_heads=4,
-        num_layers=3,
+        hidden_dim=hidden_dim,
+        num_heads=num_heads,
+        num_layers=num_layers,
         model_arch="gemma",
         max_len=sequence_length,
     )
