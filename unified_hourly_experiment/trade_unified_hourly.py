@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified hourly trading bot for stocks (Alpaca) and crypto (Binance)."""
+"""Unified hourly trading bot for stocks (Alpaca) with exit orders, directional constraints, multi-position."""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -26,9 +26,29 @@ from binanceneural.inference import generate_latest_action
 from src.torch_load_utils import torch_load_compat
 from src.symbol_utils import is_crypto_symbol
 
+LONG_ONLY = {"NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "DBX", "TSLA", "AAPL"}
+SHORT_ONLY = {"YELP", "EBAY", "TRIP", "MTCH", "KIND", "ANGI", "Z", "EXPE", "BKNG", "NWSA", "NYT"}
+
+STATE_FILE = Path("strategy_state/stock_portfolio_state.json")
+MAX_HOLD_HOURS = 6
+MAX_POSITIONS = 5
+
+
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text())
+        except Exception:
+            pass
+    return {"positions": {}}
+
+
+def save_state(state: dict):
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(state, indent=2, default=str))
+
 
 def load_model(checkpoint_dir: Path, epoch: int = None):
-    """Load model from checkpoint directory."""
     if epoch is not None:
         best_ckpt = checkpoint_dir / f"epoch_{epoch:03d}.pt"
         if not best_ckpt.exists():
@@ -68,12 +88,10 @@ def load_model(checkpoint_dir: Path, epoch: int = None):
 
     model.load_state_dict(state_dict, strict=False)
     model.eval()
-
     return model, feature_columns, sequence_length
 
 
 def is_market_open_now() -> bool:
-    """Check if US stock market is currently open."""
     from zoneinfo import ZoneInfo
     ny = datetime.now(ZoneInfo("America/New_York"))
     if ny.weekday() >= 5:
@@ -91,7 +109,6 @@ def get_alpaca_client(paper: bool = True):
 
 
 def get_current_positions(api) -> Dict[str, float]:
-    """Get current stock positions."""
     positions = {}
     try:
         for pos in api.get_all_positions():
@@ -101,103 +118,159 @@ def get_current_positions(api) -> Dict[str, float]:
     return positions
 
 
-def get_buying_power(api) -> float:
-    """Get available buying power."""
+def get_account_info(api) -> dict:
     try:
         account = api.get_account()
-        return float(account.buying_power)
+        return {
+            "equity": float(account.equity),
+            "buying_power": float(account.buying_power),
+            "cash": float(account.cash),
+        }
     except Exception as e:
         logger.error("Failed to get account: {}", e)
-        return 0.0
+        return {"equity": 0, "buying_power": 0, "cash": 0}
 
 
-def execute_stock_trades(api, signals: Dict, positions: Dict, allocation_per_symbol: float = 1000.0):
-    """Execute stock trades via Alpaca."""
+def get_open_orders(api) -> Dict[str, list]:
+    """Get open orders grouped by symbol."""
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+    orders_by_symbol = {}
+    try:
+        request = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+        orders = api.get_orders(request)
+        for o in orders:
+            sym = o.symbol
+            if sym not in orders_by_symbol:
+                orders_by_symbol[sym] = []
+            orders_by_symbol[sym].append(o)
+    except Exception as e:
+        logger.error("Failed to get orders: {}", e)
+    return orders_by_symbol
+
+
+def cancel_symbol_orders(api, symbol: str, orders_by_symbol: Dict):
+    for order in orders_by_symbol.get(symbol, []):
+        try:
+            api.cancel_order_by_id(order.id)
+            logger.info("{}: cancelled order {}", symbol, order.id)
+        except Exception as e:
+            logger.error("{}: cancel failed - {}", symbol, e)
+
+
+def place_exit_order(api, symbol: str, qty: float, sell_price: float, side: str = "sell"):
+    from alpaca.trading.requests import LimitOrderRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce
+
+    order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
+    abs_qty = abs(qty)
+    if abs_qty < 1:
+        return None
+
+    try:
+        order = LimitOrderRequest(
+            symbol=symbol,
+            qty=int(abs_qty),
+            side=order_side,
+            limit_price=round(sell_price, 2),
+            time_in_force=TimeInForce.GTC,
+        )
+        result = api.submit_order(order)
+        logger.info("{}: exit order placed - {} {} @ ${:.2f} (id={})",
+                    symbol, side, int(abs_qty), sell_price, result.id)
+        return str(result.id)
+    except Exception as e:
+        logger.error("{}: exit order failed - {}", symbol, e)
+        return None
+
+
+def force_close_position(api, symbol: str, qty: float):
     from alpaca.trading.requests import MarketOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
-    buying_power = get_buying_power(api)
-    logger.info("Buying power: ${:.2f}", buying_power)
-
-    for symbol, action in signals.items():
-        try:
-            buy_price = action.get("buy_price", 0)
-            trade_amount = min(action.get("trade_amount", 0), 1.0)
-            if buy_price <= 0 or trade_amount <= 0:
-                continue
-
-            target_value = allocation_per_symbol * trade_amount
-            target_qty = int(target_value / buy_price)
-            current_qty = positions.get(symbol, 0)
-
-            if target_qty <= 0:
-                continue
-
-            if current_qty > 0:
-                logger.info("{}: already holding {} shares", symbol, current_qty)
-                continue
-
-            if target_value > buying_power:
-                logger.warning("{}: insufficient buying power (${:.0f} needed, ${:.0f} available)",
-                              symbol, target_value, buying_power)
-                continue
-
-            logger.info("{}: buying {} shares @ ${:.2f}", symbol, target_qty, buy_price)
-            order = MarketOrderRequest(
-                symbol=symbol,
-                qty=target_qty,
-                side=OrderSide.BUY,
-                time_in_force=TimeInForce.DAY,
-            )
-            api.submit_order(order)
-            buying_power -= target_value
-
-        except Exception as e:
-            logger.error("{}: order failed - {}", symbol, e)
+    if abs(qty) < 1:
+        return
+    side = OrderSide.SELL if qty > 0 else OrderSide.BUY
+    try:
+        order = MarketOrderRequest(
+            symbol=symbol,
+            qty=int(abs(qty)),
+            side=side,
+            time_in_force=TimeInForce.DAY,
+        )
+        api.submit_order(order)
+        logger.info("{}: force-closed {} shares", symbol, int(abs(qty)))
+    except Exception as e:
+        logger.error("{}: force-close failed - {}", symbol, e)
 
 
-def execute_crypto_trades(api, signals: Dict, positions: Dict, allocation_per_symbol: float = 1000.0):
-    """Execute crypto trades via Alpaca."""
-    from alpaca.trading.requests import MarketOrderRequest
-    from alpaca.trading.enums import OrderSide, TimeInForce
+def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS):
+    """Check existing positions: enforce hold timeout, ensure exit orders exist."""
+    now = datetime.now(timezone.utc)
+    positions = get_current_positions(api)
+    orders_by_symbol = get_open_orders(api)
+    tracked = state.get("positions", {})
+    removed = []
 
-    buying_power = get_buying_power(api)
-    logger.info("Buying power: ${:.2f}", buying_power)
+    for symbol, info in list(tracked.items()):
+        qty = positions.get(symbol, 0)
 
-    for symbol, action in signals.items():
-        try:
-            buy_price = action.get("buy_price", 0)
-            trade_amount = min(action.get("trade_amount", 0), 1.0)
-            if buy_price <= 0 or trade_amount <= 0:
-                continue
+        if abs(qty) < 1:
+            logger.info("{}: position closed, cleaning state", symbol)
+            cancel_symbol_orders(api, symbol, orders_by_symbol)
+            removed.append(symbol)
+            continue
 
-            target_value = allocation_per_symbol * trade_amount
-            alpaca_sym = symbol[:3] + "/" + symbol[3:] if "/" not in symbol else symbol
+        if symbol in SHORT_ONLY and qty > 0:
+            logger.info("{}: SHORT_ONLY stock held long, force closing {} shares", symbol, qty)
+            cancel_symbol_orders(api, symbol, orders_by_symbol)
+            force_close_position(api, symbol, qty)
+            removed.append(symbol)
+            continue
 
-            current_qty = positions.get(alpaca_sym, positions.get(symbol, 0))
+        entry_time = datetime.fromisoformat(info["entry_time"])
+        hours_held = (now - entry_time).total_seconds() / 3600
 
-            if current_qty > 0:
-                logger.info("{}: already holding {:.4f}", symbol, current_qty)
-                continue
+        if hours_held >= max_hold_hours:
+            logger.info("{}: hold timeout ({:.1f}h >= {}h), force closing", symbol, hours_held, max_hold_hours)
+            cancel_symbol_orders(api, symbol, orders_by_symbol)
+            force_close_position(api, symbol, qty)
+            removed.append(symbol)
+            continue
 
-            if target_value > buying_power:
-                logger.warning("{}: insufficient buying power (${:.0f} needed, ${:.0f} available)",
-                              symbol, target_value, buying_power)
-                continue
+        has_exit = len(orders_by_symbol.get(symbol, [])) > 0
+        if not has_exit and info.get("exit_price"):
+            exit_side = "sell" if qty > 0 else "buy"
+            oid = place_exit_order(api, symbol, qty, info["exit_price"], side=exit_side)
+            if oid:
+                info["exit_order_id"] = oid
 
-            notional = min(target_value, buying_power)
-            logger.info("{}: buying ${:.2f} notional @ ${:.2f}", symbol, notional, buy_price)
-            order = MarketOrderRequest(
-                symbol=alpaca_sym,
-                notional=round(notional, 2),
-                side=OrderSide.BUY,
-                time_in_force=TimeInForce.GTC,
-            )
-            api.submit_order(order)
-            buying_power -= notional
+    for s in removed:
+        tracked.pop(s, None)
 
-        except Exception as e:
-            logger.error("{}: order failed - {}", symbol, e)
+    pending_close = set(state.get("pending_close", []))
+    for s in removed:
+        pending_close.add(s)
+    state["pending_close"] = list(pending_close)
+
+    for symbol, qty in positions.items():
+        if symbol not in tracked and abs(qty) >= 1 and symbol not in pending_close:
+            logger.info("{}: untracked position found ({} shares), adding to state", symbol, qty)
+            tracked[symbol] = {
+                "qty": qty,
+                "entry_time": now.isoformat(),
+                "exit_price": None,
+                "exit_order_id": None,
+            }
+
+    still_pending = []
+    for s in pending_close:
+        if s in positions and abs(positions[s]) >= 1:
+            still_pending.append(s)
+    state["pending_close"] = still_pending
+
+    state["positions"] = tracked
+    return len(tracked)
 
 
 def generate_signal_for_symbol(
@@ -209,7 +282,6 @@ def generate_signal_for_symbol(
     cache_root: Path,
     device: torch.device,
 ) -> Optional[Dict]:
-    """Generate trading signal for a single symbol."""
     data_config = DatasetConfig(
         symbol=symbol,
         data_root=str(data_root),
@@ -220,7 +292,6 @@ def generate_signal_for_symbol(
         validation_days=30,
         cache_only=True,
     )
-
     try:
         data_module = BinanceHourlyDataModule(data_config)
     except Exception as e:
@@ -246,52 +317,116 @@ def generate_signal_for_symbol(
         return None
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint-dir", type=Path, required=True)
-    parser.add_argument("--stock-symbols", default="NVDA,MSFT,META,GOOG")
-    parser.add_argument("--crypto-symbols", default="")
-    parser.add_argument("--stock-data-root", type=Path, default=Path("trainingdatahourly/stocks"))
-    parser.add_argument("--crypto-data-root", type=Path, default=Path("trainingdatahourly/crypto"))
-    parser.add_argument("--stock-cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
-    parser.add_argument("--crypto-cache-root", type=Path, default=Path("binanceneural/forecast_cache"))
-    parser.add_argument("--dry-run", action="store_true", help="Print signals only, no trading")
-    parser.add_argument("--paper", action="store_true", help="Use paper trading (default)")
-    parser.add_argument("--live", action="store_true", help="Use live trading (DANGEROUS)")
-    parser.add_argument("--min-edge", type=float, default=0.012, help="Min edge to execute trade")
-    parser.add_argument("--fee-rate", type=float, default=0.001, help="Trading fee rate")
-    parser.add_argument("--allocation-per-symbol", type=float, default=1000.0, help="USD allocation per symbol")
-    parser.add_argument("--ignore-market-hours", action="store_true", help="Generate signals even outside market hours")
-    parser.add_argument("--loop", action="store_true", help="Run in continuous loop")
-    parser.add_argument("--epoch", type=int, default=None, help="Specific epoch to load")
-    args = parser.parse_args()
+def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POSITIONS):
+    from alpaca.trading.requests import LimitOrderRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce
 
-    paper = not args.live
+    account = get_account_info(api)
+    equity = account["equity"]
+    buying_power = account["buying_power"]
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, feature_columns, sequence_length = load_model(args.checkpoint_dir, epoch=args.epoch)
-    model = model.to(device)
+    if equity <= 0:
+        logger.error("No equity available")
+        return
 
-    stocks = [s.strip().upper() for s in args.stock_symbols.split(",") if s.strip()]
-    cryptos = [s.strip().upper() for s in args.crypto_symbols.split(",") if s.strip()]
+    tracked = state.get("positions", {})
+    current_count = len(tracked)
+    slots_available = max_positions - current_count
 
-    logger.info("=" * 60)
-    logger.info("Unified Hourly Trading Bot")
-    logger.info("=" * 60)
-    logger.info("Stocks: {}", stocks)
-    logger.info("Crypto: {}", cryptos)
-    logger.info("Dry run: {}", args.dry_run)
+    if slots_available <= 0:
+        logger.info("Max positions reached ({}/{})", current_count, max_positions)
+        return
 
-    # Check market hours for stocks
+    per_position = equity / max_positions
+
+    sorted_signals = sorted(signals.items(), key=lambda x: x[1].get("edge", 0), reverse=True)
+
+    for symbol, action in sorted_signals:
+        if slots_available <= 0:
+            break
+
+        if symbol in tracked:
+            continue
+
+        buy_price = action.get("buy_price", 0)
+        sell_price = action.get("sell_price", 0)
+        trade_amount = min(action.get("trade_amount", 0), 1.0)
+
+        if buy_price <= 0 or trade_amount <= 0:
+            continue
+
+        is_long = symbol in LONG_ONLY or symbol not in SHORT_ONLY
+
+        if symbol in SHORT_ONLY:
+            logger.info("{}: SHORT_ONLY, skipping long signal (short model not trained yet)", symbol)
+            continue
+
+        target_value = min(per_position * trade_amount, buying_power * 0.9)
+        target_qty = int(target_value / buy_price)
+
+        if target_qty <= 0:
+            continue
+
+        if target_value > buying_power:
+            logger.warning("{}: insufficient buying power (${:.0f} needed, ${:.0f} avail)",
+                          symbol, target_value, buying_power)
+            continue
+
+        try:
+            order = LimitOrderRequest(
+                symbol=symbol,
+                qty=target_qty,
+                side=OrderSide.BUY,
+                limit_price=round(buy_price, 2),
+                time_in_force=TimeInForce.DAY,
+            )
+            result = api.submit_order(order)
+            logger.info("{}: entry limit {} shares @ ${:.2f} (id={})",
+                       symbol, target_qty, buy_price, result.id)
+
+            now = datetime.now(timezone.utc)
+            tracked[symbol] = {
+                "qty": target_qty,
+                "side": "long",
+                "entry_price": buy_price,
+                "entry_time": now.isoformat(),
+                "entry_order_id": str(result.id),
+                "exit_price": sell_price,
+                "exit_order_id": None,
+                "max_hold_until": (now + timedelta(hours=MAX_HOLD_HOURS)).isoformat(),
+            }
+
+            exit_oid = place_exit_order(api, symbol, target_qty, sell_price, side="sell")
+            if exit_oid:
+                tracked[symbol]["exit_order_id"] = exit_oid
+
+            buying_power -= target_value
+            slots_available -= 1
+
+        except Exception as e:
+            logger.error("{}: order failed - {}", symbol, e)
+
+    state["positions"] = tracked
+
+
+def run_cycle(
+    model, feature_columns, sequence_length, device,
+    stocks, args, api, state, max_positions=MAX_POSITIONS,
+):
     market_open = is_market_open_now()
-    logger.info("Market open: {}", market_open)
+    if not market_open and not args.ignore_market_hours:
+        logger.info("Market closed, managing existing positions only")
+        num_pos = manage_positions(api, state)
+        logger.info("Active positions: {}", num_pos)
+        save_state(state)
+        return
+
+    num_pos = manage_positions(api, state)
+    logger.info("Active positions after management: {}", num_pos)
 
     signals = {}
-
-    # Generate stock signals
     for symbol in stocks:
-        if not market_open and not args.ignore_market_hours:
-            logger.info("{}: Market closed, skipping", symbol)
+        if symbol in SHORT_ONLY:
             continue
 
         action = generate_signal_for_symbol(
@@ -303,49 +438,69 @@ def main():
             buy_price = action.get("buy_price", 0)
             edge = (pred_high - buy_price) / buy_price - args.fee_rate if buy_price > 0 else 0
             if edge >= args.min_edge:
+                action["edge"] = edge
                 signals[symbol] = action
                 logger.info("{}: buy={:.2f} sell={:.2f} amount={:.4f} edge={:.4f}",
                            symbol, action["buy_price"], action["sell_price"], action["trade_amount"], edge)
             else:
-                logger.info("{}: edge={:.4f} below threshold {:.4f}", symbol, edge, args.min_edge)
+                logger.info("{}: edge={:.4f} below {:.4f}", symbol, edge, args.min_edge)
 
-    # Generate crypto signals
-    for symbol in cryptos:
-        action = generate_signal_for_symbol(
-            symbol, model, feature_columns, sequence_length,
-            args.crypto_data_root, args.crypto_cache_root, device
-        )
-        if action:
-            pred_high = action.get("predicted_high", 0)
-            buy_price = action.get("buy_price", 0)
-            edge = (pred_high - buy_price) / buy_price - args.fee_rate if buy_price > 0 else 0
-            if edge >= args.min_edge:
-                signals[symbol] = action
-                logger.info("{}: buy={:.2f} sell={:.2f} amount={:.4f} edge={:.4f}",
-                           symbol, action["buy_price"], action["sell_price"], action["trade_amount"], edge)
-            else:
-                logger.info("{}: edge={:.4f} below threshold {:.4f}", symbol, edge, args.min_edge)
+    if not args.dry_run and signals:
+        execute_trades(api, signals, state, max_positions=max_positions)
+    elif not signals:
+        logger.info("No signals above threshold")
 
-    if args.dry_run:
-        logger.info("Dry run - would execute signals: {}", list(signals.keys()))
-        if not args.loop:
-            return
-    else:
-        api = get_alpaca_client(paper=paper)
-        positions = get_current_positions(api)
-        logger.info("Current positions: {}", positions)
+    save_state(state)
 
-        stock_signals = {k: v for k, v in signals.items() if k in stocks}
-        crypto_signals = {k: v for k, v in signals.items() if k in cryptos}
 
-        if stock_signals:
-            execute_stock_trades(api, stock_signals, positions, args.allocation_per_symbol)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint-dir", type=Path, required=True)
+    parser.add_argument("--stock-symbols", default="NVDA,MSFT,META,GOOG")
+    parser.add_argument("--crypto-symbols", default="")
+    parser.add_argument("--stock-data-root", type=Path, default=Path("trainingdatahourly/stocks"))
+    parser.add_argument("--crypto-data-root", type=Path, default=Path("trainingdatahourly/crypto"))
+    parser.add_argument("--stock-cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
+    parser.add_argument("--crypto-cache-root", type=Path, default=Path("binanceneural/forecast_cache"))
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--paper", action="store_true")
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--min-edge", type=float, default=0.012)
+    parser.add_argument("--fee-rate", type=float, default=0.001)
+    parser.add_argument("--allocation-per-symbol", type=float, default=1000.0)
+    parser.add_argument("--ignore-market-hours", action="store_true")
+    parser.add_argument("--loop", action="store_true")
+    parser.add_argument("--epoch", type=int, default=None)
+    parser.add_argument("--max-positions", type=int, default=MAX_POSITIONS)
+    args = parser.parse_args()
 
-        if crypto_signals:
-            execute_crypto_trades(api, crypto_signals, positions, args.allocation_per_symbol)
+    max_pos = args.max_positions
 
-        if not stock_signals and not crypto_signals:
-            logger.info("No signals above threshold")
+    paper = not args.live
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, feature_columns, sequence_length = load_model(args.checkpoint_dir, epoch=args.epoch)
+    model = model.to(device)
+
+    stocks = [s.strip().upper() for s in args.stock_symbols.split(",") if s.strip()]
+
+    logger.info("=" * 60)
+    logger.info("Portfolio Stock Trading Bot")
+    logger.info("=" * 60)
+    logger.info("Stocks: {} (LONG_ONLY: {}, SHORT_ONLY: {})",
+               len(stocks), len([s for s in stocks if s in LONG_ONLY]),
+               len([s for s in stocks if s in SHORT_ONLY]))
+    logger.info("Max positions: {}, Hold limit: {}h", MAX_POSITIONS, MAX_HOLD_HOURS)
+    logger.info("Mode: {}", "LIVE" if not paper else "PAPER")
+
+    api = None if args.dry_run else get_alpaca_client(paper=paper)
+    state = load_state()
+
+    if api:
+        account = get_account_info(api)
+        logger.info("Equity: ${:.2f}, Buying power: ${:.2f}", account["equity"], account["buying_power"])
+
+    run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos)
 
     if not args.loop:
         return
@@ -357,27 +512,7 @@ def main():
         logger.info("Sleeping {:.0f}s until next hour", wait_secs)
         time.sleep(wait_secs)
 
-        signals = {}
-        market_open = is_market_open_now()
-        for symbol in stocks:
-            if not market_open and not args.ignore_market_hours:
-                continue
-            action = generate_signal_for_symbol(
-                symbol, model, feature_columns, sequence_length,
-                args.stock_data_root, args.stock_cache_root, device
-            )
-            if action:
-                pred_high = action.get("predicted_high", 0)
-                buy_price = action.get("buy_price", 0)
-                edge = (pred_high - buy_price) / buy_price - args.fee_rate if buy_price > 0 else 0
-                if edge >= args.min_edge:
-                    signals[symbol] = action
-                    logger.info("{}: buy={:.2f} sell={:.2f} edge={:.4f}",
-                               symbol, buy_price, action["sell_price"], edge)
-
-        if not args.dry_run and signals:
-            positions = get_current_positions(api)
-            execute_stock_trades(api, signals, positions, args.allocation_per_symbol)
+        run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos)
 
 
 if __name__ == "__main__":

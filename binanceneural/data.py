@@ -60,6 +60,8 @@ class BinanceHourlyDataset(Dataset):
         sequence_length: int,
         *,
         primary_horizon: int,
+        can_long: float = 1.0,
+        can_short: float = 0.0,
     ) -> None:
         if len(frame) != len(features):
             raise ValueError("Feature matrix must align with base frame")
@@ -76,6 +78,8 @@ class BinanceHourlyDataset(Dataset):
         self.chronos_high = frame[f"predicted_high_p50_h{self.primary_horizon}"].to_numpy(dtype=np.float32)
         self.chronos_low = frame[f"predicted_low_p50_h{self.primary_horizon}"].to_numpy(dtype=np.float32)
         self.all_horizons = self._extract_horizon_columns(frame)
+        self._can_long = float(can_long)
+        self._can_short = float(can_short)
 
     def __len__(self) -> int:
         return len(self.frame) - self.seq_len + 1
@@ -91,6 +95,8 @@ class BinanceHourlyDataset(Dataset):
             "reference_close": torch.from_numpy(self.reference_close[start:end]),
             "chronos_high": torch.from_numpy(self.chronos_high[start:end]),
             "chronos_low": torch.from_numpy(self.chronos_low[start:end]),
+            "can_long": torch.tensor(self._can_long),
+            "can_short": torch.tensor(self._can_short),
         }
         for key, values in self.all_horizons.items():
             payload[key] = torch.from_numpy(values[start:end])
@@ -236,7 +242,13 @@ class MultiSymbolDataset(Dataset):
 class MultiSymbolDataModule:
     """Data module for training on multiple crypto pairs."""
 
-    def __init__(self, symbols: Sequence[str], config: DatasetConfig) -> None:
+    def __init__(
+        self,
+        symbols: Sequence[str],
+        config: DatasetConfig,
+        *,
+        directional_constraints: Optional[Dict[str, Tuple[float, float]]] = None,
+    ) -> None:
         cleaned: List[str] = []
         seen: set[str] = set()
         for symbol in symbols:
@@ -261,6 +273,7 @@ class MultiSymbolDataModule:
         self.base_config = config
         self.modules: Dict[str, BinanceHourlyDataModule] = {}
         self.normalizers: Dict[str, FeatureNormalizer] = {}
+        self._dir_constraints = directional_constraints or {}
 
         for symbol in self.symbols:
             symbol_config = DatasetConfig(
@@ -281,7 +294,14 @@ class MultiSymbolDataModule:
             self.modules[symbol] = module
             self.normalizers[symbol] = module.normalizer
 
-        train_datasets = [mod.train_dataset for mod in self.modules.values()]
+        train_datasets = []
+        for symbol, mod in self.modules.items():
+            can_long, can_short = self._dir_constraints.get(symbol, (1.0, 0.0))
+            mod.train_dataset._can_long = float(can_long)
+            mod.train_dataset._can_short = float(can_short)
+            mod.val_dataset._can_long = float(can_long)
+            mod.val_dataset._can_short = float(can_short)
+            train_datasets.append(mod.train_dataset)
         self.train_dataset = MultiSymbolDataset(train_datasets)
 
         target_module = self.modules[self.target_symbol]

@@ -67,8 +67,7 @@ def generate_actions_from_frame(
                 chronos_low=c_low,
             )
             take = -1
-            actions.append(
-                {
+            row = {
                     "timestamp": frame["timestamp"].iloc[idx],
                     "symbol": frame["symbol"].iloc[idx],
                     "buy_price": float(decoded["buy_price"][0, take].cpu().item()),
@@ -77,7 +76,11 @@ def generate_actions_from_frame(
                     "sell_amount": float(decoded["sell_amount"][0, take].cpu().item()),
                     "trade_amount": float(decoded["trade_amount"][0, take].cpu().item()),
                 }
-            )
+            if "hold_hours" in decoded:
+                row["hold_hours"] = float(decoded["hold_hours"][0, take].cpu().item())
+            if "allocation_fraction" in decoded:
+                row["allocation_fraction"] = float(decoded["allocation_fraction"][0, take].cpu().item())
+            actions.append(row)
 
     return pd.DataFrame(actions)
 
@@ -135,7 +138,7 @@ def generate_latest_action(
 
     take = -1
     close_col = f"predicted_close_p50_h{int(horizon)}"
-    return {
+    result = {
         "timestamp": frame["timestamp"].iloc[-1],
         "symbol": frame["symbol"].iloc[-1],
         "buy_price": float(decoded["buy_price"][0, take].cpu().item()),
@@ -147,6 +150,11 @@ def generate_latest_action(
         "predicted_low": float(frame[low_col].iloc[-1]),
         "predicted_close": float(frame[close_col].iloc[-1]) if close_col in frame.columns else 0.0,
     }
+    if "hold_hours" in decoded:
+        result["hold_hours"] = float(decoded["hold_hours"][0, take].cpu().item())
+    if "allocation_fraction" in decoded:
+        result["allocation_fraction"] = float(decoded["allocation_fraction"][0, take].cpu().item())
+    return result
 
 
 __all__ = ["generate_actions_from_frame", "generate_latest_action"]

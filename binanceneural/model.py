@@ -120,12 +120,14 @@ class BinancePolicyBase(nn.Module):
         min_price_gap_pct: float,
         trade_amount_scale: float,
         use_midpoint_offsets: bool,
+        max_hold_hours: float = 24.0,
     ) -> None:
         super().__init__()
         self.price_offset_pct = price_offset_pct
         self.min_gap_pct = min_price_gap_pct
         self.trade_amount_scale = trade_amount_scale
         self.use_midpoint_offsets = use_midpoint_offsets
+        self.max_hold_hours = max_hold_hours
 
     def decode_actions(
         self,
@@ -167,13 +169,18 @@ class BinancePolicyBase(nn.Module):
         buy_amount = torch.sigmoid(outputs["buy_amount_logits"]).squeeze(-1) * self.trade_amount_scale
         sell_amount = torch.sigmoid(outputs["sell_amount_logits"]).squeeze(-1) * self.trade_amount_scale
         trade_amount = torch.maximum(buy_amount, sell_amount)
-        return {
+        result = {
             "buy_price": buy_price,
             "sell_price": sell_price,
             "trade_amount": trade_amount,
             "buy_amount": buy_amount,
             "sell_amount": sell_amount,
         }
+        if "hold_hours_logits" in outputs:
+            result["hold_hours"] = torch.sigmoid(outputs["hold_hours_logits"]).squeeze(-1) * self.max_hold_hours
+        if "allocation_logits" in outputs:
+            result["allocation_fraction"] = torch.sigmoid(outputs["allocation_logits"]).squeeze(-1)
+        return result
 
 
 class BinanceHourlyPolicy(BinancePolicyBase):
@@ -185,6 +192,7 @@ class BinanceHourlyPolicy(BinancePolicyBase):
             min_price_gap_pct=config.min_price_gap_pct,
             trade_amount_scale=config.trade_amount_scale,
             use_midpoint_offsets=config.use_midpoint_offsets,
+            max_hold_hours=config.max_hold_hours,
         )
         self.embed = nn.Linear(config.input_dim, config.hidden_dim)
         self.pos_encoding = PositionalEncoding(config.hidden_dim, dropout=config.dropout, max_len=config.max_len)
@@ -199,7 +207,7 @@ class BinanceHourlyPolicy(BinancePolicyBase):
             )
             self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=config.num_layers)
         self.norm = nn.LayerNorm(config.hidden_dim)
-        self.head = nn.Linear(config.hidden_dim, 4)
+        self.head = nn.Linear(config.hidden_dim, config.num_outputs)
 
     def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:
         h = self.embed(features)
@@ -207,12 +215,17 @@ class BinanceHourlyPolicy(BinancePolicyBase):
         h = self.encoder(h)
         h = self.norm(h)
         logits = self.head(h)
-        return {
+        out = {
             "buy_price_logits": logits[..., 0:1],
             "sell_price_logits": logits[..., 1:2],
             "buy_amount_logits": logits[..., 2:3],
             "sell_amount_logits": logits[..., 3:4],
         }
+        if logits.shape[-1] > 4:
+            out["hold_hours_logits"] = logits[..., 4:5]
+        if logits.shape[-1] > 5:
+            out["allocation_logits"] = logits[..., 5:6]
+        return out
 
 def _rms_norm(x: torch.Tensor, eps: float) -> torch.Tensor:
     if hasattr(F, "rms_norm"):
@@ -398,6 +411,7 @@ class BinanceHourlyPolicyNano(BinancePolicyBase):
             min_price_gap_pct=config.min_price_gap_pct,
             trade_amount_scale=config.trade_amount_scale,
             use_midpoint_offsets=config.use_midpoint_offsets,
+            max_hold_hours=config.max_hold_hours,
         )
         self.config = config
         self.embed = nn.Linear(config.input_dim, config.hidden_dim, bias=False)
@@ -410,7 +424,7 @@ class BinanceHourlyPolicyNano(BinancePolicyBase):
             [NanoTransformerBlock(config, layer_idx) for layer_idx in range(config.num_layers)]
         )
         self.norm_eps = config.rms_norm_eps
-        self.head = nn.Linear(config.hidden_dim, 4, bias=False)
+        self.head = nn.Linear(config.hidden_dim, config.num_outputs, bias=False)
         self._init_weights()
 
     def _init_weights(self) -> None:
@@ -436,12 +450,17 @@ class BinanceHourlyPolicyNano(BinancePolicyBase):
         softcap = float(self.config.logits_softcap)
         if softcap > 0:
             logits = softcap * torch.tanh(logits / softcap)
-        return {
+        out = {
             "buy_price_logits": logits[..., 0:1],
             "sell_price_logits": logits[..., 1:2],
             "buy_amount_logits": logits[..., 2:3],
             "sell_amount_logits": logits[..., 3:4],
         }
+        if logits.shape[-1] > 4:
+            out["hold_hours_logits"] = logits[..., 4:5]
+        if logits.shape[-1] > 5:
+            out["allocation_logits"] = logits[..., 5:6]
+        return out
 
 
 def build_policy(policy_cfg: PolicyConfig) -> BinancePolicyBase:
@@ -504,6 +523,8 @@ def policy_config_from_payload(
         use_value_embedding=bool(payload.get("use_value_embedding", False)),
         value_embedding_every=_maybe(payload.get("value_embedding_every"), int, 2),
         value_embedding_scale=_maybe(payload.get("value_embedding_scale"), float, 1.0),
+        num_outputs=_maybe(payload.get("num_outputs"), int, 4),
+        max_hold_hours=_maybe(payload.get("max_hold_hours"), float, 24.0),
     )
 
 
