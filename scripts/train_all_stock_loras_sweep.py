@@ -25,6 +25,18 @@ DATA_ROOT = "trainingdatahourly/stocks"
 RESULTS_FILE = Path("hyperparams/stock_lora_sweep_results.json")
 
 
+def parse_result(data):
+    """Extract val/test MAE from nested or flat JSON structure."""
+    if isinstance(data.get("val"), dict):
+        val_mae = data["val"].get("mae_percent_mean", 999)
+        test_mae = data.get("test", {}).get("mae_percent_mean", 999)
+    else:
+        val_mae = data.get("val_mae_percent_mean", data.get("val_mae_pct", 999))
+        test_mae = data.get("test_mae_percent_mean", data.get("test_mae_pct", 999))
+    model_name = data.get("run_name", data.get("model_name", ""))
+    return val_mae, test_mae, model_name
+
+
 def train_and_eval(symbol, preaug, ctx, lr, steps):
     cmd = [
         sys.executable, "scripts/train_crypto_lora_sweep.py",
@@ -38,19 +50,22 @@ def train_and_eval(symbol, preaug, ctx, lr, steps):
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-        # Accept exit codes 0 and 137 (CUDA cleanup SIGKILL)
-        if result.returncode in (0, 137, -9):
-            for line in result.stdout.strip().split("\n"):
+        # Check for saved JSON files (most reliable)
+        # Try both lr formats: 5e-5 and 5e-05
+        for lr_fmt in [lr, lr.replace("e-5", "e-05").replace("e-4", "e-04")]:
+            pattern = f"hyperparams/crypto_lora_sweep/{symbol}_lora_{preaug}_ctx{ctx}_lr{lr_fmt}_r16_*.json"
+            jsons = sorted(Path(".").glob(pattern))
+            if jsons:
+                return json.loads(jsons[-1].read_text())
+        # Fallback: scan both stdout and stderr for JSON
+        for output in [result.stdout, result.stderr]:
+            for line in output.strip().split("\n"):
+                line = line.strip()
                 if line.startswith("{"):
                     try:
                         return json.loads(line)
                     except json.JSONDecodeError:
                         continue
-        # Always check for saved JSON files regardless of exit code
-        pattern = f"hyperparams/crypto_lora_sweep/{symbol}_lora_{preaug}_ctx{ctx}_lr{lr}_r16_*.json"
-        jsons = sorted(Path(".").glob(pattern))
-        if jsons:
-            return json.loads(jsons[-1].read_text())
         if result.returncode not in (0, 137, -9):
             print(f"  FAILED (rc={result.returncode}): {result.stderr[-200:]}")
     except subprocess.TimeoutExpired:
@@ -92,9 +107,7 @@ def main():
 
                 r = train_and_eval(symbol, preaug, cfg["ctx"], cfg["lr"], cfg["steps"])
                 if r:
-                    val_mae = r.get("val_mae_percent_mean", r.get("val_mae_pct", 999))
-                    test_mae = r.get("test_mae_percent_mean", r.get("test_mae_pct", 999))
-                    model_name = r.get("model_name", "")
+                    val_mae, test_mae, model_name = parse_result(r)
                     print(f"  val_mae={val_mae:.3f}% test_mae={test_mae:.3f}% model={model_name}")
 
                     results[key] = {
