@@ -49,50 +49,60 @@ class FakeConfig:
         self.torch_dtype = None
 
 
-def eval_model(pipeline, data, ctx, pred_len=24):
-    from chronos import Chronos2Pipeline
-    results = []
-    for i in range(len(data) - ctx - pred_len):
-        inp = torch.tensor(data[i:i+ctx], dtype=torch.float32)
+def eval_model_df(pipeline, aug_df, target_cols, ctx, pred_len=24, n_samples=20):
+    data = aug_df[target_cols].to_numpy(dtype=np.float32)
+    n = len(data)
+    if n < ctx + pred_len + n_samples:
+        n_samples = max(1, n - ctx - pred_len)
+    step = max(1, (n - ctx - pred_len) // n_samples)
+    maes = []
+    for i in range(0, n - ctx - pred_len, step):
+        inp = data[i:i+ctx].T
         with torch.no_grad():
             preds = pipeline.predict([inp], prediction_length=pred_len, batch_size=1)
         pred_mean = preds[0].mean(dim=0).numpy()
-        actual = data[i+ctx:i+ctx+pred_len]
-        mae = np.abs(pred_mean - actual).mean()
+        actual = data[i+ctx:i+ctx+pred_len, 3]
+        mae = np.abs(pred_mean[3] - actual).mean() if pred_mean.ndim > 1 else np.abs(pred_mean - actual).mean()
         pct_mae = mae / (np.abs(actual).mean() + 1e-8) * 100
-        results.append(pct_mae)
-    return np.mean(results), np.std(results)
+        maes.append(pct_mae)
+    return float(np.mean(maes)), float(np.std(maes))
 
 
-def train_single(symbol, preaug, ctx, lr, steps, lora_r=16):
+def load_hourly_frame(path):
+    df = pd.read_csv(path)
+    for col in ["open", "high", "low", "close"]:
+        if col not in df.columns:
+            raise ValueError(f"Missing column: {col}")
+    return df
+
+
+def train_single(symbol, preaug_name, ctx, lr, steps, lora_r=16):
     data_path = Path(DATA_ROOT) / f"{symbol}.csv"
     if not data_path.exists():
         print(f"  No data for {symbol}")
         return None
 
-    df = pd.read_csv(data_path)
-    if "close" not in df.columns:
-        print(f"  No close column for {symbol}")
-        return None
+    df = load_hourly_frame(data_path)
+    val_hours = 168
+    test_hours = 168
+    n = len(df)
+    train_df = df.iloc[:n - val_hours - test_hours]
+    val_df = df.iloc[n - val_hours - test_hours:n - test_hours]
+    test_df = df.iloc[n - test_hours:]
 
-    close = df["close"].values.astype(np.float64)
-    aug_fn = get_augmentation(preaug)
-    aug_data = aug_fn(close)
+    augmentation = get_augmentation(preaug_name)
+    train_aug = augmentation.transform_dataframe(train_df.copy())
+    val_aug = augmentation.transform_dataframe(val_df.copy())
+    test_aug = augmentation.transform_dataframe(test_df.copy())
 
-    n = len(aug_data)
-    val_size = min(168, n // 10)
-    test_size = val_size
-    train_data = aug_data[:n - val_size - test_size]
-    val_data = aug_data[n - val_size - test_size:n - test_size]
-    test_data = aug_data[n - test_size:]
+    logger.info(f"{symbol} {preaug_name} ctx={ctx} lr={lr} steps={steps}: "
+                f"train={len(train_df)} val={len(val_df)} test={len(test_df)}")
 
-    logger.info(f"Training {symbol} {preaug} ctx={ctx} lr={lr} steps={steps}: "
-                f"train={len(train_data)} val={len(val_data)} test={len(test_data)}")
+    target_cols = ["open", "high", "low", "close"]
+    train_inputs = [{"target": train_aug[target_cols].to_numpy(dtype=np.float32).T}]
+    val_inputs = [{"target": val_aug[target_cols].to_numpy(dtype=np.float32).T}]
 
-    train_inputs = [torch.tensor(train_data, dtype=torch.float32)]
-    val_inputs = [torch.tensor(val_data, dtype=torch.float32)]
-
-    run_name = f"{symbol}_lora_{preaug}_ctx{ctx}_lr{lr}_r{lora_r}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"{symbol}_lora_{preaug_name}_ctx{ctx}_lr{lr}_r{lora_r}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_dir = OUTPUT_ROOT / run_name
 
     cfg = FakeConfig(ctx, lr, steps, lora_r)
@@ -101,15 +111,15 @@ def train_single(symbol, preaug, ctx, lr, steps, lora_r=16):
     finetuned = _fit_pipeline(pipeline, train_inputs, val_inputs, cfg, str(output_dir))
     _save_pipeline(finetuned, str(output_dir), "finetuned-ckpt")
 
-    val_mae, val_std = eval_model(finetuned, val_data, ctx)
-    test_mae, test_std = eval_model(finetuned, test_data, ctx)
+    val_mae = eval_model_df(finetuned, val_aug, target_cols, ctx)
+    test_mae = eval_model_df(finetuned, test_aug, target_cols, ctx)
 
     result = {
         "run_name": run_name,
-        "config": {"symbol": symbol, "preaug": preaug, "context_length": ctx,
+        "config": {"symbol": symbol, "preaug": preaug_name, "context_length": ctx,
                     "learning_rate": float(lr), "num_steps": steps, "lora_r": lora_r},
-        "val": {"mae_percent_mean": float(val_mae), "mae_percent_std": float(val_std)},
-        "test": {"mae_percent_mean": float(test_mae), "mae_percent_std": float(test_std)},
+        "val": {"mae_percent_mean": val_mae[0], "mae_percent_std": val_mae[1]},
+        "test": {"mae_percent_mean": test_mae[0], "mae_percent_std": test_mae[1]},
     }
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
