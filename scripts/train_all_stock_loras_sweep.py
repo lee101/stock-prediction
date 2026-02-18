@@ -39,6 +39,7 @@ def parse_result(data):
 
 def train_and_eval(symbol, preaug, ctx, lr, steps):
     cmd = [
+        "strace", "-e", "trace=none", "-f",
         sys.executable, "scripts/train_crypto_lora_sweep.py",
         "--symbol", symbol,
         "--data-root", DATA_ROOT,
@@ -49,7 +50,8 @@ def train_and_eval(symbol, preaug, ctx, lr, steps):
         "--preaug", preaug,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
+                                env={**__import__('os').environ, 'PYTHONUNBUFFERED': '1'})
         # Check for saved JSON files (most reliable)
         # Try both lr formats: 5e-5 and 5e-05
         for lr_fmt in [lr, lr.replace("e-5", "e-05").replace("e-4", "e-04")]:
