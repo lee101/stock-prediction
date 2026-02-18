@@ -396,7 +396,31 @@ class BinanceHourlyTrainer:
     def _apply_schedules(self, optimizer: torch.optim.Optimizer, global_step: int) -> None:
         if self._total_train_steps <= 0:
             return
+        import math
         progress = min(max(global_step / float(self._total_train_steps), 0.0), 1.0)
+
+        lr_sched = (self.config.lr_schedule or "none").lower()
+        if lr_sched == "cosine":
+            warmup = self.config.warmup_steps
+            min_r = self.config.lr_min_ratio
+            if global_step >= warmup:
+                decay_progress = (global_step - warmup) / max(1, self._total_train_steps - warmup)
+                decay_progress = min(decay_progress, 1.0)
+                lr_mult = min_r + (1.0 - min_r) * 0.5 * (1.0 + math.cos(math.pi * decay_progress))
+                for group, base_lr in zip(self._iter_param_groups(optimizer), self._warmup_base_lrs):
+                    group["lr"] = float(base_lr * lr_mult)
+        elif lr_sched == "linear_warmdown":
+            warmup = self.config.warmup_steps
+            wd_ratio = self.config.lr_warmdown_ratio
+            min_r = self.config.lr_min_ratio
+            wd_start = int(self._total_train_steps * (1.0 - wd_ratio))
+            if global_step >= warmup and global_step >= wd_start:
+                wd_progress = (global_step - wd_start) / max(1, self._total_train_steps - wd_start)
+                wd_progress = min(wd_progress, 1.0)
+                lr_mult = 1.0 - (1.0 - min_r) * wd_progress
+                for group, base_lr in zip(self._iter_param_groups(optimizer), self._warmup_base_lrs):
+                    group["lr"] = float(base_lr * lr_mult)
+
         schedule = (self.config.weight_decay_schedule or "none").lower()
         if schedule in {"linear", "linear_to_zero", "linear_decay"}:
             wd_end = float(self.config.weight_decay_end)
