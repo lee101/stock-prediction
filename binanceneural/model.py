@@ -497,6 +497,11 @@ def policy_config_from_payload(
     if max_len is None:
         max_len = 2048
 
+    if state_dict is not None:
+        embed_w = state_dict.get("embed.weight")
+        if isinstance(embed_w, torch.Tensor) and embed_w.ndim == 2:
+            input_dim = int(embed_w.shape[1])
+
     return PolicyConfig(
         input_dim=input_dim,
         hidden_dim=_maybe(payload.get("transformer_dim", payload.get("hidden_dim")), int, 256),

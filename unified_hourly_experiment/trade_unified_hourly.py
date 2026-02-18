@@ -74,11 +74,24 @@ def load_model(checkpoint_dir: Path, epoch: int = None):
     else:
         config = ckpt.get("config", {})
 
-    feature_columns = config.get("feature_columns", [])
+    feature_columns = config.get("feature_columns") or []
     sequence_length = config.get("sequence_length", 32)
 
     if any(k.startswith("_orig_mod.") for k in state_dict):
         state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+
+    if not feature_columns:
+        from binanceneural.data import build_default_feature_columns
+        embed_w = state_dict.get("embed.weight") or state_dict.get("_orig_mod.embed.weight")
+        if embed_w is not None and embed_w.ndim == 2:
+            input_dim = int(embed_w.shape[1])
+            for h_try in [[1], [1, 24]]:
+                fc = build_default_feature_columns(h_try)
+                if len(fc) == input_dim:
+                    feature_columns = fc
+                    break
+        if not feature_columns:
+            feature_columns = build_default_feature_columns([1])
 
     policy_cfg = policy_config_from_payload(config, input_dim=len(feature_columns), state_dict=state_dict)
     model = build_policy(policy_cfg)
@@ -99,6 +112,31 @@ def is_market_open_now() -> bool:
     t = ny.time()
     from datetime import time as dt_time
     return dt_time(9, 30) <= t <= dt_time(16, 0)
+
+
+def market_hours_between(start_utc: datetime, end_utc: datetime) -> float:
+    """Count market-open hours (9:30-16:00 ET, Mon-Fri) between two UTC datetimes."""
+    from zoneinfo import ZoneInfo
+    from datetime import time as dt_time
+    et = ZoneInfo("America/New_York")
+    start_et = start_utc.astimezone(et)
+    end_et = end_utc.astimezone(et)
+    total_minutes = 0
+    current = start_et.replace(second=0, microsecond=0)
+    while current < end_et:
+        if current.weekday() < 5:
+            t = current.time()
+            if dt_time(9, 30) <= t < dt_time(16, 0):
+                step = min(60, int((end_et - current).total_seconds() / 60))
+                total_minutes += max(step, 1)
+                current += timedelta(minutes=max(step, 1))
+                continue
+            if t < dt_time(9, 30):
+                current = current.replace(hour=9, minute=30, second=0)
+                continue
+        next_day = (current + timedelta(days=1)).replace(hour=9, minute=30, second=0, microsecond=0)
+        current = next_day
+    return total_minutes / 60.0
 
 
 def get_alpaca_client(paper: bool = True):
@@ -229,11 +267,13 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS):
             continue
 
         entry_time = datetime.fromisoformat(info["entry_time"])
-        hours_held = (now - entry_time).total_seconds() / 3600
+        if entry_time.tzinfo is None:
+            entry_time = entry_time.replace(tzinfo=timezone.utc)
+        hours_held = market_hours_between(entry_time, now)
         pos_hold_limit = info.get("hold_hours", max_hold_hours)
 
         if hours_held >= pos_hold_limit:
-            logger.info("{}: hold timeout ({:.1f}h >= {:.1f}h), force closing", symbol, hours_held, pos_hold_limit)
+            logger.info("{}: hold timeout ({:.1f} market hrs >= {:.1f}h), force closing", symbol, hours_held, pos_hold_limit)
             cancel_symbol_orders(api, symbol, orders_by_symbol)
             force_close_position(api, symbol, qty)
             removed.append(symbol)
@@ -283,11 +323,14 @@ def generate_signal_for_symbol(
     cache_root: Path,
     device: torch.device,
 ) -> Optional[Dict]:
+    horizons = [1]
+    if any("h24" in c for c in feature_columns):
+        horizons = [1, 24]
     data_config = DatasetConfig(
         symbol=symbol,
         data_root=str(data_root),
         forecast_cache_root=str(cache_root),
-        forecast_horizons=[1, 24],
+        forecast_horizons=horizons,
         sequence_length=sequence_length,
         min_history_hours=100,
         validation_days=30,

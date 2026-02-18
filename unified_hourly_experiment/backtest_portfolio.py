@@ -95,13 +95,13 @@ def backtest_symbol(model, dm, symbol, config, device, maker_fee):
 
     return {
         "symbol": symbol,
-        "return_pct": round(total_return, 2),
-        "sortino": round(sortino, 2),
-        "max_drawdown_pct": round(max_dd, 2),
+        "return_pct": float(round(total_return, 2)),
+        "sortino": float(round(sortino, 2)),
+        "max_drawdown_pct": float(round(max_dd, 2)),
         "direction": "long" if symbol in LONG_ONLY else "short" if symbol in SHORT_ONLY else "both",
-        "avg_hold_hours": round(hold_hours, 1),
-        "avg_alloc_frac": round(alloc_frac, 3),
-        "n_bars": n,
+        "avg_hold_hours": float(round(hold_hours, 1)),
+        "avg_alloc_frac": float(round(alloc_frac, 3)),
+        "n_bars": int(n),
     }
 
 
@@ -142,16 +142,32 @@ def main():
     else:
         symbols = config.get("symbols", sorted(LONG_ONLY | SHORT_ONLY))
 
-    feature_columns = config.get("feature_columns")
-    if feature_columns is None:
-        from binanceneural.data import build_default_feature_columns
-        feature_columns = build_default_feature_columns([1])
-    config["feature_columns"] = feature_columns
-
     seq_len = config.get("sequence_length", 512)
+
+    from binanceneural.data import build_default_feature_columns
+    ckpt0 = torch_load_compat(checkpoints[0], map_location="cpu", weights_only=False)
+    sd0 = ckpt0.get("state_dict", ckpt0)
+    if any(k.startswith("_orig_mod.") for k in sd0):
+        sd0 = {k.replace("_orig_mod.", ""): v for k, v in sd0.items()}
+    embed_w = sd0.get("embed.weight")
+    model_input_dim = int(embed_w.shape[1]) if embed_w is not None and embed_w.ndim == 2 else None
+
+    feature_columns = config.get("feature_columns")
+    if feature_columns is not None and model_input_dim and len(feature_columns) != model_input_dim:
+        feature_columns = None
+    if feature_columns is None:
+        for h_try in [[1], [1, 24]]:
+            fc = build_default_feature_columns(h_try)
+            if model_input_dim is None or len(fc) == model_input_dim:
+                feature_columns = fc
+                break
+        if feature_columns is None:
+            feature_columns = build_default_feature_columns([1])
+
     horizons = [1]
-    if "forecast_horizons" in config:
-        horizons = config["forecast_horizons"]
+    if any("h24" in c for c in feature_columns):
+        horizons = [1, 24]
+    config["feature_columns"] = feature_columns
 
     print(f"Loading data for {len(symbols)} symbols...")
     data_modules = {}
