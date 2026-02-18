@@ -119,6 +119,9 @@ class TrainingConfig:
     muon_nesterov: bool = True
     muon_ns_steps: int = 5
     warmup_steps: int = 100
+    lr_schedule: str = "none"  # "none", "cosine", "linear_warmdown"
+    lr_warmdown_ratio: float = 0.5  # fraction of training for warmdown
+    lr_min_ratio: float = 0.0  # final LR as fraction of base LR
     weight_decay_schedule: str = "none"
     weight_decay_end: float = 0.0
     ema_decay: float = 0.0
