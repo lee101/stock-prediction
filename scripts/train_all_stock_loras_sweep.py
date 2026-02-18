@@ -38,16 +38,21 @@ def train_and_eval(symbol, preaug, ctx, lr, steps):
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-        if result.returncode == 0:
+        # Accept exit codes 0 and 137 (CUDA cleanup SIGKILL)
+        if result.returncode in (0, 137, -9):
             for line in result.stdout.strip().split("\n"):
                 if line.startswith("{"):
-                    return json.loads(line)
-            # Check for saved JSON
-            pattern = f"hyperparams/crypto_lora_sweep/{symbol}_lora_{preaug}_ctx{ctx}_lr{lr}_r16_*.json"
-            jsons = sorted(Path(".").glob(pattern))
-            if jsons:
-                return json.loads(jsons[-1].read_text())
-        print(f"  FAILED: {result.stderr[-200:]}")
+                    try:
+                        return json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+        # Always check for saved JSON files regardless of exit code
+        pattern = f"hyperparams/crypto_lora_sweep/{symbol}_lora_{preaug}_ctx{ctx}_lr{lr}_r16_*.json"
+        jsons = sorted(Path(".").glob(pattern))
+        if jsons:
+            return json.loads(jsons[-1].read_text())
+        if result.returncode not in (0, 137, -9):
+            print(f"  FAILED (rc={result.returncode}): {result.stderr[-200:]}")
     except subprocess.TimeoutExpired:
         print(f"  TIMEOUT")
     except Exception as e:
