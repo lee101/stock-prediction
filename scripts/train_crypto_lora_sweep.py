@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+import torch  # noqa: early import to warm page cache
 import numpy as np
 import pandas as pd
 from loguru import logger
