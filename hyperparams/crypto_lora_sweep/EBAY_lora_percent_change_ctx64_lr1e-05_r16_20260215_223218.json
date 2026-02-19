@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "EBAY",
+    "context_length": 64,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 1e-05,
+    "num_steps": 1000,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "percent_change",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "EBAY_lora_percent_change_ctx64_lr1e-05_r16_20260215_223218",
+  "output_dir": "chronos2_finetuned/EBAY_lora_percent_change_ctx64_lr1e-05_r16_20260215_223218",
+  "val": {
+    "mae_mean": 1.1524658277630806,
+    "mae_std": 0.7154923084614945,
+    "mae_max": 3.119199514389038,
+    "mae_p90": 1.5245201110839843,
+    "mae_percent_mean": 1.3343614855936419,
+    "mae_percent_std": 0.78624494866945,
+    "mae_percent_max": 3.4290794283151627,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 2.0494023859500885,
+    "mae_std": 1.4443657180524547,
+    "mae_max": 6.00015115737915,
+    "mae_p90": 3.001267981529236,
+    "mae_percent_mean": 2.272774806867043,
+    "mae_percent_std": 1.6720057310784833,
+    "mae_percent_max": 6.969508528709412,
+    "count": 12
+  },
+  "val_consistency_score": 2.355899342744823,
+  "test_consistency_score": 4.517797788958996
+}

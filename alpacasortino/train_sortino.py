@@ -164,6 +164,15 @@ class AlpacaSortinoDataModule:
                         merge_df = forecasts[["timestamp", col]].rename(columns={col: forecast_col})
                         df = df.merge(merge_df, on="timestamp", how="left")
 
+        # For stocks or missing forecasts, use actual price as dummy forecast
+        for horizon in self.forecast_horizons:
+            for base_col, price_col in [("predicted_close_p50", "close"),
+                                         ("predicted_high_p50", "high"),
+                                         ("predicted_low_p50", "low")]:
+                col = f"{base_col}_h{horizon}"
+                if col not in df.columns:
+                    df[col] = df[price_col]
+
         # Fill missing with close
         for col in df.columns:
             if col.startswith("predicted_"):

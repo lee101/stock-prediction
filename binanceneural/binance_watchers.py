@@ -33,6 +33,8 @@ class WatcherPlan:
     poll_seconds: int
     price_tolerance: float = 0.0
     dry_run: bool = False
+    margin: bool = False
+    side_effect_type: str = "NO_SIDE_EFFECT"
 
 
 def _sanitize(value: str) -> str:
@@ -86,8 +88,12 @@ def _cancel_order(metadata: dict) -> None:
     if not order_id or not symbol:
         return
     try:
-        client = binance_wrapper.get_client()
-        client.cancel_order(symbol=symbol, orderId=order_id)
+        if metadata.get("margin"):
+            from src.binan.binance_margin import cancel_margin_order
+            cancel_margin_order(symbol, order_id=order_id)
+        else:
+            client = binance_wrapper.get_client()
+            client.cancel_order(symbol=symbol, orderId=order_id)
         logger.info("Canceled Binance order %s for %s", order_id, symbol)
     except Exception as exc:
         logger.warning("Failed to cancel Binance order %s for %s: %s", order_id, symbol, exc)
@@ -185,6 +191,8 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
         "price_tolerance": float(plan.price_tolerance),
         "binance_symbol": binance_symbol,
         "dry_run": bool(plan.dry_run),
+        "margin": bool(plan.margin),
+        "side_effect_type": plan.side_effect_type,
     }
     _persist_metadata(config_path, metadata)
 
@@ -213,6 +221,8 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
     ]
     if plan.dry_run:
         command.append("--dry-run")
+    if plan.margin:
+        command.extend(["--margin", "--side-effect-type", plan.side_effect_type])
 
     logger.info("Launching Binance watcher: %s", " ".join(command))
     try:

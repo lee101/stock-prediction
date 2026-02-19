@@ -41,13 +41,22 @@ def main():
         rows.append((a["asset"], f"{a['amount']:.6f}", fmt_usd(a["value_usdt"])))
     print_table(["Asset", "Amount", "Value"], rows, ["<", ">", ">"])
 
-    # 24h pnl
-    try:
-        pnl = bw.get_prev_day_pnl_usdt()
-        sign = "+" if pnl["delta_usdt"] >= 0 else ""
-        print(f"\n-- 24H PNL: {sign}{fmt_usd(pnl['delta_usdt'])} ({sign}{pnl['delta_btc']:.6f} BTC) --")
-    except Exception as e:
-        print(f"\n-- 24H PNL: error ({e}) --")
+    # realized trading pnl from state file
+    pnl_path = Path(__file__).resolve().parent.parent / "strategy_state" / "binanceneural_pnl_state_live.json"
+    if pnl_path.exists():
+        pnl_state = json.loads(pnl_path.read_text())
+        total_realized = sum(s.get("realized_pnl", 0) for s in pnl_state.values())
+        sign = "+" if total_realized >= 0 else ""
+        print(f"\n-- REALIZED TRADING PNL: {sign}{fmt_usd(total_realized)} --")
+        rows = []
+        for sym, s in sorted(pnl_state.items(), key=lambda x: -abs(x[1].get("realized_pnl", 0))):
+            rpnl = s.get("realized_pnl", 0)
+            pos = s.get("position_qty", 0)
+            sign = "+" if rpnl >= 0 else ""
+            rows.append((sym, f"{sign}${rpnl:,.2f}", f"{pos:.4f}", s.get("mode", "?")))
+        print_table(["Symbol", "Realized", "Position", "Mode"], rows, ["<", ">", ">", "<"])
+    else:
+        print("\n-- REALIZED TRADING PNL: no state file --")
 
     # selector state
     state_path = Path(__file__).resolve().parent.parent / "strategy_state" / "selector_state.json"

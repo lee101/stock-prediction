@@ -1,0 +1,569 @@
+[
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_033.pt",
+    "min_edge": 0.0,
+    "return": 43.914022848096934,
+    "sortino": 1.711955012273411,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_033.pt",
+    "min_edge": 0.0005,
+    "return": 43.914022848096934,
+    "sortino": 1.711955012273411,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_033.pt",
+    "min_edge": 0.001,
+    "return": 43.914022848096934,
+    "sortino": 1.711955012273411,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_033.pt",
+    "min_edge": 0.002,
+    "return": 43.914022848096934,
+    "sortino": 1.711955012273411,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_033.pt",
+    "min_edge": 0.003,
+    "return": 43.914022848096934,
+    "sortino": 1.711955012273411,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_033.pt",
+    "min_edge": 0.005,
+    "return": 30.821062162203106,
+    "sortino": 1.1920271973418,
+    "max_drawdown": 0,
+    "trades": 21
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_033.pt",
+    "min_edge": 0.008,
+    "return": 30.821062162203106,
+    "sortino": 1.1920271973418,
+    "max_drawdown": 0,
+    "trades": 21
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_033.pt",
+    "min_edge": 0.01,
+    "return": 41.40437759847462,
+    "sortino": 3.106749108018849,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_033.pt",
+    "min_edge": 0.015,
+    "return": 19.51221578444691,
+    "sortino": 0.7424424345339912,
+    "max_drawdown": 0,
+    "trades": 11
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_031.pt",
+    "min_edge": 0.0,
+    "return": -33.008074881033686,
+    "sortino": -0.7078666730645898,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_031.pt",
+    "min_edge": 0.0005,
+    "return": -33.008074881033686,
+    "sortino": -0.7078666730645898,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_031.pt",
+    "min_edge": 0.001,
+    "return": -33.008074881033686,
+    "sortino": -0.7078666730645898,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_031.pt",
+    "min_edge": 0.002,
+    "return": -33.008074881033686,
+    "sortino": -0.7078666730645898,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_031.pt",
+    "min_edge": 0.003,
+    "return": -33.008074881033686,
+    "sortino": -0.7078666730645898,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_031.pt",
+    "min_edge": 0.005,
+    "return": 25.594689513076418,
+    "sortino": 1.056081819773959,
+    "max_drawdown": 0,
+    "trades": 21
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_031.pt",
+    "min_edge": 0.008,
+    "return": 25.594689513076418,
+    "sortino": 1.056081819773959,
+    "max_drawdown": 0,
+    "trades": 21
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_031.pt",
+    "min_edge": 0.01,
+    "return": 34.430408127540744,
+    "sortino": 2.8805572219272335,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_4L_lr5e5",
+    "checkpoint": "epoch_031.pt",
+    "min_edge": 0.015,
+    "return": -5.547695151198928,
+    "sortino": -0.12535355081487773,
+    "max_drawdown": 0,
+    "trades": 11
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_006.pt",
+    "min_edge": 0.0,
+    "return": 70.54026464346381,
+    "sortino": 2.261939503460034,
+    "max_drawdown": 0,
+    "trades": 17
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_006.pt",
+    "min_edge": 0.0005,
+    "return": 74.51181480982363,
+    "sortino": 2.4808490909266028,
+    "max_drawdown": 0,
+    "trades": 19
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_006.pt",
+    "min_edge": 0.001,
+    "return": 74.51181480982363,
+    "sortino": 2.4808490909266028,
+    "max_drawdown": 0,
+    "trades": 19
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_006.pt",
+    "min_edge": 0.002,
+    "return": 74.51181480982363,
+    "sortino": 2.4808490909266028,
+    "max_drawdown": 0,
+    "trades": 19
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_006.pt",
+    "min_edge": 0.003,
+    "return": 74.51181480982363,
+    "sortino": 2.4808490909266028,
+    "max_drawdown": 0,
+    "trades": 19
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_006.pt",
+    "min_edge": 0.005,
+    "return": -19.615214548650638,
+    "sortino": -0.2546973229961028,
+    "max_drawdown": 0,
+    "trades": 17
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_006.pt",
+    "min_edge": 0.008,
+    "return": -19.55054940519101,
+    "sortino": -0.2524861763102272,
+    "max_drawdown": 0,
+    "trades": 17
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_006.pt",
+    "min_edge": 0.01,
+    "return": -19.479057547764246,
+    "sortino": -0.23169904249466347,
+    "max_drawdown": 0,
+    "trades": 15
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_006.pt",
+    "min_edge": 0.015,
+    "return": 20.114076241227274,
+    "sortino": 0.7585989167236984,
+    "max_drawdown": 0,
+    "trades": 9
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_007.pt",
+    "min_edge": 0.0,
+    "return": 57.84566267490299,
+    "sortino": 3.37511396649411,
+    "max_drawdown": 0,
+    "trades": 25
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_007.pt",
+    "min_edge": 0.0005,
+    "return": 57.84566267490299,
+    "sortino": 3.37511396649411,
+    "max_drawdown": 0,
+    "trades": 25
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_007.pt",
+    "min_edge": 0.001,
+    "return": 57.84566267490299,
+    "sortino": 3.37511396649411,
+    "max_drawdown": 0,
+    "trades": 25
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_007.pt",
+    "min_edge": 0.002,
+    "return": 57.84566267490299,
+    "sortino": 3.37511396649411,
+    "max_drawdown": 0,
+    "trades": 25
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_007.pt",
+    "min_edge": 0.003,
+    "return": 57.84566267490299,
+    "sortino": 3.37511396649411,
+    "max_drawdown": 0,
+    "trades": 25
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_007.pt",
+    "min_edge": 0.005,
+    "return": 32.886609182166524,
+    "sortino": 1.2531462820902846,
+    "max_drawdown": 0,
+    "trades": 21
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_007.pt",
+    "min_edge": 0.008,
+    "return": 29.205132855855,
+    "sortino": 1.1559886720713137,
+    "max_drawdown": 0,
+    "trades": 21
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_007.pt",
+    "min_edge": 0.01,
+    "return": -6.953265056802415,
+    "sortino": -0.12210059206774099,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "exp_512h_6L",
+    "checkpoint": "epoch_007.pt",
+    "min_edge": 0.015,
+    "return": -4.232453534833292,
+    "sortino": -0.05631422933030701,
+    "max_drawdown": 0,
+    "trades": 11
+  },
+  {
+    "model": "exp_512h_4L_seq64",
+    "checkpoint": "epoch_010.pt",
+    "min_edge": 0.0,
+    "return": 46.183760406628195,
+    "sortino": 1.6618055734563657,
+    "max_drawdown": 0,
+    "trades": 21
+  },
+  {
+    "model": "exp_512h_4L_seq64",
+    "checkpoint": "epoch_010.pt",
+    "min_edge": 0.0005,
+    "return": 46.183760406628195,
+    "sortino": 1.6618055734563657,
+    "max_drawdown": 0,
+    "trades": 21
+  },
+  {
+    "model": "exp_512h_4L_seq64",
+    "checkpoint": "epoch_010.pt",
+    "min_edge": 0.001,
+    "return": 48.40725846028071,
+    "sortino": 3.46138254670242,
+    "max_drawdown": 0,
+    "trades": 31
+  },
+  {
+    "model": "exp_512h_4L_seq64",
+    "checkpoint": "epoch_010.pt",
+    "min_edge": 0.002,
+    "return": 48.40725846028071,
+    "sortino": 3.46138254670242,
+    "max_drawdown": 0,
+    "trades": 31
+  },
+  {
+    "model": "exp_512h_4L_seq64",
+    "checkpoint": "epoch_010.pt",
+    "min_edge": 0.003,
+    "return": 48.40725846028071,
+    "sortino": 3.46138254670242,
+    "max_drawdown": 0,
+    "trades": 31
+  },
+  {
+    "model": "exp_512h_4L_seq64",
+    "checkpoint": "epoch_010.pt",
+    "min_edge": 0.005,
+    "return": 17.754492544832456,
+    "sortino": 0.8348504574019348,
+    "max_drawdown": 0,
+    "trades": 27
+  },
+  {
+    "model": "exp_512h_4L_seq64",
+    "checkpoint": "epoch_010.pt",
+    "min_edge": 0.008,
+    "return": 11.048143372789099,
+    "sortino": 1.0774614729576444,
+    "max_drawdown": 0,
+    "trades": 17
+  },
+  {
+    "model": "exp_512h_4L_seq64",
+    "checkpoint": "epoch_010.pt",
+    "min_edge": 0.01,
+    "return": 10.848487739051315,
+    "sortino": 1.0491648088195806,
+    "max_drawdown": 0,
+    "trades": 15
+  },
+  {
+    "model": "exp_512h_4L_seq64",
+    "checkpoint": "epoch_010.pt",
+    "min_edge": 0.015,
+    "return": -41.983054528160324,
+    "sortino": -1.1049124115745497,
+    "max_drawdown": 0,
+    "trades": 9
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_028.pt",
+    "min_edge": 0.0,
+    "return": 45.89708008371116,
+    "sortino": 2.222885864242504,
+    "max_drawdown": 0,
+    "trades": 23
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_028.pt",
+    "min_edge": 0.0005,
+    "return": 45.180075825711,
+    "sortino": 3.127135690331634,
+    "max_drawdown": 0,
+    "trades": 25
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_028.pt",
+    "min_edge": 0.001,
+    "return": 45.180075825711,
+    "sortino": 3.127135690331634,
+    "max_drawdown": 0,
+    "trades": 25
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_028.pt",
+    "min_edge": 0.002,
+    "return": 45.180075825711,
+    "sortino": 3.127135690331634,
+    "max_drawdown": 0,
+    "trades": 25
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_028.pt",
+    "min_edge": 0.003,
+    "return": 45.180075825711,
+    "sortino": 3.127135690331634,
+    "max_drawdown": 0,
+    "trades": 25
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_028.pt",
+    "min_edge": 0.005,
+    "return": 23.952443732405637,
+    "sortino": 1.0059868878495963,
+    "max_drawdown": 0,
+    "trades": 21
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_028.pt",
+    "min_edge": 0.008,
+    "return": 41.78505094566136,
+    "sortino": 1.643312209345378,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_028.pt",
+    "min_edge": 0.01,
+    "return": 30.154040767579836,
+    "sortino": 2.573074908483552,
+    "max_drawdown": 0,
+    "trades": 11
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_028.pt",
+    "min_edge": 0.015,
+    "return": 13.407855081523735,
+    "sortino": 0.5630470341429504,
+    "max_drawdown": 0,
+    "trades": 9
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_003.pt",
+    "min_edge": 0.0,
+    "return": -22.401232008056525,
+    "sortino": -0.3596424548404948,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_003.pt",
+    "min_edge": 0.0005,
+    "return": -22.401232008056525,
+    "sortino": -0.3596424548404948,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_003.pt",
+    "min_edge": 0.001,
+    "return": -22.401232008056525,
+    "sortino": -0.3596424548404948,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_003.pt",
+    "min_edge": 0.002,
+    "return": -22.401232008056525,
+    "sortino": -0.3596424548404948,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_003.pt",
+    "min_edge": 0.003,
+    "return": -35.04571688664899,
+    "sortino": -0.7826530411973389,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_003.pt",
+    "min_edge": 0.005,
+    "return": -35.04571688664899,
+    "sortino": -0.7826530411973389,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_003.pt",
+    "min_edge": 0.008,
+    "return": -37.93656039722707,
+    "sortino": -0.8953110592302546,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_003.pt",
+    "min_edge": 0.01,
+    "return": -9.971079777882775,
+    "sortino": -0.2597649309849468,
+    "max_drawdown": 0,
+    "trades": 13
+  },
+  {
+    "model": "nas_512h_4L",
+    "checkpoint": "epoch_003.pt",
+    "min_edge": 0.015,
+    "return": 15.251867478162605,
+    "sortino": 0.6130144040685588,
+    "max_drawdown": 0,
+    "trades": 11
+  }
+]

@@ -12,6 +12,11 @@ import typer
 from loguru import logger
 
 from src.binan import binance_wrapper
+from src.binan.binance_margin import (
+    create_margin_limit_buy,
+    create_margin_limit_sell,
+    cancel_margin_order,
+)
 from src.stock_utils import binance_remap_symbols
 
 from .execution import resolve_symbol_rules, quantize_price, quantize_qty
@@ -126,6 +131,21 @@ def _place_limit_order(symbol: str, side: str, quantity: float, price: float):
     return binance_wrapper.create_order(symbol, side.upper(), quantity, price)
 
 
+def _place_margin_limit_order(symbol: str, side: str, quantity: float, price: float, side_effect_type: str = "NO_SIDE_EFFECT"):
+    if side.upper() == "BUY":
+        return create_margin_limit_buy(symbol, quantity, price, side_effect_type=side_effect_type)
+    return create_margin_limit_sell(symbol, quantity, price, side_effect_type=side_effect_type)
+
+
+def _get_margin_order_status(symbol: str, order_id: int):
+    client = binance_wrapper.get_client()
+    try:
+        return client.get_margin_order(symbol=symbol, orderId=order_id, isIsolated="FALSE")
+    except Exception as exc:
+        logger.warning("Failed to fetch margin order %s for %s: %s", order_id, symbol, exc)
+        return None
+
+
 @app.command("watch")
 def watch(
     symbol: str = typer.Argument(..., help="Symbol, e.g. SOLUSD"),
@@ -138,6 +158,8 @@ def watch(
     price_tolerance: float = typer.Option(0.0, "--price-tolerance"),
     config_path: Optional[Path] = typer.Option(None, "--config-path"),
     dry_run: bool = typer.Option(False, "--dry-run/--live"),
+    margin: bool = typer.Option(False, "--margin/--no-margin"),
+    side_effect_type: str = typer.Option("NO_SIDE_EFFECT", "--side-effect-type"),
 ) -> None:
     config_path = config_path.expanduser().resolve() if config_path else None
     status = _load_status(config_path)
@@ -200,10 +222,13 @@ def watch(
 
         if order_id is None:
             try:
-                order = _place_limit_order(binance_symbol, side, qty, price)
+                if margin:
+                    order = _place_margin_limit_order(binance_symbol, side, qty, price, side_effect_type)
+                else:
+                    order = _place_limit_order(binance_symbol, side, qty, price)
                 order_id = _coerce_order_id(order.get("orderId")) if isinstance(order, dict) else None
                 last_status = order.get("status") if isinstance(order, dict) else None
-                logger.info("Placed Binance order %s for %s", order_id, binance_symbol)
+                logger.info("Placed %s order %s for %s", "margin" if margin else "spot", order_id, binance_symbol)
                 status = _update_status(
                     config_path,
                     status,
@@ -216,7 +241,7 @@ def watch(
                 return
 
         if order_id is not None:
-            order = _get_order_status(binance_symbol, order_id)
+            order = _get_margin_order_status(binance_symbol, order_id) if margin else _get_order_status(binance_symbol, order_id)
             if order:
                 last_status = order.get("status")
                 status = _update_status(config_path, status, order_status=last_status)
@@ -232,13 +257,15 @@ def watch(
 
     if order_id is not None:
         try:
-            client = binance_wrapper.get_client()
-            client.cancel_order(symbol=binance_symbol, orderId=order_id)
+            if margin:
+                cancel_margin_order(binance_symbol, order_id=order_id)
+            else:
+                client = binance_wrapper.get_client()
+                client.cancel_order(symbol=binance_symbol, orderId=order_id)
         except Exception as exc:
             logger.warning("Failed to cancel expired order %s for %s: %s", order_id, binance_symbol, exc)
         else:
-            # After cancellation, pull final executedQty to record partial fills if any.
-            order = _get_order_status(binance_symbol, order_id)
+            order = _get_margin_order_status(binance_symbol, order_id) if margin else _get_order_status(binance_symbol, order_id)
             if isinstance(order, dict):
                 fill_details = _extract_fill_details(order)
                 if fill_details:

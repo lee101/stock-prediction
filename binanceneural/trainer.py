@@ -252,6 +252,9 @@ class BinanceHourlyTrainer:
             if mark_step_begin is not None:
                 mark_step_begin()
             features = batch["features"].to(self.device)
+            if train and self.config.feature_noise_std > 0:
+                features = features + self.config.feature_noise_std * torch.randn_like(features)
+            opens = batch["open"].to(self.device) if "open" in batch else None
             highs = batch["high"].to(self.device)
             lows = batch["low"].to(self.device)
             closes = batch["close"].to(self.device)
@@ -277,6 +280,7 @@ class BinanceHourlyTrainer:
                     "highs": highs,
                     "lows": lows,
                     "closes": closes,
+                    "opens": opens,
                     "buy_prices": actions["buy_price"],
                     "sell_prices": actions["sell_price"],
                     "trade_intensity": trade_intensity,
@@ -286,32 +290,77 @@ class BinanceHourlyTrainer:
                     "initial_cash": self.config.initial_cash,
                     "can_short": batch.get("can_short", False),
                     "can_long": batch.get("can_long", True),
+                    "max_leverage": self.config.max_leverage,
+                    "market_order_entry": self.config.market_order_entry,
                 }
-                if (not train) and bool(self.config.validation_use_binary_fills):
-                    sim = simulate_hourly_trades_binary(**sim_kwargs)
-                else:
-                    sim = simulate_hourly_trades(
-                        **sim_kwargs,
-                        temperature=float(self.config.fill_temperature),
-                    )
+                base_lag = int(self.config.decision_lag_bars)
+                lag_range_str = self.config.decision_lag_range.strip()
+                lag_list = [int(x) for x in lag_range_str.split(",") if x.strip()] if lag_range_str else [base_lag]
 
-            returns = sim.returns.float()
-            periods_per_year = batch.get("periods_per_year", None)
-            if periods_per_year is None:
-                periods_per_year = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
-            score, sortino, annual_return = compute_hourly_objective(
-                returns,
-                periods_per_year=periods_per_year,
-                return_weight=self.config.return_weight,
-                smoothness_penalty=self.config.smoothness_penalty,
-            )
-            loss = combined_sortino_pnl_loss(
-                returns,
-                target_sign=self.config.sortino_target_sign,
-                periods_per_year=periods_per_year,
-                return_weight=self.config.return_weight,
-                smoothness_penalty=self.config.smoothness_penalty,
-            )
+                if train and len(lag_list) > 1:
+                    # Multi-lag: average loss across all lags for robust training
+                    all_losses = []
+                    all_scores = []
+                    all_sortinos = []
+                    all_returns_val = []
+                    for lag_i in lag_list:
+                        sim_i = simulate_hourly_trades(
+                            **sim_kwargs,
+                            temperature=float(self.config.fill_temperature),
+                            decision_lag_bars=lag_i,
+                        )
+                        ret_i = sim_i.returns.float()
+                        ppy = batch.get("periods_per_year", None)
+                        if ppy is None:
+                            ppy = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
+                        sc_i, so_i, ar_i = compute_hourly_objective(
+                            ret_i, periods_per_year=ppy,
+                            return_weight=self.config.return_weight,
+                            smoothness_penalty=self.config.smoothness_penalty,
+                        )
+                        lo_i = combined_sortino_pnl_loss(
+                            ret_i, target_sign=self.config.sortino_target_sign,
+                            periods_per_year=ppy,
+                            return_weight=self.config.return_weight,
+                            smoothness_penalty=self.config.smoothness_penalty,
+                        )
+                        all_losses.append(lo_i)
+                        all_scores.append(sc_i.detach())
+                        all_sortinos.append(so_i.detach())
+                        all_returns_val.append(ar_i.detach())
+                    loss = sum(all_losses) / len(all_losses)
+                    score = sum(all_scores) / len(all_scores)
+                    sortino = sum(all_sortinos) / len(all_sortinos)
+                    annual_return = sum(all_returns_val) / len(all_returns_val)
+                else:
+                    val_lag = max(lag_list) if not train else base_lag
+                    if (not train) and bool(self.config.validation_use_binary_fills):
+                        sim = simulate_hourly_trades_binary(**sim_kwargs, decision_lag_bars=val_lag)
+                    else:
+                        sim = simulate_hourly_trades(
+                            **sim_kwargs,
+                            temperature=float(self.config.fill_temperature),
+                            decision_lag_bars=val_lag,
+                        )
+
+            if not (train and len(lag_list) > 1):
+                returns = sim.returns.float()
+                periods_per_year = batch.get("periods_per_year", None)
+                if periods_per_year is None:
+                    periods_per_year = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
+                score, sortino, annual_return = compute_hourly_objective(
+                    returns,
+                    periods_per_year=periods_per_year,
+                    return_weight=self.config.return_weight,
+                    smoothness_penalty=self.config.smoothness_penalty,
+                )
+                loss = combined_sortino_pnl_loss(
+                    returns,
+                    target_sign=self.config.sortino_target_sign,
+                    periods_per_year=periods_per_year,
+                    return_weight=self.config.return_weight,
+                    smoothness_penalty=self.config.smoothness_penalty,
+                )
 
             if train and optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)

@@ -1,0 +1,275 @@
+{
+  "config": {
+    "symbol": "SUIUSDT",
+    "data_root": "trainingdatahourlybinance",
+    "forecast_cache_root": "binancechronossolexperiment/forecast_cache_sui_stable_best",
+    "horizons": "1,6,12",
+    "context_hours": 256,
+    "chronos_batch_size": 32,
+    "chronos_model_id": "amazon/chronos-t5-small",
+    "sequence_length": 72,
+    "val_days": 15,
+    "test_days": 7,
+    "baseline_checkpoint": "binanceleveragesui/checkpoints/lev5x_rw0.012_s1337/policy_checkpoint.pt",
+    "window_size": 32,
+    "max_leverage": 5.0,
+    "maker_fee": 0.001,
+    "margin_hourly_rate": 2.5457e-06,
+    "scale_limit": 1.0,
+    "residual_penalty": 5e-05,
+    "total_timesteps": 1000,
+    "n_envs": 2,
+    "train_episode_hours": 240,
+    "eval_freq": 500,
+    "learning_rate": 0.0002,
+    "n_steps": 256,
+    "batch_size": 128,
+    "gamma": 0.995,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "ent_coef": 0.001,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "hidden_dim": 256,
+    "device": "cuda",
+    "initial_cash": 10000.0,
+    "drawdown_weight_for_rank": 0.35,
+    "seeds": "1337",
+    "output": "binanceleveragesui_rlcuda/results_cuda_ppo_residual_smoke_monitor.json",
+    "artifacts_root": "binanceleveragesui_rlcuda/artifacts_residual_smoke_monitor",
+    "baseline_json": "binanceleveragesui/results_single_5x_stable_mae.json"
+  },
+  "dataset": {
+    "feature_columns": [
+      "return_1h",
+      "return_4h",
+      "return_24h",
+      "volatility_24h",
+      "range_pct",
+      "volume_z",
+      "hour_sin",
+      "hour_cos",
+      "dow_sin",
+      "dow_cos",
+      "chronos_close_delta_h1",
+      "chronos_high_delta_h1",
+      "chronos_low_delta_h1",
+      "chronos_close_delta_h6",
+      "chronos_high_delta_h6",
+      "chronos_low_delta_h6",
+      "chronos_close_delta_h12",
+      "chronos_high_delta_h12",
+      "chronos_low_delta_h12"
+    ],
+    "val_start": "2026-01-15 10:00:00+00:00",
+    "test_start": "2026-01-30 10:00:00+00:00",
+    "train_rows": 134,
+    "val_rows": 391,
+    "test_rows": 199
+  },
+  "baseline_lev_5x_return_external": 6.823058119599603,
+  "runs": [
+    {
+      "seed": 1337,
+      "model_path": "binanceleveragesui_rlcuda/artifacts_residual_smoke_monitor/seed_1337/best_model.zip",
+      "train_seconds": 2.544933795928955,
+      "score": 60.610089175167076,
+      "rl_metrics": {
+        "lev_1.0x": {
+          "total_return": 1.4143815934488697,
+          "sortino": 1164.1766533709842,
+          "max_drawdown": -0.04848532079859778,
+          "final_equity": 24143.815934488695,
+          "num_trades": 181.0,
+          "margin_cost_total": 3.2587057518374634,
+          "margin_cost_pct": 0.03258705751837464
+        },
+        "lev_2.0x": {
+          "total_return": 4.6513627826851955,
+          "sortino": 1186.5274287462357,
+          "max_drawdown": -0.09604224600664282,
+          "final_equity": 56513.62782685195,
+          "num_trades": 180.0,
+          "margin_cost_total": 11.593797233458039,
+          "margin_cost_pct": 0.11593797233458039
+        },
+        "lev_3.0x": {
+          "total_return": 11.866316994490541,
+          "sortino": 1198.9188754785619,
+          "max_drawdown": -0.14252407569098513,
+          "final_equity": 128663.16994490541,
+          "num_trades": 180.0,
+          "margin_cost_total": 30.20559813395861,
+          "margin_cost_pct": 0.3020559813395861
+        },
+        "lev_4.0x": {
+          "total_return": 27.524095608829473,
+          "sortino": 1208.4423533930478,
+          "max_drawdown": -0.18955725505391613,
+          "final_equity": 285240.95608829474,
+          "num_trades": 178.0,
+          "margin_cost_total": 69.42344082562275,
+          "margin_cost_pct": 0.6942344082562275
+        },
+        "lev_5.0x": {
+          "total_return": 60.69297117952206,
+          "sortino": 1221.812524811582,
+          "max_drawdown": -0.23680572672852013,
+          "final_equity": 616929.7117952206,
+          "num_trades": 178.0,
+          "margin_cost_total": 149.462098834661,
+          "margin_cost_pct": 1.49462098834661
+        }
+      },
+      "baseline_metrics": {
+        "lev_1.0x": {
+          "total_return": 0.5705845232759073,
+          "sortino": 962.828095267627,
+          "max_drawdown": -0.047866272972059545,
+          "final_equity": 15705.845232759073,
+          "num_trades": 181.0,
+          "margin_cost_total": 0.12050216067804422,
+          "margin_cost_pct": 0.0012050216067804422
+        },
+        "lev_2.0x": {
+          "total_return": 1.4415143009488367,
+          "sortino": 990.922369544014,
+          "max_drawdown": -0.09480988289655494,
+          "final_equity": 24415.14300948837,
+          "num_trades": 180.0,
+          "margin_cost_total": 0.9671371455198152,
+          "margin_cost_pct": 0.009671371455198152
+        },
+        "lev_3.0x": {
+          "total_return": 2.7607042007388953,
+          "sortino": 1005.395518558555,
+          "max_drawdown": -0.14066576980809656,
+          "final_equity": 37607.042007388955,
+          "num_trades": 180.0,
+          "margin_cost_total": 2.5094426551170654,
+          "margin_cost_pct": 0.025094426551170654
+        },
+        "lev_4.0x": {
+          "total_return": 4.739547147514748,
+          "sortino": 1034.0517032159662,
+          "max_drawdown": -0.18568987150374286,
+          "final_equity": 57395.47147514748,
+          "num_trades": 179.0,
+          "margin_cost_total": 4.9043546213983324,
+          "margin_cost_pct": 0.049043546213983324
+        },
+        "lev_5.0x": {
+          "total_return": 7.671391599276198,
+          "sortino": 1044.492178861574,
+          "max_drawdown": -0.23182992527901067,
+          "final_equity": 86713.91599276199,
+          "num_trades": 178.0,
+          "margin_cost_total": 8.585550766965092,
+          "margin_cost_pct": 0.08585550766965092
+        }
+      }
+    }
+  ],
+  "best": {
+    "seed": 1337,
+    "model_path": "binanceleveragesui_rlcuda/artifacts_residual_smoke_monitor/seed_1337/best_model.zip",
+    "train_seconds": 2.544933795928955,
+    "score": 60.610089175167076,
+    "rl_metrics": {
+      "lev_1.0x": {
+        "total_return": 1.4143815934488697,
+        "sortino": 1164.1766533709842,
+        "max_drawdown": -0.04848532079859778,
+        "final_equity": 24143.815934488695,
+        "num_trades": 181.0,
+        "margin_cost_total": 3.2587057518374634,
+        "margin_cost_pct": 0.03258705751837464
+      },
+      "lev_2.0x": {
+        "total_return": 4.6513627826851955,
+        "sortino": 1186.5274287462357,
+        "max_drawdown": -0.09604224600664282,
+        "final_equity": 56513.62782685195,
+        "num_trades": 180.0,
+        "margin_cost_total": 11.593797233458039,
+        "margin_cost_pct": 0.11593797233458039
+      },
+      "lev_3.0x": {
+        "total_return": 11.866316994490541,
+        "sortino": 1198.9188754785619,
+        "max_drawdown": -0.14252407569098513,
+        "final_equity": 128663.16994490541,
+        "num_trades": 180.0,
+        "margin_cost_total": 30.20559813395861,
+        "margin_cost_pct": 0.3020559813395861
+      },
+      "lev_4.0x": {
+        "total_return": 27.524095608829473,
+        "sortino": 1208.4423533930478,
+        "max_drawdown": -0.18955725505391613,
+        "final_equity": 285240.95608829474,
+        "num_trades": 178.0,
+        "margin_cost_total": 69.42344082562275,
+        "margin_cost_pct": 0.6942344082562275
+      },
+      "lev_5.0x": {
+        "total_return": 60.69297117952206,
+        "sortino": 1221.812524811582,
+        "max_drawdown": -0.23680572672852013,
+        "final_equity": 616929.7117952206,
+        "num_trades": 178.0,
+        "margin_cost_total": 149.462098834661,
+        "margin_cost_pct": 1.49462098834661
+      }
+    },
+    "baseline_metrics": {
+      "lev_1.0x": {
+        "total_return": 0.5705845232759073,
+        "sortino": 962.828095267627,
+        "max_drawdown": -0.047866272972059545,
+        "final_equity": 15705.845232759073,
+        "num_trades": 181.0,
+        "margin_cost_total": 0.12050216067804422,
+        "margin_cost_pct": 0.0012050216067804422
+      },
+      "lev_2.0x": {
+        "total_return": 1.4415143009488367,
+        "sortino": 990.922369544014,
+        "max_drawdown": -0.09480988289655494,
+        "final_equity": 24415.14300948837,
+        "num_trades": 180.0,
+        "margin_cost_total": 0.9671371455198152,
+        "margin_cost_pct": 0.009671371455198152
+      },
+      "lev_3.0x": {
+        "total_return": 2.7607042007388953,
+        "sortino": 1005.395518558555,
+        "max_drawdown": -0.14066576980809656,
+        "final_equity": 37607.042007388955,
+        "num_trades": 180.0,
+        "margin_cost_total": 2.5094426551170654,
+        "margin_cost_pct": 0.025094426551170654
+      },
+      "lev_4.0x": {
+        "total_return": 4.739547147514748,
+        "sortino": 1034.0517032159662,
+        "max_drawdown": -0.18568987150374286,
+        "final_equity": 57395.47147514748,
+        "num_trades": 179.0,
+        "margin_cost_total": 4.9043546213983324,
+        "margin_cost_pct": 0.049043546213983324
+      },
+      "lev_5.0x": {
+        "total_return": 7.671391599276198,
+        "sortino": 1044.492178861574,
+        "max_drawdown": -0.23182992527901067,
+        "final_equity": 86713.91599276199,
+        "num_trades": 178.0,
+        "margin_cost_total": 8.585550766965092,
+        "margin_cost_pct": 0.08585550766965092
+      }
+    }
+  },
+  "best_vs_internal_baseline_5x_delta": 53.02157958024586,
+  "best_vs_external_baseline_5x_delta": 53.86991305992246
+}
