@@ -60,6 +60,8 @@ class LeverageConfig:
     transformer_dim: int = 256
     transformer_layers: int = 4
     transformer_heads: int = 8
+    fill_buffer_pct: float = 0.0  # require high >= sell*(1+buf) or low <= buy*(1-buf)
+    decision_lag_bars: int = 0  # 0=same-bar fills (optimistic), 1=next-bar fills (realistic)
 
 
 def simulate_with_margin_cost(
@@ -72,6 +74,12 @@ def simulate_with_margin_cost(
     actions = actions.sort_values("timestamp").reset_index(drop=True)
 
     merged = bars.merge(actions, on=["timestamp", "symbol"], how="inner", suffixes=("", "_act"))
+
+    if config.decision_lag_bars > 0:
+        for col in ['buy_price', 'sell_price', 'buy_amount', 'sell_amount']:
+            if col in merged.columns:
+                merged[col] = merged[col].shift(config.decision_lag_bars)
+        merged = merged.dropna(subset=['buy_price']).reset_index(drop=True)
 
     cash = config.initial_cash
     inventory = 0.0
@@ -103,8 +111,9 @@ def simulate_with_margin_cost(
             cash -= interest
             margin_cost_total += interest
 
+        fill_buf = config.fill_buffer_pct
         # Buy execution (can go beyond cash with leverage - cash goes negative = borrowed)
-        if buy_amount > 0 and buy_price > 0 and low <= buy_price:
+        if buy_amount > 0 and buy_price > 0 and low <= buy_price * (1 - fill_buf):
             max_buy_value = config.max_leverage * max(equity, 0) - inventory * buy_price
             if max_buy_value > 0:
                 buy_qty = buy_amount * max_buy_value / (buy_price * (1 + config.maker_fee))
@@ -115,7 +124,7 @@ def simulate_with_margin_cost(
                     trades.append(("buy", float(row["timestamp"].timestamp()) if hasattr(row["timestamp"], "timestamp") else 0, buy_price, buy_qty))
 
         # Sell execution
-        if sell_amount > 0 and sell_price > 0 and high >= sell_price:
+        if sell_amount > 0 and sell_price > 0 and high >= sell_price * (1 + fill_buf):
             if inventory > 0:
                 sell_qty = min(sell_amount * inventory, inventory)
             elif config.can_short:

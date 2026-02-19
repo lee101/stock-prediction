@@ -31,7 +31,9 @@ SHORT_ONLY = {"YELP", "EBAY", "TRIP", "MTCH", "KIND", "ANGI", "Z", "EXPE", "BKNG
 
 STATE_FILE = Path("strategy_state/stock_portfolio_state.json")
 MAX_HOLD_HOURS = 6
-MAX_POSITIONS = 5
+MAX_POSITIONS = 10
+TRADE_AMOUNT_SCALE = 100.0
+MIN_BUY_AMOUNT = 0.0
 
 
 def load_state() -> dict:
@@ -381,7 +383,8 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
         logger.info("Max positions reached ({}/{})", current_count, max_positions)
         return
 
-    per_position = equity / max_positions
+    leverage = 2.0
+    per_position = (equity * leverage) / max_positions
 
     sorted_signals = sorted(signals.items(), key=lambda x: x[1].get("edge", 0), reverse=True)
 
@@ -394,12 +397,14 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
 
         buy_price = action.get("buy_price", 0)
         sell_price = action.get("sell_price", 0)
-        trade_amount = min(action.get("trade_amount", 0), 1.0)
+        buy_amount = action.get("buy_amount", 0)
+        intensity_frac = min(buy_amount / TRADE_AMOUNT_SCALE, 1.0)
 
-        if buy_price <= 0 or trade_amount <= 0:
+        if buy_price <= 0 or intensity_frac <= 0:
+            continue
+        if MIN_BUY_AMOUNT > 0 and buy_amount < MIN_BUY_AMOUNT:
             continue
 
-        alloc_frac = action.get("allocation_fraction", 0.5)
         hold_hours = action.get("hold_hours", MAX_HOLD_HOURS)
 
         is_long = symbol in LONG_ONLY or symbol not in SHORT_ONLY
@@ -419,7 +424,7 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
         if entry_price <= 0:
             continue
 
-        position_alloc = per_position * trade_amount * alloc_frac
+        position_alloc = per_position * intensity_frac
         target_value = min(position_alloc, buying_power * 0.9)
         target_qty = int(target_value / entry_price)
 
@@ -441,8 +446,8 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
             )
             result = api.submit_order(order)
             side_str = "short" if is_short else "long"
-            logger.info("{}: {} entry {} shares @ ${:.2f} (alloc={:.2f}, hold={:.1f}h)",
-                       symbol, side_str, target_qty, entry_price, alloc_frac, hold_hours)
+            logger.info("{}: {} entry {} shares @ ${:.2f} (${:.0f}, hold={:.1f}h)",
+                       symbol, side_str, target_qty, entry_price, position_alloc, hold_hours)
 
             now = datetime.now(timezone.utc)
             tracked[symbol] = {
@@ -473,17 +478,17 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
 
 def run_cycle(
     model, feature_columns, sequence_length, device,
-    stocks, args, api, state, max_positions=MAX_POSITIONS,
+    stocks, args, api, state, max_positions=MAX_POSITIONS, max_hold_hours=MAX_HOLD_HOURS,
 ):
     market_open = is_market_open_now()
     if not market_open and not args.ignore_market_hours:
         logger.info("Market closed, managing existing positions only")
-        num_pos = manage_positions(api, state)
+        num_pos = manage_positions(api, state, max_hold_hours=max_hold_hours)
         logger.info("Active positions: {}", num_pos)
         save_state(state)
         return
 
-    num_pos = manage_positions(api, state)
+    num_pos = manage_positions(api, state, max_hold_hours=max_hold_hours)
     logger.info("Active positions after management: {}", num_pos)
 
     signals = {}
@@ -540,9 +545,13 @@ def main():
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--epoch", type=int, default=None)
     parser.add_argument("--max-positions", type=int, default=MAX_POSITIONS)
+    parser.add_argument("--max-hold-hours", type=int, default=MAX_HOLD_HOURS)
+    parser.add_argument("--trade-amount-scale", type=float, default=TRADE_AMOUNT_SCALE)
+    parser.add_argument("--min-buy-amount", type=float, default=MIN_BUY_AMOUNT)
     args = parser.parse_args()
 
     max_pos = args.max_positions
+    max_hold = args.max_hold_hours
 
     paper = not args.live
 
@@ -558,7 +567,7 @@ def main():
     logger.info("Stocks: {} (LONG_ONLY: {}, SHORT_ONLY: {})",
                len(stocks), len([s for s in stocks if s in LONG_ONLY]),
                len([s for s in stocks if s in SHORT_ONLY]))
-    logger.info("Max positions: {}, Hold limit: {}h", MAX_POSITIONS, MAX_HOLD_HOURS)
+    logger.info("Max positions: {}, Hold limit: {}h", max_pos, max_hold)
     logger.info("Mode: {}", "LIVE" if not paper else "PAPER")
 
     api = None if args.dry_run else get_alpaca_client(paper=paper)
@@ -568,7 +577,7 @@ def main():
         account = get_account_info(api)
         logger.info("Equity: ${:.2f}, Buying power: ${:.2f}", account["equity"], account["buying_power"])
 
-    run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos)
+    run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos, max_hold)
 
     if not args.loop:
         return
@@ -580,7 +589,7 @@ def main():
         logger.info("Sleeping {:.0f}s until next hour", wait_secs)
         time.sleep(wait_secs)
 
-        run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos)
+        run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos, max_hold)
 
 
 if __name__ == "__main__":

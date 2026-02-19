@@ -441,3 +441,7 @@ unified_hourly_experiment/forecast_cache/
 unified_hourly_experiment/checkpoints/
 scripts/cron_*.txt
 scripts/monitor_*.sh
+binanceleveragesui/checkpoints
+ binanceleveragesui_rlcuda/artifacts*
+experiments/sui_sortino_max/artifacts/
+binanceleveragesui_rlcuda/artifacts*

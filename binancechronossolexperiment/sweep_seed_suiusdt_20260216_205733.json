@@ -1,0 +1,58 @@
+[
+  {
+    "name": "sweep_seed1337",
+    "config": {
+      "symbol": "SUIUSDT",
+      "return_weight": 0.012,
+      "epochs": 25,
+      "sequence_length": 72,
+      "learning_rate": 0.0001,
+      "seed": 1337,
+      "horizons": "1,4,24",
+      "batch_size": 16,
+      "transformer_dim": 256,
+      "transformer_layers": 4,
+      "transformer_heads": 8,
+      "model_arch": "classic",
+      "maker_fee": 0.001,
+      "weight_decay": 0.0001,
+      "no_compile": true
+    },
+    "test_return": 1.3388870823658634,
+    "test_sortino": 190.32779648555615,
+    "test_max_dd": 0,
+    "test_trades": 0,
+    "final_equity": 23388.87632447469,
+    "elapsed_s": 6512.560748577118
+  },
+  {
+    "name": "sweep_seed42",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python3', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.012', '--epochs', '25', '--sequence-length', '72', '--learning-rate', '0.0001', '--horizons', '1,4,24', '--batch-size', '16', '--seed', '42', '--transformer-dim', '256', '--transformer-layers', '4', '--transformer-heads', '8', '--maker-fee', '0.001', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-plot', '--run-name', 'sweep_seed42', '--no-compile']' timed out after 7200 seconds",
+    "elapsed_s": 7200.269415855408
+  },
+  {
+    "name": "sweep_seed123",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python3', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.012', '--epochs', '25', '--sequence-length', '72', '--learning-rate', '0.0001', '--horizons', '1,4,24', '--batch-size', '16', '--seed', '123', '--transformer-dim', '256', '--transformer-layers', '4', '--transformer-heads', '8', '--maker-fee', '0.001', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-plot', '--run-name', 'sweep_seed123', '--no-compile']' timed out after 7200 seconds",
+    "elapsed_s": 7200.1774706840515
+  },
+  {
+    "name": "sweep_seed2024",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python3', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.012', '--epochs', '25', '--sequence-length', '72', '--learning-rate', '0.0001', '--horizons', '1,4,24', '--batch-size', '16', '--seed', '2024', '--transformer-dim', '256', '--transformer-layers', '4', '--transformer-heads', '8', '--maker-fee', '0.001', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-plot', '--run-name', 'sweep_seed2024', '--no-compile']' timed out after 7200 seconds",
+    "elapsed_s": 7200.265384912491
+  },
+  {
+    "name": "sweep_seed7",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python3', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.012', '--epochs', '25', '--sequence-length', '72', '--learning-rate', '0.0001', '--horizons', '1,4,24', '--batch-size', '16', '--seed', '7', '--transformer-dim', '256', '--transformer-layers', '4', '--transformer-heads', '8', '--maker-fee', '0.001', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-plot', '--run-name', 'sweep_seed7', '--no-compile']' timed out after 7200 seconds",
+    "elapsed_s": 7200.264543056488
+  },
+  {
+    "name": "sweep_seed3407",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python3', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.012', '--epochs', '25', '--sequence-length', '72', '--learning-rate', '0.0001', '--horizons', '1,4,24', '--batch-size', '16', '--seed', '3407', '--transformer-dim', '256', '--transformer-layers', '4', '--transformer-heads', '8', '--maker-fee', '0.001', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-plot', '--run-name', 'sweep_seed3407', '--no-compile']' timed out after 7200 seconds",
+    "elapsed_s": 7200.269759893417
+  },
+  {
+    "name": "sweep_seed9999",
+    "error": "Command '['/home/lee/code/stock/.venv313/bin/python3', '-m', 'binancechronossolexperiment.run_experiment', '--symbol', 'SUIUSDT', '--return-weight', '0.012', '--epochs', '25', '--sequence-length', '72', '--learning-rate', '0.0001', '--horizons', '1,4,24', '--batch-size', '16', '--seed', '9999', '--transformer-dim', '256', '--transformer-layers', '4', '--transformer-heads', '8', '--maker-fee', '0.001', '--forecast-cache-root', 'binancechronossolexperiment/forecast_cache_sui_10bp', '--cache-only', '--no-plot', '--run-name', 'sweep_seed9999', '--no-compile']' timed out after 7200 seconds",
+    "elapsed_s": 7200.280709981918
+  }
+]

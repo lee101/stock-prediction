@@ -1,0 +1,68 @@
+{
+  "config": {
+    "symbol": "SUIUSDT",
+    "max_leverage": 3.0,
+    "can_short": false,
+    "maker_fee": 0.001,
+    "margin_hourly_rate": 4.1883e-06,
+    "return_weight": 0.012,
+    "learning_rate": 0.0001,
+    "epochs": 25,
+    "sequence_length": 72,
+    "seed": 1337,
+    "initial_cash": 10000.0,
+    "val_days": 20,
+    "test_days": 10,
+    "horizons": "1,4,24",
+    "batch_size": 16,
+    "transformer_dim": 256,
+    "transformer_layers": 4,
+    "transformer_heads": 8
+  },
+  "run_name": "lev3x_rw0.012_s1337",
+  "lev_1.0x": {
+    "total_return": 1.3616443385476011,
+    "sortino": 141.68420132312554,
+    "max_drawdown": -0.013120890298334688,
+    "final_equity": 23616.44338547601,
+    "num_trades": 357,
+    "margin_cost_total": 0.014447827756045735,
+    "margin_cost_pct": 0.00014447827756045733
+  },
+  "lev_1.5x": {
+    "total_return": 2.620506953700077,
+    "sortino": 142.2799205011832,
+    "max_drawdown": -0.01961982731663705,
+    "final_equity": 36205.06953700077,
+    "num_trades": 354,
+    "margin_cost_total": 3.2640873812009406,
+    "margin_cost_pct": 0.032640873812009405
+  },
+  "lev_2.0x": {
+    "total_return": 4.542058882788845,
+    "sortino": 142.90599810453895,
+    "max_drawdown": -0.026076908980954005,
+    "final_equity": 55420.588827888445,
+    "num_trades": 353,
+    "margin_cost_total": 8.753651622792788,
+    "margin_cost_pct": 0.08753651622792788
+  },
+  "lev_3.0x": {
+    "total_return": 11.928494178376857,
+    "sortino": 144.19079699177848,
+    "max_drawdown": -0.03886711326449242,
+    "final_equity": 129284.94178376858,
+    "num_trades": 353,
+    "margin_cost_total": 31.55987668854795,
+    "margin_cost_pct": 0.3155987668854795
+  },
+  "lev_2.0x_short": {
+    "total_return": 7.656865496804405,
+    "sortino": 146.50099096723434,
+    "max_drawdown": -0.031069123807122626,
+    "final_equity": 86568.65496804405,
+    "num_trades": 364,
+    "margin_cost_total": 27.485457518456702,
+    "margin_cost_pct": 0.274854575184567
+  }
+}

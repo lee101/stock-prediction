@@ -1,0 +1,67 @@
+[
+  {
+    "name": "lag1_rw012",
+    "config": {
+      "name": "lag1_rw012",
+      "return_weight": 0.012
+    },
+    "seed": 1337,
+    "decision_lag_bars": 1,
+    "lev_1x_lag0": {
+      "total_return": -0.05472444655133646,
+      "sortino": -3.8690975797219664,
+      "max_drawdown": -0.1345139939575554,
+      "final_equity": 4726.377767243318,
+      "num_trades": 375,
+      "margin_cost_total": 0.000660273396567906,
+      "margin_cost_pct": 1.320546793135812e-05
+    },
+    "lev_1x_lag1": {
+      "total_return": -0.1271734939926924,
+      "sortino": -9.795043767875555,
+      "max_drawdown": -0.17461712761856027,
+      "final_equity": 4364.132530036538,
+      "num_trades": 345,
+      "margin_cost_total": 0.0035376949912711534,
+      "margin_cost_pct": 7.075389982542307e-05
+    },
+    "lev_3x_lag0": {
+      "total_return": -0.18249697147734367,
+      "sortino": -3.909426404850207,
+      "max_drawdown": -0.3598866344233809,
+      "final_equity": 4087.5151426132816,
+      "num_trades": 371,
+      "margin_cost_total": 2.9691614211025046,
+      "margin_cost_pct": 0.05938322842205009
+    },
+    "lev_3x_lag1": {
+      "total_return": -0.34949656742219326,
+      "sortino": -9.626725033117188,
+      "max_drawdown": -0.44327902240254735,
+      "final_equity": 3252.517162889034,
+      "num_trades": 335,
+      "margin_cost_total": 2.8228783202762138,
+      "margin_cost_pct": 0.056457566405524275
+    },
+    "lev_5x_lag0": {
+      "total_return": -0.3228839684700845,
+      "sortino": -3.9346242755152807,
+      "max_drawdown": -0.5346360862033125,
+      "final_equity": 3385.580157649578,
+      "num_trades": 368,
+      "margin_cost_total": 5.836769898055164,
+      "margin_cost_pct": 0.11673539796110328
+    },
+    "lev_5x_lag1": {
+      "total_return": -0.5296861857487394,
+      "sortino": -9.457460974602316,
+      "max_drawdown": -0.6297572479440432,
+      "final_equity": 2351.5690712563032,
+      "num_trades": 331,
+      "margin_cost_total": 5.378305868644575,
+      "margin_cost_pct": 0.1075661173728915
+    },
+    "best_epoch": -1,
+    "val_sortino": 0.0
+  }
+]

@@ -1,0 +1,18 @@
+[
+  {
+    "name": "rw0.02",
+    "best_epoch": 11,
+    "val_sortino": 101.52402123160984,
+    "val_return": 1.1798240555369335,
+    "train_sortino": 371.8389692378223,
+    "config": {
+      "name": "rw0.02",
+      "return_weight": 0.02,
+      "smoothness": 0.0,
+      "fill_temp": 0.0005,
+      "epochs": 15,
+      "optimizer": "adamw"
+    },
+    "status": "ok"
+  }
+]

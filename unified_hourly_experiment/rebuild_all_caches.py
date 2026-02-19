@@ -26,6 +26,7 @@ BEST_MODELS = {
     "NWSA": "NWSA_lora_differencing_ctx128_lr5e-05_r16_20260215_225432",
     "TSLA": "TSLA_lora_differencing_ctx128_lr5e-05_r16_20260218_102822",
     "AAPL": "AAPL_lora_differencing_ctx128_lr5e-05_r16_20260218_102824",
+    "QUBT": "QUBT_lora_percent_change_ctx128_lr5e-05_r16_20260218_224547",
 }
 
 CACHE_ROOT = Path("unified_hourly_experiment/forecast_cache")

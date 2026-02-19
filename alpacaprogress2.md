@@ -338,3 +338,97 @@ All cron monitoring is disabled.
 4. **Brief live deployment** - started on live account ($55k equity) but stopped same day
 5. **PufferLib crypto scaling** - continued to show crypto12 h1024 300M anneal-LR as best at 2,659x per 30d
 
+---
+
+## 2026-02-15: Stock-Only Sortino Training (256h/4l architecture)
+
+### Training Config
+- 10 epochs, 256 hidden, 4 layers (bitbank-style)
+- Classic transformer, AdamW optimizer
+- Smoothness penalty 0.3, return weight 0.12
+- No Chronos forecasts (using price as dummy forecast)
+
+### Results (7d test period)
+
+| Symbol | 7d Return | Sortino | Final Equity | vs Old |
+|--------|-----------|---------|--------------|--------|
+| **NET** | **801.15%** | 0.0 | $91,072 | +9x |
+| **TRIP** | **598.11%** | 814.9 | $69,811 | +9x |
+| **PLTR** | **279.87%** | 200.5 | $38,054 | +13x |
+| **DBX** | **207.55%** | nan | $30,755 | +6x |
+| **META** | **196.61%** | 277.3 | $29,752 | +5.6x |
+| **MSFT** | **185.51%** | 114.6 | $28,684 | +9.5x |
+| **GOOG** | **160.49%** | 3335.4 | $26,237 | +8.8x |
+| **NVDA** | **129.91%** | 314,659 | $23,108 | +9.2x |
+
+Major improvement over Feb 13 baseline (NET was 88%, TRIP was 63%, etc.)
+
+### Checkpoints
+- `alpacasortino/checkpoints/` - Contains all 8 stock model checkpoints
+- Results: `alpacasortino/results/results_*_sortino.json`
+
+### Notes
+- High Sortino values indicate few/no down days in test period
+- Sortino=0 or nan means no downside volatility (all up days)
+- Architecture (256h/4l) matches crypto training that worked well for SUI
+
+
+---
+
+## 2026-02-15: Expanded Stock Universe
+
+### Symbol Categories
+**Shortable (11):** YELP, EBAY, TRIP, MTCH, KIND, ANGI, Z, EXPE, BKNG, NWSA, NYT
+**Longable (7):** NVDA, MSFT, META, GOOG, NET, PLTR, DBX
+
+### Data Download Complete
+| Symbol | Bars | Type |
+|--------|------|------|
+| KIND | 6401 | shortable |
+| EBAY | 9756 | shortable |
+| MTCH | 9737 | shortable |
+| Z | 9753 | shortable |
+| EXPE | 9748 | shortable |
+| BKNG | 9219 | shortable |
+| ANGI | 9600 | shortable |
+| NWSA | 9739 | shortable |
+| NVDA | 2096 | longable |
+| MSFT | 1840 | longable |
+
+### In Progress
+- LoRA sweep for 8 new stocks (EBAY, MTCH, ANGI, Z, EXPE, BKNG, NWSA, KIND)
+- Training v4: 200 epochs, 256 hidden, 4 layers on 11 stocks
+
+### NAS Experiment: 256h 4L on 18 Stocks
+- Train: 12,406 samples (2.3x more)
+- Train Sortino: 2606, Val Sortino: 1235
+- Val Return: 23.9%
+
+**Backtest (min_edge sweep)**
+| min_edge | Return | Sortino | Trades |
+|----------|--------|---------|--------|
+| 0.001 | 32.77% | 1.40 | 13 |
+| **0.01** | **35.60%** | **2.87** | 13 |
+
+Best result: **min_edge=0.01 gives 35.60% return, Sortino 2.87**
+- Beats v3 Sortino (1.69)
+- Checkpoint: `unified_hourly_experiment/checkpoints/nas_256h_4L`
+
+### NAS Experiment: 512h 4L on 18 Stocks - NEW BEST
+- Train: 12,406 samples
+- Train Sortino: 2674, Val Sortino: 1122
+- Best checkpoint: epoch_028
+
+**Backtest Results**
+| min_edge | Return | Sortino | Trades |
+|----------|--------|---------|--------|
+| 0.000 | 45.90% | 2.22 | 23 |
+| **0.001** | **45.18%** | **3.13** | 25 |
+| 0.005 | 23.95% | 1.01 | 21 |
+| 0.010 | 30.15% | 2.57 | 11 |
+
+**Best result: 512h 4L with min_edge=0.001**
+- Return: **45.18%** (vs v3's 36.34%)
+- Sortino: **3.13** (vs v3's 1.69)
+- Improvement: +8.84% return, +1.44 Sortino
+- Checkpoint: `unified_hourly_experiment/checkpoints/nas_512h_4L`

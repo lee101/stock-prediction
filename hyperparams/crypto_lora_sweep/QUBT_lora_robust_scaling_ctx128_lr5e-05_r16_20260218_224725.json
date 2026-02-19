@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "QUBT",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "robust_scaling",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "QUBT_lora_robust_scaling_ctx128_lr5e-05_r16_20260218_224725",
+  "output_dir": "chronos2_finetuned/QUBT_lora_robust_scaling_ctx128_lr5e-05_r16_20260218_224725",
+  "val": {
+    "mae_mean": 0.69956024736166,
+    "mae_std": 0.5018622822235783,
+    "mae_max": 1.6659269332885742,
+    "mae_p90": 1.5428049921989442,
+    "mae_percent_mean": 6.12852011124293,
+    "mae_percent_std": 4.3154945300807235,
+    "mae_percent_max": 14.164948463439941,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 0.5546932617823283,
+    "mae_std": 0.2656540374132622,
+    "mae_max": 1.342970848083496,
+    "mae_p90": 0.6862111508846284,
+    "mae_percent_mean": 5.545053601264954,
+    "mae_percent_std": 2.834119912833747,
+    "mae_percent_max": 14.206533432006836,
+    "count": 12
+  },
+  "val_consistency_score": 10.697195881942394,
+  "test_consistency_score": 9.560557506904392
+}
