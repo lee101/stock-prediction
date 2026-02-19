@@ -119,7 +119,7 @@ def neural_backtest_with_fee(checkpoint_path, test_frame, fee=MAKER_FEE, seq_len
 def main():
     data_root = Path("trainingdatahourlybinance")
     forecast_cache = Path("binancechronossolexperiment/forecast_cache_sui_10bp")
-    checkpoint = Path("binancechronossolexperiment/checkpoints/sui_10bp_neural/policy_checkpoint.pt")
+    checkpoint = Path("binancechronossolexperiment/checkpoints/sui_sortino_rw0012_lr1e4_ep25/policy_checkpoint.pt")
 
     # Load test data
     csv_path = data_root / f"{SYMBOL}.csv"

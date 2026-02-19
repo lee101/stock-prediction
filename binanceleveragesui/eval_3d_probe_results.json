@@ -1,0 +1,612 @@
+{
+  "3d": {
+    "1x": {
+      "base": {
+        "total_return": 0.28152503298955067,
+        "sortino": 190.973882187368,
+        "max_drawdown": -0.008654936238607702,
+        "final_equity": 6407.625164947754,
+        "num_trades": 106,
+        "margin_cost_total": 0.0009988145843586244,
+        "margin_cost_pct": 1.997629168717249e-05
+      },
+      "probe": {
+        "total_return": 0.28152503298955067,
+        "sortino": 190.973882187368,
+        "max_drawdown": -0.008654936238607702,
+        "final_equity": 6407.625164947754,
+        "num_trades": 106,
+        "full_trades": 106,
+        "probe_trades": 0,
+        "probe_switches": 0,
+        "probe_wins": 0,
+        "margin_cost_total": 0.0009988145843586244,
+        "margin_cost_pct": 1.997629168717249e-05
+      }
+    },
+    "2x": {
+      "base": {
+        "total_return": 0.6404545414934204,
+        "sortino": 192.62660039997004,
+        "max_drawdown": -0.017228372913701648,
+        "final_equity": 8202.272707467102,
+        "num_trades": 103,
+        "margin_cost_total": 0.36864600887665117,
+        "margin_cost_pct": 0.007372920177533024
+      },
+      "probe": {
+        "total_return": 0.6404545414934204,
+        "sortino": 192.62660039997004,
+        "max_drawdown": -0.017228372913701648,
+        "final_equity": 8202.272707467102,
+        "num_trades": 103,
+        "full_trades": 103,
+        "probe_trades": 0,
+        "probe_switches": 0,
+        "probe_wins": 0,
+        "margin_cost_total": 0.36864600887665117,
+        "margin_cost_pct": 0.007372920177533024
+      }
+    },
+    "3x": {
+      "base": {
+        "total_return": 1.0975784476801067,
+        "sortino": 194.30838679414543,
+        "max_drawdown": -0.02571651164282425,
+        "final_equity": 10487.892238400535,
+        "num_trades": 103,
+        "margin_cost_total": 0.8311679205016341,
+        "margin_cost_pct": 0.016623358410032683
+      },
+      "probe": {
+        "total_return": 1.0975784476801067,
+        "sortino": 194.30838679414543,
+        "max_drawdown": -0.02571651164282425,
+        "final_equity": 10487.892238400535,
+        "num_trades": 103,
+        "full_trades": 103,
+        "probe_trades": 0,
+        "probe_switches": 0,
+        "probe_wins": 0,
+        "margin_cost_total": 0.8311679205016341,
+        "margin_cost_pct": 0.016623358410032683
+      }
+    },
+    "4x": {
+      "base": {
+        "total_return": 1.6789786127416173,
+        "sortino": 195.98363759561946,
+        "max_drawdown": -0.03412061883041361,
+        "final_equity": 13394.893063708087,
+        "num_trades": 103,
+        "margin_cost_total": 1.406573669160229,
+        "margin_cost_pct": 0.02813147338320458
+      },
+      "probe": {
+        "total_return": 1.6789786127416173,
+        "sortino": 195.98363759561946,
+        "max_drawdown": -0.03412061883041361,
+        "final_equity": 13394.893063708087,
+        "num_trades": 103,
+        "full_trades": 103,
+        "probe_trades": 0,
+        "probe_switches": 0,
+        "probe_wins": 0,
+        "margin_cost_total": 1.406573669160229,
+        "margin_cost_pct": 0.02813147338320458
+      }
+    },
+    "5x": {
+      "base": {
+        "total_return": 2.417430423606066,
+        "sortino": 197.64620289750025,
+        "max_drawdown": -0.04244193618316489,
+        "final_equity": 17087.15211803033,
+        "num_trades": 103,
+        "margin_cost_total": 2.116783051173651,
+        "margin_cost_pct": 0.04233566102347302
+      },
+      "probe": {
+        "total_return": 2.417430423606066,
+        "sortino": 197.64620289750025,
+        "max_drawdown": -0.04244193618316489,
+        "final_equity": 17087.15211803033,
+        "num_trades": 103,
+        "full_trades": 103,
+        "probe_trades": 0,
+        "probe_switches": 0,
+        "probe_wins": 0,
+        "margin_cost_total": 2.116783051173651,
+        "margin_cost_pct": 0.04233566102347302
+      }
+    }
+  },
+  "7d": {
+    "1x": {
+      "base": {
+        "total_return": 0.6910698490257214,
+        "sortino": 140.73850203018995,
+        "max_drawdown": -0.009413148436975688,
+        "final_equity": 8455.349245128607,
+        "num_trades": 235,
+        "margin_cost_total": 0.003922691285778453,
+        "margin_cost_pct": 7.845382571556906e-05
+      },
+      "probe": {
+        "total_return": 0.6910773748886736,
+        "sortino": 140.7396864362893,
+        "max_drawdown": -0.009413148436975688,
+        "final_equity": 8455.386874443368,
+        "num_trades": 231,
+        "full_trades": 229,
+        "probe_trades": 1,
+        "probe_switches": 1,
+        "probe_wins": 1,
+        "margin_cost_total": 0.003922705586205287,
+        "margin_cost_pct": 7.845411172410573e-05
+      }
+    },
+    "2x": {
+      "base": {
+        "total_return": 1.854389257410535,
+        "sortino": 142.08377773472913,
+        "max_drawdown": -0.018737497129315675,
+        "final_equity": 14271.946287052675,
+        "num_trades": 232,
+        "margin_cost_total": 1.1338345177225653,
+        "margin_cost_pct": 0.022676690354451304
+      },
+      "probe": {
+        "total_return": 1.8543987673611562,
+        "sortino": 142.0842231774649,
+        "max_drawdown": -0.018737497129315675,
+        "final_equity": 14271.993836805781,
+        "num_trades": 228,
+        "full_trades": 226,
+        "probe_trades": 1,
+        "probe_switches": 1,
+        "probe_wins": 1,
+        "margin_cost_total": 1.1338375630124131,
+        "margin_cost_pct": 0.022676751260248262
+      }
+    },
+    "3x": {
+      "base": {
+        "total_return": 3.809935831736845,
+        "sortino": 143.47191129671364,
+        "max_drawdown": -0.02797182693484143,
+        "final_equity": 24049.679158684226,
+        "num_trades": 233,
+        "margin_cost_total": 3.0727831198523123,
+        "margin_cost_pct": 0.061455662397046244
+      },
+      "probe": {
+        "total_return": 3.8099469700687383,
+        "sortino": 143.47211869440642,
+        "max_drawdown": -0.02797182693484143,
+        "final_equity": 24049.73485034369,
+        "num_trades": 229,
+        "full_trades": 227,
+        "probe_trades": 1,
+        "probe_switches": 1,
+        "probe_wins": 1,
+        "margin_cost_total": 3.0727891013876065,
+        "margin_cost_pct": 0.061455782027752134
+      }
+    },
+    "4x": {
+      "base": {
+        "total_return": 7.090656212212293,
+        "sortino": 144.87094663577986,
+        "max_drawdown": -0.03711743395475086,
+        "final_equity": 40453.28106106146,
+        "num_trades": 234,
+        "margin_cost_total": 6.323380230098607,
+        "margin_cost_pct": 0.12646760460197215
+      },
+      "probe": {
+        "total_return": 7.090667433741817,
+        "sortino": 144.87104025072279,
+        "max_drawdown": -0.03711743395475086,
+        "final_equity": 40453.33716870909,
+        "num_trades": 230,
+        "full_trades": 228,
+        "probe_trades": 1,
+        "probe_switches": 1,
+        "probe_wins": 1,
+        "margin_cost_total": 6.323387871483548,
+        "margin_cost_pct": 0.12646775742967098
+      }
+    },
+    "5x": {
+      "base": {
+        "total_return": 12.583087403736084,
+        "sortino": 146.2726911701367,
+        "max_drawdown": -0.04617559073910293,
+        "final_equity": 67915.43701868042,
+        "num_trades": 234,
+        "margin_cost_total": 11.705635905408535,
+        "margin_cost_pct": 0.2341127181081707
+      },
+      "probe": {
+        "total_return": 12.583094636721459,
+        "sortino": 146.27272006165552,
+        "max_drawdown": -0.04617559073910293,
+        "final_equity": 67915.47318360729,
+        "num_trades": 230,
+        "full_trades": 228,
+        "probe_trades": 1,
+        "probe_switches": 1,
+        "probe_wins": 1,
+        "margin_cost_total": 11.705641498144377,
+        "margin_cost_pct": 0.23411282996288757
+      }
+    }
+  },
+  "10d": {
+    "1x": {
+      "base": {
+        "total_return": 1.14717182681483,
+        "sortino": 164.6966837841534,
+        "max_drawdown": -0.009413148436975582,
+        "final_equity": 10735.859134074151,
+        "num_trades": 342,
+        "margin_cost_total": 0.005574272538250581,
+        "margin_cost_pct": 0.00011148545076501161
+      },
+      "probe": {
+        "total_return": 1.107209447130678,
+        "sortino": 159.07834111558478,
+        "max_drawdown": -0.009413148436975539,
+        "final_equity": 10536.04723565339,
+        "num_trades": 337,
+        "full_trades": 327,
+        "probe_trades": 5,
+        "probe_switches": 3,
+        "probe_wins": 3,
+        "margin_cost_total": 0.005256164495418223,
+        "margin_cost_pct": 0.00010512328990836445
+      }
+    },
+    "2x": {
+      "base": {
+        "total_return": 3.5916969827970178,
+        "sortino": 166.06196059092687,
+        "max_drawdown": -0.01873749712931602,
+        "final_equity": 22958.48491398509,
+        "num_trades": 337,
+        "margin_cost_total": 2.1841001706726333,
+        "margin_cost_pct": 0.043682003413452665
+      },
+      "probe": {
+        "total_return": 3.4215385400126728,
+        "sortino": 160.36813225721798,
+        "max_drawdown": -0.018737497129315633,
+        "final_equity": 22107.692700063366,
+        "num_trades": 332,
+        "full_trades": 322,
+        "probe_trades": 5,
+        "probe_switches": 3,
+        "probe_wins": 3,
+        "margin_cost_total": 2.076474776756691,
+        "margin_cost_pct": 0.04152949553513382
+      }
+    },
+    "3x": {
+      "base": {
+        "total_return": 8.782457711479664,
+        "sortino": 167.4761901789176,
+        "max_drawdown": -0.027971826934841727,
+        "final_equity": 48912.28855739832,
+        "num_trades": 338,
+        "margin_cost_total": 7.075889669265372,
+        "margin_cost_pct": 0.14151779338530743
+      },
+      "probe": {
+        "total_return": 8.241406623985881,
+        "sortino": 161.70534928041573,
+        "max_drawdown": -0.027971826934841598,
+        "final_equity": 46207.03311992941,
+        "num_trades": 333,
+        "full_trades": 323,
+        "probe_trades": 5,
+        "probe_switches": 3,
+        "probe_wins": 3,
+        "margin_cost_total": 6.63040995148295,
+        "margin_cost_pct": 0.132608199029659
+      }
+    },
+    "4x": {
+      "base": {
+        "total_return": 19.761319375799413,
+        "sortino": 168.90391648696394,
+        "max_drawdown": -0.03711743395475059,
+        "final_equity": 103806.59687899706,
+        "num_trades": 339,
+        "margin_cost_total": 17.642247248380087,
+        "margin_cost_pct": 0.35284494496760177
+      },
+      "probe": {
+        "total_return": 18.238550293851755,
+        "sortino": 163.05471427091618,
+        "max_drawdown": -0.03711743395475119,
+        "final_equity": 96192.75146925877,
+        "num_trades": 334,
+        "full_trades": 324,
+        "probe_trades": 5,
+        "probe_switches": 3,
+        "probe_wins": 3,
+        "margin_cost_total": 16.26588345891724,
+        "margin_cost_pct": 0.3253176691783448
+      }
+    },
+    "5x": {
+      "base": {
+        "total_return": 42.889880596541076,
+        "sortino": 170.33683759449,
+        "max_drawdown": -0.04617559073910249,
+        "final_equity": 219449.4029827054,
+        "num_trades": 339,
+        "margin_cost_total": 39.98083030943159,
+        "margin_cost_pct": 0.7996166061886318
+      },
+      "probe": {
+        "total_return": 38.8889846355994,
+        "sortino": 164.40814067268528,
+        "max_drawdown": -0.046175590739101796,
+        "final_equity": 199444.923177997,
+        "num_trades": 334,
+        "full_trades": 324,
+        "probe_trades": 5,
+        "probe_switches": 3,
+        "probe_wins": 3,
+        "margin_cost_total": 36.22495236751231,
+        "margin_cost_pct": 0.7244990473502462
+      }
+    }
+  },
+  "14d": {
+    "1x": {
+      "base": {
+        "total_return": 2.1734160484752816,
+        "sortino": 185.0127698515402,
+        "max_drawdown": -0.009413148436975629,
+        "final_equity": 15867.080242376407,
+        "num_trades": 501,
+        "margin_cost_total": 0.008250602244127499,
+        "margin_cost_pct": 0.00016501204488254999
+      },
+      "probe": {
+        "total_return": 2.112408960401362,
+        "sortino": 180.75240445415025,
+        "max_drawdown": -0.009413148436975553,
+        "final_equity": 15562.044802006809,
+        "num_trades": 494,
+        "full_trades": 480,
+        "probe_trades": 7,
+        "probe_switches": 4,
+        "probe_wins": 4,
+        "margin_cost_total": 0.007775598346649195,
+        "margin_cost_pct": 0.0001555119669329839
+      }
+    },
+    "2x": {
+      "base": {
+        "total_return": 8.942902128414653,
+        "sortino": 188.99274514646999,
+        "max_drawdown": -0.018737497129315855,
+        "final_equity": 49714.51064207326,
+        "num_trades": 495,
+        "margin_cost_total": 4.8684060123074335,
+        "margin_cost_pct": 0.09736812024614867
+      },
+      "probe": {
+        "total_return": 8.562480200274626,
+        "sortino": 184.64075108988274,
+        "max_drawdown": -0.01873749712931601,
+        "final_equity": 47812.40100137313,
+        "num_trades": 488,
+        "full_trades": 474,
+        "probe_trades": 7,
+        "probe_switches": 4,
+        "probe_wins": 4,
+        "margin_cost_total": 4.629603333332151,
+        "margin_cost_pct": 0.09259206666664302
+      }
+    },
+    "3x": {
+      "base": {
+        "total_return": 29.781731021655894,
+        "sortino": 192.74951820194167,
+        "max_drawdown": -0.027971826934841907,
+        "final_equity": 153908.65510827946,
+        "num_trades": 496,
+        "margin_cost_total": 22.625657974980456,
+        "margin_cost_pct": 0.45251315949960913
+      },
+      "probe": {
+        "total_return": 28.024818971053982,
+        "sortino": 188.31092623618437,
+        "max_drawdown": -0.027971826934841848,
+        "final_equity": 145124.0948552699,
+        "num_trades": 489,
+        "full_trades": 475,
+        "probe_trades": 7,
+        "probe_switches": 4,
+        "probe_wins": 4,
+        "margin_cost_total": 21.18431063079779,
+        "margin_cost_pct": 0.4236862126159558
+      }
+    },
+    "4x": {
+      "base": {
+        "total_return": 93.19131420301676,
+        "sortino": 196.26395620943563,
+        "max_drawdown": -0.037117433954751394,
+        "final_equity": 470956.5710150838,
+        "num_trades": 497,
+        "margin_cost_total": 80.72392857236511,
+        "margin_cost_pct": 1.614478571447302
+      },
+      "probe": {
+        "total_return": 86.06513299251723,
+        "sortino": 191.74281191697466,
+        "max_drawdown": -0.037117433954751304,
+        "final_equity": 435325.6649625862,
+        "num_trades": 490,
+        "full_trades": 476,
+        "probe_trades": 7,
+        "probe_switches": 4,
+        "probe_wins": 4,
+        "margin_cost_total": 74.29418660179634,
+        "margin_cost_pct": 1.4858837320359268
+      }
+    },
+    "5x": {
+      "base": {
+        "total_return": 283.97165990802375,
+        "sortino": 200.52855530178311,
+        "max_drawdown": -0.04617559073910357,
+        "final_equity": 1424858.2995401188,
+        "num_trades": 497,
+        "margin_cost_total": 260.74393945229065,
+        "margin_cost_pct": 5.214878789045812
+      },
+      "probe": {
+        "total_return": 257.1880940054655,
+        "sortino": 194.944770925469,
+        "max_drawdown": -0.04617559073910331,
+        "final_equity": 1290940.4700273273,
+        "num_trades": 490,
+        "full_trades": 476,
+        "probe_trades": 7,
+        "probe_switches": 4,
+        "probe_wins": 4,
+        "margin_cost_total": 235.62227192538896,
+        "margin_cost_pct": 4.712445438507779
+      }
+    }
+  },
+  "30d": {
+    "1x": {
+      "base": {
+        "total_return": 5.672254563456305,
+        "sortino": 150.29783901669995,
+        "max_drawdown": -0.010713232920499405,
+        "final_equity": 33361.272817281526,
+        "num_trades": 1086,
+        "margin_cost_total": 0.019456308611718747,
+        "margin_cost_pct": 0.00038912617223437493
+      },
+      "probe": {
+        "total_return": 5.469275726984675,
+        "sortino": 147.46129761858398,
+        "max_drawdown": -0.010713232920499702,
+        "final_equity": 32346.378634923374,
+        "num_trades": 1074,
+        "full_trades": 1036,
+        "probe_trades": 19,
+        "probe_switches": 14,
+        "probe_wins": 14,
+        "margin_cost_total": 0.018249966005433677,
+        "margin_cost_pct": 0.00036499932010867353
+      }
+    },
+    "2x": {
+      "base": {
+        "total_return": 42.74464055257894,
+        "sortino": 152.3590240967374,
+        "max_drawdown": -0.021299210036621146,
+        "final_equity": 218723.2027628947,
+        "num_trades": 1072,
+        "margin_cost_total": 23.115331711572992,
+        "margin_cost_pct": 0.4623066342314598
+      },
+      "probe": {
+        "total_return": 40.11773694945892,
+        "sortino": 149.4760664951199,
+        "max_drawdown": -0.021299210036621212,
+        "final_equity": 205588.6847472946,
+        "num_trades": 1060,
+        "full_trades": 1022,
+        "probe_trades": 19,
+        "probe_switches": 14,
+        "probe_wins": 14,
+        "margin_cost_total": 21.533029651546055,
+        "margin_cost_pct": 0.43066059303092113
+      }
+    },
+    "3x": {
+      "base": {
+        "total_return": 281.04907032771274,
+        "sortino": 154.34284180394278,
+        "max_drawdown": -0.03175564001489652,
+        "final_equity": 1410245.3516385637,
+        "num_trades": 1073,
+        "margin_cost_total": 212.3219443418215,
+        "margin_cost_pct": 4.2464388868364304
+      },
+      "probe": {
+        "total_return": 255.9880929929646,
+        "sortino": 151.4159146218972,
+        "max_drawdown": -0.03175564001489692,
+        "final_equity": 1284940.4649648229,
+        "num_trades": 1061,
+        "full_trades": 1023,
+        "probe_trades": 19,
+        "probe_switches": 14,
+        "probe_wins": 14,
+        "margin_cost_total": 192.32399159113123,
+        "margin_cost_pct": 3.8464798318226245
+      }
+    },
+    "4x": {
+      "base": {
+        "total_return": 1787.6467345392946,
+        "sortino": 156.2307747777069,
+        "max_drawdown": -0.04208524445378932,
+        "final_equity": 8943233.672696473,
+        "num_trades": 1074,
+        "margin_cost_total": 1544.2584192228346,
+        "margin_cost_pct": 30.88516838445669
+      },
+      "probe": {
+        "total_return": 1578.6634187284717,
+        "sortino": 153.26135332402464,
+        "max_drawdown": -0.04208524445378906,
+        "final_equity": 7898317.093642359,
+        "num_trades": 1062,
+        "full_trades": 1024,
+        "probe_trades": 19,
+        "probe_switches": 14,
+        "probe_wins": 14,
+        "margin_cost_total": 1358.6526075712993,
+        "margin_cost_pct": 27.173052151425985
+      }
+    },
+    "5x": {
+      "base": {
+        "total_return": 11157.289181449183,
+        "sortino": 158.0278334545011,
+        "max_drawdown": -0.05229066925582518,
+        "final_equity": 55791445.90724592,
+        "num_trades": 1074,
+        "margin_cost_total": 10233.03664249988,
+        "margin_cost_pct": 204.6607328499976
+      },
+      "probe": {
+        "total_return": 9550.306151394729,
+        "sortino": 155.01706103476474,
+        "max_drawdown": -0.052290669255824436,
+        "final_equity": 47756530.75697364,
+        "num_trades": 1062,
+        "full_trades": 1024,
+        "probe_trades": 19,
+        "probe_switches": 14,
+        "probe_wins": 14,
+        "margin_cost_total": 8738.389318370184,
+        "margin_cost_pct": 174.7677863674037
+      }
+    }
+  }
+}

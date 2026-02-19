@@ -1,0 +1,164 @@
+[
+  {
+    "name": "exp_512h_4L_400ep",
+    "config": {
+      "epochs": 400,
+      "hidden": 512,
+      "layers": 4,
+      "heads": 8,
+      "name": "exp_512h_4L_400ep"
+    },
+    "val_sortino": null,
+    "val_return": null,
+    "backtests": [
+      {
+        "min_edge": 0.0,
+        "return": 39.0,
+        "sortino": -0.7105
+      },
+      {
+        "min_edge": 0.001,
+        "return": 40.0,
+        "sortino": -0.7105
+      },
+      {
+        "min_edge": 0.005,
+        "return": 40.0,
+        "sortino": -0.7105
+      },
+      {
+        "min_edge": 0.01,
+        "return": 41.0,
+        "sortino": -0.7105
+      },
+      {
+        "min_edge": 0.012,
+        "return": 42.0,
+        "sortino": -0.7105
+      }
+    ],
+    "train_success": true
+  },
+  {
+    "name": "exp_512h_4L_lr5e5",
+    "config": {
+      "epochs": 300,
+      "hidden": 512,
+      "layers": 4,
+      "heads": 8,
+      "lr": 5e-05,
+      "name": "exp_512h_4L_lr5e5"
+    },
+    "val_sortino": null,
+    "val_return": null,
+    "backtests": [
+      {
+        "min_edge": 0.0,
+        "return": 43.0,
+        "sortino": 1.712
+      },
+      {
+        "min_edge": 0.001,
+        "return": 44.0,
+        "sortino": 1.712
+      },
+      {
+        "min_edge": 0.005,
+        "return": 45.0,
+        "sortino": 1.712
+      },
+      {
+        "min_edge": 0.01,
+        "return": 46.0,
+        "sortino": 1.712
+      },
+      {
+        "min_edge": 0.012,
+        "return": 46.0,
+        "sortino": 1.712
+      }
+    ],
+    "train_success": true
+  },
+  {
+    "name": "exp_512h_4L_seq64",
+    "config": {
+      "epochs": 200,
+      "hidden": 512,
+      "layers": 4,
+      "heads": 8,
+      "seq_len": 64,
+      "name": "exp_512h_4L_seq64"
+    },
+    "val_sortino": null,
+    "val_return": null,
+    "backtests": [
+      {
+        "min_edge": 0.0,
+        "return": 44.0,
+        "sortino": 2.4701
+      },
+      {
+        "min_edge": 0.001,
+        "return": 44.0,
+        "sortino": 2.4701
+      },
+      {
+        "min_edge": 0.005,
+        "return": 45.0,
+        "sortino": 2.4701
+      },
+      {
+        "min_edge": 0.01,
+        "return": 46.0,
+        "sortino": 2.4701
+      },
+      {
+        "min_edge": 0.012,
+        "return": 46.0,
+        "sortino": 2.4701
+      }
+    ],
+    "train_success": true
+  },
+  {
+    "name": "exp_512h_6L",
+    "config": {
+      "epochs": 200,
+      "hidden": 512,
+      "layers": 6,
+      "heads": 8,
+      "name": "exp_512h_6L"
+    },
+    "val_sortino": null,
+    "val_return": null,
+    "backtests": [
+      {
+        "min_edge": 0.0,
+        "return": 52.0,
+        "sortino": 3.2057
+      },
+      {
+        "min_edge": 0.001,
+        "return": 54.0,
+        "sortino": 3.2057
+      },
+      {
+        "min_edge": 0.005,
+        "return": 56.0,
+        "sortino": 3.2057
+      },
+      {
+        "min_edge": 0.01,
+        "return": 58.0,
+        "sortino": 3.2057
+      },
+      {
+        "min_edge": 0.012,
+        "return": 59.0,
+        "sortino": 3.2057
+      }
+    ],
+    "train_success": true
+  }
+]

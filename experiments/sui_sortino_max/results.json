@@ -1,0 +1,702 @@
+{
+  "sortino_asym2": {
+    "name": "sortino_asym2",
+    "best_seed": 1337,
+    "rl_5x_return": 4.387923939268078,
+    "rl_5x_sortino": 941.6778831884523,
+    "rl_5x_dd": -0.2080663361724652,
+    "bl_5x_return": 7.517595682497003,
+    "bl_5x_dd": -0.22740176368712753,
+    "rl_3x_return": 1.746511493563832,
+    "rl_3x_sortino": 910.4691945238201,
+    "rl_3x_dd": -0.13999696542959986,
+    "all_seeds": [
+      {
+        "seed": 1337,
+        "score": 837.6447151022196,
+        "train_time": 15.749218702316284,
+        "metrics": {
+          "lev_3x": {
+            "rl": {
+              "total_return": 1.746511493563832,
+              "sortino": 910.4691945238201,
+              "max_drawdown": -0.13999696542959986,
+              "final_equity": 27465.114935638318,
+              "num_trades": 197.0,
+              "margin_cost_total": 3.6234350887663394,
+              "margin_cost_pct": 0.03623435088766339,
+              "avg_cap_ratio": 0.758348442311676,
+              "cap_ratio_std": 0.04174148284829048,
+              "step_return_std": 0.013478320112013255,
+              "step_return_delta_std": 0.020088933049203898
+            },
+            "bl": {
+              "total_return": 2.717886325776734,
+              "sortino": 1007.1987141975966,
+              "max_drawdown": -0.14042520874259337,
+              "final_equity": 37178.86325776734,
+              "num_trades": 183.0,
+              "margin_cost_total": 2.4115294683054915,
+              "margin_cost_pct": 0.024115294683054914,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.01925915616266702,
+              "step_return_delta_std": 0.02870638398527051
+            }
+          },
+          "lev_5x": {
+            "rl": {
+              "total_return": 4.387923939268078,
+              "sortino": 941.6778831884523,
+              "max_drawdown": -0.2080663361724652,
+              "final_equity": 53879.239392680785,
+              "num_trades": 193.0,
+              "margin_cost_total": 11.339973456368643,
+              "margin_cost_pct": 0.11339973456368643,
+              "avg_cap_ratio": 0.7593238529180998,
+              "cap_ratio_std": 0.0423165299848122,
+              "step_return_std": 0.02266004167942189,
+              "step_return_delta_std": 0.03380331305544856
+            },
+            "bl": {
+              "total_return": 7.517595682497003,
+              "sortino": 1046.2309399920061,
+              "max_drawdown": -0.22740176368712753,
+              "final_equity": 85175.95682497002,
+              "num_trades": 183.0,
+              "margin_cost_total": 8.199645624951065,
+              "margin_cost_pct": 0.08199645624951066,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.032220787579884475,
+              "step_return_delta_std": 0.04799718023306215
+            }
+          }
+        }
+      },
+      {
+        "seed": 2024,
+        "score": 730.6867253491207,
+        "train_time": 15.983571767807007,
+        "metrics": {
+          "lev_3x": {
+            "rl": {
+              "total_return": 1.1460656636414948,
+              "sortino": 848.4437221105026,
+              "max_drawdown": -0.1978698466467084,
+              "final_equity": 21460.656636414948,
+              "num_trades": 188.0,
+              "margin_cost_total": 2.2261542543731747,
+              "margin_cost_pct": 0.022261542543731746,
+              "avg_cap_ratio": 0.7835522144369731,
+              "cap_ratio_std": 0.0442413499758427,
+              "step_return_std": 0.011642147036034304,
+              "step_return_delta_std": 0.017720503754183128
+            },
+            "bl": {
+              "total_return": 2.717886325776734,
+              "sortino": 1007.1987141975966,
+              "max_drawdown": -0.14042520874259337,
+              "final_equity": 37178.86325776734,
+              "num_trades": 183.0,
+              "margin_cost_total": 2.4115294683054915,
+              "margin_cost_pct": 0.024115294683054914,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.01925915616266702,
+              "step_return_delta_std": 0.02870638398527051
+            }
+          },
+          "lev_5x": {
+            "rl": {
+              "total_return": 2.469015226704225,
+              "sortino": 887.7761555049336,
+              "max_drawdown": -0.31417886031162584,
+              "final_equity": 34690.15226704225,
+              "num_trades": 185.0,
+              "margin_cost_total": 7.036798695607164,
+              "margin_cost_pct": 0.07036798695607165,
+              "avg_cap_ratio": 0.7861847293438456,
+              "cap_ratio_std": 0.044642113273973806,
+              "step_return_std": 0.019520983625766635,
+              "step_return_delta_std": 0.029707040079933508
+            },
+            "bl": {
+              "total_return": 7.517595682497003,
+              "sortino": 1046.2309399920061,
+              "max_drawdown": -0.22740176368712753,
+              "final_equity": 85175.95682497002,
+              "num_trades": 183.0,
+              "margin_cost_total": 8.199645624951065,
+              "margin_cost_pct": 0.08199645624951066,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.032220787579884475,
+              "step_return_delta_std": 0.04799718023306215
+            }
+          }
+        }
+      }
+    ]
+  },
+  "sortino_asym4_tight": {
+    "name": "sortino_asym4_tight",
+    "best_seed": 2024,
+    "rl_5x_return": 3.740469177669816,
+    "rl_5x_sortino": 998.6475108236637,
+    "rl_5x_dd": -0.19659826583025172,
+    "bl_5x_return": 7.517595682497003,
+    "bl_5x_dd": -0.22740176368712753,
+    "rl_3x_return": 1.5869083771214942,
+    "rl_3x_sortino": 970.7640140968449,
+    "rl_3x_dd": -0.12159907542908276,
+    "all_seeds": [
+      {
+        "seed": 1337,
+        "score": 798.0135907433761,
+        "train_time": 15.955962419509888,
+        "metrics": {
+          "lev_3x": {
+            "rl": {
+              "total_return": 0.9984779581367795,
+              "sortino": 817.851360463888,
+              "max_drawdown": -0.11916832180043549,
+              "final_equity": 19984.779581367795,
+              "num_trades": 186.0,
+              "margin_cost_total": 2.0576117638648133,
+              "margin_cost_pct": 0.020576117638648132,
+              "avg_cap_ratio": 0.7442622534486526,
+              "cap_ratio_std": 0.04976779347394234,
+              "step_return_std": 0.01083729601674231,
+              "step_return_delta_std": 0.014959051049142356
+            },
+            "bl": {
+              "total_return": 2.717886325776734,
+              "sortino": 1007.1987141975966,
+              "max_drawdown": -0.14042520874259337,
+              "final_equity": 37178.86325776734,
+              "num_trades": 183.0,
+              "margin_cost_total": 2.4115294683054915,
+              "margin_cost_pct": 0.024115294683054914,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.01925915616266702,
+              "step_return_delta_std": 0.02870638398527051
+            }
+          },
+          "lev_5x": {
+            "rl": {
+              "total_return": 2.1469301920129014,
+              "sortino": 893.6556083263249,
+              "max_drawdown": -0.1912840351658977,
+              "final_equity": 31469.301920129015,
+              "num_trades": 188.0,
+              "margin_cost_total": 6.659435416832172,
+              "margin_cost_pct": 0.06659435416832171,
+              "avg_cap_ratio": 0.7449606943998897,
+              "cap_ratio_std": 0.0496199187236624,
+              "step_return_std": 0.018360352341936458,
+              "step_return_delta_std": 0.025355801996409258
+            },
+            "bl": {
+              "total_return": 7.517595682497003,
+              "sortino": 1046.2309399920061,
+              "max_drawdown": -0.22740176368712753,
+              "final_equity": 85175.95682497002,
+              "num_trades": 183.0,
+              "margin_cost_total": 8.199645624951065,
+              "margin_cost_pct": 0.08199645624951066,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.032220787579884475,
+              "step_return_delta_std": 0.04799718023306215
+            }
+          }
+        }
+      },
+      {
+        "seed": 2024,
+        "score": 900.3483779085378,
+        "train_time": 16.44984745979309,
+        "metrics": {
+          "lev_3x": {
+            "rl": {
+              "total_return": 1.5869083771214942,
+              "sortino": 970.7640140968449,
+              "max_drawdown": -0.12159907542908276,
+              "final_equity": 25869.083771214944,
+              "num_trades": 189.0,
+              "margin_cost_total": 3.833517124397436,
+              "margin_cost_pct": 0.038335171243974356,
+              "avg_cap_ratio": 0.7921133897606134,
+              "cap_ratio_std": 0.051509992244823256,
+              "step_return_std": 0.014391529179060766,
+              "step_return_delta_std": 0.020852286678591722
+            },
+            "bl": {
+              "total_return": 2.717886325776734,
+              "sortino": 1007.1987141975966,
+              "max_drawdown": -0.14042520874259337,
+              "final_equity": 37178.86325776734,
+              "num_trades": 183.0,
+              "margin_cost_total": 2.4115294683054915,
+              "margin_cost_pct": 0.024115294683054914,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.01925915616266702,
+              "step_return_delta_std": 0.02870638398527051
+            }
+          },
+          "lev_5x": {
+            "rl": {
+              "total_return": 3.740469177669816,
+              "sortino": 998.6475108236637,
+              "max_drawdown": -0.19659826583025172,
+              "final_equity": 47404.69177669816,
+              "num_trades": 188.0,
+              "margin_cost_total": 10.961402825491708,
+              "margin_cost_pct": 0.10961402825491709,
+              "avg_cap_ratio": 0.7920590327065882,
+              "cap_ratio_std": 0.051364392379135586,
+              "step_return_std": 0.024388778653332076,
+              "step_return_delta_std": 0.035290430497988086
+            },
+            "bl": {
+              "total_return": 7.517595682497003,
+              "sortino": 1046.2309399920061,
+              "max_drawdown": -0.22740176368712753,
+              "final_equity": 85175.95682497002,
+              "num_trades": 183.0,
+              "margin_cost_total": 8.199645624951065,
+              "margin_cost_pct": 0.08199645624951066,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.032220787579884475,
+              "step_return_delta_std": 0.04799718023306215
+            }
+          }
+        }
+      }
+    ]
+  },
+  "dd_adaptive_lev": {
+    "name": "dd_adaptive_lev",
+    "best_seed": 2024,
+    "rl_5x_return": 9.584910982303565,
+    "rl_5x_sortino": 961.2629119132768,
+    "rl_5x_dd": -0.19330677981430072,
+    "bl_5x_return": 7.517595682497003,
+    "bl_5x_dd": -0.22740176368712753,
+    "rl_3x_return": 4.340667305413927,
+    "rl_3x_sortino": 996.9402943271591,
+    "rl_3x_dd": -0.11894418508506167,
+    "all_seeds": [
+      {
+        "seed": 1337,
+        "score": 806.7680080191659,
+        "train_time": 14.682465553283691,
+        "metrics": {
+          "lev_3x": {
+            "rl": {
+              "total_return": 4.89150794881208,
+              "sortino": 892.8598390493764,
+              "max_drawdown": -0.11079582540651767,
+              "final_equity": 58915.0794881208,
+              "num_trades": 209.0,
+              "margin_cost_total": 9.893510038409827,
+              "margin_cost_pct": 0.09893510038409828,
+              "avg_cap_ratio": 0.8023024766060103,
+              "cap_ratio_std": 0.051205876751109096,
+              "step_return_std": 0.021084173555239883,
+              "step_return_delta_std": 0.030273646125228162
+            },
+            "bl": {
+              "total_return": 2.717886325776734,
+              "sortino": 1007.1987141975966,
+              "max_drawdown": -0.14042520874259337,
+              "final_equity": 37178.86325776734,
+              "num_trades": 183.0,
+              "margin_cost_total": 2.4115294683054915,
+              "margin_cost_pct": 0.024115294683054914,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.01925915616266702,
+              "step_return_delta_std": 0.02870638398527051
+            }
+          },
+          "lev_5x": {
+            "rl": {
+              "total_return": 17.126268757274673,
+              "sortino": 896.5765093929817,
+              "max_drawdown": -0.17961700274763157,
+              "final_equity": 181262.6875727467,
+              "num_trades": 209.0,
+              "margin_cost_total": 35.01389721073869,
+              "margin_cost_pct": 0.3501389721073869,
+              "avg_cap_ratio": 0.8037064468009267,
+              "cap_ratio_std": 0.05193891587831686,
+              "step_return_std": 0.03553823275076943,
+              "step_return_delta_std": 0.051021273383234804
+            },
+            "bl": {
+              "total_return": 7.517595682497003,
+              "sortino": 1046.2309399920061,
+              "max_drawdown": -0.22740176368712753,
+              "final_equity": 85175.95682497002,
+              "num_trades": 183.0,
+              "margin_cost_total": 8.199645624951065,
+              "margin_cost_pct": 0.08199645624951066,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.032220787579884475,
+              "step_return_delta_std": 0.04799718023306215
+            }
+          }
+        }
+      },
+      {
+        "seed": 2024,
+        "score": 864.6095220061264,
+        "train_time": 15.106146574020386,
+        "metrics": {
+          "lev_3x": {
+            "rl": {
+              "total_return": 4.340667305413927,
+              "sortino": 996.9402943271591,
+              "max_drawdown": -0.11894418508506167,
+              "final_equity": 53406.67305413927,
+              "num_trades": 206.0,
+              "margin_cost_total": 9.466143894623174,
+              "margin_cost_pct": 0.09466143894623175,
+              "avg_cap_ratio": 0.791270180550609,
+              "cap_ratio_std": 0.048703962333421336,
+              "step_return_std": 0.024209987925111767,
+              "step_return_delta_std": 0.035090519620013194
+            },
+            "bl": {
+              "total_return": 2.717886325776734,
+              "sortino": 1007.1987141975966,
+              "max_drawdown": -0.14042520874259337,
+              "final_equity": 37178.86325776734,
+              "num_trades": 183.0,
+              "margin_cost_total": 2.4115294683054915,
+              "margin_cost_pct": 0.024115294683054914,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.01925915616266702,
+              "step_return_delta_std": 0.02870638398527051
+            }
+          },
+          "lev_5x": {
+            "rl": {
+              "total_return": 9.584910982303565,
+              "sortino": 961.2629119132768,
+              "max_drawdown": -0.19330677981430072,
+              "final_equity": 105849.10982303566,
+              "num_trades": 201.0,
+              "margin_cost_total": 22.853983071155792,
+              "margin_cost_pct": 0.22853983071155792,
+              "avg_cap_ratio": 0.7914550096241458,
+              "cap_ratio_std": 0.04903280672658385,
+              "step_return_std": 0.04080274728200572,
+              "step_return_delta_std": 0.05895574696741886
+            },
+            "bl": {
+              "total_return": 7.517595682497003,
+              "sortino": 1046.2309399920061,
+              "max_drawdown": -0.22740176368712753,
+              "final_equity": 85175.95682497002,
+              "num_trades": 183.0,
+              "margin_cost_total": 8.199645624951065,
+              "margin_cost_pct": 0.08199645624951066,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.032220787579884475,
+              "step_return_delta_std": 0.04799718023306215
+            }
+          }
+        }
+      }
+    ]
+  },
+  "dd_adaptive_sortino": {
+    "name": "dd_adaptive_sortino",
+    "best_seed": 2024,
+    "rl_5x_return": 3.6900234671364274,
+    "rl_5x_sortino": 1070.814303605058,
+    "rl_5x_dd": -0.32637009577322135,
+    "bl_5x_return": 7.517595682497003,
+    "bl_5x_dd": -0.22740176368712753,
+    "rl_3x_return": 1.5768297904072397,
+    "rl_3x_sortino": 1005.1979703069277,
+    "rl_3x_dd": -0.2056104113223168,
+    "all_seeds": [
+      {
+        "seed": 1337,
+        "score": 776.5864611826083,
+        "train_time": 16.276051998138428,
+        "metrics": {
+          "lev_3x": {
+            "rl": {
+              "total_return": 1.8806684108511296,
+              "sortino": 878.2844883753795,
+              "max_drawdown": -0.10975578589291143,
+              "final_equity": 28806.684108511294,
+              "num_trades": 200.0,
+              "margin_cost_total": 3.697312475337129,
+              "margin_cost_pct": 0.03697312475337129,
+              "avg_cap_ratio": 0.7375063076043304,
+              "cap_ratio_std": 0.03895480216342281,
+              "step_return_std": 0.014317742352300584,
+              "step_return_delta_std": 0.0209419154526339
+            },
+            "bl": {
+              "total_return": 2.717886325776734,
+              "sortino": 1007.1987141975966,
+              "max_drawdown": -0.14042520874259337,
+              "final_equity": 37178.86325776734,
+              "num_trades": 183.0,
+              "margin_cost_total": 2.4115294683054915,
+              "margin_cost_pct": 0.024115294683054914,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.01925915616266702,
+              "step_return_delta_std": 0.02870638398527051
+            }
+          },
+          "lev_5x": {
+            "rl": {
+              "total_return": 4.5288223741931555,
+              "sortino": 866.3308574425888,
+              "max_drawdown": -0.1794887925199609,
+              "final_equity": 55288.22374193156,
+              "num_trades": 195.0,
+              "margin_cost_total": 10.718951676159723,
+              "margin_cost_pct": 0.10718951676159723,
+              "avg_cap_ratio": 0.7383539952454677,
+              "cap_ratio_std": 0.039425940928215365,
+              "step_return_std": 0.022792434866188944,
+              "step_return_delta_std": 0.033725970947395614
+            },
+            "bl": {
+              "total_return": 7.517595682497003,
+              "sortino": 1046.2309399920061,
+              "max_drawdown": -0.22740176368712753,
+              "final_equity": 85175.95682497002,
+              "num_trades": 183.0,
+              "margin_cost_total": 8.199645624951065,
+              "margin_cost_pct": 0.08199645624951066,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.032220787579884475,
+              "step_return_delta_std": 0.04799718023306215
+            }
+          }
+        }
+      },
+      {
+        "seed": 2024,
+        "score": 907.6292557184474,
+        "train_time": 16.011176824569702,
+        "metrics": {
+          "lev_3x": {
+            "rl": {
+              "total_return": 1.5768297904072397,
+              "sortino": 1005.1979703069277,
+              "max_drawdown": -0.2056104113223168,
+              "final_equity": 25768.297904072395,
+              "num_trades": 187.0,
+              "margin_cost_total": 3.0054525468824864,
+              "margin_cost_pct": 0.030054525468824863,
+              "avg_cap_ratio": 0.7823130725155352,
+              "cap_ratio_std": 0.05085487660115258,
+              "step_return_std": 0.01351159771258707,
+              "step_return_delta_std": 0.02002396482780153
+            },
+            "bl": {
+              "total_return": 2.717886325776734,
+              "sortino": 1007.1987141975966,
+              "max_drawdown": -0.14042520874259337,
+              "final_equity": 37178.86325776734,
+              "num_trades": 183.0,
+              "margin_cost_total": 2.4115294683054915,
+              "margin_cost_pct": 0.024115294683054914,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.01925915616266702,
+              "step_return_delta_std": 0.02870638398527051
+            }
+          },
+          "lev_5x": {
+            "rl": {
+              "total_return": 3.6900234671364274,
+              "sortino": 1070.814303605058,
+              "max_drawdown": -0.32637009577322135,
+              "final_equity": 46900.23467136428,
+              "num_trades": 187.0,
+              "margin_cost_total": 9.558976147922005,
+              "margin_cost_pct": 0.09558976147922005,
+              "avg_cap_ratio": 0.7841680022338723,
+              "cap_ratio_std": 0.05201858504162623,
+              "step_return_std": 0.02268493545527782,
+              "step_return_delta_std": 0.033592517836458
+            },
+            "bl": {
+              "total_return": 7.517595682497003,
+              "sortino": 1046.2309399920061,
+              "max_drawdown": -0.22740176368712753,
+              "final_equity": 85175.95682497002,
+              "num_trades": 183.0,
+              "margin_cost_total": 8.199645624951065,
+              "margin_cost_pct": 0.08199645624951066,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.032220787579884475,
+              "step_return_delta_std": 0.04799718023306215
+            }
+          }
+        }
+      }
+    ]
+  },
+  "high_cap_sortino": {
+    "name": "high_cap_sortino",
+    "best_seed": 2024,
+    "rl_5x_return": 7.619739613433872,
+    "rl_5x_sortino": 1099.3217079046892,
+    "rl_5x_dd": -0.30269966161724526,
+    "bl_5x_return": 7.517595682497003,
+    "bl_5x_dd": -0.22740176368712753,
+    "rl_3x_return": 2.5940638375159617,
+    "rl_3x_sortino": 1150.2125473792162,
+    "rl_3x_dd": -0.19182691917794417,
+    "all_seeds": [
+      {
+        "seed": 1337,
+        "score": 764.2966082139743,
+        "train_time": 16.115610599517822,
+        "metrics": {
+          "lev_3x": {
+            "rl": {
+              "total_return": 2.6125198513085532,
+              "sortino": 858.5772441515819,
+              "max_drawdown": -0.12460891734276766,
+              "final_equity": 36125.19851308553,
+              "num_trades": 197.0,
+              "margin_cost_total": 5.015263192303264,
+              "margin_cost_pct": 0.05015263192303264,
+              "avg_cap_ratio": 0.8489882451369859,
+              "cap_ratio_std": 0.025630796215895466,
+              "step_return_std": 0.017601689428773094,
+              "step_return_delta_std": 0.02575015143376077
+            },
+            "bl": {
+              "total_return": 2.717886325776734,
+              "sortino": 1007.1987141975966,
+              "max_drawdown": -0.14042520874259337,
+              "final_equity": 37178.86325776734,
+              "num_trades": 183.0,
+              "margin_cost_total": 2.4115294683054915,
+              "margin_cost_pct": 0.024115294683054914,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.01925915616266702,
+              "step_return_delta_std": 0.02870638398527051
+            }
+          },
+          "lev_5x": {
+            "rl": {
+              "total_return": 7.412648407294171,
+              "sortino": 865.5169438581937,
+              "max_drawdown": -0.2024406712884389,
+              "final_equity": 84126.4840729417,
+              "num_trades": 196.0,
+              "margin_cost_total": 16.747839967752785,
+              "margin_cost_pct": 0.16747839967752787,
+              "avg_cap_ratio": 0.8492064476950741,
+              "cap_ratio_std": 0.02593955295585119,
+              "step_return_std": 0.029857130120020208,
+              "step_return_delta_std": 0.0437353451238924
+            },
+            "bl": {
+              "total_return": 7.517595682497003,
+              "sortino": 1046.2309399920061,
+              "max_drawdown": -0.22740176368712753,
+              "final_equity": 85175.95682497002,
+              "num_trades": 183.0,
+              "margin_cost_total": 8.199645624951065,
+              "margin_cost_pct": 0.08199645624951066,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.032220787579884475,
+              "step_return_delta_std": 0.04799718023306215
+            }
+          }
+        }
+      },
+      {
+        "seed": 2024,
+        "score": 947.9718770960666,
+        "train_time": 16.659525156021118,
+        "metrics": {
+          "lev_3x": {
+            "rl": {
+              "total_return": 2.5940638375159617,
+              "sortino": 1150.2125473792162,
+              "max_drawdown": -0.19182691917794417,
+              "final_equity": 35940.638375159615,
+              "num_trades": 193.0,
+              "margin_cost_total": 5.899777413131158,
+              "margin_cost_pct": 0.05899777413131158,
+              "avg_cap_ratio": 0.8818734123257205,
+              "cap_ratio_std": 0.03163548751377166,
+              "step_return_std": 0.017529668352396333,
+              "step_return_delta_std": 0.02512163597786263
+            },
+            "bl": {
+              "total_return": 2.717886325776734,
+              "sortino": 1007.1987141975966,
+              "max_drawdown": -0.14042520874259337,
+              "final_equity": 37178.86325776734,
+              "num_trades": 183.0,
+              "margin_cost_total": 2.4115294683054915,
+              "margin_cost_pct": 0.024115294683054914,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.01925915616266702,
+              "step_return_delta_std": 0.02870638398527051
+            }
+          },
+          "lev_5x": {
+            "rl": {
+              "total_return": 7.619739613433872,
+              "sortino": 1099.3217079046892,
+              "max_drawdown": -0.30269966161724526,
+              "final_equity": 86197.39613433872,
+              "num_trades": 194.0,
+              "margin_cost_total": 25.078608879876754,
+              "margin_cost_pct": 0.2507860887987675,
+              "avg_cap_ratio": 0.8819500519345249,
+              "cap_ratio_std": 0.03219923627225336,
+              "step_return_std": 0.029749963375597287,
+              "step_return_delta_std": 0.04268177724290757
+            },
+            "bl": {
+              "total_return": 7.517595682497003,
+              "sortino": 1046.2309399920061,
+              "max_drawdown": -0.22740176368712753,
+              "final_equity": 85175.95682497002,
+              "num_trades": 183.0,
+              "margin_cost_total": 8.199645624951065,
+              "margin_cost_pct": 0.08199645624951066,
+              "avg_cap_ratio": 1.0,
+              "cap_ratio_std": 0.0,
+              "step_return_std": 0.032220787579884475,
+              "step_return_delta_std": 0.04799718023306215
+            }
+          }
+        }
+      }
+    ]
+  }
+}

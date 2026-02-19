@@ -83,6 +83,8 @@ class TrainingConfig:
     weight_decay: float = 1e-4
     grad_clip: float = 1.0
     maker_fee: float = 0.0
+    max_leverage: float = 1.0
+    margin_annual_rate: float = 0.0
     return_weight: float = 0.08
     smoothness_penalty: float = 0.0
     periods_per_year: Optional[float] = None
@@ -90,6 +92,9 @@ class TrainingConfig:
     min_price_gap_pct: float = 0.0003
     trade_amount_scale: float = 100.0
     fill_temperature: float = 5e-4
+    decision_lag_bars: int = 0
+    decision_lag_range: str = ""  # e.g. "0,1,2" -- average loss across lags during training
+    market_order_entry: bool = False
     initial_cash: float = 1.0
     sortino_target_sign: float = 1.0
     transformer_dim: int = 256
@@ -140,6 +145,7 @@ class TrainingConfig:
     num_workers: int = 0
     num_outputs: int = 4
     max_hold_hours: float = 24.0
+    feature_noise_std: float = 0.0
     use_compile: bool = True
     use_amp: bool = False
     amp_dtype: str = "bfloat16"

@@ -70,6 +70,7 @@ class BinanceHourlyDataset(Dataset):
         self.frame = frame.reset_index(drop=True)
         self.features = features.astype(np.float32)
         self.seq_len = int(sequence_length)
+        self.opens = frame["open"].to_numpy(dtype=np.float32)
         self.highs = frame["high"].to_numpy(dtype=np.float32)
         self.lows = frame["low"].to_numpy(dtype=np.float32)
         self.closes = frame["close"].to_numpy(dtype=np.float32)
@@ -89,6 +90,7 @@ class BinanceHourlyDataset(Dataset):
         end = idx + self.seq_len
         payload = {
             "features": torch.from_numpy(self.features[start:end]),
+            "open": torch.from_numpy(self.opens[start:end]),
             "high": torch.from_numpy(self.highs[start:end]),
             "low": torch.from_numpy(self.lows[start:end]),
             "close": torch.from_numpy(self.closes[start:end]),

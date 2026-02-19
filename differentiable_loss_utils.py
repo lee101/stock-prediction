@@ -118,6 +118,7 @@ def simulate_hourly_trades(
     highs: torch.Tensor,
     lows: torch.Tensor,
     closes: torch.Tensor,
+    opens: torch.Tensor | None = None,
     buy_prices: torch.Tensor,
     sell_prices: torch.Tensor,
     trade_intensity: torch.Tensor,
@@ -130,6 +131,8 @@ def simulate_hourly_trades(
     max_leverage: float | torch.Tensor = 1.0,
     can_short: bool | float | torch.Tensor = False,
     can_long: bool | float | torch.Tensor = True,
+    decision_lag_bars: int = 0,
+    market_order_entry: bool = False,
 ) -> HourlySimulationResult:
     """Simulate hourly fills with differentiable maker execution logic.
 
@@ -147,6 +150,24 @@ def simulate_hourly_trades(
     buy_intensity = buy_trade_intensity if buy_trade_intensity is not None else trade_intensity
     sell_intensity = sell_trade_intensity if sell_trade_intensity is not None else trade_intensity
     _check_shapes(highs, buy_intensity, sell_intensity)
+
+    if opens is not None:
+        _check_shapes(highs, opens)
+
+    if decision_lag_bars > 0:
+        lag = decision_lag_bars
+        highs = highs[..., lag:]
+        lows = lows[..., lag:]
+        closes = closes[..., lag:]
+        if opens is not None:
+            opens = opens[..., lag:]
+        buy_prices = buy_prices[..., :-lag]
+        sell_prices = sell_prices[..., :-lag]
+        trade_intensity = trade_intensity[..., :-lag]
+        buy_intensity = buy_intensity[..., :-lag]
+        sell_intensity = sell_intensity[..., :-lag]
+        if torch.is_tensor(max_leverage) and max_leverage.ndim > 0:
+            max_leverage = max_leverage[..., lag:]
 
     batch_shape = closes.shape[:-1]
     steps = closes.shape[-1]
@@ -176,13 +197,18 @@ def simulate_hourly_trades(
         low = lows[..., idx]
         b_price = torch.clamp(buy_prices[..., idx], min=_EPS)
         s_price = torch.clamp(sell_prices[..., idx], min=_EPS)
+        if market_order_entry and opens is not None:
+            b_price = torch.clamp(opens[..., idx], min=_EPS)
         step_limit = torch.clamp(max_leverage_tensor[..., idx], min=_EPS)
         b_intensity = torch.minimum(torch.clamp(buy_intensity[..., idx], min=0.0), step_limit)
         s_intensity = torch.minimum(torch.clamp(sell_intensity[..., idx], min=0.0), step_limit)
         b_frac_limit = b_intensity / torch.clamp(step_limit, min=_EPS)
         s_frac_limit = s_intensity / torch.clamp(step_limit, min=_EPS)
 
-        buy_prob = approx_buy_fill_probability(b_price, low, close, temperature=float(temperature_tensor))
+        if market_order_entry:
+            buy_prob = torch.ones_like(b_price)
+        else:
+            buy_prob = approx_buy_fill_probability(b_price, low, close, temperature=float(temperature_tensor))
         sell_prob = approx_sell_fill_probability(s_price, high, close, temperature=float(temperature_tensor))
 
         equity = cash + inventory * close
@@ -272,6 +298,7 @@ def simulate_hourly_trades_binary(
     highs: torch.Tensor,
     lows: torch.Tensor,
     closes: torch.Tensor,
+    opens: torch.Tensor | None = None,
     buy_prices: torch.Tensor,
     sell_prices: torch.Tensor,
     trade_intensity: torch.Tensor,
@@ -283,6 +310,8 @@ def simulate_hourly_trades_binary(
     max_leverage: float | torch.Tensor = 1.0,
     can_short: bool | float | torch.Tensor = False,
     can_long: bool | float | torch.Tensor = True,
+    decision_lag_bars: int = 0,
+    market_order_entry: bool = False,
 ) -> HourlySimulationResult:
     """Binary fill simulation (100% or 0%) for realistic backtesting.
 
@@ -297,6 +326,24 @@ def simulate_hourly_trades_binary(
     buy_intensity = buy_trade_intensity if buy_trade_intensity is not None else trade_intensity
     sell_intensity = sell_trade_intensity if sell_trade_intensity is not None else trade_intensity
     _check_shapes(highs, buy_intensity, sell_intensity)
+
+    if opens is not None:
+        _check_shapes(highs, opens)
+
+    if decision_lag_bars > 0:
+        lag = decision_lag_bars
+        highs = highs[..., lag:]
+        lows = lows[..., lag:]
+        closes = closes[..., lag:]
+        if opens is not None:
+            opens = opens[..., lag:]
+        buy_prices = buy_prices[..., :-lag]
+        sell_prices = sell_prices[..., :-lag]
+        trade_intensity = trade_intensity[..., :-lag]
+        buy_intensity = buy_intensity[..., :-lag]
+        sell_intensity = sell_intensity[..., :-lag]
+        if torch.is_tensor(max_leverage) and max_leverage.ndim > 0:
+            max_leverage = max_leverage[..., lag:]
 
     batch_shape = closes.shape[:-1]
     steps = closes.shape[-1]
@@ -325,14 +372,18 @@ def simulate_hourly_trades_binary(
         low = lows[..., idx]
         b_price = torch.clamp(buy_prices[..., idx], min=_EPS)
         s_price = torch.clamp(sell_prices[..., idx], min=_EPS)
+        if market_order_entry and opens is not None:
+            b_price = torch.clamp(opens[..., idx], min=_EPS)
         step_limit = torch.clamp(max_leverage_tensor[..., idx], min=_EPS)
         b_intensity = torch.minimum(torch.clamp(buy_intensity[..., idx], min=0.0), step_limit)
         s_intensity = torch.minimum(torch.clamp(sell_intensity[..., idx], min=0.0), step_limit)
         b_frac_limit = b_intensity / torch.clamp(step_limit, min=_EPS)
         s_frac_limit = s_intensity / torch.clamp(step_limit, min=_EPS)
 
-        # Binary fills: 100% if price touches limit, 0% otherwise
-        buy_fill = (low <= b_price) & (b_intensity > 0)
+        if market_order_entry:
+            buy_fill = b_intensity > 0
+        else:
+            buy_fill = (low <= b_price) & (b_intensity > 0)
         sell_fill = (high >= s_price) & (s_intensity > 0)
 
         equity = cash + inventory * close

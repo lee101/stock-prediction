@@ -36,6 +36,25 @@ def main():
     parser.add_argument("--checkpoint-name", type=str, default=None)
     parser.add_argument("--symbols", type=str, default=None, help="Override stock symbols")
     parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
+    parser.add_argument("--forecast-horizons", type=str, default="1,24", help="Comma-sep horizons")
+    parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--warmup-steps", type=int, default=100)
+    parser.add_argument("--weight-decay", type=float, default=0.01)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--lr-schedule", type=str, default="none", choices=["none", "cosine", "linear_warmdown"])
+    parser.add_argument("--lr-min-ratio", type=float, default=0.0)
+    parser.add_argument("--return-weight", type=float, default=0.08)
+    parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument("--fill-temperature", type=float, default=5e-4)
+    parser.add_argument("--logits-softcap", type=float, default=12.0)
+    parser.add_argument("--smoothness-penalty", type=float, default=0.0)
+    parser.add_argument("--feature-noise-std", type=float, default=0.0)
+    parser.add_argument("--use-residual-scalars", action="store_true")
+    parser.add_argument("--max-leverage", type=float, default=1.0)
+    parser.add_argument("--margin-annual-rate", type=float, default=0.0)
+    parser.add_argument("--decision-lag-bars", type=int, default=0)
+    parser.add_argument("--decision-lag-range", type=str, default="")
+    parser.add_argument("--market-order-entry", action="store_true")
     args = parser.parse_args()
 
     if args.symbols:
@@ -44,13 +63,14 @@ def main():
         stocks = [s.strip().upper() for s in args.stock_symbols.split(",") if s.strip()]
     cryptos = [s.strip().upper() for s in args.crypto_symbols.split(",") if s.strip()]
 
-    logger.info("Training unified policy on {} stocks + {} crypto", len(stocks), len(cryptos))
+    horizons = [int(h.strip()) for h in args.forecast_horizons.split(",")]
+    logger.info("Training unified policy on {} stocks + {} crypto, horizons={}", len(stocks), len(cryptos), horizons)
 
     stock_config = DatasetConfig(
         symbol=stocks[0],
         data_root=str(args.stock_data_root),
         forecast_cache_root=str(args.stock_cache_root),
-        forecast_horizons=[1, 24],
+        forecast_horizons=horizons,
         sequence_length=args.sequence_length,
         val_fraction=0.15,
         min_history_hours=100,
@@ -62,7 +82,7 @@ def main():
         symbol=cryptos[0] if cryptos else "SOLUSD",
         data_root=str(args.crypto_data_root),
         forecast_cache_root=str(args.crypto_cache_root),
-        forecast_horizons=[1, 24],
+        forecast_horizons=horizons,
         sequence_length=args.sequence_length,
         val_fraction=0.1,
         cache_only=True,
@@ -94,14 +114,30 @@ def main():
         sequence_length=args.sequence_length,
         checkpoint_root=args.checkpoint_root,
         run_name=args.checkpoint_name or args.run_name,
-        warmup_steps=100,
-        weight_decay=0.01,
+        warmup_steps=args.warmup_steps,
+        weight_decay=args.weight_decay,
         transformer_dim=args.hidden_dim,
         transformer_heads=args.num_heads,
         transformer_layers=args.num_layers,
         model_arch="gemma",
+        transformer_dropout=args.dropout,
+        lr_schedule=args.lr_schedule,
+        lr_min_ratio=args.lr_min_ratio,
+        return_weight=args.return_weight,
+        grad_clip=args.grad_clip,
+        fill_temperature=args.fill_temperature,
+        logits_softcap=args.logits_softcap,
+        smoothness_penalty=args.smoothness_penalty,
+        feature_noise_std=args.feature_noise_std,
+        use_residual_scalars=args.use_residual_scalars,
+        max_leverage=args.max_leverage,
+        margin_annual_rate=args.margin_annual_rate,
+        decision_lag_bars=args.decision_lag_bars,
+        decision_lag_range=args.decision_lag_range,
+        market_order_entry=args.market_order_entry,
         preload_checkpoint_path=str(args.preload) if args.preload else None,
         use_compile=not args.no_compile,
+        seed=args.seed,
     )
 
     trainer = BinanceHourlyTrainer(train_config, data_module)

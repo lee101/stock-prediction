@@ -1,0 +1,26 @@
+[Unit]
+Description=SUI Binance hourly trader (10bp fees)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/lee/code/stock
+Environment=PYTHONPATH=/home/lee/code/stock
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/lee/code/stock/.venv313/bin/python -m bitbankstylelongsuitrain.trade_binance_sui \
+  --checkpoint /home/lee/code/stock/binancechronossolexperiment/checkpoints/sui_sortino_rw0012_lr1e4_ep25/policy_checkpoint.pt \
+  --sequence-length 72 \
+  --horizon 1 \
+  --intensity-scale 6.0 \
+  --price-offset-pct 0.0005 \
+  --min-gap-pct 0.0003 \
+  --poll-seconds 30 \
+  --expiry-minutes 90 \
+  --cycle-minutes 5 \
+  --refresh-data
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

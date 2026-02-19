@@ -4,9 +4,17 @@ from .unified_selector import (
     UnifiedSelectorSimulationResult,
     run_unified_simulation,
 )
+from .portfolio_simulator import (
+    PortfolioConfig,
+    PortfolioResult,
+    run_portfolio_simulation,
+)
 
 __all__ = [
     "UnifiedSelectionConfig",
     "UnifiedSelectorSimulationResult",
     "run_unified_simulation",
+    "PortfolioConfig",
+    "PortfolioResult",
+    "run_portfolio_simulation",
 ]
