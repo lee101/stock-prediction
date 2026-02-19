@@ -418,6 +418,16 @@ src/metrics_utils.py
 alpaca_cli_paper.log*
 binanceneural/forecast_cache_backup/
 newnanoalpacahourlyexp/outputs/
+
+# Local experimental/training artifacts
+experimental/
+*.npz
+*.safetensors
+binance*/artifacts*/
+binance*/artifacts_*/
+experiments/alpaca_stock_modern_rlcuda_*/
+experiments/*/checkpoint-*/
+experiments/*/finetuned/
 alpacanewccrosslearning/outputs/
 alpacanewccrosslearning/forecast_cache/
 alpacanewccrosslearning/chronos_finetuned/

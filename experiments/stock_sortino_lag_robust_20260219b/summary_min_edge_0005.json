@@ -1,0 +1,34 @@
+{
+  "experiment_name": "stock_sortino_lag_robust_20260219b",
+  "created_at_utc": "2026-02-19T10:48:04.385101+00:00",
+  "symbols": [
+    "NVDA",
+    "PLTR",
+    "GOOG",
+    "NET",
+    "DBX",
+    "TRIP",
+    "EBAY",
+    "KIND",
+    "MTCH",
+    "NYT"
+  ],
+  "eval_lags": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "ranking": [
+    {
+      "name": "fast_rw012_sm003_lagr01",
+      "run_name": "stock_sortino_lag_robust_20260219b_fast_rw012_sm003_lagr01",
+      "robust_score": -9.486208054816053,
+      "sortino_p10": -5.409659985878513,
+      "sortino_mean": -3.8604237889370605,
+      "return_mean_pct": -17.282502245150088,
+      "max_drawdown_mean_pct": 18.735290734205662,
+      "pnl_smoothness_mean": 0.0022380522159014438
+    }
+  ]
+}
