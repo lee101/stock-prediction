@@ -133,6 +133,7 @@ def simulate_hourly_trades(
     can_long: bool | float | torch.Tensor = True,
     decision_lag_bars: int = 0,
     market_order_entry: bool = False,
+    fill_buffer_pct: float = 0.0,
 ) -> HourlySimulationResult:
     """Simulate hourly fills with differentiable maker execution logic.
 
@@ -208,8 +209,10 @@ def simulate_hourly_trades(
         if market_order_entry:
             buy_prob = torch.ones_like(b_price)
         else:
-            buy_prob = approx_buy_fill_probability(b_price, low, close, temperature=float(temperature_tensor))
-        sell_prob = approx_sell_fill_probability(s_price, high, close, temperature=float(temperature_tensor))
+            buy_threshold = b_price * (1.0 - fill_buffer_pct) if fill_buffer_pct > 0 else b_price
+            buy_prob = approx_buy_fill_probability(buy_threshold, low, close, temperature=float(temperature_tensor))
+        sell_threshold = s_price * (1.0 + fill_buffer_pct) if fill_buffer_pct > 0 else s_price
+        sell_prob = approx_sell_fill_probability(sell_threshold, high, close, temperature=float(temperature_tensor))
 
         equity = cash + inventory * close
         # Allow borrowing up to ``step_limit`` * equity; translated to units.
@@ -312,6 +315,7 @@ def simulate_hourly_trades_binary(
     can_long: bool | float | torch.Tensor = True,
     decision_lag_bars: int = 0,
     market_order_entry: bool = False,
+    fill_buffer_pct: float = 0.0,
 ) -> HourlySimulationResult:
     """Binary fill simulation (100% or 0%) for realistic backtesting.
 
@@ -383,8 +387,10 @@ def simulate_hourly_trades_binary(
         if market_order_entry:
             buy_fill = b_intensity > 0
         else:
-            buy_fill = (low <= b_price) & (b_intensity > 0)
-        sell_fill = (high >= s_price) & (s_intensity > 0)
+            buy_threshold = b_price * (1.0 - fill_buffer_pct) if fill_buffer_pct > 0 else b_price
+            buy_fill = (low <= buy_threshold) & (b_intensity > 0)
+        sell_threshold = s_price * (1.0 + fill_buffer_pct) if fill_buffer_pct > 0 else s_price
+        sell_fill = (high >= sell_threshold) & (s_intensity > 0)
 
         equity = cash + inventory * close
         max_buy_cash = torch.where(

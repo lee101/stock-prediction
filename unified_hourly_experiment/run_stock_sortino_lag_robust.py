@@ -76,6 +76,18 @@ def parse_int_list(value: str) -> list[int]:
     return values
 
 
+def parse_float_list(value: str) -> list[float]:
+    values = []
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        values.append(float(token))
+    if not values:
+        raise ValueError(f"Expected at least one float, got {value!r}")
+    return values
+
+
 def parse_symbols(value: str) -> list[str]:
     symbols = [token.strip().upper() for token in value.split(",") if token.strip()]
     if not symbols:
@@ -131,6 +143,16 @@ def choose_best_epoch(checkpoint_dir: Path) -> int:
     if not checkpoints:
         raise FileNotFoundError(f"No checkpoints found under {checkpoint_dir}")
     return int(checkpoints[-1].stem.split("_")[1])
+
+
+def choose_epoch(checkpoint_dir: Path, override_epoch: Any | None) -> int:
+    if override_epoch is None:
+        return choose_best_epoch(checkpoint_dir)
+    epoch = int(override_epoch)
+    ckpt_path = checkpoint_dir / f"epoch_{epoch:03d}.pt"
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Requested checkpoint epoch does not exist: {ckpt_path}")
+    return epoch
 
 
 def load_model_for_epoch(checkpoint_dir: Path, epoch: int, device: torch.device):
@@ -299,6 +321,9 @@ def evaluate_lag_sweep(
         }
         lag_results.append(result_row)
     summary = summarize_lag_results(lag_results)
+    buys = [int(row.get("num_buys", 0)) for row in lag_results]
+    summary["num_buys_mean"] = float(sum(buys) / len(buys)) if buys else 0.0
+    summary["num_buys_min"] = float(min(buys)) if buys else 0.0
     return lag_results, summary
 
 
@@ -309,7 +334,23 @@ def train_one_config(
     symbols_arg: str,
     args: argparse.Namespace,
 ) -> Path:
-    checkpoint_dir = args.checkpoint_root / run_name
+    checkpoint_override = str(cfg.get("checkpoint_dir", "")).strip()
+    checkpoint_dir = Path(checkpoint_override) if checkpoint_override else (args.checkpoint_root / run_name)
+    if checkpoint_override and not bool(cfg.get("skip_train", False)):
+        raise ValueError(
+            f"Config {cfg.get('name', run_name)!r} sets checkpoint_dir but not skip_train=true. "
+            "checkpoint_dir is eval-only and must not be used for new training outputs."
+        )
+    if bool(cfg.get("skip_train", False)):
+        existing = sorted(checkpoint_dir.glob("epoch_*.pt"))
+        if not existing:
+            raise FileNotFoundError(
+                f"Config {cfg.get('name', run_name)!r} requested skip_train but no checkpoints were found in "
+                f"{checkpoint_dir}"
+            )
+        logger.info("Skipping training for {} and reusing {}", cfg["name"], checkpoint_dir)
+        return checkpoint_dir
+
     existing = sorted(checkpoint_dir.glob("epoch_*.pt"))
     if args.reuse_checkpoints and existing:
         logger.info("Reusing existing checkpoint run {}", run_name)
@@ -359,6 +400,9 @@ def train_one_config(
         "--seed",
         str(int(cfg.get("seed", args.seed))),
     ]
+    preload_checkpoint = str(cfg.get("preload_checkpoint", "")).strip()
+    if preload_checkpoint:
+        train_cmd.extend(["--preload", preload_checkpoint])
     if bool(cfg.get("market_order_entry", False)) or args.market_order_entry:
         train_cmd.append("--market-order-entry")
     if bool(cfg.get("no_compile", False)) or args.no_compile:
@@ -379,6 +423,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-configs", type=int, default=0)
     parser.add_argument("--experiment-name", type=str, default="")
     parser.add_argument("--eval-lags", type=str, default="0,1,2,3")
+    parser.add_argument("--eval-min-edges", type=str, default="")
+    parser.add_argument("--min-buys-mean", type=float, default=5.0)
     parser.add_argument("--validation-days", type=int, default=30)
     parser.add_argument("--horizon", type=int, default=1)
     parser.add_argument("--forecast-horizons", type=str, default="1,24")
@@ -416,6 +462,7 @@ def main() -> None:
     args = build_parser().parse_args()
     symbols = parse_symbols(args.symbols)
     lag_values = parse_int_list(args.eval_lags)
+    default_edge_values = parse_float_list(args.eval_min_edges) if args.eval_min_edges.strip() else [float(args.min_edge)]
     configs = load_configs(args.configs_json)
     if args.max_configs > 0:
         configs = configs[: args.max_configs]
@@ -440,11 +487,11 @@ def main() -> None:
 
     for idx, cfg in enumerate(configs, start=1):
         cfg_name = str(cfg["name"])
-        run_name = f"{exp_name}_{cfg_name}"
+        run_name = str(cfg.get("checkpoint_name") or f"{exp_name}_{cfg_name}")
         logger.info("[{}/{}] {}", idx, len(configs), cfg_name)
 
         checkpoint_dir = train_one_config(cfg, run_name=run_name, symbols_arg=",".join(symbols), args=args)
-        best_epoch = choose_best_epoch(checkpoint_dir)
+        best_epoch = choose_epoch(checkpoint_dir, cfg.get("checkpoint_epoch"))
         logger.info("Selected epoch {} for {}", best_epoch, cfg_name)
 
         model, feature_columns, sequence_length = load_model_for_epoch(checkpoint_dir, best_epoch, device)
@@ -469,19 +516,40 @@ def main() -> None:
             symbol_data=symbol_holdout,
             device=device,
         )
-        lag_rows, lag_summary = evaluate_lag_sweep(
-            bars,
-            actions,
-            symbols=used_symbols,
-            lags=lag_values,
-            initial_cash=args.initial_cash,
-            max_positions=args.max_positions,
-            min_edge=args.min_edge,
-            max_hold_hours=args.max_hold_hours,
-            trade_amount_scale=args.trade_amount_scale,
-            market_order_entry=args.market_order_entry,
-            horizon=args.horizon,
-        )
+        config_edge_values = default_edge_values
+        if "eval_min_edges" in cfg and str(cfg["eval_min_edges"]).strip():
+            config_edge_values = parse_float_list(str(cfg["eval_min_edges"]))
+        edge_sweep_rows: list[dict[str, Any]] = []
+        best_edge_row: dict[str, Any] | None = None
+        for edge in config_edge_values:
+            lag_rows, lag_summary = evaluate_lag_sweep(
+                bars,
+                actions,
+                symbols=used_symbols,
+                lags=lag_values,
+                initial_cash=args.initial_cash,
+                max_positions=int(cfg.get("eval_max_positions", args.max_positions)),
+                min_edge=float(edge),
+                max_hold_hours=int(cfg.get("eval_max_hold_hours", args.max_hold_hours)),
+                trade_amount_scale=float(cfg.get("eval_trade_amount_scale", args.trade_amount_scale)),
+                market_order_entry=bool(cfg.get("eval_market_order_entry", args.market_order_entry)),
+                horizon=args.horizon,
+            )
+            avg_buys = float(lag_summary.get("num_buys_mean", 0.0))
+            trade_shortfall = max(0.0, float(args.min_buys_mean) - avg_buys)
+            selection_score = float(lag_summary["robust_score"]) - 0.1 * trade_shortfall
+            edge_row = {
+                "min_edge": float(edge),
+                "selection_score": selection_score,
+                "lags": lag_rows,
+                "summary": lag_summary,
+            }
+            edge_sweep_rows.append(edge_row)
+            if best_edge_row is None or edge_row["selection_score"] > best_edge_row["selection_score"]:
+                best_edge_row = edge_row
+
+        if best_edge_row is None:
+            raise RuntimeError("Edge sweep produced no results")
 
         result_row = {
             "name": cfg_name,
@@ -492,21 +560,32 @@ def main() -> None:
             "used_symbols": used_symbols,
             "sequence_length": sequence_length,
             "feature_horizons": list(horizons),
-            "lags": lag_rows,
-            "summary": lag_summary,
+            "min_edge": best_edge_row["min_edge"],
+            "selection_score": best_edge_row["selection_score"],
+            "lags": best_edge_row["lags"],
+            "summary": best_edge_row["summary"],
+            "edge_sweep": edge_sweep_rows,
         }
         all_results.append(result_row)
         results_path.write_text(json.dumps(all_results, indent=2))
 
+        lag_summary = best_edge_row["summary"]
         logger.info(
-            "Config {} robust_score={:.4f} sortino_p10={:.4f} mean_ret={:+.2f}%",
+            "Config {} edge={:.4f} robust_score={:.4f} sel_score={:.4f} sortino_p10={:.4f} mean_ret={:+.2f}% mean_buys={:.1f}",
             cfg_name,
+            float(best_edge_row["min_edge"]),
             lag_summary["robust_score"],
+            float(best_edge_row["selection_score"]),
             lag_summary["sortino_p10"],
             lag_summary["return_mean_pct"],
+            lag_summary.get("num_buys_mean", 0.0),
         )
 
-    ranked = sorted(all_results, key=lambda row: row["summary"]["robust_score"], reverse=True)
+    ranked = sorted(
+        all_results,
+        key=lambda row: float(row.get("selection_score", row["summary"]["robust_score"])),
+        reverse=True,
+    )
     summary_payload = {
         "experiment_name": exp_name,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -516,12 +595,16 @@ def main() -> None:
             {
                 "name": row["name"],
                 "run_name": row["run_name"],
+                "min_edge": row.get("min_edge"),
+                "selection_score": row.get("selection_score"),
                 "robust_score": row["summary"]["robust_score"],
                 "sortino_p10": row["summary"]["sortino_p10"],
                 "sortino_mean": row["summary"]["sortino_mean"],
                 "return_mean_pct": row["summary"]["return_mean_pct"],
                 "max_drawdown_mean_pct": row["summary"]["max_drawdown_mean_pct"],
                 "pnl_smoothness_mean": row["summary"]["pnl_smoothness_mean"],
+                "num_buys_mean": row["summary"].get("num_buys_mean"),
+                "num_buys_min": row["summary"].get("num_buys_min"),
             }
             for row in ranked
         ],
@@ -533,8 +616,9 @@ def main() -> None:
     if ranked:
         best = ranked[0]
         logger.success(
-            "Best config {} | robust_score={:.4f} | sortino_p10={:.4f} | mean_return={:+.2f}%",
+            "Best config {} | sel_score={:.4f} | robust_score={:.4f} | sortino_p10={:.4f} | mean_return={:+.2f}%",
             best["name"],
+            float(best.get("selection_score", best["summary"]["robust_score"])),
             best["summary"]["robust_score"],
             best["summary"]["sortino_p10"],
             best["summary"]["return_mean_pct"],
