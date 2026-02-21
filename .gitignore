@@ -253,6 +253,9 @@ neuraldailyv3timed/checkpoints/
 experiments/model_sizes
 experiments/walk_forward/
 positions_shelf.json.bak
+experiments/stock_sortino_lag_robust_*/results.json
+binanceleveragesui/result_*.json
+binanceleveragesui/*sweep_results*.json
 tmp0pdsx9bp
 tmp0qpqh2a8
 tmp386ifzby
