@@ -55,12 +55,25 @@ def compute_pnl_smoothness_from_equity(equity_curve: Iterable[float] | np.ndarra
     return compute_pnl_smoothness(compute_return_series(equity_curve))
 
 
-def summarize_lag_results(lag_results: Sequence[Mapping[str, Any]]) -> dict[str, float]:
-    """Aggregate lag-sweep metrics into a single robust score."""
+def summarize_lag_results(
+    lag_results: Sequence[Mapping[str, Any]],
+    *,
+    sortino_clip: float = 10.0,
+) -> dict[str, float]:
+    """Aggregate lag-sweep metrics into a single robust score.
+
+    Per-lag Sortino can explode when downside variance is extremely close to zero.
+    We clip Sortino before aggregation so one pathological lag does not dominate
+    the robustness score.
+    """
     if not lag_results:
         raise ValueError("lag_results must not be empty")
 
-    sortinos = _to_1d_float_array(float(row.get("sortino", 0.0) or 0.0) for row in lag_results)
+    sortinos_raw = _to_1d_float_array(float(row.get("sortino", 0.0) or 0.0) for row in lag_results)
+    if sortino_clip > 0:
+        sortinos = np.clip(sortinos_raw, -float(sortino_clip), float(sortino_clip))
+    else:
+        sortinos = sortinos_raw
     returns = _to_1d_float_array(float(row.get("return_pct", 0.0) or 0.0) for row in lag_results)
     drawdowns = _to_1d_float_array(float(row.get("max_drawdown_pct", 0.0) or 0.0) for row in lag_results)
     smoothness = _to_1d_float_array(float(row.get("pnl_smoothness", 0.0) or 0.0) for row in lag_results)
@@ -83,12 +96,14 @@ def summarize_lag_results(lag_results: Sequence[Mapping[str, Any]]) -> dict[str,
 
     return {
         "lag_count": float(len(lag_results)),
+        "sortino_clip": float(sortino_clip),
         "sortino_mean": sortino_mean,
         "sortino_std": sortino_std,
         "sortino_p10": sortino_p10,
+        "sortino_mean_raw": float(np.mean(sortinos_raw)),
+        "sortino_std_raw": float(np.std(sortinos_raw)),
         "return_mean_pct": return_mean,
         "max_drawdown_mean_pct": drawdown_mean,
         "pnl_smoothness_mean": smoothness_mean,
         "robust_score": float(robust_score),
     }
-

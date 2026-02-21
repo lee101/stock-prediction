@@ -292,6 +292,7 @@ class BinanceHourlyTrainer:
                     "can_long": batch.get("can_long", True),
                     "max_leverage": self.config.max_leverage,
                     "market_order_entry": self.config.market_order_entry,
+                    "fill_buffer_pct": self.config.fill_buffer_pct,
                 }
                 base_lag = int(self.config.decision_lag_bars)
                 lag_range_str = self.config.decision_lag_range.strip()

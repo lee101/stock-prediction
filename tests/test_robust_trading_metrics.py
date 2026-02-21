@@ -48,3 +48,17 @@ def test_summarize_lag_results_requires_non_empty_input() -> None:
     with pytest.raises(ValueError, match="must not be empty"):
         summarize_lag_results([])
 
+
+def test_summarize_lag_results_clips_sortino_outliers() -> None:
+    lag_results = [
+        {"sortino": 0.0, "return_pct": 0.0, "max_drawdown_pct": 1.0, "pnl_smoothness": 0.001},
+        {"sortino": 0.0, "return_pct": 0.0, "max_drawdown_pct": 1.0, "pnl_smoothness": 0.001},
+        {"sortino": 100.0, "return_pct": 0.0, "max_drawdown_pct": 1.0, "pnl_smoothness": 0.001},
+    ]
+
+    clipped = summarize_lag_results(lag_results, sortino_clip=10.0)
+    unclipped = summarize_lag_results(lag_results, sortino_clip=0.0)
+
+    assert clipped["sortino_mean"] == pytest.approx(10.0 / 3.0)
+    assert clipped["sortino_std"] < unclipped["sortino_std"]
+    assert clipped["sortino_std_raw"] == pytest.approx(unclipped["sortino_std"])
