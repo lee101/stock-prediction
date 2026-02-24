@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SUI 4x margin trading bot for Binance cross-margin.
+"""Binance cross-margin trading bot (generic symbol).
 
-Trades SUIUSDT with up to 4x leverage. Auto-borrows USDT on entry
+Trades any symbol with configurable leverage. Auto-borrows USDT on entry
 (MARGIN_BUY), auto-repays on exit (AUTO_REPAY). Repays outstanding
 loans when flat.
 """
@@ -42,7 +42,9 @@ from binanceneural.trade_binance_hourly import _ensure_valid_levels
 from binancechronossolexperiment.data import ChronosSolDataModule, SplitConfig
 from binancechronossolexperiment.inference import load_policy_checkpoint
 
-SYMBOL = "SUIUSDT"
+SYMBOL = "SUIUSDT"  # overridden by --symbol
+BASE_ASSET = "SUI"  # derived from SYMBOL
+TAG = "margin"  # log prefix
 STATE_FILE = Path("strategy_state/margin_sui_state.json")
 MIN_POSITION_NOTIONAL = 5.0
 
@@ -84,25 +86,26 @@ class MarginState:
             return cls()
 
 
-def _refresh_price_csv(symbol: str, data_root: Path):
+def _refresh_price_csv(data_symbol: str, data_root: Path):
     try:
         from binance_data_wrapper import fetch_binance_hourly_bars
     except ImportError:
         return
-    csv_path = data_root / f"{symbol.upper()}.csv"
+    csv_path = data_root / f"{data_symbol.upper()}.csv"
     if not csv_path.exists():
         return
     existing = pd.read_csv(csv_path)
     existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True)
     last_ts = existing["timestamp"].max()
+    # Use SYMBOL (Binance trading pair) for API, data_symbol for file
     try:
-        new = fetch_binance_hourly_bars(symbol.upper(), start=last_ts, end=datetime.now(timezone.utc))
+        new = fetch_binance_hourly_bars(SYMBOL, start=last_ts, end=datetime.now(timezone.utc))
     except Exception:
         return
     if new is None or len(new) == 0:
         return
     new = new.reset_index()
-    new["symbol"] = symbol.upper()
+    new["symbol"] = data_symbol.upper()
     new["timestamp"] = pd.to_datetime(new["timestamp"], utc=True)
     new = new[new["timestamp"] > last_ts]
     if len(new) == 0:
@@ -111,7 +114,7 @@ def _refresh_price_csv(symbol: str, data_root: Path):
     combined = combined.drop_duplicates(subset="timestamp", keep="last")
     combined = combined.sort_values("timestamp").reset_index(drop=True)
     combined.to_csv(csv_path, index=False)
-    print(f"[margin-sui] data: +{len(new)} rows")
+    print(f"[{TAG}] data: +{len(new)} rows")
 
 
 def _load_live_frame(
@@ -140,28 +143,28 @@ def _load_live_frame(
 def _get_margin_equity() -> dict:
     """Returns margin account balances and total equity in USDT."""
     usdt_entry = get_margin_asset_balance("USDT")
-    sui_entry = get_margin_asset_balance("SUI")
+    asset_entry = get_margin_asset_balance(BASE_ASSET)
     usdt_free = float(usdt_entry.get("free", 0)) if usdt_entry else 0.0
     usdt_locked = float(usdt_entry.get("locked", 0)) if usdt_entry else 0.0
     usdt_borrowed = float(usdt_entry.get("borrowed", 0)) if usdt_entry else 0.0
     usdt_net = float(usdt_entry.get("netAsset", 0)) if usdt_entry else 0.0
-    sui_free = float(sui_entry.get("free", 0)) if sui_entry else 0.0
-    sui_locked = float(sui_entry.get("locked", 0)) if sui_entry else 0.0
-    sui_borrowed = float(sui_entry.get("borrowed", 0)) if sui_entry else 0.0
-    sui_net = float(sui_entry.get("netAsset", 0)) if sui_entry else 0.0
-    sui_total = sui_free + sui_locked
+    asset_free = float(asset_entry.get("free", 0)) if asset_entry else 0.0
+    asset_locked = float(asset_entry.get("locked", 0)) if asset_entry else 0.0
+    asset_borrowed = float(asset_entry.get("borrowed", 0)) if asset_entry else 0.0
+    asset_net = float(asset_entry.get("netAsset", 0)) if asset_entry else 0.0
+    asset_total = asset_free + asset_locked
     try:
         market_price = float(binance_wrapper.get_symbol_price(SYMBOL))
     except Exception:
         market_price = 0.0
-    sui_value = sui_total * market_price
-    equity = usdt_net + sui_net * market_price
+    asset_value = asset_total * market_price
+    equity = usdt_net + asset_net * market_price
     return {
         "usdt_free": usdt_free, "usdt_locked": usdt_locked,
         "usdt_borrowed": usdt_borrowed, "usdt_net": usdt_net,
-        "sui_free": sui_free, "sui_locked": sui_locked,
-        "sui_borrowed": sui_borrowed, "sui_total": sui_total,
-        "sui_value": sui_value, "market_price": market_price,
+        "asset_free": asset_free, "asset_locked": asset_locked,
+        "asset_borrowed": asset_borrowed, "asset_total": asset_total,
+        "asset_value": asset_value, "market_price": market_price,
         "equity": equity,
     }
 
@@ -173,71 +176,93 @@ def _repay_outstanding(asset: str = "USDT"):
     cancel_all_margin_orders(SYMBOL)
     try:
         margin_repay_all(asset)
-        print(f"[margin-sui] repaid {borrowed:.4f} {asset}")
+        print(f"[{TAG}] repaid {borrowed:.4f} {asset}")
     except Exception as exc:
         free = get_margin_free_balance(asset)
         if free > 0.01:
             from src.binan.binance_margin import margin_repay
             try:
                 margin_repay(asset, free * 0.999)
-                print(f"[margin-sui] partial repay {free:.4f} {asset}")
+                print(f"[{TAG}] partial repay {free:.4f} {asset}")
             except Exception as exc2:
-                print(f"[margin-sui] repay failed: {exc2}")
+                print(f"[{TAG}] repay failed: {exc2}")
         else:
-            print(f"[margin-sui] repay failed: {exc}")
+            print(f"[{TAG}] repay failed: {exc}")
 
 
-def _run_cycle(
-    checkpoint_path: Path,
+def _refresh_signal(
+    model,
+    normalizer,
+    feature_columns,
     *,
-    max_leverage: float,
     horizon: int,
     sequence_length: int,
     intensity_scale: float,
-    min_gap_pct: float,
-    max_hold_hours: Optional[int],
-    poll_seconds: int,
-    expiry_minutes: int,
-    price_tolerance: float,
     data_root: Path,
     forecast_cache: Path,
     forecast_horizons: tuple,
-    state_path: Path,
-    dry_run: bool,
-):
-    _refresh_price_csv(SYMBOL, data_root)
-
-    model, normalizer, feature_columns, cfg = load_policy_checkpoint(str(checkpoint_path))
-
-    frame = _load_live_frame(SYMBOL, data_root, forecast_cache, forecast_horizons, sequence_length)
-
+    data_symbol: str,
+) -> dict:
+    _refresh_price_csv(data_symbol, data_root)
+    frame = _load_live_frame(data_symbol, data_root, forecast_cache, forecast_horizons, sequence_length)
     action = generate_latest_action(
-        model=model,
-        frame=frame,
-        feature_columns=feature_columns,
-        normalizer=normalizer,
-        sequence_length=sequence_length,
-        horizon=horizon,
-        require_gpu=True,
+        model=model, frame=frame, feature_columns=feature_columns,
+        normalizer=normalizer, sequence_length=sequence_length,
+        horizon=horizon, require_gpu=True,
     )
     action["symbol"] = SYMBOL
-
     last_row = frame.iloc[-1]
     for col in [f"predicted_high_p50_h{horizon}", f"predicted_low_p50_h{horizon}", f"predicted_close_p50_h{horizon}"]:
         if col in frame.columns:
             action[col] = float(last_row[col])
 
+    buy_price = float(action.get("buy_price", 0))
+    sell_price = float(action.get("sell_price", 0))
+    buy_amount = max(0.0, min(100.0, float(action.get("buy_amount", 0)) * intensity_scale))
+    sell_amount = max(0.0, min(100.0, float(action.get("sell_amount", 0)) * intensity_scale))
+
+    MIN_SPREAD_BP = 0.002
+    if buy_price > 0 and sell_price > 0 and sell_price <= buy_price * (1 + MIN_SPREAD_BP):
+        mid = (buy_price + sell_price) / 2
+        buy_price = mid * (1 - MIN_SPREAD_BP / 2)
+        sell_price = mid * (1 + MIN_SPREAD_BP / 2)
+        print(f"[{TAG}] WARNING: sell<=buy, forced 20bp spread buy={buy_price:.4f} sell={sell_price:.4f}")
+
+    print(f"[{TAG}] signal buy={buy_price:.4f}({buy_amount:.1f}%) sell={sell_price:.4f}({sell_amount:.1f}%)")
+    return {"buy_price": buy_price, "sell_price": sell_price,
+            "buy_amount": buy_amount, "sell_amount": sell_amount,
+            "ts": time.monotonic()}
+
+
+def _fast_check(
+    signal: dict,
+    rules,
+    *,
+    max_leverage: float,
+    min_gap_pct: float,
+    max_hold_hours: Optional[int],
+    poll_seconds: int,
+    expiry_minutes: int,
+    price_tolerance: float,
+    state_path: Path,
+    dry_run: bool,
+):
+    buy_price = signal["buy_price"]
+    sell_price = signal["sell_price"]
+    buy_amount = signal["buy_amount"]
+    sell_amount = signal["sell_amount"]
+
     bal = _get_margin_equity()
     equity = bal["equity"]
     market_price = bal["market_price"]
-    sui_total = bal["sui_total"]
-    sui_value = bal["sui_value"]
+    asset_total = bal["asset_total"]
+    asset_value = bal["asset_value"]
 
     state = MarginState.load(state_path)
 
-    if sui_value >= MIN_POSITION_NOTIONAL:
+    if asset_value >= MIN_POSITION_NOTIONAL:
         if not state.in_position:
-            print(f"[margin-sui] detected position: {sui_total:.4f} SUI (${sui_value:.2f})")
+            print(f"[{TAG}] detected position: {asset_total:.4f} {BASE_ASSET} (${asset_value:.2f})")
             state.in_position = True
             if not state.open_ts:
                 state.open_ts = datetime.now(timezone.utc).isoformat()
@@ -246,35 +271,20 @@ def _run_cycle(
             state.save(state_path)
     else:
         if state.in_position:
-            print(f"[margin-sui] position closed")
+            print(f"[{TAG}] position closed")
             state = MarginState()
             state.save(state_path)
         _repay_outstanding("USDT")
 
-    buy_price = float(action.get("buy_price", 0))
-    sell_price = float(action.get("sell_price", 0))
-    buy_amount = max(0.0, min(100.0, float(action.get("buy_amount", 0)) * intensity_scale))
-    sell_amount = max(0.0, min(100.0, float(action.get("sell_amount", 0)) * intensity_scale))
-
-    MIN_SPREAD_BP = 0.002  # 20bp minimum spread
-    if buy_price > 0 and sell_price > 0 and sell_price <= buy_price * (1 + MIN_SPREAD_BP):
-        mid = (buy_price + sell_price) / 2
-        buy_price = mid * (1 - MIN_SPREAD_BP / 2)
-        sell_price = mid * (1 + MIN_SPREAD_BP / 2)
-        print(f"[margin-sui] WARNING: sell<=buy, forced 20bp spread buy={buy_price:.4f} sell={sell_price:.4f}")
-
-    current_leverage = sui_value / equity if equity > 0 else 0.0
+    current_leverage = asset_value / equity if equity > 0 else 0.0
     print(
-        f"[margin-sui] eq=${equity:.2f} usdt_free=${bal['usdt_free']:.2f} usdt_borrow=${bal['usdt_borrowed']:.2f} "
-        f"sui={sui_total:.4f} pos=${sui_value:.2f} lev={current_leverage:.1f}x price={market_price:.4f}"
+        f"[{TAG}] eq=${equity:.2f} usdt_free=${bal['usdt_free']:.2f} usdt_borrow=${bal['usdt_borrowed']:.2f} "
+        f"{BASE_ASSET}={asset_total:.4f} pos=${asset_value:.2f} lev={current_leverage:.1f}x price={market_price:.4f}"
     )
-    print(f"[margin-sui] signal buy={buy_price:.4f}({buy_amount:.1f}%) sell={sell_price:.4f}({sell_amount:.1f}%)")
-
-    rules = resolve_symbol_rules(SYMBOL)
 
     if state.in_position:
         _handle_exit(
-            state, sui_total, market_price, rules,
+            state, asset_total, market_price, rules,
             sell_price=sell_price, sell_amount=sell_amount,
             buy_price=buy_price,
             min_gap_pct=min_gap_pct, max_hold_hours=max_hold_hours,
@@ -283,7 +293,7 @@ def _run_cycle(
             state_path=state_path,
         )
         if current_leverage < max_leverage and buy_amount > 0 and buy_price > 0:
-            remaining_power = equity * max_leverage - sui_value
+            remaining_power = equity * max_leverage - asset_value
             if remaining_power > rules.min_notional:
                 _handle_add(
                     remaining_power, rules,
@@ -305,7 +315,7 @@ def _run_cycle(
 
 def _handle_exit(
     state: MarginState,
-    sui_total: float,
+    asset_total: float,
     market_price: float,
     rules,
     *,
@@ -324,14 +334,14 @@ def _handle_exit(
     force_close = max_hold_hours is not None and hours >= max_hold_hours
 
     if force_close:
-        print(f"[margin-sui] FORCE CLOSE after {hours:.1f}h (max={max_hold_hours}h)")
+        print(f"[{TAG}] FORCE CLOSE after {hours:.1f}h (max={max_hold_hours}h)")
         sell_p = market_price * 0.999
         validated = _ensure_valid_levels(SYMBOL, sell_p * 0.99, sell_p, min_gap_pct=min_gap_pct, rules=rules)
         if validated is None:
-            print(f"[margin-sui] invalid force-close price")
+            print(f"[{TAG}] invalid force-close price")
             return
         _, sell_p = validated
-        sell_qty = quantize_qty(sui_total, step_size=rules.step_size)
+        sell_qty = quantize_qty(asset_total, step_size=rules.step_size)
         if sell_qty > 0:
             spawn_watcher(WatcherPlan(
                 symbol=SYMBOL, side="sell", mode="exit",
@@ -340,11 +350,11 @@ def _handle_exit(
                 price_tolerance=price_tolerance * 3, dry_run=dry_run,
                 margin=True, side_effect_type="AUTO_REPAY",
             ))
-            print(f"[margin-sui] force-close sell={sell_p:.4f} qty={sell_qty:.4f}")
+            print(f"[{TAG}] force-close sell={sell_p:.4f} qty={sell_qty:.4f}")
         return
 
     if sell_amount <= 0 or sell_price <= 0:
-        print(f"[margin-sui] holding ({hours:.1f}h), no sell signal")
+        print(f"[{TAG}] holding ({hours:.1f}h), no sell signal")
         return
 
     bp = buy_price if buy_price > 0 else sell_price * 0.99
@@ -352,18 +362,18 @@ def _handle_exit(
     bp, sp = enforce_gap(SYMBOL, bp, sp, min_gap_pct=min_gap_pct)
     validated = _ensure_valid_levels(SYMBOL, bp, sp, min_gap_pct=min_gap_pct, rules=rules)
     if validated is None:
-        print(f"[margin-sui] invalid exit prices")
+        print(f"[{TAG}] invalid exit prices")
         return
     _, sp = validated
 
     sell_intensity = max(0.0, min(1.0, sell_amount / 100.0))
-    sell_qty = quantize_qty(sui_total * sell_intensity, step_size=rules.step_size)
+    sell_qty = quantize_qty(asset_total * sell_intensity, step_size=rules.step_size)
 
     if sell_qty <= 0:
-        print(f"[margin-sui] holding ({hours:.1f}h), sell qty too small")
+        print(f"[{TAG}] holding ({hours:.1f}h), sell qty too small")
         return
     if rules.min_notional and sell_qty * sp < rules.min_notional:
-        print(f"[margin-sui] holding ({hours:.1f}h), below min notional")
+        print(f"[{TAG}] holding ({hours:.1f}h), below min notional")
         return
 
     spawn_watcher(WatcherPlan(
@@ -373,7 +383,7 @@ def _handle_exit(
         price_tolerance=price_tolerance, dry_run=dry_run,
         margin=True, side_effect_type="AUTO_REPAY",
     ))
-    print(f"[margin-sui] EXIT sell={sp:.4f} qty={sell_qty:.4f} amt={sell_amount:.1f}%")
+    print(f"[{TAG}] EXIT sell={sp:.4f} qty={sell_qty:.4f} amt={sell_amount:.1f}%")
 
 
 def _handle_add(
@@ -407,7 +417,7 @@ def _handle_add(
         margin=True, side_effect_type="MARGIN_BUY",
     ))
     notional = buy_qty * bp
-    print(f"[margin-sui] ADD buy={bp:.4f} qty={buy_qty:.2f} notional=${notional:.2f} (remaining leverage)")
+    print(f"[{TAG}] ADD buy={bp:.4f} qty={buy_qty:.2f} notional=${notional:.2f} (remaining leverage)")
 
 
 def _handle_entry(
@@ -425,21 +435,21 @@ def _handle_entry(
     dry_run: bool,
 ):
     if buy_amount <= 0 or buy_price <= 0:
-        print(f"[margin-sui] flat, no buy signal")
+        print(f"[{TAG}] flat, no buy signal")
         return
     if equity <= 0:
-        print(f"[margin-sui] no equity in margin account")
+        print(f"[{TAG}] no equity in margin account")
         return
 
     bp, sp = enforce_min_spread(buy_price, sell_price, min_spread_pct=min_gap_pct)
     bp, sp = enforce_gap(SYMBOL, bp, sp, min_gap_pct=min_gap_pct)
     if bp <= 0 or sp <= 0 or bp >= sp:
-        print(f"[margin-sui] invalid entry prices")
+        print(f"[{TAG}] invalid entry prices")
         return
 
     validated = _ensure_valid_levels(SYMBOL, bp, sp, min_gap_pct=min_gap_pct, rules=rules)
     if validated is None:
-        print(f"[margin-sui] invalid entry levels")
+        print(f"[{TAG}] invalid entry levels")
         return
     bp, _ = validated
 
@@ -447,10 +457,10 @@ def _handle_entry(
     buy_qty = quantize_qty(buying_power / bp, step_size=rules.step_size)
 
     if buy_qty <= 0:
-        print(f"[margin-sui] buy qty too small")
+        print(f"[{TAG}] buy qty too small")
         return
     if rules.min_notional and buy_qty * bp < rules.min_notional:
-        print(f"[margin-sui] below min notional")
+        print(f"[{TAG}] below min notional")
         return
 
     spawn_watcher(WatcherPlan(
@@ -461,11 +471,14 @@ def _handle_entry(
         margin=True, side_effect_type="MARGIN_BUY",
     ))
     notional = buy_qty * bp
-    print(f"[margin-sui] ENTER buy={bp:.4f} qty={buy_qty:.2f} notional=${notional:.2f} lev={max_leverage}x")
+    print(f"[{TAG}] ENTER buy={bp:.4f} qty={buy_qty:.2f} notional=${notional:.2f} lev={max_leverage}x")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SUI margin trading bot")
+    global SYMBOL, BASE_ASSET, TAG, STATE_FILE
+    parser = argparse.ArgumentParser(description="Binance margin trading bot")
+    parser.add_argument("--symbol", default="SUIUSDT", help="Trading pair e.g. DOGEUSDT")
+    parser.add_argument("--data-symbol", default=None, help="Symbol for data/cache lookup (default: same as --symbol)")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--max-leverage", type=float, default=4.0)
     parser.add_argument("--horizon", type=int, default=1)
@@ -481,42 +494,83 @@ def main():
     parser.add_argument("--forecast-horizons", default="1,4,24")
     parser.add_argument("--state-path", default=str(STATE_FILE))
     parser.add_argument("--cycle-minutes", type=int, default=5)
+    parser.add_argument("--fast-check-seconds", type=int, default=30)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
+    SYMBOL = args.symbol.upper()
+    DATA_SYMBOL = (args.data_symbol or SYMBOL).upper()
+    BASE_ASSET = SYMBOL.replace("USDT", "").replace("USD", "")
+    TAG = f"margin-{BASE_ASSET.lower()}"
+    if args.state_path == str(Path("strategy_state/margin_sui_state.json")):
+        STATE_FILE = Path(f"strategy_state/margin_{BASE_ASSET.lower()}_state.json")
+        state_path = STATE_FILE
+    else:
+        state_path = Path(args.state_path)
+
     checkpoint_path = Path(args.checkpoint).expanduser().resolve()
     forecast_horizons = tuple(int(h) for h in args.forecast_horizons.split(","))
+    data_root = Path(args.data_root)
+    forecast_cache = Path(args.forecast_cache)
+    signal_interval = args.cycle_minutes * 60
+    fast_interval = args.fast_check_seconds
+
+    print(f"[{TAG}] loading model from {checkpoint_path}")
+    model, normalizer, feature_columns, cfg = load_policy_checkpoint(str(checkpoint_path))
+    rules = resolve_symbol_rules(SYMBOL)
+    print(f"[{TAG}] {SYMBOL} model loaded, signal every {signal_interval}s, fast check every {fast_interval}s")
+
+    signal: Optional[dict] = None
+    last_signal_time = 0.0
 
     while True:
+        now = time.monotonic()
+
+        if now - last_signal_time >= signal_interval or signal is None:
+            try:
+                signal = _refresh_signal(
+                    model, normalizer, feature_columns,
+                    horizon=args.horizon,
+                    sequence_length=args.sequence_length,
+                    intensity_scale=args.intensity_scale,
+                    data_root=data_root,
+                    forecast_cache=forecast_cache,
+                    forecast_horizons=forecast_horizons,
+                    data_symbol=DATA_SYMBOL,
+                )
+                last_signal_time = now
+            except Exception as exc:
+                print(f"[{TAG}] signal error: {exc}")
+                import traceback; traceback.print_exc()
+                if signal is None:
+                    time.sleep(fast_interval)
+                    continue
+
+        signal_age = now - last_signal_time
+        if signal_age > signal_interval * 2:
+            print(f"[{TAG}] WARNING: signal is {signal_age:.0f}s old (stale)")
+
         try:
-            _run_cycle(
-                checkpoint_path,
+            _fast_check(
+                signal, rules,
                 max_leverage=args.max_leverage,
-                horizon=args.horizon,
-                sequence_length=args.sequence_length,
-                intensity_scale=args.intensity_scale,
                 min_gap_pct=args.min_gap_pct,
                 max_hold_hours=args.max_hold_hours,
                 poll_seconds=args.poll_seconds,
                 expiry_minutes=args.expiry_minutes,
                 price_tolerance=args.price_tolerance,
-                data_root=Path(args.data_root),
-                forecast_cache=Path(args.forecast_cache),
-                forecast_horizons=forecast_horizons,
-                state_path=Path(args.state_path),
+                state_path=state_path,
                 dry_run=args.dry_run,
             )
         except Exception as exc:
-            print(f"[margin-sui] cycle error: {exc}")
-            import traceback
-            traceback.print_exc()
+            print(f"[{TAG}] fast_check error: {exc}")
+            import traceback; traceback.print_exc()
 
         if args.once:
             break
-        sleep_sec = args.cycle_minutes * 60
-        print(f"[margin-sui] sleeping {sleep_sec}s...")
-        time.sleep(sleep_sec)
+        print(f"[{TAG}] sleeping {fast_interval}s...")
+        time.sleep(fast_interval)
 
 
 if __name__ == "__main__":

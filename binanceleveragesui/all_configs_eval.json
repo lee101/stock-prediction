@@ -1,0 +1,38 @@
+[
+  {
+    "tag": "SUIUSDT_rw10_wd03",
+    "best_epoch": "epoch_001",
+    "best_edge": "edge10",
+    "best_sortino": -5.835256019282976
+  },
+  {
+    "tag": "SUIUSDT_rw10_wd05",
+    "best_epoch": "epoch_001",
+    "best_edge": "edge10",
+    "best_sortino": -6.677372085362848
+  },
+  {
+    "tag": "SUIUSDT_rw30_wd03",
+    "best_epoch": "epoch_001",
+    "best_edge": "edge0",
+    "best_sortino": -0.3563832127321921
+  },
+  {
+    "tag": "SUIUSDT_rw30_wd05",
+    "best_epoch": "epoch_001",
+    "best_edge": "edge8",
+    "best_sortino": -3.3668788984503357
+  },
+  {
+    "tag": "SUIUSDT_rw50_wd03",
+    "best_epoch": "epoch_001",
+    "best_edge": "edge10",
+    "best_sortino": -0.3502428334625761
+  },
+  {
+    "tag": "SUIUSDT_rw50_wd05",
+    "best_epoch": "epoch_001",
+    "best_edge": "edge10",
+    "best_sortino": -5.492050546637836
+  }
+]
