@@ -62,7 +62,7 @@ def run_backtest(model, feature_columns, symbols, config, device, args):
             symbol=symbol,
             data_root=str(args.data_root),
             forecast_cache_root=str(args.cache_root),
-            forecast_horizons=[1, 24],
+            forecast_horizons=[int(h) for h in args.forecast_horizons.split(",")],
             sequence_length=config.get("sequence_length", 32),
             min_history_hours=100,
             validation_days=30,
@@ -164,6 +164,7 @@ def main():
     parser.add_argument("--cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
     parser.add_argument("--initial-cash", type=float, default=10000)
     parser.add_argument("--min-edge", type=float, default=0.001)
+    parser.add_argument("--forecast-horizons", type=str, default="1", help="Comma-sep horizons")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

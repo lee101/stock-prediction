@@ -26,7 +26,8 @@ from src.torch_load_utils import torch_load_compat
 
 def backtest_checkpoint(ckpt_path: Path, config: dict, symbols: list,
                         data_modules: dict, normalizer, device, min_edge: float,
-                        initial_cash: float):
+                        initial_cash: float, bar_margin: float = 0.0,
+                        max_hold_hours: int = None):
     ckpt = torch_load_compat(ckpt_path, map_location="cpu", weights_only=False)
     state_dict = ckpt.get("state_dict", ckpt)
 
@@ -66,6 +67,7 @@ def backtest_checkpoint(ckpt_path: Path, config: dict, symbols: list,
         initial_cash=initial_cash, min_edge=min_edge,
         enforce_market_hours=True, close_at_eod=True,
         symbols=symbols, max_leverage_stock=1.0, max_leverage_crypto=1.0,
+        bar_margin=bar_margin, max_hold_hours=max_hold_hours,
     )
     result = run_unified_simulation(bars, actions, sim_config, horizon=1)
     ret = (result.equity_curve.iloc[-1] / initial_cash - 1) * 100
@@ -81,6 +83,8 @@ def main():
     parser.add_argument("--cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
     parser.add_argument("--initial-cash", type=float, default=10000)
     parser.add_argument("--min-edge", type=float, default=0.001)
+    parser.add_argument("--bar-margin", type=float, default=0.0)
+    parser.add_argument("--max-hold-hours", type=int, default=None)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -117,7 +121,8 @@ def main():
         epoch = int(ckpt_path.stem.split("_")[1])
         ret, sortino, trades = backtest_checkpoint(
             ckpt_path, config, symbols, data_modules, normalizer,
-            device, args.min_edge, args.initial_cash)
+            device, args.min_edge, args.initial_cash, bar_margin=args.bar_margin,
+            max_hold_hours=args.max_hold_hours)
         logger.info("Epoch {:3d}: Return={:+.2f}%, Sortino={:.2f}, Trades={}",
                      epoch, ret, sortino, trades)
         results.append({"epoch": epoch, "return": ret, "sortino": sortino, "trades": trades})
