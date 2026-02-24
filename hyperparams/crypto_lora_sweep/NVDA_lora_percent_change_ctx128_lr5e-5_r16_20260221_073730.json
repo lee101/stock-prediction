@@ -1,0 +1,19 @@
+{
+  "run_name": "NVDA_lora_percent_change_ctx128_lr5e-5_r16_20260221_073730",
+  "config": {
+    "symbol": "NVDA",
+    "preaug": "percent_change",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 50.87110137939453,
+    "mae_percent_std": 10.847268104553223
+  },
+  "test": {
+    "mae_percent_mean": 181.54861450195312,
+    "mae_percent_std": 57.11830520629883
+  }
+}

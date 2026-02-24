@@ -1,0 +1,19 @@
+{
+  "run_name": "GOOG_lora_log_returns_ctx128_lr5e-5_r16_20260221_080308",
+  "config": {
+    "symbol": "GOOG",
+    "preaug": "log_returns",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 82.08322143554688,
+    "mae_percent_std": 24.263784408569336
+  },
+  "test": {
+    "mae_percent_mean": 24.162799835205078,
+    "mae_percent_std": 10.485299110412598
+  }
+}

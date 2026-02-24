@@ -1,8 +1,9 @@
-"""Opus 4.6 vs Chronos2 return forecasting comparison on BTCUSD."""
+"""Gemini 3.1 Pro (via OpenRouter) vs Chronos2 return forecasting comparison on BTCUSD."""
 
 import os
 import re
 import asyncio
+import requests
 from pathlib import Path
 from typing import Optional
 
@@ -14,19 +15,12 @@ from tqdm import tqdm
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import anthropic
 
 from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 from src.cache import async_cache_decorator
-from env_real import ANTHROPIC_API_KEY
 
-OPUS46_MODEL_ID = os.getenv("OPUS46_MODEL_ID", "claude-opus-4-6")
-
-api_key = ANTHROPIC_API_KEY or os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
-if not api_key:
-    raise RuntimeError("Set ANTHROPIC_API_KEY or CLAUDE_API_KEY")
-
-client = anthropic.Anthropic(api_key=api_key)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
+GEMINI_MODEL = "google/gemini-2.5-pro"
 
 base_dir = Path(__file__).parent
 data_path = base_dir / "trainingdata" / "BTCUSD.csv"
@@ -70,21 +64,29 @@ def analyse_prediction(pred: str) -> float:
 
 
 @async_cache_decorator(typed=True)
-async def query_opus46(prompt: str, system_message: str) -> Optional[str]:
+async def query_gemini(prompt: str, system_message: str) -> Optional[str]:
     try:
-        message = client.messages.create(
-            model=OPUS46_MODEL_ID,
-            max_tokens=16000,
-            thinking={"type": "enabled", "budget_tokens": 10000},
-            messages=[{"role": "user", "content": f"{system_message}\n\n{prompt}"}],
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": GEMINI_MODEL,
+                "max_tokens": 8000,
+                "messages": [
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+            timeout=120,
         )
-        if message.content:
-            for block in message.content:
-                if hasattr(block, 'text'):
-                    return block.text
-        return None
+        resp.raise_for_status()
+        data_resp = resp.json()
+        return data_resp["choices"][0]["message"]["content"]
     except Exception as e:
-        logger.error(f"Opus 4.6 error: {e}")
+        logger.error(f"Gemini error: {e}")
         return None
 
 
@@ -113,12 +115,12 @@ def predict_chronos2_return(context_df: pd.DataFrame, close_col: str) -> float:
 
 
 chronos2_forecasts = []
-opus46_forecasts = []
+gemini_forecasts = []
 chronos2_err = 0.0
-opus46_err = 0.0
+gemini_err = 0.0
 n = 0
 
-print(f"Opus 4.6 ({OPUS46_MODEL_ID}) vs Chronos2 -- {end_idx - start_idx} predictions")
+print(f"Gemini 3.1 Pro ({GEMINI_MODEL}) via OpenRouter vs Chronos2 -- {end_idx - start_idx} predictions")
 
 with tqdm(range(start_idx, end_idx), desc="Forecasting") as pbar:
     for t in pbar:
@@ -133,49 +135,49 @@ with tqdm(range(start_idx, end_idx), desc="Forecasting") as pbar:
             f"Given these recent return values: {recent}, predict the next return value as a decimal number. "
             "End your response with the numeric prediction alone on the last line."
         )
-        o46_response = asyncio.run(query_opus46(
+        gem_response = asyncio.run(query_gemini(
             prompt,
             system_message="You are a number guessing system. Provide minimal reasoning if needed, "
             "and ensure the final line of your reply is just the numeric prediction with no trailing text.",
         ))
-        o46_pred = analyse_prediction(o46_response)
+        gem_pred = analyse_prediction(gem_response)
 
         chronos2_forecasts.append({'idx': t, 'actual': actual, 'predicted': c2_pred})
-        opus46_forecasts.append({'idx': t, 'actual': actual, 'predicted': o46_pred})
+        gemini_forecasts.append({'idx': t, 'actual': actual, 'predicted': gem_pred})
 
         n += 1
         chronos2_err += abs(actual - c2_pred)
-        opus46_err += abs(actual - o46_pred)
+        gemini_err += abs(actual - gem_pred)
 
-        pbar.set_postfix(c2_mae=chronos2_err/n, o46_mae=opus46_err/n)
+        pbar.set_postfix(c2_mae=chronos2_err/n, gem_mae=gemini_err/n)
 
 c2_df = pd.DataFrame(chronos2_forecasts)
-o46_df = pd.DataFrame(opus46_forecasts)
+gem_df = pd.DataFrame(gemini_forecasts)
 
 c2_mae = mean_absolute_error(c2_df['actual'], c2_df['predicted'])
 c2_mape = mean_absolute_percentage_error(c2_df['actual'], c2_df['predicted'])
-o46_mae = mean_absolute_error(o46_df['actual'], o46_df['predicted'])
-o46_mape = mean_absolute_percentage_error(o46_df['actual'], o46_df['predicted'])
+gem_mae = mean_absolute_error(gem_df['actual'], gem_df['predicted'])
+gem_mape = mean_absolute_percentage_error(gem_df['actual'], gem_df['predicted'])
 
 print("\n" + "=" * 60)
-print("RESULTS: Opus 4.6 vs Chronos2")
+print("RESULTS: Gemini 3.1 Pro vs Chronos2")
 print("=" * 60)
-print(f"Chronos2  MAE: {c2_mae:.6f}  MAPE: {c2_mape:.6f}")
-print(f"Opus 4.6  MAE: {o46_mae:.6f}  MAPE: {o46_mape:.6f}")
+print(f"Chronos2      MAE: {c2_mae:.6f}  MAPE: {c2_mape:.6f}")
+print(f"Gemini 3.1Pro MAE: {gem_mae:.6f}  MAPE: {gem_mape:.6f}")
 print("-" * 60)
-if c2_mae < o46_mae:
-    pct = ((o46_mae - c2_mae) / o46_mae) * 100
+if c2_mae < gem_mae:
+    pct = ((gem_mae - c2_mae) / gem_mae) * 100
     print(f"WINNER: Chronos2 ({pct:.1f}% lower MAE)")
 else:
-    pct = ((c2_mae - o46_mae) / c2_mae) * 100
-    print(f"WINNER: Opus 4.6 ({pct:.1f}% lower MAE)")
+    pct = ((c2_mae - gem_mae) / c2_mae) * 100
+    print(f"WINNER: Gemini 3.1 Pro ({pct:.1f}% lower MAE)")
 
 plt.figure(figsize=(12, 6))
 plt.plot(c2_df.index, c2_df['actual'], label='Actual', color='blue')
 plt.plot(c2_df.index, c2_df['predicted'], label='Chronos2', color='red', linestyle='--')
-plt.plot(o46_df.index, o46_df['predicted'], label='Opus 4.6', color='green', linestyle='--')
-plt.title('Return Predictions: Opus 4.6 vs Chronos2 (BTCUSD)')
+plt.plot(gem_df.index, gem_df['predicted'], label='Gemini 3.1 Pro', color='purple', linestyle='--')
+plt.title('Return Predictions: Gemini 3.1 Pro vs Chronos2 (BTCUSD)')
 plt.legend()
 plt.tight_layout()
-plt.savefig('opus46_vs_chronos2_returns.png', dpi=150)
-print(f"\nPlot saved to opus46_vs_chronos2_returns.png")
+plt.savefig('gemini31pro_vs_chronos2_returns.png', dpi=150)
+print(f"\nPlot saved to gemini31pro_vs_chronos2_returns.png")

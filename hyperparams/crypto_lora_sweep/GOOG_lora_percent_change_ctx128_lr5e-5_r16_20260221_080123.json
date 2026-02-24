@@ -1,0 +1,19 @@
+{
+  "run_name": "GOOG_lora_percent_change_ctx128_lr5e-5_r16_20260221_080123",
+  "config": {
+    "symbol": "GOOG",
+    "preaug": "percent_change",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 82.15171813964844,
+    "mae_percent_std": 24.021133422851562
+  },
+  "test": {
+    "mae_percent_mean": 23.192922592163086,
+    "mae_percent_std": 10.344016075134277
+  }
+}
