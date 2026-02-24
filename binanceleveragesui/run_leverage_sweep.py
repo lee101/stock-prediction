@@ -62,6 +62,9 @@ class LeverageConfig:
     transformer_heads: int = 8
     fill_buffer_pct: float = 0.0  # require high >= sell*(1+buf) or low <= buy*(1-buf)
     decision_lag_bars: int = 0  # 0=same-bar fills (optimistic), 1=next-bar fills (realistic)
+    min_edge: float = 0.0  # skip trades where (sell-buy)/buy < min_edge
+    max_hold_bars: int = 0  # 0=no limit, >0=force close at close after N bars held
+    intensity_scale: float = 1.0  # multiply buy/sell amounts (live bot uses 5.0)
 
 
 def simulate_with_margin_cost(
@@ -86,6 +89,8 @@ def simulate_with_margin_cost(
     equity_curve = [cash]
     trades = []
     margin_cost_total = 0.0
+    bars_in_position = 0
+    iscale = config.intensity_scale
 
     for _, row in merged.iterrows():
         close = float(row["close"])
@@ -93,18 +98,16 @@ def simulate_with_margin_cost(
         low = float(row["low"])
         buy_price = float(row.get("buy_price", 0) or 0)
         sell_price = float(row.get("sell_price", 0) or 0)
-        buy_amount = float(row.get("buy_amount", 0) or 0) / 100.0
-        sell_amount = float(row.get("sell_amount", 0) or 0) / 100.0
+        buy_amount = min(float(row.get("buy_amount", 0) or 0) * iscale, 100.0) / 100.0
+        sell_amount = min(float(row.get("sell_amount", 0) or 0) * iscale, 100.0) / 100.0
 
         equity = cash + inventory * close
 
-        # Margin interest: charged on borrowed amount each hour
-        # If cash < 0, we borrowed cash to buy on margin
+        # Margin interest
         if cash < 0:
             interest = abs(cash) * config.margin_hourly_rate
             cash -= interest
             margin_cost_total += interest
-        # Short position: borrowed the asset
         if inventory < 0:
             borrowed_value = abs(inventory) * close
             interest = borrowed_value * config.margin_hourly_rate
@@ -112,18 +115,27 @@ def simulate_with_margin_cost(
             margin_cost_total += interest
 
         fill_buf = config.fill_buffer_pct
-        # Buy execution (can go beyond cash with leverage - cash goes negative = borrowed)
-        if buy_amount > 0 and buy_price > 0 and low <= buy_price * (1 - fill_buf):
-            max_buy_value = config.max_leverage * max(equity, 0) - inventory * buy_price
-            if max_buy_value > 0:
-                buy_qty = buy_amount * max_buy_value / (buy_price * (1 + config.maker_fee))
-                if buy_qty > 0:
-                    cost = buy_qty * buy_price * (1 + config.maker_fee)
-                    cash -= cost
-                    inventory += buy_qty
-                    trades.append(("buy", float(row["timestamp"].timestamp()) if hasattr(row["timestamp"], "timestamp") else 0, buy_price, buy_qty))
 
-        # Sell execution
+        # Force close if held too long (matches live bot --max-hold-hours)
+        if config.max_hold_bars > 0 and inventory > 0 and bars_in_position >= config.max_hold_bars:
+            force_price = close * 0.999
+            proceeds = inventory * force_price * (1 - config.maker_fee)
+            cash += proceeds
+            trades.append(("force_sell", 0, force_price, inventory))
+            inventory = 0.0
+            bars_in_position = 0
+            equity_curve.append(cash)
+            continue
+
+        # Min edge filter
+        edge = (sell_price - buy_price) / buy_price if buy_price > 0 and sell_price > 0 else 0.0
+        if config.min_edge > 0 and edge < config.min_edge:
+            if inventory > 0:
+                bars_in_position += 1
+            equity_curve.append(cash + inventory * close)
+            continue
+
+        # Sell first (matches live bot: handle_exit before handle_entry/add)
         if sell_amount > 0 and sell_price > 0 and high >= sell_price * (1 + fill_buf):
             if inventory > 0:
                 sell_qty = min(sell_amount * inventory, inventory)
@@ -139,6 +151,24 @@ def simulate_with_margin_cost(
                 cash += proceeds
                 inventory -= sell_qty
                 trades.append(("sell", 0, sell_price, sell_qty))
+                if inventory <= 0:
+                    bars_in_position = 0
+
+        # Buy execution
+        if buy_amount > 0 and buy_price > 0 and low <= buy_price * (1 - fill_buf):
+            max_buy_value = config.max_leverage * max(equity, 0) - inventory * buy_price
+            if max_buy_value > 0:
+                buy_qty = buy_amount * max_buy_value / (buy_price * (1 + config.maker_fee))
+                if buy_qty > 0:
+                    cost = buy_qty * buy_price * (1 + config.maker_fee)
+                    cash -= cost
+                    inventory += buy_qty
+                    trades.append(("buy", float(row["timestamp"].timestamp()) if hasattr(row["timestamp"], "timestamp") else 0, buy_price, buy_qty))
+
+        if inventory > 0:
+            bars_in_position += 1
+        else:
+            bars_in_position = 0
 
         equity_curve.append(cash + inventory * close)
 

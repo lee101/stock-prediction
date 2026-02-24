@@ -1,0 +1,11 @@
+{
+  "DOGEUSD": {
+    "lora": {
+      "data_symbol": "DOGEUSD",
+      "preaug": "percent_change",
+      "test_mae_pct": 28.806678771972656,
+      "model_path": "/home/lee/code/stock/chronos2_finetuned/DOGEUSD_lora_percent_change_ctx128_lr5e-5_r16/finetuned-ckpt",
+      "run_name": "DOGEUSD_lora_percent_change_ctx128_lr5e-5_r16"
+    }
+  }
+}

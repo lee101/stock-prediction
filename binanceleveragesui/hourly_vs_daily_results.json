@@ -1,0 +1,80 @@
+[
+  {
+    "rw": 0.016,
+    "hourly": {
+      "model": "hourly",
+      "rw": 0.016,
+      "results": {
+        "lag0_buf0": {
+          "total_return": 0.27212993200825686,
+          "sortino": 5.90050325502686,
+          "max_drawdown": -0.1539829497256834,
+          "final_equity": 6360.649660041285,
+          "num_trades": 574,
+          "margin_cost_total": 0.006259995567079482,
+          "margin_cost_pct": 0.00012519991134158964
+        },
+        "lag0_buf10": {
+          "total_return": -0.07247724262959676,
+          "sortino": -1.1919875897777341,
+          "max_drawdown": -0.2264506998105603,
+          "final_equity": 4637.613786852016,
+          "num_trades": 452,
+          "margin_cost_total": 0.008194307292077164,
+          "margin_cost_pct": 0.0001638861458415433
+        },
+        "lag1_buf0": {
+          "total_return": -0.2714539406262373,
+          "sortino": -5.957920597886178,
+          "max_drawdown": -0.32559665826045703,
+          "final_equity": 3642.7302968688136,
+          "num_trades": 496,
+          "margin_cost_total": 0.008750977702879833,
+          "margin_cost_pct": 0.00017501955405759665
+        },
+        "lag1_buf10": {
+          "total_return": -0.37939115635009546,
+          "sortino": -9.291435779689037,
+          "max_drawdown": -0.3956803395299877,
+          "final_equity": 3103.0442182495226,
+          "num_trades": 396,
+          "margin_cost_total": 0.008133356084888998,
+          "margin_cost_pct": 0.00016266712169777997
+        }
+      },
+      "checkpoint": "/home/lee/code/stock/binanceleveragesui/checkpoints/hourly_rw0016_cmp/policy_checkpoint.pt"
+    },
+    "daily": {
+      "model": "daily",
+      "rw": 0.016,
+      "seq_len": 30,
+      "results": {
+        "lag0_buf0": {
+          "total_return": -0.13485622917947182,
+          "sortino": -3.2113120014913674,
+          "num_trades": 21,
+          "final_equity": 4325.718854102641
+        },
+        "lag0_buf10": {
+          "total_return": -0.13485622917947182,
+          "sortino": -3.2113120014913674,
+          "num_trades": 21,
+          "final_equity": 4325.718854102641
+        },
+        "lag1_buf0": {
+          "total_return": -0.3953817332007903,
+          "sortino": -5.706054283920849,
+          "num_trades": 17,
+          "final_equity": 3023.0913339960484
+        },
+        "lag1_buf10": {
+          "total_return": -0.3953817332007903,
+          "sortino": -5.706054283920849,
+          "num_trades": 17,
+          "final_equity": 3023.0913339960484
+        }
+      },
+      "checkpoint": "/home/lee/code/stock/binanceleveragesui/checkpoints/daily_rw0016_seq30/policy_checkpoint.pt"
+    }
+  }
+]
