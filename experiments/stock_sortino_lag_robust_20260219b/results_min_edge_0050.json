@@ -1,0 +1,80 @@
+[
+  {
+    "name": "fast_rw012_sm003_lagr01",
+    "run_name": "stock_sortino_lag_robust_20260219b_fast_rw012_sm003_lagr01",
+    "checkpoint_dir": "unified_hourly_experiment/checkpoints/stock_sortino_lag_robust_20260219b_fast_rw012_sm003_lagr01",
+    "best_epoch": 6,
+    "train_config": {
+      "name": "fast_rw012_sm003_lagr01",
+      "return_weight": 0.12,
+      "smoothness_penalty": 0.003,
+      "fill_temperature": 0.0005,
+      "decision_lag_range": "0,1"
+    },
+    "used_symbols": [
+      "NVDA",
+      "PLTR",
+      "GOOG",
+      "NET",
+      "DBX",
+      "TRIP",
+      "EBAY",
+      "KIND",
+      "MTCH",
+      "NYT"
+    ],
+    "sequence_length": 32,
+    "feature_horizons": [
+      1,
+      24
+    ],
+    "lags": [
+      {
+        "lag_bars": 0,
+        "return_pct": -0.7026824628324935,
+        "sortino": -0.3370034490305659,
+        "max_drawdown_pct": 1.3510200745687946,
+        "pnl_smoothness": 0.0004035072178488059,
+        "num_buys": 32,
+        "num_sells": 32
+      },
+      {
+        "lag_bars": 1,
+        "return_pct": 0.29632178658967057,
+        "sortino": 0.09688633144843654,
+        "max_drawdown_pct": 1.1633274390561787,
+        "pnl_smoothness": 0.00039906750568052883,
+        "num_buys": 11,
+        "num_sells": 11
+      },
+      {
+        "lag_bars": 2,
+        "return_pct": 2.0917317211655018e-06,
+        "sortino": 0.008491423421667778,
+        "max_drawdown_pct": 1.2653529200666035e-05,
+        "pnl_smoothness": 7.333274998280118e-09,
+        "num_buys": 1,
+        "num_sells": 1
+      },
+      {
+        "lag_bars": 3,
+        "return_pct": 0.016365884336377867,
+        "sortino": 0.00777516052084419,
+        "max_drawdown_pct": 0.27758614805439175,
+        "pnl_smoothness": 0.00015850634161953433,
+        "num_buys": 3,
+        "num_sells": 3
+      }
+    ],
+    "summary": {
+      "lag_count": 4.0,
+      "sortino_mean": -0.055962633409904344,
+      "sortino_std": 0.1662555096231393,
+      "sortino_p10": -0.23356986616514286,
+      "return_mean_pct": -0.09749817504368097,
+      "max_drawdown_mean_pct": 0.6979865788021415,
+      "pnl_smoothness_mean": 0.00024027209960596682,
+      "robust_score": -0.44585802189069507
+    }
+  }
+]
