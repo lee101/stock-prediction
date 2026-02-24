@@ -35,6 +35,11 @@ def main():
     parser.add_argument("--min-edge", type=float, default=0.0)
     parser.add_argument("--decision-lag-bars", type=int, default=0)
     parser.add_argument("--market-order-entry", action="store_true")
+    parser.add_argument("--bar-margin", type=float, default=0.0)
+    parser.add_argument("--holdout-days", type=int, default=0,
+                        help="Only simulate on last N days (OOS only). 0=all data.")
+    parser.add_argument("--epoch", type=int, default=None,
+                        help="Run single epoch instead of sweep")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -64,8 +69,13 @@ def main():
 
     checkpoints = sorted(args.checkpoint_dir.glob("epoch_*.pt"),
                          key=lambda p: int(p.stem.split("_")[1]))
-    logger.info("Sweeping {} checkpoints over {} symbols (portfolio mode, pos={})",
-                len(checkpoints), len(data_modules), args.max_positions)
+    if args.epoch is not None:
+        checkpoints = [c for c in checkpoints if int(c.stem.split("_")[1]) == args.epoch]
+    holdout_suffix = ""
+    if args.holdout_days > 0:
+        holdout_suffix = f" (OOS {args.holdout_days}d)"
+    logger.info("Sweeping {} checkpoints over {} symbols (portfolio mode, pos={}){}",
+                len(checkpoints), len(data_modules), args.max_positions, holdout_suffix)
 
     results = []
     for ckpt_path in checkpoints:
@@ -103,12 +113,18 @@ def main():
         bars = pd.concat(all_bars, ignore_index=True)
         actions = pd.concat(all_actions, ignore_index=True)
 
+        if args.holdout_days > 0:
+            cutoff = bars["timestamp"].max() - pd.Timedelta(days=args.holdout_days)
+            bars = bars[bars["timestamp"] >= cutoff].reset_index(drop=True)
+            actions = actions[actions["timestamp"] >= cutoff].reset_index(drop=True)
+
         cfg = PortfolioConfig(
             initial_cash=args.initial_cash, max_positions=args.max_positions,
             min_edge=args.min_edge, max_hold_hours=args.max_hold_hours,
             enforce_market_hours=True, close_at_eod=True, symbols=symbols,
             decision_lag_bars=args.decision_lag_bars,
             market_order_entry=args.market_order_entry,
+            bar_margin=args.bar_margin,
         )
         r = run_portfolio_simulation(bars, actions, cfg, horizon=1)
         ret = r.metrics["total_return"] * 100
