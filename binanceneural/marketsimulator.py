@@ -342,37 +342,9 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
         executed_buy = 0.0
         executed_sell = 0.0
 
-        if buy_fill:
-            available_cash = cash
-            if config.enable_probe_mode and probe_mode and config.probe_notional > 0:
-                available_cash = min(available_cash, float(config.probe_notional))
-            max_buy = available_cash / (buy_price * (1 + config.maker_fee)) if buy_price > 0 else 0.0
-            executed_buy = buy_intensity * max_buy
-
-        if executed_buy > 0:
-            cost = executed_buy * buy_price * (1 + config.maker_fee)
-            cash -= cost
-            if inventory <= 0:
-                cost_basis = buy_price
-                open_time = ts
-            else:
-                cost_basis = (cost_basis * inventory + buy_price * executed_buy) / (inventory + executed_buy)
-            inventory += executed_buy
-            trades.append(
-                TradeRecord(
-                    timestamp=ts,
-                    symbol=symbol,
-                    side="buy",
-                    price=buy_price,
-                    quantity=executed_buy,
-                    notional=executed_buy * buy_price,
-                    fee=executed_buy * buy_price * config.maker_fee,
-                    cash_after=cash,
-                    inventory_after=inventory,
-                    realized_pnl=0.0,
-                )
-            )
-
+        # Process sells first to release cash before new buys (matches
+        # run_shared_cash_simulation and real exchange behaviour where
+        # resting sell limits execute before new buy orders).
         if sell_fill and inventory > 0:
             executed_sell = sell_intensity * inventory
 
@@ -404,6 +376,37 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
                     cash_after=cash,
                     inventory_after=inventory,
                     realized_pnl=realized,
+                )
+            )
+
+        if buy_fill:
+            available_cash = cash
+            if config.enable_probe_mode and probe_mode and config.probe_notional > 0:
+                available_cash = min(available_cash, float(config.probe_notional))
+            max_buy = available_cash / (buy_price * (1 + config.maker_fee)) if buy_price > 0 else 0.0
+            executed_buy = buy_intensity * max_buy
+
+        if executed_buy > 0:
+            cost = executed_buy * buy_price * (1 + config.maker_fee)
+            cash -= cost
+            if inventory <= 0:
+                cost_basis = buy_price
+                open_time = ts
+            else:
+                cost_basis = (cost_basis * inventory + buy_price * executed_buy) / (inventory + executed_buy)
+            inventory += executed_buy
+            trades.append(
+                TradeRecord(
+                    timestamp=ts,
+                    symbol=symbol,
+                    side="buy",
+                    price=buy_price,
+                    quantity=executed_buy,
+                    notional=executed_buy * buy_price,
+                    fee=executed_buy * buy_price * config.maker_fee,
+                    cash_after=cash,
+                    inventory_after=inventory,
+                    realized_pnl=0.0,
                 )
             )
 

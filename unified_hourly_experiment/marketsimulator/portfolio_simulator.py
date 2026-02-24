@@ -41,6 +41,7 @@ class PortfolioConfig:
     max_leverage: float = 1.0
     decision_lag_bars: int = 0
     market_order_entry: bool = False
+    bar_margin: float = 0.0
 
 
 @dataclass
