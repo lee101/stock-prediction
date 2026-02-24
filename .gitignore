@@ -253,6 +253,9 @@ neuraldailyv3timed/checkpoints/
 experiments/model_sizes
 experiments/walk_forward/
 positions_shelf.json.bak
+experiments/stock_sortino_lag_robust_*/results.json
+binanceleveragesui/result_*.json
+binanceleveragesui/*sweep_results*.json
 tmp0pdsx9bp
 tmp0qpqh2a8
 tmp386ifzby
@@ -418,6 +421,16 @@ src/metrics_utils.py
 alpaca_cli_paper.log*
 binanceneural/forecast_cache_backup/
 newnanoalpacahourlyexp/outputs/
+
+# Local experimental/training artifacts
+experimental/
+*.npz
+*.safetensors
+binance*/artifacts*/
+binance*/artifacts_*/
+experiments/alpaca_stock_modern_rlcuda_*/
+experiments/*/checkpoint-*/
+experiments/*/finetuned/
 alpacanewccrosslearning/outputs/
 alpacanewccrosslearning/forecast_cache/
 alpacanewccrosslearning/chronos_finetuned/

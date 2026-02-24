@@ -182,7 +182,42 @@ def main():
             "transformer_layers": args.num_layers,
         }, f, indent=2)
 
+    history_rows = []
+    for row in artifacts.history:
+        history_rows.append({
+            "epoch": row.epoch,
+            "train_loss": row.train_loss,
+            "train_score": row.train_score,
+            "train_sortino": row.train_sortino,
+            "train_return": row.train_return,
+            "val_loss": row.val_loss,
+            "val_score": row.val_score,
+            "val_sortino": row.val_sortino,
+            "val_return": row.val_return,
+        })
+    best = max(artifacts.history, key=lambda h: h.val_sortino or float("-inf")) if artifacts.history else None
+    meta_path = trainer.checkpoint_dir / "training_meta.json"
+    with open(meta_path, "w") as f:
+        json.dump({
+            "run_name": args.checkpoint_name or args.run_name,
+            "symbols": stocks,
+            "epochs": args.epochs,
+            "sequence_length": args.sequence_length,
+            "feature_columns": data_module.feature_columns,
+            "decision_lag_bars": args.decision_lag_bars,
+            "decision_lag_range": args.decision_lag_range,
+            "smoothness_penalty": args.smoothness_penalty,
+            "return_weight": args.return_weight,
+            "fill_temperature": args.fill_temperature,
+            "history": history_rows,
+            "best_epoch": best.epoch if best else None,
+            "best_val_sortino": best.val_sortino if best else None,
+            "best_val_return": best.val_return if best else None,
+            "best_checkpoint": str(artifacts.best_checkpoint) if artifacts.best_checkpoint else None,
+        }, f, indent=2)
+
     logger.info("Config saved to {}", config_path)
+    logger.info("Training metadata saved to {}", meta_path)
 
 
 if __name__ == "__main__":
