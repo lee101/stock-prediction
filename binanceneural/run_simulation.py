@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from differentiable_loss_utils import set_seed
@@ -40,6 +41,11 @@ def main() -> None:
     parser.add_argument("--probe-after-loss", action="store_true", help="Enable probe trades after a losing sell")
     parser.add_argument("--probe-notional", type=float, default=1.0, help="Notional size for probe trades")
     parser.add_argument("--max-hold-hours", type=int, default=None, help="Force close positions after N hours")
+    parser.add_argument("--intensity-scale", type=float, default=1.0, help="Scale buy/sell amounts (prod uses 0.8)")
+    parser.add_argument("--tick-size", type=float, default=None, help="Price tick size for quantization")
+    parser.add_argument("--step-size", type=float, default=None, help="Qty step size for quantization")
+    parser.add_argument("--min-qty", type=float, default=None, help="Minimum order quantity")
+    parser.add_argument("--min-notional", type=float, default=None, help="Minimum order notional value")
     parser.add_argument(
         "--plot-dir",
         default="binanceneural/plots",
@@ -75,12 +81,22 @@ def main() -> None:
     if "symbol" not in actions.columns:
         actions["symbol"] = args.symbol
 
+    # Apply production intensity_scale to model outputs (same as trade_binance_hourly.py)
+    if args.intensity_scale != 1.0:
+        for col in ("buy_amount", "sell_amount", "trade_amount"):
+            if col in actions.columns:
+                actions[col] = np.clip(actions[col] * args.intensity_scale, 0.0, 100.0)
+
     sim = BinanceMarketSimulator(
         SimulationConfig(
             initial_cash=args.initial_cash,
             enable_probe_mode=args.probe_after_loss,
             probe_notional=args.probe_notional,
             max_hold_hours=args.max_hold_hours,
+            tick_size=args.tick_size,
+            step_size=args.step_size,
+            min_qty=args.min_qty,
+            min_notional=args.min_notional,
         )
     )
     result = sim.run(val_frame, actions)
