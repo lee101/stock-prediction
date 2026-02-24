@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
@@ -168,6 +169,68 @@ def apply_fast_testing(verbose: bool = False) -> None:
     config.configure_torch_backends()
 
 
+def apply(verbose: bool = True) -> int:
+    """Backwards-compatible Chronos2-specific compilation heuristics."""
+    tweaks: list[str] = []
+    running_pytest = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    aggressive_env = os.environ.get("CHRONOS_COMPILE_AGGRESSIVE")
+    if aggressive_env is None:
+        aggressive = not running_pytest
+    else:
+        aggressive = aggressive_env.strip().lower() in {"1", "true", "yes", "on"}
+
+    if os.environ.get("TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS") != "1":
+        os.environ["TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS"] = "1"
+        tweaks.append("Scalar output capture")
+
+    if "CHRONOS_COMPILE" not in os.environ:
+        os.environ["CHRONOS_COMPILE"] = "0"
+        tweaks.append("Compilation disabled by default")
+
+    os.environ.setdefault("CHRONOS_COMPILE_MODE", "reduce-overhead")
+    os.environ.setdefault("CHRONOS_COMPILE_BACKEND", "inductor")
+
+    cache_dir = os.path.join(os.getcwd(), "compiled_models", "chronos2_torch_inductor")
+    os.makedirs(cache_dir, exist_ok=True)
+    if os.environ.get("TORCHINDUCTOR_CACHE_DIR") != cache_dir:
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache_dir
+        tweaks.append(f"Cache dir: {cache_dir}")
+
+    try:
+        import torch._inductor.config as inductor_config  # type: ignore
+
+        if aggressive:
+            inductor_config.max_autotune = True
+            inductor_config.triton.cudagraphs = True
+            tweaks.append("Inductor autotune + cudagraphs")
+        else:
+            inductor_config.max_autotune = False
+            inductor_config.triton.cudagraphs = False
+            tweaks.append("Inductor stable mode (no autotune/cudagraphs)")
+    except Exception as exc:  # pragma: no cover - optional
+        warnings.warn(f"Unable to configure torch._inductor optimizations: {exc}")
+
+    try:
+        import torch._dynamo.config as dynamo_config  # type: ignore
+
+        dynamo_config.recompile_limit = 64
+        if aggressive:
+            dynamo_config.automatic_dynamic_shapes = True
+            tweaks.append("Dynamo dynamic shapes")
+        else:
+            dynamo_config.automatic_dynamic_shapes = False
+            tweaks.append("Dynamo static shapes")
+    except Exception:  # pragma: no cover
+        pass
+
+    if verbose and tweaks:
+        print("Chronos2 Compile Optimizations:")
+        for tweak in tweaks:
+            print(f"  - {tweak}")
+
+    return len(tweaks)
+
+
 def get_current_config() -> ChronosCompileConfig:
     """Get current configuration from environment."""
     return ChronosCompileConfig.from_env()
@@ -238,6 +301,7 @@ __all__ = [
     "apply_production_eager",
     "apply_production_compiled",
     "apply_fast_testing",
+    "apply",
     "get_current_config",
     "is_compilation_enabled",
     "print_current_config",
