@@ -52,6 +52,7 @@ class UnifiedSelectionConfig:
     racing_symbols: Optional[Sequence[str]] = None
     # Deferred orders: queue stock orders for market open
     enable_deferred_orders: bool = True
+    bar_margin: float = 0.0
 
 
 @dataclass
@@ -96,7 +97,7 @@ def _is_market_open(ts: pd.Timestamp, symbol: str) -> bool:
         if not is_nyse_open_on_date(ny_ts):
             return False
         t = ny_ts.time()
-        return MARKET_OPEN <= t <= MARKET_CLOSE
+        return MARKET_OPEN <= t < MARKET_CLOSE
     except Exception:
         return False
 
@@ -159,6 +160,19 @@ def run_unified_simulation(
 ) -> UnifiedSelectorSimulationResult:
     """Run unified stock+crypto simulation with proper market hours."""
     cfg = config or UnifiedSelectionConfig()
+
+    if cfg.decision_lag_bars > 0:
+        lag = cfg.decision_lag_bars
+        shifted_parts = []
+        for sym in actions["symbol"].unique():
+            sym_acts = actions[actions["symbol"] == sym].sort_values("timestamp").copy()
+            sym_bars = bars[bars["symbol"] == sym].sort_values("timestamp")
+            bar_ts = sym_bars["timestamp"].tolist()
+            if len(sym_acts) > lag and len(bar_ts) > lag:
+                sym_acts = sym_acts.iloc[:-lag].copy()
+                sym_acts["timestamp"] = bar_ts[lag:lag + len(sym_acts)]
+            shifted_parts.append(sym_acts)
+        actions = pd.concat(shifted_parts, ignore_index=True)
 
     merged = bars.merge(actions, on=["timestamp", "symbol"], how="inner", suffixes=("", "_act"))
     if merged.empty:
@@ -247,6 +261,19 @@ def run_unified_simulation(
         equity = cash + mtm
         equity_values.append((ts, equity))
 
+        # Force-close position after max hold hours
+        if cfg.max_hold_hours and open_symbol and open_ts:
+            hold_hours = (ts - open_ts).total_seconds() / 3600
+            if hold_hours >= cfg.max_hold_hours:
+                row = group[group["symbol"] == open_symbol]
+                if not row.empty:
+                    price = float(row.iloc[0]["close"])
+                    fee = symbol_meta[open_symbol]["fee"]
+                    if inventory > 0:
+                        _execute_sell(ts, open_symbol, inventory, price, fee, "max_hold")
+                    elif inventory < 0:
+                        _execute_buy(ts, open_symbol, abs(inventory), price, fee, "max_hold")
+
         # Process deferred orders for stocks now that market is open
         if cfg.enable_deferred_orders and deferred_orders:
             executed = []
@@ -259,7 +286,7 @@ def run_unified_simulation(
                 row = row.iloc[0]
                 fee = symbol_meta[order.symbol]["fee"]
                 if order.side == "buy":
-                    if row.low <= order.price:
+                    if row.low <= order.price * (1 - cfg.bar_margin):
                         max_lev = symbol_meta[order.symbol]["max_leverage"]
                         max_notional = max(0, cash * max_lev)
                         intensity = min(1.0, max(0.0, order.intensity))
@@ -268,7 +295,7 @@ def run_unified_simulation(
                             _execute_buy(ts, order.symbol, qty, order.price, fee, "deferred")
                             executed.append(i)
                 else:
-                    if row.high >= order.price and open_symbol == order.symbol:
+                    if row.high >= order.price * (1 + cfg.bar_margin) and open_symbol == order.symbol:
                         _execute_sell(ts, order.symbol, abs(inventory), order.price, fee, "deferred")
                         executed.append(i)
             for i in sorted(executed, reverse=True):
@@ -317,7 +344,7 @@ def run_unified_simulation(
                         edge_mode=cfg.edge_mode, fee_rate=meta["fee"],
                     )
                     if edge and edge >= cfg.min_edge:
-                        fillable = row.low <= buy_price if hasattr(row, "low") else True
+                        fillable = row.low <= buy_price * (1 - cfg.bar_margin) if hasattr(row, "low") else True
                         candidates.append({
                             "symbol": sym,
                             "edge": edge,

@@ -14,6 +14,7 @@ from differentiable_loss_utils import (
     HOURLY_PERIODS_PER_YEAR,
     combined_sortino_pnl_loss,
     compute_hourly_objective,
+    compute_loss_by_type,
     simulate_hourly_trades,
     simulate_hourly_trades_binary,
 )
@@ -73,6 +74,13 @@ class BinanceHourlyTrainer:
         self._scaler = None
         self._total_train_steps = 0
         self._weight_decay_groups: list[tuple[dict, float]] = []
+
+    def _get_fill_buffer(self, epoch: int) -> float:
+        buf = self.config.fill_buffer_pct
+        warmup = self.config.fill_buffer_warmup_epochs
+        if warmup > 0 and epoch <= warmup:
+            buf = buf * epoch / warmup
+        return buf
 
     def train(self) -> TrainingArtifacts:
         torch.manual_seed(self.config.seed)
@@ -181,6 +189,7 @@ class BinanceHourlyTrainer:
                 optimizer,
                 train=True,
                 global_step=global_step,
+                current_epoch=epoch,
             )
             val_metrics, _ = self._run_epoch(
                 model,
@@ -188,6 +197,7 @@ class BinanceHourlyTrainer:
                 optimizer=None,
                 train=False,
                 global_step=global_step,
+                current_epoch=epoch,
             )
 
             entry = TrainingHistoryEntry(
@@ -233,6 +243,7 @@ class BinanceHourlyTrainer:
         *,
         train: bool,
         global_step: int,
+        current_epoch: int = 1,
     ) -> Tuple[Dict[str, float], int]:
         model.train(train)
         total_loss = 0.0
@@ -292,6 +303,7 @@ class BinanceHourlyTrainer:
                     "can_long": batch.get("can_long", True),
                     "max_leverage": self.config.max_leverage,
                     "market_order_entry": self.config.market_order_entry,
+                    "fill_buffer_pct": self._get_fill_buffer(current_epoch),
                 }
                 base_lag = int(self.config.decision_lag_bars)
                 lag_range_str = self.config.decision_lag_range.strip()
@@ -313,16 +325,13 @@ class BinanceHourlyTrainer:
                         ppy = batch.get("periods_per_year", None)
                         if ppy is None:
                             ppy = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
-                        sc_i, so_i, ar_i = compute_hourly_objective(
-                            ret_i, periods_per_year=ppy,
-                            return_weight=self.config.return_weight,
-                            smoothness_penalty=self.config.smoothness_penalty,
-                        )
-                        lo_i = combined_sortino_pnl_loss(
-                            ret_i, target_sign=self.config.sortino_target_sign,
+                        lo_i, sc_i, so_i, ar_i = compute_loss_by_type(
+                            ret_i, self.config.loss_type,
+                            target_sign=self.config.sortino_target_sign,
                             periods_per_year=ppy,
                             return_weight=self.config.return_weight,
                             smoothness_penalty=self.config.smoothness_penalty,
+                            dd_penalty=self.config.dd_penalty,
                         )
                         all_losses.append(lo_i)
                         all_scores.append(sc_i.detach())
@@ -348,19 +357,24 @@ class BinanceHourlyTrainer:
                 periods_per_year = batch.get("periods_per_year", None)
                 if periods_per_year is None:
                     periods_per_year = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
-                score, sortino, annual_return = compute_hourly_objective(
-                    returns,
-                    periods_per_year=periods_per_year,
-                    return_weight=self.config.return_weight,
-                    smoothness_penalty=self.config.smoothness_penalty,
-                )
-                loss = combined_sortino_pnl_loss(
-                    returns,
+                loss, score, sortino, annual_return = compute_loss_by_type(
+                    returns, self.config.loss_type,
                     target_sign=self.config.sortino_target_sign,
                     periods_per_year=periods_per_year,
                     return_weight=self.config.return_weight,
                     smoothness_penalty=self.config.smoothness_penalty,
+                    dd_penalty=self.config.dd_penalty,
                 )
+
+            if train and self.config.spread_penalty > 0:
+                bp = actions["buy_price"]
+                sp = actions["sell_price"]
+                tgt = self.config.spread_target
+                buy_gap = (bp - lows[..., :bp.shape[-1]]) / closes[..., :bp.shape[-1]].clamp(min=1e-4)
+                sell_gap = (highs[..., :sp.shape[-1]] - sp) / closes[..., :sp.shape[-1]].clamp(min=1e-4)
+                buy_pen = torch.relu(tgt - buy_gap).mean()
+                sell_pen = torch.relu(tgt - sell_gap).mean()
+                loss = loss + self.config.spread_penalty * (buy_pen + sell_pen)
 
             if train and optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)

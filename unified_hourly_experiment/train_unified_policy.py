@@ -48,6 +48,8 @@ def main():
     parser.add_argument("--fill-temperature", type=float, default=5e-4)
     parser.add_argument("--logits-softcap", type=float, default=12.0)
     parser.add_argument("--smoothness-penalty", type=float, default=0.0)
+    parser.add_argument("--loss-type", type=str, default="sortino", choices=["sortino", "sharpe", "calmar", "log_wealth", "sortino_dd"])
+    parser.add_argument("--dd-penalty", type=float, default=1.0)
     parser.add_argument("--feature-noise-std", type=float, default=0.0)
     parser.add_argument("--use-residual-scalars", action="store_true")
     parser.add_argument("--max-leverage", type=float, default=1.0)
@@ -55,6 +57,11 @@ def main():
     parser.add_argument("--decision-lag-bars", type=int, default=0)
     parser.add_argument("--decision-lag-range", type=str, default="")
     parser.add_argument("--market-order-entry", action="store_true")
+    parser.add_argument("--fill-buffer-pct", type=float, default=0.0)
+    parser.add_argument("--spread-penalty", type=float, default=0.0)
+    parser.add_argument("--spread-target", type=float, default=0.0013)
+    parser.add_argument("--fill-buffer-warmup-epochs", type=int, default=0)
+    parser.add_argument("--validation-use-binary-fills", action="store_true")
     args = parser.parse_args()
 
     if args.symbols:
@@ -128,6 +135,8 @@ def main():
         fill_temperature=args.fill_temperature,
         logits_softcap=args.logits_softcap,
         smoothness_penalty=args.smoothness_penalty,
+        loss_type=args.loss_type,
+        dd_penalty=args.dd_penalty,
         feature_noise_std=args.feature_noise_std,
         use_residual_scalars=args.use_residual_scalars,
         max_leverage=args.max_leverage,
@@ -135,6 +144,11 @@ def main():
         decision_lag_bars=args.decision_lag_bars,
         decision_lag_range=args.decision_lag_range,
         market_order_entry=args.market_order_entry,
+        fill_buffer_pct=args.fill_buffer_pct,
+        spread_penalty=args.spread_penalty,
+        spread_target=args.spread_target,
+        fill_buffer_warmup_epochs=args.fill_buffer_warmup_epochs,
+        validation_use_binary_fills=args.validation_use_binary_fills,
         preload_checkpoint_path=str(args.preload) if args.preload else None,
         use_compile=not args.no_compile,
         seed=args.seed,
