@@ -5,6 +5,7 @@ from pathlib import Path
 
 import torch
 
+from differentiable_loss_utils import set_seed
 from src.torch_load_utils import torch_load_compat
 
 from .config import DatasetConfig, TrainingConfig
@@ -45,7 +46,10 @@ def main() -> None:
         help="Directory to write PNG trade plots (set --no-plot to disable)",
     )
     parser.add_argument("--no-plot", action="store_true", help="Disable writing PNG trade plots")
+    parser.add_argument("--seed", type=int, default=1337, help="RNG seed for reproducibility")
     args = parser.parse_args()
+
+    set_seed(args.seed)
 
     data_cfg = DatasetConfig(
         symbol=args.symbol,
