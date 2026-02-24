@@ -1,0 +1,19 @@
+{
+  "run_name": "TRIP_lora_percent_change_ctx128_lr5e-5_r16_20260221_082153",
+  "config": {
+    "symbol": "TRIP",
+    "preaug": "percent_change",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 76.43689727783203,
+    "mae_percent_std": 40.393272399902344
+  },
+  "test": {
+    "mae_percent_mean": 28.34162139892578,
+    "mae_percent_std": 10.14968490600586
+  }
+}

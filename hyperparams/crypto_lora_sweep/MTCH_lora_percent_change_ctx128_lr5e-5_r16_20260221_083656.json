@@ -1,0 +1,19 @@
+{
+  "run_name": "MTCH_lora_percent_change_ctx128_lr5e-5_r16_20260221_083656",
+  "config": {
+    "symbol": "MTCH",
+    "preaug": "percent_change",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 56.342918395996094,
+    "mae_percent_std": 17.080278396606445
+  },
+  "test": {
+    "mae_percent_mean": 134.94296264648438,
+    "mae_percent_std": 84.14506530761719
+  }
+}

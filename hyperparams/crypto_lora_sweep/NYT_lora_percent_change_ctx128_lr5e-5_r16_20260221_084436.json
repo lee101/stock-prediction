@@ -1,0 +1,19 @@
+{
+  "run_name": "NYT_lora_percent_change_ctx128_lr5e-5_r16_20260221_084436",
+  "config": {
+    "symbol": "NYT",
+    "preaug": "percent_change",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 32.45018005371094,
+    "mae_percent_std": 7.945802688598633
+  },
+  "test": {
+    "mae_percent_mean": 207.06698608398438,
+    "mae_percent_std": 103.03053283691406
+  }
+}

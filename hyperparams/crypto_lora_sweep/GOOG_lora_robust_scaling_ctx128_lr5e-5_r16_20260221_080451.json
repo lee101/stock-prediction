@@ -1,0 +1,19 @@
+{
+  "run_name": "GOOG_lora_robust_scaling_ctx128_lr5e-5_r16_20260221_080451",
+  "config": {
+    "symbol": "GOOG",
+    "preaug": "robust_scaling",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 64.15773010253906,
+    "mae_percent_std": 17.188440322875977
+  },
+  "test": {
+    "mae_percent_mean": 30.356491088867188,
+    "mae_percent_std": 13.857465744018555
+  }
+}

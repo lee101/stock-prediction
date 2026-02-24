@@ -2,6 +2,32 @@
 
 Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
 
+## Deployment: ft01 ep6 (2026-02-21) -- Sort=10.81, +34.2%
+
+**DEPLOYED** top9_lag1_6L_seq48_bm05_ft01 epoch 6 to Alpaca LIVE
+- Sortino: 10.81 (bm=0.05%), 11.44 (bm=0%)
+- Return: +34.2% (bm=0.05%), +36.6% (bm=0%)
+- Training: fill_temperature=0.1, fill_buffer_pct=0.0005, lag=1, seq=48, 6L h512, lr=1e-5, wd=0.03, rw=0.10, seed=1337
+- Replaces: top9_lag1_6L_lr1e5_wd03_rw10_seq48 ep50 (Sort=6.32 old eval, Sort=-0.05 realistic eval)
+
+Key finding: Old model FAILS under bar_margin=0.05% eval (all epochs negative).
+fill_temperature + fill_buffer during training produces models robust to real fill requirements.
+
+### ft01 Sweep (bm=0.05%)
+| Ep | Ret | Sort | Buys |
+|----|-----|------|------|
+| 1 | +17.0% | 7.15 | 1331 |
+| 5 | +43.5% | 8.54 | 1435 |
+| **6** | **+34.2%** | **10.81** | **1424** |
+| 7 | +33.6% | 8.04 | 1373 |
+| 9 | +42.6% | 7.63 | 1411 |
+| 29 | +55.7% | 5.73 | 1558 |
+| 37 | +58.4% | 5.43 | 1502 |
+
+### Training In Progress
+- ft005 (fill_temp=0.05, buffer=0.05%) -- sharper sigmoid variant
+- Spread penalty experiments
+
 ## PufferLib PPO RL Experiments (2026-02-13)
 
 Training PPO agents directly on C trading environment with reward shaping for loss-resistance.

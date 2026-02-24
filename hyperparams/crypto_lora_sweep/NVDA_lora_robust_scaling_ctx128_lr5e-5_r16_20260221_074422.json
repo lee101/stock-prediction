@@ -1,0 +1,19 @@
+{
+  "run_name": "NVDA_lora_robust_scaling_ctx128_lr5e-5_r16_20260221_074422",
+  "config": {
+    "symbol": "NVDA",
+    "preaug": "robust_scaling",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 129.23434448242188,
+    "mae_percent_std": 26.575729370117188
+  },
+  "test": {
+    "mae_percent_mean": 145.79483032226562,
+    "mae_percent_std": 41.4743766784668
+  }
+}
