@@ -1,0 +1,19 @@
+{
+  "run_name": "PLTR_lora_log_returns_ctx128_lr5e-5_r16_20260221_075606",
+  "config": {
+    "symbol": "PLTR",
+    "preaug": "log_returns",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 267.5964050292969,
+    "mae_percent_std": 121.4603271484375
+  },
+  "test": {
+    "mae_percent_mean": 32.6964111328125,
+    "mae_percent_std": 9.338461875915527
+  }
+}

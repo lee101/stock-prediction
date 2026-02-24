@@ -1,0 +1,19 @@
+{
+  "run_name": "NYT_lora_differencing_ctx128_lr5e-5_r16_20260221_084237",
+  "config": {
+    "symbol": "NYT",
+    "preaug": "differencing",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 145.14016723632812,
+    "mae_percent_std": 8.84219741821289
+  },
+  "test": {
+    "mae_percent_mean": 147.19403076171875,
+    "mae_percent_std": 12.928275108337402
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "run_name": "PLTR_lora_differencing_ctx128_lr5e-5_r16_20260221_074812",
+  "config": {
+    "symbol": "PLTR",
+    "preaug": "differencing",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 165.460693359375,
+    "mae_percent_std": 12.533013343811035
+  },
+  "test": {
+    "mae_percent_mean": 142.08694458007812,
+    "mae_percent_std": 11.508648872375488
+  }
+}

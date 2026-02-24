@@ -1,0 +1,19 @@
+{
+  "run_name": "NET_lora_robust_scaling_ctx128_lr5e-5_r16_20260221_081148",
+  "config": {
+    "symbol": "NET",
+    "preaug": "robust_scaling",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 80.48727416992188,
+    "mae_percent_std": 15.817170143127441
+  },
+  "test": {
+    "mae_percent_mean": 405.7962646484375,
+    "mae_percent_std": 51.72651290893555
+  }
+}
