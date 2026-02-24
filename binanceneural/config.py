@@ -95,8 +95,14 @@ class TrainingConfig:
     decision_lag_bars: int = 0
     decision_lag_range: str = ""  # e.g. "0,1,2" -- average loss across lags during training
     market_order_entry: bool = False
+    fill_buffer_pct: float = 0.0
+    spread_penalty: float = 0.0
+    spread_target: float = 0.0013
+    fill_buffer_warmup_epochs: int = 0
     initial_cash: float = 1.0
     sortino_target_sign: float = 1.0
+    loss_type: str = "sortino"  # sortino, sharpe, calmar, log_wealth, sortino_dd
+    dd_penalty: float = 1.0
     transformer_dim: int = 256
     transformer_layers: int = 4
     transformer_heads: int = 8
