@@ -249,6 +249,67 @@ def fetch_binance_hourly_bars(
     return frame
 
 
+def fetch_binance_daily_bars(
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    client: Optional[Client] = None,
+) -> pd.DataFrame:
+    """Fetch daily OHLCV bars from Binance."""
+    client = client or binance_wrapper.get_client()
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    else:
+        start = start.astimezone(timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    else:
+        end = end.astimezone(timezone.utc)
+    start_ms = max(0, int(start.timestamp() * 1000))
+    end_ms = max(0, int(end.timestamp() * 1000))
+
+    try:
+        rows = client.get_historical_klines(
+            symbol, Client.KLINE_INTERVAL_1DAY, start_ms, end_ms,
+        )
+    except Exception as exc:
+        logger.warning(f"Failed fetching daily klines for {symbol}: {exc}")
+        return pd.DataFrame()
+
+    records = []
+    for row in rows:
+        if not row:
+            continue
+        try:
+            open_time = datetime.fromtimestamp(row[0] / 1000, tz=timezone.utc)
+            close_time = datetime.fromtimestamp(row[6] / 1000, tz=timezone.utc) if len(row) > 6 else None
+            if close_time is not None and close_time > end:
+                continue
+            records.append({
+                "timestamp": open_time,
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "volume": float(row[5]),
+                "trade_count": int(row[8]) if len(row) > 8 else 0,
+                "vwap": float(row[7]) / float(row[5]) if len(row) > 7 and float(row[5]) else float(row[4]),
+                "symbol": symbol,
+            })
+        except (TypeError, ValueError, IndexError):
+            continue
+
+    if not records:
+        return pd.DataFrame()
+    frame = pd.DataFrame.from_records(records).set_index("timestamp").sort_index()
+    if frame.index.tz is None:
+        frame.index = frame.index.tz_localize(timezone.utc)
+    else:
+        frame.index = frame.index.tz_convert(timezone.utc)
+    frame.index.name = "timestamp"
+    return frame
+
+
 def _resolve_window(
     start: Optional[datetime],
     end: Optional[datetime],
