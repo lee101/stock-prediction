@@ -1,3 +1,6 @@
+import random
+
+import numpy as np
 import torch
 
 from differentiable_loss_utils import (
@@ -5,6 +8,7 @@ from differentiable_loss_utils import (
     approx_buy_fill_probability,
     approx_sell_fill_probability,
     combined_sortino_pnl_loss,
+    set_seed,
     simulate_hourly_trades,
     simulate_hourly_trades_binary,
 )
@@ -116,6 +120,32 @@ def test_simulation_caps_extreme_trade_intensity_by_leverage_limit() -> None:
 
     # 1.2x of equity at price 1 should keep position close to 1.2 units
     assert result.inventory <= 1.25
+
+
+def test_set_seed_produces_reproducible_results() -> None:
+    """set_seed should make all RNG sources deterministic."""
+    set_seed(42)
+    a_py = random.random()
+    a_np = np.random.rand()
+    a_torch = torch.randn(5)
+
+    set_seed(42)
+    b_py = random.random()
+    b_np = np.random.rand()
+    b_torch = torch.randn(5)
+
+    assert a_py == b_py
+    assert a_np == b_np
+    assert torch.equal(a_torch, b_torch)
+
+
+def test_set_seed_different_seeds_differ() -> None:
+    """Different seeds produce different outputs."""
+    set_seed(1)
+    a = torch.randn(10)
+    set_seed(2)
+    b = torch.randn(10)
+    assert not torch.equal(a, b)
 
 
 def test_binary_simulation_supports_short_only_mode() -> None:

@@ -14,6 +14,7 @@ from differentiable_loss_utils import (
     HOURLY_PERIODS_PER_YEAR,
     combined_sortino_pnl_loss,
     compute_hourly_objective,
+    set_seed,
     simulate_hourly_trades,
     simulate_hourly_trades_binary,
 )
@@ -74,8 +75,15 @@ class BinanceHourlyTrainer:
         self._total_train_steps = 0
         self._weight_decay_groups: list[tuple[dict, float]] = []
 
+    def _get_fill_buffer(self, epoch: int) -> float:
+        buf = self.config.fill_buffer_pct
+        warmup = self.config.fill_buffer_warmup_epochs
+        if warmup > 0 and epoch <= warmup:
+            buf = buf * epoch / warmup
+        return buf
+
     def train(self) -> TrainingArtifacts:
-        torch.manual_seed(self.config.seed)
+        set_seed(self.config.seed)
         if float(self.config.fill_temperature) <= 0.0:
             raise ValueError(
                 f"fill_temperature must be > 0 for differentiable fills (got {self.config.fill_temperature})."
@@ -181,6 +189,7 @@ class BinanceHourlyTrainer:
                 optimizer,
                 train=True,
                 global_step=global_step,
+                current_epoch=epoch,
             )
             val_metrics, _ = self._run_epoch(
                 model,
@@ -188,6 +197,7 @@ class BinanceHourlyTrainer:
                 optimizer=None,
                 train=False,
                 global_step=global_step,
+                current_epoch=epoch,
             )
 
             entry = TrainingHistoryEntry(
@@ -233,6 +243,7 @@ class BinanceHourlyTrainer:
         *,
         train: bool,
         global_step: int,
+        current_epoch: int = 1,
     ) -> Tuple[Dict[str, float], int]:
         model.train(train)
         total_loss = 0.0
@@ -292,7 +303,7 @@ class BinanceHourlyTrainer:
                     "can_long": batch.get("can_long", True),
                     "max_leverage": self.config.max_leverage,
                     "market_order_entry": self.config.market_order_entry,
-                    "fill_buffer_pct": self.config.fill_buffer_pct,
+                    "fill_buffer_pct": self._get_fill_buffer(current_epoch),
                 }
                 base_lag = int(self.config.decision_lag_bars)
                 lag_range_str = self.config.decision_lag_range.strip()
@@ -362,6 +373,16 @@ class BinanceHourlyTrainer:
                     return_weight=self.config.return_weight,
                     smoothness_penalty=self.config.smoothness_penalty,
                 )
+
+            if train and self.config.spread_penalty > 0:
+                bp = actions["buy_price"]
+                sp = actions["sell_price"]
+                tgt = self.config.spread_target
+                buy_gap = (bp - lows[..., :bp.shape[-1]]) / closes[..., :bp.shape[-1]].clamp(min=1e-4)
+                sell_gap = (highs[..., :sp.shape[-1]] - sp) / closes[..., :sp.shape[-1]].clamp(min=1e-4)
+                buy_pen = torch.relu(tgt - buy_gap).mean()
+                sell_pen = torch.relu(tgt - sell_gap).mean()
+                loss = loss + self.config.spread_penalty * (buy_pen + sell_pen)
 
             if train and optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)

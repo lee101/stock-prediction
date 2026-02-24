@@ -10,9 +10,12 @@ time steps (hours).
 from __future__ import annotations
 
 import math
+import os
+import random
 from dataclasses import dataclass
 from typing import Iterable, Tuple
 
+import numpy as np
 import torch
 
 from src.fixtures import all_crypto_symbols
@@ -22,6 +25,24 @@ HOURLY_PERIODS_PER_YEAR = 24 * 365  # 8760 hours
 DAILY_PERIODS_PER_YEAR_CRYPTO = 365  # Crypto trades 24/7
 DAILY_PERIODS_PER_YEAR_STOCK = 252   # ~252 trading days/year for stocks
 _EPS = 1e-8
+
+
+def set_seed(seed: int = 1337, *, deterministic: bool = True) -> None:
+    """Seed all RNG sources for full reproducibility.
+
+    Mirrors ``transformers.set_seed`` but without the HF dependency.
+    Seeds: stdlib random, numpy, torch (CPU + all CUDA devices), and
+    optionally enables cuDNN deterministic mode.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)  # also seeds CUDA via torch.cuda.manual_seed_all
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+    os.environ["PYTHONHASHSEED"] = str(seed)
 
 
 def get_periods_per_year(frequency: str = "hourly", symbol: str = "") -> float:
