@@ -18,6 +18,8 @@ from binanceneural.marketsimulator import (
     _resolve_amount_scale,
     _compute_metrics,
     _prepare_frame,
+    _quantize_down,
+    _quantize_up,
 )
 
 # ---------------------------------------------------------------------------
@@ -867,3 +869,114 @@ class TestDeterminism:
         cash_after_sell = cash_after_buy + proceeds
         eq_bar1 = cash_after_sell  # inventory is 0
         assert abs(eq.iloc[1] - eq_bar1) < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# Production quantization (tick_size, step_size, min_qty, min_notional)
+# ---------------------------------------------------------------------------
+
+class TestQuantization:
+    """Verify exchange quantization rules match production execution.py."""
+
+    def test_quantize_down(self):
+        assert _quantize_down(95.1234, 0.01) == 95.12
+        assert _quantize_down(95.129, 0.01) == 95.12
+        assert _quantize_down(0.123456, 0.00001) == 0.12345
+
+    def test_quantize_up(self):
+        assert _quantize_up(110.001, 0.01) == 110.01
+        assert _quantize_up(110.011, 0.01) == 110.02
+
+    def test_tick_size_rounds_prices(self):
+        """Buy price rounds down, sell price rounds up to tick."""
+        bars = _make_bars([
+            (100, 105, 90, 100),
+            (100, 115, 95, 110),
+        ])
+        actions = _make_actions([
+            {"buy_price": 95.123, "sell_price": 0.0, "trade_amount": 100},
+            {"buy_price": 0.0, "sell_price": 110.001, "trade_amount": 100},
+        ])
+        config = SimulationConfig(
+            maker_fee=FEE, initial_cash=10_000.0,
+            tick_size=0.01,
+        )
+        sim = BinanceMarketSimulator(config)
+        result = sim.run(bars, actions)
+        trades = result.per_symbol["BTCUSD"].trades
+
+        buy = [t for t in trades if t.side == "buy"][0]
+        sell = [t for t in trades if t.side == "sell"][0]
+        assert buy.price == 95.12  # rounded down
+        assert sell.price == 110.01  # rounded up (110.001 -> 110.01)
+
+    def test_step_size_rounds_quantity(self):
+        """Quantities are rounded down to step_size."""
+        bars = _make_bars([(100, 105, 90, 100)])
+        actions = _make_actions([{"buy_price": 95.0, "sell_price": 0.0, "trade_amount": 100}])
+        config = SimulationConfig(
+            maker_fee=FEE, initial_cash=10_000.0,
+            step_size=1.0,  # only whole units
+        )
+        sim = BinanceMarketSimulator(config)
+        result = sim.run(bars, actions)
+        buy = result.per_symbol["BTCUSD"].trades[0]
+        # qty should be a whole number
+        assert buy.quantity == int(buy.quantity)
+
+    def test_min_notional_blocks_small_trades(self):
+        """Orders below min_notional are rejected."""
+        bars = _make_bars([(100, 105, 90, 100)])
+        actions = _make_actions([{"buy_price": 95.0, "sell_price": 0.0, "trade_amount": 100}])
+        config = SimulationConfig(
+            maker_fee=FEE, initial_cash=5.0,  # only $5, notional < 10
+            min_notional=10.0,
+        )
+        sim = BinanceMarketSimulator(config)
+        result = sim.run(bars, actions)
+        # Buy notional ~$5 < min $10 → no trade
+        assert len(result.per_symbol["BTCUSD"].trades) == 0
+
+    def test_min_qty_blocks_tiny_orders(self):
+        """Orders below min_qty are rejected."""
+        bars = _make_bars([(50000, 51000, 49000, 50000)])
+        actions = _make_actions([{"buy_price": 49500.0, "sell_price": 0.0, "trade_amount": 100}])
+        config = SimulationConfig(
+            maker_fee=FEE, initial_cash=100.0,  # ~0.002 BTC
+            min_qty=0.01,  # need at least 0.01 BTC
+        )
+        sim = BinanceMarketSimulator(config)
+        result = sim.run(bars, actions)
+        # qty ~0.002 < min 0.01 → no trade
+        assert len(result.per_symbol["BTCUSD"].trades) == 0
+
+    def test_quantization_in_shared_cash(self):
+        """Quantization also applies in run_shared_cash_simulation."""
+        bars = _make_bars([
+            (100, 105, 90, 100),
+            (100, 115, 95, 110),
+        ])
+        actions = _make_actions([
+            {"buy_price": 95.123, "sell_price": 0.0, "trade_amount": 100},
+            {"buy_price": 0.0, "sell_price": 110.001, "trade_amount": 100},
+        ])
+        config = SimulationConfig(
+            maker_fee=FEE, initial_cash=10_000.0,
+            tick_size=0.01,
+        )
+        result = run_shared_cash_simulation(bars, actions, config)
+        trades = result.per_symbol["BTCUSD"].trades
+        buy = [t for t in trades if t.side == "buy"][0]
+        sell = [t for t in trades if t.side == "sell"][0]
+        assert buy.price == 95.12
+        assert sell.price == 110.01
+
+    def test_no_quantization_by_default(self):
+        """Without tick/step config, no quantization applied (backward compat)."""
+        bars = _make_bars([(100, 105, 90, 100)])
+        actions = _make_actions([{"buy_price": 95.123, "sell_price": 0.0, "trade_amount": 100}])
+        config = SimulationConfig(maker_fee=FEE, initial_cash=10_000.0)
+        sim = BinanceMarketSimulator(config)
+        result = sim.run(bars, actions)
+        buy = result.per_symbol["BTCUSD"].trades[0]
+        assert buy.price == 95.123  # unmodified
