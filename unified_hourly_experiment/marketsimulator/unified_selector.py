@@ -52,7 +52,7 @@ class UnifiedSelectionConfig:
     racing_symbols: Optional[Sequence[str]] = None
     # Deferred orders: queue stock orders for market open
     enable_deferred_orders: bool = True
-    bar_margin: float = 0.0
+    bar_margin: float = 0.0005
 
 
 @dataclass

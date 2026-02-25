@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""Compare prod vs sim using EXACT same inference path as live bot.
+"""Compare prod vs sim using EXACT same inference path as live bot."""
+import os
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
-Key differences from previous comparison:
-1. Uses generate_latest_action (same as live bot) instead of batch generate_actions_from_frame
-2. Sets torch seed before each inference for determinism
-3. Reloads frame for each bar (simulating live bot's frame reload per signal)
-4. Applies same intensity_scale=1.0, min_spread=20bp logic as live bot
-5. Sell-first order matching live bot's _fast_check
-"""
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -22,11 +17,11 @@ from binanceneural.inference import generate_latest_action, generate_actions_fro
 
 REPO = Path(__file__).resolve().parents[1]
 CKPT = REPO / "binanceleveragesui/checkpoints/DOGEUSD_rw30_ep4_full.pt"
-FILL_BUF = 0.0013
+FILL_BUF = 0.0005
 MAKER_FEE = 0.001
 INITIAL_CASH = 3896.67
 MIN_SPREAD_BP = 0.002
-INTENSITY_SCALE = 1.0
+INTENSITY_SCALE = 5.0
 
 model, normalizer, feature_columns, meta = load_policy_checkpoint(CKPT, device="cuda")
 seq_len = meta.get("sequence_length", 72)
@@ -135,6 +130,7 @@ for bar_idx in range(start_idx, len(frame)):
         actions_taken = []
 
         # SELL FIRST (matching live bot _fast_check: handle_exit before handle_entry/add)
+        sold_this_bar = False
         if inv > 0 and sa > 0 and sp > 0 and high >= sp * (1 + FILL_BUF):
             sq = min(sa * inv, inv)
             if sq > 0:
@@ -143,9 +139,10 @@ for bar_idx in range(start_idx, len(frame)):
                 inv -= sq
                 trades.append((str(ts)[:16], "SELL", sq, sp))
                 actions_taken.append(f"SELL {sq:.0f}@{sp:.5f}")
+                sold_this_bar = True
 
-        # BUY (entry when flat, or add when in position)
-        if ba > 0 and bp > 0 and low <= bp * (1 - FILL_BUF):
+        # BUY (no same-bar roundtrip)
+        if not sold_this_bar and ba > 0 and bp > 0 and low <= bp * (1 - FILL_BUF):
             equity = cash + inv * close
             max_bv = 1.0 * max(equity, 0) - inv * bp
             if max_bv > 0:

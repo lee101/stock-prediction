@@ -14,7 +14,7 @@ from binanceneural.inference import generate_actions_from_frame
 REPO = Path(__file__).resolve().parents[1]
 CKPT = REPO / "binanceleveragesui/checkpoints/DOGEUSD_rw30_ep4_full.pt"
 SYMBOL = "DOGEUSD"
-FILL_BUF = 0.0013
+FILL_BUF = 0.0005
 MAKER_FEE = 0.001
 INITIAL_CASH = 10000.0
 DECISION_LAG = 1

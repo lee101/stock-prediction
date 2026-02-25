@@ -111,10 +111,19 @@ def load_model(checkpoint_dir: Path, epoch: int = None):
     model.load_state_dict(state_dict, strict=False)
     model.eval()
 
+    normalizer = None
+    config_path2 = checkpoint_dir / "config.json"
+    if config_path2.exists():
+        with open(config_path2) as f:
+            cfg2 = json.load(f)
+        if "normalizer" in cfg2:
+            normalizer = FeatureNormalizer.from_dict(cfg2["normalizer"])
+            logger.info("Loaded saved normalizer from config")
+
     num_outputs = config.get("num_outputs", 4)
     max_hold = config.get("max_hold_hours", MAX_HOLD_HOURS)
     logger.info("Model: {} outputs, max_hold={}h", num_outputs, max_hold)
-    return model, feature_columns, sequence_length
+    return model, feature_columns, sequence_length, normalizer
 
 
 def is_market_open_now() -> bool:
@@ -379,6 +388,7 @@ def generate_signal_for_symbol(
     data_root: Path,
     cache_root: Path,
     device: torch.device,
+    saved_normalizer: Optional[FeatureNormalizer] = None,
 ) -> Optional[Dict]:
     horizons = [1]
     if any("h24" in c for c in feature_columns):
@@ -403,11 +413,12 @@ def generate_signal_for_symbol(
     frame["symbol"] = symbol
 
     try:
+        norm = saved_normalizer if saved_normalizer is not None else data_module.normalizer
         action = generate_latest_action(
             model=model,
             frame=frame,
             feature_columns=feature_columns,
-            normalizer=data_module.normalizer,
+            normalizer=norm,
             sequence_length=sequence_length,
             horizon=1,
             device=device,
@@ -533,24 +544,20 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
 def run_cycle(
     model, feature_columns, sequence_length, device,
     stocks, args, api, state, max_positions=MAX_POSITIONS, max_hold_hours=MAX_HOLD_HOURS,
+    normalizer=None,
 ):
     active_set = set(stocks)
-    market_open = is_market_open_now()
-    if not market_open and not args.ignore_market_hours:
-        logger.info("Market closed, managing existing positions only")
-        num_pos = manage_positions(api, state, max_hold_hours=max_hold_hours, active_symbols=active_set)
-        logger.info("Active positions: {}", num_pos)
-        save_state(state)
-        return
+    market_open = is_market_open_now() or args.ignore_market_hours
 
     num_pos = manage_positions(api, state, max_hold_hours=max_hold_hours, active_symbols=active_set)
-    logger.info("Active positions after management: {}", num_pos)
+    logger.info("Active positions: {} | Market: {}", num_pos, "OPEN" if market_open else "CLOSED")
 
     signals = {}
     for symbol in stocks:
         action = generate_signal_for_symbol(
             symbol, model, feature_columns, sequence_length,
-            args.stock_data_root, args.stock_cache_root, device
+            args.stock_data_root, args.stock_cache_root, device,
+            saved_normalizer=normalizer,
         )
         if action:
             pred_high = action.get("predicted_high", 0)
@@ -575,8 +582,10 @@ def run_cycle(
             else:
                 logger.debug("{}: edge={:.4f} below {:.4f}", symbol, edge, args.min_edge)
 
-    if not args.dry_run and signals:
+    if market_open and not args.dry_run and signals:
         execute_trades(api, signals, state, max_positions=max_positions)
+    elif not market_open and signals:
+        logger.info("Market closed - {} signals ready, will trade when open", len(signals))
     elif not signals:
         logger.info("No signals above threshold")
 
@@ -613,7 +622,7 @@ def main():
     paper = not args.live
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, feature_columns, sequence_length = load_model(args.checkpoint_dir, epoch=args.epoch)
+    model, feature_columns, sequence_length, normalizer = load_model(args.checkpoint_dir, epoch=args.epoch)
     model = model.to(device)
 
     stocks = [s.strip().upper() for s in args.stock_symbols.split(",") if s.strip()]
@@ -634,7 +643,7 @@ def main():
         account = get_account_info(api)
         logger.info("Equity: ${:.2f}, Buying power: ${:.2f}", account["equity"], account["buying_power"])
 
-    run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos, max_hold)
+    run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos, max_hold, normalizer=normalizer)
 
     if not args.loop:
         return
@@ -646,7 +655,7 @@ def main():
         logger.info("Sleeping {:.0f}s until next hour", wait_secs)
         time.sleep(wait_secs)
 
-        run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos, max_hold)
+        run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos, max_hold, normalizer=normalizer)
 
 
 if __name__ == "__main__":

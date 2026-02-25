@@ -358,6 +358,7 @@ binancetrainingdatahourly
 binance_spot_hourly/
 binance_spot_daily/
 binance_spot_*/
+trainingdata5min/
 trainingdatadailybinance
 trainingdatadailybinance/
 bagsfm_state.json
@@ -458,3 +459,7 @@ binanceleveragesui/checkpoints
  binanceleveragesui_rlcuda/artifacts*
 experiments/sui_sortino_max/artifacts/
 binanceleveragesui_rlcuda/artifacts*
+checkpoints
+cryptoalpacaexperiment/checkpoints/
+forecast_cache
+cryptoalpacaexperiment/forecast_cache/

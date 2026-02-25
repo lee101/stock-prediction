@@ -36,7 +36,7 @@ bars = test_frame[["timestamp", "symbol", "open", "high", "low", "close"]].copy(
 cfg = LeverageConfig(
     symbol="DOGEUSD", max_leverage=1.0, can_short=False,
     maker_fee=0.001, margin_hourly_rate=0.0,
-    initial_cash=10000.0, fill_buffer_pct=0.0013,
+    initial_cash=10000.0, fill_buffer_pct=0.0005,
     decision_lag_bars=1, min_edge=0.0,
 )
 
