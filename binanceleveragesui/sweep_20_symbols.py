@@ -78,7 +78,7 @@ POLICY_LAYERS = 4
 POLICY_HEADS = 8
 POLICY_LR = 1e-4
 FILL_TEMP = 0.1
-FILL_BUFFER = 0.0013
+FILL_BUFFER = 0.0005
 
 # eval params (prod-matching)
 EVAL_LAG = 1
@@ -246,16 +246,27 @@ def build_forecast_cache(data_symbol: str, csv_path: Path, model_id: str) -> boo
     h1_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = h1_dir / f"{data_symbol.upper()}.parquet"
 
-    # skip if already exists and recent enough
+    # skip if already exists, recent, and has good coverage
+    price_df = pd.read_csv(csv_path)
+    price_rows = len(price_df)
+    if "timestamp" in price_df.columns:
+        first_ts = pd.to_datetime(price_df["timestamp"]).min()
+        if first_ts.tzinfo is None:
+            first_ts = first_ts.tz_localize("UTC")
+    else:
+        first_ts = None
+    del price_df
     if parquet_path.exists():
         existing = pd.read_parquet(parquet_path)
-        if len(existing) > 100:
-            logger.info(f"  Cache exists ({len(existing)} rows), checking freshness")
-            # rebuild if older than 7 days
+        coverage = len(existing) / max(price_rows, 1)
+        if len(existing) > 100 and coverage > 0.5:
+            logger.info(f"  Cache exists ({len(existing)} rows, {coverage:.0%} coverage), checking freshness")
             last_ts = pd.to_datetime(existing["timestamp"]).max()
             if (pd.Timestamp.now(tz="UTC") - last_ts).days < 7:
                 logger.info(f"  Cache fresh enough (last: {last_ts}), skipping")
                 return True
+        elif coverage <= 0.5:
+            logger.info(f"  Cache too small ({len(existing)} rows, {coverage:.0%} coverage), rebuilding")
 
     try:
         wrapper = Chronos2OHLCWrapper.from_pretrained(
@@ -278,7 +289,7 @@ def build_forecast_cache(data_symbol: str, csv_path: Path, model_id: str) -> boo
         manager = ChronosForecastManager(cfg, wrapper_factory=lambda: wrapper)
 
         end_ts = pd.Timestamp.now(tz="UTC")
-        start_ts = end_ts - pd.Timedelta(hours=5000)
+        start_ts = first_ts if first_ts is not None else end_ts - pd.Timedelta(hours=60000)
         manager.ensure_latest(start=start_ts, end=end_ts, cache_only=False, force_rebuild=True)
 
         logger.info(f"  Cache built: {parquet_path}")
@@ -600,7 +611,7 @@ def print_summary(all_results: Dict[str, Any]):
         calmar = r.get("calmar", 0)
         comp = r.get("composite", r.get("sortino", 0))
         print(
-            f"{r['symbol']:<10} {r['rw']:>4.2f} {r['wd']:>5.003f} {r['epoch']:<12} "
+            f"{r['symbol']:<10} {r['rw']:>4.2f} {r['wd']:>5.3f} {r['epoch']:<12} "
             f"{r['sortino']:>8.2f} {r['total_return']*100:>7.1f}% "
             f"{r['max_drawdown']*100:>7.1f}% {calmar:>8.2f} {comp:>8.2f} {r['num_trades']:>7}"
         )

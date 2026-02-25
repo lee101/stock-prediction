@@ -35,7 +35,7 @@ def main():
     parser.add_argument("--min-edge", type=float, default=0.0)
     parser.add_argument("--decision-lag-bars", type=int, default=1)
     parser.add_argument("--market-order-entry", action="store_true")
-    parser.add_argument("--bar-margin", type=float, default=0.0)
+    parser.add_argument("--bar-margin", type=float, default=0.0005)
     parser.add_argument("--leverage", type=float, default=2.0)
     parser.add_argument("--force-close-slippage", type=float, default=0.003)
     parser.add_argument("--no-int-qty", action="store_true")
@@ -68,7 +68,13 @@ def main():
         except Exception as e:
             logger.warning("Skip {}: {}", symbol, e)
 
-    normalizer = list(data_modules.values())[0].normalizer
+    if "normalizer" in config:
+        from binanceneural.data import FeatureNormalizer
+        normalizer = FeatureNormalizer.from_dict(config["normalizer"])
+        logger.info("Using saved normalizer from config")
+    else:
+        normalizer = list(data_modules.values())[0].normalizer
+        logger.info("No saved normalizer, using recomputed")
 
     checkpoints = sorted(args.checkpoint_dir.glob("epoch_*.pt"),
                          key=lambda p: int(p.stem.split("_")[1]))

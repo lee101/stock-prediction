@@ -180,6 +180,7 @@ def main():
             "transformer_dim": args.hidden_dim,
             "transformer_heads": args.num_heads,
             "transformer_layers": args.num_layers,
+            "normalizer": data_module.normalizer.to_dict(),
         }, f, indent=2)
 
     history_rows = []

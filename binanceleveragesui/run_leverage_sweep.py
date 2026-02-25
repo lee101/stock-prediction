@@ -136,6 +136,7 @@ def simulate_with_margin_cost(
             continue
 
         # Sell first (matches live bot: handle_exit before handle_entry/add)
+        sold_this_bar = False
         if sell_amount > 0 and sell_price > 0 and high >= sell_price * (1 + fill_buf):
             if inventory > 0:
                 sell_qty = min(sell_amount * inventory, inventory)
@@ -151,11 +152,12 @@ def simulate_with_margin_cost(
                 cash += proceeds
                 inventory -= sell_qty
                 trades.append(("sell", 0, sell_price, sell_qty))
+                sold_this_bar = True
                 if inventory <= 0:
                     bars_in_position = 0
 
-        # Buy execution
-        if buy_amount > 0 and buy_price > 0 and low <= buy_price * (1 - fill_buf):
+        # Buy execution (no same-bar roundtrip: skip if we sold this bar)
+        if not sold_this_bar and buy_amount > 0 and buy_price > 0 and low <= buy_price * (1 - fill_buf):
             max_buy_value = config.max_leverage * max(equity, 0) - inventory * buy_price
             if max_buy_value > 0:
                 buy_qty = buy_amount * max_buy_value / (buy_price * (1 + config.maker_fee))

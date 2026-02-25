@@ -16,7 +16,7 @@ from binanceleveragesui.run_leverage_sweep import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
-FILL_BUFFER = 0.0013
+FILL_BUFFER = 0.0005
 
 dm = ChronosSolDataModule(
     symbol="DOGEUSD",

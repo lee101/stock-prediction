@@ -1,12 +1,14 @@
-"""Multi-position portfolio simulator for stock trading.
+"""Crypto portfolio simulator -- trades only when US stock market is CLOSED.
 
-Supports N simultaneous positions with per-position equity allocation,
-edge-based entry ranking, sell-target exits, hold-timeout exits, and EOD close.
+Inverse of the stock simulator: skips NYSE open hours + buffer,
+force-closes positions before market opens.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import time
 from typing import Dict, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -14,42 +16,62 @@ import pandas as pd
 from src.date_utils import is_nyse_open_on_date
 from src.fees import get_fee_for_symbol
 from src.metrics_utils import annualized_sortino
-from src.symbol_utils import is_crypto_symbol
 
-from .unified_selector import (
-    _is_market_open,
-    _next_market_open,
+from unified_hourly_experiment.marketsimulator.unified_selector import (
     _edge_score,
-    _infer_periods_per_year,
     UnifiedTradeRecord,
 )
 
+NEW_YORK = ZoneInfo("America/New_York")
+BUFFER_OPEN = time(8, 30)
+BUFFER_CLOSE = time(17, 0)
+BACKOUT_START = time(8, 0)
 
-LONG_ONLY_DEFAULT = {"NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "DBX", "TSLA", "AAPL"}
-SHORT_ONLY_DEFAULT = {"YELP", "EBAY", "TRIP", "MTCH", "ANGI", "Z", "EXPE", "BKNG", "NWSA", "NYT"}
+
+def _is_crypto_allowed(ts: pd.Timestamp) -> bool:
+    """True when crypto trading is allowed (US market CLOSED + buffer)."""
+    try:
+        ny = ts.tz_convert(NEW_YORK)
+    except TypeError:
+        ny = ts.tz_localize("UTC").tz_convert(NEW_YORK)
+    if not is_nyse_open_on_date(ny):
+        return True
+    t = ny.time()
+    return not (BUFFER_OPEN <= t < BUFFER_CLOSE)
+
+
+def _is_backout_window(ts: pd.Timestamp) -> bool:
+    """True during the 30min window before buffer (force-close time)."""
+    try:
+        ny = ts.tz_convert(NEW_YORK)
+    except TypeError:
+        ny = ts.tz_localize("UTC").tz_convert(NEW_YORK)
+    if not is_nyse_open_on_date(ny):
+        return False
+    t = ny.time()
+    return BACKOUT_START <= t < BUFFER_OPEN
 
 
 @dataclass
-class PortfolioConfig:
+class CryptoPortfolioConfig:
     initial_cash: float = 10_000.0
-    max_positions: int = 5
+    max_positions: int = 2
     min_edge: float = 0.0
     edge_mode: str = "high_low"
     max_hold_hours: int = 6
-    enforce_market_hours: bool = True
-    close_at_eod: bool = True
+    skip_during_market_hours: bool = True
+    backout_before_market: bool = True
     symbols: Optional[Sequence[str]] = None
     trade_amount_scale: float = 100.0
     min_buy_amount: float = 0.0
     fee_by_symbol: Optional[Dict[str, float]] = None
-    max_leverage: float = 2.0
+    max_leverage: float = 1.0
     decision_lag_bars: int = 1
-    market_order_entry: bool = False
     bar_margin: float = 0.0005
     long_only_symbols: Optional[set] = None
     short_only_symbols: Optional[set] = None
-    force_close_slippage: float = 0.003
-    int_qty: bool = True
+    force_close_slippage: float = 0.001
+    int_qty: bool = False
 
 
 @dataclass
@@ -59,25 +81,25 @@ class Position:
     entry_price: float
     entry_ts: pd.Timestamp
     sell_target: Optional[float] = None
-    market_hours_held: int = 0
+    hours_held: int = 0
     direction: str = "long"
 
 
 @dataclass
-class PortfolioResult:
+class CryptoPortfolioResult:
     equity_curve: pd.Series
     trades: List[UnifiedTradeRecord]
     metrics: Dict[str, float] = field(default_factory=dict)
 
 
-def run_portfolio_simulation(
+def run_crypto_simulation(
     bars: pd.DataFrame,
     actions: pd.DataFrame,
-    config: Optional[PortfolioConfig] = None,
+    config: Optional[CryptoPortfolioConfig] = None,
     *,
     horizon: int = 1,
-) -> PortfolioResult:
-    cfg = config or PortfolioConfig()
+) -> CryptoPortfolioResult:
+    cfg = config or CryptoPortfolioConfig()
 
     if cfg.decision_lag_bars > 0:
         lag = cfg.decision_lag_bars
@@ -107,12 +129,14 @@ def run_portfolio_simulation(
             fee = get_fee_for_symbol(sym)
         symbol_fee[sym] = fee
 
-    long_only = cfg.long_only_symbols if cfg.long_only_symbols is not None else LONG_ONLY_DEFAULT
-    short_only = cfg.short_only_symbols if cfg.short_only_symbols is not None else SHORT_ONLY_DEFAULT
+    long_only = cfg.long_only_symbols or set()
+    short_only = cfg.short_only_symbols or set()
 
     def _direction(sym):
         if sym in short_only:
             return "short"
+        if sym in long_only:
+            return "long"
         return "long"
 
     high_col = f"predicted_high_p50_h{horizon}"
@@ -126,7 +150,7 @@ def run_portfolio_simulation(
     trades: List[UnifiedTradeRecord] = []
 
     def _mtm():
-        total = 0
+        total = 0.0
         for pos in positions.values():
             price = last_close.get(pos.symbol, pos.entry_price)
             if pos.direction == "short":
@@ -137,6 +161,20 @@ def run_portfolio_simulation(
 
     def _equity():
         return cash + _mtm()
+
+    def _close_position(sym, pos, price, reason, ts_now):
+        nonlocal cash
+        fee = symbol_fee.get(sym, 0.001)
+        slip = cfg.force_close_slippage if reason != "target" else 0.0
+        if pos.direction == "short":
+            exit_price = price * (1 + slip)
+            cash += pos.qty * (2 * pos.entry_price - exit_price * (1 + fee))
+            trades.append(UnifiedTradeRecord(ts_now, sym, "buy_cover", exit_price, pos.qty, cash, 0, reason))
+        else:
+            exit_price = price * (1 - slip)
+            proceeds = pos.qty * exit_price * (1 - fee)
+            cash += proceeds
+            trades.append(UnifiedTradeRecord(ts_now, sym, "sell", exit_price, pos.qty, cash, 0, reason))
 
     groups = merged.groupby("timestamp", sort=True)
 
@@ -149,24 +187,35 @@ def run_portfolio_simulation(
         equity = _equity()
         equity_values.append((ts, equity))
 
-        # 1. Check exit targets (sell for longs, buy-to-cover for shorts)
+        allowed = _is_crypto_allowed(ts) if cfg.skip_during_market_hours else True
+        backout = _is_backout_window(ts) if cfg.backout_before_market else False
+
+        # 1. Force close before market opens
+        if backout:
+            closed = list(positions.keys())
+            for sym in closed:
+                pos = positions[sym]
+                price = last_close.get(sym, pos.entry_price)
+                _close_position(sym, pos, price, "market_backout", ts)
+            for sym in closed:
+                del positions[sym]
+            continue
+
+        # 2. Check exit targets
         closed = []
         for sym, pos in positions.items():
             row_df = group[group["symbol"] == sym]
             if row_df.empty:
                 continue
             row = row_df.iloc[0]
-            fee = symbol_fee.get(sym, 0.001)
 
             if pos.sell_target:
                 if pos.direction == "short":
                     target_hit = row["low"] <= pos.sell_target * (1 - cfg.bar_margin)
                 else:
                     target_hit = row["high"] >= pos.sell_target * (1 + cfg.bar_margin)
-
-                if target_hit:
-                    if cfg.enforce_market_hours and not is_crypto_symbol(sym) and not _is_market_open(ts, sym):
-                        continue
+                if target_hit and allowed:
+                    fee = symbol_fee.get(sym, 0.001)
                     if pos.direction == "short":
                         cash += pos.qty * (2 * pos.entry_price - pos.sell_target * (1 + fee))
                         trades.append(UnifiedTradeRecord(ts, sym, "buy_cover", pos.sell_target, pos.qty, cash, 0, "target"))
@@ -175,58 +224,24 @@ def run_portfolio_simulation(
                         cash += proceeds
                         trades.append(UnifiedTradeRecord(ts, sym, "sell", pos.sell_target, pos.qty, cash, 0, "target"))
                     closed.append(sym)
-
         for sym in closed:
             del positions[sym]
 
-        # 2. Check hold timeout (market hours)
+        # 3. Check hold timeout
         closed2 = []
         for sym, pos in positions.items():
-            if _is_market_open(ts, sym) or is_crypto_symbol(sym):
-                pos.market_hours_held += 1
-            if cfg.max_hold_hours and pos.market_hours_held >= cfg.max_hold_hours:
-                if cfg.enforce_market_hours and not is_crypto_symbol(sym) and not _is_market_open(ts, sym):
-                    continue
+            pos.hours_held += 1
+            if cfg.max_hold_hours and pos.hours_held >= cfg.max_hold_hours:
                 price = last_close.get(sym, pos.entry_price)
-                fee = symbol_fee.get(sym, 0.001)
-                slip = cfg.force_close_slippage
-                if pos.direction == "short":
-                    exit_price = price * (1 + slip)
-                    cash += pos.qty * (2 * pos.entry_price - exit_price * (1 + fee))
-                    trades.append(UnifiedTradeRecord(ts, sym, "buy_cover", exit_price, pos.qty, cash, 0, "timeout"))
-                else:
-                    exit_price = price * (1 - slip)
-                    proceeds = pos.qty * exit_price * (1 - fee)
-                    cash += proceeds
-                    trades.append(UnifiedTradeRecord(ts, sym, "sell", exit_price, pos.qty, cash, 0, "timeout"))
+                _close_position(sym, pos, price, "timeout", ts)
                 closed2.append(sym)
         for sym in closed2:
             del positions[sym]
 
-        # 3. EOD close for stocks
-        if cfg.close_at_eod:
-            closed3 = []
-            for sym, pos in positions.items():
-                if is_crypto_symbol(sym):
-                    continue
-                if _is_market_open(ts, sym) and not _is_market_open(ts + pd.Timedelta(hours=1), sym):
-                    price = last_close.get(sym, pos.entry_price)
-                    fee = symbol_fee.get(sym, 0.001)
-                    slip = cfg.force_close_slippage
-                    if pos.direction == "short":
-                        exit_price = price * (1 + slip)
-                        cash += pos.qty * (2 * pos.entry_price - exit_price * (1 + fee))
-                        trades.append(UnifiedTradeRecord(ts, sym, "buy_cover", exit_price, pos.qty, cash, 0, "eod"))
-                    else:
-                        exit_price = price * (1 - slip)
-                        proceeds = pos.qty * exit_price * (1 - fee)
-                        cash += proceeds
-                        trades.append(UnifiedTradeRecord(ts, sym, "sell", exit_price, pos.qty, cash, 0, "eod"))
-                    closed3.append(sym)
-            for sym in closed3:
-                del positions[sym]
+        # 4. New entries (only when crypto trading allowed)
+        if not allowed:
+            continue
 
-        # 4. Find new entries if we have open slots
         open_slots = cfg.max_positions - len(positions)
         if open_slots <= 0:
             continue
@@ -236,8 +251,6 @@ def run_portfolio_simulation(
         for row in group.itertuples(index=False):
             sym = row.symbol
             if sym in held_symbols:
-                continue
-            if cfg.enforce_market_hours and not is_crypto_symbol(sym) and not _is_market_open(ts, sym):
                 continue
 
             buy_price = getattr(row, "buy_price", None)
@@ -273,25 +286,17 @@ def run_portfolio_simulation(
             if edge is None or edge < cfg.min_edge:
                 continue
 
-            if cfg.market_order_entry:
-                fillable = True
-                actual_entry_price = row.open if hasattr(row, "open") else row.close
+            if is_long:
+                fillable = row.low <= entry_price * (1 - cfg.bar_margin) if hasattr(row, "low") else True
             else:
-                if is_long:
-                    fillable = row.low <= entry_price * (1 - cfg.bar_margin) if hasattr(row, "low") else True
-                else:
-                    fillable = row.high >= entry_price * (1 + cfg.bar_margin) if hasattr(row, "high") else True
-                actual_entry_price = entry_price
+                fillable = row.high >= entry_price * (1 + cfg.bar_margin) if hasattr(row, "high") else True
             if not fillable:
                 continue
 
             candidates.append({
-                "symbol": sym,
-                "edge": edge,
-                "entry_price": actual_entry_price,
-                "exit_price": exit_price,
-                "buy_int": buy_int,
-                "direction": direction,
+                "symbol": sym, "edge": edge,
+                "entry_price": entry_price, "exit_price": exit_price,
+                "buy_int": buy_int, "direction": direction,
             })
 
         candidates.sort(key=lambda x: x["edge"], reverse=True)
@@ -320,7 +325,6 @@ def run_portfolio_simulation(
             side = "short_sell" if direction == "short" else "buy"
             trades.append(UnifiedTradeRecord(ts, sym, side, entry_price, qty, cash, qty, "entry"))
 
-    # Final equity
     equity = _equity()
     if equity_values:
         eq_ts, eq_vals = zip(*equity_values)
@@ -330,24 +334,30 @@ def run_portfolio_simulation(
 
     total_return = (equity / cfg.initial_cash - 1) if cfg.initial_cash > 0 else 0.0
     returns = equity_curve.pct_change().dropna()
-    avg_ppy = np.mean([_infer_periods_per_year(s) for s in symbols]) if symbols else 1764.0
-    sortino = annualized_sortino(returns.values, periods_per_year=avg_ppy) if len(returns) > 1 else 0.0
+    sortino = annualized_sortino(returns.values, periods_per_year=8760) if len(returns) > 1 else 0.0
+
+    max_dd = 0.0
+    if len(equity_curve) > 0:
+        peak = equity_curve.expanding().max()
+        dd = (equity_curve - peak) / peak
+        max_dd = float(dd.min())
 
     n_buys = sum(1 for t in trades if t.side in ("buy", "short_sell"))
-    n_sells = sum(1 for t in trades if t.side in ("sell", "buy_cover"))
-    wins = sum(1 for t in trades if t.side in ("sell", "buy_cover") and t.reason == "target")
-    timeouts = sum(1 for t in trades if t.side in ("sell", "buy_cover") and t.reason == "timeout")
-    eods = sum(1 for t in trades if t.side in ("sell", "buy_cover") and t.reason == "eod")
+    n_exits = sum(1 for t in trades if t.side in ("sell", "buy_cover"))
+    targets = sum(1 for t in trades if t.reason == "target")
+    timeouts = sum(1 for t in trades if t.reason == "timeout")
+    backouts = sum(1 for t in trades if t.reason == "market_backout")
 
     metrics = {
         "total_return": total_return,
         "sortino": sortino,
+        "max_drawdown": max_dd,
         "final_equity": equity,
-        "num_buys": n_buys,
-        "num_sells": n_sells,
-        "target_exits": wins,
+        "num_entries": n_buys,
+        "num_exits": n_exits,
+        "target_exits": targets,
         "timeout_exits": timeouts,
-        "eod_exits": eods,
+        "market_backouts": backouts,
     }
 
-    return PortfolioResult(equity_curve=equity_curve, trades=trades, metrics=metrics)
+    return CryptoPortfolioResult(equity_curve=equity_curve, trades=trades, metrics=metrics)
