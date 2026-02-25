@@ -74,7 +74,7 @@ RW_VALUES = [0.10, 0.30, 0.50]
 WD_VALUES = [0.03, 0.05]
 EPOCHS = 20
 MIN_EDGES = [0.0, 0.002, 0.004, 0.006, 0.008, 0.010]
-FILL_BUFFER = 0.0013
+FILL_BUFFER = 0.0005
 
 
 def train_model(symbol, rw, wd, epochs=EPOCHS):

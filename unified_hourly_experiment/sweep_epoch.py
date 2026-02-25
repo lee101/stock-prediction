@@ -83,7 +83,7 @@ def main():
     parser.add_argument("--cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
     parser.add_argument("--initial-cash", type=float, default=10000)
     parser.add_argument("--min-edge", type=float, default=0.001)
-    parser.add_argument("--bar-margin", type=float, default=0.0)
+    parser.add_argument("--bar-margin", type=float, default=0.0005)
     parser.add_argument("--max-hold-hours", type=int, default=None)
     args = parser.parse_args()
 

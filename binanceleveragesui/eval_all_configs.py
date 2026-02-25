@@ -17,7 +17,7 @@ from binanceleveragesui.run_leverage_sweep import (
 
 REPO = Path(__file__).resolve().parents[1]
 CKPT_ROOT = REPO / "binanceleveragesui" / "checkpoints"
-FILL_BUFFER = 0.0013
+FILL_BUFFER = 0.0005
 MIN_EDGES = [0.0, 0.002, 0.004, 0.006, 0.008, 0.010]
 HORIZONS = (1, 4, 24)
 
