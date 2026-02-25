@@ -415,6 +415,7 @@ def _fit_pipeline(
 
 
 def _save_pipeline(pipeline: Any, output_dir: Path, name: str) -> Path:
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     save_path = output_dir / name
     pipeline.save_pretrained(save_path)

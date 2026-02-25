@@ -1,0 +1,19 @@
+{
+  "run_name": "MTCH_lora_robust_scaling_ctx128_lr5e-5_r16_20260221_084043",
+  "config": {
+    "symbol": "MTCH",
+    "preaug": "robust_scaling",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 354.91839599609375,
+    "mae_percent_std": 106.02978515625
+  },
+  "test": {
+    "mae_percent_mean": 118.83680725097656,
+    "mae_percent_std": 57.42665481567383
+  }
+}

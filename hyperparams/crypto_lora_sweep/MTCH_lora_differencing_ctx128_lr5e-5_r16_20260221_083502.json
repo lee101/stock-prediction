@@ -1,0 +1,19 @@
+{
+  "run_name": "MTCH_lora_differencing_ctx128_lr5e-5_r16_20260221_083502",
+  "config": {
+    "symbol": "MTCH",
+    "preaug": "differencing",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 150.57266235351562,
+    "mae_percent_std": 14.80405330657959
+  },
+  "test": {
+    "mae_percent_mean": 100.13742065429688,
+    "mae_percent_std": 7.658325672149658
+  }
+}

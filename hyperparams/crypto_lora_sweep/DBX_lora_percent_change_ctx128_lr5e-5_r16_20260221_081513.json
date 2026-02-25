@@ -1,0 +1,19 @@
+{
+  "run_name": "DBX_lora_percent_change_ctx128_lr5e-5_r16_20260221_081513",
+  "config": {
+    "symbol": "DBX",
+    "preaug": "percent_change",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 26.680652618408203,
+    "mae_percent_std": 8.05447769165039
+  },
+  "test": {
+    "mae_percent_mean": 10.691795349121094,
+    "mae_percent_std": 0.986713171005249
+  }
+}
