@@ -1,0 +1,19 @@
+{
+  "run_name": "GOOG_lora_differencing_ctx128_lr5e-5_r16_20260221_075938",
+  "config": {
+    "symbol": "GOOG",
+    "preaug": "differencing",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 146.41238403320312,
+    "mae_percent_std": 14.180933952331543
+  },
+  "test": {
+    "mae_percent_mean": 152.55935668945312,
+    "mae_percent_std": 12.18569278717041
+  }
+}

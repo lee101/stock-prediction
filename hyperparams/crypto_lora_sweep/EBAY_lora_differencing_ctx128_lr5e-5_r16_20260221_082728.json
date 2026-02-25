@@ -1,0 +1,19 @@
+{
+  "run_name": "EBAY_lora_differencing_ctx128_lr5e-5_r16_20260221_082728",
+  "config": {
+    "symbol": "EBAY",
+    "preaug": "differencing",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 130.04061889648438,
+    "mae_percent_std": 7.944077491760254
+  },
+  "test": {
+    "mae_percent_mean": 101.69522094726562,
+    "mae_percent_std": 16.16666603088379
+  }
+}

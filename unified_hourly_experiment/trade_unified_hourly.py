@@ -27,13 +27,24 @@ from src.torch_load_utils import torch_load_compat
 from src.symbol_utils import is_crypto_symbol
 
 LONG_ONLY = {"NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "DBX", "TSLA", "AAPL"}
-SHORT_ONLY = {"YELP", "EBAY", "TRIP", "MTCH", "KIND", "ANGI", "Z", "EXPE", "BKNG", "NWSA", "NYT"}
+SHORT_ONLY = {"YELP", "EBAY", "TRIP", "MTCH", "ANGI", "Z", "EXPE", "BKNG", "NWSA", "NYT"}
 
 STATE_FILE = Path("strategy_state/stock_portfolio_state.json")
+TRADE_LOG = Path("strategy_state/stock_trade_log.jsonl")
 MAX_HOLD_HOURS = 6
 MAX_POSITIONS = 10
 TRADE_AMOUNT_SCALE = 100.0
 MIN_BUY_AMOUNT = 0.0
+
+
+def log_trade(event: dict):
+    event["logged_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        TRADE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(TRADE_LOG, "a") as f:
+            f.write(json.dumps(event, default=str) + "\n")
+    except Exception:
+        pass
 
 
 def load_state() -> dict:
@@ -100,10 +111,19 @@ def load_model(checkpoint_dir: Path, epoch: int = None):
     model.load_state_dict(state_dict, strict=False)
     model.eval()
 
+    normalizer = None
+    config_path2 = checkpoint_dir / "config.json"
+    if config_path2.exists():
+        with open(config_path2) as f:
+            cfg2 = json.load(f)
+        if "normalizer" in cfg2:
+            normalizer = FeatureNormalizer.from_dict(cfg2["normalizer"])
+            logger.info("Loaded saved normalizer from config")
+
     num_outputs = config.get("num_outputs", 4)
     max_hold = config.get("max_hold_hours", MAX_HOLD_HOURS)
     logger.info("Model: {} outputs, max_hold={}h", num_outputs, max_hold)
-    return model, feature_columns, sequence_length
+    return model, feature_columns, sequence_length, normalizer
 
 
 def is_market_open_now() -> bool:
@@ -148,11 +168,14 @@ def get_alpaca_client(paper: bool = True):
     return TradingClient(key_id, secret, paper=paper)
 
 
-def get_current_positions(api) -> Dict[str, float]:
+def get_current_positions(api) -> Dict[str, dict]:
     positions = {}
     try:
         for pos in api.get_all_positions():
-            positions[pos.symbol] = float(pos.qty)
+            positions[pos.symbol] = {
+                "qty": float(pos.qty),
+                "price": float(pos.current_price),
+            }
     except Exception as e:
         logger.error("Failed to get positions: {}", e)
     return positions
@@ -224,28 +247,40 @@ def place_exit_order(api, symbol: str, qty: float, sell_price: float, side: str 
         return None
 
 
-def force_close_position(api, symbol: str, qty: float):
-    from alpaca.trading.requests import MarketOrderRequest
+def force_close_position(api, symbol: str, qty: float, current_price: float = 0):
+    from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
     if abs(qty) < 1:
         return
     side = OrderSide.SELL if qty > 0 else OrderSide.BUY
+    if current_price <= 0:
+        logger.error("{}: no price for limit close, skipping", symbol)
+        return
     try:
-        order = MarketOrderRequest(
+        if side == OrderSide.SELL:
+            price = round(current_price * 0.997, 2)
+        else:
+            price = round(current_price * 1.003, 2)
+        order = LimitOrderRequest(
             symbol=symbol,
             qty=int(abs(qty)),
             side=side,
+            limit_price=price,
             time_in_force=TimeInForce.DAY,
         )
-        api.submit_order(order)
-        logger.info("{}: force-closed {} shares", symbol, int(abs(qty)))
+        result = api.submit_order(order)
+        logger.info("{}: force-close limit {} shares @ ${:.2f} (cur=${:.2f})", symbol, int(abs(qty)), price, current_price)
+        log_trade({"event": "force_close", "symbol": symbol, "qty": int(abs(qty)),
+                   "price": price, "cur_price": current_price, "order_id": str(result.id)})
     except Exception as e:
         logger.error("{}: force-close failed - {}", symbol, e)
 
 
-def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS):
-    """Check existing positions: enforce hold timeout, ensure exit orders exist."""
+def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
+                     active_symbols: set = None):
+    """Check existing positions: enforce hold timeout, ensure exit orders exist.
+    Force-close positions not in active_symbols or without exit prices."""
     now = datetime.now(timezone.utc)
     positions = get_current_positions(api)
     orders_by_symbol = get_open_orders(api)
@@ -253,10 +288,15 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS):
     removed = []
 
     for symbol, info in list(tracked.items()):
-        qty = positions.get(symbol, 0)
+        pos_data = positions.get(symbol, {})
+        qty = pos_data.get("qty", 0) if isinstance(pos_data, dict) else 0
+        cur_price = pos_data.get("price", 0) if isinstance(pos_data, dict) else 0
 
         if abs(qty) < 1:
             logger.info("{}: position closed, cleaning state", symbol)
+            log_trade({"event": "exit_filled", "symbol": symbol,
+                       "entry_price": info.get("entry_price"),
+                       "exit_price": info.get("exit_price")})
             cancel_symbol_orders(api, symbol, orders_by_symbol)
             removed.append(symbol)
             continue
@@ -264,7 +304,14 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS):
         if symbol in SHORT_ONLY and qty > 0:
             logger.info("{}: SHORT_ONLY stock held long, force closing {} shares", symbol, qty)
             cancel_symbol_orders(api, symbol, orders_by_symbol)
-            force_close_position(api, symbol, qty)
+            force_close_position(api, symbol, qty, cur_price)
+            removed.append(symbol)
+            continue
+
+        if active_symbols and symbol not in active_symbols:
+            logger.info("{}: not in active symbol set, force closing {} shares", symbol, qty)
+            cancel_symbol_orders(api, symbol, orders_by_symbol)
+            force_close_position(api, symbol, qty, cur_price)
             removed.append(symbol)
             continue
 
@@ -277,16 +324,28 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS):
         if hours_held >= pos_hold_limit:
             logger.info("{}: hold timeout ({:.1f} market hrs >= {:.1f}h), force closing", symbol, hours_held, pos_hold_limit)
             cancel_symbol_orders(api, symbol, orders_by_symbol)
-            force_close_position(api, symbol, qty)
+            force_close_position(api, symbol, qty, cur_price)
+            removed.append(symbol)
+            continue
+
+        if not info.get("exit_price"):
+            logger.info("{}: no exit price set, force closing {} shares", symbol, qty)
+            cancel_symbol_orders(api, symbol, orders_by_symbol)
+            force_close_position(api, symbol, qty, cur_price)
             removed.append(symbol)
             continue
 
         has_exit = len(orders_by_symbol.get(symbol, [])) > 0
-        if not has_exit and info.get("exit_price"):
+        if not has_exit:
             exit_side = "sell" if qty > 0 else "buy"
             oid = place_exit_order(api, symbol, qty, info["exit_price"], side=exit_side)
             if oid:
                 info["exit_order_id"] = oid
+            else:
+                logger.warning("{}: failed to place exit order, force closing", symbol)
+                force_close_position(api, symbol, qty, cur_price)
+                removed.append(symbol)
+                continue
 
     for s in removed:
         tracked.pop(s, None)
@@ -296,20 +355,25 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS):
         pending_close.add(s)
     state["pending_close"] = list(pending_close)
 
-    for symbol, qty in positions.items():
+    for symbol, pos_data in positions.items():
+        qty = pos_data.get("qty", 0) if isinstance(pos_data, dict) else 0
+        cur_price = pos_data.get("price", 0) if isinstance(pos_data, dict) else 0
         if symbol not in tracked and abs(qty) >= 1 and symbol not in pending_close:
-            logger.info("{}: untracked position found ({} shares), adding to state", symbol, qty)
-            tracked[symbol] = {
-                "qty": qty,
-                "entry_time": now.isoformat(),
-                "exit_price": None,
-                "exit_order_id": None,
-            }
+            if active_symbols and symbol not in active_symbols:
+                logger.info("{}: untracked position not in active set ({} shares), force closing", symbol, qty)
+                force_close_position(api, symbol, qty, cur_price)
+                pending_close.add(symbol)
+                continue
+            logger.info("{}: untracked position found ({} shares), force closing (no exit price)", symbol, qty)
+            force_close_position(api, symbol, qty, cur_price)
+            pending_close.add(symbol)
 
     still_pending = []
     for s in pending_close:
-        if s in positions and abs(positions[s]) >= 1:
-            still_pending.append(s)
+        if s in positions:
+            pq = positions[s].get("qty", 0) if isinstance(positions[s], dict) else float(positions[s])
+            if abs(pq) >= 1:
+                still_pending.append(s)
     state["pending_close"] = still_pending
 
     state["positions"] = tracked
@@ -324,6 +388,7 @@ def generate_signal_for_symbol(
     data_root: Path,
     cache_root: Path,
     device: torch.device,
+    saved_normalizer: Optional[FeatureNormalizer] = None,
 ) -> Optional[Dict]:
     horizons = [1]
     if any("h24" in c for c in feature_columns):
@@ -348,11 +413,12 @@ def generate_signal_for_symbol(
     frame["symbol"] = symbol
 
     try:
+        norm = saved_normalizer if saved_normalizer is not None else data_module.normalizer
         action = generate_latest_action(
             model=model,
             frame=frame,
             feature_columns=feature_columns,
-            normalizer=data_module.normalizer,
+            normalizer=norm,
             sequence_length=sequence_length,
             horizon=1,
             device=device,
@@ -448,6 +514,10 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
             side_str = "short" if is_short else "long"
             logger.info("{}: {} entry {} shares @ ${:.2f} (${:.0f}, hold={:.1f}h)",
                        symbol, side_str, target_qty, entry_price, position_alloc, hold_hours)
+            log_trade({"event": "entry", "symbol": symbol, "side": side_str,
+                       "qty": target_qty, "price": entry_price, "exit_price": exit_price,
+                       "edge": action.get("edge"), "intensity": intensity_frac,
+                       "alloc": position_alloc, "order_id": str(result.id)})
 
             now = datetime.now(timezone.utc)
             tracked[symbol] = {
@@ -462,11 +532,6 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
                 "max_hold_until": (now + timedelta(hours=hold_hours)).isoformat(),
             }
 
-            exit_qty = target_qty
-            exit_oid = place_exit_order(api, symbol, exit_qty, exit_price, side=exit_side)
-            if exit_oid:
-                tracked[symbol]["exit_order_id"] = exit_oid
-
             buying_power -= target_value
             slots_available -= 1
 
@@ -479,23 +544,20 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
 def run_cycle(
     model, feature_columns, sequence_length, device,
     stocks, args, api, state, max_positions=MAX_POSITIONS, max_hold_hours=MAX_HOLD_HOURS,
+    normalizer=None,
 ):
-    market_open = is_market_open_now()
-    if not market_open and not args.ignore_market_hours:
-        logger.info("Market closed, managing existing positions only")
-        num_pos = manage_positions(api, state, max_hold_hours=max_hold_hours)
-        logger.info("Active positions: {}", num_pos)
-        save_state(state)
-        return
+    active_set = set(stocks)
+    market_open = is_market_open_now() or args.ignore_market_hours
 
-    num_pos = manage_positions(api, state, max_hold_hours=max_hold_hours)
-    logger.info("Active positions after management: {}", num_pos)
+    num_pos = manage_positions(api, state, max_hold_hours=max_hold_hours, active_symbols=active_set)
+    logger.info("Active positions: {} | Market: {}", num_pos, "OPEN" if market_open else "CLOSED")
 
     signals = {}
     for symbol in stocks:
         action = generate_signal_for_symbol(
             symbol, model, feature_columns, sequence_length,
-            args.stock_data_root, args.stock_cache_root, device
+            args.stock_data_root, args.stock_cache_root, device,
+            saved_normalizer=normalizer,
         )
         if action:
             pred_high = action.get("predicted_high", 0)
@@ -512,14 +574,18 @@ def run_cycle(
                 action["edge"] = edge
                 signals[symbol] = action
                 side = "short" if symbol in SHORT_ONLY else "long"
-                logger.info("{}: {} buy={:.2f} sell={:.2f} edge={:.4f} hold={:.1f}h alloc={:.3f}",
+                buy_amt = action.get("buy_amount", 0)
+                intensity = min(buy_amt / TRADE_AMOUNT_SCALE, 1.0)
+                logger.info("{}: {} buy={:.2f} sell={:.2f} edge={:.4f} hold={:.1f}h int={:.3f}",
                            symbol, side, buy_price, sell_price, edge,
-                           action.get("hold_hours", 0), action.get("allocation_fraction", 0))
+                           action.get("hold_hours", 0), intensity)
             else:
                 logger.debug("{}: edge={:.4f} below {:.4f}", symbol, edge, args.min_edge)
 
-    if not args.dry_run and signals:
+    if market_open and not args.dry_run and signals:
         execute_trades(api, signals, state, max_positions=max_positions)
+    elif not market_open and signals:
+        logger.info("Market closed - {} signals ready, will trade when open", len(signals))
     elif not signals:
         logger.info("No signals above threshold")
 
@@ -556,7 +622,7 @@ def main():
     paper = not args.live
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, feature_columns, sequence_length = load_model(args.checkpoint_dir, epoch=args.epoch)
+    model, feature_columns, sequence_length, normalizer = load_model(args.checkpoint_dir, epoch=args.epoch)
     model = model.to(device)
 
     stocks = [s.strip().upper() for s in args.stock_symbols.split(",") if s.strip()]
@@ -577,7 +643,7 @@ def main():
         account = get_account_info(api)
         logger.info("Equity: ${:.2f}, Buying power: ${:.2f}", account["equity"], account["buying_power"])
 
-    run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos, max_hold)
+    run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos, max_hold, normalizer=normalizer)
 
     if not args.loop:
         return
@@ -589,7 +655,7 @@ def main():
         logger.info("Sleeping {:.0f}s until next hour", wait_secs)
         time.sleep(wait_secs)
 
-        run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos, max_hold)
+        run_cycle(model, feature_columns, sequence_length, device, stocks, args, api, state, max_pos, max_hold, normalizer=normalizer)
 
 
 if __name__ == "__main__":

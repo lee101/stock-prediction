@@ -1,0 +1,19 @@
+{
+  "run_name": "NET_lora_percent_change_ctx128_lr5e-5_r16_20260221_080820",
+  "config": {
+    "symbol": "NET",
+    "preaug": "percent_change",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 46.59015655517578,
+    "mae_percent_std": 6.5238871574401855
+  },
+  "test": {
+    "mae_percent_mean": 416.4468994140625,
+    "mae_percent_std": 74.85492706298828
+  }
+}

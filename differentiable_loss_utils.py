@@ -541,3 +541,118 @@ def combined_sortino_pnl_loss(
             smoothness = diffs.abs().mean(dim=-1)
             loss = loss + (smooth_weight * smoothness).mean()
     return loss
+
+
+def compute_sharpe_objective(
+    hourly_returns: torch.Tensor,
+    *,
+    periods_per_year: float | torch.Tensor = HOURLY_PERIODS_PER_YEAR,
+    return_weight: float = 0.05,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Sharpe ratio objective: penalizes ALL volatility, not just downside."""
+    mean_return = hourly_returns.mean(dim=-1)
+    total_std = torch.sqrt(torch.mean(hourly_returns**2, dim=-1) - mean_return**2 + _EPS)
+    sharpe = mean_return / _safe_denominator(total_std)
+    periods = _as_tensor(periods_per_year, mean_return)
+    sharpe = sharpe * torch.sqrt(torch.clamp(periods, min=_EPS))
+    annual_return = mean_return * periods
+    score = sharpe + return_weight * annual_return
+    return score, sharpe, annual_return
+
+
+def compute_calmar_objective(
+    hourly_returns: torch.Tensor,
+    *,
+    periods_per_year: float | torch.Tensor = HOURLY_PERIODS_PER_YEAR,
+    return_weight: float = 0.05,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Calmar ratio objective: annual_return / max_drawdown."""
+    mean_return = hourly_returns.mean(dim=-1)
+    periods = _as_tensor(periods_per_year, mean_return)
+    annual_return = mean_return * periods
+    cumulative = torch.cumsum(hourly_returns, dim=-1)
+    running_max = torch.cummax(cumulative, dim=-1).values
+    drawdowns = running_max - cumulative
+    max_dd = drawdowns.max(dim=-1).values + _EPS
+    calmar = annual_return / max_dd
+    score = calmar + return_weight * annual_return
+    return score, calmar, annual_return
+
+
+def compute_log_wealth_objective(
+    hourly_returns: torch.Tensor,
+    *,
+    periods_per_year: float | torch.Tensor = HOURLY_PERIODS_PER_YEAR,
+    return_weight: float = 0.05,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Kelly-criterion inspired: maximize E[log(1+r)]. Naturally risk-averse."""
+    log_returns = torch.log1p(hourly_returns.clamp(min=-0.99))
+    mean_log_return = log_returns.mean(dim=-1)
+    periods = _as_tensor(periods_per_year, mean_log_return)
+    annual_log_return = mean_log_return * periods
+    mean_return = hourly_returns.mean(dim=-1)
+    annual_return = mean_return * periods
+    score = annual_log_return + return_weight * annual_return
+    return score, annual_log_return, annual_return
+
+
+def compute_sortino_dd_objective(
+    hourly_returns: torch.Tensor,
+    *,
+    periods_per_year: float | torch.Tensor = HOURLY_PERIODS_PER_YEAR,
+    return_weight: float = 0.05,
+    dd_penalty: float = 1.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Sortino + drawdown penalty: penalizes max drawdown directly."""
+    score, sortino, annual_return = compute_hourly_objective(
+        hourly_returns, periods_per_year=periods_per_year, return_weight=return_weight,
+    )
+    cumulative = torch.cumsum(hourly_returns, dim=-1)
+    running_max = torch.cummax(cumulative, dim=-1).values
+    drawdowns = running_max - cumulative
+    max_dd = drawdowns.max(dim=-1).values
+    score = score - dd_penalty * max_dd
+    return score, sortino, annual_return
+
+
+def compute_loss_by_type(
+    hourly_returns: torch.Tensor,
+    loss_type: str = "sortino",
+    *,
+    target_sign: float = 1.0,
+    periods_per_year: float | torch.Tensor = HOURLY_PERIODS_PER_YEAR,
+    return_weight: float = 0.05,
+    smoothness_penalty: float | torch.Tensor = 0.0,
+    dd_penalty: float = 1.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Unified loss dispatcher. Returns (loss, score, ratio_metric, annual_return)."""
+    if loss_type == "sharpe":
+        score, ratio, annual_return = compute_sharpe_objective(
+            hourly_returns, periods_per_year=periods_per_year, return_weight=return_weight,
+        )
+    elif loss_type == "calmar":
+        score, ratio, annual_return = compute_calmar_objective(
+            hourly_returns, periods_per_year=periods_per_year, return_weight=return_weight,
+        )
+    elif loss_type == "log_wealth":
+        score, ratio, annual_return = compute_log_wealth_objective(
+            hourly_returns, periods_per_year=periods_per_year, return_weight=return_weight,
+        )
+    elif loss_type == "sortino_dd":
+        score, ratio, annual_return = compute_sortino_dd_objective(
+            hourly_returns, periods_per_year=periods_per_year, return_weight=return_weight,
+            dd_penalty=dd_penalty,
+        )
+    else:
+        score, ratio, annual_return = compute_hourly_objective(
+            hourly_returns, periods_per_year=periods_per_year, return_weight=return_weight,
+        )
+
+    loss = -target_sign * score.mean()
+    smooth_weight = _as_tensor(smoothness_penalty, hourly_returns)
+    if torch.any(smooth_weight != 0):
+        if hourly_returns.shape[-1] > 1:
+            diffs = hourly_returns[..., 1:] - hourly_returns[..., :-1]
+            smoothness = diffs.abs().mean(dim=-1)
+            loss = loss + (smooth_weight * smoothness).mean()
+    return loss, score, ratio, annual_return

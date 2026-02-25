@@ -358,6 +358,7 @@ binancetrainingdatahourly
 binance_spot_hourly/
 binance_spot_daily/
 binance_spot_*/
+trainingdata5min/
 trainingdatadailybinance
 trainingdatadailybinance/
 bagsfm_state.json
@@ -460,6 +461,7 @@ binanceleveragesui/checkpoints
 binanceleveragesui_rlcuda/artifacts*
 experiments/sui_sortino_max/artifacts/
 binanceleveragesui_rlcuda/artifacts*
+
 
 # =============================================================================
 # Root-level convenience copies (originals live in src/)
@@ -628,3 +630,7 @@ binanceleveragesui/retrain_full_pipeline.py
 binanceleveragesui/run_step3_only.py
 binanceleveragesui/test_probe_strategy.py
 binanceleveragesui/train_with_buffer.py
+checkpoints
+cryptoalpacaexperiment/checkpoints/
+forecast_cache
+cryptoalpacaexperiment/forecast_cache/

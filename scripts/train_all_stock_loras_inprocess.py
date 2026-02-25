@@ -43,10 +43,17 @@ class FakeConfig:
         self.batch_size = 32
         self.learning_rate = float(lr)
         self.num_steps = steps
+        self.lora_r = lora_r
         self.lora_rank = lora_r
+        self.lora_alpha = 32
+        self.lora_dropout = 0.05
+        self.lora_targets = ("q", "k", "v", "o")
         self.lora_target_modules = "q,v"
+        self.finetune_mode = "lora"
+        self.merge_lora = True
         self.device_map = "cuda"
         self.torch_dtype = None
+        self.seed = 1337
 
 
 def eval_model_df(pipeline, aug_df, target_cols, ctx, pred_len=24, n_samples=20):
@@ -108,8 +115,8 @@ def train_single(symbol, preaug_name, ctx, lr, steps, lora_r=16):
     cfg = FakeConfig(ctx, lr, steps, lora_r)
 
     pipeline = _load_pipeline("amazon/chronos-2", "cuda", None)
-    finetuned = _fit_pipeline(pipeline, train_inputs, val_inputs, cfg, str(output_dir))
-    _save_pipeline(finetuned, str(output_dir), "finetuned-ckpt")
+    finetuned = _fit_pipeline(pipeline, train_inputs, val_inputs, cfg, output_dir)
+    _save_pipeline(finetuned, output_dir, "finetuned-ckpt")
 
     val_mae = eval_model_df(finetuned, val_aug, target_cols, ctx)
     test_mae = eval_model_df(finetuned, test_aug, target_cols, ctx)
@@ -167,6 +174,7 @@ def main():
                 try:
                     r = train_single(symbol, preaug, cfg["ctx"], cfg["lr"], cfg["steps"])
                 except Exception as e:
+                    import traceback; traceback.print_exc()
                     print(f"  ERROR: {e}", flush=True)
                     r = None
 
