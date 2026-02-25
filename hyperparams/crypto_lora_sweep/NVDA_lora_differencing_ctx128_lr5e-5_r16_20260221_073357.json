@@ -1,0 +1,19 @@
+{
+  "run_name": "NVDA_lora_differencing_ctx128_lr5e-5_r16_20260221_073357",
+  "config": {
+    "symbol": "NVDA",
+    "preaug": "differencing",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 126.98484802246094,
+    "mae_percent_std": 5.756510257720947
+  },
+  "test": {
+    "mae_percent_mean": 133.1012725830078,
+    "mae_percent_std": 9.20853042602539
+  }
+}

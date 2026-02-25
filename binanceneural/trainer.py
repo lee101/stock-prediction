@@ -5,29 +5,29 @@ import time
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 import torch
-from torch.nn.utils import clip_grad_norm_  # type: ignore
-
 from differentiable_loss_utils import (
     HOURLY_PERIODS_PER_YEAR,
-    combined_sortino_pnl_loss,
-    compute_hourly_objective,
+    compute_loss_by_type,
     set_seed,
     simulate_hourly_trades,
     simulate_hourly_trades_binary,
 )
+from torch.nn.utils import clip_grad_norm_  # type: ignore
+from traininglib.optim_factory import MultiOptim
+
 from src.serialization_utils import serialize_for_checkpoint
 from src.torch_load_utils import torch_load_compat
 
 from .config import TrainingConfig
 from .data import BinanceHourlyDataModule, FeatureNormalizer, MultiSymbolDataModule
 from .model import BinancePolicyBase, PolicyConfig, build_policy
-from traininglib.optim_factory import MultiOptim
+
 
 try:  # pragma: no cover - optional dependency
     from nanochat.nanochat.muon import Muon
+
     MUON_AVAILABLE = True
 except Exception:  # pragma: no cover
     Muon = None  # type: ignore
@@ -43,21 +43,21 @@ class TrainingHistoryEntry:
     train_score: float
     train_sortino: float
     train_return: float
-    val_loss: Optional[float] = None
-    val_score: Optional[float] = None
-    val_sortino: Optional[float] = None
-    val_return: Optional[float] = None
+    val_loss: float | None = None
+    val_score: float | None = None
+    val_sortino: float | None = None
+    val_return: float | None = None
 
 
 @dataclass
 class TrainingArtifacts:
-    state_dict: Dict[str, torch.Tensor]
+    state_dict: dict[str, torch.Tensor]
     normalizer: FeatureNormalizer
-    history: List[TrainingHistoryEntry] = field(default_factory=list)
-    feature_columns: List[str] = field(default_factory=list)
-    config: Optional[TrainingConfig] = None
-    checkpoint_paths: List[Path] = field(default_factory=list)
-    best_checkpoint: Optional[Path] = None
+    history: list[TrainingHistoryEntry] = field(default_factory=list)
+    feature_columns: list[str] = field(default_factory=list)
+    config: TrainingConfig | None = None
+    checkpoint_paths: list[Path] = field(default_factory=list)
+    best_checkpoint: Path | None = None
 
 
 class BinanceHourlyTrainer:
@@ -146,9 +146,12 @@ class BinanceHourlyTrainer:
                 # Handle input dim mismatch between pretrain and finetune
                 for key in list(state_dict.keys()):
                     if state_dict[key].shape != model.state_dict().get(key, state_dict[key]).shape:
-                        logger.warning("Shape mismatch for %s: %s vs %s, skipping",
-                                       key, state_dict[key].shape,
-                                       model.state_dict()[key].shape)
+                        logger.warning(
+                            "Shape mismatch for %s: %s vs %s, skipping",
+                            key,
+                            state_dict[key].shape,
+                            model.state_dict()[key].shape,
+                        )
                         del state_dict[key]
                 missing, unexpected = model.load_state_dict(state_dict, strict=False)
                 if missing:
@@ -177,9 +180,9 @@ class BinanceHourlyTrainer:
                 int(self.config.dry_train_steps) * max(1, self.config.epochs),
             )
 
-        history: List[TrainingHistoryEntry] = []
+        history: list[TrainingHistoryEntry] = []
         best_score = float("-inf")
-        best_checkpoint: Optional[Path] = None
+        best_checkpoint: Path | None = None
 
         global_step = 0
         for epoch in range(1, self.config.epochs + 1):
@@ -239,12 +242,12 @@ class BinanceHourlyTrainer:
         self,
         model: BinancePolicyBase,
         loader: torch.utils.data.DataLoader,
-        optimizer: Optional[torch.optim.Optimizer],
+        optimizer: torch.optim.Optimizer | None,
         *,
         train: bool,
         global_step: int,
         current_epoch: int = 1,
-    ) -> Tuple[Dict[str, float], int]:
+    ) -> tuple[dict[str, float], int]:
         model.train(train)
         total_loss = 0.0
         total_score = 0.0
@@ -325,16 +328,14 @@ class BinanceHourlyTrainer:
                         ppy = batch.get("periods_per_year", None)
                         if ppy is None:
                             ppy = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
-                        sc_i, so_i, ar_i = compute_hourly_objective(
-                            ret_i, periods_per_year=ppy,
-                            return_weight=self.config.return_weight,
-                            smoothness_penalty=self.config.smoothness_penalty,
-                        )
-                        lo_i = combined_sortino_pnl_loss(
-                            ret_i, target_sign=self.config.sortino_target_sign,
+                        lo_i, sc_i, so_i, ar_i = compute_loss_by_type(
+                            ret_i,
+                            self.config.loss_type,
+                            target_sign=self.config.sortino_target_sign,
                             periods_per_year=ppy,
                             return_weight=self.config.return_weight,
                             smoothness_penalty=self.config.smoothness_penalty,
+                            dd_penalty=self.config.dd_penalty,
                         )
                         all_losses.append(lo_i)
                         all_scores.append(sc_i.detach())
@@ -360,26 +361,22 @@ class BinanceHourlyTrainer:
                 periods_per_year = batch.get("periods_per_year", None)
                 if periods_per_year is None:
                     periods_per_year = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
-                score, sortino, annual_return = compute_hourly_objective(
+                loss, score, sortino, annual_return = compute_loss_by_type(
                     returns,
-                    periods_per_year=periods_per_year,
-                    return_weight=self.config.return_weight,
-                    smoothness_penalty=self.config.smoothness_penalty,
-                )
-                loss = combined_sortino_pnl_loss(
-                    returns,
+                    self.config.loss_type,
                     target_sign=self.config.sortino_target_sign,
                     periods_per_year=periods_per_year,
                     return_weight=self.config.return_weight,
                     smoothness_penalty=self.config.smoothness_penalty,
+                    dd_penalty=self.config.dd_penalty,
                 )
 
             if train and self.config.spread_penalty > 0:
                 bp = actions["buy_price"]
                 sp = actions["sell_price"]
                 tgt = self.config.spread_target
-                buy_gap = (bp - lows[..., :bp.shape[-1]]) / closes[..., :bp.shape[-1]].clamp(min=1e-4)
-                sell_gap = (highs[..., :sp.shape[-1]] - sp) / closes[..., :sp.shape[-1]].clamp(min=1e-4)
+                buy_gap = (bp - lows[..., : bp.shape[-1]]) / closes[..., : bp.shape[-1]].clamp(min=1e-4)
+                sell_gap = (highs[..., : sp.shape[-1]] - sp) / closes[..., : sp.shape[-1]].clamp(min=1e-4)
                 buy_pen = torch.relu(tgt - buy_gap).mean()
                 sell_pen = torch.relu(tgt - sell_gap).mean()
                 loss = loss + self.config.spread_penalty * (buy_pen + sell_pen)
@@ -456,9 +453,9 @@ class BinanceHourlyTrainer:
                 scaler = torch.cuda.amp.GradScaler()
         return amp_ctx, scaler
 
-    def _iter_param_groups(self, optimizer: torch.optim.Optimizer) -> List[dict]:
+    def _iter_param_groups(self, optimizer: torch.optim.Optimizer) -> list[dict]:
         if isinstance(optimizer, MultiOptim):
-            groups: List[dict] = []
+            groups: list[dict] = []
             for opt in optimizer.optimizers:
                 groups.extend(opt.param_groups)
             return groups
@@ -468,6 +465,7 @@ class BinanceHourlyTrainer:
         if self._total_train_steps <= 0:
             return
         import math
+
         progress = min(max(global_step / float(self._total_train_steps), 0.0), 1.0)
 
         lr_sched = (self.config.lr_schedule or "none").lower()
@@ -509,7 +507,7 @@ class BinanceHourlyTrainer:
                 if "momentum" in group:
                     group["momentum"] = momentum
 
-    def _save_checkpoint(self, model: BinancePolicyBase, epoch: int, metrics: Dict[str, float]) -> Path:
+    def _save_checkpoint(self, model: BinancePolicyBase, epoch: int, metrics: dict[str, float]) -> Path:
         path = self.checkpoint_dir / f"epoch_{epoch:03d}.pt"
         payload = {
             "state_dict": model.state_dict(),
@@ -569,7 +567,7 @@ class BinanceHourlyTrainer:
         )
 
     @staticmethod
-    def _split_muon_params(model: BinancePolicyBase) -> Tuple[list[torch.Tensor], list[torch.Tensor]]:
+    def _split_muon_params(model: BinancePolicyBase) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         muon_params: list[torch.Tensor] = []
         adam_params: list[torch.Tensor] = []
         for name, param in model.named_parameters():

@@ -39,6 +39,7 @@ class SimulationConfig:
     # This matches the live hourly loop which computes an action on the latest completed bar
     # then places orders for the next bar.
     decision_lag_bars: int = 0
+    bar_margin: float = 0.0
 
 
 @dataclass
@@ -224,8 +225,9 @@ class AlpacaMarketSimulator:
                     buy_intensity = 0.0
                     sell_intensity = 0.0
 
-                buy_fill = bool(row.low <= row.buy_price and buy_intensity > 0)
-                sell_fill = bool(row.high >= row.sell_price and sell_intensity > 0)
+                bm = self.config.bar_margin
+                buy_fill = bool(row.low <= row.buy_price * (1 - bm) and buy_intensity > 0)
+                sell_fill = bool(row.high >= row.sell_price * (1 + bm) and sell_intensity > 0)
                 executed_buy = 0.0
                 executed_sell = 0.0
 

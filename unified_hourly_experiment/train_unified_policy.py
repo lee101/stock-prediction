@@ -48,6 +48,8 @@ def main():
     parser.add_argument("--fill-temperature", type=float, default=5e-4)
     parser.add_argument("--logits-softcap", type=float, default=12.0)
     parser.add_argument("--smoothness-penalty", type=float, default=0.0)
+    parser.add_argument("--loss-type", type=str, default="sortino", choices=["sortino", "sharpe", "calmar", "log_wealth", "sortino_dd"])
+    parser.add_argument("--dd-penalty", type=float, default=1.0)
     parser.add_argument("--feature-noise-std", type=float, default=0.0)
     parser.add_argument("--use-residual-scalars", action="store_true")
     parser.add_argument("--max-leverage", type=float, default=1.0)
@@ -133,6 +135,8 @@ def main():
         fill_temperature=args.fill_temperature,
         logits_softcap=args.logits_softcap,
         smoothness_penalty=args.smoothness_penalty,
+        loss_type=args.loss_type,
+        dd_penalty=args.dd_penalty,
         feature_noise_std=args.feature_noise_std,
         use_residual_scalars=args.use_residual_scalars,
         max_leverage=args.max_leverage,
@@ -176,6 +180,7 @@ def main():
             "transformer_dim": args.hidden_dim,
             "transformer_heads": args.num_heads,
             "transformer_layers": args.num_layers,
+            "normalizer": data_module.normalizer.to_dict(),
         }, f, indent=2)
 
     logger.info("Config saved to {}", config_path)

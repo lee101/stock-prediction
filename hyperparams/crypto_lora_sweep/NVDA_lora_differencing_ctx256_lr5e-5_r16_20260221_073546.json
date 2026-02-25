@@ -1,0 +1,19 @@
+{
+  "run_name": "NVDA_lora_differencing_ctx256_lr5e-5_r16_20260221_073546",
+  "config": {
+    "symbol": "NVDA",
+    "preaug": "differencing",
+    "context_length": 256,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": NaN,
+    "mae_percent_std": NaN
+  },
+  "test": {
+    "mae_percent_mean": NaN,
+    "mae_percent_std": NaN
+  }
+}

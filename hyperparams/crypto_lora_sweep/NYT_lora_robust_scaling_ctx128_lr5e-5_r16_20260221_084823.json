@@ -1,0 +1,19 @@
+{
+  "run_name": "NYT_lora_robust_scaling_ctx128_lr5e-5_r16_20260221_084823",
+  "config": {
+    "symbol": "NYT",
+    "preaug": "robust_scaling",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 255.40870666503906,
+    "mae_percent_std": 102.66246795654297
+  },
+  "test": {
+    "mae_percent_mean": 170.26837158203125,
+    "mae_percent_std": 95.16542053222656
+  }
+}
