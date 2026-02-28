@@ -99,6 +99,38 @@ def load_5m_bars(symbol: str, start_ts, end_ts):
     return df[mask].sort_values("timestamp").reset_index(drop=True)
 
 
+def reconstruct_initial_state(symbol: str, start_ms: int, lookback_hours: int = 24):
+    """Pull fills from before start to figure out initial position and entry time."""
+    lb_ms = lookback_hours * 3600 * 1000
+    pre_start = start_ms - lb_ms
+    MS_24H = 24 * 3600 * 1000
+    raw = []
+    cursor = pre_start
+    while cursor < start_ms:
+        chunk_end = min(cursor + MS_24H, start_ms)
+        raw.extend(get_margin_trades(symbol, start_time=cursor, end_time=chunk_end, limit=1000))
+        cursor = chunk_end
+    if not raw:
+        return 0.0, None
+
+    # replay fills to get net position at start
+    pos = 0.0
+    last_buy_ts = None
+    for t in sorted(raw, key=lambda x: int(x["time"])):
+        qty = float(t["qty"])
+        if t.get("isBuyer"):
+            pos += qty
+            last_buy_ts = pd.Timestamp(int(t["time"]), unit="ms", tz="UTC")
+        else:
+            pos -= qty
+
+    if pos > 0:
+        print(f"  Initial position: {pos:.0f} {symbol} (entered ~{last_buy_ts})")
+    else:
+        print(f"  Initial position: flat")
+    return pos, last_buy_ts
+
+
 def generate_hourly_signals(args, frame, model, normalizer, feature_columns, meta):
     """Generate signals for each hourly bar."""
     seq_len = meta.get("sequence_length", args.sequence_length)
@@ -134,22 +166,14 @@ def generate_hourly_signals(args, frame, model, normalizer, feature_columns, met
     return signals
 
 
-def simulate_5m(args, hourly_signals, bars_5m):
-    """Execute on 5m bars using hourly signals with lag=1.
-
-    Models the live bot behavior:
-    - Signal from hour T-1 is active during all 5m bars of hour T
-    - ONE buy order per signal (fills once, done until sell or new signal)
-    - ONE sell order per signal (fills once, done until buy or new signal)
-    - After sell fills, can re-buy on later 5m bar (oscillation)
-    - No same-5m-bar roundtrips
-    """
+def simulate_5m(args, hourly_signals, bars_5m, initial_inv=0.0, initial_entry_ts=None):
     fee = args.fee
     fill_buf = args.fill_buffer_pct
     cash = args.initial_cash
-    inv = 0.0
+    inv = initial_inv
     sim_trades = []
-    entry_ts = None
+    entry_ts = initial_entry_ts
+    exec_start = pd.Timestamp(args.start, tz="UTC")
 
     # state tracking per hourly signal window
     current_sig_hour = None
@@ -163,6 +187,8 @@ def simulate_5m(args, hourly_signals, bars_5m):
 
     for _, bar in bars_5m.iterrows():
         ts = bar["timestamp"]
+        if ts < exec_start:
+            continue
         high = float(bar["high"])
         low = float(bar["low"])
         close = float(bar["close"])
@@ -218,7 +244,7 @@ def simulate_5m(args, hourly_signals, bars_5m):
             max_bv = args.max_leverage * max(equity, 0) - inv * bp
             if max_bv > 0:
                 qty = ba * max_bv / (bp * (1 + fee))
-                if qty > 0:
+                if qty * bp > 1.0:  # min $1 notional
                     cash -= qty * bp * (1 + fee)
                     inv += qty
                     sim_trades.append({"ts": ts, "side": "buy", "price": bp, "qty": qty})
@@ -352,10 +378,11 @@ def main():
     p.add_argument("--end", default=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
     p.add_argument("--intensity-scale", type=float, default=5.0)
     p.add_argument("--max-hold-hours", type=int, default=6)
-    p.add_argument("--fill-buffer-pct", type=float, default=0.0005)
+    p.add_argument("--fill-buffer-pct", type=float, default=0.0)
     p.add_argument("--fee", type=float, default=0.001)
     p.add_argument("--max-leverage", type=float, default=1.0)
     p.add_argument("--initial-cash", type=float, default=3754.0)
+    p.add_argument("--debug", action="store_true")
     p.add_argument("--sequence-length", type=int, default=72)
     p.add_argument("--horizon", type=int, default=1)
     args = p.parse_args()
@@ -391,6 +418,9 @@ def main():
     bars_5m = load_5m_bars(args.symbol, start_ts - pd.Timedelta(hours=1), end_ts)
     print(f"5m bars: {len(bars_5m)} ({bars_5m['timestamp'].min()} to {bars_5m['timestamp'].max()})")
 
+    print(f"\nReconstructing initial position at {start_ts}...")
+    initial_inv, initial_entry_ts = reconstruct_initial_state(args.symbol, start_ms, lookback_hours=48)
+
     print(f"\nPulling production fills: {args.symbol} {start_ts} to {end_ts}")
     prod_fills, raw_trades, prod_orders = pull_prod_fills(args.symbol, start_ms, end_ms)
     print(f"Got {len(prod_fills)} aggregated fills from {len(raw_trades)} raw trades")
@@ -399,13 +429,35 @@ def main():
     hourly_signals = generate_hourly_signals(args, frame, model, normalizer, feature_columns, meta)
     print(f"Generated {len(hourly_signals)} hourly signals")
 
+    if args.debug:
+        print(f"\nHourly signals (active during next hour due to lag=1):")
+        for ts in sorted(hourly_signals.keys()):
+            s = hourly_signals[ts]
+            if s["buy_price"] > 0 or s["sell_price"] > 0:
+                print(f"  {str(ts)[:16]} -> applied {str(ts + pd.Timedelta(hours=1))[:16]}: "
+                      f"bp={s['buy_price']:.5f} sp={s['sell_price']:.5f} "
+                      f"ba={s['buy_amount']:.1f}% sa={s['sell_amount']:.1f}%")
+
+    # Derive starting cash: total equity = cash + position_value
+    if initial_inv > 0 and len(bars_5m) > 0:
+        first_close = float(bars_5m[bars_5m["timestamp"] >= pd.Timestamp(args.start, tz="UTC")].iloc[0]["close"])
+        starting_cash = args.initial_cash - initial_inv * first_close
+        print(f"  Account equity=${args.initial_cash:.2f}, position={initial_inv:.0f}*{first_close:.5f}=${initial_inv*first_close:.2f}")
+        print(f"  Derived cash: ${starting_cash:.2f}")
+        args.initial_cash = starting_cash
+
     print(f"\nSimulating on 5m bars (hourly signals, 5m execution, lag=1)...")
-    sim_trades, final_eq, cash, inv = simulate_5m(args, hourly_signals, bars_5m)
+    sim_trades, final_eq, cash, inv = simulate_5m(
+        args, hourly_signals, bars_5m,
+        initial_inv=initial_inv, initial_entry_ts=initial_entry_ts,
+    )
+    starting_eq = args.initial_cash + initial_inv * float(bars_5m.iloc[0]["close"]) if len(bars_5m) > 0 else args.initial_cash
     print(f"Sim: {len(sim_trades)} trades, equity=${final_eq:.2f}, position={inv:.0f}")
+    print(f"Starting equity: ${starting_eq:.2f} (cash=${args.initial_cash:.2f} + {initial_inv:.0f} units)")
 
     matches, unmatched_sim = match_trades(prod_fills, sim_trades)
     print_report(prod_fills, sim_trades, matches, unmatched_sim, prod_orders,
-                 final_eq, args.initial_cash, args.fill_buffer_pct)
+                 final_eq, starting_eq, args.fill_buffer_pct)
 
 
 if __name__ == "__main__":

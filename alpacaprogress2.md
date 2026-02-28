@@ -849,3 +849,70 @@ All-positive models but none approach deployed Sort=74.71. lag=0 training is cat
 5. **lag=0 training is invalid**: model learns future info, all negative OOS
 6. **Hold hours shifted**: hold=4 now best for champion (data window update)
 7. **Keep deployed model running** - it's the best we have by a wide margin
+
+---
+
+## 2026-02-27: Realistic Multi-Period Sweep (bar_margin=0.0005, int_qty, margin cost)
+
+### Context
+Previous eval used bar_margin=0.0013 which was generous. Switched to stricter realistic simulation:
+- bar_margin=0.0005, decision_lag_bars=1, max_leverage=2.0
+- force_close_slippage=0.003, margin_annual_rate=0.0625
+- int_qty=True (integer share quantities)
+- Deployed model (realistic_rw015 ep7) showed Sort=3.26 on old eval, now Sort=0.52 on current data
+
+### Training Sweep (6 new configs, 50 epochs each, ~14 min/run)
+All: h512, 6L, 8 heads, gemma, lr=1e-5, seed=1337, fill_temp=5e-4
+
+| Config | RW | WD | Seq | Symbols | Val Sort (best) |
+|--------|-----|------|-----|---------|-----------------|
+| sweep_rw035_wd04 | 0.35 | 0.04 | 48 | 7 | 392.87 |
+| sweep_rw025_wd04 | 0.25 | 0.04 | 48 | 7 | 313.15 |
+| sweep_rw035_wd05 | 0.35 | 0.05 | 48 | 7 | 326.45 |
+| sweep_rw020_wd03_fb | 0.20 | 0.03 | 48 | 7 | 245.36 |
+| sweep_9sym_rw035_wd04 | 0.35 | 0.04 | 48 | 9 | 510.85 |
+| sweep_rw015_wd04_seq32 | 0.15 | 0.04 | 32 | 7 | 477.02 |
+
+### Multi-Period OOS Results (epochs 5-12, holdout 7/30/60/90d)
+
+224 evaluations total. Only **sweep_rw015_wd04_seq32** produced positive returns.
+
+**Best results by Sortino (top entries):**
+
+| Config | Epoch | Period | Return | Sortino | MaxDD | Buys |
+|--------|-------|--------|--------|---------|-------|------|
+| sweep_rw015_wd04_seq32 | 11 | 7d | +0.42% | 2.26 | 1.2% | 6 |
+| sweep_rw015_wd04_seq32 | 12 | 30d | +2.32% | 1.37 | 2.7% | 25 |
+| sweep_rw015_wd04_seq32 | 11 | 30d | +1.54% | 1.26 | 1.8% | 27 |
+| sweep_rw015_wd04_seq32 | 10 | 30d | +1.27% | 0.97 | 2.0% | 25 |
+| sweep_rw015_wd04_seq32 | 12 | 60d | +2.14% | 0.81 | 2.7% | 34 |
+| realistic_rw015 (deployed) | 7 | 30d | +0.48% | 0.52 | 2.4% | 21 |
+| sweep_rw015_wd04_seq32 | 12 | 90d | +0.44% | 0.14 | 2.7% | 42 |
+
+**All other configs uniformly negative across all periods:**
+- sweep_rw035_wd04: best 30d Sort=-2.92, Ret=-4.05%
+- sweep_rw025_wd04: best 30d Sort=-2.74, Ret=-3.82%
+- sweep_rw035_wd05: best 30d Sort=-3.47, Ret=-4.25%
+- sweep_rw020_wd03_fb: best 30d Sort=-2.32, Ret=-3.34%
+- sweep_9sym_rw035_wd04: best 30d Sort=-4.76, Ret=-6.89% (9-sym much worse)
+
+### Key Findings
+1. **Low return weight wins**: rw=0.15 >> rw=0.20-0.35 in realistic sim
+2. **Shorter sequence wins**: seq=32 >> seq=48 (matches Session 3 finding)
+3. **Fewer symbols wins**: 7-sym >> 9-sym (adding NET/EBAY doubles losses)
+4. **ep12 best for consistency**: positive on 30d, 60d, AND 90d with low drawdown
+5. **Market conditions shifted**: deployed model Sort degraded from 3.26 to 0.52
+
+### Deployment Decision
+**Deploy sweep_rw015_wd04_seq32 ep12** as new best:
+- Beats deployed on 30d: Sort 1.37 vs 0.52, Ret +2.32% vs +0.48%
+- Positive on 60d (+2.14%) and 90d (+0.44%) - deployed is negative on both
+- Max drawdown only 2.7% across all periods
+- Checkpoint: `unified_hourly_experiment/checkpoints/sweep_rw015_wd04_seq32/epoch_012.pt`
+
+### Currently Deployed (updated 2026-02-27)
+- Model: **sweep_rw015_wd04_seq32 ep12**
+- Config: rw=0.15, wd=0.04, seq=32, h512, 6L, 8 heads, gemma
+- Symbols: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT
+- Params: min_edge=0.012, fee=0.001, max_positions=5, max_hold_hours=6
+- OOS: 30d Sort=1.37 Ret=+2.32%, 60d Sort=0.81 Ret=+2.14%, 90d Sort=0.14 Ret=+0.44%

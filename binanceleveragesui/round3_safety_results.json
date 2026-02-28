@@ -1,0 +1,852 @@
+{
+  "configs": {
+    "R3_6L_baseline": {
+      "config_name": "R3_6L_baseline",
+      "best_epoch": 2,
+      "doge_sortino": 43.27108203395796,
+      "mean_sortino": 12.706016149254403,
+      "min_sortino": -5.4491526336595095,
+      "worst_drawdown": -0.13357941689876782,
+      "positive": 4,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 43.27108203395796,
+          "total_return": 0.6262130839614812,
+          "max_drawdown": -0.026998693681894975,
+          "num_trades": 376
+        },
+        "BTCUSD": {
+          "sortino": -5.4491526336595095,
+          "total_return": -0.12658577645670177,
+          "max_drawdown": -0.13357941689876782,
+          "num_trades": 349
+        },
+        "ETHUSD": {
+          "sortino": 4.487200582689922,
+          "total_return": 0.11064238552951267,
+          "max_drawdown": -0.06050171777272056,
+          "num_trades": 355
+        },
+        "SOLUSD": {
+          "sortino": 0.8870638499088288,
+          "total_return": 0.023465424040298943,
+          "max_drawdown": -0.06160517164924357,
+          "num_trades": 339
+        },
+        "LINKUSD": {
+          "sortino": -0.09167554959106858,
+          "total_return": -0.001908552413064868,
+          "max_drawdown": -0.04016898128516097,
+          "num_trades": 323
+        },
+        "AAVEUSD": {
+          "sortino": 33.13157861222028,
+          "total_return": 0.4028775170394785,
+          "max_drawdown": -0.045389666862326136,
+          "num_trades": 370
+        }
+      },
+      "safety_score": 7.339169280620448
+    },
+    "R3_6L_fnoise02": {
+      "config_name": "R3_6L_fnoise02",
+      "best_epoch": 1,
+      "doge_sortino": 33.39254790956429,
+      "mean_sortino": 7.913137371419218,
+      "min_sortino": -5.764853272567941,
+      "worst_drawdown": -0.12894482795898365,
+      "positive": 3,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 33.39254790956429,
+          "total_return": 0.7324288552766687,
+          "max_drawdown": -0.031133763467333795,
+          "num_trades": 386
+        },
+        "BTCUSD": {
+          "sortino": -5.764853272567941,
+          "total_return": -0.12589489099265394,
+          "max_drawdown": -0.12894482795898365,
+          "num_trades": 355
+        },
+        "ETHUSD": {
+          "sortino": 4.025101592920832,
+          "total_return": 0.06318859145172473,
+          "max_drawdown": -0.038487793993938445,
+          "num_trades": 359
+        },
+        "SOLUSD": {
+          "sortino": -0.8588645452511963,
+          "total_return": -0.03389538782306156,
+          "max_drawdown": -0.07122980018560518,
+          "num_trades": 344
+        },
+        "LINKUSD": {
+          "sortino": -3.455754757768892,
+          "total_return": -0.09554681075359472,
+          "max_drawdown": -0.10465960811650801,
+          "num_trades": 333
+        },
+        "AAVEUSD": {
+          "sortino": 20.14064730161821,
+          "total_return": 0.5497755475591926,
+          "max_drawdown": -0.03634971233694839,
+          "num_trades": 375
+        }
+      },
+      "safety_score": 3.446389617222881
+    },
+    "R3_6L_sortino_dd2": {
+      "config_name": "R3_6L_sortino_dd2",
+      "best_epoch": 1,
+      "doge_sortino": 44.65915524946552,
+      "mean_sortino": 12.635762850501747,
+      "min_sortino": -5.778570499026298,
+      "worst_drawdown": -0.13209825471868317,
+      "positive": 3,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 44.65915524946552,
+          "total_return": 0.6783070742850723,
+          "max_drawdown": -0.027993555438718346,
+          "num_trades": 381
+        },
+        "BTCUSD": {
+          "sortino": -5.778570499026298,
+          "total_return": -0.12751117177819105,
+          "max_drawdown": -0.1303166954735181,
+          "num_trades": 354
+        },
+        "ETHUSD": {
+          "sortino": 1.6837351871395443,
+          "total_return": 0.04212656011806204,
+          "max_drawdown": -0.09370713947661385,
+          "num_trades": 356
+        },
+        "SOLUSD": {
+          "sortino": -0.6624476741123396,
+          "total_return": -0.031134796700732714,
+          "max_drawdown": -0.10706401696004908,
+          "num_trades": 343
+        },
+        "LINKUSD": {
+          "sortino": -2.480206960365023,
+          "total_return": -0.07131571378763746,
+          "max_drawdown": -0.13209825471868317,
+          "num_trades": 330
+        },
+        "AAVEUSD": {
+          "sortino": 38.39291179990907,
+          "total_return": 0.45582065129399285,
+          "max_drawdown": -0.04645745289849104,
+          "num_trades": 374
+        }
+      },
+      "safety_score": 5.483300315455646
+    },
+    "R3_6L_sortino_dd5": {
+      "config_name": "R3_6L_sortino_dd5",
+      "best_epoch": 3,
+      "doge_sortino": 33.33659629798317,
+      "mean_sortino": 7.999086125038286,
+      "min_sortino": -4.938172410528317,
+      "worst_drawdown": -0.1390224606560983,
+      "positive": 4,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 33.33659629798317,
+          "total_return": 0.799884573592148,
+          "max_drawdown": -0.03450594921468966,
+          "num_trades": 373
+        },
+        "BTCUSD": {
+          "sortino": -4.938172410528317,
+          "total_return": -0.11671407542931433,
+          "max_drawdown": -0.12401028835515884,
+          "num_trades": 347
+        },
+        "ETHUSD": {
+          "sortino": 4.729094567538651,
+          "total_return": 0.12013811087837989,
+          "max_drawdown": -0.06044973708254161,
+          "num_trades": 354
+        },
+        "SOLUSD": {
+          "sortino": 0.6851329291312831,
+          "total_return": 0.017305651854917503,
+          "max_drawdown": -0.061775792241684176,
+          "num_trades": 340
+        },
+        "LINKUSD": {
+          "sortino": -1.2864979125786737,
+          "total_return": -0.04340327949268519,
+          "max_drawdown": -0.1390224606560983,
+          "num_trades": 319
+        },
+        "AAVEUSD": {
+          "sortino": 15.468363278683595,
+          "total_return": 0.5494067886517162,
+          "max_drawdown": -0.03902223277010114,
+          "num_trades": 360
+        }
+      },
+      "safety_score": 4.591355659290271
+    },
+    "R3_6L_sortino_dd10": {
+      "config_name": "R3_6L_sortino_dd10",
+      "best_epoch": 10,
+      "doge_sortino": 40.819232919244335,
+      "mean_sortino": 8.041686623054831,
+      "min_sortino": -6.064353638412616,
+      "worst_drawdown": -0.197396812458499,
+      "positive": 3,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 40.819232919244335,
+          "total_return": 0.8355315311112999,
+          "max_drawdown": -0.036394184042708944,
+          "num_trades": 365
+        },
+        "BTCUSD": {
+          "sortino": -6.064353638412616,
+          "total_return": -0.1737933511066886,
+          "max_drawdown": -0.197396812458499,
+          "num_trades": 330
+        },
+        "ETHUSD": {
+          "sortino": 1.4313923382539255,
+          "total_return": 0.037836151305303156,
+          "max_drawdown": -0.06495072991508923,
+          "num_trades": 335
+        },
+        "SOLUSD": {
+          "sortino": -0.4461804689295327,
+          "total_return": -0.02333360859162803,
+          "max_drawdown": -0.07240812853855266,
+          "num_trades": 331
+        },
+        "LINKUSD": {
+          "sortino": -0.6457395740602142,
+          "total_return": -0.02812779910048102,
+          "max_drawdown": -0.13614477194122443,
+          "num_trades": 312
+        },
+        "AAVEUSD": {
+          "sortino": 13.155768162233086,
+          "total_return": 0.49475603734242735,
+          "max_drawdown": -0.08919101146811383,
+          "num_trades": 358
+        }
+      },
+      "safety_score": 3.227141658436828
+    },
+    "R3_6L_smooth005_fn02": {
+      "config_name": "R3_6L_smooth005_fn02",
+      "best_epoch": 1,
+      "doge_sortino": 45.66590073128927,
+      "mean_sortino": 13.173679601287702,
+      "min_sortino": -4.444727753578371,
+      "worst_drawdown": -0.10813970248057486,
+      "positive": 3,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 45.66590073128927,
+          "total_return": 0.6418415068796826,
+          "max_drawdown": -0.031986051667405854,
+          "num_trades": 380
+        },
+        "BTCUSD": {
+          "sortino": -4.444727753578371,
+          "total_return": -0.09883764493641867,
+          "max_drawdown": -0.10813970248057486,
+          "num_trades": 357
+        },
+        "ETHUSD": {
+          "sortino": 10.62421983294195,
+          "total_return": 0.11937908615460535,
+          "max_drawdown": -0.020843507307688126,
+          "num_trades": 358
+        },
+        "SOLUSD": {
+          "sortino": -1.0798217375225059,
+          "total_return": -0.047641437139179676,
+          "max_drawdown": -0.10556502544159259,
+          "num_trades": 343
+        },
+        "LINKUSD": {
+          "sortino": -1.0743986980784523,
+          "total_return": -0.03306995588466921,
+          "max_drawdown": -0.10072656293583589,
+          "num_trades": 332
+        },
+        "AAVEUSD": {
+          "sortino": 29.350905232674325,
+          "total_return": 0.5018907138801982,
+          "max_drawdown": -0.042890603989853116,
+          "num_trades": 371
+        }
+      },
+      "safety_score": 5.874540904315016
+    },
+    "R3_6L_smooth01_fn02": {
+      "config_name": "R3_6L_smooth01_fn02",
+      "best_epoch": 1,
+      "doge_sortino": 49.79245123351664,
+      "mean_sortino": 12.176449546398066,
+      "min_sortino": -4.336849061915055,
+      "worst_drawdown": -0.1070873663988038,
+      "positive": 3,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 49.79245123351664,
+          "total_return": 0.6537351108194784,
+          "max_drawdown": -0.026051938354438347,
+          "num_trades": 383
+        },
+        "BTCUSD": {
+          "sortino": -4.336849061915055,
+          "total_return": -0.09368359381968616,
+          "max_drawdown": -0.1070873663988038,
+          "num_trades": 357
+        },
+        "ETHUSD": {
+          "sortino": 0.38377134432298615,
+          "total_return": 0.005418102064802532,
+          "max_drawdown": -0.09697630724697713,
+          "num_trades": 356
+        },
+        "SOLUSD": {
+          "sortino": -0.6694551614423557,
+          "total_return": -0.027055841171643058,
+          "max_drawdown": -0.06422850590308411,
+          "num_trades": 345
+        },
+        "LINKUSD": {
+          "sortino": -0.3513885841368527,
+          "total_return": -0.013150327826808694,
+          "max_drawdown": -0.10325457458110539,
+          "num_trades": 331
+        },
+        "AAVEUSD": {
+          "sortino": 28.24016750804303,
+          "total_return": 0.5324372397313348,
+          "max_drawdown": -0.043205372372264544,
+          "num_trades": 372
+        }
+      },
+      "safety_score": 5.4362528161931944
+    },
+    "R3_6L_cosine_fn02": {
+      "config_name": "R3_6L_cosine_fn02",
+      "best_epoch": 3,
+      "doge_sortino": 49.47489405569658,
+      "mean_sortino": 11.382253518336585,
+      "min_sortino": -3.8492425428026196,
+      "worst_drawdown": -0.13714721504145033,
+      "positive": 4,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 49.47489405569658,
+          "total_return": 0.7230936679124651,
+          "max_drawdown": -0.026774437920131205,
+          "num_trades": 376
+        },
+        "BTCUSD": {
+          "sortino": -3.8492425428026196,
+          "total_return": -0.10330069449661172,
+          "max_drawdown": -0.11759824852289248,
+          "num_trades": 350
+        },
+        "ETHUSD": {
+          "sortino": 5.084997617039789,
+          "total_return": 0.13121330541216913,
+          "max_drawdown": -0.06046306340461554,
+          "num_trades": 354
+        },
+        "SOLUSD": {
+          "sortino": 1.3968893004226917,
+          "total_return": 0.039561390512455885,
+          "max_drawdown": -0.06445281601384285,
+          "num_trades": 340
+        },
+        "LINKUSD": {
+          "sortino": -0.778752775056301,
+          "total_return": -0.030606255999177323,
+          "max_drawdown": -0.13714721504145033,
+          "num_trades": 316
+        },
+        "AAVEUSD": {
+          "sortino": 16.964735454719374,
+          "total_return": 0.42860006411973117,
+          "max_drawdown": -0.03902765021857406,
+          "num_trades": 360
+        }
+      },
+      "safety_score": 6.547472764933981
+    },
+    "R3_6L_h384": {
+      "config_name": "R3_6L_h384",
+      "best_epoch": 3,
+      "doge_sortino": 47.537289641908686,
+      "mean_sortino": 10.193694149424028,
+      "min_sortino": -4.977297015386082,
+      "worst_drawdown": -0.1184954598519407,
+      "positive": 5,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 47.537289641908686,
+          "total_return": 0.6824132661137041,
+          "max_drawdown": -0.01914452205802054,
+          "num_trades": 372
+        },
+        "BTCUSD": {
+          "sortino": -4.977297015386082,
+          "total_return": -0.10403726181340067,
+          "max_drawdown": -0.1184954598519407,
+          "num_trades": 347
+        },
+        "ETHUSD": {
+          "sortino": 2.98257170714109,
+          "total_return": 0.07870796054123774,
+          "max_drawdown": -0.06044037791281976,
+          "num_trades": 345
+        },
+        "SOLUSD": {
+          "sortino": 2.4280039569369167,
+          "total_return": 0.07345280222736483,
+          "max_drawdown": -0.06402416686888769,
+          "num_trades": 341
+        },
+        "LINKUSD": {
+          "sortino": 3.59258155232419,
+          "total_return": 0.05367913697120574,
+          "max_drawdown": -0.06894755006292394,
+          "num_trades": 321
+        },
+        "AAVEUSD": {
+          "sortino": 9.599015053619361,
+          "total_return": 0.17981939327893692,
+          "max_drawdown": -0.038994037751030525,
+          "num_trades": 367
+        }
+      },
+      "safety_score": 7.488156394664991
+    },
+    "R3_8L_fn02": {
+      "config_name": "R3_8L_fn02",
+      "best_epoch": 2,
+      "doge_sortino": 40.093192927966975,
+      "mean_sortino": 7.693628923739516,
+      "min_sortino": -4.7508470473852595,
+      "worst_drawdown": -0.09859454704803278,
+      "positive": 5,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 40.093192927966975,
+          "total_return": 0.472045706780841,
+          "max_drawdown": -0.027383968636321948,
+          "num_trades": 381
+        },
+        "BTCUSD": {
+          "sortino": -4.7508470473852595,
+          "total_return": -0.0920354927384962,
+          "max_drawdown": -0.09859454704803278,
+          "num_trades": 364
+        },
+        "ETHUSD": {
+          "sortino": 1.9703714453789511,
+          "total_return": 0.04818638681094334,
+          "max_drawdown": -0.06050965169694961,
+          "num_trades": 351
+        },
+        "SOLUSD": {
+          "sortino": 0.6622866870389508,
+          "total_return": 0.015987642596027474,
+          "max_drawdown": -0.058741025780963546,
+          "num_trades": 347
+        },
+        "LINKUSD": {
+          "sortino": 0.7512050202888496,
+          "total_return": 0.00845420068814784,
+          "max_drawdown": -0.04048577169355946,
+          "num_trades": 334
+        },
+        "AAVEUSD": {
+          "sortino": 7.435564509148627,
+          "total_return": 0.12343695864428628,
+          "max_drawdown": -0.03908776232162785,
+          "num_trades": 368
+        }
+      },
+      "safety_score": 5.779232554039813
+    },
+    "R3_6L_muon": {
+      "config_name": "R3_6L_muon",
+      "best_epoch": 3,
+      "doge_sortino": 33.4658839342449,
+      "mean_sortino": 6.759005601759029,
+      "min_sortino": -4.174868691989413,
+      "worst_drawdown": -0.1145457032063497,
+      "positive": 4,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 33.4658839342449,
+          "total_return": 0.5016085490956701,
+          "max_drawdown": -0.02959071828709094,
+          "num_trades": 369
+        },
+        "BTCUSD": {
+          "sortino": -4.174868691989413,
+          "total_return": -0.10098523234080714,
+          "max_drawdown": -0.1145457032063497,
+          "num_trades": 346
+        },
+        "ETHUSD": {
+          "sortino": 5.512893349676924,
+          "total_return": 0.15245451250179776,
+          "max_drawdown": -0.06046397893958229,
+          "num_trades": 348
+        },
+        "SOLUSD": {
+          "sortino": 0.12724828197106322,
+          "total_return": -0.0018577463300596397,
+          "max_drawdown": -0.06230154107156264,
+          "num_trades": 334
+        },
+        "LINKUSD": {
+          "sortino": -1.427478069383976,
+          "total_return": -0.03419870253442092,
+          "max_drawdown": -0.08054508301286097,
+          "num_trades": 313
+        },
+        "AAVEUSD": {
+          "sortino": 7.050354806034673,
+          "total_return": 0.11598908896360616,
+          "max_drawdown": -0.03902485412376366,
+          "num_trades": 368
+        }
+      },
+      "safety_score": 3.9898603680865894
+    },
+    "R3_6L_vale_resid": {
+      "config_name": "R3_6L_vale_resid",
+      "best_epoch": 5,
+      "doge_sortino": 36.09207088457049,
+      "mean_sortino": 6.835670994285638,
+      "min_sortino": -4.589493799853141,
+      "worst_drawdown": -0.15567803379756867,
+      "positive": 4,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 36.09207088457049,
+          "total_return": 0.7448079738835185,
+          "max_drawdown": -0.047808530451494434,
+          "num_trades": 363
+        },
+        "BTCUSD": {
+          "sortino": -4.589493799853141,
+          "total_return": -0.13132496957871753,
+          "max_drawdown": -0.15567803379756867,
+          "num_trades": 340
+        },
+        "ETHUSD": {
+          "sortino": 1.7364629695258489,
+          "total_return": 0.060044021164994854,
+          "max_drawdown": -0.09166923866470769,
+          "num_trades": 340
+        },
+        "SOLUSD": {
+          "sortino": -0.7947095227907385,
+          "total_return": -0.038290980955861365,
+          "max_drawdown": -0.09192528010003308,
+          "num_trades": 330
+        },
+        "LINKUSD": {
+          "sortino": 2.1809311942738816,
+          "total_return": 0.05160753494056558,
+          "max_drawdown": -0.07306621174767149,
+          "num_trades": 313
+        },
+        "AAVEUSD": {
+          "sortino": 6.388764239987485,
+          "total_return": 0.12479035397278637,
+          "max_drawdown": -0.04449477623280737,
+          "num_trades": 362
+        }
+      },
+      "safety_score": 3.8476714494721187
+    },
+    "R3_6L_calmar_fn02": {
+      "config_name": "R3_6L_calmar_fn02",
+      "best_epoch": 2,
+      "doge_sortino": 36.1254196611802,
+      "mean_sortino": 8.764075228031649,
+      "min_sortino": -3.954599550305406,
+      "worst_drawdown": -0.10929589712017869,
+      "positive": 4,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 36.1254196611802,
+          "total_return": 0.4207177629680696,
+          "max_drawdown": -0.026973309569720997,
+          "num_trades": 373
+        },
+        "BTCUSD": {
+          "sortino": -3.954599550305406,
+          "total_return": -0.08860248288335937,
+          "max_drawdown": -0.10929589712017869,
+          "num_trades": 350
+        },
+        "ETHUSD": {
+          "sortino": 6.245292823801525,
+          "total_return": 0.14134232813718728,
+          "max_drawdown": -0.060717513443297545,
+          "num_trades": 348
+        },
+        "SOLUSD": {
+          "sortino": -0.5392864316094041,
+          "total_return": -0.024573923610044734,
+          "max_drawdown": -0.08087170947406562,
+          "num_trades": 333
+        },
+        "LINKUSD": {
+          "sortino": 6.662827215296384,
+          "total_return": 0.09944249798267202,
+          "max_drawdown": -0.03867911729485617,
+          "num_trades": 325
+        },
+        "AAVEUSD": {
+          "sortino": 8.044797649826583,
+          "total_return": 0.18325586234751623,
+          "max_drawdown": -0.039342572746085776,
+          "num_trades": 367
+        }
+      },
+      "safety_score": 5.2041318423701295
+    },
+    "R3_6L_rw005_fn02": {
+      "config_name": "R3_6L_rw005_fn02",
+      "best_epoch": 5,
+      "doge_sortino": 30.951376187258752,
+      "mean_sortino": 6.489248136468116,
+      "min_sortino": -3.828445537961008,
+      "worst_drawdown": -0.16016627251623,
+      "positive": 4,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 30.951376187258752,
+          "total_return": 0.7364784632962336,
+          "max_drawdown": -0.030991651103251805,
+          "num_trades": 372
+        },
+        "BTCUSD": {
+          "sortino": -3.828445537961008,
+          "total_return": -0.10141638180182122,
+          "max_drawdown": -0.1248216710873414,
+          "num_trades": 346
+        },
+        "ETHUSD": {
+          "sortino": 3.715864433744785,
+          "total_return": 0.10197927503763071,
+          "max_drawdown": -0.06393530040530435,
+          "num_trades": 348
+        },
+        "SOLUSD": {
+          "sortino": 1.1221110037084931,
+          "total_return": 0.0318657125924533,
+          "max_drawdown": -0.06131147549264647,
+          "num_trades": 341
+        },
+        "LINKUSD": {
+          "sortino": -2.194046131405557,
+          "total_return": -0.07419239811230072,
+          "max_drawdown": -0.16016627251623,
+          "num_trades": 314
+        },
+        "AAVEUSD": {
+          "sortino": 9.16862886346323,
+          "total_return": 0.3837675906458764,
+          "max_drawdown": -0.10870923890883086,
+          "num_trades": 356
+        }
+      },
+      "safety_score": 3.6332596340114165
+    },
+    "R3_6L_rw003_fn02": {
+      "config_name": "R3_6L_rw003_fn02",
+      "best_epoch": 1,
+      "doge_sortino": 44.35113818982412,
+      "mean_sortino": 9.327357809287854,
+      "min_sortino": -5.143537783331502,
+      "worst_drawdown": -0.12727620094799477,
+      "positive": 3,
+      "total": 6,
+      "symbols": {
+        "DOGEUSD": {
+          "sortino": 44.35113818982412,
+          "total_return": 0.6304348067355228,
+          "max_drawdown": -0.031626449411059784,
+          "num_trades": 378
+        },
+        "BTCUSD": {
+          "sortino": -5.143537783331502,
+          "total_return": -0.11213574815485572,
+          "max_drawdown": -0.11498430995857173,
+          "num_trades": 359
+        },
+        "ETHUSD": {
+          "sortino": 3.9128100126946435,
+          "total_return": 0.08716682252205055,
+          "max_drawdown": -0.06058633938986584,
+          "num_trades": 356
+        },
+        "SOLUSD": {
+          "sortino": -0.372759463783031,
+          "total_return": -0.017051586459159607,
+          "max_drawdown": -0.07803490364194764,
+          "num_trades": 342
+        },
+        "LINKUSD": {
+          "sortino": -3.454919942210598,
+          "total_return": -0.10089304809836008,
+          "max_drawdown": -0.12727620094799477,
+          "num_trades": 332
+        },
+        "AAVEUSD": {
+          "sortino": 16.671415842533495,
+          "total_return": 0.16883029208573186,
+          "max_drawdown": -0.04012991174845631,
+          "num_trades": 373
+        }
+      },
+      "safety_score": 4.070103571219542
+    }
+  },
+  "leverage": {
+    "R3_6L_h384": [
+      {
+        "leverage": 1.0,
+        "sortino": 47.45888568297233,
+        "total_return": 0.6824483724237154,
+        "max_drawdown": -0.01914452205801999,
+        "num_trades": 372
+      },
+      {
+        "leverage": 1.5,
+        "sortino": 47.238748210462134,
+        "total_return": 1.1254009140030359,
+        "max_drawdown": -0.028698003516582308,
+        "num_trades": 370
+      },
+      {
+        "leverage": 2.0,
+        "sortino": 47.03436751119769,
+        "total_return": 1.647451652331851,
+        "max_drawdown": -0.038238978965115106,
+        "num_trades": 370
+      },
+      {
+        "leverage": 3.0,
+        "sortino": 46.662705932664174,
+        "total_return": 2.966174572246965,
+        "max_drawdown": -0.05728345290488125,
+        "num_trades": 369
+      },
+      {
+        "leverage": 5.0,
+        "sortino": 46.04850529670164,
+        "total_return": 7.002602840346528,
+        "max_drawdown": -0.09522278011014379,
+        "num_trades": 369
+      }
+    ],
+    "R3_6L_baseline": [
+      {
+        "leverage": 1.0,
+        "sortino": 43.069873039791496,
+        "total_return": 0.6264774551771926,
+        "max_drawdown": -0.026998693681895152,
+        "num_trades": 375
+      },
+      {
+        "leverage": 1.5,
+        "sortino": 42.83004701012419,
+        "total_return": 1.0205495884566211,
+        "max_drawdown": -0.04037137657647709,
+        "num_trades": 375
+      },
+      {
+        "leverage": 2.0,
+        "sortino": 42.604027198365486,
+        "total_return": 1.4751586090499398,
+        "max_drawdown": -0.05365559584288125,
+        "num_trades": 375
+      },
+      {
+        "leverage": 3.0,
+        "sortino": 42.188569541290875,
+        "total_return": 2.586878804647348,
+        "max_drawdown": -0.07995930714733308,
+        "num_trades": 374
+      },
+      {
+        "leverage": 5.0,
+        "sortino": 41.485598558770555,
+        "total_return": 5.775563365818198,
+        "max_drawdown": -0.13151244862961062,
+        "num_trades": 374
+      }
+    ],
+    "R3_6L_cosine_fn02": [
+      {
+        "leverage": 1.0,
+        "sortino": 49.396658465073365,
+        "total_return": 0.7231599914170452,
+        "max_drawdown": -0.026774437920131396,
+        "num_trades": 376
+      },
+      {
+        "leverage": 1.5,
+        "sortino": 49.16013778851954,
+        "total_return": 1.2017266454125424,
+        "max_drawdown": -0.040038653120347545,
+        "num_trades": 376
+      },
+      {
+        "leverage": 2.0,
+        "sortino": 48.93773268291192,
+        "total_return": 1.7727523917665233,
+        "max_drawdown": -0.0532168183082225,
+        "num_trades": 376
+      },
+      {
+        "leverage": 3.0,
+        "sortino": 48.53060621461363,
+        "total_return": 3.2411285552144387,
+        "max_drawdown": -0.07931558300925014,
+        "num_trades": 375
+      },
+      {
+        "leverage": 5.0,
+        "sortino": 47.84783781245387,
+        "total_return": 7.882580650402348,
+        "max_drawdown": -0.13048692459494415,
+        "num_trades": 375
+      }
+    ]
+  }
+}
