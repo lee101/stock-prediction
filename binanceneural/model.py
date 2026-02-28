@@ -299,9 +299,16 @@ class MultiQueryAttention(nn.Module):
             self.use_value_embedding = (self.layer_idx % every == 0)
         self.value_embedding_scale = float(config.value_embedding_scale)
         if self.use_value_embedding:
-            self.value_embedding = nn.Parameter(torch.zeros(config.max_len, config.hidden_dim))
+            ve_len = config.max_len + (int(config.num_memory_tokens) if config.num_memory_tokens else 0)
+            self.value_embedding = nn.Parameter(torch.zeros(ve_len, config.hidden_dim))
         else:
             self.register_parameter("value_embedding", None)
+        # Dilated attention: per-head-group strides for multi-scale temporal coverage
+        self.dilated_strides: list[int] = []
+        if config.dilated_strides:
+            self.dilated_strides = [int(s) for s in config.dilated_strides.split(",")]
+        # Number of memory tokens (needed for mask construction)
+        self.num_memory_tokens = int(config.num_memory_tokens) if config.num_memory_tokens else 0
 
     def forward(self, x: torch.Tensor, cos_sin: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         B, T, _ = x.shape
@@ -331,7 +338,7 @@ class MultiQueryAttention(nn.Module):
             n_rep = self.n_head // self.n_kv_head
             k = k.repeat_interleave(n_rep, dim=1)
             v = v.repeat_interleave(n_rep, dim=1)
-        attn_mask = self._sliding_window_mask(T, x.device)
+        attn_mask = self._build_attention_mask(T, x.device)
         y = _scaled_dot_product_attention_with_fallback(
             q,
             k,
@@ -343,18 +350,100 @@ class MultiQueryAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(B, T, -1)
         return self.out_proj(y)
 
+    def _build_attention_mask(self, seq_len: int, device: torch.device) -> torch.Tensor | None:
+        """Build attention mask combining sliding window, dilated strides, and memory tokens."""
+        has_dilated = len(self.dilated_strides) > 0
+        has_window = self.attention_window is not None
+        has_memory = self.num_memory_tokens > 0
+
+        if not has_dilated and not has_window and not has_memory:
+            return None
+
+        # For dilated attention: build per-head mask with different strides
+        if has_dilated:
+            return self._dilated_mask(seq_len, device)
+
+        # For sliding window (possibly with memory tokens)
+        return self._sliding_window_mask(seq_len, device)
+
     def _sliding_window_mask(self, seq_len: int, device: torch.device) -> torch.Tensor | None:
-        if self.attention_window is None:
+        if self.attention_window is None and self.num_memory_tokens == 0:
             return None
         # NOTE: Do not cache this mask on the module during torch.compile() runs.
         # Torch Inductor may wrap forward in CUDAGraphs and reuse output buffers
         # between steps; holding onto an output tensor (e.g. via self._window_mask)
         # can trigger "overwritten by a subsequent run" errors.
         idx = torch.arange(seq_len, device=device)
+        M = self.num_memory_tokens
+
+        if self.attention_window is not None:
+            dist = idx[:, None] - idx[None, :]
+            if self.causal:
+                mask = (dist >= 0) & (dist < self.attention_window)
+            else:
+                mask = dist.abs() < self.attention_window
+        else:
+            # No window but has memory tokens - start with full causal or full mask
+            if self.causal:
+                mask = idx[:, None] >= idx[None, :]
+            else:
+                mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device=device)
+
+        # Memory tokens (first M positions) can attend to / be attended by everything
+        if M > 0:
+            mask[:M, :] = True  # memory tokens attend to all
+            mask[:, :M] = True  # all tokens attend to memory tokens
+
+        return mask
+
+    def _dilated_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
+        """Build per-head dilated attention mask.
+
+        Each head group gets a different stride. Head group i attends to
+        positions where (position_distance % stride_i == 0). This gives
+        multi-scale temporal coverage: stride=1 for local, stride=24 for
+        daily patterns, etc.
+
+        Returns mask of shape (num_heads, seq_len, seq_len).
+        """
+        strides = self.dilated_strides
+        M = self.num_memory_tokens
+        idx = torch.arange(seq_len, device=device)
         dist = idx[:, None] - idx[None, :]
-        if self.causal:
-            return (dist >= 0) & (dist < self.attention_window)
-        return dist.abs() < self.attention_window
+
+        # Divide heads into groups, one per stride
+        n_groups = len(strides)
+        heads_per_group = self.n_head // n_groups
+        remainder = self.n_head % n_groups
+
+        mask = torch.zeros(self.n_head, seq_len, seq_len, dtype=torch.bool, device=device)
+
+        head_offset = 0
+        for g, stride in enumerate(strides):
+            n_h = heads_per_group + (1 if g < remainder else 0)
+            # This group attends to positions at multiples of stride
+            if self.causal:
+                group_mask = (dist >= 0) & (dist % stride == 0)
+            else:
+                group_mask = dist.abs() % stride == 0
+
+            # Apply sliding window on top if configured
+            if self.attention_window is not None:
+                effective_window = self.attention_window * stride
+                if self.causal:
+                    group_mask = group_mask & (dist < effective_window)
+                else:
+                    group_mask = group_mask & (dist.abs() < effective_window)
+
+            mask[head_offset:head_offset + n_h] = group_mask.unsqueeze(0)
+            head_offset += n_h
+
+        # Memory tokens always fully connected
+        if M > 0:
+            mask[:, :M, :] = True
+            mask[:, :, :M] = True
+
+        return mask
 
 
 class FeedForward(nn.Module):
@@ -403,7 +492,7 @@ class NanoTransformerBlock(nn.Module):
 
 
 class BinanceHourlyPolicyNano(BinancePolicyBase):
-    """Nanochat-style transformer policy."""
+    """Nanochat-style transformer policy with optional memory tokens and dilated attention."""
 
     def __init__(self, config: PolicyConfig) -> None:
         super().__init__(
@@ -415,9 +504,19 @@ class BinanceHourlyPolicyNano(BinancePolicyBase):
         )
         self.config = config
         self.embed = nn.Linear(config.input_dim, config.hidden_dim, bias=False)
+        self.num_memory_tokens = int(config.num_memory_tokens) if config.num_memory_tokens else 0
+        # Learnable memory tokens that participate in attention for global context
+        if self.num_memory_tokens > 0:
+            self.memory_tokens = nn.Parameter(
+                torch.randn(1, self.num_memory_tokens, config.hidden_dim) * 0.02
+            )
+        else:
+            self.register_parameter("memory_tokens", None)
+        # RoPE max_len accounts for memory tokens prepended to sequence
+        rope_max = config.max_len + self.num_memory_tokens
         self.rope = RotaryEmbedding(
             config.hidden_dim // config.num_heads,
-            max_len=config.max_len,
+            max_len=rope_max,
             base=config.rope_base,
         )
         self.blocks = nn.ModuleList(
@@ -440,12 +539,25 @@ class BinanceHourlyPolicyNano(BinancePolicyBase):
             nn.init.zeros_(block.mlp.fc2.weight)
 
     def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:
-        _, seq_len, _ = features.shape
+        B, seq_len, _ = features.shape
         h = _rms_norm(self.embed(features), self.norm_eps)
-        cos_sin = self.rope(seq_len)
+
+        # Prepend memory tokens if configured
+        M = self.num_memory_tokens
+        if M > 0 and self.memory_tokens is not None:
+            mem = self.memory_tokens.expand(B, -1, -1)
+            h = torch.cat([mem, h], dim=1)  # (B, M+seq_len, hidden_dim)
+
+        total_len = h.size(1)
+        cos_sin = self.rope(total_len)
         for block in self.blocks:
             h = block(h, cos_sin)
         h = _rms_norm(h, self.norm_eps)
+
+        # Strip memory tokens - only decode from real sequence positions
+        if M > 0:
+            h = h[:, M:, :]
+
         logits = self.head(h)
         softcap = float(self.config.logits_softcap)
         if softcap > 0:
@@ -485,14 +597,19 @@ def policy_config_from_payload(
             return default
 
     max_len = _maybe(payload.get("max_len"), int, None)
+    if max_len is None:
+        seq_len = _maybe(payload.get("sequence_length"), int, None)
+        if seq_len is not None:
+            max_len = max(seq_len, 32)
     if max_len is None and state_dict is not None:
         pe = state_dict.get("pos_encoding.pe")
         if isinstance(pe, torch.Tensor) and pe.ndim >= 2:
             max_len = int(pe.shape[0])
         if max_len is None:
+            n_mem = _maybe(payload.get("num_memory_tokens"), int, 0)
             for key, tensor in state_dict.items():
                 if key.endswith("value_embedding") and isinstance(tensor, torch.Tensor) and tensor.ndim == 2:
-                    max_len = int(tensor.shape[0])
+                    max_len = int(tensor.shape[0]) - n_mem
                     break
     if max_len is None:
         max_len = 2048
@@ -528,6 +645,8 @@ def policy_config_from_payload(
         use_value_embedding=bool(payload.get("use_value_embedding", False)),
         value_embedding_every=_maybe(payload.get("value_embedding_every"), int, 2),
         value_embedding_scale=_maybe(payload.get("value_embedding_scale"), float, 1.0),
+        num_memory_tokens=_maybe(payload.get("num_memory_tokens"), int, 0),
+        dilated_strides=str(payload.get("dilated_strides", "")),
         num_outputs=_maybe(payload.get("num_outputs"), int, 4),
         max_hold_hours=_maybe(payload.get("max_hold_hours"), float, 24.0),
     )

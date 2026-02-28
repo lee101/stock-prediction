@@ -1,0 +1,2018 @@
+[
+  {
+    "config": "realistic_rw015",
+    "epoch": 5,
+    "holdout_days": 7,
+    "return": -2.2193,
+    "sortino": -7.3996,
+    "max_drawdown": 2.1234,
+    "buys": 5
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 5,
+    "holdout_days": 30,
+    "return": -4.9463,
+    "sortino": -3.6423,
+    "max_drawdown": 6.7502,
+    "buys": 21
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 5,
+    "holdout_days": 60,
+    "return": -6.9527,
+    "sortino": -2.8835,
+    "max_drawdown": 6.8114,
+    "buys": 29
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 5,
+    "holdout_days": 90,
+    "return": -7.7911,
+    "sortino": -2.261,
+    "max_drawdown": 7.6499,
+    "buys": 36
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 6,
+    "holdout_days": 7,
+    "return": -1.5558,
+    "sortino": -5.5218,
+    "max_drawdown": 2.143,
+    "buys": 7
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 6,
+    "holdout_days": 30,
+    "return": -1.6648,
+    "sortino": -1.336,
+    "max_drawdown": 3.5524,
+    "buys": 21
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 6,
+    "holdout_days": 60,
+    "return": -4.3839,
+    "sortino": -1.9585,
+    "max_drawdown": 4.2426,
+    "buys": 30
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 6,
+    "holdout_days": 90,
+    "return": -5.617,
+    "sortino": -1.752,
+    "max_drawdown": 5.4757,
+    "buys": 38
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 7,
+    "holdout_days": 7,
+    "return": -0.8428,
+    "sortino": -3.2569,
+    "max_drawdown": 1.5281,
+    "buys": 6
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 7,
+    "holdout_days": 30,
+    "return": 0.48,
+    "sortino": 0.5237,
+    "max_drawdown": 2.404,
+    "buys": 21
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 7,
+    "holdout_days": 60,
+    "return": -1.2159,
+    "sortino": -0.5363,
+    "max_drawdown": 2.3388,
+    "buys": 29
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 7,
+    "holdout_days": 90,
+    "return": -2.9996,
+    "sortino": -0.9692,
+    "max_drawdown": 3.9605,
+    "buys": 37
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 8,
+    "holdout_days": 7,
+    "return": -0.9087,
+    "sortino": -3.5887,
+    "max_drawdown": 1.7948,
+    "buys": 6
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 8,
+    "holdout_days": 30,
+    "return": -1.3287,
+    "sortino": -0.934,
+    "max_drawdown": 4.3716,
+    "buys": 22
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 8,
+    "holdout_days": 60,
+    "return": -5.4816,
+    "sortino": -1.7886,
+    "max_drawdown": 6.4589,
+    "buys": 35
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 8,
+    "holdout_days": 90,
+    "return": -8.2525,
+    "sortino": -2.0367,
+    "max_drawdown": 9.242,
+    "buys": 44
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 9,
+    "holdout_days": 7,
+    "return": -1.2565,
+    "sortino": -3.9671,
+    "max_drawdown": 1.2763,
+    "buys": 3
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 9,
+    "holdout_days": 30,
+    "return": -0.0899,
+    "sortino": -0.052,
+    "max_drawdown": 1.9585,
+    "buys": 20
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 9,
+    "holdout_days": 60,
+    "return": -3.0124,
+    "sortino": -1.1441,
+    "max_drawdown": 3.6864,
+    "buys": 28
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 9,
+    "holdout_days": 90,
+    "return": -4.2719,
+    "sortino": -1.1773,
+    "max_drawdown": 4.9168,
+    "buys": 35
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 10,
+    "holdout_days": 7,
+    "return": -1.0944,
+    "sortino": -4.7542,
+    "max_drawdown": 1.4303,
+    "buys": 4
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 10,
+    "holdout_days": 30,
+    "return": 0.3975,
+    "sortino": 0.3724,
+    "max_drawdown": 2.1,
+    "buys": 27
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 10,
+    "holdout_days": 60,
+    "return": -2.6737,
+    "sortino": -0.9004,
+    "max_drawdown": 4.1079,
+    "buys": 41
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 10,
+    "holdout_days": 90,
+    "return": -5.6543,
+    "sortino": -1.4251,
+    "max_drawdown": 7.0,
+    "buys": 48
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 11,
+    "holdout_days": 7,
+    "return": -1.1004,
+    "sortino": -4.7439,
+    "max_drawdown": 1.4209,
+    "buys": 3
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 11,
+    "holdout_days": 30,
+    "return": -1.082,
+    "sortino": -0.714,
+    "max_drawdown": 2.7437,
+    "buys": 14
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 11,
+    "holdout_days": 60,
+    "return": -1.842,
+    "sortino": -0.6398,
+    "max_drawdown": 2.7432,
+    "buys": 27
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 11,
+    "holdout_days": 90,
+    "return": -4.2151,
+    "sortino": -1.1094,
+    "max_drawdown": 5.2869,
+    "buys": 35
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 12,
+    "holdout_days": 7,
+    "return": -0.2532,
+    "sortino": -0.8733,
+    "max_drawdown": 1.4903,
+    "buys": 7
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 12,
+    "holdout_days": 30,
+    "return": -2.1754,
+    "sortino": -0.9664,
+    "max_drawdown": 6.7471,
+    "buys": 26
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 12,
+    "holdout_days": 60,
+    "return": -3.2577,
+    "sortino": -0.8645,
+    "max_drawdown": 6.7217,
+    "buys": 43
+  },
+  {
+    "config": "realistic_rw015",
+    "epoch": 12,
+    "holdout_days": 90,
+    "return": -5.7631,
+    "sortino": -1.2361,
+    "max_drawdown": 7.5101,
+    "buys": 55
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 5,
+    "holdout_days": 7,
+    "return": -1.8867,
+    "sortino": -9.5329,
+    "max_drawdown": 2.3765,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 5,
+    "holdout_days": 30,
+    "return": -4.3158,
+    "sortino": -3.8201,
+    "max_drawdown": 6.7058,
+    "buys": 21
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 5,
+    "holdout_days": 60,
+    "return": -7.3896,
+    "sortino": -3.487,
+    "max_drawdown": 7.3896,
+    "buys": 27
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 5,
+    "holdout_days": 90,
+    "return": -9.4067,
+    "sortino": -3.0639,
+    "max_drawdown": 9.4067,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 6,
+    "holdout_days": 7,
+    "return": -2.0079,
+    "sortino": -10.0518,
+    "max_drawdown": 2.5132,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 6,
+    "holdout_days": 30,
+    "return": -4.2326,
+    "sortino": -3.6647,
+    "max_drawdown": 6.6858,
+    "buys": 23
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 6,
+    "holdout_days": 60,
+    "return": -6.5416,
+    "sortino": -3.1787,
+    "max_drawdown": 6.6575,
+    "buys": 29
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 6,
+    "holdout_days": 90,
+    "return": -7.8021,
+    "sortino": -2.6066,
+    "max_drawdown": 7.8021,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 7,
+    "holdout_days": 7,
+    "return": -1.9597,
+    "sortino": -10.3222,
+    "max_drawdown": 2.4653,
+    "buys": 3
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 7,
+    "holdout_days": 30,
+    "return": -4.8736,
+    "sortino": -3.9239,
+    "max_drawdown": 7.3524,
+    "buys": 20
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 7,
+    "holdout_days": 60,
+    "return": -6.8494,
+    "sortino": -3.1569,
+    "max_drawdown": 7.365,
+    "buys": 28
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 7,
+    "holdout_days": 90,
+    "return": -8.7144,
+    "sortino": -2.8086,
+    "max_drawdown": 8.7144,
+    "buys": 33
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 8,
+    "holdout_days": 7,
+    "return": -2.2777,
+    "sortino": -12.3086,
+    "max_drawdown": 2.5317,
+    "buys": 6
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 8,
+    "holdout_days": 30,
+    "return": -5.3928,
+    "sortino": -3.9433,
+    "max_drawdown": 7.8119,
+    "buys": 23
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 8,
+    "holdout_days": 60,
+    "return": -8.3964,
+    "sortino": -3.441,
+    "max_drawdown": 8.3964,
+    "buys": 33
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 8,
+    "holdout_days": 90,
+    "return": -10.3187,
+    "sortino": -2.98,
+    "max_drawdown": 10.3187,
+    "buys": 40
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 9,
+    "holdout_days": 7,
+    "return": -1.6813,
+    "sortino": -7.7706,
+    "max_drawdown": 2.067,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 9,
+    "holdout_days": 30,
+    "return": -4.6793,
+    "sortino": -3.34,
+    "max_drawdown": 7.1252,
+    "buys": 22
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 9,
+    "holdout_days": 60,
+    "return": -7.8668,
+    "sortino": -3.1311,
+    "max_drawdown": 7.8668,
+    "buys": 32
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 9,
+    "holdout_days": 90,
+    "return": -9.7386,
+    "sortino": -2.7529,
+    "max_drawdown": 9.7386,
+    "buys": 39
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 10,
+    "holdout_days": 7,
+    "return": -1.7682,
+    "sortino": -8.5918,
+    "max_drawdown": 2.2748,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 10,
+    "holdout_days": 30,
+    "return": -4.6931,
+    "sortino": -3.3627,
+    "max_drawdown": 7.1289,
+    "buys": 23
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 10,
+    "holdout_days": 60,
+    "return": -7.803,
+    "sortino": -3.0814,
+    "max_drawdown": 7.803,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 10,
+    "holdout_days": 90,
+    "return": -9.8055,
+    "sortino": -2.7502,
+    "max_drawdown": 9.8055,
+    "buys": 41
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 11,
+    "holdout_days": 7,
+    "return": -1.8161,
+    "sortino": -8.7225,
+    "max_drawdown": 2.2501,
+    "buys": 4
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 11,
+    "holdout_days": 30,
+    "return": -4.0481,
+    "sortino": -2.9215,
+    "max_drawdown": 6.5015,
+    "buys": 21
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 11,
+    "holdout_days": 60,
+    "return": -6.9655,
+    "sortino": -2.8624,
+    "max_drawdown": 6.9655,
+    "buys": 32
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 11,
+    "holdout_days": 90,
+    "return": -7.6887,
+    "sortino": -2.2304,
+    "max_drawdown": 7.6887,
+    "buys": 38
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 12,
+    "holdout_days": 7,
+    "return": -1.673,
+    "sortino": -7.8639,
+    "max_drawdown": 2.1801,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 12,
+    "holdout_days": 30,
+    "return": -4.4117,
+    "sortino": -3.1429,
+    "max_drawdown": 6.8547,
+    "buys": 22
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 12,
+    "holdout_days": 60,
+    "return": -7.4653,
+    "sortino": -2.9288,
+    "max_drawdown": 7.4653,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw035_wd04",
+    "epoch": 12,
+    "holdout_days": 90,
+    "return": -10.5439,
+    "sortino": -3.0306,
+    "max_drawdown": 10.5439,
+    "buys": 43
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 5,
+    "holdout_days": 7,
+    "return": -1.956,
+    "sortino": -9.7433,
+    "max_drawdown": 2.4454,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 5,
+    "holdout_days": 30,
+    "return": -4.5184,
+    "sortino": -3.9889,
+    "max_drawdown": 6.8546,
+    "buys": 20
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 5,
+    "holdout_days": 60,
+    "return": -6.7768,
+    "sortino": -3.2884,
+    "max_drawdown": 6.8179,
+    "buys": 26
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 5,
+    "holdout_days": 90,
+    "return": -8.578,
+    "sortino": -2.853,
+    "max_drawdown": 8.578,
+    "buys": 32
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 6,
+    "holdout_days": 7,
+    "return": -1.9668,
+    "sortino": -10.3768,
+    "max_drawdown": 2.4723,
+    "buys": 4
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 6,
+    "holdout_days": 30,
+    "return": -4.5755,
+    "sortino": -3.9116,
+    "max_drawdown": 7.0211,
+    "buys": 20
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 6,
+    "holdout_days": 60,
+    "return": -6.9798,
+    "sortino": -3.2944,
+    "max_drawdown": 6.99,
+    "buys": 26
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 6,
+    "holdout_days": 90,
+    "return": -8.2717,
+    "sortino": -2.6934,
+    "max_drawdown": 8.2717,
+    "buys": 31
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 7,
+    "holdout_days": 7,
+    "return": -1.9666,
+    "sortino": -10.3362,
+    "max_drawdown": 2.4559,
+    "buys": 3
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 7,
+    "holdout_days": 30,
+    "return": -4.4254,
+    "sortino": -3.7945,
+    "max_drawdown": 6.799,
+    "buys": 20
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 7,
+    "holdout_days": 60,
+    "return": -5.9928,
+    "sortino": -2.9015,
+    "max_drawdown": 6.8324,
+    "buys": 27
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 7,
+    "holdout_days": 90,
+    "return": -6.8881,
+    "sortino": -2.2863,
+    "max_drawdown": 6.8881,
+    "buys": 32
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 8,
+    "holdout_days": 7,
+    "return": -1.9597,
+    "sortino": -10.3222,
+    "max_drawdown": 2.4653,
+    "buys": 3
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 8,
+    "holdout_days": 30,
+    "return": -5.1001,
+    "sortino": -3.7705,
+    "max_drawdown": 7.5614,
+    "buys": 19
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 8,
+    "holdout_days": 60,
+    "return": -6.7667,
+    "sortino": -2.8675,
+    "max_drawdown": 7.5534,
+    "buys": 27
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 8,
+    "holdout_days": 90,
+    "return": -8.4364,
+    "sortino": -2.5319,
+    "max_drawdown": 8.4364,
+    "buys": 33
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 9,
+    "holdout_days": 7,
+    "return": -1.6648,
+    "sortino": -7.8696,
+    "max_drawdown": 2.1719,
+    "buys": 3
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 9,
+    "holdout_days": 30,
+    "return": -4.8732,
+    "sortino": -3.4645,
+    "max_drawdown": 7.325,
+    "buys": 20
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 9,
+    "holdout_days": 60,
+    "return": -7.3768,
+    "sortino": -3.0672,
+    "max_drawdown": 7.3768,
+    "buys": 30
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 9,
+    "holdout_days": 90,
+    "return": -9.3098,
+    "sortino": -2.7377,
+    "max_drawdown": 9.3098,
+    "buys": 36
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 10,
+    "holdout_days": 7,
+    "return": -1.6667,
+    "sortino": -7.754,
+    "max_drawdown": 2.1738,
+    "buys": 4
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 10,
+    "holdout_days": 30,
+    "return": -4.9608,
+    "sortino": -3.5439,
+    "max_drawdown": 7.3897,
+    "buys": 23
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 10,
+    "holdout_days": 60,
+    "return": -8.5547,
+    "sortino": -3.3913,
+    "max_drawdown": 8.5547,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 10,
+    "holdout_days": 90,
+    "return": -10.5643,
+    "sortino": -2.9957,
+    "max_drawdown": 10.5643,
+    "buys": 40
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 11,
+    "holdout_days": 7,
+    "return": -2.0697,
+    "sortino": -10.8872,
+    "max_drawdown": 2.3195,
+    "buys": 4
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 11,
+    "holdout_days": 30,
+    "return": -4.7792,
+    "sortino": -3.5929,
+    "max_drawdown": 7.2158,
+    "buys": 21
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 11,
+    "holdout_days": 60,
+    "return": -7.1648,
+    "sortino": -3.1013,
+    "max_drawdown": 7.2153,
+    "buys": 30
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 11,
+    "holdout_days": 90,
+    "return": -7.1904,
+    "sortino": -2.2279,
+    "max_drawdown": 8.2024,
+    "buys": 36
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 12,
+    "holdout_days": 7,
+    "return": -0.9209,
+    "sortino": -4.6558,
+    "max_drawdown": 1.3375,
+    "buys": 3
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 12,
+    "holdout_days": 30,
+    "return": -3.8212,
+    "sortino": -2.7395,
+    "max_drawdown": 6.2865,
+    "buys": 19
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 12,
+    "holdout_days": 60,
+    "return": -4.1332,
+    "sortino": -1.6855,
+    "max_drawdown": 6.2756,
+    "buys": 28
+  },
+  {
+    "config": "sweep_rw025_wd04",
+    "epoch": 12,
+    "holdout_days": 90,
+    "return": -4.5709,
+    "sortino": -1.3644,
+    "max_drawdown": 6.2609,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 5,
+    "holdout_days": 7,
+    "return": -1.8868,
+    "sortino": -9.5335,
+    "max_drawdown": 2.3765,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 5,
+    "holdout_days": 30,
+    "return": -4.3164,
+    "sortino": -3.8206,
+    "max_drawdown": 6.7064,
+    "buys": 21
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 5,
+    "holdout_days": 60,
+    "return": -7.391,
+    "sortino": -3.4875,
+    "max_drawdown": 7.391,
+    "buys": 27
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 5,
+    "holdout_days": 90,
+    "return": -9.4086,
+    "sortino": -3.0646,
+    "max_drawdown": 9.4086,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 6,
+    "holdout_days": 7,
+    "return": -1.9997,
+    "sortino": -10.0046,
+    "max_drawdown": 2.5051,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 6,
+    "holdout_days": 30,
+    "return": -4.2496,
+    "sortino": -3.6834,
+    "max_drawdown": 6.7028,
+    "buys": 23
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 6,
+    "holdout_days": 60,
+    "return": -6.5525,
+    "sortino": -3.1958,
+    "max_drawdown": 6.6746,
+    "buys": 29
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 6,
+    "holdout_days": 90,
+    "return": -7.8004,
+    "sortino": -2.6115,
+    "max_drawdown": 7.8004,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 7,
+    "holdout_days": 7,
+    "return": -1.9607,
+    "sortino": -10.33,
+    "max_drawdown": 2.4663,
+    "buys": 4
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 7,
+    "holdout_days": 30,
+    "return": -4.8709,
+    "sortino": -3.7473,
+    "max_drawdown": 7.3341,
+    "buys": 21
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 7,
+    "holdout_days": 60,
+    "return": -6.8302,
+    "sortino": -2.9993,
+    "max_drawdown": 7.3167,
+    "buys": 28
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 7,
+    "holdout_days": 90,
+    "return": -8.8607,
+    "sortino": -2.7547,
+    "max_drawdown": 8.8607,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 8,
+    "holdout_days": 7,
+    "return": -1.8502,
+    "sortino": -9.1804,
+    "max_drawdown": 2.3564,
+    "buys": 6
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 8,
+    "holdout_days": 30,
+    "return": -5.0776,
+    "sortino": -3.6924,
+    "max_drawdown": 7.5039,
+    "buys": 24
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 8,
+    "holdout_days": 60,
+    "return": -8.0362,
+    "sortino": -3.2776,
+    "max_drawdown": 8.0362,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 8,
+    "holdout_days": 90,
+    "return": -10.1743,
+    "sortino": -2.9343,
+    "max_drawdown": 10.1743,
+    "buys": 41
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 9,
+    "holdout_days": 7,
+    "return": -1.9617,
+    "sortino": -10.3379,
+    "max_drawdown": 2.4673,
+    "buys": 4
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 9,
+    "holdout_days": 30,
+    "return": -4.9142,
+    "sortino": -3.583,
+    "max_drawdown": 7.3459,
+    "buys": 21
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 9,
+    "holdout_days": 60,
+    "return": -7.8569,
+    "sortino": -3.1778,
+    "max_drawdown": 7.8569,
+    "buys": 31
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 9,
+    "holdout_days": 90,
+    "return": -8.9057,
+    "sortino": -2.5104,
+    "max_drawdown": 8.9057,
+    "buys": 37
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 10,
+    "holdout_days": 7,
+    "return": -1.9728,
+    "sortino": -10.423,
+    "max_drawdown": 2.4783,
+    "buys": 4
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 10,
+    "holdout_days": 30,
+    "return": -5.1213,
+    "sortino": -3.8021,
+    "max_drawdown": 7.5462,
+    "buys": 23
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 10,
+    "holdout_days": 60,
+    "return": -8.6855,
+    "sortino": -3.4812,
+    "max_drawdown": 8.6855,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 10,
+    "holdout_days": 90,
+    "return": -10.7245,
+    "sortino": -3.0664,
+    "max_drawdown": 10.7245,
+    "buys": 40
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 11,
+    "holdout_days": 7,
+    "return": -1.6684,
+    "sortino": -7.7751,
+    "max_drawdown": 2.1755,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 11,
+    "holdout_days": 30,
+    "return": -4.8858,
+    "sortino": -3.4629,
+    "max_drawdown": 7.3167,
+    "buys": 22
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 11,
+    "holdout_days": 60,
+    "return": -8.2371,
+    "sortino": -3.2967,
+    "max_drawdown": 8.2371,
+    "buys": 33
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 11,
+    "holdout_days": 90,
+    "return": -9.6547,
+    "sortino": -2.7421,
+    "max_drawdown": 9.6547,
+    "buys": 39
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 12,
+    "holdout_days": 7,
+    "return": -1.7099,
+    "sortino": -8.2707,
+    "max_drawdown": 2.2168,
+    "buys": 3
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 12,
+    "holdout_days": 30,
+    "return": -4.935,
+    "sortino": -3.5733,
+    "max_drawdown": 7.365,
+    "buys": 19
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 12,
+    "holdout_days": 60,
+    "return": -8.4856,
+    "sortino": -3.445,
+    "max_drawdown": 8.4856,
+    "buys": 30
+  },
+  {
+    "config": "sweep_rw035_wd05",
+    "epoch": 12,
+    "holdout_days": 90,
+    "return": -10.0631,
+    "sortino": -3.0295,
+    "max_drawdown": 10.4221,
+    "buys": 36
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 5,
+    "holdout_days": 7,
+    "return": -2.0242,
+    "sortino": -10.1702,
+    "max_drawdown": 2.5304,
+    "buys": 6
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 5,
+    "holdout_days": 30,
+    "return": -5.1615,
+    "sortino": -4.8555,
+    "max_drawdown": 7.5962,
+    "buys": 22
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 5,
+    "holdout_days": 60,
+    "return": -7.5747,
+    "sortino": -3.8252,
+    "max_drawdown": 7.5747,
+    "buys": 28
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 5,
+    "holdout_days": 90,
+    "return": -8.8278,
+    "sortino": -3.0411,
+    "max_drawdown": 8.8278,
+    "buys": 33
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 6,
+    "holdout_days": 7,
+    "return": -1.9441,
+    "sortino": -9.9726,
+    "max_drawdown": 2.4498,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 6,
+    "holdout_days": 30,
+    "return": -5.0687,
+    "sortino": -4.3661,
+    "max_drawdown": 7.5207,
+    "buys": 21
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 6,
+    "holdout_days": 60,
+    "return": -7.4052,
+    "sortino": -3.513,
+    "max_drawdown": 7.4474,
+    "buys": 28
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 6,
+    "holdout_days": 90,
+    "return": -9.5677,
+    "sortino": -3.1601,
+    "max_drawdown": 9.5677,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 7,
+    "holdout_days": 7,
+    "return": -1.9643,
+    "sortino": -9.7881,
+    "max_drawdown": 2.4699,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 7,
+    "holdout_days": 30,
+    "return": -4.8106,
+    "sortino": -4.4043,
+    "max_drawdown": 7.2929,
+    "buys": 22
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 7,
+    "holdout_days": 60,
+    "return": -7.1514,
+    "sortino": -3.6429,
+    "max_drawdown": 7.2672,
+    "buys": 28
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 7,
+    "holdout_days": 90,
+    "return": -9.3464,
+    "sortino": -3.2687,
+    "max_drawdown": 9.3464,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 8,
+    "holdout_days": 7,
+    "return": -1.9678,
+    "sortino": -10.3846,
+    "max_drawdown": 2.4733,
+    "buys": 4
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 8,
+    "holdout_days": 30,
+    "return": -5.6451,
+    "sortino": -4.4506,
+    "max_drawdown": 8.0952,
+    "buys": 22
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 8,
+    "holdout_days": 60,
+    "return": -7.7054,
+    "sortino": -3.4793,
+    "max_drawdown": 8.0414,
+    "buys": 31
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 8,
+    "holdout_days": 90,
+    "return": -9.8849,
+    "sortino": -3.141,
+    "max_drawdown": 9.8849,
+    "buys": 37
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 9,
+    "holdout_days": 7,
+    "return": -1.9607,
+    "sortino": -10.33,
+    "max_drawdown": 2.4663,
+    "buys": 4
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 9,
+    "holdout_days": 30,
+    "return": -5.6618,
+    "sortino": -4.6008,
+    "max_drawdown": 8.0929,
+    "buys": 22
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 9,
+    "holdout_days": 60,
+    "return": -7.7067,
+    "sortino": -3.5822,
+    "max_drawdown": 8.0228,
+    "buys": 31
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 9,
+    "holdout_days": 90,
+    "return": -9.8391,
+    "sortino": -3.2198,
+    "max_drawdown": 9.8391,
+    "buys": 37
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 10,
+    "holdout_days": 7,
+    "return": -2.3769,
+    "sortino": -12.5268,
+    "max_drawdown": 2.6283,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 10,
+    "holdout_days": 30,
+    "return": -5.6734,
+    "sortino": -4.0609,
+    "max_drawdown": 8.0845,
+    "buys": 24
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 10,
+    "holdout_days": 60,
+    "return": -9.6742,
+    "sortino": -3.793,
+    "max_drawdown": 9.6742,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 10,
+    "holdout_days": 90,
+    "return": -11.8688,
+    "sortino": -3.3439,
+    "max_drawdown": 11.8688,
+    "buys": 41
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 11,
+    "holdout_days": 7,
+    "return": -2.0758,
+    "sortino": -10.5548,
+    "max_drawdown": 2.3303,
+    "buys": 5
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 11,
+    "holdout_days": 30,
+    "return": -4.4074,
+    "sortino": -3.2164,
+    "max_drawdown": 6.8509,
+    "buys": 25
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 11,
+    "holdout_days": 60,
+    "return": -7.7444,
+    "sortino": -3.2989,
+    "max_drawdown": 7.7444,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 11,
+    "holdout_days": 90,
+    "return": -8.786,
+    "sortino": -2.6751,
+    "max_drawdown": 8.8443,
+    "buys": 40
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 12,
+    "holdout_days": 7,
+    "return": -1.6433,
+    "sortino": -7.9625,
+    "max_drawdown": 2.161,
+    "buys": 3
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 12,
+    "holdout_days": 30,
+    "return": -3.3437,
+    "sortino": -2.3192,
+    "max_drawdown": 5.7497,
+    "buys": 21
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 12,
+    "holdout_days": 60,
+    "return": -5.368,
+    "sortino": -2.2084,
+    "max_drawdown": 5.7365,
+    "buys": 30
+  },
+  {
+    "config": "sweep_rw020_wd03_fb",
+    "epoch": 12,
+    "holdout_days": 90,
+    "return": -4.8159,
+    "sortino": -1.3858,
+    "max_drawdown": 6.4368,
+    "buys": 35
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 5,
+    "holdout_days": 7,
+    "return": -4.432,
+    "sortino": -11.0489,
+    "max_drawdown": 4.432,
+    "buys": 9
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 5,
+    "holdout_days": 30,
+    "return": -10.0695,
+    "sortino": -5.9619,
+    "max_drawdown": 12.3197,
+    "buys": 27
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 5,
+    "holdout_days": 60,
+    "return": -12.2273,
+    "sortino": -4.2592,
+    "max_drawdown": 12.2273,
+    "buys": 36
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 5,
+    "holdout_days": 90,
+    "return": -13.2081,
+    "sortino": -3.2832,
+    "max_drawdown": 13.4126,
+    "buys": 43
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 6,
+    "holdout_days": 7,
+    "return": -4.6328,
+    "sortino": -11.5601,
+    "max_drawdown": 4.6328,
+    "buys": 6
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 6,
+    "holdout_days": 30,
+    "return": -10.4197,
+    "sortino": -6.9692,
+    "max_drawdown": 12.6856,
+    "buys": 23
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 6,
+    "holdout_days": 60,
+    "return": -11.7614,
+    "sortino": -4.5944,
+    "max_drawdown": 12.5967,
+    "buys": 34
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 6,
+    "holdout_days": 90,
+    "return": -12.5678,
+    "sortino": -3.4289,
+    "max_drawdown": 12.8055,
+    "buys": 41
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 7,
+    "holdout_days": 7,
+    "return": -4.4091,
+    "sortino": -10.03,
+    "max_drawdown": 4.4091,
+    "buys": 4
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 7,
+    "holdout_days": 30,
+    "return": -10.3154,
+    "sortino": -6.3831,
+    "max_drawdown": 12.5167,
+    "buys": 22
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 7,
+    "holdout_days": 60,
+    "return": -11.9429,
+    "sortino": -4.3417,
+    "max_drawdown": 12.3573,
+    "buys": 33
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 7,
+    "holdout_days": 90,
+    "return": -11.8843,
+    "sortino": -3.0558,
+    "max_drawdown": 12.6397,
+    "buys": 39
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 8,
+    "holdout_days": 7,
+    "return": -3.2884,
+    "sortino": -8.1504,
+    "max_drawdown": 3.2884,
+    "buys": 6
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 8,
+    "holdout_days": 30,
+    "return": -10.1516,
+    "sortino": -6.0258,
+    "max_drawdown": 12.2892,
+    "buys": 29
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 8,
+    "holdout_days": 60,
+    "return": -10.8774,
+    "sortino": -3.8418,
+    "max_drawdown": 12.1457,
+    "buys": 40
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 8,
+    "holdout_days": 90,
+    "return": -10.5185,
+    "sortino": -2.6272,
+    "max_drawdown": 12.3412,
+    "buys": 47
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 9,
+    "holdout_days": 7,
+    "return": -4.5515,
+    "sortino": -11.0557,
+    "max_drawdown": 4.5515,
+    "buys": 5
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 9,
+    "holdout_days": 30,
+    "return": -10.2669,
+    "sortino": -6.5145,
+    "max_drawdown": 12.4556,
+    "buys": 27
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 9,
+    "holdout_days": 60,
+    "return": -11.5619,
+    "sortino": -4.0676,
+    "max_drawdown": 12.5316,
+    "buys": 38
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 9,
+    "holdout_days": 90,
+    "return": -12.0291,
+    "sortino": -3.1721,
+    "max_drawdown": 13.2808,
+    "buys": 47
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 10,
+    "holdout_days": 7,
+    "return": -3.9004,
+    "sortino": -7.6673,
+    "max_drawdown": 3.9004,
+    "buys": 2
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 10,
+    "holdout_days": 30,
+    "return": -8.9914,
+    "sortino": -5.4514,
+    "max_drawdown": 10.7418,
+    "buys": 24
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 10,
+    "holdout_days": 60,
+    "return": -10.395,
+    "sortino": -3.5259,
+    "max_drawdown": 10.8287,
+    "buys": 31
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 10,
+    "holdout_days": 90,
+    "return": -10.3579,
+    "sortino": -2.4708,
+    "max_drawdown": 10.9186,
+    "buys": 37
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 11,
+    "holdout_days": 7,
+    "return": -3.9004,
+    "sortino": -7.6673,
+    "max_drawdown": 3.9004,
+    "buys": 2
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 11,
+    "holdout_days": 30,
+    "return": -6.8915,
+    "sortino": -4.7587,
+    "max_drawdown": 8.5557,
+    "buys": 23
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 11,
+    "holdout_days": 60,
+    "return": -8.1767,
+    "sortino": -3.1793,
+    "max_drawdown": 8.6044,
+    "buys": 31
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 11,
+    "holdout_days": 90,
+    "return": -8.4007,
+    "sortino": -2.2522,
+    "max_drawdown": 8.7341,
+    "buys": 37
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 12,
+    "holdout_days": 7,
+    "return": -3.1813,
+    "sortino": -5.8925,
+    "max_drawdown": 3.1813,
+    "buys": 4
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 12,
+    "holdout_days": 30,
+    "return": -5.8792,
+    "sortino": -3.4774,
+    "max_drawdown": 8.2847,
+    "buys": 25
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 12,
+    "holdout_days": 60,
+    "return": -7.3211,
+    "sortino": -2.5247,
+    "max_drawdown": 8.1372,
+    "buys": 36
+  },
+  {
+    "config": "sweep_9sym_rw035_wd04",
+    "epoch": 12,
+    "holdout_days": 90,
+    "return": -7.7858,
+    "sortino": -1.9702,
+    "max_drawdown": 9.8189,
+    "buys": 45
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 5,
+    "holdout_days": 7,
+    "return": -0.8802,
+    "sortino": -4.8723,
+    "max_drawdown": 1.3924,
+    "buys": 6
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 5,
+    "holdout_days": 30,
+    "return": -1.5051,
+    "sortino": -1.2335,
+    "max_drawdown": 4.5371,
+    "buys": 25
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 5,
+    "holdout_days": 60,
+    "return": -2.9789,
+    "sortino": -1.3681,
+    "max_drawdown": 4.4635,
+    "buys": 37
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 5,
+    "holdout_days": 90,
+    "return": -5.1792,
+    "sortino": -1.6821,
+    "max_drawdown": 5.1792,
+    "buys": 45
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 6,
+    "holdout_days": 7,
+    "return": -1.0834,
+    "sortino": -6.294,
+    "max_drawdown": 1.9688,
+    "buys": 6
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 6,
+    "holdout_days": 30,
+    "return": -2.2535,
+    "sortino": -1.9374,
+    "max_drawdown": 5.2252,
+    "buys": 26
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 6,
+    "holdout_days": 60,
+    "return": -4.5043,
+    "sortino": -2.0499,
+    "max_drawdown": 5.142,
+    "buys": 39
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 6,
+    "holdout_days": 90,
+    "return": -8.5113,
+    "sortino": -2.8119,
+    "max_drawdown": 8.5113,
+    "buys": 48
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 7,
+    "holdout_days": 7,
+    "return": -0.5102,
+    "sortino": -2.8557,
+    "max_drawdown": 1.1983,
+    "buys": 7
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 7,
+    "holdout_days": 30,
+    "return": -0.4005,
+    "sortino": -0.2673,
+    "max_drawdown": 3.5522,
+    "buys": 27
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 7,
+    "holdout_days": 60,
+    "return": -2.4734,
+    "sortino": -1.055,
+    "max_drawdown": 3.542,
+    "buys": 40
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 7,
+    "holdout_days": 90,
+    "return": -7.8072,
+    "sortino": -2.5434,
+    "max_drawdown": 8.3134,
+    "buys": 52
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 8,
+    "holdout_days": 7,
+    "return": -0.4355,
+    "sortino": -2.2646,
+    "max_drawdown": 1.1913,
+    "buys": 6
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 8,
+    "holdout_days": 30,
+    "return": -0.3784,
+    "sortino": -0.2626,
+    "max_drawdown": 3.5688,
+    "buys": 26
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 8,
+    "holdout_days": 60,
+    "return": -2.6151,
+    "sortino": -1.109,
+    "max_drawdown": 3.5216,
+    "buys": 38
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 8,
+    "holdout_days": 90,
+    "return": -7.4151,
+    "sortino": -2.3839,
+    "max_drawdown": 7.6811,
+    "buys": 47
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 9,
+    "holdout_days": 7,
+    "return": -0.807,
+    "sortino": -3.8119,
+    "max_drawdown": 1.3185,
+    "buys": 3
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 9,
+    "holdout_days": 30,
+    "return": -0.2412,
+    "sortino": -0.1446,
+    "max_drawdown": 3.2291,
+    "buys": 22
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 9,
+    "holdout_days": 60,
+    "return": -1.7732,
+    "sortino": -0.8469,
+    "max_drawdown": 3.2098,
+    "buys": 32
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 9,
+    "holdout_days": 90,
+    "return": -3.1255,
+    "sortino": -1.0437,
+    "max_drawdown": 3.2004,
+    "buys": 38
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 10,
+    "holdout_days": 7,
+    "return": -0.0746,
+    "sortino": -0.3564,
+    "max_drawdown": 1.284,
+    "buys": 7
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 10,
+    "holdout_days": 30,
+    "return": 1.2687,
+    "sortino": 0.9726,
+    "max_drawdown": 2.0053,
+    "buys": 25
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 10,
+    "holdout_days": 60,
+    "return": -1.352,
+    "sortino": -0.5523,
+    "max_drawdown": 2.7096,
+    "buys": 37
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 10,
+    "holdout_days": 90,
+    "return": -6.5455,
+    "sortino": -2.1112,
+    "max_drawdown": 7.9153,
+    "buys": 50
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 11,
+    "holdout_days": 7,
+    "return": 0.4226,
+    "sortino": 2.259,
+    "max_drawdown": 1.2105,
+    "buys": 6
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 11,
+    "holdout_days": 30,
+    "return": 1.5352,
+    "sortino": 1.2583,
+    "max_drawdown": 1.8401,
+    "buys": 27
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 11,
+    "holdout_days": 60,
+    "return": -0.4321,
+    "sortino": -0.1648,
+    "max_drawdown": 2.1345,
+    "buys": 40
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 11,
+    "holdout_days": 90,
+    "return": -4.4272,
+    "sortino": -1.4851,
+    "max_drawdown": 6.0724,
+    "buys": 54
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 12,
+    "holdout_days": 7,
+    "return": -0.0328,
+    "sortino": -0.1263,
+    "max_drawdown": 1.1824,
+    "buys": 7
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 12,
+    "holdout_days": 30,
+    "return": 2.3209,
+    "sortino": 1.3728,
+    "max_drawdown": 2.6735,
+    "buys": 25
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 12,
+    "holdout_days": 60,
+    "return": 2.1372,
+    "sortino": 0.8076,
+    "max_drawdown": 2.6767,
+    "buys": 34
+  },
+  {
+    "config": "sweep_rw015_wd04_seq32",
+    "epoch": 12,
+    "holdout_days": 90,
+    "return": 0.4371,
+    "sortino": 0.1409,
+    "max_drawdown": 2.6789,
+    "buys": 42
+  }
+]

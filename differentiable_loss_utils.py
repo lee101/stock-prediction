@@ -10,12 +10,9 @@ time steps (hours).
 from __future__ import annotations
 
 import math
-import os
-import random
 from dataclasses import dataclass
 from typing import Iterable, Tuple
 
-import numpy as np
 import torch
 
 from src.fixtures import all_crypto_symbols
@@ -25,24 +22,6 @@ HOURLY_PERIODS_PER_YEAR = 24 * 365  # 8760 hours
 DAILY_PERIODS_PER_YEAR_CRYPTO = 365  # Crypto trades 24/7
 DAILY_PERIODS_PER_YEAR_STOCK = 252   # ~252 trading days/year for stocks
 _EPS = 1e-8
-
-
-def set_seed(seed: int = 1337, *, deterministic: bool = True) -> None:
-    """Seed all RNG sources for full reproducibility.
-
-    Mirrors ``transformers.set_seed`` but without the HF dependency.
-    Seeds: stdlib random, numpy, torch (CPU + all CUDA devices), and
-    optionally enables cuDNN deterministic mode.
-    """
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)  # also seeds CUDA via torch.cuda.manual_seed_all
-    if deterministic:
-        torch.use_deterministic_algorithms(True, warn_only=True)
-        if hasattr(torch.backends, "cudnn"):
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-    os.environ["PYTHONHASHSEED"] = str(seed)
 
 
 def get_periods_per_year(frequency: str = "hourly", symbol: str = "") -> float:
@@ -155,6 +134,7 @@ def simulate_hourly_trades(
     decision_lag_bars: int = 0,
     market_order_entry: bool = False,
     fill_buffer_pct: float = 0.0,
+    margin_annual_rate: float = 0.0,
 ) -> HourlySimulationResult:
     """Simulate hourly fills with differentiable maker execution logic.
 
@@ -190,6 +170,8 @@ def simulate_hourly_trades(
         sell_intensity = sell_intensity[..., :-lag]
         if torch.is_tensor(max_leverage) and max_leverage.ndim > 0:
             max_leverage = max_leverage[..., lag:]
+
+    margin_cost_per_step = margin_annual_rate / HOURLY_PERIODS_PER_YEAR
 
     batch_shape = closes.shape[:-1]
     steps = closes.shape[-1]
@@ -278,6 +260,13 @@ def simulate_hourly_trades(
 
         cash = cash - executed_buys * b_price * (1.0 + fee) + executed_sells * s_price * (1.0 - fee)
         inventory = inventory + executed_buys - executed_sells
+
+        if margin_cost_per_step > 0:
+            pos_value = torch.abs(inventory * close)
+            eq = cash + inventory * close
+            margin_used = torch.clamp(pos_value - torch.clamp(eq, min=0.0), min=0.0)
+            cash = cash - margin_used * margin_cost_per_step
+
         portfolio_value = cash + inventory * close
 
         prior_value = prev_value
@@ -337,6 +326,7 @@ def simulate_hourly_trades_binary(
     decision_lag_bars: int = 0,
     market_order_entry: bool = False,
     fill_buffer_pct: float = 0.0,
+    margin_annual_rate: float = 0.0,
 ) -> HourlySimulationResult:
     """Binary fill simulation (100% or 0%) for realistic backtesting.
 
@@ -369,6 +359,8 @@ def simulate_hourly_trades_binary(
         sell_intensity = sell_intensity[..., :-lag]
         if torch.is_tensor(max_leverage) and max_leverage.ndim > 0:
             max_leverage = max_leverage[..., lag:]
+
+    margin_cost_per_step = margin_annual_rate / HOURLY_PERIODS_PER_YEAR
 
     batch_shape = closes.shape[:-1]
     steps = closes.shape[-1]
@@ -452,6 +444,13 @@ def simulate_hourly_trades_binary(
 
         cash = cash - executed_buys * b_price * (1.0 + fee) + executed_sells * s_price * (1.0 - fee)
         inventory = inventory + executed_buys - executed_sells
+
+        if margin_cost_per_step > 0:
+            pos_value = torch.abs(inventory * close)
+            eq = cash + inventory * close
+            margin_used = torch.clamp(pos_value - torch.clamp(eq, min=0.0), min=0.0)
+            cash = cash - margin_used * margin_cost_per_step
+
         portfolio_value = cash + inventory * close
 
         prior_value = prev_value
@@ -615,6 +614,56 @@ def compute_sortino_dd_objective(
     return score, sortino, annual_return
 
 
+def compute_multiwindow_objective(
+    hourly_returns: torch.Tensor,
+    *,
+    periods_per_year: float | torch.Tensor = HOURLY_PERIODS_PER_YEAR,
+    return_weight: float = 0.05,
+    dd_penalty: float = 0.0,
+    window_fractions: Iterable[float] = (0.33, 0.5, 0.75, 1.0),
+    aggregation: str = "minimax",
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Multi-window robustness objective: optimize worst-case score across time windows.
+
+    Computes sortino-based score on multiple trailing sub-windows of the return
+    series and aggregates them. With aggregation="minimax", the model is trained
+    to maximize its worst-window performance.
+
+    Returns (score, sortino_of_full, annual_return_of_full).
+    """
+    T = hourly_returns.shape[-1]
+    fracs = sorted(set(window_fractions))
+    window_scores = []
+    for frac in fracs:
+        w = max(int(T * frac), 2)
+        sub = hourly_returns[..., -w:]
+        sub_ppy = _as_tensor(periods_per_year, hourly_returns)
+        sc, _, _ = compute_hourly_objective(
+            sub, periods_per_year=sub_ppy, return_weight=return_weight,
+        )
+        if dd_penalty > 0:
+            cum = torch.cumsum(sub, dim=-1)
+            rmax = torch.cummax(cum, dim=-1).values
+            max_dd = (rmax - cum).max(dim=-1).values
+            sc = sc - dd_penalty * max_dd
+        window_scores.append(sc)
+
+    stacked = torch.stack(window_scores, dim=0)
+    if aggregation == "minimax":
+        score = stacked.min(dim=0).values
+    elif aggregation == "mean":
+        score = stacked.mean(dim=0)
+    elif aggregation == "softmin":
+        score = -torch.logsumexp(-stacked * 5.0, dim=0) / 5.0
+    else:
+        score = stacked.min(dim=0).values
+
+    _, sortino_full, annual_full = compute_hourly_objective(
+        hourly_returns, periods_per_year=periods_per_year, return_weight=return_weight,
+    )
+    return score, sortino_full, annual_full
+
+
 def compute_loss_by_type(
     hourly_returns: torch.Tensor,
     loss_type: str = "sortino",
@@ -624,6 +673,8 @@ def compute_loss_by_type(
     return_weight: float = 0.05,
     smoothness_penalty: float | torch.Tensor = 0.0,
     dd_penalty: float = 1.0,
+    multiwindow_fractions: str = "0.33,0.5,0.75,1.0",
+    multiwindow_aggregation: str = "minimax",
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Unified loss dispatcher. Returns (loss, score, ratio_metric, annual_return)."""
     if loss_type == "sharpe":
@@ -642,6 +693,13 @@ def compute_loss_by_type(
         score, ratio, annual_return = compute_sortino_dd_objective(
             hourly_returns, periods_per_year=periods_per_year, return_weight=return_weight,
             dd_penalty=dd_penalty,
+        )
+    elif loss_type in ("multiwindow", "multiwindow_dd"):
+        fracs = [float(x) for x in multiwindow_fractions.split(",") if x.strip()]
+        ddp = dd_penalty if loss_type == "multiwindow_dd" else 0.0
+        score, ratio, annual_return = compute_multiwindow_objective(
+            hourly_returns, periods_per_year=periods_per_year, return_weight=return_weight,
+            dd_penalty=ddp, window_fractions=fracs, aggregation=multiwindow_aggregation,
         )
     else:
         score, ratio, annual_return = compute_hourly_objective(

@@ -52,6 +52,7 @@ def main():
     parser.add_argument("--dd-penalty", type=float, default=1.0)
     parser.add_argument("--feature-noise-std", type=float, default=0.0)
     parser.add_argument("--use-residual-scalars", action="store_true")
+    parser.add_argument("--maker-fee", type=float, default=0.001)
     parser.add_argument("--max-leverage", type=float, default=1.0)
     parser.add_argument("--margin-annual-rate", type=float, default=0.0)
     parser.add_argument("--decision-lag-bars", type=int, default=0)
@@ -62,6 +63,23 @@ def main():
     parser.add_argument("--spread-target", type=float, default=0.0013)
     parser.add_argument("--fill-buffer-warmup-epochs", type=int, default=0)
     parser.add_argument("--validation-use-binary-fills", action="store_true")
+    parser.add_argument("--model-arch", type=str, default="classic", choices=["classic", "nano"])
+    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "muon", "muon_mix"])
+    parser.add_argument("--muon-lr", type=float, default=0.02)
+    parser.add_argument("--muon-momentum", type=float, default=0.95)
+    parser.add_argument("--cooldown-fraction", type=float, default=0.0)
+    parser.add_argument("--muon-momentum-end", type=float, default=0.85)
+    parser.add_argument("--cautious-wd", action="store_true")
+    parser.add_argument("--embed-lr-mult", type=float, default=1.0)
+    parser.add_argument("--head-lr-mult", type=float, default=1.0)
+    parser.add_argument("--embed-wd", type=float, default=None)
+    parser.add_argument("--head-wd", type=float, default=None)
+    parser.add_argument("--no-amp", action="store_true")
+    parser.add_argument("--num-kv-heads", type=int, default=None)
+    parser.add_argument("--dilated-strides", type=str, default="")
+    parser.add_argument("--num-memory-tokens", type=int, default=0)
+    parser.add_argument("--use-value-embedding", action="store_true")
+    parser.add_argument("--value-embedding-every", type=int, default=2)
     args = parser.parse_args()
 
     if args.symbols:
@@ -126,7 +144,23 @@ def main():
         transformer_dim=args.hidden_dim,
         transformer_heads=args.num_heads,
         transformer_layers=args.num_layers,
-        model_arch="gemma",
+        model_arch=args.model_arch,
+        optimizer_name=args.optimizer,
+        muon_lr=args.muon_lr,
+        muon_momentum=args.muon_momentum,
+        cooldown_fraction=args.cooldown_fraction,
+        muon_momentum_end=args.muon_momentum_end,
+        cautious_weight_decay=args.cautious_wd,
+        embed_lr_mult=args.embed_lr_mult,
+        head_lr_mult=args.head_lr_mult,
+        embed_weight_decay=args.embed_wd,
+        head_weight_decay=args.head_wd,
+        use_amp=not args.no_amp,
+        num_kv_heads=args.num_kv_heads,
+        dilated_strides=args.dilated_strides,
+        num_memory_tokens=args.num_memory_tokens,
+        use_value_embedding=args.use_value_embedding,
+        value_embedding_every=args.value_embedding_every,
         transformer_dropout=args.dropout,
         lr_schedule=args.lr_schedule,
         lr_min_ratio=args.lr_min_ratio,
@@ -139,6 +173,7 @@ def main():
         dd_penalty=args.dd_penalty,
         feature_noise_std=args.feature_noise_std,
         use_residual_scalars=args.use_residual_scalars,
+        maker_fee=args.maker_fee,
         max_leverage=args.max_leverage,
         margin_annual_rate=args.margin_annual_rate,
         decision_lag_bars=args.decision_lag_bars,
@@ -180,10 +215,50 @@ def main():
             "transformer_dim": args.hidden_dim,
             "transformer_heads": args.num_heads,
             "transformer_layers": args.num_layers,
+            "model_arch": args.model_arch,
             "normalizer": data_module.normalizer.to_dict(),
         }, f, indent=2)
 
+    history_rows = []
+    for row in artifacts.history:
+        history_rows.append({
+            "epoch": row.epoch,
+            "train_loss": row.train_loss,
+            "train_score": row.train_score,
+            "train_sortino": row.train_sortino,
+            "train_return": row.train_return,
+            "val_loss": row.val_loss,
+            "val_score": row.val_score,
+            "val_sortino": row.val_sortino,
+            "val_return": row.val_return,
+        })
+    best = max(artifacts.history, key=lambda h: h.val_sortino or float("-inf")) if artifacts.history else None
+    meta_path = trainer.checkpoint_dir / "training_meta.json"
+    with open(meta_path, "w") as f:
+        json.dump({
+            "run_name": args.checkpoint_name or args.run_name,
+            "symbols": stocks,
+            "epochs": args.epochs,
+            "sequence_length": args.sequence_length,
+            "transformer_dim": args.hidden_dim,
+            "transformer_heads": args.num_heads,
+            "transformer_layers": args.num_layers,
+            "model_arch": args.model_arch,
+            "feature_columns": data_module.feature_columns,
+            "decision_lag_bars": args.decision_lag_bars,
+            "decision_lag_range": args.decision_lag_range,
+            "smoothness_penalty": args.smoothness_penalty,
+            "return_weight": args.return_weight,
+            "fill_temperature": args.fill_temperature,
+            "history": history_rows,
+            "best_epoch": best.epoch if best else None,
+            "best_val_sortino": best.val_sortino if best else None,
+            "best_val_return": best.val_return if best else None,
+            "best_checkpoint": str(artifacts.best_checkpoint) if artifacts.best_checkpoint else None,
+        }, f, indent=2)
+
     logger.info("Config saved to {}", config_path)
+    logger.info("Training metadata saved to {}", meta_path)
 
 
 if __name__ == "__main__":
