@@ -1,0 +1,157 @@
+{
+  "config": {
+    "epochs": 1,
+    "batch_size": 16,
+    "sequence_length": 72,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.03,
+    "grad_clip": 1.0,
+    "maker_fee": 0.001,
+    "max_leverage": 1.0,
+    "margin_annual_rate": 0.0,
+    "return_weight": 0.3,
+    "smoothness_penalty": 0.0,
+    "periods_per_year": null,
+    "price_offset_pct": 0.0003,
+    "min_price_gap_pct": 0.0003,
+    "trade_amount_scale": 100.0,
+    "fill_temperature": 0.1,
+    "decision_lag_bars": 1,
+    "decision_lag_range": "",
+    "market_order_entry": false,
+    "fill_buffer_pct": 0.0005,
+    "spread_penalty": 0.0,
+    "spread_target": 0.0005,
+    "fill_buffer_warmup_epochs": 0,
+    "initial_cash": 1.0,
+    "sortino_target_sign": 1.0,
+    "loss_type": "multiwindow",
+    "dd_penalty": 2.0,
+    "multiwindow_fractions": "0.25,0.5,0.75,1.0",
+    "multiwindow_aggregation": "minimax",
+    "transformer_dim": 256,
+    "transformer_layers": 4,
+    "transformer_heads": 8,
+    "transformer_dropout": 0.1,
+    "optimizer_name": "adamw",
+    "model_arch": "classic",
+    "num_kv_heads": null,
+    "mlp_ratio": 4.0,
+    "logits_softcap": 12.0,
+    "rope_base": 10000.0,
+    "use_qk_norm": true,
+    "use_causal_attention": true,
+    "rms_norm_eps": 1e-05,
+    "attention_window": null,
+    "use_residual_scalars": false,
+    "residual_scale_init": 1.0,
+    "skip_scale_init": 0.0,
+    "use_value_embedding": false,
+    "value_embedding_every": 2,
+    "value_embedding_scale": 1.0,
+    "num_memory_tokens": 0,
+    "dilated_strides": "",
+    "muon_lr": 0.02,
+    "muon_momentum": 0.95,
+    "muon_momentum_start": null,
+    "muon_momentum_warmup_steps": 300,
+    "muon_nesterov": true,
+    "muon_ns_steps": 5,
+    "warmup_steps": 100,
+    "lr_schedule": "none",
+    "lr_warmdown_ratio": 0.5,
+    "lr_min_ratio": 0.0,
+    "weight_decay_schedule": "none",
+    "weight_decay_end": 0.0,
+    "ema_decay": 0.0,
+    "validation_use_binary_fills": false,
+    "dry_train_steps": null,
+    "device": null,
+    "run_name": "binanceneural_20260228_094748",
+    "wandb_project": null,
+    "wandb_entity": null,
+    "log_dir": "tensorboard_logs/binanceleveragesui_mw",
+    "checkpoint_root": "/home/lee/code/stock/binanceleveragesui/checkpoints/DOGEUSD_mw_dryrun",
+    "top_k_checkpoints": 50,
+    "preload_checkpoint_path": null,
+    "force_retrain": false,
+    "seed": 1337,
+    "num_workers": 0,
+    "num_outputs": 4,
+    "max_hold_hours": 24.0,
+    "feature_noise_std": 0.02,
+    "use_compile": false,
+    "use_amp": false,
+    "amp_dtype": "bfloat16",
+    "use_tf32": true,
+    "use_flash_attention": true,
+    "forecast_config": {
+      "symbol": "BTCUSD",
+      "data_root": "trainingdatahourly/crypto",
+      "context_hours": 336,
+      "prediction_horizon_hours": 1,
+      "quantile_levels": [
+        0.1,
+        0.5,
+        0.9
+      ],
+      "batch_size": 128,
+      "cache_dir": "binanceneural/forecast_cache"
+    },
+    "dataset": {
+      "symbol": "BTCUSD",
+      "data_root": "trainingdatahourly/crypto",
+      "forecast_cache_root": "binanceneural/forecast_cache",
+      "forecast_horizons": [
+        1,
+        24
+      ],
+      "sequence_length": 72,
+      "val_fraction": 0.15,
+      "min_history_hours": 720,
+      "max_feature_lookback_hours": 168,
+      "feature_columns": null,
+      "refresh_hours": 0,
+      "validation_days": 70,
+      "cache_only": false
+    }
+  },
+  "epochs": {
+    "epoch_001": {
+      "results": {
+        "7": {
+          "ret": -8.440567330179661,
+          "sort": -11.149358110216292,
+          "dd": -8.445730619811636
+        },
+        "14": {
+          "ret": -8.44118321270778,
+          "sort": -10.70753757251852,
+          "dd": -8.445730619811766
+        },
+        "30": {
+          "ret": 70.02809373221068,
+          "sort": 25.36467066583933,
+          "dd": -8.788019136417326
+        },
+        "60": {
+          "ret": 48.581803512024834,
+          "sort": 7.590375011811641,
+          "dd": -29.32377083350055
+        },
+        "90": {
+          "ret": 15.544187341521054,
+          "sort": 2.1028374803514596,
+          "dd": -38.19482117369631
+        },
+        "180": {
+          "ret": -18.0010725732072,
+          "sort": -0.3738440478606674,
+          "dd": -55.81866211525715
+        }
+      },
+      "min_sort": -11.149358110216292,
+      "avg_ret": 16.545210244943654
+    }
+  }
+}

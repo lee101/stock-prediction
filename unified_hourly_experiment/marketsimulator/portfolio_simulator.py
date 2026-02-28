@@ -50,6 +50,7 @@ class PortfolioConfig:
     short_only_symbols: Optional[set] = None
     force_close_slippage: float = 0.003
     int_qty: bool = True
+    margin_annual_rate: float = 0.0
 
 
 @dataclass
@@ -148,6 +149,13 @@ def run_portfolio_simulation(
 
         equity = _equity()
         equity_values.append((ts, equity))
+
+        # Margin interest: charge hourly rate on borrowed amount
+        if cfg.margin_annual_rate > 0:
+            position_value = abs(_mtm())
+            margin_used = max(0, position_value - max(0, equity))
+            if margin_used > 0:
+                cash -= margin_used * cfg.margin_annual_rate / 8760
 
         # 1. Check exit targets (sell for longs, buy-to-cover for shorts)
         closed = []
@@ -339,10 +347,17 @@ def run_portfolio_simulation(
     timeouts = sum(1 for t in trades if t.side in ("sell", "buy_cover") and t.reason == "timeout")
     eods = sum(1 for t in trades if t.side in ("sell", "buy_cover") and t.reason == "eod")
 
+    max_drawdown = 0.0
+    if len(equity_curve) > 0:
+        running_max = equity_curve.cummax()
+        drawdowns = (running_max - equity_curve) / running_max
+        max_drawdown = float(drawdowns.max())
+
     metrics = {
         "total_return": total_return,
         "sortino": sortino,
         "final_equity": equity,
+        "max_drawdown": max_drawdown,
         "num_buys": n_buys,
         "num_sells": n_sells,
         "target_exits": wins,

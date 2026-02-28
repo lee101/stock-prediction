@@ -109,6 +109,143 @@ CONFIGS = {
         lr_warmdown_ratio=0.3, lr_min_ratio=0.01,
         feature_noise_std=0.02, transformer_dropout=0.15,
     ),
+    # === Architecture experiments ===
+    # memory tokens: 8 learnable global memory slots
+    "mem8": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", num_memory_tokens=8,
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # dilated attention: heads at strides 1,4,24,72 for multi-scale
+    "dilated_1_4_24_72": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", dilated_strides="1,4,24,72",
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # memory + dilated combined
+    "mem8_dilated": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", num_memory_tokens=8, dilated_strides="1,4,24,72",
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # memory + dilated + regularization (best generalization candidate)
+    "mem8_dilated_reg": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.05, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="cosine",
+        lr_warmdown_ratio=0.3, lr_min_ratio=0.01,
+        model_arch="nano", num_memory_tokens=8, dilated_strides="1,4,24,72",
+        feature_noise_std=0.02, transformer_dropout=0.15,
+    ),
+    # longer sequence with dilated attention to capture more context
+    "long_seq_dilated": dict(
+        epochs=20, batch_size=8, sequence_length=168, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", num_memory_tokens=4, dilated_strides="1,4,24,72",
+        attention_window=72,
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # nano baseline (no memory/dilated) for fair comparison
+    "nano_baseline": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano",
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # === Round 2: building on mem8_dilated winner ===
+    # value embeddings every 2 layers
+    "value_embed": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", num_memory_tokens=8, dilated_strides="1,4,24,72",
+        use_value_embedding=True, value_embedding_every=2, value_embedding_scale=0.1,
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # learnable residual scalars (skip connections)
+    "residual_scalars": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", num_memory_tokens=8, dilated_strides="1,4,24,72",
+        use_residual_scalars=True, residual_scale_init=1.0, skip_scale_init=0.0,
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # RoPE base=72 for hourly periodicity (1 day = 24 positions)
+    "rope72": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", num_memory_tokens=8, dilated_strides="1,4,24,72",
+        rope_base=72.0,
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # deeper: 6 layers
+    "deeper_6L": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=6, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", num_memory_tokens=8, dilated_strides="1,4,24,72",
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # 16 memory tokens
+    "mem16_dilated": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", num_memory_tokens=16, dilated_strides="1,4,24,72",
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # wider FFN (8x ratio instead of 4x)
+    "wider_mlp8": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", num_memory_tokens=8, dilated_strides="1,4,24,72",
+        mlp_ratio=8.0,
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # finer dilated strides: 1,2,6,24
+    "fine_strides": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=4, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", num_memory_tokens=8, dilated_strides="1,2,6,24",
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
+    # kitchen sink: value_embed + residual_scalars + rope72 + 6L
+    "kitchen_sink": dict(
+        epochs=20, batch_size=16, sequence_length=72, learning_rate=1e-4,
+        weight_decay=0.03, return_weight=0.10, transformer_dim=256,
+        transformer_layers=6, transformer_heads=8, fill_temperature=0.1,
+        fill_buffer_pct=0.0005, loss_type="sortino", lr_schedule="none",
+        model_arch="nano", num_memory_tokens=8, dilated_strides="1,4,24,72",
+        use_value_embedding=True, value_embedding_every=2, value_embedding_scale=0.1,
+        use_residual_scalars=True, residual_scale_init=1.0, skip_scale_init=0.0,
+        rope_base=72.0,
+        feature_noise_std=0.0, transformer_dropout=0.1,
+    ),
 }
 
 

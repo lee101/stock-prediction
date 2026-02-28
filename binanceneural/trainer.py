@@ -24,13 +24,16 @@ from .data import BinanceHourlyDataModule, FeatureNormalizer, MultiSymbolDataMod
 from .model import BinancePolicyBase, PolicyConfig, build_policy
 
 
-try:  # pragma: no cover - optional dependency
-    from nanochat.nanochat.muon import Muon
-
+try:
+    from torch.optim._muon import Muon
     MUON_AVAILABLE = True
-except Exception:  # pragma: no cover
-    Muon = None  # type: ignore
-    MUON_AVAILABLE = False
+except Exception:
+    try:
+        from pytorch_optimizer import Muon
+        MUON_AVAILABLE = True
+    except Exception:
+        Muon = None  # type: ignore
+        MUON_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +133,8 @@ class BinanceHourlyTrainer:
             use_midpoint_offsets=True,
             num_outputs=self.config.num_outputs,
             max_hold_hours=self.config.max_hold_hours,
+            num_memory_tokens=self.config.num_memory_tokens,
+            dilated_strides=self.config.dilated_strides,
         )
         model = build_policy(policy_cfg).to(self.device)
 
@@ -215,9 +220,10 @@ class BinanceHourlyTrainer:
             )
             history.append(entry)
 
+            ckpt_path = self._save_checkpoint(model, epoch, val_metrics)
             if val_metrics["score"] > best_score:
                 best_score = val_metrics["score"]
-                best_checkpoint = self._save_checkpoint(model, epoch, val_metrics)
+                best_checkpoint = ckpt_path
 
             print(
                 f"Epoch {epoch}/{self.config.epochs} | "
@@ -306,6 +312,7 @@ class BinanceHourlyTrainer:
                     "max_leverage": self.config.max_leverage,
                     "market_order_entry": self.config.market_order_entry,
                     "fill_buffer_pct": self._get_fill_buffer(current_epoch),
+                    "margin_annual_rate": float(self.config.margin_annual_rate),
                 }
                 base_lag = int(self.config.decision_lag_bars)
                 lag_range_str = self.config.decision_lag_range.strip()
@@ -335,6 +342,8 @@ class BinanceHourlyTrainer:
                             return_weight=self.config.return_weight,
                             smoothness_penalty=self.config.smoothness_penalty,
                             dd_penalty=self.config.dd_penalty,
+                            multiwindow_fractions=self.config.multiwindow_fractions,
+                            multiwindow_aggregation=self.config.multiwindow_aggregation,
                         )
                         all_losses.append(lo_i)
                         all_scores.append(sc_i.detach())
@@ -368,6 +377,8 @@ class BinanceHourlyTrainer:
                     return_weight=self.config.return_weight,
                     smoothness_penalty=self.config.smoothness_penalty,
                     dd_penalty=self.config.dd_penalty,
+                    multiwindow_fractions=self.config.multiwindow_fractions,
+                    multiwindow_aggregation=self.config.multiwindow_aggregation,
                 )
 
             if train and self.config.spread_penalty > 0:
@@ -394,6 +405,7 @@ class BinanceHourlyTrainer:
                             group["lr"] = float(base_lr) * warmup_frac
                     self._scaler.step(optimizer)
                     self._scaler.update()
+                    self._apply_cautious_weight_decay(model, self.config.muon_lr)
                 else:
                     loss.backward()
                     if self.config.grad_clip:
@@ -404,6 +416,7 @@ class BinanceHourlyTrainer:
                         for group, base_lr in zip(optimizer.param_groups, self._warmup_base_lrs):
                             group["lr"] = float(base_lr) * warmup_frac
                     optimizer.step()
+                    self._apply_cautious_weight_decay(model, self.config.muon_lr)
                 global_step += 1
 
             total_loss += float(loss.detach().mean().item())
@@ -506,14 +519,26 @@ class BinanceHourlyTrainer:
                 if "momentum" in group:
                     group["momentum"] = momentum
 
+        if self.config.cooldown_fraction > 0 and self._total_train_steps > 0:
+            cooldown_start = int(self._total_train_steps * (1.0 - self.config.cooldown_fraction))
+            if global_step >= cooldown_start:
+                cooldown_steps = max(1, self._total_train_steps - cooldown_start)
+                frac = min((global_step - cooldown_start) / float(cooldown_steps), 1.0)
+                target = float(self.config.muon_momentum_end)
+                peak = float(self.config.muon_momentum)
+                for group in self._iter_param_groups(optimizer):
+                    if "momentum" in group:
+                        group["momentum"] = peak + (target - peak) * frac
+
     def _save_checkpoint(self, model: BinancePolicyBase, epoch: int, metrics: dict[str, float]) -> Path:
         path = self.checkpoint_dir / f"epoch_{epoch:03d}.pt"
         payload = {
             "state_dict": model.state_dict(),
             "metrics": metrics,
             "epoch": epoch,
-            # Keep checkpoints portable across Python versions by avoiding Path objects.
             "config": serialize_for_checkpoint(self.config),
+            "normalizer": self.data.normalizer.to_dict(),
+            "feature_columns": list(self.data.feature_columns),
         }
         torch.save(payload, path)
         return path
@@ -522,23 +547,14 @@ class BinanceHourlyTrainer:
         name = (self.config.optimizer_name or "adamw").lower()
         if name in {"muon", "muon_mix", "dual"}:
             if not MUON_AVAILABLE:
-                logger.warning("Muon optimizer requested but not available; falling back to AdamW.")
-                return torch.optim.AdamW(
-                    model.parameters(),
-                    lr=self.config.learning_rate,
-                    weight_decay=self.config.weight_decay,
-                )
-            muon_params, adam_params = self._split_muon_params(model)
+                logger.warning("Muon not available; falling back to AdamW.")
+                return self._build_adamw(model)
+            muon_params, adam_groups = self._split_muon_params(model, self.config)
             optimizers: list[torch.optim.Optimizer] = []
-            if adam_params:
-                optimizers.append(
-                    torch.optim.AdamW(
-                        adam_params,
-                        lr=self.config.learning_rate,
-                        weight_decay=self.config.weight_decay,
-                    )
-                )
+            if adam_groups:
+                optimizers.append(torch.optim.AdamW(adam_groups, lr=self.config.learning_rate))
             if muon_params:
+                muon_wd = 0.0 if self.config.cautious_weight_decay else self.config.weight_decay
                 optimizers.append(
                     Muon(  # type: ignore[call-arg]
                         muon_params,
@@ -546,37 +562,74 @@ class BinanceHourlyTrainer:
                         momentum=self.config.muon_momentum,
                         nesterov=self.config.muon_nesterov,
                         ns_steps=self.config.muon_ns_steps,
+                        weight_decay=muon_wd,
+                        adjust_lr_fn="original",
                     )
                 )
             if not optimizers:
-                logger.warning("No trainable parameters found; defaulting to AdamW.")
-                return torch.optim.AdamW(
-                    model.parameters(),
-                    lr=self.config.learning_rate,
-                    weight_decay=self.config.weight_decay,
-                )
+                logger.warning("No trainable params; defaulting to AdamW.")
+                return self._build_adamw(model)
+            logger.info("Muon: %d matrix params, %d adam groups", len(muon_params), len(adam_groups))
             if len(optimizers) == 1:
                 return optimizers[0]
             return MultiOptim(optimizers)
 
-        return torch.optim.AdamW(
-            model.parameters(),
-            lr=self.config.learning_rate,
-            weight_decay=self.config.weight_decay,
-        )
+        return self._build_adamw(model)
+
+    def _build_adamw(self, model: BinancePolicyBase) -> torch.optim.Optimizer:
+        _, adam_groups = self._split_muon_params(model, self.config, muon=False)
+        if not adam_groups:
+            return torch.optim.AdamW(model.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
+        return torch.optim.AdamW(adam_groups, lr=self.config.learning_rate)
 
     @staticmethod
-    def _split_muon_params(model: BinancePolicyBase) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    def _split_muon_params(
+        model: BinancePolicyBase, config: "TrainingConfig", *, muon: bool = True
+    ) -> tuple[list[torch.Tensor], list[dict]]:
         muon_params: list[torch.Tensor] = []
-        adam_params: list[torch.Tensor] = []
+        embed_params: list[torch.Tensor] = []
+        head_params: list[torch.Tensor] = []
+        matrix_params: list[torch.Tensor] = []
+        other_params: list[torch.Tensor] = []
         for name, param in model.named_parameters():
             if not param.requires_grad:
                 continue
-            if param.ndim == 2 and "embed" not in name and "head" not in name:
-                muon_params.append(param)
+            if "embed" in name:
+                embed_params.append(param)
+            elif "head" in name:
+                head_params.append(param)
+            elif param.ndim == 2:
+                if muon:
+                    muon_params.append(param)
+                else:
+                    matrix_params.append(param)
             else:
-                adam_params.append(param)
-        return muon_params, adam_params
+                other_params.append(param)
+        adam_groups: list[dict] = []
+        embed_wd = config.embed_weight_decay if config.embed_weight_decay is not None else config.weight_decay
+        head_wd = config.head_weight_decay if config.head_weight_decay is not None else 0.0
+        if matrix_params:
+            adam_groups.append({"params": matrix_params, "lr": config.learning_rate, "weight_decay": config.weight_decay})
+        if embed_params:
+            adam_groups.append({"params": embed_params, "lr": config.learning_rate * config.embed_lr_mult, "weight_decay": embed_wd})
+        if head_params:
+            adam_groups.append({"params": head_params, "lr": config.learning_rate * config.head_lr_mult, "weight_decay": head_wd})
+        if other_params:
+            adam_groups.append({"params": other_params, "lr": config.learning_rate, "weight_decay": 0.0})
+        return muon_params, adam_groups
+
+    def _apply_cautious_weight_decay(self, model: BinancePolicyBase, lr: float) -> None:
+        if not self.config.cautious_weight_decay or self.config.weight_decay <= 0:
+            return
+        wd = self.config.weight_decay
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if p.grad is None or p.ndim <= 1:
+                    continue
+                if "embed" in name or "head" in name:
+                    continue
+                mask = (p.grad * p).gt(0).float()
+                p.mul_(1.0 - lr * wd * mask)
 
 
 __all__ = ["BinanceHourlyTrainer", "TrainingArtifacts", "TrainingHistoryEntry"]

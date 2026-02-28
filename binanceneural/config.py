@@ -66,6 +66,10 @@ class PolicyConfig:
     use_value_embedding: bool = False
     value_embedding_every: int = 2
     value_embedding_scale: float = 1.0
+    # Memory tokens: learnable global slots that attend to full sequence
+    num_memory_tokens: int = 0  # 0=disabled, e.g. 4-16 for global memory
+    # Dilated attention: different head groups attend at different strides
+    dilated_strides: str = ""  # e.g. "1,4,24" - one stride per head group
     num_outputs: int = 4
     max_hold_hours: float = 24.0
 
@@ -99,8 +103,10 @@ class TrainingConfig:
     fill_buffer_warmup_epochs: int = 0
     initial_cash: float = 1.0
     sortino_target_sign: float = 1.0
-    loss_type: str = "sortino"  # sortino, sharpe, calmar, log_wealth, sortino_dd
+    loss_type: str = "sortino"  # sortino, sharpe, calmar, log_wealth, sortino_dd, multiwindow, multiwindow_dd
     dd_penalty: float = 1.0
+    multiwindow_fractions: str = "0.33,0.5,0.75,1.0"
+    multiwindow_aggregation: str = "minimax"  # minimax, mean, softmin
     transformer_dim: int = 256
     transformer_layers: int = 4
     transformer_heads: int = 8
@@ -121,12 +127,21 @@ class TrainingConfig:
     use_value_embedding: bool = False
     value_embedding_every: int = 2
     value_embedding_scale: float = 1.0
+    num_memory_tokens: int = 0
+    dilated_strides: str = ""
     muon_lr: float = 0.02
     muon_momentum: float = 0.95
     muon_momentum_start: float | None = None
     muon_momentum_warmup_steps: int = 300
+    muon_momentum_end: float = 0.85
+    cooldown_fraction: float = 0.0
     muon_nesterov: bool = True
     muon_ns_steps: int = 5
+    cautious_weight_decay: bool = False
+    embed_lr_mult: float = 1.0
+    head_lr_mult: float = 1.0
+    embed_weight_decay: float | None = None
+    head_weight_decay: float | None = None
     warmup_steps: int = 100
     lr_schedule: str = "none"  # "none", "cosine", "linear_warmdown"
     lr_warmdown_ratio: float = 0.5  # fraction of training for warmdown
@@ -151,7 +166,7 @@ class TrainingConfig:
     max_hold_hours: float = 24.0
     feature_noise_std: float = 0.0
     use_compile: bool = True
-    use_amp: bool = False
+    use_amp: bool = True
     amp_dtype: str = "bfloat16"
     use_tf32: bool = True
     use_flash_attention: bool = True
