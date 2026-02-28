@@ -1,6 +1,92 @@
-# Binance Progress Log 2 - SUI Trading
+# Binance Progress Log 2 - SUI & DOGE Trading
 
-Updated: 2026-02-17
+Updated: 2026-03-01
+
+## DOGE Margin Trading - Checkpoint Sweep & Deployment (2026-03-01)
+
+### 96-Checkpoint Sweep
+
+Swept all available DOGE checkpoints (96 total) across 6 time windows (7d, 14d, 30d, 60d, 90d, 180d) with lag=1, intensity=5.0, hold=6h, lev=1.0x, fee=0.001.
+
+Architectures tested: classic, nano, nano+dilated, nano+memory, nano+wider_mlp, nano+value_embed, nano+residual_scalars, nano+rope72, various loss types (sortino, calmar, combined).
+
+### Top 10 by Worst-Window Sortino (robustness)
+
+| Checkpoint | Worst Sort | Avg Ret | 7d | 14d | 30d | 60d | 90d | 180d |
+|---|---|---|---|---|---|---|---|---|
+| **gen_wider_mlp8_ep4** | **+3.72** | **+65.1%** | **+0.5%** | **+0.5%** | +95.9% | +95.5% | +83.2% | +115.0% |
+| **gen_dilated_1_4_24_72_ep4** | **+3.67** | +61.4% | **+0.4%** | **+0.4%** | +84.1% | +89.1% | +84.7% | +109.8% |
+| gen_dilated_1_4_24_72_ep2 | +1.35 | +72.4% | +0.1% | +0.1% | +98.2% | +107.3% | +103.2% | +125.5% |
+| gen_value_embed_ep5 | -0.99 | +87.0% | -0.1% | -0.1% | +94.3% | +109.3% | +98.5% | +219.8% |
+| loop_A1_value_embed_ep4 | -1.07 | +82.4% | -0.2% | -0.2% | +107.5% | +121.6% | +119.8% | +146.0% |
+| gen_dilated_1_4_24_72_ep5 | -1.39 | +64.5% | -0.2% | -0.2% | +88.8% | +88.6% | +84.4% | +125.8% |
+| gen_deeper_6L_ep10 | -1.73 | +92.1% | -0.3% | -0.3% | +99.7% | +103.4% | +96.8% | +253.3% |
+| gen_nano_baseline_ep4 | -1.80 | +58.8% | -0.3% | -0.2% | +81.2% | +84.0% | +79.5% | +108.4% |
+| loop_A1_value_embed_ep5 | -2.53 | +84.2% | -0.4% | -0.4% | +98.4% | +122.1% | +118.4% | +166.8% |
+| loop_A1_value_embed_ep2 | -2.95 | +45.2% | -0.5% | -0.4% | +64.7% | +69.4% | +65.4% | +72.4% |
+
+Only 2 checkpoints are **positive across ALL 6 windows**: gen_wider_mlp8_ep4 and gen_dilated_1_4_24_72_ep4.
+
+### Top 5 by Average Return
+
+| Checkpoint | Avg Ret | Min Sort | 7d | 30d | 90d | 180d |
+|---|---|---|---|---|---|---|
+| gen_rope72_ep10 | +109.5% | -11.37 | -5.3% | +124.1% | +122.2% | +282.6% |
+| gen_deeper_6L_ep10 | +92.1% | -1.73 | -0.3% | +99.7% | +96.8% | +253.3% |
+| gen_value_embed_ep5 | +87.0% | -0.99 | -0.1% | +94.3% | +98.5% | +219.8% |
+| gen_wider_mlp8_ep10 | +84.9% | -4.73 | -1.1% | +111.2% | +104.0% | +184.2% |
+| loop_A1_value_embed_ep5 | +84.2% | -2.53 | -0.4% | +98.4% | +118.4% | +166.8% |
+
+### Architecture Analysis
+
+Key finding: **dilated attention** (strides 1,4,24,72) is the dominant factor for cross-window robustness. Both top-2 models use it.
+
+| Feature | gen_wider_mlp8_ep4 | gen_dilated_1_4_24_72_ep4 | rw30_ep4 (old deployed) |
+|---|---|---|---|
+| Architecture | nano | nano | classic |
+| Dilated strides | 1,4,24,72 | 1,4,24,72 | none |
+| MLP ratio | 8.0 | 4.0 | 4.0 |
+| Memory tokens | 8 | 0 | 0 |
+| Return weight | 0.1 | 0.1 | 0.3 |
+| Decision lag | 1 | 1 | 0 |
+| Parameters | 4.98M | 2.88M | 3.18M |
+
+Lower return_weight (0.1 vs 0.3) = less aggressive = more robust across windows.
+Dilated attention captures multi-scale temporal patterns (hourly, 4h, daily, 3-day).
+
+### Deployed Config (2026-03-01)
+
+- Supervisor: `binance-doge-margin` RUNNING
+- Checkpoint: `binanceleveragesui/checkpoints/DOGEUSD_gen_wider_mlp8/binanceneural_20260227_031938/epoch_004.pt`
+- Architecture: nano, mlp_ratio=8, 8 memory tokens, dilated strides 1,4,24,72
+- Max leverage: 1.0x, intensity: 5.0, max hold: 6h, fee: 0.001
+- Equity: ~$3,318
+
+### Backtest Detail (gen_wider_mlp8_ep4)
+
+| Window | Return | Sortino | MaxDD | Trades |
+|---|---|---|---|---|
+| 7d | +0.55% | 6.28 | -0.69% | 106 |
+| 14d | +0.55% | 5.64 | -0.69% | 127 |
+| 30d | +96.09% | 42.50 | -3.73% | 230 |
+| 60d | +95.69% | 21.44 | -5.95% | 658 |
+| 90d | +82.68% | 11.75 | -9.98% | 1087 |
+| 180d | +115.30% | 3.72 | -23.45% | 2366 |
+
+### Sim-vs-Prod Validation (past 24h, nano_fine_strides_ep5 -- previous model)
+
+60% fill direction match, -0.9bps avg price diff. Key divergences:
+- Noise trades: tiny buys (0.2% intensity = $6) set entry_ts too early, causing premature force_sells
+- Partial fills: prod splits large sells into 3 fills, sim counts as one
+- Force sell timing: sim triggered at 08:00 (6h from noise buy at 02:00) vs prod at 09:37 (6h from real buy at 03:36)
+
+### Multi-Window Loss (experimental)
+
+Implemented `multiwindow` and `multiwindow_dd` loss types in `differentiable_loss_utils.py`. Computes objective on multiple sub-windows of the training sequence and optimizes worst-case (minimax). Training config params: `multiwindow_fractions`, `multiwindow_aggregation`.
+
+10-epoch training with multiwindow_dd: best ep2 min_sort=-9.86. Within-batch sub-window optimization (72h) can't solve 7d-180d regime robustness -- architecture choices (dilated attention) matter much more than loss function.
+
+---
 
 ## SUI LoRA Fine-tuning
 
