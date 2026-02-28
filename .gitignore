@@ -634,3 +634,4 @@ checkpoints
 cryptoalpacaexperiment/checkpoints/
 forecast_cache
 cryptoalpacaexperiment/forecast_cache/
+experiments/shortable_full_auto/run_*
