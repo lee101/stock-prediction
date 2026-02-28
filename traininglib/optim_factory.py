@@ -19,7 +19,7 @@ _Lion = _maybe_import("lion_pytorch", "Lion") or _maybe_import("torch_optimizer"
 _Adafactor = _maybe_import("transformers", "Adafactor")
 _Shampoo = _maybe_import("torch_optimizer", "Shampoo")
 _Adan = _maybe_import("torch_optimizer", "Adan")
-_Muon = _maybe_import("muon", "Muon")
+_Muon = _maybe_import("torch.optim._muon", "Muon") or _maybe_import("pytorch_optimizer", "Muon") or _maybe_import("muon", "Muon")
 
 
 def _patch_muon_single_process() -> None:

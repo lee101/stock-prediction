@@ -4,10 +4,11 @@ import argparse
 import json
 import math
 import csv
+import time
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 try:
     import matplotlib
@@ -52,22 +53,240 @@ class TrainingConfig:
     evaluate: bool = True
     history_csv: str | None = None
     max_plot_points: int = 0
+    forecast_cache_root: str | None = None
+    forecast_horizons: Tuple[int, ...] = ()
+    correlated_symbols: Tuple[str, ...] = ()
+    auto_correlated_count: int = 0
+    correlation_lookback: int = 24 * 30
+    correlation_min_abs: float = 0.25
+    validation_interval_timesteps: int = 0
 
 
-def _load_price_tensor(cfg: TrainingConfig) -> Tuple[torch.Tensor, Tuple[str, ...]]:
-    root = Path(cfg.data_root).expanduser().resolve()
-    csv_path = root / f"{cfg.symbol.upper()}.csv"
+def _read_symbol_frame(root: Path, symbol: str) -> tuple[pd.DataFrame, str]:
+    csv_path = root / f"{symbol.upper()}.csv"
     if not csv_path.exists():
-        raise FileNotFoundError(f"Unable to find data for symbol '{cfg.symbol}' at {csv_path}")
+        raise FileNotFoundError(f"Unable to find data for symbol '{symbol}' at {csv_path}")
     frame = pd.read_csv(csv_path)
     frame.columns = [str(c).lower() for c in frame.columns]
     required = ["open", "high", "low", "close"]
     missing = [col for col in required if col not in frame.columns]
     if missing:
-        raise ValueError(f"CSV missing required columns {missing} for symbol {cfg.symbol}")
-    float_cols = [
-        col for col in frame.columns if col in required or pd.api.types.is_numeric_dtype(frame[col])
-    ]
+        raise ValueError(f"CSV missing required columns {missing} for symbol {symbol}")
+
+    if "timestamp" in frame.columns:
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+        frame = frame.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+        time_col = "timestamp"
+    elif "date" in frame.columns:
+        frame["date"] = pd.to_datetime(frame["date"], utc=True, errors="coerce")
+        frame = frame.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+        frame = frame.rename(columns={"date": "timestamp"})
+        time_col = "timestamp"
+    else:
+        frame["__row_id"] = np.arange(len(frame), dtype=np.int64)
+        time_col = "__row_id"
+
+    numeric_cols = [col for col in frame.columns if pd.api.types.is_numeric_dtype(frame[col])]
+    keep_cols = []
+    for col in ["open", "high", "low", "close", *numeric_cols]:
+        if col not in keep_cols and col in frame.columns:
+            keep_cols.append(col)
+    if time_col not in keep_cols:
+        keep_cols = [time_col, *keep_cols]
+    return frame[keep_cols].copy(), time_col
+
+
+def _symbol_name_token(symbol: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "_" for ch in symbol).strip("_")
+
+
+def _select_correlated_symbols(cfg: TrainingConfig, root: Path) -> tuple[str, ...]:
+    explicit: List[str] = [s.strip().upper() for s in cfg.correlated_symbols if s.strip()]
+    selected: List[str] = []
+    seen = {cfg.symbol.upper()}
+
+    for symbol in explicit:
+        if symbol not in seen:
+            selected.append(symbol)
+            seen.add(symbol)
+
+    if cfg.auto_correlated_count <= 0:
+        return tuple(selected)
+
+    target_frame, time_col = _read_symbol_frame(root, cfg.symbol)
+    target_close = pd.to_numeric(target_frame["close"], errors="coerce")
+    target_returns = target_close.pct_change(fill_method=None)
+    if cfg.correlation_lookback > 0 and len(target_returns) > cfg.correlation_lookback:
+        target_returns = target_returns.iloc[-cfg.correlation_lookback :]
+    target_returns = target_returns.replace([np.inf, -np.inf], np.nan).dropna()
+    if target_returns.empty:
+        return tuple(selected)
+
+    scored: List[tuple[float, str]] = []
+    for csv_path in sorted(root.glob("*.csv")):
+        peer = csv_path.stem.upper()
+        if peer in seen:
+            continue
+        try:
+            peer_frame, peer_time_col = _read_symbol_frame(root, peer)
+        except Exception:
+            continue
+        peer_close = pd.to_numeric(peer_frame["close"], errors="coerce")
+        peer_returns = peer_close.pct_change(fill_method=None)
+        if cfg.correlation_lookback > 0 and len(peer_returns) > cfg.correlation_lookback:
+            peer_returns = peer_returns.iloc[-cfg.correlation_lookback :]
+        peer_returns = peer_returns.replace([np.inf, -np.inf], np.nan)
+
+        if time_col == "timestamp" and peer_time_col == "timestamp":
+            left = pd.DataFrame({"timestamp": target_frame["timestamp"], "ret": target_returns})
+            right = pd.DataFrame({"timestamp": peer_frame["timestamp"], "peer_ret": peer_returns})
+            merged = left.merge(right, on="timestamp", how="inner").dropna()
+            if merged.empty:
+                continue
+            corr = float(merged["ret"].corr(merged["peer_ret"]))
+        else:
+            min_len = min(len(target_returns), len(peer_returns))
+            if min_len < 16:
+                continue
+            corr = float(np.corrcoef(target_returns.iloc[-min_len:], peer_returns.iloc[-min_len:])[0, 1])
+
+        if not np.isfinite(corr):
+            continue
+        if abs(corr) < float(cfg.correlation_min_abs):
+            continue
+        scored.append((abs(corr), peer))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    for _, peer in scored:
+        if len(selected) >= len(explicit) + int(cfg.auto_correlated_count):
+            break
+        if peer not in seen:
+            selected.append(peer)
+            seen.add(peer)
+    return tuple(selected)
+
+
+def _merge_forecast_features(
+    base: pd.DataFrame,
+    *,
+    symbol: str,
+    time_col: str,
+    forecast_cache_root: str | None,
+    horizons: tuple[int, ...],
+) -> pd.DataFrame:
+    if forecast_cache_root is None or not horizons or time_col != "timestamp":
+        return base
+
+    merged = base.copy()
+    cache_root = Path(forecast_cache_root).expanduser().resolve()
+    for horizon in horizons:
+        parquet_path = cache_root / f"h{int(horizon)}" / f"{symbol.upper()}.parquet"
+        if not parquet_path.exists():
+            continue
+        forecast = pd.read_parquet(parquet_path)
+        if "timestamp" not in forecast.columns:
+            continue
+        forecast["timestamp"] = pd.to_datetime(forecast["timestamp"], utc=True, errors="coerce")
+        forecast = forecast.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+        cols = {
+            "predicted_close_p50": f"chronos_close_h{horizon}",
+            "predicted_high_p50": f"chronos_high_h{horizon}",
+            "predicted_low_p50": f"chronos_low_h{horizon}",
+            "predicted_close_p10": f"chronos_close_p10_h{horizon}",
+            "predicted_close_p90": f"chronos_close_p90_h{horizon}",
+        }
+        available = ["timestamp", *[src for src in cols if src in forecast.columns]]
+        if len(available) <= 1:
+            continue
+        forecast = forecast[available].rename(columns={src: dst for src, dst in cols.items() if src in available})
+        merged = merged.merge(forecast, on="timestamp", how="left")
+
+        close = pd.to_numeric(merged["close"], errors="coerce").replace(0.0, np.nan)
+        close_key = f"chronos_close_h{horizon}"
+        high_key = f"chronos_high_h{horizon}"
+        low_key = f"chronos_low_h{horizon}"
+        p10_key = f"chronos_close_p10_h{horizon}"
+        p90_key = f"chronos_close_p90_h{horizon}"
+
+        if close_key in merged.columns:
+            merged[f"chronos_ret_h{horizon}"] = (merged[close_key] - merged["close"]) / close
+        if high_key in merged.columns and low_key in merged.columns:
+            merged[f"chronos_spread_h{horizon}"] = (merged[high_key] - merged[low_key]) / close
+        if p10_key in merged.columns and p90_key in merged.columns:
+            merged[f"chronos_conf_h{horizon}"] = (merged[p90_key] - merged[p10_key]) / close
+
+    return merged
+
+
+def _merge_correlated_symbol_features(
+    base: pd.DataFrame,
+    *,
+    time_col: str,
+    root: Path,
+    peers: tuple[str, ...],
+) -> pd.DataFrame:
+    merged = base.copy()
+    for peer in peers:
+        try:
+            peer_frame, peer_time_col = _read_symbol_frame(root, peer)
+        except Exception:
+            continue
+        peer_close = pd.to_numeric(peer_frame["close"], errors="coerce")
+        token = _symbol_name_token(peer)
+        peer_features = pd.DataFrame(
+            {
+                peer_time_col: peer_frame[peer_time_col],
+                f"peer_{token}_ret1": peer_close.pct_change(fill_method=None),
+                f"peer_{token}_ret6": peer_close.pct_change(periods=6, fill_method=None),
+            }
+        )
+
+        if time_col == "timestamp" and peer_time_col == "timestamp":
+            merged = merged.merge(peer_features, on="timestamp", how="left")
+        elif time_col == "__row_id" and peer_time_col == "__row_id":
+            merged = merged.merge(peer_features, on="__row_id", how="left")
+        else:
+            # Fall back to right-aligned row-wise merge when timestamps are unavailable.
+            min_len = min(len(merged), len(peer_features))
+            if min_len <= 0:
+                continue
+            for col in peer_features.columns:
+                if col == peer_time_col:
+                    continue
+                merged[col] = np.nan
+                merged.loc[merged.index[-min_len:], col] = peer_features[col].to_numpy()[-min_len:]
+    return merged
+
+
+def _load_price_tensor(cfg: TrainingConfig) -> Tuple[torch.Tensor, Tuple[str, ...]]:
+    root = Path(cfg.data_root).expanduser().resolve()
+    frame, time_col = _read_symbol_frame(root, cfg.symbol)
+    peers = _select_correlated_symbols(cfg, root)
+    frame = _merge_correlated_symbol_features(frame, time_col=time_col, root=root, peers=peers)
+    frame = _merge_forecast_features(
+        frame,
+        symbol=cfg.symbol,
+        time_col=time_col,
+        forecast_cache_root=cfg.forecast_cache_root,
+        horizons=cfg.forecast_horizons,
+    )
+
+    if time_col in frame.columns:
+        frame = frame.sort_values(time_col).reset_index(drop=True)
+
+    frame = frame.replace([np.inf, -np.inf], np.nan)
+    frame = frame.ffill().fillna(0.0)
+
+    required = ["open", "high", "low", "close"]
+    float_cols = []
+    for col in required:
+        if col in frame.columns and col not in float_cols:
+            float_cols.append(col)
+    for col in frame.columns:
+        if col in float_cols:
+            continue
+        if pd.api.types.is_numeric_dtype(frame[col]):
+            float_cols.append(col)
     values = frame[float_cols].to_numpy(dtype=np.float32)
     return torch.from_numpy(values).contiguous(), tuple(float_cols)
 
@@ -187,12 +406,35 @@ def run_training(cfg: TrainingConfig) -> Tuple[PPO, Dict[str, Any]]:
         seed=cfg.seed,
         device=cfg.device,
     )
-    model.learn(total_timesteps=cfg.total_timesteps, progress_bar=False)
-    train_metrics = _extract_train_metrics(model)
-    if cfg.evaluate:
-        metrics = _evaluate_policy(model, prices, columns, cfg)
+
+    start = time.time()
+    validation_snapshots: list[Dict[str, Any]] = []
+    if cfg.validation_interval_timesteps > 0 and cfg.evaluate:
+        trained = 0
+        interval = max(1, int(cfg.validation_interval_timesteps))
+        while trained < cfg.total_timesteps:
+            step = min(interval, int(cfg.total_timesteps - trained))
+            model.learn(total_timesteps=step, progress_bar=False, reset_num_timesteps=False)
+            trained += step
+            snap = _evaluate_policy(model, prices, columns, cfg)
+            snap["timesteps"] = int(trained)
+            snap["train_metrics"] = _extract_train_metrics(model)
+            validation_snapshots.append(snap)
+        # Copy the last snapshot so attaching the full snapshots list below does
+        # not create a self-reference cycle in the JSON summary payload.
+        metrics = dict(validation_snapshots[-1]) if validation_snapshots else _empty_metrics(cfg)
     else:
-        metrics = _empty_metrics(cfg)
+        model.learn(total_timesteps=cfg.total_timesteps, progress_bar=False)
+        if cfg.evaluate:
+            metrics = _evaluate_policy(model, prices, columns, cfg)
+        else:
+            metrics = _empty_metrics(cfg)
+
+    elapsed = max(1e-9, time.time() - start)
+    train_metrics = _extract_train_metrics(model)
+    metrics["training_seconds"] = float(elapsed)
+    metrics["train_steps_per_second"] = float(cfg.total_timesteps / elapsed)
+    metrics["validation_snapshots"] = validation_snapshots
     metrics["train_metrics"] = train_metrics
     vec_env.close()
     return model, metrics
@@ -278,7 +520,51 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--html-path", type=str, default=None, help="File path for the HTML report (defaults beside log-json)")
     parser.add_argument("--history-csv", type=str, default=None, help="Append run metrics to the specified CSV path")
     parser.add_argument("--no-eval", action="store_true", help="Skip post-training evaluation pass to save time")
+    parser.add_argument(
+        "--validation-interval-timesteps",
+        type=int,
+        default=0,
+        help="If >0, train in chunks and run a discrete validation rollout after each chunk.",
+    )
+    parser.add_argument(
+        "--forecast-cache-root",
+        type=str,
+        default=None,
+        help="Optional Chronos2 cache root (expects h{N}/{SYMBOL}.parquet).",
+    )
+    parser.add_argument(
+        "--forecast-horizons",
+        type=str,
+        default="",
+        help="Comma-separated Chronos2 horizons to merge as RL features (e.g. 1,4,24).",
+    )
+    parser.add_argument(
+        "--correlated-symbols",
+        type=str,
+        default="",
+        help="Comma-separated peer symbols to append as correlation features.",
+    )
+    parser.add_argument(
+        "--auto-correlated-count",
+        type=int,
+        default=0,
+        help="Automatically add top-N correlated symbols from the data root.",
+    )
+    parser.add_argument(
+        "--correlation-lookback",
+        type=int,
+        default=24 * 30,
+        help="Lookback bars for automatic correlation ranking.",
+    )
+    parser.add_argument(
+        "--correlation-min-abs",
+        type=float,
+        default=0.25,
+        help="Minimum absolute correlation to include auto-selected peers.",
+    )
     args = parser.parse_args()
+    forecast_horizons = tuple(int(x.strip()) for x in args.forecast_horizons.split(",") if x.strip())
+    correlated_symbols = tuple(str(x).strip().upper() for x in args.correlated_symbols.split(",") if x.strip())
     return TrainingConfig(
         symbol=args.symbol,
         data_root=args.data_root,
@@ -302,6 +588,13 @@ def parse_args() -> TrainingConfig:
         html_path=args.html_path,
         evaluate=not args.no_eval,
         history_csv=args.history_csv,
+        validation_interval_timesteps=max(0, int(args.validation_interval_timesteps)),
+        forecast_cache_root=args.forecast_cache_root,
+        forecast_horizons=forecast_horizons,
+        correlated_symbols=correlated_symbols,
+        auto_correlated_count=max(0, int(args.auto_correlated_count)),
+        correlation_lookback=max(1, int(args.correlation_lookback)),
+        correlation_min_abs=max(0.0, float(args.correlation_min_abs)),
     )
 
 
@@ -318,6 +611,10 @@ def main() -> None:
         "horizon": cfg.horizon,
         "reward_stats": metrics.get("reward_stats", {}),
         "evaluation_skipped": not cfg.evaluate,
+        "forecast_horizons": list(cfg.forecast_horizons),
+        "correlated_symbols": list(cfg.correlated_symbols),
+        "auto_correlated_count": cfg.auto_correlated_count,
+        "validation_interval_timesteps": cfg.validation_interval_timesteps,
     }
     # reward_trace contains per-step rewards from the evaluation rollout.
     # reward_stats adds aggregate mean/stdev plus configurable SMA/EMA helpers.

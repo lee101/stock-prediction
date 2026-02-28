@@ -2,10 +2,10 @@
   "symbol": "MTCH",
   "model": "chronos2",
   "config": {
-    "name": "hourly_ctx1024_skip1_single",
+    "name": "hourly_ctx2048_skip1_single",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
-    "context_length": 1024,
+    "context_length": 2048,
     "batch_size": 32,
     "quantile_levels": [
       0.1,
@@ -15,7 +15,9 @@
     "aggregation": "median",
     "sample_count": 0,
     "scaler": "meanstd",
-    "predict_kwargs": {},
+    "predict_kwargs": {
+      "predict_batches_jointly": true
+    },
     "skip_rates": [
       1
     ],
@@ -23,21 +25,38 @@
     "use_multivariate": false
   },
   "validation": {
-    "price_mae": 0.12866973876953125,
-    "pct_return_mae": 0.0040750508196651936,
+    "price_mae": 9.48649511456489,
+    "pct_return_mae": 0.05886238102113574,
+    "pct_return_mae_smoothness": 0.0034869909280541758,
     "direction_accuracy": 0.0,
-    "latency_s": 0.0474698543548584
+    "objective": 0.060082827845954694,
+    "latency_s": 0.04453974962234497
   },
   "windows": {
     "val_window": 168,
     "test_window": 168,
-    "forecast_horizon": 1
+    "forecast_horizon": 24
   },
   "metadata": {
     "source": "hyperparam_chronos_hourly",
-    "generated_at": "2025-12-01T08:10:00.726273Z",
-    "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.0040750508196651936,
-    "frequency": "hourly"
+    "generated_at": "2026-02-24T07:53:12.373700Z",
+    "selection_metric": "validation_objective",
+    "selection_value": 0.060082827845954694,
+    "frequency": "hourly",
+    "smoothness_weight": 0.35,
+    "direction_bonus": 0.05,
+    "cohort_symbols": [
+      "EXPE",
+      "ANGI",
+      "EBAY"
+    ],
+    "cohort_used_symbols": [
+      "EXPE",
+      "ANGI",
+      "EBAY"
+    ],
+    "cohort_requested": 3,
+    "cohort_used": 3,
+    "cross_learning_enabled": true
   }
 }

@@ -20,6 +20,10 @@ def test_default_groups_apply_when_allow_short_true() -> None:
     assert short_only.can_long is False
     assert short_only.can_short is True
 
+    yelp_short_only = resolve_trade_directions("YELP", allow_short=True)
+    assert yelp_short_only.can_long is False
+    assert yelp_short_only.can_short is True
+
     long_only = resolve_trade_directions("NVDA", allow_short=True)
     assert long_only.can_long is True
     assert long_only.can_short is False
@@ -35,4 +39,3 @@ def test_conflicting_overrides_disable_trading() -> None:
     )
     assert dirs.can_long is False
     assert dirs.can_short is False
-

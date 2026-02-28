@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -11,29 +10,6 @@ import pandas as pd
 from differentiable_loss_utils import DEFAULT_MAKER_FEE_RATE, HOURLY_PERIODS_PER_YEAR
 
 
-# ---------------------------------------------------------------------------
-# Quantization helpers (pure math, mirrors binanceneural/execution.py)
-# ---------------------------------------------------------------------------
-
-def _step_decimals(step: float) -> int:
-    s = f"{step:.10f}".rstrip("0")
-    if "." in s:
-        return len(s.split(".")[1])
-    return 0
-
-
-def _quantize_down(value: float, step: float) -> float:
-    if step <= 0:
-        return value
-    return round(math.floor(value / step) * step, _step_decimals(step))
-
-
-def _quantize_up(value: float, step: float) -> float:
-    if step <= 0:
-        return value
-    return round(math.ceil(value / step) * step, _step_decimals(step))
-
-
 @dataclass
 class SimulationConfig:
     maker_fee: float = DEFAULT_MAKER_FEE_RATE
@@ -41,11 +17,6 @@ class SimulationConfig:
     enable_probe_mode: bool = False
     probe_notional: float = 1.0
     max_hold_hours: Optional[int] = None
-    # Production quantization (set to match Binance symbol rules for realism)
-    tick_size: Optional[float] = None   # price precision (e.g. 0.01 for BTC)
-    step_size: Optional[float] = None   # qty precision (e.g. 0.00001 for BTC)
-    min_qty: Optional[float] = None     # minimum order qty
-    min_notional: Optional[float] = None  # minimum order value in quote (e.g. 10 USDT)
 
 
 @dataclass
@@ -118,8 +89,6 @@ def run_shared_cash_simulation(
     trades_by_symbol: Dict[str, List[TradeRecord]] = {}
 
     prepared = prepared.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
-    tick = sim_config.tick_size
-    step = sim_config.step_size
 
     for ts, chunk in prepared.groupby("timestamp", sort=False):
         # Process sells first to release cash before new buys.
@@ -129,8 +98,6 @@ def run_shared_cash_simulation(
             if inv <= 0:
                 continue
             sell_price = float(getattr(row, "sell_price", 0.0) or 0.0)
-            if tick is not None and tick > 0 and sell_price > 0:
-                sell_price = _quantize_up(sell_price, tick)
             sell_amount = getattr(row, "sell_amount", None)
             trade_amount = getattr(row, "trade_amount", None)
             if sell_amount is None:
@@ -142,12 +109,6 @@ def run_shared_cash_simulation(
             if not sell_fill:
                 continue
             executed_sell = sell_intensity * inv
-            if step is not None and step > 0:
-                executed_sell = _quantize_down(executed_sell, step)
-            if sim_config.min_qty is not None and executed_sell < sim_config.min_qty:
-                executed_sell = 0.0
-            if sim_config.min_notional is not None and executed_sell * sell_price < sim_config.min_notional:
-                executed_sell = 0.0
             if executed_sell <= 0:
                 continue
             proceeds = executed_sell * sell_price * (1 - sim_config.maker_fee)
@@ -184,8 +145,6 @@ def run_shared_cash_simulation(
         for row in chunk.itertuples(index=False):
             symbol = str(getattr(row, "symbol")).upper()
             buy_price = float(getattr(row, "buy_price", 0.0) or 0.0)
-            if tick is not None and tick > 0 and buy_price > 0:
-                buy_price = _quantize_down(buy_price, tick)
             buy_amount = getattr(row, "buy_amount", None)
             trade_amount = getattr(row, "trade_amount", None)
             if buy_amount is None:
@@ -202,12 +161,6 @@ def run_shared_cash_simulation(
                 available_cash = min(available_cash, float(sim_config.probe_notional))
             max_buy = available_cash / (buy_price * (1 + sim_config.maker_fee)) if buy_price > 0 else 0.0
             executed_buy = buy_intensity * max_buy
-            if step is not None and step > 0:
-                executed_buy = _quantize_down(executed_buy, step)
-            if sim_config.min_qty is not None and executed_buy < sim_config.min_qty:
-                executed_buy = 0.0
-            if sim_config.min_notional is not None and executed_buy * buy_price < sim_config.min_notional:
-                executed_buy = 0.0
             if executed_buy <= 0:
                 continue
 
@@ -363,18 +316,10 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
     per_hour_rows: List[Dict[str, float]] = []
     trades: List[TradeRecord] = []
 
-    tick = config.tick_size
-    step = config.step_size
-
     for row in frame.itertuples(index=False):
         ts = getattr(row, "timestamp")
         buy_price = float(getattr(row, "buy_price", 0.0) or 0.0)
         sell_price = float(getattr(row, "sell_price", 0.0) or 0.0)
-
-        # Quantize prices to exchange tick size (buy rounds down, sell rounds up)
-        if tick is not None and tick > 0:
-            buy_price = _quantize_down(buy_price, tick) if buy_price > 0 else 0.0
-            sell_price = _quantize_up(sell_price, tick) if sell_price > 0 else 0.0
 
         buy_amount = getattr(row, "buy_amount", None)
         sell_amount = getattr(row, "sell_amount", None)
@@ -397,17 +342,39 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
         executed_buy = 0.0
         executed_sell = 0.0
 
-        # Process sells first to release cash before new buys (matches
-        # run_shared_cash_simulation and real exchange behaviour where
-        # resting sell limits execute before new buy orders).
+        if buy_fill:
+            available_cash = cash
+            if config.enable_probe_mode and probe_mode and config.probe_notional > 0:
+                available_cash = min(available_cash, float(config.probe_notional))
+            max_buy = available_cash / (buy_price * (1 + config.maker_fee)) if buy_price > 0 else 0.0
+            executed_buy = buy_intensity * max_buy
+
+        if executed_buy > 0:
+            cost = executed_buy * buy_price * (1 + config.maker_fee)
+            cash -= cost
+            if inventory <= 0:
+                cost_basis = buy_price
+                open_time = ts
+            else:
+                cost_basis = (cost_basis * inventory + buy_price * executed_buy) / (inventory + executed_buy)
+            inventory += executed_buy
+            trades.append(
+                TradeRecord(
+                    timestamp=ts,
+                    symbol=symbol,
+                    side="buy",
+                    price=buy_price,
+                    quantity=executed_buy,
+                    notional=executed_buy * buy_price,
+                    fee=executed_buy * buy_price * config.maker_fee,
+                    cash_after=cash,
+                    inventory_after=inventory,
+                    realized_pnl=0.0,
+                )
+            )
+
         if sell_fill and inventory > 0:
             executed_sell = sell_intensity * inventory
-            if step is not None and step > 0:
-                executed_sell = _quantize_down(executed_sell, step)
-            if config.min_qty is not None and executed_sell < config.min_qty:
-                executed_sell = 0.0
-            if config.min_notional is not None and executed_sell * sell_price < config.min_notional:
-                executed_sell = 0.0
 
         if executed_sell > 0:
             proceeds = executed_sell * sell_price * (1 - config.maker_fee)
@@ -437,43 +404,6 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
                     cash_after=cash,
                     inventory_after=inventory,
                     realized_pnl=realized,
-                )
-            )
-
-        if buy_fill:
-            available_cash = cash
-            if config.enable_probe_mode and probe_mode and config.probe_notional > 0:
-                available_cash = min(available_cash, float(config.probe_notional))
-            max_buy = available_cash / (buy_price * (1 + config.maker_fee)) if buy_price > 0 else 0.0
-            executed_buy = buy_intensity * max_buy
-            if step is not None and step > 0:
-                executed_buy = _quantize_down(executed_buy, step)
-            if config.min_qty is not None and executed_buy < config.min_qty:
-                executed_buy = 0.0
-            if config.min_notional is not None and executed_buy * buy_price < config.min_notional:
-                executed_buy = 0.0
-
-        if executed_buy > 0:
-            cost = executed_buy * buy_price * (1 + config.maker_fee)
-            cash -= cost
-            if inventory <= 0:
-                cost_basis = buy_price
-                open_time = ts
-            else:
-                cost_basis = (cost_basis * inventory + buy_price * executed_buy) / (inventory + executed_buy)
-            inventory += executed_buy
-            trades.append(
-                TradeRecord(
-                    timestamp=ts,
-                    symbol=symbol,
-                    side="buy",
-                    price=buy_price,
-                    quantity=executed_buy,
-                    notional=executed_buy * buy_price,
-                    fee=executed_buy * buy_price * config.maker_fee,
-                    cash_after=cash,
-                    inventory_after=inventory,
-                    realized_pnl=0.0,
                 )
             )
 

@@ -6,6 +6,8 @@ This tuner optimizes Chronos2 hyperparameters for hourly forecasting with:
 2. Multivariate OHLC forecasting (predicting all columns together)
 3. Larger context lengths appropriate for hourly data density
 4. Aggregation method tuning (single, median, trimmed, weighted)
+5. Composite objective support (pct-return MAE + MAE smoothness - direction bonus)
+6. Correlation cohort scoring for cross-symbol robustness
 
 Key features:
 - Skip-rate forecasting: Uses skip_rates like [1, 2, 3] to forecast at different
@@ -34,6 +36,12 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from tqdm import tqdm
+
+from src.chronos2_objective import (
+    build_correlation_cohort_map,
+    build_correlation_matrix,
+    compute_chronos_objective,
+)
 
 
 # Hourly-specific parameter grid
@@ -85,9 +93,25 @@ class Chronos2HourlyTuner:
         self,
         holdout_hours: int = 168,  # 1 week
         device: str = "cuda",
+        prediction_length: int = 24,
+        objective: str = "composite",
+        smoothness_weight: float = 0.35,
+        direction_bonus: float = 0.05,
+        cohort_size: int = 0,
+        cohort_min_abs_corr: float = 0.25,
+        cohort_include_negative: bool = False,
+        enable_cross_learning: bool = False,
     ):
         self.holdout_hours = holdout_hours
         self.device = device
+        self.prediction_length = max(1, int(prediction_length))
+        self.objective = objective
+        self.smoothness_weight = float(smoothness_weight)
+        self.direction_bonus = float(direction_bonus)
+        self.cohort_size = max(0, int(cohort_size))
+        self.cohort_min_abs_corr = float(cohort_min_abs_corr)
+        self.cohort_include_negative = bool(cohort_include_negative)
+        self.enable_cross_learning = bool(enable_cross_learning)
         self.model = None
         self.results: List[Dict] = []
 
@@ -138,6 +162,40 @@ class Chronos2HourlyTuner:
         holdout_df = df.iloc[split_idx:].copy()
 
         return train_df, holdout_df
+
+    def _build_cohort_map(self, symbols: List[str]) -> Dict[str, Tuple[str, ...]]:
+        """Build symbol->correlated peers map from training close histories."""
+        if self.cohort_size <= 0:
+            return {str(sym).upper(): tuple() for sym in symbols}
+
+        close_history: Dict[str, pd.Series] = {}
+        for symbol in symbols:
+            try:
+                train_df, _ = self.load_data(symbol)
+            except Exception:
+                continue
+            if "timestamp" not in train_df.columns or "close" not in train_df.columns:
+                continue
+            close = pd.Series(
+                train_df["close"].to_numpy(dtype=np.float64),
+                index=pd.to_datetime(train_df["timestamp"], utc=True, errors="coerce"),
+            )
+            close = close.dropna()
+            if close.empty:
+                continue
+            close_history[str(symbol).upper()] = close
+
+        corr = build_correlation_matrix(
+            close_history,
+            lookback=min(24 * 90, max(24, self.holdout_hours * 6)),
+            min_periods=max(24, min(96, self.holdout_hours // 2)),
+        )
+        return build_correlation_cohort_map(
+            corr,
+            max_size=self.cohort_size,
+            min_abs_corr=self.cohort_min_abs_corr,
+            include_negative=self.cohort_include_negative,
+        )
 
     def _load_model(self):
         """Load Chronos2 model (lazy loading)."""
@@ -351,13 +409,15 @@ class Chronos2HourlyTuner:
         aggregation_method: str,
         use_multivariate: bool,
         scaler: str,
-        prediction_length: int = 1,
+        prediction_length: Optional[int] = None,
     ) -> Dict:
         """Evaluate a set of hyperparameters on holdout data."""
         try:
             train_df, holdout_df = self.load_data(symbol)
         except FileNotFoundError as e:
             return {"status": "error", "error": str(e)}
+
+        eval_horizon = max(1, int(prediction_length or self.prediction_length))
 
         max_context_needed = context_length * max(skip_rates)
         if len(train_df) < max_context_needed:
@@ -367,11 +427,11 @@ class Chronos2HourlyTuner:
             }
 
         # Get actual holdout values
-        actual_close = holdout_df["close"].values[:prediction_length].astype(np.float32)
-        if len(actual_close) < prediction_length:
+        actual_close = holdout_df["close"].values[:eval_horizon].astype(np.float64)
+        if len(actual_close) < eval_horizon:
             return {
                 "status": "error",
-                "error": f"Insufficient holdout: {len(actual_close)} < {prediction_length}",
+                "error": f"Insufficient holdout: {len(actual_close)} < {eval_horizon}",
             }
 
         try:
@@ -380,7 +440,7 @@ class Chronos2HourlyTuner:
             pred = self._predict_multiscale(
                 context_df=train_df,
                 symbol=symbol,
-                prediction_length=prediction_length,
+                prediction_length=eval_horizon,
                 context_length=context_length,
                 skip_rates=skip_rates,
                 aggregation_method=aggregation_method,
@@ -393,31 +453,44 @@ class Chronos2HourlyTuner:
             # Extract median prediction for close
             median_pred = pred[0.5]
             if "close" in median_pred.columns:
-                predicted_close = median_pred["close"].values[-prediction_length:].astype(np.float32)
+                predicted_close = median_pred["close"].values.astype(np.float64)
             else:
-                predicted_close = median_pred.iloc[:, -1].values[-prediction_length:].astype(np.float32)
+                predicted_close = median_pred.iloc[:, -1].values.astype(np.float64)
 
-            # Compute metrics
-            price_mae = float(np.mean(np.abs(predicted_close - actual_close)))
-            price_rmse = float(np.sqrt(np.mean((predicted_close - actual_close) ** 2)))
+            if predicted_close.size == 0:
+                return {
+                    "status": "error",
+                    "error": "Chronos2 produced empty prediction output.",
+                }
 
-            # Percentage return MAE (more meaningful for trading)
-            last_train_close = train_df["close"].iloc[-1]
-            actual_pct = (actual_close - last_train_close) / last_train_close
-            predicted_pct = (predicted_close - last_train_close) / last_train_close
-            pct_return_mae = float(np.mean(np.abs(predicted_pct - actual_pct)))
+            # Align lengths defensively (some model versions may emit shorter horizons).
+            aligned_len = int(min(len(actual_close), len(predicted_close), eval_horizon))
+            if aligned_len <= 0:
+                return {
+                    "status": "error",
+                    "error": "No overlapping forecast/holdout points for evaluation.",
+                }
+            predicted_close = predicted_close[:aligned_len]
+            actual_close = actual_close[:aligned_len]
 
-            # Direction accuracy
-            actual_direction = np.sign(actual_close - last_train_close)
-            predicted_direction = np.sign(predicted_close - last_train_close)
-            direction_acc = float(np.mean(actual_direction == predicted_direction))
+            last_train_close = float(train_df["close"].iloc[-1])
+            metrics = compute_chronos_objective(
+                actual_close=actual_close,
+                predicted_close=predicted_close,
+                reference_close=last_train_close,
+                smoothness_weight=self.smoothness_weight,
+                direction_bonus=self.direction_bonus,
+            )
 
             return {
                 "status": "success",
-                "price_mae": price_mae,
-                "price_rmse": price_rmse,
-                "pct_return_mae": pct_return_mae,
-                "direction_accuracy": direction_acc,
+                "price_mae": metrics.price_mae,
+                "price_rmse": metrics.price_rmse,
+                "pct_return_mae": metrics.pct_return_mae,
+                "pct_return_mae_smoothness": metrics.pct_return_mae_smoothness,
+                "direction_accuracy": metrics.direction_accuracy,
+                "objective": metrics.objective,
+                "n_samples": metrics.n_samples,
                 "latency_s": latency,
                 "predicted_close": predicted_close.tolist(),
                 "actual_close": actual_close.tolist(),
@@ -444,14 +517,17 @@ class Chronos2HourlyTuner:
 
         all_results = []
         best_per_symbol = {}
+        cohort_map = self._build_cohort_map(symbols)
+        selection_key = "objective" if self.objective == "composite" else "pct_return_mae"
 
         for symbol in tqdm(symbols, desc="Symbols"):
             symbol_results = []
+            peers = list(cohort_map.get(str(symbol).upper(), ()))
 
             for params in tqdm(combinations, desc=f"{symbol} params", leave=False):
                 param_dict = dict(zip(keys, params))
 
-                result = self.evaluate_params(
+                target_result = self.evaluate_params(
                     symbol=symbol,
                     context_length=param_dict["context_length"],
                     skip_rates=param_dict["skip_rates"],
@@ -459,25 +535,75 @@ class Chronos2HourlyTuner:
                     use_multivariate=param_dict["use_multivariate"],
                     scaler=param_dict["scaler"],
                 )
-                result["symbol"] = symbol
-                result.update({
+                base_result = {
+                    "symbol": symbol,
                     "context_length": param_dict["context_length"],
                     "skip_rates": list(param_dict["skip_rates"]),
                     "aggregation_method": param_dict["aggregation_method"],
                     "use_multivariate": param_dict["use_multivariate"],
                     "scaler": param_dict["scaler"],
-                })
+                    "cohort_symbols": peers,
+                    "cohort_requested": len(peers),
+                }
+
+                if target_result["status"] != "success":
+                    result = dict(base_result)
+                    result.update(target_result)
+                    symbol_results.append(result)
+                    continue
+
+                peer_metrics: List[Dict[str, Any]] = []
+                peer_success: List[str] = []
+                for peer in peers:
+                    peer_result = self.evaluate_params(
+                        symbol=peer,
+                        context_length=param_dict["context_length"],
+                        skip_rates=param_dict["skip_rates"],
+                        aggregation_method=param_dict["aggregation_method"],
+                        use_multivariate=param_dict["use_multivariate"],
+                        scaler=param_dict["scaler"],
+                    )
+                    if peer_result["status"] == "success":
+                        peer_metrics.append(peer_result)
+                        peer_success.append(peer)
+
+                combined = [target_result, *peer_metrics]
+                mean_metrics = {
+                    "price_mae": float(np.mean([row["price_mae"] for row in combined])),
+                    "price_rmse": float(np.mean([row["price_rmse"] for row in combined])),
+                    "pct_return_mae": float(np.mean([row["pct_return_mae"] for row in combined])),
+                    "pct_return_mae_smoothness": float(
+                        np.mean([row["pct_return_mae_smoothness"] for row in combined])
+                    ),
+                    "direction_accuracy": float(np.mean([row["direction_accuracy"] for row in combined])),
+                    "objective": float(np.mean([row["objective"] for row in combined])),
+                    "latency_s": float(np.mean([row["latency_s"] for row in combined])),
+                    "n_samples": int(np.sum([row.get("n_samples", 0) for row in combined])),
+                }
+
+                result = {
+                    **base_result,
+                    "status": "success",
+                    **mean_metrics,
+                    "target_pct_return_mae": float(target_result["pct_return_mae"]),
+                    "target_pct_return_mae_smoothness": float(target_result["pct_return_mae_smoothness"]),
+                    "target_objective": float(target_result["objective"]),
+                    "cohort_used": len(peer_success),
+                    "cohort_used_symbols": peer_success,
+                    "evaluated_symbols": [symbol, *peer_success],
+                }
                 symbol_results.append(result)
 
             # Find best for this symbol
             successful = [r for r in symbol_results if r["status"] == "success"]
             if successful:
-                best = min(successful, key=lambda x: x["pct_return_mae"])
+                best = min(successful, key=lambda x: x[selection_key])
                 best_per_symbol[symbol] = best
                 logger.info(
-                    f"{symbol}: Best pct_return_mae={best['pct_return_mae']:.4%} "
-                    f"(ctx={best['context_length']}, skip={best['skip_rates']}, "
-                    f"agg={best['aggregation_method']}, mv={best['use_multivariate']})"
+                    f"{symbol}: Best {selection_key}={best[selection_key]:.6f} "
+                    f"(pct_mae={best['pct_return_mae']:.4%}, smooth={best['pct_return_mae_smoothness']:.4%}, "
+                    f"ctx={best['context_length']}, skip={best['skip_rates']}, "
+                    f"agg={best['aggregation_method']}, mv={best['use_multivariate']}, cohort_used={best['cohort_used']})"
                 )
 
             all_results.extend(symbol_results)
@@ -485,14 +611,20 @@ class Chronos2HourlyTuner:
         return {
             "all_results": all_results,
             "best_per_symbol": best_per_symbol,
+            "selection_metric": selection_key,
             "timestamp": datetime.now().isoformat(),
         }
 
     def save_hyperparams(self, best_per_symbol: Dict[str, Dict]) -> None:
         """Save best hyperparameters per symbol."""
         HYPERPARAMS_DIR.mkdir(parents=True, exist_ok=True)
+        selection_metric = "objective" if self.objective == "composite" else "pct_return_mae"
 
         for symbol, best in best_per_symbol.items():
+            predict_kwargs: Dict[str, Any] = {}
+            if self.enable_cross_learning:
+                predict_kwargs["predict_batches_jointly"] = True
+
             config = {
                 "symbol": symbol,
                 "model": "chronos2",
@@ -506,7 +638,7 @@ class Chronos2HourlyTuner:
                     "aggregation": "median",
                     "sample_count": 0,
                     "scaler": best["scaler"],
-                    "predict_kwargs": {},
+                    "predict_kwargs": predict_kwargs,
                     # Multiscale config
                     "skip_rates": best["skip_rates"],
                     "aggregation_method": best["aggregation_method"],
@@ -515,20 +647,29 @@ class Chronos2HourlyTuner:
                 "validation": {
                     "price_mae": best["price_mae"],
                     "pct_return_mae": best["pct_return_mae"],
+                    "pct_return_mae_smoothness": best.get("pct_return_mae_smoothness", 0.0),
                     "direction_accuracy": best["direction_accuracy"],
+                    "objective": best.get("objective", best["pct_return_mae"]),
                     "latency_s": best["latency_s"],
                 },
                 "windows": {
                     "val_window": self.holdout_hours,
                     "test_window": self.holdout_hours,
-                    "forecast_horizon": 1,
+                    "forecast_horizon": self.prediction_length,
                 },
                 "metadata": {
                     "source": "hyperparam_chronos_hourly",
                     "generated_at": datetime.now().isoformat() + "Z",
-                    "selection_metric": "validation_pct_return_mae",
-                    "selection_value": best["pct_return_mae"],
+                    "selection_metric": f"validation_{selection_metric}",
+                    "selection_value": best.get(selection_metric, best["pct_return_mae"]),
                     "frequency": "hourly",
+                    "smoothness_weight": self.smoothness_weight,
+                    "direction_bonus": self.direction_bonus,
+                    "cohort_symbols": best.get("cohort_symbols", []),
+                    "cohort_used_symbols": best.get("cohort_used_symbols", []),
+                    "cohort_requested": best.get("cohort_requested", 0),
+                    "cohort_used": best.get("cohort_used", 0),
+                    "cross_learning_enabled": self.enable_cross_learning,
                 },
             }
 
@@ -571,6 +712,52 @@ def main():
     parser.add_argument("--quick", action="store_true", help="Quick mode with smaller grid")
     parser.add_argument("--ultraquick", action="store_true", help="Ultra-quick mode for testing")
     parser.add_argument("--holdout-hours", type=int, default=168, help="Hours to hold out (default: 168 = 1 week)")
+    parser.add_argument(
+        "--prediction-length",
+        type=int,
+        default=24,
+        help="Forecast horizon used during tuning/evaluation (default: 24 hours).",
+    )
+    parser.add_argument(
+        "--objective",
+        choices=["pct_return_mae", "composite"],
+        default="composite",
+        help="Optimization metric: plain pct_return_mae or composite objective (MAE + smoothness - direction bonus).",
+    )
+    parser.add_argument(
+        "--smoothness-weight",
+        type=float,
+        default=0.35,
+        help="Weight for MAE smoothness penalty in composite objective.",
+    )
+    parser.add_argument(
+        "--direction-bonus",
+        type=float,
+        default=0.05,
+        help="Bonus coefficient for directional accuracy in composite objective.",
+    )
+    parser.add_argument(
+        "--cohort-size",
+        type=int,
+        default=0,
+        help="Number of correlated peer symbols to include when scoring each config (0 disables).",
+    )
+    parser.add_argument(
+        "--cohort-min-abs-corr",
+        type=float,
+        default=0.25,
+        help="Minimum absolute return correlation to include a peer in a cohort.",
+    )
+    parser.add_argument(
+        "--cohort-include-negative",
+        action="store_true",
+        help="Allow negatively correlated peers in cohort selection.",
+    )
+    parser.add_argument(
+        "--enable-cross-learning",
+        action="store_true",
+        help="Persist predict_kwargs.predict_batches_jointly=True in saved hyperparams.",
+    )
     parser.add_argument("--device", default="cuda", help="Device (cuda or cpu)")
     parser.add_argument("--output", type=Path, default=RESULTS_DIR / "latest_results.json", help="Output file")
     parser.add_argument("--save-hyperparams", action="store_true", help="Save best hyperparams per symbol")
@@ -622,6 +809,14 @@ def main():
     tuner = Chronos2HourlyTuner(
         holdout_hours=args.holdout_hours,
         device=args.device,
+        prediction_length=args.prediction_length,
+        objective=args.objective,
+        smoothness_weight=args.smoothness_weight,
+        direction_bonus=args.direction_bonus,
+        cohort_size=args.cohort_size,
+        cohort_min_abs_corr=args.cohort_min_abs_corr,
+        cohort_include_negative=args.cohort_include_negative,
+        enable_cross_learning=args.enable_cross_learning,
     )
 
     try:
@@ -641,15 +836,27 @@ def main():
         print("HOURLY HYPERPARAMETER TUNING COMPLETE")
         print("=" * 70)
 
+        selection_metric = results.get("selection_metric", "pct_return_mae")
+        print(f"Selection metric: {selection_metric}")
+        if args.objective == "composite":
+            print(
+                f"Composite objective: pct_return_mae + "
+                f"{args.smoothness_weight:.3f}*smoothness - {args.direction_bonus:.3f}*direction_accuracy"
+            )
+        print(f"Cohort size: {args.cohort_size} (min|corr|={args.cohort_min_abs_corr:.2f})")
+
         print(f"\nBest results per symbol:")
         for symbol, best in sorted(results["best_per_symbol"].items()):
             print(f"  {symbol}:")
             print(f"    pct_return_mae: {best['pct_return_mae']:.4%}")
+            print(f"    mae_smoothness: {best.get('pct_return_mae_smoothness', 0.0):.4%}")
             print(f"    direction_acc:  {best['direction_accuracy']:.1%}")
+            print(f"    objective:      {best.get('objective', best['pct_return_mae']):.6f}")
             print(f"    context_length: {best['context_length']}")
             print(f"    skip_rates:     {best['skip_rates']}")
             print(f"    aggregation:    {best['aggregation_method']}")
             print(f"    multivariate:   {best['use_multivariate']}")
+            print(f"    cohort_used:    {best.get('cohort_used', 0)} / {best.get('cohort_requested', 0)}")
             print(f"    latency:        {best['latency_s']:.1f}s")
 
     finally:
