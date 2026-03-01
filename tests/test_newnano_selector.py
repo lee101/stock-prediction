@@ -228,6 +228,35 @@ def test_selector_skips_buy_when_price_never_trades_through():
     assert math.isclose(result.final_cash, 10_000.0, rel_tol=0, abs_tol=1e-9)
 
 
+def test_selector_bar_margin_requires_trade_through_limit_buffer():
+    bars, actions = _make_two_step_frames(
+        symbol="BTCUSD",
+        t0="2026-01-01T00:00:00Z",
+        t1="2026-01-01T01:00:00Z",
+        buy_price=100.0,
+        sell_price=112.0,
+        low0=99.95,  # Touches limit, but not 10 bps through.
+        high0=101.0,
+        low1=100.0,
+        high1=115.0,
+        close0=100.2,
+        close1=114.0,
+    )
+    cfg = SelectionConfig(
+        initial_cash=10_000.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=True,
+        close_at_eod=False,
+        fee_by_symbol={"BTCUSD": 0.0},
+        bar_margin=0.001,  # 10 bps buffer
+    )
+    result = run_best_trade_simulation(bars, actions, cfg, horizon=1)
+    assert result.trades == []
+    assert math.isclose(result.final_cash, 10_000.0, rel_tol=0, abs_tol=1e-9)
+
+
 def test_selector_realistic_mode_does_not_use_fillability_for_symbol_selection() -> None:
     ts = pd.to_datetime(
         [
