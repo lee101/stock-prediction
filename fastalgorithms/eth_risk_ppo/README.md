@@ -80,6 +80,9 @@ Useful training env overrides (via `run_train_local.sh`):
 - `TARGET_KL=<float|none>` for adaptive KL early stop control
 - `N_EPOCHS=<int>`, `VF_COEF=<float>`, `MAX_GRAD_NORM=<float>`
 - `CLIP_RANGE_VF=<float|none>` for value-function clipping
+- `LEVERAGE_HEAD=0` to disable leverage head for low-churn runs
+- `MAX_GROSS_LEVERAGE=<float>`, `INTRADAY_LEVERAGE_CAP=<float>`
+- `BASE_GROSS_EXPOSURE=<float>` to control financing-free leverage baseline
 
 Queue multiple iterations remotely in one command:
 
