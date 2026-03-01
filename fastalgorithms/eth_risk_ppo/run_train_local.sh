@@ -7,6 +7,7 @@ cd "${ROOT_DIR}"
 NUM_TIMESTEPS="${1:-150000}"
 RUN_NAME="${2:-eth_risk_ppo_$(date -u +%Y%m%d_%H%M%S)}"
 VENV_PATH="${VENV_PATH:-.venv312}"
+DATA_DIR="${DATA_DIR:-trainingdatahourly}"
 
 PYTHON_BIN="${VENV_PATH}/bin/python"
 
@@ -19,8 +20,15 @@ OUT_DIR="fastalgorithms/eth_risk_ppo/artifacts/${RUN_NAME}"
 TB_DIR="fastalgorithms/eth_risk_ppo/runs"
 mkdir -p "${OUT_DIR}" "${TB_DIR}"
 
+# Support both layouts:
+# - trainingdatahourly/ETHUSD.csv
+# - trainingdatahourly/crypto/ETHUSD.csv
+if [[ ! -f "${DATA_DIR}/ETHUSD.csv" && -f "${DATA_DIR}/crypto/ETHUSD.csv" ]]; then
+  DATA_DIR="${DATA_DIR}/crypto"
+fi
+
 "${PYTHON_BIN}" -m gymrl.train_ppo_allocator \
-  --data-dir trainingdatahourly \
+  --data-dir "${DATA_DIR}" \
   --symbols ETHUSD \
   --forecast-backend bootstrap \
   --num-samples 128 \
