@@ -45,7 +45,11 @@ fi
 
 OUT_DIR="fastalgorithms/eth_risk_ppo/artifacts/${RUN_NAME}"
 TB_DIR="fastalgorithms/eth_risk_ppo/runs"
-CACHE_FEATURES_TO="${CACHE_FEATURES_TO:-${OUT_DIR}/features_cache.npz}"
+FEATURES_CACHE="${FEATURES_CACHE:-}"
+CACHE_FEATURES_TO="${CACHE_FEATURES_TO:-}"
+if [[ -z "${FEATURES_CACHE}" && -z "${CACHE_FEATURES_TO}" ]]; then
+  CACHE_FEATURES_TO="${OUT_DIR}/features_cache.npz"
+fi
 mkdir -p "${OUT_DIR}" "${TB_DIR}"
 
 # Support both layouts:
@@ -90,9 +94,18 @@ CMD=(
   --no-wandb
   --run-name "${RUN_NAME}"
   --tensorboard-log "${TB_DIR}"
-  --cache-features-to "${CACHE_FEATURES_TO}"
   --output-dir "${OUT_DIR}"
 )
+
+if [[ -n "${FEATURES_CACHE}" ]]; then
+  if [[ -f "${FEATURES_CACHE}" ]]; then
+    CMD+=(--features-cache "${FEATURES_CACHE}")
+  else
+    CMD+=(--cache-features-to "${FEATURES_CACHE}")
+  fi
+elif [[ -n "${CACHE_FEATURES_TO}" ]]; then
+  CMD+=(--cache-features-to "${CACHE_FEATURES_TO}")
+fi
 
 if [[ -n "${WEIGHT_CAP}" ]]; then
   CMD+=(--weight-cap "${WEIGHT_CAP}")
