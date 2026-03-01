@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 import numpy as np
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.logger import configure as sb3_configure
 from stable_baselines3.common.vec_env import DummyVecEnv
@@ -117,6 +117,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=3e-4, help="PPO learning rate.")
     parser.add_argument("--batch-size", type=int, default=512, help="PPO minibatch size.")
     parser.add_argument("--n-steps", type=int, default=2048, help="Number of steps to run per environment update.")
+    parser.add_argument("--n-epochs", type=int, default=10, help="Number of PPO epochs per update.")
     parser.add_argument("--ent-coef", type=float, default=0.0, help="Entropy regularisation coefficient.")
     parser.add_argument(
         "--ent-coef-final",
@@ -127,6 +128,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor.")
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda parameter.")
     parser.add_argument("--clip-range", type=float, default=0.2, help="PPO clip range.")
+    parser.add_argument(
+        "--clip-range-vf",
+        type=optional_float,
+        default=None,
+        help="Optional value-function clip range; pass 'none' to disable.",
+    )
+    parser.add_argument("--vf-coef", type=float, default=0.5, help="Value-function loss coefficient.")
+    parser.add_argument("--max-grad-norm", type=float, default=0.5, help="Gradient clipping norm.")
+    parser.add_argument(
+        "--target-kl",
+        type=optional_float,
+        default=None,
+        help="Optional KL target for early stopping PPO updates; pass 'none' to disable.",
+    )
     parser.add_argument("--tensorboard-log", type=Path, default=Path("gymrl/runs"), help="TensorBoard log directory.")
     parser.add_argument("--run-name", type=str, default=None, help="Run name used for logging directories and reports.")
     parser.add_argument("--tensorboard-subdir", type=str, default=None, help="Override TensorBoard subdirectory under --tensorboard-log.")
@@ -148,7 +163,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb", dest="use_wandb", action="store_true", help="Enable Weights & Biases logging (default).")
     parser.add_argument("--no-wandb", dest="use_wandb", action="store_false", help="Disable Weights & Biases logging.")
     parser.add_argument("--output-dir", type=Path, default=Path("gymrl/artifacts"), help="Directory for checkpoints and artefacts.")
-    parser.add_argument("--save-frequency", type=int, default=50_000, help="Checkpoint frequency (timesteps).")
     parser.add_argument("--behaviour-dataset", type=Path, default=None, help="Optional path to save offline behaviour dataset (.npz).")
     parser.add_argument("--behaviour-policy", type=str, default="topk", choices=["topk", "kelly", "blended"], help="Behaviour policy flavour for offline dataset.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
@@ -716,10 +730,15 @@ def main() -> None:
             learning_rate=args.learning_rate,
             batch_size=args.batch_size,
             n_steps=args.n_steps,
+            n_epochs=args.n_epochs,
             ent_coef=args.ent_coef,
             gamma=args.gamma,
             gae_lambda=args.gae_lambda,
             clip_range=args.clip_range,
+            clip_range_vf=args.clip_range_vf,
+            vf_coef=args.vf_coef,
+            max_grad_norm=args.max_grad_norm,
+            target_kl=args.target_kl,
             seed=args.seed,
         )
         model.set_logger(sb3_logger)
@@ -778,12 +797,6 @@ def main() -> None:
             model.policy._predict = types.MethodType(_predict_with_cast, model.policy)
             model.policy.evaluate_actions = types.MethodType(_evaluate_actions_with_cast, model.policy)
 
-        checkpoint_callback = CheckpointCallback(
-            save_freq=max(args.save_frequency // args.n_steps, 1),
-            save_path=str(args.output_dir),
-            name_prefix="ppo_allocator",
-        )
-
         eval_callback = EvalCallback(
             eval_env,
             best_model_save_path=str(args.output_dir / "best"),
@@ -810,7 +823,7 @@ def main() -> None:
 
         wandboard_callback = WandBoardMetricsCallback(metrics_logger, log_every=max(1, args.wandb_log_frequency))
 
-        callbacks: List[BaseCallback] = [wandboard_callback, checkpoint_callback, eval_callback, topk_callback]
+        callbacks: List[BaseCallback] = [wandboard_callback, eval_callback, topk_callback]
         if args.ent_coef_final is not None:
             callbacks.append(EntropyAnnealCallback(args.num_timesteps, args.ent_coef, args.ent_coef_final))
 
