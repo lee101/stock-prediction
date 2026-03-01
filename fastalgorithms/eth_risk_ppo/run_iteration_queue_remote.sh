@@ -9,6 +9,8 @@ REMOTE_SSH="${REMOTE_SSH:-ssh -o StrictHostKeyChecking=no}"
 BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
 WAIT_FOR_PID="${WAIT_FOR_PID:-}"
 ITERATION_SPECS="${ITERATION_SPECS:-iter_explore_2:200000,iter_refine_1:300000}"
+VENV_PATH="${VENV_PATH:-.venv312}"
+DATA_DIR="${DATA_DIR:-trainingdatahourly}"
 
 REMOTE_CMD="
 set -euo pipefail
@@ -18,6 +20,7 @@ git checkout '${BRANCH}'
 git pull --rebase
 mkdir -p fastalgorithms/eth_risk_ppo/logs
 nohup env WAIT_FOR_PID='${WAIT_FOR_PID}' ITERATION_SPECS='${ITERATION_SPECS}' \\
+  VENV_PATH='${VENV_PATH}' DATA_DIR='${DATA_DIR}' \\
   bash fastalgorithms/eth_risk_ppo/run_iteration_queue.sh \\
   > 'fastalgorithms/eth_risk_ppo/logs/${RUN_ID}.log' 2>&1 &
 echo \$! > 'fastalgorithms/eth_risk_ppo/logs/${RUN_ID}.pid'
@@ -30,4 +33,3 @@ ${REMOTE_SSH} "${REMOTE_HOST}" "${REMOTE_CMD}"
 echo "Remote iteration queue launched: ${RUN_ID}"
 echo "Check log:"
 echo "  ${REMOTE_SSH} ${REMOTE_HOST} 'tail -n 120 ${REMOTE_DIR}/fastalgorithms/eth_risk_ppo/logs/${RUN_ID}.log'"
-

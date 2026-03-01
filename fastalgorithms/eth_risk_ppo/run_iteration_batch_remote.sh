@@ -10,6 +10,8 @@ REMOTE_DIR="${REMOTE_DIR:-/nvme0n1-disk/code/stock-prediction}"
 REMOTE_SSH="${REMOTE_SSH:-ssh -o StrictHostKeyChecking=no}"
 BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
 WAIT_FOR_PID="${WAIT_FOR_PID:-}"
+VENV_PATH="${VENV_PATH:-.venv312}"
+DATA_DIR="${DATA_DIR:-trainingdatahourly}"
 
 REMOTE_CMD="
 set -euo pipefail
@@ -24,7 +26,7 @@ if [ -n '${WAIT_FOR_PID}' ]; then
     sleep 60
   done
 fi
-nohup bash fastalgorithms/eth_risk_ppo/run_iteration_batch.sh '${ITER_TAG}' '${NUM_TIMESTEPS}' > 'fastalgorithms/eth_risk_ppo/logs/${RUN_ID}.log' 2>&1 &
+nohup env VENV_PATH='${VENV_PATH}' DATA_DIR='${DATA_DIR}' bash fastalgorithms/eth_risk_ppo/run_iteration_batch.sh '${ITER_TAG}' '${NUM_TIMESTEPS}' > 'fastalgorithms/eth_risk_ppo/logs/${RUN_ID}.log' 2>&1 &
 echo \$! > 'fastalgorithms/eth_risk_ppo/logs/${RUN_ID}.pid'
 echo launched '${RUN_ID}' pid=\$(cat 'fastalgorithms/eth_risk_ppo/logs/${RUN_ID}.pid')
 "
