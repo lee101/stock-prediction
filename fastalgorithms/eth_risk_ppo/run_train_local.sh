@@ -34,6 +34,7 @@ fi
 
 OUT_DIR="fastalgorithms/eth_risk_ppo/artifacts/${RUN_NAME}"
 TB_DIR="fastalgorithms/eth_risk_ppo/runs"
+CACHE_FEATURES_TO="${CACHE_FEATURES_TO:-${OUT_DIR}/features_cache.npz}"
 mkdir -p "${OUT_DIR}" "${TB_DIR}"
 
 # Support both layouts:
@@ -71,6 +72,7 @@ fi
   --no-wandb \
   --run-name "${RUN_NAME}" \
   --tensorboard-log "${TB_DIR}" \
+  --cache-features-to "${CACHE_FEATURES_TO}" \
   --output-dir "${OUT_DIR}"
 
 echo "Completed run: ${RUN_NAME}"
