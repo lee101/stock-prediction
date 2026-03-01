@@ -19,6 +19,7 @@ fi
 
 TS="$(date -u +%Y%m%d_%H%M%S)"
 LEADERBOARD="fastalgorithms/eth_risk_ppo/artifacts/${ITER_TAG}_${TS}_leaderboard.csv"
+ITER_FEATURE_CACHE="fastalgorithms/eth_risk_ppo/artifacts/${ITER_TAG}_${TS}_features_cache.npz"
 mkdir -p "$(dirname "${LEADERBOARD}")"
 echo "run_name,variant,num_timesteps,robust_score,long_return_5_10bp,short_return_5_10bp,long_sortino_5_10bp,all_returns_positive_5_10bp,summary_csv" > "${LEADERBOARD}"
 
@@ -43,7 +44,8 @@ for spec in "${VARIANTS[@]}"; do
   echo "=== Training ${RUN_NAME} (${NUM_TIMESTEPS} steps) ==="
 
   # shellcheck disable=SC2086
-  env VENV_PATH="${VENV_PATH}" ${OVERRIDES} bash fastalgorithms/eth_risk_ppo/run_train_local.sh "${NUM_TIMESTEPS}" "${RUN_NAME}"
+  env VENV_PATH="${VENV_PATH}" FEATURES_CACHE="${ITER_FEATURE_CACHE}" ${OVERRIDES} \
+    bash fastalgorithms/eth_risk_ppo/run_train_local.sh "${NUM_TIMESTEPS}" "${RUN_NAME}"
 
   CKPT="fastalgorithms/eth_risk_ppo/artifacts/${RUN_NAME}/ppo_allocator_final.zip"
   if [[ ! -f "${CKPT}" ]]; then
