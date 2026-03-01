@@ -8,18 +8,18 @@ NUM_TIMESTEPS="${1:-150000}"
 RUN_NAME="${2:-eth_risk_ppo_$(date -u +%Y%m%d_%H%M%S)}"
 VENV_PATH="${VENV_PATH:-.venv312}"
 
-if [[ ! -f "${VENV_PATH}/bin/activate" ]]; then
-  echo "Missing virtualenv activate script: ${VENV_PATH}/bin/activate" >&2
+PYTHON_BIN="${VENV_PATH}/bin/python"
+
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "Missing python executable: ${PYTHON_BIN}" >&2
   exit 1
 fi
-
-source "${VENV_PATH}/bin/activate"
 
 OUT_DIR="fastalgorithms/eth_risk_ppo/artifacts/${RUN_NAME}"
 TB_DIR="fastalgorithms/eth_risk_ppo/runs"
 mkdir -p "${OUT_DIR}" "${TB_DIR}"
 
-python -m gymrl.train_ppo_allocator \
+"${PYTHON_BIN}" -m gymrl.train_ppo_allocator \
   --data-dir trainingdatahourly \
   --symbols ETHUSD \
   --forecast-backend bootstrap \
