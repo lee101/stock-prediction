@@ -10,6 +10,7 @@ VENV_PATH="${VENV_PATH:-.venv312}"
 SYMBOL="${SYMBOL:-ETHUSD}"
 WINDOWS_HOURS="${WINDOWS_HOURS:-24,168,720}"
 FILL_BUFFERS_BPS="${FILL_BUFFERS_BPS:-0,5,10}"
+DATA_DIR="${DATA_DIR:-trainingdatahourly}"
 
 PYTHON_BIN="${VENV_PATH}/bin/python"
 if [[ ! -x "${PYTHON_BIN}" ]]; then
@@ -20,8 +21,61 @@ fi
 TS="$(date -u +%Y%m%d_%H%M%S)"
 LEADERBOARD="fastalgorithms/eth_risk_ppo/artifacts/${ITER_TAG}_${TS}_leaderboard.csv"
 ITER_FEATURE_CACHE="fastalgorithms/eth_risk_ppo/artifacts/${ITER_TAG}_${TS}_features_cache.npz"
+BENCHMARK_CSV="fastalgorithms/eth_risk_ppo/artifacts/${ITER_TAG}_${TS}_buyhold_benchmark.csv"
 mkdir -p "$(dirname "${LEADERBOARD}")"
 echo "run_name,variant,num_timesteps,robust_score,long_return_5_10bp,short_return_5_10bp,long_sortino_5_10bp,all_returns_positive_5_10bp,summary_csv" > "${LEADERBOARD}"
+
+if [[ ! -f "${DATA_DIR}/${SYMBOL}.csv" && -f "${DATA_DIR}/crypto/${SYMBOL}.csv" ]]; then
+  DATA_DIR="${DATA_DIR}/crypto"
+fi
+
+"${PYTHON_BIN}" - <<'PY' "${DATA_DIR}" "${SYMBOL}" "${WINDOWS_HOURS}" "${FILL_BUFFERS_BPS}" "${BENCHMARK_CSV}"
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+data_dir = Path(sys.argv[1])
+symbol = sys.argv[2]
+windows = [int(token) for token in sys.argv[3].split(",") if token.strip()]
+fill_buffers = [float(token) for token in sys.argv[4].split(",") if token.strip()]
+out_path = Path(sys.argv[5])
+
+csv_path = data_dir / f"{symbol}.csv"
+if not csv_path.exists():
+    raise FileNotFoundError(f"Missing symbol data: {csv_path}")
+
+df = pd.read_csv(csv_path)
+close_col = next((name for name in ("close", "Close", "c", "price", "last") if name in df.columns), None)
+if close_col is None:
+    numeric = [name for name in df.columns if pd.api.types.is_numeric_dtype(df[name])]
+    if not numeric:
+        raise ValueError(f"No numeric price columns in {csv_path}")
+    close_col = numeric[-1]
+
+prices = df[close_col].astype(float).dropna().to_numpy()
+if prices.size < 2:
+    raise ValueError(f"Not enough price history in {csv_path}")
+
+rows = []
+for window in windows:
+    lookback = max(2, min(window, int(prices.size)))
+    raw_ret = float(prices[-1] / prices[-lookback] - 1.0)
+    for fill in fill_buffers:
+        round_trip_cost = 2.0 * (float(fill) / 1e4)
+        buy_hold_ret = float((1.0 + raw_ret) * (1.0 - round_trip_cost) - 1.0)
+        rows.append(
+            {
+                "window_hours": int(window),
+                "fill_buffer_bps": float(fill),
+                "buy_hold_return": buy_hold_ret,
+            }
+        )
+
+out_path.parent.mkdir(parents=True, exist_ok=True)
+pd.DataFrame(rows).to_csv(out_path, index=False)
+print(f"Wrote benchmark: {out_path}")
+PY
 
 declare -a VARIANTS=(
   "regime_core|LEARNING_RATE=4e-5 BATCH_SIZE=512 N_STEPS=2048 N_EPOCHS=10 GAMMA=0.997 GAE_LAMBDA=0.99 TARGET_KL=0.010 LEVERAGE_HEAD=0 MAX_GROSS_LEVERAGE=1.0 INTRADAY_LEVERAGE_CAP=1.2 DRAWDOWN_PENALTY=0.09 CVAR_PENALTY=0.40 TURNOVER_PENALTY=0.0018 REGIME_DRAWDOWN_THRESHOLD=0.02 REGIME_LEVERAGE_SCALE=0.20"
@@ -64,31 +118,40 @@ for spec in "${VARIANTS[@]}"; do
     --cache-only \
     --output-dir "${EVAL_DIR}"
 
-  SCORE_LINE="$("${PYTHON_BIN}" - <<'PY' "${EVAL_DIR}/summary.csv"
+  SCORE_LINE="$("${PYTHON_BIN}" - <<'PY' "${EVAL_DIR}/summary.csv" "${BENCHMARK_CSV}"
 import pandas as pd
 import sys
 df = pd.read_csv(sys.argv[1])
+bench = pd.read_csv(sys.argv[2])
 subset = df[df["fill_buffer_bps"].isin([5.0, 10.0])]
 if subset.empty:
     subset = df.copy()
-long_h = subset[subset["window_hours"] >= 168]
-short_h = subset[subset["window_hours"] <= 24]
+merged = subset.merge(bench, on=["window_hours", "fill_buffer_bps"], how="left")
+if "buy_hold_return" not in merged.columns:
+    merged["buy_hold_return"] = 0.0
+merged["buy_hold_return"] = merged["buy_hold_return"].fillna(0.0)
+merged["edge_vs_buy_hold"] = merged["total_return"] - merged["buy_hold_return"]
+long_h = merged[merged["window_hours"] >= 168]
+short_h = merged[merged["window_hours"] <= 24]
 if long_h.empty:
-    long_h = subset
+    long_h = merged
 if short_h.empty:
-    short_h = subset
+    short_h = merged
 long_ret = float(long_h["total_return"].mean()) if not long_h.empty else 0.0
 short_ret = float(short_h["total_return"].mean()) if not short_h.empty else 0.0
+long_edge = float(long_h["edge_vs_buy_hold"].mean()) if not long_h.empty else long_ret
+short_edge = float(short_h["edge_vs_buy_hold"].mean()) if not short_h.empty else short_ret
 long_sort = float(long_h["sortino"].mean()) if not long_h.empty else 0.0
 long_sort_clipped = max(min(long_sort, 5.0), -5.0)
 worst_long = float(long_h["total_return"].min()) if not long_h.empty else 0.0
 mean_drawdown = float(long_h["max_drawdown"].mean()) if ("max_drawdown" in long_h.columns and not long_h.empty) else 0.0
-all_positive = int(bool((subset["total_return"] > 0).all())) if not subset.empty else 0
+all_positive = int(bool((merged["total_return"] > 0).all())) if not merged.empty else 0
 mean_fills = float(long_h["fills_total"].mean()) if ("fills_total" in long_h.columns and not long_h.empty) else 0.0
 mean_turnover = float(long_h["mean_turnover"].mean()) if ("mean_turnover" in long_h.columns and not long_h.empty) else 0.0
 score = (
-    (long_ret * 160.0)
-    + (short_ret * 10.0)
+    (long_edge * 180.0)
+    + (short_edge * 30.0)
+    + (long_ret * 20.0)
     + (0.05 * long_sort_clipped)
     + (worst_long * 80.0)
     - (mean_drawdown * 35.0)
@@ -96,11 +159,11 @@ score = (
 if all_positive:
     score += 5.0
 if mean_fills < 1.0:
-    score -= 30.0
+    score -= 100.0
 elif mean_fills < 5.0:
-    score -= 12.0
+    score -= 40.0
 if mean_turnover < 1e-4:
-    score -= 12.0
+    score -= 40.0
 elif mean_turnover > 0.45:
     score -= 8.0
 print(f"{score:.6f},{long_ret:.6f},{short_ret:.6f},{long_sort:.6f},{all_positive}")
