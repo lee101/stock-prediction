@@ -1000,133 +1000,82 @@ Cloned modded-nanogpt as reference for efficient training patterns:
 - Gradient accumulation scaling
 - Key insight: BF16 doesn't need GradScaler, just autocast
 
-### Multi-Period Eval Results: wd_0.06_s42 (all epochs, 1-150d)
-
-**NO epoch qualified across all 6 periods (1d, 7d, 30d, 60d, 120d, 150d).**
-
-All 20 epochs fail at 120d and/or 150d. Pattern:
-- 30d/60d: model is profitable (ep9: +1.79%, +2.09%)
-- 120d/150d: model loses money (ep9: -3.05%, -3.18%)
-- Later epochs (14+) catastrophically fail at 150d (-30% to -48%)
-
-| Epoch | 1d | 7d | 30d | 60d | 120d | 150d |
-|-------|------|------|-------|-------|--------|--------|
-| ep6 | - | - | +0.39% | +0.16% | -1.94% | -1.16% |
-| ep9 | +0.53% | -0.22% | +1.79% | +2.09% | -3.05% | -3.18% |
-| ep13 | - | - | +2.79% | +2.45% | -14.33% | -14.80% |
-| ep17 | +1.00% | - | +2.88% | +2.27% | -11.97% | -40.98% |
-
-### Root Cause Analysis: Market Conditions
-
-The 120d-150d window covers Sep-Oct 2025, a period of broad market weakness:
-
-| Period | NVDA | PLTR | GOOG | DBX | TRIP | MTCH | NYT |
-|--------|------|------|------|-----|------|------|-----|
-| 30d | -7.6% | -13.9% | -7.4% | -4.6% | -22.4% | +0.8% | +9.9% |
-| 60d | -5.8% | -24.9% | -1.0% | -10.5% | -26.6% | -2.5% | +14.7% |
-| 120d | -13.5% | -31.8% | +8.7% | -13.0% | -37.2% | -2.9% | +39.4% |
-| 150d | -4.1% | -24.7% | +29.1% | -16.5% | -37.9% | -10.0% | +41.3% |
-
-Most stocks are deeply negative. Model needs to SHORT effectively to profit.
-
-### Data Limitation Discovery
-- Forecast cache (Chronos h1): only ~11 months (Mar 2025 - Feb 2026)
-- Raw hourly data: ~5.5 years (Jul 2020 - Feb 2026, ~10k bars/symbol)
-- Training uses only forecast-covered period: **5,799 train samples**
-- Without forecast cache: **9,567 train samples** (65% more)
-- More training data = more market regimes seen = better generalization
-
-### Next Steps (from initial analysis)
-1. ~~Extend forecast cache to cover full history~~
-2. ~~Try multiwindow loss function~~ DONE - see below
-3. ~~Add explicit short-selling optimization~~ DONE - see below
-4. Consider ensemble: different models for different market regimes
+### Multi-Period Eval Running (pending results)
+Evaluating all WD sweep models across 1,7,30,60,120,150d holdouts.
+The key challenge is finding a model that doesn't degrade at longer horizons.
 
 ---
 
-## 2026-03-01 (continued): Multiwindow + Directional Training
+## 2026-03-01: Stock vs ETH Comparison
 
-### Critical Bug Found: Training/Eval Direction Mismatch
+### Goal
+Compare stock Alpaca strategy (wd_0.04 ep9) vs ETH model (ethusd_h1only_ft20) to determine which deserves capital.
 
-**Root cause of poor 120d/150d performance was a direction mismatch:**
-- **Training**: ALL symbols trained as LONG-ONLY (`can_short=False` default in trainer.py)
-- **Eval (portfolio_simulator.py)**: Uses defaults where TRIP, MTCH, NYT are SHORT-ONLY
-- Model learned to go long on TRIP/MTCH/NYT during training, but eval tried to short them
-- This mismatch caused the model's learned patterns to be applied in reverse for shorts
+### Stock Model (wd_0.04 ep9) - Currently Deployed
 
-**Fix**: Updated `train_bf16_efficient.py` to import `resolve_trade_directions` and pass
-proper `directional_constraints` to `MultiSymbolDataModule`:
-- NVDA, GOOG → LONG-ONLY
-- PLTR, DBX → LONG+SHORT (both directions)
-- TRIP, MTCH, NYT → SHORT-ONLY
+h512, 6L, 8 heads, seq48, classic, fee=10bps, margin=6.25%, leverage=2x, max_hold=6h
+Symbols: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT
 
-### Stock Performance Analysis (Feb 27, 2026)
+| Period | Return | Sortino | Buys | WinRate | DD |
+|--------|--------|---------|------|---------|-----|
+| 3d | -1.28% | -9.97 | 4 | 25% | 1.3% |
+| 7d | -1.28% | -6.03 | 4 | 25% | 1.3% |
+| 14d | -0.65% | -1.95 | 10 | 60% | 1.5% |
+| **30d** | **+1.71%** | **2.68** | **33** | **58%** | **1.5%** |
 
-| Symbol | Direction | 1d | 7d | 30d | 60d | 120d | 150d |
-|--------|-----------|------|------|-------|-------|--------|--------|
-| NVDA | LONG | -2.2% | -6.6% | -5.4% | +0.1% | -3.9% | +0.1% |
-| GOOG | LONG | +1.0% | +2.3% | -4.5% | -1.7% | +23.4% | +59.2% |
-| PLTR | BOTH | +0.2% | +1.8% | -17.2% | -26.9% | -23.5% | -24.1% |
-| DBX | BOTH | +1.5% | +1.1% | -6.5% | -15.0% | -15.7% | -10.6% |
-| TRIP | SHORT | +1.1% | -1.8% | -26.3% | -32.7% | -42.1% | -44.5% |
-| MTCH | SHORT | +1.3% | +3.8% | -0.0% | -6.5% | -15.6% | -7.6% |
-| **NYT** | **SHORT** | +0.9% | +4.8% | **+10.8%** | **+22.6%** | **+34.4%** | **+51.6%** |
+Remote 5090 verification: 30d=+1.67%, Sort=2.63 (matches local)
 
-**NYT is the poison pill**: Classified as SHORT-ONLY but UP +51.6% over 150d.
-Shorting NYT destroys the portfolio. However, removing NYT made overall results worse
-(fewer short symbols to offset long losses).
+### ETH Model (ethusd_h1only_ft20 ep20)
 
-### Training Run: Multiwindow + Proper Directions
+h256, 4L, 8 heads, seq96, classic, trained with maker_fee=0 (unrealistic!)
+Simulator: newnanoalpacahourlyexp HourlyTrader, intensity=3.0, price_offset=0.03%
 
-```
-Config: mw_short_rw015_wd06_s42
-Loss: multiwindow (minimax aggregation)
-Fractions: 0.2, 0.4, 0.6, 0.8, 1.0
-Directions: NVDA/GOOG=long, PLTR/DBX=both, TRIP/MTCH/NYT=short
-Epochs: 30, lr=1e-5, wd=0.06, rw=0.15, seq=32, h512 6L 8H
-Training time: 1660s (55.3s/epoch)
-Best val Sortino: 248.6 (epoch 27)
-```
+| Period | Return | Sortino |
+|--------|--------|---------|
+| 3d | -0.15% | -7.51 |
+| 7d | -0.48% | -11.84 |
+| 14d | -0.75% | -10.94 |
+| 30d | -1.43% | -7.04 |
 
-### Multi-Period Eval Results
+### ETH Epoch Sweep (ft20, 30d holdout)
 
-#### Standard params (min-edge=0.0, max-pos=7, max-hold=6): ALL FAIL
-All 30 epochs fail at 60d+ (-40% to -78% at 150d). Too aggressive trading.
+| Epoch | Return | Sortino |
+|-------|--------|---------|
+| 1 | -0.33% | -2.31 |
+| 3 | -1.26% | -6.55 |
+| 5 | -0.69% | -3.51 |
+| 10 | -1.05% | -5.35 |
+| 20 | -1.43% | -7.04 |
 
-#### High selectivity (min-edge=0.02, max-pos=3, max-hold=4): NEAR-BREAKEVEN
-Epoch 16 nearly qualified: avg_ret=-0.86%, worst=-2.05%(60d), **120d=+1.15%!**
-Only 36 trades over 150d, max DD 5.8%.
+### ETH ft30 Checkpoint Set (30d holdout)
 
-#### **BEST: Ultra-selective (min-edge=0.03, max-pos=3, max-hold=4): PROFITABLE!**
+| Epoch | Return | Sortino |
+|-------|--------|---------|
+| 1 | -0.69% | -4.86 |
+| 5 | -1.50% | -6.67 |
+| 9 | -1.63% | -8.83 |
+| 15 | -1.91% | -8.60 |
+| 20 | -1.77% | -7.81 |
+| 30 | -1.74% | -7.96 |
 
-| Epoch | 1d | 7d | 30d | 60d | 120d | 150d | Avg Ret | Max DD | Buys |
-|-------|------|------|-------|-------|--------|--------|---------|--------|------|
-| **17** | 0% | 0% | **+1.08%** | **+2.12%** | **+7.60%** | **+7.60%** | **+3.07%** | 4.0% | 17 |
-| 16 | 0% | 0% | -0.04% | +1.00% | +7.38% | +7.38% | +2.62% | 4.9% | 15 |
-| 19 | 0% | 0% | -0.66% | +0.40% | +5.38% | +5.38% | +1.75% | 5.6% | 16 |
+**All ETH models uniformly negative on all time periods.**
 
-**Epoch 17 is profitable at ALL traded periods** (30d, 60d, 120d, 150d).
-1d/7d have 0 trades = model correctly abstains when there's no edge.
-- Only 17 trades over 150 days (~1 trade per 9 days)
-- Win rate: 53-60%
-- Max drawdown: 4.0%
-- Survived Sep-Oct 2025 bear market with 4% max drawdown
+### ETH Price Context (Feb 2026)
+- Feb 1: $2,451 -> Mar 1: $2,005 (-18.2%)
+- Last 7d (Feb 22-Mar 1): +1.7% recovery
 
-### Key Insights
+### Why ETH Model Fails
+1. Trained with maker_fee=0 -- never penalized for trading costs
+2. Late epochs overfit (ep1 is "best" at Sort=-2.31 but still negative)
+3. No margin/leverage cost in training
+4. ETH crashed 18% in Feb - model can't adapt
 
-1. **Direction alignment is critical**: Training must match eval direction constraints
-2. **Selectivity > model quality**: min-edge=0.03 turned a -70% model into a +7.6% model
-3. **Multiwindow minimax loss helps**: Epoch 17 from multiwindow loss works where sortino-only failed
-4. **NYT hurts but can't remove**: NYT SHORT-ONLY is wrong for this market, but removing it loses short diversity
-5. **Ultra-low frequency trading works**: 17 trades/150d = very patient, very selective
+### Verdict
+**Keep stocks deployed.** Stock model positive on 30d (Sort=2.68) despite bad last week.
 
-### Recommended Production Configuration
-
-```
-Checkpoint: mw_short_rw015_wd06_s42/epoch_017.pt
-Min edge: 0.03
-Max positions: 3
-Max hold hours: 4
-Symbols: NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT
-Directions: NVDA/GOOG=long, PLTR/DBX=both, TRIP/MTCH/NYT=short
-```
+To make ETH competitive, need full retrain:
+- Use `unified_hourly_experiment/train_unified_policy.py --crypto-symbols ETHUSD`
+- Realistic fees: `--maker-fee 0.001`
+- Margin: `--margin-rate 0.0625`
+- 24/7 trading (no market hours for crypto)
+- Early stopping at epoch 6-9
