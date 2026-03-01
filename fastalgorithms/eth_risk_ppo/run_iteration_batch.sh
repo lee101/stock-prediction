@@ -80,9 +80,17 @@ short_ret = float(short_h["total_return"].mean()) if not short_h.empty else 0.0
 long_sort = float(long_h["sortino"].mean()) if not long_h.empty else 0.0
 worst_long = float(long_h["total_return"].min()) if not long_h.empty else 0.0
 all_positive = int(bool((subset["total_return"] > 0).all())) if not subset.empty else 0
+mean_fills = float(long_h["fills_total"].mean()) if ("fills_total" in long_h.columns and not long_h.empty) else 0.0
+mean_turnover = float(long_h["mean_turnover"].mean()) if ("mean_turnover" in long_h.columns and not long_h.empty) else 0.0
 score = (long_ret * 100.0) + (0.05 * long_sort) + (worst_long * 50.0)
 if all_positive:
     score += 5.0
+if mean_fills < 1.0:
+    score -= 25.0
+elif mean_fills < 5.0:
+    score -= 10.0
+if mean_turnover < 1e-4:
+    score -= 10.0
 print(f"{score:.6f},{long_ret:.6f},{short_ret:.6f},{long_sort:.6f},{all_positive}")
 PY
 )"
