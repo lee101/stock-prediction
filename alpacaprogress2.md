@@ -1000,6 +1000,44 @@ Cloned modded-nanogpt as reference for efficient training patterns:
 - Gradient accumulation scaling
 - Key insight: BF16 doesn't need GradScaler, just autocast
 
-### Multi-Period Eval Running (pending results)
-Evaluating all WD sweep models across 1,7,30,60,120,150d holdouts.
-The key challenge is finding a model that doesn't degrade at longer horizons.
+### Multi-Period Eval Results: wd_0.06_s42 (all epochs, 1-150d)
+
+**NO epoch qualified across all 6 periods (1d, 7d, 30d, 60d, 120d, 150d).**
+
+All 20 epochs fail at 120d and/or 150d. Pattern:
+- 30d/60d: model is profitable (ep9: +1.79%, +2.09%)
+- 120d/150d: model loses money (ep9: -3.05%, -3.18%)
+- Later epochs (14+) catastrophically fail at 150d (-30% to -48%)
+
+| Epoch | 1d | 7d | 30d | 60d | 120d | 150d |
+|-------|------|------|-------|-------|--------|--------|
+| ep6 | - | - | +0.39% | +0.16% | -1.94% | -1.16% |
+| ep9 | +0.53% | -0.22% | +1.79% | +2.09% | -3.05% | -3.18% |
+| ep13 | - | - | +2.79% | +2.45% | -14.33% | -14.80% |
+| ep17 | +1.00% | - | +2.88% | +2.27% | -11.97% | -40.98% |
+
+### Root Cause Analysis: Market Conditions
+
+The 120d-150d window covers Sep-Oct 2025, a period of broad market weakness:
+
+| Period | NVDA | PLTR | GOOG | DBX | TRIP | MTCH | NYT |
+|--------|------|------|------|-----|------|------|-----|
+| 30d | -7.6% | -13.9% | -7.4% | -4.6% | -22.4% | +0.8% | +9.9% |
+| 60d | -5.8% | -24.9% | -1.0% | -10.5% | -26.6% | -2.5% | +14.7% |
+| 120d | -13.5% | -31.8% | +8.7% | -13.0% | -37.2% | -2.9% | +39.4% |
+| 150d | -4.1% | -24.7% | +29.1% | -16.5% | -37.9% | -10.0% | +41.3% |
+
+Most stocks are deeply negative. Model needs to SHORT effectively to profit.
+
+### Data Limitation Discovery
+- Forecast cache (Chronos h1): only ~11 months (Mar 2025 - Feb 2026)
+- Raw hourly data: ~5.5 years (Jul 2020 - Feb 2026, ~10k bars/symbol)
+- Training uses only forecast-covered period: **5,799 train samples**
+- Without forecast cache: **9,567 train samples** (65% more)
+- More training data = more market regimes seen = better generalization
+
+### Next Steps
+1. Extend forecast cache to cover full history (or train without Chronos features)
+2. Try multiwindow loss function that optimizes across multiple horizons simultaneously
+3. Add explicit short-selling optimization to the training objective
+4. Consider ensemble: different models for different market regimes
