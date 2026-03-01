@@ -1003,3 +1003,79 @@ Cloned modded-nanogpt as reference for efficient training patterns:
 ### Multi-Period Eval Running (pending results)
 Evaluating all WD sweep models across 1,7,30,60,120,150d holdouts.
 The key challenge is finding a model that doesn't degrade at longer horizons.
+
+---
+
+## 2026-03-01: Stock vs ETH Comparison
+
+### Goal
+Compare stock Alpaca strategy (wd_0.04 ep9) vs ETH model (ethusd_h1only_ft20) to determine which deserves capital.
+
+### Stock Model (wd_0.04 ep9) - Currently Deployed
+
+h512, 6L, 8 heads, seq48, classic, fee=10bps, margin=6.25%, leverage=2x, max_hold=6h
+Symbols: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT
+
+| Period | Return | Sortino | Buys | WinRate | DD |
+|--------|--------|---------|------|---------|-----|
+| 3d | -1.28% | -9.97 | 4 | 25% | 1.3% |
+| 7d | -1.28% | -6.03 | 4 | 25% | 1.3% |
+| 14d | -0.65% | -1.95 | 10 | 60% | 1.5% |
+| **30d** | **+1.71%** | **2.68** | **33** | **58%** | **1.5%** |
+
+Remote 5090 verification: 30d=+1.67%, Sort=2.63 (matches local)
+
+### ETH Model (ethusd_h1only_ft20 ep20)
+
+h256, 4L, 8 heads, seq96, classic, trained with maker_fee=0 (unrealistic!)
+Simulator: newnanoalpacahourlyexp HourlyTrader, intensity=3.0, price_offset=0.03%
+
+| Period | Return | Sortino |
+|--------|--------|---------|
+| 3d | -0.15% | -7.51 |
+| 7d | -0.48% | -11.84 |
+| 14d | -0.75% | -10.94 |
+| 30d | -1.43% | -7.04 |
+
+### ETH Epoch Sweep (ft20, 30d holdout)
+
+| Epoch | Return | Sortino |
+|-------|--------|---------|
+| 1 | -0.33% | -2.31 |
+| 3 | -1.26% | -6.55 |
+| 5 | -0.69% | -3.51 |
+| 10 | -1.05% | -5.35 |
+| 20 | -1.43% | -7.04 |
+
+### ETH ft30 Checkpoint Set (30d holdout)
+
+| Epoch | Return | Sortino |
+|-------|--------|---------|
+| 1 | -0.69% | -4.86 |
+| 5 | -1.50% | -6.67 |
+| 9 | -1.63% | -8.83 |
+| 15 | -1.91% | -8.60 |
+| 20 | -1.77% | -7.81 |
+| 30 | -1.74% | -7.96 |
+
+**All ETH models uniformly negative on all time periods.**
+
+### ETH Price Context (Feb 2026)
+- Feb 1: $2,451 -> Mar 1: $2,005 (-18.2%)
+- Last 7d (Feb 22-Mar 1): +1.7% recovery
+
+### Why ETH Model Fails
+1. Trained with maker_fee=0 -- never penalized for trading costs
+2. Late epochs overfit (ep1 is "best" at Sort=-2.31 but still negative)
+3. No margin/leverage cost in training
+4. ETH crashed 18% in Feb - model can't adapt
+
+### Verdict
+**Keep stocks deployed.** Stock model positive on 30d (Sort=2.68) despite bad last week.
+
+To make ETH competitive, need full retrain:
+- Use `unified_hourly_experiment/train_unified_policy.py --crypto-symbols ETHUSD`
+- Realistic fees: `--maker-fee 0.001`
+- Margin: `--margin-rate 0.0625`
+- 24/7 trading (no market hours for crypto)
+- Early stopping at epoch 6-9
