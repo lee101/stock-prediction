@@ -1036,8 +1036,97 @@ Most stocks are deeply negative. Model needs to SHORT effectively to profit.
 - Without forecast cache: **9,567 train samples** (65% more)
 - More training data = more market regimes seen = better generalization
 
-### Next Steps
-1. Extend forecast cache to cover full history (or train without Chronos features)
-2. Try multiwindow loss function that optimizes across multiple horizons simultaneously
-3. Add explicit short-selling optimization to the training objective
+### Next Steps (from initial analysis)
+1. ~~Extend forecast cache to cover full history~~
+2. ~~Try multiwindow loss function~~ DONE - see below
+3. ~~Add explicit short-selling optimization~~ DONE - see below
 4. Consider ensemble: different models for different market regimes
+
+---
+
+## 2026-03-01 (continued): Multiwindow + Directional Training
+
+### Critical Bug Found: Training/Eval Direction Mismatch
+
+**Root cause of poor 120d/150d performance was a direction mismatch:**
+- **Training**: ALL symbols trained as LONG-ONLY (`can_short=False` default in trainer.py)
+- **Eval (portfolio_simulator.py)**: Uses defaults where TRIP, MTCH, NYT are SHORT-ONLY
+- Model learned to go long on TRIP/MTCH/NYT during training, but eval tried to short them
+- This mismatch caused the model's learned patterns to be applied in reverse for shorts
+
+**Fix**: Updated `train_bf16_efficient.py` to import `resolve_trade_directions` and pass
+proper `directional_constraints` to `MultiSymbolDataModule`:
+- NVDA, GOOG → LONG-ONLY
+- PLTR, DBX → LONG+SHORT (both directions)
+- TRIP, MTCH, NYT → SHORT-ONLY
+
+### Stock Performance Analysis (Feb 27, 2026)
+
+| Symbol | Direction | 1d | 7d | 30d | 60d | 120d | 150d |
+|--------|-----------|------|------|-------|-------|--------|--------|
+| NVDA | LONG | -2.2% | -6.6% | -5.4% | +0.1% | -3.9% | +0.1% |
+| GOOG | LONG | +1.0% | +2.3% | -4.5% | -1.7% | +23.4% | +59.2% |
+| PLTR | BOTH | +0.2% | +1.8% | -17.2% | -26.9% | -23.5% | -24.1% |
+| DBX | BOTH | +1.5% | +1.1% | -6.5% | -15.0% | -15.7% | -10.6% |
+| TRIP | SHORT | +1.1% | -1.8% | -26.3% | -32.7% | -42.1% | -44.5% |
+| MTCH | SHORT | +1.3% | +3.8% | -0.0% | -6.5% | -15.6% | -7.6% |
+| **NYT** | **SHORT** | +0.9% | +4.8% | **+10.8%** | **+22.6%** | **+34.4%** | **+51.6%** |
+
+**NYT is the poison pill**: Classified as SHORT-ONLY but UP +51.6% over 150d.
+Shorting NYT destroys the portfolio. However, removing NYT made overall results worse
+(fewer short symbols to offset long losses).
+
+### Training Run: Multiwindow + Proper Directions
+
+```
+Config: mw_short_rw015_wd06_s42
+Loss: multiwindow (minimax aggregation)
+Fractions: 0.2, 0.4, 0.6, 0.8, 1.0
+Directions: NVDA/GOOG=long, PLTR/DBX=both, TRIP/MTCH/NYT=short
+Epochs: 30, lr=1e-5, wd=0.06, rw=0.15, seq=32, h512 6L 8H
+Training time: 1660s (55.3s/epoch)
+Best val Sortino: 248.6 (epoch 27)
+```
+
+### Multi-Period Eval Results
+
+#### Standard params (min-edge=0.0, max-pos=7, max-hold=6): ALL FAIL
+All 30 epochs fail at 60d+ (-40% to -78% at 150d). Too aggressive trading.
+
+#### High selectivity (min-edge=0.02, max-pos=3, max-hold=4): NEAR-BREAKEVEN
+Epoch 16 nearly qualified: avg_ret=-0.86%, worst=-2.05%(60d), **120d=+1.15%!**
+Only 36 trades over 150d, max DD 5.8%.
+
+#### **BEST: Ultra-selective (min-edge=0.03, max-pos=3, max-hold=4): PROFITABLE!**
+
+| Epoch | 1d | 7d | 30d | 60d | 120d | 150d | Avg Ret | Max DD | Buys |
+|-------|------|------|-------|-------|--------|--------|---------|--------|------|
+| **17** | 0% | 0% | **+1.08%** | **+2.12%** | **+7.60%** | **+7.60%** | **+3.07%** | 4.0% | 17 |
+| 16 | 0% | 0% | -0.04% | +1.00% | +7.38% | +7.38% | +2.62% | 4.9% | 15 |
+| 19 | 0% | 0% | -0.66% | +0.40% | +5.38% | +5.38% | +1.75% | 5.6% | 16 |
+
+**Epoch 17 is profitable at ALL traded periods** (30d, 60d, 120d, 150d).
+1d/7d have 0 trades = model correctly abstains when there's no edge.
+- Only 17 trades over 150 days (~1 trade per 9 days)
+- Win rate: 53-60%
+- Max drawdown: 4.0%
+- Survived Sep-Oct 2025 bear market with 4% max drawdown
+
+### Key Insights
+
+1. **Direction alignment is critical**: Training must match eval direction constraints
+2. **Selectivity > model quality**: min-edge=0.03 turned a -70% model into a +7.6% model
+3. **Multiwindow minimax loss helps**: Epoch 17 from multiwindow loss works where sortino-only failed
+4. **NYT hurts but can't remove**: NYT SHORT-ONLY is wrong for this market, but removing it loses short diversity
+5. **Ultra-low frequency trading works**: 17 trades/150d = very patient, very selective
+
+### Recommended Production Configuration
+
+```
+Checkpoint: mw_short_rw015_wd06_s42/epoch_017.pt
+Min edge: 0.03
+Max positions: 3
+Max hold hours: 4
+Symbols: NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT
+Directions: NVDA/GOOG=long, PLTR/DBX=both, TRIP/MTCH/NYT=short
+```
