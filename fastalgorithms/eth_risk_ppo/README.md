@@ -13,6 +13,7 @@ This experiment package focuses on ETH hourly trading research with:
 - `run_train_remote.sh`: pull latest git on remote and launch detached training.
 - `run_iteration_batch.sh`: run a sequential multi-variant training+eval iteration locally.
 - `run_iteration_batch_remote.sh`: launch the iteration batch on remote (optionally queued behind an existing PID).
+- `ITERATION_PLAN.md`: 10-step remote exploration/refinement plan and queue examples.
 - `compare_live_vs_sim_eth.py`: compare simulator fills against live ETH orders.
 - `evaluate_checkpoint_windows.py`: evaluate one checkpoint across multiple windows and fill buffers.
 - `configs/eth_risk_ppo_bf16.json`: baseline training hyperparameters.
@@ -64,6 +65,7 @@ WAIT_FOR_PID=3161891 bash fastalgorithms/eth_risk_ppo/run_iteration_batch_remote
 ```
 
 Each variant is evaluated across `24h/7d/30d` by default and fill buffers `0/5/10 bps`.
+The default grid now runs 10 variants per iteration.
 
 ## Live-vs-Sim Comparison
 
