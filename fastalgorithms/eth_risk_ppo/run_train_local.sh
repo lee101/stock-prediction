@@ -29,6 +29,7 @@ INCLUDE_CASH="${INCLUDE_CASH:-1}"
 LEVERAGE_CAP="${LEVERAGE_CAP:-1.0}"
 POLICY_DTYPE="${POLICY_DTYPE:-bfloat16}"
 DEVICE="${DEVICE:-auto}"
+SEED="${SEED:-42}"
 
 PYTHON_BIN="${VENV_PATH}/bin/python"
 
@@ -76,6 +77,7 @@ CMD=(
   --regime-leverage-scale "${REGIME_LEVERAGE_SCALE}"
   --policy-dtype "${POLICY_DTYPE}"
   --device "${DEVICE}"
+  --seed "${SEED}"
   --no-wandb
   --run-name "${RUN_NAME}"
   --tensorboard-log "${TB_DIR}"
