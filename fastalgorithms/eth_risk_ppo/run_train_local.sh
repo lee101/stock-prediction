@@ -32,6 +32,10 @@ WEIGHT_CAP="${WEIGHT_CAP:-}"
 ALLOW_SHORT="${ALLOW_SHORT:-0}"
 INCLUDE_CASH="${INCLUDE_CASH:-1}"
 LEVERAGE_CAP="${LEVERAGE_CAP:-1.0}"
+LEVERAGE_HEAD="${LEVERAGE_HEAD:-1}"
+BASE_GROSS_EXPOSURE="${BASE_GROSS_EXPOSURE:-1.0}"
+MAX_GROSS_LEVERAGE="${MAX_GROSS_LEVERAGE:-2.0}"
+INTRADAY_LEVERAGE_CAP="${INTRADAY_LEVERAGE_CAP:-4.0}"
 POLICY_DTYPE="${POLICY_DTYPE:-bfloat16}"
 DEVICE="${DEVICE:-auto}"
 SEED="${SEED:-42}"
@@ -91,6 +95,9 @@ CMD=(
   --policy-dtype "${POLICY_DTYPE}"
   --device "${DEVICE}"
   --seed "${SEED}"
+  --base-gross-exposure "${BASE_GROSS_EXPOSURE}"
+  --max-gross-leverage "${MAX_GROSS_LEVERAGE}"
+  --intraday-leverage-cap "${INTRADAY_LEVERAGE_CAP}"
   --no-wandb
   --run-name "${RUN_NAME}"
   --tensorboard-log "${TB_DIR}"
@@ -121,6 +128,12 @@ elif [[ "${INCLUDE_CASH}" == "0" ]]; then
   CMD+=(--no-include-cash)
 else
   CMD+=(--include-cash)
+fi
+
+if [[ "${LEVERAGE_HEAD}" == "0" ]]; then
+  CMD+=(--no-leverage-head)
+else
+  CMD+=(--leverage-head)
 fi
 
 "${CMD[@]}"
