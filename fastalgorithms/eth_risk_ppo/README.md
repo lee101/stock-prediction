@@ -68,7 +68,7 @@ WAIT_FOR_PID=3161891 bash fastalgorithms/eth_risk_ppo/run_iteration_batch_remote
 
 Each variant is evaluated across `24h/7d/30d` by default and fill buffers `0/5/10 bps`.
 The default grid now runs 10 variants per iteration.
-Leaderboard ranking uses a robust score that prioritizes `7d/30d` returns under `5/10 bps` buffers.
+Leaderboard ranking uses a robust score that prioritizes `7d/30d` returns under `5/10 bps` buffers and penalizes near-zero-activity policies.
 
 Useful training env overrides (via `run_train_local.sh`):
 
