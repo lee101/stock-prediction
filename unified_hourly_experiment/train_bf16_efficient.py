@@ -48,7 +48,7 @@ def setup_bf16_optimizations():
     # Log GPU info
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
-        gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1024**3
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
         logger.info("GPU: {} ({:.1f} GB)", gpu_name, gpu_mem)
         logger.info("BF16 support: {}", torch.cuda.is_bf16_supported())
 
@@ -191,7 +191,6 @@ def main():
         decision_lag_bars=args.decision_lag_bars,
         fill_buffer_pct=args.fill_buffer_pct,
         validation_use_binary_fills=True,
-        forecast_horizons=horizons,
         # BF16 optimizations
         use_amp=not args.no_bf16,
         amp_dtype="bfloat16",
