@@ -80,17 +80,18 @@ if short_h.empty:
 long_ret = float(long_h["total_return"].mean()) if not long_h.empty else 0.0
 short_ret = float(short_h["total_return"].mean()) if not short_h.empty else 0.0
 long_sort = float(long_h["sortino"].mean()) if not long_h.empty else 0.0
+long_sort_clipped = max(min(long_sort, 5.0), -5.0)
 worst_long = float(long_h["total_return"].min()) if not long_h.empty else 0.0
 mean_drawdown = float(long_h["max_drawdown"].mean()) if ("max_drawdown" in long_h.columns and not long_h.empty) else 0.0
 all_positive = int(bool((subset["total_return"] > 0).all())) if not subset.empty else 0
 mean_fills = float(long_h["fills_total"].mean()) if ("fills_total" in long_h.columns and not long_h.empty) else 0.0
 mean_turnover = float(long_h["mean_turnover"].mean()) if ("mean_turnover" in long_h.columns and not long_h.empty) else 0.0
 score = (
-    (long_ret * 140.0)
-    + (short_ret * 25.0)
-    + (0.06 * long_sort)
-    + (worst_long * 60.0)
-    - (mean_drawdown * 30.0)
+    (long_ret * 160.0)
+    + (short_ret * 10.0)
+    + (0.05 * long_sort_clipped)
+    + (worst_long * 80.0)
+    - (mean_drawdown * 35.0)
 )
 if all_positive:
     score += 5.0
