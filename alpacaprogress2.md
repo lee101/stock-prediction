@@ -916,3 +916,90 @@ All: h512, 6L, 8 heads, gemma, lr=1e-5, seed=1337, fill_temp=5e-4
 - Symbols: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT
 - Params: min_edge=0.012, fee=0.001, max_positions=5, max_hold_hours=6
 - OOS: 30d Sort=1.37 Ret=+2.32%, 60d Sort=0.81 Ret=+2.14%, 90d Sort=0.14 Ret=+0.44%
+
+---
+
+## 2026-03-01: E2E Alpaca Trader - BF16 Training + Multi-Timeframe Market Simulator
+
+### Goals
+1. Train best overall Alpaca stock trader
+2. BF16 efficient training (nanoGPT-style optimizations)
+3. Market simulator tested over ALL time windows: 1d, 7d, 30d, 60d, 120d, 150d
+4. Validate production accuracy against recent live trading
+
+### Data Update
+- Downloaded fresh hourly data from Alpaca (7-year history per symbol)
+- Data now extends to Feb 27, 2026 (last trading day)
+- 9,750-10,528 bars per symbol (was ~1,800-2,155)
+- Forecast caches (h1) up to date through Feb 27
+
+### Production Account Status (2026-03-01)
+**Live account: $46,086 (down -17.6% from $55,935)**
+
+Current positions:
+- ETHUSD: 5.88 @ $1955.56 (LONG, +0.73%)
+- MTCH: -7 @ $31.32 (SHORT, -0.89%)
+- NVDA: 81 @ $186.83 (LONG, -5.16%)
+
+Recent filled trades (Feb 23-28):
+| Symbol | Side | Result | Notes |
+|--------|------|--------|-------|
+| TRIP | BUY/SELL | +$576 | 1194 shares short, great fill |
+| ETH | BUY/SELL | +$720 | Crypto hourly scalping |
+| DBX | BUY/SELL | +$86 | Quick round trip |
+| PLTR | BUY/SELL | +$74 | Multiple round trips |
+| GOOG | BUY/SELL | +$18 | 5 shares long |
+| EBAY | BUY/SELL | -$350 | Bad entry timing |
+| MTCH | BUY/SELL | -$99 | Multiple entries, slippage |
+| NYT | BUY/SELL | -$19 | Small loss |
+| NVDA | LONG (open) | -$781 unrealized | 81 shares, biggest loss |
+
+**Key issue**: NVDA 81 shares at $186.83 is the biggest drag (-$781 unrealized)
+
+### Weight Decay Sweep Results (s42, rw=0.15, seq=48, 9-sym)
+
+| WD | Best Epoch | 30d Sort | 30d Ret |
+|----|-----------|----------|---------|
+| 0.03 | ep7 | 2.66 | +2.01% |
+| 0.04 | ep7 | 2.52 | +2.03% |
+| 0.05 | ep9 | 2.64 | +1.75% |
+| **0.06** | **ep9** | **3.63** | **+2.59%** |
+
+**wd=0.06 is the new best** (Sort 3.63, +2.59% on 30d)
+
+### Extended Multi-Period Eval (wd_0.06_s42 ep9)
+
+| Period | Return | Sortino | MaxDD | Buys |
+|--------|--------|---------|-------|------|
+| 1d | +0.53% | 93.88 | 0.0% | 2 |
+| 7d | -0.22% | -1.05 | 1.4% | 9 |
+| 30d | +1.79% | 2.40 | 2.7% | 36 |
+| 60d | +2.09% | 1.54 | 2.7% | 64 |
+| 120d | -3.05% | -0.77 | 6.9% | 110 |
+| 150d | -3.18% | -0.62 | 8.1% | 131 |
+
+**Challenge**: Model is profitable at 30d/60d but LOSES money at 120d/150d. This is the core problem to solve.
+
+### BF16 Training Infrastructure
+Created `unified_hourly_experiment/train_bf16_efficient.py`:
+- BF16 autocast (no grad scaler needed)
+- torch.compile with max-autotune
+- TF32 matmul for bf16-incompatible ops
+- Expandable CUDA memory segments
+- Built-in multi-period eval (1,7,30,60,120,150d)
+
+E2E pipeline: `unified_hourly_experiment/run_e2e_alpaca_trainer.sh`
+- Trains model, then evaluates across all time windows
+- Reports smoothness score (harmonic mean of Sortinos)
+- Only qualifies models profitable on ALL periods
+
+### nanoGPT Reference
+Cloned modded-nanogpt as reference for efficient training patterns:
+- FP8 matmul operators
+- Fused kernels (ReLU^2 MLP, softcapped cross-entropy)
+- Gradient accumulation scaling
+- Key insight: BF16 doesn't need GradScaler, just autocast
+
+### Multi-Period Eval Running (pending results)
+Evaluating all WD sweep models across 1,7,30,60,120,150d holdouts.
+The key challenge is finding a model that doesn't degrade at longer horizons.
