@@ -37,6 +37,8 @@ class HourlyTraderSimulationConfig:
     long_only_symbols: Optional[Sequence[str]] = None
     short_only_symbols: Optional[Sequence[str]] = None
     exit_only_symbols: Optional[Sequence[str]] = None
+    allow_position_adds: bool = False
+    always_full_exit: bool = True
     symbols: Optional[Sequence[str]] = None
 
     # Broker constraints (approximate).
@@ -456,6 +458,8 @@ class HourlyTraderMarketSimulator:
                     can_short=bool(directions.can_short),
                     allow_short=bool(cfg.allow_short),
                     exit_only=bool(exit_only),
+                    allow_position_adds=bool(cfg.allow_position_adds),
+                    always_full_exit=bool(cfg.always_full_exit),
                 )
 
                 for intent in intents:
@@ -524,4 +528,3 @@ __all__ = [
     "HourlyTraderSimulationResult",
     "OpenOrder",
 ]
-

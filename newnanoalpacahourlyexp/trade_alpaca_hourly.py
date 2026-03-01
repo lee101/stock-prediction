@@ -233,6 +233,8 @@ def _run_cycle(
     refresher: HourlyDataRefresher,
     device: torch.device,
     exit_only_symbols: Sequence[str],
+    allow_position_adds: bool,
+    always_full_exit: bool,
     dry_run: bool,
 ) -> None:
     symbols_list = [str(sym).upper() for sym in symbols]
@@ -343,6 +345,8 @@ def _run_cycle(
             can_short=bool(directions.can_short),
             allow_short=bool(allow_short),
             exit_only=exit_only,
+            allow_position_adds=bool(allow_position_adds),
+            always_full_exit=bool(always_full_exit),
         )
         if exit_only:
             logger.info("Exit-only mode for %s: %d intent(s)", symbol, len(intents))
@@ -420,6 +424,24 @@ def main() -> None:
     )
     parser.add_argument("--long-only-symbols", default=None, help="Comma-separated symbols to restrict to long-only.")
     parser.add_argument("--short-only-symbols", default=None, help="Comma-separated symbols to restrict to short-only.")
+    parser.add_argument(
+        "--allow-position-adds",
+        action="store_true",
+        help="Allow same-side add orders while already in a position (legacy behavior).",
+    )
+    parser.add_argument(
+        "--always-full-exit",
+        dest="always_full_exit",
+        action="store_true",
+        help="Always quote full-position exits when a position is open (default).",
+    )
+    parser.add_argument(
+        "--no-always-full-exit",
+        dest="always_full_exit",
+        action="store_false",
+        help="Respect model sell_amount/buy_amount for partial exits when a position is open.",
+    )
+    parser.set_defaults(always_full_exit=True)
     parser.add_argument("--device", default=None, help="Override device (cuda/cuda:0).")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--buffer-seconds", type=int, default=30)
@@ -504,6 +526,8 @@ def main() -> None:
             refresher=refresher,
             device=device,
             exit_only_symbols=exit_only_symbols,
+            allow_position_adds=bool(args.allow_position_adds),
+            always_full_exit=bool(args.always_full_exit),
             dry_run=args.dry_run,
         )
         if args.once:

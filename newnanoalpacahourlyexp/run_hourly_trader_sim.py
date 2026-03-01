@@ -129,6 +129,24 @@ def main() -> None:
     parser.add_argument("--intensity-scale", type=float, default=1.0)
     parser.add_argument("--price-offset-pct", type=float, default=0.0)
     parser.add_argument("--min-gap-pct", type=float, default=0.001)
+    parser.add_argument(
+        "--allow-position-adds",
+        action="store_true",
+        help="Allow same-side add orders while already in a position (legacy behavior).",
+    )
+    parser.add_argument(
+        "--always-full-exit",
+        dest="always_full_exit",
+        action="store_true",
+        help="Always quote full-position exits when a position is open (default).",
+    )
+    parser.add_argument(
+        "--no-always-full-exit",
+        dest="always_full_exit",
+        action="store_false",
+        help="Respect model sell_amount/buy_amount for partial exits when a position is open.",
+    )
+    parser.set_defaults(always_full_exit=True)
     parser.add_argument("--decision-lag-bars", type=int, default=1)
     parser.add_argument("--eval-days", type=float, default=None)
     parser.add_argument("--eval-hours", type=float, default=None)
@@ -271,6 +289,8 @@ def main() -> None:
             intensity_scale=float(args.intensity_scale),
             price_offset_pct=float(args.price_offset_pct),
             min_gap_pct=float(args.min_gap_pct),
+            allow_position_adds=bool(args.allow_position_adds),
+            always_full_exit=bool(args.always_full_exit),
             decision_lag_bars=int(args.decision_lag_bars),
             symbols=[s.upper() for s in symbols],
         )
