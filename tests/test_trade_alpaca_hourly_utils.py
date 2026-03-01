@@ -149,6 +149,56 @@ def test_build_order_intents_long_position_can_exit_and_add():
     ]
 
 
+def test_build_order_intents_long_position_default_live_mode_full_exit_no_add():
+    plan = TradingPlan(
+        symbol="ETHUSD",
+        buy_price=1900.0,
+        sell_price=1970.0,
+        buy_amount=80.0,
+        sell_amount=10.0,
+        timestamp=datetime.now(timezone.utc),
+    )
+    intents = build_order_intents(
+        plan,
+        position_qty=5.5,
+        allocation_usd=10_000.0,
+        buy_price=1900.0,
+        sell_price=1970.0,
+        can_long=True,
+        can_short=False,
+        allow_short=False,
+        exit_only=False,
+        allow_position_adds=False,
+        always_full_exit=True,
+    )
+    assert [(i.kind, i.side, round(i.qty, 6)) for i in intents] == [("exit", "sell", 5.5)]
+
+
+def test_build_order_intents_short_position_default_live_mode_full_exit_no_add():
+    plan = TradingPlan(
+        symbol="EBAY",
+        buy_price=10.0,
+        sell_price=11.0,
+        buy_amount=5.0,
+        sell_amount=90.0,
+        timestamp=datetime.now(timezone.utc),
+    )
+    intents = build_order_intents(
+        plan,
+        position_qty=-8.0,
+        allocation_usd=1000.0,
+        buy_price=10.0,
+        sell_price=11.0,
+        can_long=False,
+        can_short=True,
+        allow_short=True,
+        exit_only=False,
+        allow_position_adds=False,
+        always_full_exit=True,
+    )
+    assert [(i.kind, i.side, round(i.qty, 6)) for i in intents] == [("exit", "buy", 8.0)]
+
+
 def test_build_order_intents_short_position_can_cover_and_add_short_when_enabled():
     plan = TradingPlan(
         symbol="EBAY",
