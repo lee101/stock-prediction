@@ -130,6 +130,12 @@ def main() -> None:
     parser.add_argument("--price-offset-pct", type=float, default=0.0)
     parser.add_argument("--min-gap-pct", type=float, default=0.001)
     parser.add_argument(
+        "--fill-buffer-bps",
+        type=float,
+        default=0.0,
+        help="Require bar to trade through limit by this many bps before fill (realism control).",
+    )
+    parser.add_argument(
         "--allow-position-adds",
         action="store_true",
         help="Allow same-side add orders while already in a position (legacy behavior).",
@@ -289,6 +295,7 @@ def main() -> None:
             intensity_scale=float(args.intensity_scale),
             price_offset_pct=float(args.price_offset_pct),
             min_gap_pct=float(args.min_gap_pct),
+            fill_buffer_bps=float(args.fill_buffer_bps),
             allow_position_adds=bool(args.allow_position_adds),
             always_full_exit=bool(args.always_full_exit),
             decision_lag_bars=int(args.decision_lag_bars),

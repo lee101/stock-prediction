@@ -27,6 +27,9 @@ class HourlyTraderSimulationConfig:
     intensity_scale: float = 1.0
     price_offset_pct: float = 0.0
     min_gap_pct: float = 0.001
+    # Realism: require bar to trade through limit by this many bps before fill.
+    # Example: 5 bps means a buy at 100 fills only if low <= 99.95.
+    fill_buffer_bps: float = 0.0
     # Execution realism: lag between decision bar close and earliest fill eligibility.
     # For live hourly trading, 1 is appropriate (decide on bar t, fill on bar t+1).
     decision_lag_bars: int = 1
@@ -109,6 +112,10 @@ class HourlyTraderMarketSimulator:
         decision_lag_bars = int(getattr(cfg, "decision_lag_bars", 1) or 0)
         if decision_lag_bars < 0:
             raise ValueError(f"decision_lag_bars must be >= 0, got {cfg.decision_lag_bars}.")
+        fill_buffer_bps = float(getattr(cfg, "fill_buffer_bps", 0.0) or 0.0)
+        if not math.isfinite(fill_buffer_bps) or fill_buffer_bps < 0.0:
+            raise ValueError(f"fill_buffer_bps must be finite and >= 0, got {cfg.fill_buffer_bps}.")
+        fill_buffer = fill_buffer_bps / 10_000.0
         cash_buffer = float(getattr(cfg, "cash_buffer", 0.99) or 0.99)
         if not math.isfinite(cash_buffer) or cash_buffer <= 0.0 or cash_buffer > 1.0:
             raise ValueError(f"cash_buffer must be in (0, 1], got {cfg.cash_buffer}.")
@@ -225,7 +232,8 @@ class HourlyTraderMarketSimulator:
                 return
 
             if order.side == "buy":
-                if bar_low > price:
+                buy_trigger = max(0.0, price * (1.0 - fill_buffer))
+                if bar_low > buy_trigger:
                     return
                 # Consume reserved cash (approx broker behavior). Cost is deterministic in this sim.
                 notional = qty * price
@@ -235,7 +243,8 @@ class HourlyTraderMarketSimulator:
                 reserved_cash -= float(order.reserved_cash)
                 positions[sym] = float(positions.get(sym, 0.0)) + qty
             else:
-                if bar_high < price:
+                sell_trigger = price * (1.0 + fill_buffer)
+                if bar_high < sell_trigger:
                     return
                 notional = qty * price
                 fee = notional * fee_rate
