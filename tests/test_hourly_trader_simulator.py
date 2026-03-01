@@ -124,3 +124,42 @@ def test_hourly_trader_simulator_default_live_mode_no_same_side_add_and_full_exi
     assert [f.side for f in result.fills] == ["buy", "sell"]
     assert result.final_positions == {}
     assert result.final_cash == 1100.0
+
+
+def test_hourly_trader_simulator_fill_buffer_bps_requires_trade_through_limit():
+    ts0 = pd.Timestamp("2026-01-01T00:00:00Z")
+    ts1 = ts0 + pd.Timedelta(hours=1)
+    ts2 = ts1 + pd.Timedelta(hours=1)
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "high": 100.1, "low": 99.9, "close": 100.0},
+            # Buy at 100.0 with 5 bps buffer requires low <= 99.95 -> fills here (99.94).
+            {"timestamp": ts1, "symbol": "ETHUSD", "high": 100.05, "low": 99.94, "close": 100.0},
+            # Sell at 100.0 with 5 bps buffer requires high >= 100.05 -> does not fill here (100.04).
+            {"timestamp": ts2, "symbol": "ETHUSD", "high": 100.04, "low": 99.9, "close": 100.0},
+        ]
+    )
+
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 100.0, "buy_amount": 100.0, "sell_amount": 0.0},
+            {"timestamp": ts1, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 100.0, "buy_amount": 0.0, "sell_amount": 100.0},
+            {"timestamp": ts2, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 100.0, "buy_amount": 0.0, "sell_amount": 0.0},
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=1000.0,
+            allocation_usd=1000.0,
+            allocation_pct=None,
+            decision_lag_bars=1,
+            fill_buffer_bps=5.0,
+            fee_by_symbol={"ETHUSD": 0.0},
+        )
+    )
+    result = sim.run(bars, actions)
+    assert [f.side for f in result.fills] == ["buy"]
+    assert "ETHUSD" in result.final_positions
+    assert result.final_positions["ETHUSD"] > 0.0

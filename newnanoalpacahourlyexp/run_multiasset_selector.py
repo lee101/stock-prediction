@@ -159,6 +159,18 @@ def main() -> None:
     parser.add_argument("--no-enforce-market-hours", action="store_true")
     parser.add_argument("--no-close-at-eod", action="store_true")
     parser.add_argument(
+        "--bar-margin",
+        type=float,
+        default=0.0,
+        help="Decimal fill buffer on bar extremums (0.001 = 10 bps).",
+    )
+    parser.add_argument(
+        "--fill-buffer-bps",
+        type=float,
+        default=None,
+        help="Fill buffer in bps; overrides --bar-margin when provided.",
+    )
+    parser.add_argument(
         "--decision-lag-bars",
         type=int,
         default=0,
@@ -283,6 +295,10 @@ def main() -> None:
     if args.eval_days or args.eval_hours:
         actions, bars = _slice_eval_window(actions, bars, args.eval_days, args.eval_hours)
 
+    bar_margin = float(args.fill_buffer_bps) / 10_000.0 if args.fill_buffer_bps is not None else float(args.bar_margin)
+    if bar_margin < 0.0:
+        raise ValueError(f"bar margin/fill buffer must be >= 0, got {bar_margin}.")
+
     sim_config = SelectionConfig(
         initial_cash=args.initial_cash,
         min_edge=args.min_edge,
@@ -293,6 +309,7 @@ def main() -> None:
         allow_reentry_same_bar=args.allow_reentry_same_bar,
         enforce_market_hours=not args.no_enforce_market_hours,
         close_at_eod=not args.no_close_at_eod,
+        bar_margin=bar_margin,
         decision_lag_bars=args.decision_lag_bars,
         select_fillable_only=not bool(args.realistic_selection),
         fee_by_symbol=fee_by_symbol,

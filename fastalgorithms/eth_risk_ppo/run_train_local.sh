@@ -9,6 +9,22 @@ RUN_NAME="${2:-eth_risk_ppo_$(date -u +%Y%m%d_%H%M%S)}"
 VENV_PATH="${VENV_PATH:-.venv312}"
 DATA_DIR="${DATA_DIR:-trainingdatahourly}"
 
+LEARNING_RATE="${LEARNING_RATE:-5e-5}"
+BATCH_SIZE="${BATCH_SIZE:-512}"
+N_STEPS="${N_STEPS:-2048}"
+GAMMA="${GAMMA:-0.995}"
+GAE_LAMBDA="${GAE_LAMBDA:-0.98}"
+CLIP_RANGE="${CLIP_RANGE:-0.2}"
+COSTS_BPS="${COSTS_BPS:-3.0}"
+TURNOVER_PENALTY="${TURNOVER_PENALTY:-0.001}"
+DRAWDOWN_PENALTY="${DRAWDOWN_PENALTY:-0.05}"
+CVAR_PENALTY="${CVAR_PENALTY:-0.25}"
+UNCERTAINTY_PENALTY="${UNCERTAINTY_PENALTY:-0.05}"
+REGIME_DRAWDOWN_THRESHOLD="${REGIME_DRAWDOWN_THRESHOLD:-0.03}"
+REGIME_LEVERAGE_SCALE="${REGIME_LEVERAGE_SCALE:-0.35}"
+POLICY_DTYPE="${POLICY_DTYPE:-bfloat16}"
+DEVICE="${DEVICE:-auto}"
+
 PYTHON_BIN="${VENV_PATH}/bin/python"
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
@@ -36,22 +52,22 @@ fi
   --prediction-length 1 \
   --realized-horizon 1 \
   --num-timesteps "${NUM_TIMESTEPS}" \
-  --learning-rate 5e-5 \
-  --batch-size 512 \
-  --n-steps 2048 \
-  --gamma 0.995 \
-  --gae-lambda 0.98 \
-  --clip-range 0.2 \
-  --costs-bps 3.0 \
-  --turnover-penalty 0.001 \
-  --drawdown-penalty 0.05 \
-  --cvar-penalty 0.25 \
-  --uncertainty-penalty 0.05 \
+  --learning-rate "${LEARNING_RATE}" \
+  --batch-size "${BATCH_SIZE}" \
+  --n-steps "${N_STEPS}" \
+  --gamma "${GAMMA}" \
+  --gae-lambda "${GAE_LAMBDA}" \
+  --clip-range "${CLIP_RANGE}" \
+  --costs-bps "${COSTS_BPS}" \
+  --turnover-penalty "${TURNOVER_PENALTY}" \
+  --drawdown-penalty "${DRAWDOWN_PENALTY}" \
+  --cvar-penalty "${CVAR_PENALTY}" \
+  --uncertainty-penalty "${UNCERTAINTY_PENALTY}" \
   --regime-filters-enabled \
-  --regime-drawdown-threshold 0.03 \
-  --regime-leverage-scale 0.35 \
-  --policy-dtype bfloat16 \
-  --device auto \
+  --regime-drawdown-threshold "${REGIME_DRAWDOWN_THRESHOLD}" \
+  --regime-leverage-scale "${REGIME_LEVERAGE_SCALE}" \
+  --policy-dtype "${POLICY_DTYPE}" \
+  --device "${DEVICE}" \
   --no-wandb \
   --run-name "${RUN_NAME}" \
   --tensorboard-log "${TB_DIR}" \
