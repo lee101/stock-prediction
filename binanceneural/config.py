@@ -166,7 +166,7 @@ class TrainingConfig:
     max_hold_hours: float = 24.0
     feature_noise_std: float = 0.0
     use_compile: bool = True
-    use_amp: bool = True
+    use_amp: bool = False
     amp_dtype: str = "bfloat16"
     use_tf32: bool = True
     use_flash_attention: bool = True
