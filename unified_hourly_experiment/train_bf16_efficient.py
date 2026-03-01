@@ -30,6 +30,7 @@ from loguru import logger
 from binanceneural.trainer import BinanceHourlyTrainer
 from binanceneural.data import MultiSymbolDataModule
 from binanceneural.config import DatasetConfig, TrainingConfig
+from src.trade_directions import resolve_trade_directions
 
 
 def setup_bf16_optimizations():
@@ -94,6 +95,19 @@ def main():
     parser.add_argument("--fill-temperature", type=float, default=5e-4)
     parser.add_argument("--logits-softcap", type=float, default=12.0)
 
+    # Loss function
+    parser.add_argument("--loss-type", type=str, default="sortino",
+                        choices=["sortino", "sharpe", "calmar", "log_wealth",
+                                 "sortino_dd", "multiwindow", "multiwindow_dd"],
+                        help="Loss function type")
+    parser.add_argument("--multiwindow-fractions", type=str, default="0.33,0.5,0.75,1.0",
+                        help="Comma-separated window fractions for multiwindow loss")
+    parser.add_argument("--multiwindow-aggregation", type=str, default="minimax",
+                        choices=["minimax", "mean", "softmin"],
+                        help="Aggregation for multiwindow loss")
+    parser.add_argument("--dd-penalty", type=float, default=1.0,
+                        help="Drawdown penalty for sortino_dd/multiwindow_dd")
+
     # BF16 optimization controls
     parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
     parser.add_argument("--no-bf16", action="store_true", help="Disable BF16 (use FP32)")
@@ -111,6 +125,12 @@ def main():
     parser.add_argument("--max-hold-hours", type=int, default=6)
     parser.add_argument("--eval-fee-rate", type=float, default=0.001)
     parser.add_argument("--eval-margin-rate", type=float, default=0.0625)
+
+    # Trade direction
+    parser.add_argument("--allow-short", action="store_true", default=True,
+                        help="Enable short-selling for short-only symbols")
+    parser.add_argument("--no-short", action="store_true",
+                        help="Disable all shorting (long-only)")
 
     # Output
     parser.add_argument("--checkpoint-name", type=str, default=None)
@@ -133,9 +153,23 @@ def main():
     logger.info("Training: epochs={} bs={} lr={} wd={} rw={} seq={}",
                 args.epochs, args.batch_size, args.lr, args.weight_decay,
                 args.return_weight, args.sequence_length)
-    logger.info("BF16: {} | Compile: {} ({})",
+    allow_short = args.allow_short and not args.no_short
+    logger.info("BF16: {} | Compile: {} ({}) | Shorts: {}",
                 not args.no_bf16, not args.no_compile,
-                args.compile_mode if not args.no_compile else "disabled")
+                args.compile_mode if not args.no_compile else "disabled",
+                allow_short)
+
+    # Build directional constraints matching portfolio simulator defaults
+    dir_constraints = {}
+    for sym in stocks:
+        td = resolve_trade_directions(sym, allow_short=allow_short)
+        dir_constraints[sym] = (float(td.can_long), float(td.can_short))
+        if td.can_short and not td.can_long:
+            logger.info("  {} → SHORT-ONLY", sym)
+        elif td.can_long and not td.can_short:
+            logger.info("  {} → LONG-ONLY", sym)
+        else:
+            logger.info("  {} → LONG+SHORT", sym)
 
     # Load data
     stock_config = DatasetConfig(
@@ -152,7 +186,8 @@ def main():
 
     logger.info("Loading stock data for {} symbols...", len(stocks))
     t0 = time.perf_counter()
-    stock_data = MultiSymbolDataModule(stocks, stock_config)
+    stock_data = MultiSymbolDataModule(stocks, stock_config,
+                                       directional_constraints=dir_constraints)
     logger.info("Data loaded in {:.1f}s ({} train samples, {} features)",
                 time.perf_counter() - t0,
                 len(stock_data.train_dataset),
@@ -198,8 +233,11 @@ def main():
         use_flash_attention=True,
         use_compile=not args.no_compile,
         seed=args.seed,
-        # Realistic sim params
-        loss_type="sortino",
+        # Loss function
+        loss_type=args.loss_type,
+        multiwindow_fractions=args.multiwindow_fractions,
+        multiwindow_aggregation=args.multiwindow_aggregation,
+        dd_penalty=args.dd_penalty,
     )
 
     # Train
