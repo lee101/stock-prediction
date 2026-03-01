@@ -12,9 +12,14 @@ DATA_DIR="${DATA_DIR:-trainingdatahourly}"
 LEARNING_RATE="${LEARNING_RATE:-5e-5}"
 BATCH_SIZE="${BATCH_SIZE:-512}"
 N_STEPS="${N_STEPS:-2048}"
+N_EPOCHS="${N_EPOCHS:-10}"
 GAMMA="${GAMMA:-0.995}"
 GAE_LAMBDA="${GAE_LAMBDA:-0.98}"
 CLIP_RANGE="${CLIP_RANGE:-0.2}"
+CLIP_RANGE_VF="${CLIP_RANGE_VF:-}"
+VF_COEF="${VF_COEF:-0.5}"
+MAX_GRAD_NORM="${MAX_GRAD_NORM:-0.5}"
+TARGET_KL="${TARGET_KL:-0.015}"
 ENT_COEF="${ENT_COEF:-0.0}"
 COSTS_BPS="${COSTS_BPS:-3.0}"
 TURNOVER_PENALTY="${TURNOVER_PENALTY:-0.001}"
@@ -63,9 +68,13 @@ CMD=(
   --learning-rate "${LEARNING_RATE}"
   --batch-size "${BATCH_SIZE}"
   --n-steps "${N_STEPS}"
+  --n-epochs "${N_EPOCHS}"
   --gamma "${GAMMA}"
   --gae-lambda "${GAE_LAMBDA}"
   --clip-range "${CLIP_RANGE}"
+  --vf-coef "${VF_COEF}"
+  --max-grad-norm "${MAX_GRAD_NORM}"
+  --target-kl "${TARGET_KL}"
   --ent-coef "${ENT_COEF}"
   --costs-bps "${COSTS_BPS}"
   --turnover-penalty "${TURNOVER_PENALTY}"
@@ -87,6 +96,10 @@ CMD=(
 
 if [[ -n "${WEIGHT_CAP}" ]]; then
   CMD+=(--weight-cap "${WEIGHT_CAP}")
+fi
+
+if [[ -n "${CLIP_RANGE_VF}" ]]; then
+  CMD+=(--clip-range-vf "${CLIP_RANGE_VF}")
 fi
 
 if [[ "${ALLOW_SHORT}" == "1" ]]; then
