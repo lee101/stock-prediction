@@ -82,6 +82,8 @@ Queue multiple iterations remotely in one command:
 ```bash
 WAIT_FOR_PID=3161891 \
 ITERATION_SPECS="iter_explore_2:200000,iter_refine_1:300000" \
+VENV_PATH=/abs/path/to/.venv312 \
+DATA_DIR=/abs/path/to/trainingdatahourly \
 REMOTE_SSH="sshpass -p '$SSHPASS' ssh -o StrictHostKeyChecking=no" \
 bash fastalgorithms/eth_risk_ppo/run_iteration_queue_remote.sh eth_risk_queue_$(date -u +%Y%m%d_%H%M%S)
 ```
