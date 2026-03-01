@@ -15,6 +15,7 @@ N_STEPS="${N_STEPS:-2048}"
 GAMMA="${GAMMA:-0.995}"
 GAE_LAMBDA="${GAE_LAMBDA:-0.98}"
 CLIP_RANGE="${CLIP_RANGE:-0.2}"
+ENT_COEF="${ENT_COEF:-0.0}"
 COSTS_BPS="${COSTS_BPS:-3.0}"
 TURNOVER_PENALTY="${TURNOVER_PENALTY:-0.001}"
 DRAWDOWN_PENALTY="${DRAWDOWN_PENALTY:-0.05}"
@@ -22,6 +23,10 @@ CVAR_PENALTY="${CVAR_PENALTY:-0.25}"
 UNCERTAINTY_PENALTY="${UNCERTAINTY_PENALTY:-0.05}"
 REGIME_DRAWDOWN_THRESHOLD="${REGIME_DRAWDOWN_THRESHOLD:-0.03}"
 REGIME_LEVERAGE_SCALE="${REGIME_LEVERAGE_SCALE:-0.35}"
+WEIGHT_CAP="${WEIGHT_CAP:-}"
+ALLOW_SHORT="${ALLOW_SHORT:-0}"
+INCLUDE_CASH="${INCLUDE_CASH:-1}"
+LEVERAGE_CAP="${LEVERAGE_CAP:-1.0}"
 POLICY_DTYPE="${POLICY_DTYPE:-bfloat16}"
 DEVICE="${DEVICE:-auto}"
 
@@ -44,36 +49,53 @@ if [[ ! -f "${DATA_DIR}/ETHUSD.csv" && -f "${DATA_DIR}/crypto/ETHUSD.csv" ]]; th
   DATA_DIR="${DATA_DIR}/crypto"
 fi
 
-"${PYTHON_BIN}" -m gymrl.train_ppo_allocator \
-  --data-dir "${DATA_DIR}" \
-  --symbols ETHUSD \
-  --forecast-backend bootstrap \
-  --num-samples 128 \
-  --context-window 128 \
-  --prediction-length 1 \
-  --realized-horizon 1 \
-  --num-timesteps "${NUM_TIMESTEPS}" \
-  --learning-rate "${LEARNING_RATE}" \
-  --batch-size "${BATCH_SIZE}" \
-  --n-steps "${N_STEPS}" \
-  --gamma "${GAMMA}" \
-  --gae-lambda "${GAE_LAMBDA}" \
-  --clip-range "${CLIP_RANGE}" \
-  --costs-bps "${COSTS_BPS}" \
-  --turnover-penalty "${TURNOVER_PENALTY}" \
-  --drawdown-penalty "${DRAWDOWN_PENALTY}" \
-  --cvar-penalty "${CVAR_PENALTY}" \
-  --uncertainty-penalty "${UNCERTAINTY_PENALTY}" \
-  --regime-filters-enabled \
-  --regime-drawdown-threshold "${REGIME_DRAWDOWN_THRESHOLD}" \
-  --regime-leverage-scale "${REGIME_LEVERAGE_SCALE}" \
-  --policy-dtype "${POLICY_DTYPE}" \
-  --device "${DEVICE}" \
-  --no-wandb \
-  --run-name "${RUN_NAME}" \
-  --tensorboard-log "${TB_DIR}" \
-  --cache-features-to "${CACHE_FEATURES_TO}" \
+CMD=(
+  "${PYTHON_BIN}" -m gymrl.train_ppo_allocator
+  --data-dir "${DATA_DIR}"
+  --symbols ETHUSD
+  --forecast-backend bootstrap
+  --num-samples 128
+  --context-window 128
+  --prediction-length 1
+  --realized-horizon 1
+  --num-timesteps "${NUM_TIMESTEPS}"
+  --learning-rate "${LEARNING_RATE}"
+  --batch-size "${BATCH_SIZE}"
+  --n-steps "${N_STEPS}"
+  --gamma "${GAMMA}"
+  --gae-lambda "${GAE_LAMBDA}"
+  --clip-range "${CLIP_RANGE}"
+  --ent-coef "${ENT_COEF}"
+  --costs-bps "${COSTS_BPS}"
+  --turnover-penalty "${TURNOVER_PENALTY}"
+  --drawdown-penalty "${DRAWDOWN_PENALTY}"
+  --cvar-penalty "${CVAR_PENALTY}"
+  --uncertainty-penalty "${UNCERTAINTY_PENALTY}"
+  --regime-filters-enabled
+  --regime-drawdown-threshold "${REGIME_DRAWDOWN_THRESHOLD}"
+  --regime-leverage-scale "${REGIME_LEVERAGE_SCALE}"
+  --policy-dtype "${POLICY_DTYPE}"
+  --device "${DEVICE}"
+  --no-wandb
+  --run-name "${RUN_NAME}"
+  --tensorboard-log "${TB_DIR}"
+  --cache-features-to "${CACHE_FEATURES_TO}"
   --output-dir "${OUT_DIR}"
+)
+
+if [[ -n "${WEIGHT_CAP}" ]]; then
+  CMD+=(--weight-cap "${WEIGHT_CAP}")
+fi
+
+if [[ "${ALLOW_SHORT}" == "1" ]]; then
+  CMD+=(--allow-short --leverage-cap "${LEVERAGE_CAP}" --no-include-cash)
+elif [[ "${INCLUDE_CASH}" == "0" ]]; then
+  CMD+=(--no-include-cash)
+else
+  CMD+=(--include-cash)
+fi
+
+"${CMD[@]}"
 
 echo "Completed run: ${RUN_NAME}"
 echo "Artifacts: ${OUT_DIR}"
