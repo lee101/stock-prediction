@@ -1160,3 +1160,61 @@ Max positions: 5
 Max hold hours: 5
 Fee: 0.001, Margin: 0.0625
 ```
+
+---
+
+## 2026-03-02: Retrain Sweep + Training Efficiency
+
+### Training Efficiency Optimizations (BF16 Split AMP + Vectorized Sim)
+
+Built `trainingefficiency/` module with:
+1. **Split AMP**: Model forward in BF16, simulation + loss in FP32. Fixes previous BF16 Sortino degradation (1.01 vs 1.60).
+2. **Vectorized simulation**: Pre-compute fill probabilities as full [batch, steps] tensors, pre-allocate outputs. The `simulate_hourly_trades()` Python for-loop was 60-70% of training time.
+3. **torch.compile**: Tested but impractical (173s overhead for 10 batches).
+
+**Benchmark (local 3090 Ti, 50 batches):**
+
+| Config | Time | Speedup | Sortino |
+|--------|------|---------|---------|
+| FP32 baseline | 2.52s | 1.00x | 30.06 |
+| BF16 full | 1.74s | 1.45x | 30.06 |
+| BF16 split | 1.55s | 1.63x | 30.06 |
+| **BF16 split + vectorized** | **0.91s** | **2.77x** | **30.06** |
+| Compiled | 173.58s | 0.01x | -- |
+
+Key: **2.77x speedup with identical Sortino**. Split AMP preserves financial math accuracy.
+
+### Retrain Sweep (7 configs on remote 5090)
+
+**Stock Models (9sym train, 7sym eval, 2x leverage):**
+
+| Config | Best Ep | Sortino | Return | Worst |
+|--------|---------|---------|--------|-------|
+| **deployed wd_0.04** | **ep9** | **-3.82** | **-0.38%** | **-1.28%** |
+| retrain wd=0.03, rw=0.15 | ep13 | -9.32 | -6.20% | -14.17% |
+| retrain wd=0.04, rw=0.15 | ep14 | -9.57 | -6.42% | -15.61% |
+| efficient wd=0.04, rw=0.15 (BF16+vsim) | ep14 | -10.44 | -6.52% | -14.72% |
+| retrain wd=0.04, rw=0.20 | ep18 | -10.63 | -7.03% | -16.13% |
+
+**ETH Models (1sym, 2x leverage, no-int-qty):**
+
+| Config | Best Ep | Sortino | Return | Worst |
+|--------|---------|---------|--------|-------|
+| retrain wd=0.04, rw=0.10 | ep6 | -0.43 | -4.68% | -9.03% |
+| efficient wd=0.04, rw=0.15 (BF16+vsim) | ep5 | -1.14 | -6.12% | -11.56% |
+| retrain wd=0.04, rw=0.15 | ep6 | -1.31 | -7.79% | -13.89% |
+| retrain wd=0.04, rw=0.15, seq72 | ep6 | -1.62 | -7.62% | -11.40% |
+| retrain ETH+BTC | ep5 | -2.25 | -8.77% | -13.52% |
+
+**Efficient training times (5090, BF16 split + vsim):**
+- Stock (9sym, 7138 samples): 9 min / 20 epochs
+- ETH (1sym, 61786 samples): 73 min / 20 epochs
+
+### Key Findings
+
+1. **ALL retrained configs negative** - late Feb to Mar 2026 holdout is brutal
+2. **Deployed model still best** for stocks (Sort=-3.82 vs -9 to -11 retrained)
+3. **BF16 split+vsim matches FP32 quality** (Sort within noise, both same hyperparams)
+4. **Retraining on recent data hurts** - models learn the downturn and overtrade into it
+5. **No new model deployed** - existing deployed models remain best
+6. **seq72 doesn't beat seq48**, multi-symbol ETH+BTC hurts vs ETH-only

@@ -112,6 +112,8 @@ def run_portfolio_simulation(
     short_only = cfg.short_only_symbols if cfg.short_only_symbols is not None else SHORT_ONLY_DEFAULT
 
     def _direction(sym):
+        if is_crypto_symbol(sym):
+            return "long"
         if sym in short_only:
             return "short"
         return "long"
@@ -304,9 +306,10 @@ def run_portfolio_simulation(
 
         candidates.sort(key=lambda x: x["edge"], reverse=True)
 
-        per_position_alloc = (equity * cfg.max_leverage) / cfg.max_positions
         for cand in candidates[:open_slots]:
             sym = cand["symbol"]
+            sym_leverage = 1.0 if is_crypto_symbol(sym) else cfg.max_leverage
+            per_position_alloc = (equity * sym_leverage) / cfg.max_positions
             fee = symbol_fee.get(sym, 0.001)
             entry_price = cand["entry_price"]
             direction = cand["direction"]

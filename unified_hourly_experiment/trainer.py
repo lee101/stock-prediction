@@ -18,6 +18,14 @@ from differentiable_loss_utils import (
     simulate_hourly_trades,
     simulate_hourly_trades_binary,
 )
+try:
+    from trainingefficiency.fast_differentiable_sim import (
+        simulate_hourly_trades_fast,
+        simulate_hourly_trades_compiled,
+    )
+except ImportError:
+    simulate_hourly_trades_fast = None
+    simulate_hourly_trades_compiled = None
 from src.serialization_utils import serialize_for_checkpoint
 from src.torch_load_utils import torch_load_compat
 
@@ -263,6 +271,10 @@ class BinanceHourlyTrainer:
             chronos_high = batch["chronos_high"].to(self.device)
             chronos_low = batch["chronos_low"].to(self.device)
 
+            split_amp = bool(self.config.split_amp) and self._amp_context is not None
+            use_vsim = bool(self.config.use_vectorized_sim) and simulate_hourly_trades_fast is not None
+
+            # Model forward - always in AMP context
             with self._amp_context:
                 outputs = model(features)
                 actions = model.decode_actions(
@@ -272,18 +284,40 @@ class BinanceHourlyTrainer:
                     chronos_low=chronos_low,
                 )
 
+            # When split_amp: cast actions to fp32 for sim accuracy
+            # When not split_amp: keep original dtype (backward compat)
+            sim_context = nullcontext() if split_amp else self._amp_context
+
+            with sim_context:
                 scale = float(self.config.trade_amount_scale)
-                trade_intensity = actions["trade_amount"] / scale
-                buy_intensity = actions["buy_amount"] / scale
-                sell_intensity = actions["sell_amount"] / scale
+                if split_amp:
+                    trade_intensity = actions["trade_amount"].float() / scale
+                    buy_intensity = actions["buy_amount"].float() / scale
+                    sell_intensity = actions["sell_amount"].float() / scale
+                    sim_highs = highs.float()
+                    sim_lows = lows.float()
+                    sim_closes = closes.float()
+                    sim_opens = opens.float() if opens is not None else None
+                    sim_buy = actions["buy_price"].float()
+                    sim_sell = actions["sell_price"].float()
+                else:
+                    trade_intensity = actions["trade_amount"] / scale
+                    buy_intensity = actions["buy_amount"] / scale
+                    sell_intensity = actions["sell_amount"] / scale
+                    sim_highs = highs
+                    sim_lows = lows
+                    sim_closes = closes
+                    sim_opens = opens
+                    sim_buy = actions["buy_price"]
+                    sim_sell = actions["sell_price"]
 
                 sim_kwargs = {
-                    "highs": highs,
-                    "lows": lows,
-                    "closes": closes,
-                    "opens": opens,
-                    "buy_prices": actions["buy_price"],
-                    "sell_prices": actions["sell_price"],
+                    "highs": sim_highs,
+                    "lows": sim_lows,
+                    "closes": sim_closes,
+                    "opens": sim_opens,
+                    "buy_prices": sim_buy,
+                    "sell_prices": sim_sell,
                     "trade_intensity": trade_intensity,
                     "buy_trade_intensity": buy_intensity,
                     "sell_trade_intensity": sell_intensity,
@@ -298,14 +332,15 @@ class BinanceHourlyTrainer:
                 lag_range_str = self.config.decision_lag_range.strip()
                 lag_list = [int(x) for x in lag_range_str.split(",") if x.strip()] if lag_range_str else [base_lag]
 
+                sim_fn = simulate_hourly_trades_fast if use_vsim else simulate_hourly_trades
+
                 if train and len(lag_list) > 1:
-                    # Multi-lag: average loss across all lags for robust training
                     all_losses = []
                     all_scores = []
                     all_sortinos = []
                     all_returns_val = []
                     for lag_i in lag_list:
-                        sim_i = simulate_hourly_trades(
+                        sim_i = sim_fn(
                             **sim_kwargs,
                             temperature=float(self.config.fill_temperature),
                             decision_lag_bars=lag_i,
@@ -338,7 +373,7 @@ class BinanceHourlyTrainer:
                     if (not train) and bool(self.config.validation_use_binary_fills):
                         sim = simulate_hourly_trades_binary(**sim_kwargs, decision_lag_bars=val_lag)
                     else:
-                        sim = simulate_hourly_trades(
+                        sim = sim_fn(
                             **sim_kwargs,
                             temperature=float(self.config.fill_temperature),
                             decision_lag_bars=val_lag,

@@ -168,6 +168,8 @@ class TrainingConfig:
     use_compile: bool = True
     use_amp: bool = False
     amp_dtype: str = "bfloat16"
+    split_amp: bool = False
+    use_vectorized_sim: bool = False
     use_tf32: bool = True
     use_flash_attention: bool = True
     forecast_config: ForecastConfig = field(default_factory=ForecastConfig)
