@@ -449,8 +449,8 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
         logger.info("Max positions reached ({}/{})", current_count, max_positions)
         return
 
-    leverage = 2.0
-    per_position = (equity * leverage) / max_positions
+    stock_leverage = 2.0
+    per_position_stock = (equity * stock_leverage) / max_positions
 
     sorted_signals = sorted(signals.items(), key=lambda x: x[1].get("edge", 0), reverse=True)
 
@@ -473,8 +473,13 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
 
         hold_hours = action.get("hold_hours", MAX_HOLD_HOURS)
 
-        is_long = symbol in LONG_ONLY or symbol not in SHORT_ONLY
-        is_short = symbol in SHORT_ONLY
+        crypto = is_crypto_symbol(symbol)
+        if crypto:
+            is_long = True
+            is_short = False
+        else:
+            is_long = symbol in LONG_ONLY or symbol not in SHORT_ONLY
+            is_short = symbol in SHORT_ONLY
 
         if is_short:
             entry_price = sell_price
@@ -490,6 +495,7 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
         if entry_price <= 0:
             continue
 
+        per_position = per_position_stock if not crypto else (equity / max_positions)
         position_alloc = per_position * intensity_frac
         target_value = min(position_alloc, buying_power * 0.9)
         target_qty = int(target_value / entry_price)
