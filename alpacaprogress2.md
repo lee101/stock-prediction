@@ -2105,3 +2105,39 @@ Current deploy target remains:
 - sit-out threshold `0.3`
 - metric/lookback `sharpe / 16d`
 - mode `winner` with `switch_margin=0.0`, `min_score_gap=0.0`
+
+### 2026-03-04 Robust-Gate Sweep Cycle (Strict + Tolerance Pass)
+
+#### Strict robust gate pass (`max-window-regression=0.0`)
+Ran robust-gated alpha/dropout sweeps with `promotion_eval_test_hours=168,336,672`:
+- `experiments/chronos_nonreg_trip_robustgate_20260304.json`
+- `experiments/chronos_nonreg_goog_robustgate_20260304.json`
+- `experiments/chronos_nonreg_dbx_robustgate_20260304.json`
+- `experiments/chronos_nonreg_pltr_robustgate_20260304.json`
+- `experiments/chronos_nonreg_mtch_robustgate_20260304.json`
+- `experiments/chronos_nonreg_nvda_robustgate_20260304.json`
+
+Outcome:
+- All candidate promotions were rejected by robust gate.
+- Common pattern: single-window improvements existed, but one or more windows regressed.
+- Selected/canonical models were preserved for all symbols under strict no-regression policy.
+
+#### Calibrated tolerance pass (`max-window-regression=0.01`) on MTCH
+- Artifact: `experiments/chronos_nonreg_mtch_robustgate_tol001_20260304.json`
+- Result:
+  - robust gate passed with max window regression `0.0050` (within `0.01` budget)
+  - promoted model:
+    - `MTCH_lora_nonreg_20260304_194526_ctx512_lr0p00007_st400_r32_a64_d0`
+
+Updated canonical map:
+- `MTCH -> MTCH_lora_nonreg_20260304_194526_ctx512_lr0p00007_st400_r32_a64_d0`
+
+#### Post-update meta verification
+- Artifact: `experiments/meta_post_robustgate_tol001_mtch_20260304.json`
+- Result remained robust and unchanged at deploy regime:
+  - `metric=sharpe`, `lookback=16d`, `mode=winner`
+  - min_sortino `~1.096`
+  - mean_sortino `~2.356`
+  - min_return `+1.2485%`
+  - mean_return `+1.5732%`
+  - mean_max_drawdown `0.2962%`
