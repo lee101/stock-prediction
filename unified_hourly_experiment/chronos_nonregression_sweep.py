@@ -105,6 +105,7 @@ def should_promote_on_windows(
     current_by_window: dict[int, float],
     candidate_by_window: dict[int, float],
     max_window_regression: float,
+    min_mean_improvement: float = 0.0,
 ) -> tuple[bool, dict]:
     common_windows = sorted(set(current_by_window.keys()) & set(candidate_by_window.keys()))
     if not common_windows:
@@ -117,12 +118,14 @@ def should_promote_on_windows(
     mean_improvement = float(mean_current - mean_candidate)
 
     allowed_regression = float(max_window_regression)
-    robust_ok = (mean_improvement > 0.0) and (max_regression <= allowed_regression)
+    required_mean_improvement = float(min_mean_improvement)
+    robust_ok = (mean_improvement >= required_mean_improvement) and (max_regression <= allowed_regression)
     details = {
         "windows": common_windows,
         "deltas_candidate_minus_current": deltas,
         "max_window_regression": float(max_regression),
         "max_window_regression_allowed": allowed_regression,
+        "min_mean_improvement_required": required_mean_improvement,
         "mean_current_test_mae_percent": mean_current,
         "mean_candidate_test_mae_percent": mean_candidate,
         "mean_improvement_test_mae_percent": mean_improvement,
@@ -386,6 +389,12 @@ def main() -> None:
         default=0.0,
         help="Max allowed candidate minus current MAE%% on any promotion-eval window.",
     )
+    parser.add_argument(
+        "--min-window-mean-improvement",
+        type=float,
+        default=0.0,
+        help="Minimum required mean improvement (current - candidate MAE%%) across promotion-eval windows.",
+    )
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
@@ -419,6 +428,7 @@ def main() -> None:
             "min_improvement_rel": float(args.min_improvement_rel),
             "promotion_eval_test_hours": promotion_eval_test_hours,
             "max_window_regression": float(args.max_window_regression),
+            "min_window_mean_improvement": float(args.min_window_mean_improvement),
         },
         "results": {},
     }
@@ -543,6 +553,7 @@ def main() -> None:
                     current_by_window=current_by_window,
                     candidate_by_window=candidate_by_window,
                     max_window_regression=float(args.max_window_regression),
+                    min_mean_improvement=float(args.min_window_mean_improvement),
                 )
                 symbol_result["promotion_window_eval"] = {
                     "current_rows": current_rows,

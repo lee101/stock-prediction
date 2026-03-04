@@ -77,6 +77,7 @@ def test_should_promote_on_windows_requires_mean_gain_and_limited_regression() -
         current_by_window={168: 5.0, 336: 4.0, 672: 3.0},
         candidate_by_window={168: 4.8, 336: 3.9, 672: 2.8},
         max_window_regression=0.0,
+        min_mean_improvement=0.0,
     )
     assert ok
     assert details["mean_improvement_test_mae_percent"] > 0.0
@@ -88,6 +89,18 @@ def test_should_promote_on_windows_blocks_large_single_window_regression() -> No
         current_by_window={168: 5.0, 336: 4.0, 672: 3.0},
         candidate_by_window={168: 5.2, 336: 3.4, 672: 2.0},
         max_window_regression=0.05,
+        min_mean_improvement=0.0,
     )
     assert not ok
     assert details["max_window_regression"] > 0.05
+
+
+def test_should_promote_on_windows_respects_min_mean_improvement() -> None:
+    ok, details = should_promote_on_windows(
+        current_by_window={168: 5.0, 336: 4.0, 672: 3.0},
+        candidate_by_window={168: 4.95, 336: 3.98, 672: 2.97},
+        max_window_regression=0.0,
+        min_mean_improvement=0.05,
+    )
+    assert not ok
+    assert details["mean_improvement_test_mae_percent"] < 0.05

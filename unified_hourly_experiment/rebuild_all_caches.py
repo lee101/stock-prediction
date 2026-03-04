@@ -11,7 +11,7 @@ BEST_MODELS = {
     "NVDA": "NVDA_lora_nonreg_20260304_140918_ctx512_lr0p00007_st400_r16_a32_d0",
     "MSFT": "MSFT_lora_percent_change_ctx128_lr5e-05_r16_20260213_171918",
     "META": "META_lora_differencing_ctx128_lr5e-05_r16_20260213_172640",
-    "GOOG": "GOOG_lora_nonreg_20260304_103031_ctx512_lr0p0001_st400_r32_a64_d0p05",
+    "GOOG": "GOOG_lora_nonreg_20260304_203535_ctx512_lr0p00005_st400_r16_a32_d0",
     "NET": "NET_lora_differencing_ctx128_lr5e-5_r16_20260221_080636",
     "PLTR": "PLTR_lora_nonreg_20260304_122912_ctx512_lr0p00005_st400_r32_a64_d0",
     "NYT": "NYT_lora_differencing_ctx128_lr5e-5_r16_20260221_084237",
