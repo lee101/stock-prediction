@@ -2,7 +2,9 @@ from unified_hourly_experiment.chronos_nonregression_sweep import (
     float_token,
     parse_float_list,
     parse_int_list,
+    parse_optional_int_list,
     should_promote,
+    should_promote_on_windows,
 )
 
 
@@ -15,6 +17,8 @@ def test_float_token_strips_trailing_zeros() -> None:
 def test_parse_lists() -> None:
     assert parse_int_list(" 1,2, 3 ") == [1, 2, 3]
     assert parse_float_list("5e-5, 1e-4 ,0.2") == [5e-5, 1e-4, 0.2]
+    assert parse_optional_int_list("") == []
+    assert parse_optional_int_list("168, 336") == [168, 336]
 
 
 def test_should_promote_requires_candidate_better() -> None:
@@ -66,3 +70,24 @@ def test_should_promote_respects_rel_threshold() -> None:
         min_improvement_abs=0.0,
         min_improvement_rel=0.05,
     )
+
+
+def test_should_promote_on_windows_requires_mean_gain_and_limited_regression() -> None:
+    ok, details = should_promote_on_windows(
+        current_by_window={168: 5.0, 336: 4.0, 672: 3.0},
+        candidate_by_window={168: 4.8, 336: 3.9, 672: 2.8},
+        max_window_regression=0.0,
+    )
+    assert ok
+    assert details["mean_improvement_test_mae_percent"] > 0.0
+    assert details["max_window_regression"] <= 0.0
+
+
+def test_should_promote_on_windows_blocks_large_single_window_regression() -> None:
+    ok, details = should_promote_on_windows(
+        current_by_window={168: 5.0, 336: 4.0, 672: 3.0},
+        candidate_by_window={168: 5.2, 336: 3.4, 672: 2.0},
+        max_window_regression=0.05,
+    )
+    assert not ok
+    assert details["max_window_regression"] > 0.05
