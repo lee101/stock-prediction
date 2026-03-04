@@ -1714,6 +1714,86 @@ Guarded post-batchA optimize:
   - mean_max_drawdown=`0.2962%`
   - min_num_buys=`2`
 
+### 2026-03-04 Alpha/Dropout Expansion (All Active Symbols)
+
+#### Tooling update
+`unified_hourly_experiment/chronos_nonregression_sweep.py` expanded search space to include:
+- `lora_alpha` grid
+- `lora_dropout` grid
+
+This keeps non-regression gating against current promoted model while exploring a richer LoRA space.
+
+#### New promoted models from alpha/dropout scans
+
+**TRIP**
+- Artifact: `experiments/chronos_nonreg_trip_alpha_dropout_scan_20260304.json`
+- Promoted:
+  - `TRIP_lora_nonreg_20260304_093817_ctx512_lr0p00005_st400_r32_a32_d0`
+- Eval window improvement:
+  - current test MAE% `15.4664` -> best `10.9194`
+
+**GOOG**
+- Artifact: `experiments/chronos_nonreg_goog_alpha_dropout_scan_20260304.json`
+- Promoted:
+  - `GOOG_lora_nonreg_20260304_103031_ctx512_lr0p0001_st400_r32_a64_d0p05`
+- Eval window improvement:
+  - current test MAE% `4.1606` -> best `2.8101`
+
+**DBX**
+- Artifact: `experiments/chronos_nonreg_dbx_alpha_dropout_scan_20260304.json`
+- Promoted:
+  - `DBX_lora_nonreg_20260304_113639_ctx512_lr0p0001_st400_r32_a64_d0p05`
+- Eval window improvement:
+  - current test MAE% `2.1357` -> best `1.3140`
+
+**PLTR**
+- Artifact: `experiments/chronos_nonreg_pltr_alpha_dropout_scan_20260304.json`
+- Promoted:
+  - `PLTR_lora_nonreg_20260304_122912_ctx512_lr0p00005_st400_r32_a64_d0`
+- Eval window improvement:
+  - current test MAE% `5.1856` -> best `2.4339`
+
+**MTCH**
+- Artifact: `experiments/chronos_nonreg_mtch_alpha_dropout_scan_20260304.json`
+- Promoted:
+  - `MTCH_lora_nonreg_20260304_131652_ctx512_lr0p0001_st400_r32_a64_d0`
+- Eval window improvement:
+  - current test MAE% `1.9464` -> best `1.1111`
+
+**NVDA**
+- Artifact: `experiments/chronos_nonreg_nvda_alpha_dropout_scan_20260304.json`
+- Promoted:
+  - `NVDA_lora_nonreg_20260304_140918_ctx512_lr0p00007_st400_r16_a32_d0`
+- Eval window improvement:
+  - current test MAE% `2.4134` -> best `1.5543`
+
+#### Cache-map canonical updates (after promotions)
+`unified_hourly_experiment/rebuild_all_caches.py` now maps active symbols to:
+- `NVDA -> NVDA_lora_nonreg_20260304_140918_ctx512_lr0p00007_st400_r16_a32_d0`
+- `PLTR -> PLTR_lora_nonreg_20260304_122912_ctx512_lr0p00005_st400_r32_a64_d0`
+- `GOOG -> GOOG_lora_nonreg_20260304_103031_ctx512_lr0p0001_st400_r32_a64_d0p05`
+- `DBX -> DBX_lora_nonreg_20260304_113639_ctx512_lr0p0001_st400_r32_a64_d0p05`
+- `TRIP -> TRIP_lora_nonreg_20260304_093817_ctx512_lr0p00005_st400_r32_a32_d0`
+- `MTCH -> MTCH_lora_nonreg_20260304_131652_ctx512_lr0p0001_st400_r32_a64_d0`
+
+#### Meta validation after full alpha/dropout promotions
+- Artifacts:
+  - `experiments/meta_post_nonreg_goog_trip_alpha_dropout_20260304.json`
+  - `experiments/meta_post_nonreg_alpha_dropout_all_20260304.json`
+  - `experiments/meta_post_nonreg_alpha_dropout_all_v2_20260304.json`
+- Result: robust deploy regime remains unchanged:
+  - `metric=sharpe`
+  - `lookback=16d`
+  - `selection_mode=winner`
+  - `edge=0.0065`
+  - `sit_out_threshold=0.3`
+  - `min_sortino=1.0791`
+  - `mean_sortino=2.3529`
+  - `min_return=+1.2485%`
+  - `mean_return=+1.5732%`
+  - `mean_max_drawdown=0.2962%`
+  - `min_num_buys=2`
+
 ### 2026-03-04 Production Hotfix: Short Sizing Under-allocation (MTCH/NYT)
 
 Root cause (confirmed in live signals):
