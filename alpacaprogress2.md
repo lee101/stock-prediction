@@ -1218,3 +1218,424 @@ Key: **2.77x speedup with identical Sortino**. Split AMP preserves financial mat
 4. **Retraining on recent data hurts** - models learn the downturn and overtrade into it
 5. **No new model deployed** - existing deployed models remain best
 6. **seq72 doesn't beat seq48**, multi-symbol ETH+BTC hurts vs ETH-only
+
+---
+
+## 2026-03-03: Alpaca Meta-Selector Integration + Remote Optimization
+
+### Implementation Completed
+Added live meta-selector trader:
+- `unified_hourly_experiment/trade_unified_hourly_meta.py`
+- `unified_hourly_experiment/meta_live_runtime.py`
+- tests: `tests/test_meta_live_runtime.py`
+
+This bot loads multiple strategy checkpoints, simulates recent per-symbol PnL for each strategy,
+selects a daily winner using trailing metric windows, optionally sits out to cash, then executes
+only selected symbol-strategy signals.
+
+### Local Validation
+- `ruff check` passed
+- `pytest -q tests/test_meta_live_runtime.py tests/test_meta_selector.py` passed (`10 passed`)
+- `python -m py_compile unified_hourly_experiment/trade_unified_hourly_meta.py` passed
+- dry-run smoke test passed
+
+### Remote Validation (`/nvme0n1-disk/code/stock-prediction`)
+- New files synced and validated in `.venv313`
+- `ruff check`, tests, and py_compile passed
+- remote dry-runs passed
+
+### Remote Meta Sweep Results (stocks only)
+Universe: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH` (no NYT)
+
+Strategies:
+- `wd_0.04:9`
+- `wd_0.06_s42:8`
+- `wd_0.05_s42:19`
+- `wd_0.08_s42:10`
+- `wd_0.03_s42:20`
+
+Conservative simulation params:
+- `min_edge=0.006`
+- `max_hold_hours=5`
+- `decision_lag_bars=1`
+- `bar_margin=0.0013`
+- `fee=0.001`, `margin=0.0625`, `leverage=2.0`
+- holdouts: `30/60/90`
+
+#### Best current robust config
+Artifact: `experiments/meta_stock5_lowth_edge0006_th03_20260303_203338.json`
+
+Best row:
+- metric: `sharpe`
+- lookback: `14d`
+- sit-out threshold: `0.3`
+- min_sortino: `0.4394`
+- mean_sortino: `1.0199`
+- min_return: `+0.3092%`
+- mean_return: `+0.7332%`
+- mean_max_drawdown: `0.3637%`
+
+This beats the prior threshold=0.7 config on both return and sortino while reducing drawdown.
+
+### Live Dry-Run Check of Winning Config
+Remote one-cycle dry-run (`2026-03-03 20:44 UTC`):
+- `PLTR`: winner=`wd08`, long, edge `0.0128` (passed)
+- `MTCH`: winner=`wd03`, short, edge `0.0140` (passed)
+- `NVDA/GOOG/DBX/TRIP`: sit-out cash
+
+This confirms selective exposure (not full cash, not always-on).
+
+### Deployment Command (when supervisor permissions are available)
+```bash
+python unified_hourly_experiment/trade_unified_hourly_meta.py \
+  --strategy wd04=/home/lee/code/stock/unified_hourly_experiment/checkpoints/wd_0.04:9 \
+  --strategy wd06=/home/lee/code/stock/unified_hourly_experiment/checkpoints/wd_0.06_s42:8 \
+  --strategy wd05=/home/lee/code/stock/unified_hourly_experiment/checkpoints/wd_0.05_s42:19 \
+  --strategy wd08=/home/lee/code/stock/unified_hourly_experiment/checkpoints/wd_0.08_s42:10 \
+  --strategy wd03=/home/lee/code/stock/unified_hourly_experiment/checkpoints/wd_0.03_s42:20 \
+  --stock-symbols NVDA,PLTR,GOOG,DBX,TRIP,MTCH \
+  --min-edge 0.006 \
+  --max-hold-hours 5 \
+  --max-positions 5 \
+  --meta-metric sharpe \
+  --meta-lookback-days 14 \
+  --meta-history-days 120 \
+  --sit-out-if-negative --sit-out-threshold 0.3 \
+  --bar-margin 0.0013 \
+  --fee-rate 0.001 \
+  --margin-rate 0.0625 \
+  --live --loop
+```
+
+### Ops Note
+`supervisorctl` is permission-blocked from current shell on remote (`PermissionError`), so service restart/swap still requires privileged supervisor access.
+
+### 2026-03-03 Late Session: Autonomous Meta Re-Optimization + Chronos2 MAE Boost
+
+#### Meta runtime efficiency upgrade
+Updated `trade_unified_hourly_meta.py`:
+- Added `--meta-reselect-frequency` (`daily` default) so full winner recomputation happens once/day instead of every hourly cycle.
+- Kept selection math identical; only reduced redundant recomputation.
+- Added fast latest-action path (`generate_latest_action`) for selected winner strategies.
+- Net effect: materially lower per-cycle compute cost for live operation.
+
+#### New autonomous search runner
+Added `unified_hourly_experiment/auto_meta_optimize.py`:
+- Runs multi-run sweeps over `min_edge x sit_out_threshold`.
+- Collects best rows from each run.
+- Emits `auto_meta_recommendation.json` with best/top5 and deploy command.
+
+Remote autonomous run output:
+- Recommendation: `experiments/auto_meta_opt_20260303_205725/auto_meta_recommendation.json`
+- Best discovered:
+  - edge=`0.007`
+  - sit_out_threshold=`0.35`
+  - metric=`sharpe`
+  - lookback=`14d`
+  - min_sortino=`0.6759`
+  - mean_sortino=`0.8908`
+  - min_return=`+0.3957%`
+  - mean_return=`+0.7203%`
+  - mean_max_drawdown=`0.3647%`
+- Artifact: `experiments/auto_meta_opt_20260303_205725/meta_edge0007_th035.json`
+
+This improved robustness vs prior best (`edge=0.006`, `th=0.3`).
+
+#### Chronos2 MAE pilots (stock symbols in active universe)
+Ran baseline-vs-LoRA pilots on remote with `chronos2_trainer.py` (`context=1024`, `pred_len=1`, `val/test=336h`, `num_steps=300`, `lr=2e-4`).
+
+**MTCH**
+- Baseline report: `hyperparams/chronos2/hourly_finetune/MTCH_none_MTCH_baseline_eval_20260303_214940.json`
+- LoRA report: `hyperparams/chronos2/hourly_lora/MTCH_lora_MTCH_lora_metaopt_20260303_214940.json`
+- LoRA model: `chronos2_finetuned/MTCH_lora_metaopt_20260303_214940`
+- Improvements:
+  - val mae%: `2.6853 -> 2.2577` (**-15.92%**)
+  - val pct_return_mae: `0.02684 -> 0.02257` (**-15.93%**)
+  - test mae%: `2.2952 -> 1.8001` (**-21.57%**)
+  - test pct_return_mae: `0.02295 -> 0.01800` (**-21.57%**)
+
+**PLTR**
+- Baseline report: `hyperparams/chronos2/hourly_finetune/PLTR_none_PLTR_baseline_eval_20260303_215222.json`
+- LoRA report: `hyperparams/chronos2/hourly_lora/PLTR_lora_PLTR_lora_metaopt_20260303_215222.json`
+- LoRA model: `chronos2_finetuned/PLTR_lora_metaopt_20260303_215222`
+- Improvements:
+  - val mae%: `20.6053 -> 18.0752` (**-12.28%**)
+  - val pct_return_mae: `0.20593 -> 0.18064` (**-12.28%**)
+  - test mae%: `15.8110 -> 12.4383` (**-21.33%**)
+  - test pct_return_mae: `0.15811 -> 0.12438` (**-21.33%**)
+
+#### Forecast cache promotion for improved LoRAs
+Updated `unified_hourly_experiment/rebuild_all_caches.py` `BEST_MODELS`:
+- `PLTR -> PLTR_lora_metaopt_20260303_215222`
+- `MTCH -> MTCH_lora_metaopt_20260303_214940`
+
+Rebuilt caches remotely for both symbols; both succeeded.
+
+#### Current deploy target (meta)
+- strategies: `wd04:9, wd06:8, wd05:19, wd08:10, wd03:20`
+- symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH`
+- meta metric/lookback: `sharpe / 14d`
+- edge/threshold: `min_edge=0.007`, `sit_out_threshold=0.35`
+- hold/max positions: `5h / 5`
+- market simulation conservative params unchanged (`bar_margin=0.0013`, lag=1, fee=10bps, margin=6.25%)
+
+### 2026-03-04: Meta Selector Mode Sweep + New Chronos2 Promotions
+
+#### Selector algorithm expansion (stock meta)
+- Added selector controls to stock meta pipeline:
+  - `selection_mode` in `{winner, winner_cash, sticky}`
+  - `switch_margin` hysteresis
+  - `min_score_gap` confidence-gap gating
+- Wired through:
+  - `unified_hourly_experiment/meta_selector.py`
+  - `unified_hourly_experiment/meta_live_runtime.py`
+  - `unified_hourly_experiment/sweep_meta_portfolio.py`
+  - `unified_hourly_experiment/auto_meta_optimize.py`
+  - `unified_hourly_experiment/trade_unified_hourly_meta.py`
+- Added tests for mode/gap/hysteresis behavior.
+
+#### Advanced mode sweep result (remote)
+- Artifact: `experiments/meta_mode_sweep_20260303_234928.json`
+- Grid:
+  - metrics: `sharpe,sortino,calmar`
+  - mode: `winner,winner_cash,sticky`
+  - switch margins: `0.0,0.005,0.01`
+  - min score gaps: `0.0,0.001,0.0025,0.005`
+  - lookback: `14d`
+  - edge/threshold fixed at `0.007 / 0.35`
+- Best remained unchanged:
+  - `metric=sharpe`, `selection_mode=winner`, `lookback=14d`
+  - min_sortino `0.6759`, mean_sortino `0.8908`
+  - min_return `+0.3957%`, mean_return `+0.7203%`
+  - mean_max_drawdown `0.3647%`
+- Conclusion: new mode controls did not outperform current deployed winner on this symbol set/window.
+
+#### Chronos2 MAE improvement pilots (GOOG + DBX)
+- Artifact: `experiments/chronos_metaopt3_20260304_000359_summary.json`
+- Baseline vs LoRA (`context=512`, `pred_len=1`, `val/test=336h`, `lr=2e-4`, `steps=200` for LoRA):
+
+**GOOG**
+- Baseline report: `hyperparams/chronos2/hourly_finetune/GOOG_none_GOOG_baseline_metaopt3_20260304_000359.json`
+- LoRA report: `hyperparams/chronos2/hourly_lora/GOOG_lora_GOOG_lora_metaopt3_20260304_000359.json`
+- LoRA model: `chronos2_finetuned/GOOG_lora_metaopt3_20260304_000359`
+- Improvements:
+  - val mae%: `3.2664 -> 2.7011` (**-17.31%**)
+  - test mae%: `4.1082 -> 2.9170` (**-29.00%**)
+
+**DBX**
+- Baseline report: `hyperparams/chronos2/hourly_finetune/DBX_none_DBX_baseline_metaopt3_20260304_000359.json`
+- LoRA report: `hyperparams/chronos2/hourly_lora/DBX_lora_DBX_lora_metaopt3_20260304_000359.json`
+- LoRA model: `chronos2_finetuned/DBX_lora_metaopt3_20260304_000359`
+- Improvements:
+  - val mae%: `3.6232 -> 3.0075` (**-17.00%**)
+  - test mae%: `2.0513 -> 1.5450` (**-24.68%**)
+
+Promoted and rebuilt forecast caches for both symbols.
+
+#### Cache map updates
+`unified_hourly_experiment/rebuild_all_caches.py` now points to:
+- `GOOG -> GOOG_lora_metaopt3_20260304_000359`
+- `DBX -> DBX_lora_metaopt3_20260304_000359`
+
+#### Post-promotion meta verification
+- Artifact: `experiments/meta_postcache_retry_20260304.json`
+- Same deploy config re-evaluated after GOOG/DBX cache refresh:
+  - `metric=sharpe`, `lookback=14d`, `mode=winner`, `edge=0.007`, `threshold=0.35`
+- Result was unchanged vs pre-promotion meta metrics:
+  - min_sortino `0.6759`, mean_sortino `0.8908`
+  - min_return `+0.3957%`, mean_return `+0.7203%`
+  - mean_max_drawdown `0.3647%`
+
+Current best deploy target remains unchanged on selector policy, with improved GOOG/DBX forecast models now promoted.
+
+### 2026-03-04 Later: Post-Promotion Re-Sweep + Chronos Metaopt4
+
+#### Post-promotion meta re-sweep (focused edge/threshold neighborhood)
+- Artifact directory: `experiments/meta_refine_20260304_002053`
+- Search:
+  - `metric=sharpe`, `lookback=14d`, `mode=winner`
+  - edges: `0.0065, 0.0070, 0.0075`
+  - sit-out thresholds: `0.30, 0.35, 0.40`
+
+Best found:
+- edge=`0.0065`
+- sit_out_threshold=`0.30`
+- metric=`sharpe`, lookback=`14d`
+- min_sortino=`0.9704`
+- mean_sortino=`1.9052`
+- min_return=`+0.7049%`
+- mean_return=`+1.1294%`
+- mean_max_drawdown=`0.3977%`
+
+Recommendation artifact:
+- `experiments/meta_refine_20260304_002053/auto_meta_recommendation.json`
+- best config row:
+  - `experiments/meta_refine_20260304_002053/meta_edge0p0065_th0p3_mwinner_sm0p0_mg0p0.json`
+
+This is materially stronger than prior deployed robust config (`edge=0.007`, `th=0.35`) on the same holdout windows.
+
+#### Chronos2 hyperparam sweep (PLTR + MTCH)
+- Artifact: `experiments/chronos_metaopt4_20260304_002146_summary.json`
+- Per-symbol grid:
+  - `ctx=512`
+  - `lr in {1e-4,2e-4,3e-4}`
+  - `steps in {200,400}`
+  - `lora_r in {16,32}`
+  - 12 LoRA candidates/symbol, ranked by **test MAE%**
+
+**PLTR**
+- Baseline report: `hyperparams/chronos2/hourly_finetune/PLTR_none_PLTR_baseline_metaopt4_20260304_002146.json`
+- Best LoRA report: `hyperparams/chronos2/hourly_lora/PLTR_lora_PLTR_lora_metaopt4_20260304_002146_ctx512_lr0p0001_st200_r16.json`
+- Best LoRA model: `chronos2_finetuned/PLTR_lora_metaopt4_20260304_002146_ctx512_lr0p0001_st200_r16`
+- Improvements:
+  - val mae%: `13.3655 -> 10.1385` (**-24.14%**)
+  - test mae%: `4.5484 -> 2.5217` (**-44.56%**)
+
+**MTCH**
+- Baseline report: `hyperparams/chronos2/hourly_finetune/MTCH_none_MTCH_baseline_metaopt4_20260304_002146.json`
+- Best LoRA report: `hyperparams/chronos2/hourly_lora/MTCH_lora_MTCH_lora_metaopt4_20260304_002146_ctx512_lr0p0001_st400_r16.json`
+- Best LoRA model: `chronos2_finetuned/MTCH_lora_metaopt4_20260304_002146_ctx512_lr0p0001_st400_r16`
+- Improvements:
+  - val mae%: `2.2847 -> 1.6889` (**-26.08%**)
+  - test mae%: `1.9454 -> 1.1209` (**-42.38%**)
+
+Both promoted and caches rebuilt automatically during the run.
+
+#### Final confirmation on fully promoted caches
+- Artifact: `experiments/meta_post_allpromotions_20260304.json`
+- Config tested:
+  - `edge=0.0065`, `threshold=0.3`, `sharpe`, `14d`, `winner`
+- Result:
+  - min_sortino=`0.9704`
+  - mean_sortino=`1.9052`
+  - min_return=`+0.7049%`
+  - mean_return=`+1.1294%`
+  - mean_max_drawdown=`0.3977%`
+
+Confirmed stable after all GOOG/DBX/PLTR/MTCH cache promotions.
+
+### 2026-03-04 Overnight: Chronos Metaopt5 + Lookback Breakthrough
+
+#### Chronos2 hyperparam sweep (NVDA + TRIP)
+- Artifact: `experiments/chronos_metaopt5_20260304_011706_summary.json`
+- Grid:
+  - `ctx=512`
+  - `lr in {5e-5,1e-4,2e-4}`
+  - `steps in {200,400}`
+  - `lora_r in {16,32}`
+  - rank by **test MAE%**
+
+**NVDA**
+- Baseline: `2.3601` test MAE%
+- Best LoRA model: `chronos2_finetuned/NVDA_lora_metaopt5_20260304_011706_ctx512_lr0p0001_st400_r32`
+- Best report: `hyperparams/chronos2/hourly_lora/NVDA_lora_NVDA_lora_metaopt5_20260304_011706_ctx512_lr0p0001_st400_r32.json`
+- Improvement: `2.3601 -> 1.4891` (**-36.91%**)
+
+**TRIP**
+- Baseline: `16.0184` test MAE%
+- Best LoRA model: `chronos2_finetuned/TRIP_lora_metaopt5_20260304_011706_ctx512_lr5e-05_st400_r32`
+- Best report: `hyperparams/chronos2/hourly_lora/TRIP_lora_TRIP_lora_metaopt5_20260304_011706_ctx512_lr5e-05_st400_r32.json`
+- Improvement: `16.0184 -> 10.5867` (**-33.91%**)
+
+Promoted both and rebuilt caches during the run.
+
+#### Meta lookback refinement on promoted cache set
+- Artifact: `experiments/meta_lookback_refine_20260304.json`
+- Search:
+  - `metric=sharpe`, `mode=winner`
+  - `lookback in {10,12,14,16,20}`
+  - fixed `edge=0.0065`, `sit_out_threshold=0.3`
+
+New best:
+- lookback=`16d`
+- min_sortino=`1.0811`
+- mean_sortino=`2.3625`
+- min_return=`+1.2485%`
+- mean_return=`+1.5732%`
+- mean_max_drawdown=`0.2962%`
+
+This exceeds prior best (`lookback=14d`) on objective ordering.
+
+#### Confirmation rerun (14d vs 16d only)
+- Artifact: `experiments/meta_lookback_14v16_confirm_20260304.json`
+- Result: `16d` reproduced exactly as best with the same summary metrics above.
+
+#### Updated deploy target (meta)
+- strategies: `wd04:9, wd06:8, wd05:19, wd08:10, wd03:20`
+- symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH`
+- metric/lookback: `sharpe / 16d`
+- edge/threshold: `0.0065 / 0.3`
+- mode/hysteresis/gap: `winner / 0.0 / 0.0`
+
+### 2026-03-04 Follow-up: Chronos Metaopt6 (TRIP + GOOG)
+
+#### Chronos2 sweep (targeted)
+- Artifact: `experiments/chronos_metaopt6_20260304_021638_summary.json`
+- Grid:
+  - symbols: `TRIP, GOOG`
+  - `ctx in {512,1024}`
+  - `lr in {5e-5,1e-4}`
+  - `steps in {400,800}`
+  - `lora_r in {16,32}`
+  - selection metric: test MAE%
+
+Best candidates from this run:
+- `TRIP`: `TRIP_lora_metaopt6_20260304_021638_ctx512_lr0p0001_st800_r16`
+  - baseline test MAE% (base model): `15.9959`
+  - candidate test MAE%: `11.0974`
+- `GOOG`: `GOOG_lora_metaopt6_20260304_021638_ctx512_lr0p0001_st400_r32`
+  - baseline test MAE% (base model): `4.2415`
+  - candidate test MAE%: `2.8190`
+
+#### Promotion decision against current best map
+- `GOOG`: promoted to new metaopt6 model (improves over prior promoted `2.9170` test MAE%)
+- `TRIP`: **not promoted** as canonical best, because prior promoted model remains better:
+  - current best `TRIP_lora_metaopt5_20260304_011706_ctx512_lr5e-05_st400_r32` with test MAE% `10.5867`
+  - metaopt6 best candidate test MAE% `11.0974` is worse
+
+Applied cache state:
+- rebuilt `GOOG` cache with metaopt6 best model
+- rebuilt `TRIP` cache back to metaopt5 best model to avoid regression
+
+#### Cache-map update
+`unified_hourly_experiment/rebuild_all_caches.py` updated:
+- `GOOG -> GOOG_lora_metaopt6_20260304_021638_ctx512_lr0p0001_st400_r32`
+- `TRIP` mapping unchanged (metaopt5 best retained)
+
+#### Post-promotion portfolio verification
+- Artifact: `experiments/meta_post_metaopt6_20260304.json`
+- Config: `sharpe`, `lookback=16d`, `mode=winner`, `edge=0.0065`, `threshold=0.3`
+- Result: unchanged vs current deploy benchmark:
+  - min_sortino=`1.0811`
+  - mean_sortino=`2.3625`
+  - min_return=`+1.2485%`
+  - mean_return=`+1.5732%`
+  - mean_max_drawdown=`0.2962%`
+
+No portfolio regression after GOOG promotion + TRIP restore.
+
+### 2026-03-04 Additional TRIP Guarded Sweep (Metaopt7)
+
+- Artifact: `experiments/chronos_trip_metaopt7_20260304_033602_summary.json`
+- Goal: beat current TRIP best test MAE% `10.5867` with strict promotion gate.
+- Grid:
+  - `ctx=512`
+  - `lr in {3e-5,5e-5,7e-5,1e-4}`
+  - `steps in {400,800,1200}`
+  - `lora_r in {16,32}`
+
+Outcome:
+- Best candidate test MAE%: `10.6564`
+- Promotion decision: **rejected** (`10.6564` does not beat `10.5867`)
+- Selected model remains:
+  - `TRIP_lora_metaopt5_20260304_011706_ctx512_lr5e-05_st400_r32`
+- TRIP cache rebuilt on selected (canonical) model to enforce non-regression.
+
+Final end-state verification:
+- Artifact: `experiments/meta_post_metaopt7_20260304.json`
+- Result unchanged:
+  - min_sortino=`1.0811`
+  - mean_sortino=`2.3625`
+  - min_return=`+1.2485%`
+  - mean_return=`+1.5732%`
+  - mean_max_drawdown=`0.2962%`

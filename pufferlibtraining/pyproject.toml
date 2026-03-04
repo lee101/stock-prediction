@@ -12,7 +12,7 @@ dependencies = [
     "stock-trading-suite[rl,hf,mlops,opt]",
     "gymrl",
     "hftraining",
-    "pufferlib>=2.0.2",
+    "pufferlib>=3.0.0,<4",
     "gymnasium>=0.29",
 ]
 
