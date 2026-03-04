@@ -1,0 +1,35 @@
+{
+  "timestamp": "20260304_000359",
+  "symbols": {
+    "GOOG": {
+      "baseline_report": "hyperparams/chronos2/hourly_finetune/GOOG_none_GOOG_baseline_metaopt3_20260304_000359.json",
+      "lora_report": "hyperparams/chronos2/hourly_lora/GOOG_lora_GOOG_lora_metaopt3_20260304_000359.json",
+      "baseline_val_mae_percent": 3.266412874959114,
+      "lora_val_mae_percent": 2.701137794815899,
+      "baseline_test_mae_percent": 4.1082070288962855,
+      "lora_test_mae_percent": 2.9170153245300448,
+      "val_mae_percent_improvement_pct": 17.30568368979658,
+      "test_mae_percent_improvement_pct": 28.995415664002387,
+      "promote_lora": true,
+      "lora_model_name": "GOOG_lora_metaopt3_20260304_000359",
+      "lora_model_ckpt": "chronos2_finetuned/GOOG_lora_metaopt3_20260304_000359/finetuned-ckpt"
+    },
+    "DBX": {
+      "baseline_report": "hyperparams/chronos2/hourly_finetune/DBX_none_DBX_baseline_metaopt3_20260304_000359.json",
+      "lora_report": "hyperparams/chronos2/hourly_lora/DBX_lora_DBX_lora_metaopt3_20260304_000359.json",
+      "baseline_val_mae_percent": 3.623238422695675,
+      "lora_val_mae_percent": 3.007462654418266,
+      "baseline_test_mae_percent": 2.0513158442945776,
+      "lora_test_mae_percent": 1.5449779521776725,
+      "val_mae_percent_improvement_pct": 16.99517659175391,
+      "test_mae_percent_improvement_pct": 24.683565601328862,
+      "promote_lora": true,
+      "lora_model_name": "DBX_lora_metaopt3_20260304_000359",
+      "lora_model_ckpt": "chronos2_finetuned/DBX_lora_metaopt3_20260304_000359/finetuned-ckpt"
+    }
+  },
+  "promoted_models": {
+    "GOOG": "GOOG_lora_metaopt3_20260304_000359",
+    "DBX": "DBX_lora_metaopt3_20260304_000359"
+  }
+}
