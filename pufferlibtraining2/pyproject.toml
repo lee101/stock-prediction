@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
     "stock-trading-suite[rl,mlops]",
-    "pufferlib>=2.0.2",
+    "pufferlib>=3.0.0,<4",
     "gym<=0.23.1",
     "gymnasium>=0.29",
     "pandas>=2.1",

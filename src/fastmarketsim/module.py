@@ -13,6 +13,20 @@ _LOCK = threading.Lock()
 _EXTENSION: Any | None = None
 
 
+def _resolve_repo_root() -> Path:
+    here = Path(__file__).resolve()
+    candidates = [here.parents[1], here.parents[2], Path.cwd().resolve()]
+    for root in candidates:
+        cpp_root = root / "cppsimulator"
+        if (cpp_root / "src" / "market_sim.cpp").exists() and (
+            cpp_root / "bindings" / "market_sim_py.cpp"
+        ).exists():
+            return root
+    raise FileNotFoundError(
+        "Unable to locate cppsimulator sources relative to fastmarketsim/module.py"
+    )
+
+
 def _extra_cflags() -> list[str]:
     flags = ["-O3", "-std=c++17", "-D_GLIBCXX_USE_CXX11_ABI=1"]
     if platform.system() != "Windows":
@@ -41,7 +55,7 @@ def load_extension(*, verbose: bool = False) -> Any:
         if _EXTENSION is not None:
             return _EXTENSION
 
-        repo_root = Path(__file__).resolve().parents[2]
+        repo_root = _resolve_repo_root()
         cpp_root = repo_root / "cppsimulator"
         sources = [
             cpp_root / "src" / "market_sim.cpp",

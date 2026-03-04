@@ -3,22 +3,24 @@
 import subprocess
 import sys
 from pathlib import Path
+
 from loguru import logger
 
+
 BEST_MODELS = {
-    "NVDA": "NVDA_lora_differencing_ctx128_lr5e-5_r16_20260221_073357",
+    "NVDA": "NVDA_lora_metaopt5_20260304_011706_ctx512_lr0p0001_st400_r32",
     "MSFT": "MSFT_lora_percent_change_ctx128_lr5e-05_r16_20260213_171918",
     "META": "META_lora_differencing_ctx128_lr5e-05_r16_20260213_172640",
-    "GOOG": "GOOG_lora_percent_change_ctx128_lr5e-5_r16_20260221_080123",
+    "GOOG": "GOOG_lora_metaopt6_20260304_021638_ctx512_lr0p0001_st400_r32",
     "NET": "NET_lora_differencing_ctx128_lr5e-5_r16_20260221_080636",
-    "PLTR": "PLTR_lora_log_returns_ctx128_lr5e-5_r16_20260221_075606",
+    "PLTR": "PLTR_lora_nonreg_20260304_044949_ctx512_lr0p0001_st400_r32",
     "NYT": "NYT_lora_differencing_ctx128_lr5e-5_r16_20260221_084237",
     "YELP": "YELP_lora_percent_change_ctx128_lr5e-05_r16_20260213_175101",
-    "DBX": "DBX_lora_percent_change_ctx128_lr5e-5_r16_20260221_081513",
-    "TRIP": "TRIP_lora_percent_change_ctx128_lr5e-5_r16_20260221_082153",
+    "DBX": "DBX_lora_nonreg_20260304_044949_ctx512_lr0p00005_st400_r16",
+    "TRIP": "TRIP_lora_metaopt5_20260304_011706_ctx512_lr5e-05_st400_r32",
     "KIND": "KIND_lora_differencing_ctx128_lr5e-05_r16_20260215_225721",
     "EBAY": "EBAY_lora_robust_scaling_ctx128_lr5e-5_r16_20260221_083308",
-    "MTCH": "MTCH_lora_differencing_ctx128_lr5e-5_r16_20260221_083502",
+    "MTCH": "MTCH_lora_nonreg_20260304_044949_ctx512_lr0p0002_st400_r32",
     "ANGI": "ANGI_lora_differencing_ctx128_lr5e-05_r16_20260215_224308",
     "Z": "Z_lora_differencing_ctx128_lr5e-05_r16_20260215_224604",
     "EXPE": "EXPE_lora_differencing_ctx128_lr5e-05_r16_20260215_224859",
@@ -51,7 +53,7 @@ def build_cache(symbol: str, model_name: str):
     ]
 
     logger.info(f"Building cache for {symbol}...")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode == 0:
         logger.success(f"Built cache for {symbol}")
         return True
