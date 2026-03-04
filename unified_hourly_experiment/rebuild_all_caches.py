@@ -20,7 +20,7 @@ BEST_MODELS = {
     "TRIP": "TRIP_lora_nonreg_20260304_093817_ctx512_lr0p00005_st400_r32_a32_d0",
     "KIND": "KIND_lora_differencing_ctx128_lr5e-05_r16_20260215_225721",
     "EBAY": "EBAY_lora_robust_scaling_ctx128_lr5e-5_r16_20260221_083308",
-    "MTCH": "MTCH_lora_nonreg_20260304_131652_ctx512_lr0p0001_st400_r32_a64_d0",
+    "MTCH": "MTCH_lora_nonreg_20260304_194526_ctx512_lr0p00007_st400_r32_a64_d0",
     "ANGI": "ANGI_lora_differencing_ctx128_lr5e-05_r16_20260215_224308",
     "Z": "Z_lora_differencing_ctx128_lr5e-05_r16_20260215_224604",
     "EXPE": "EXPE_lora_differencing_ctx128_lr5e-05_r16_20260215_224859",
