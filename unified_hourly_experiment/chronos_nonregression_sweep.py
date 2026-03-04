@@ -18,6 +18,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import fmean
 
 from loguru import logger
 
@@ -92,6 +93,43 @@ def should_promote(
     return improvement_rel >= min_improvement_rel
 
 
+def parse_optional_int_list(value: str) -> list[int]:
+    value = str(value or "").strip()
+    if not value:
+        return []
+    return parse_int_list(value)
+
+
+def should_promote_on_windows(
+    *,
+    current_by_window: dict[int, float],
+    candidate_by_window: dict[int, float],
+    max_window_regression: float,
+) -> tuple[bool, dict]:
+    common_windows = sorted(set(current_by_window.keys()) & set(candidate_by_window.keys()))
+    if not common_windows:
+        return False, {"reason": "no_common_windows"}
+
+    deltas = {window: float(candidate_by_window[window] - current_by_window[window]) for window in common_windows}
+    max_regression = max(deltas.values())
+    mean_current = float(fmean(current_by_window[window] for window in common_windows))
+    mean_candidate = float(fmean(candidate_by_window[window] for window in common_windows))
+    mean_improvement = float(mean_current - mean_candidate)
+
+    allowed_regression = float(max_window_regression)
+    robust_ok = (mean_improvement > 0.0) and (max_regression <= allowed_regression)
+    details = {
+        "windows": common_windows,
+        "deltas_candidate_minus_current": deltas,
+        "max_window_regression": float(max_regression),
+        "max_window_regression_allowed": allowed_regression,
+        "mean_current_test_mae_percent": mean_current,
+        "mean_candidate_test_mae_percent": mean_candidate,
+        "mean_improvement_test_mae_percent": mean_improvement,
+    }
+    return bool(robust_ok), details
+
+
 def evaluate_current_model(
     *,
     symbol: str,
@@ -157,6 +195,70 @@ def evaluate_current_model(
         "val_mae_percent": float(payload["val_metrics"]["mae_percent"]),
         "test_mae_percent": float(payload["test_metrics"]["mae_percent"]),
     }, errors
+
+
+def evaluate_model_window_grid(
+    *,
+    symbol: str,
+    model_name: str,
+    model_id: Path,
+    run_id: str,
+    tag: str,
+    data_root: Path,
+    val_hours: int,
+    test_hours_grid: list[int],
+    batch_size: int,
+    torch_dtype: str,
+) -> tuple[list[dict], list[str]]:
+    rows: list[dict] = []
+    errors: list[str] = []
+    for test_hours in test_hours_grid:
+        save_name = f"{symbol}_{tag}_{run_id}_t{int(test_hours)}"
+        cmd = [
+            sys.executable,
+            "chronos2_trainer.py",
+            "--symbol",
+            symbol,
+            "--data-root",
+            str(data_root),
+            "--output-root",
+            str(DEFAULT_OUTPUT_ROOT),
+            "--save-name",
+            save_name,
+            "--finetune-mode",
+            "none",
+            "--model-id",
+            str(model_id),
+            "--context-length",
+            "512",
+            "--batch-size",
+            str(batch_size),
+            "--val-hours",
+            str(val_hours),
+            "--test-hours",
+            str(int(test_hours)),
+            "--torch-dtype",
+            torch_dtype,
+        ]
+        proc = run_cmd(cmd)
+        report_path = _report_path(symbol, "none", save_name)
+        if proc.returncode != 0 or not report_path.exists():
+            errors.append(
+                f"window_eval_failed(model={model_name}, test_hours={int(test_hours)}, "
+                f"returncode={proc.returncode}, report_exists={report_path.exists()})"
+            )
+            continue
+        payload = load_json(report_path)
+        rows.append(
+            {
+                "model_name": model_name,
+                "test_hours": int(test_hours),
+                "report_path": str(report_path),
+                "val_mae_percent": float(payload["val_metrics"]["mae_percent"]),
+                "test_mae_percent": float(payload["test_metrics"]["mae_percent"]),
+            }
+        )
+    return rows, errors
 
 
 def train_candidate(
@@ -273,6 +375,17 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--min-improvement-abs", type=float, default=0.0)
     parser.add_argument("--min-improvement-rel", type=float, default=0.0)
+    parser.add_argument(
+        "--promotion-eval-test-hours",
+        default="",
+        help="Optional comma-separated test-hour windows for robust post-selection gate (e.g. 168,336,672).",
+    )
+    parser.add_argument(
+        "--max-window-regression",
+        type=float,
+        default=0.0,
+        help="Max allowed candidate minus current MAE%% on any promotion-eval window.",
+    )
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
@@ -285,6 +398,7 @@ def main() -> None:
     lora_ranks = parse_int_list(args.lora_ranks)
     lora_alphas = parse_int_list(args.lora_alphas)
     lora_dropouts = parse_float_list(args.lora_dropouts)
+    promotion_eval_test_hours = parse_optional_int_list(args.promotion_eval_test_hours)
 
     summary: dict = {
         "run_id": run_id,
@@ -303,6 +417,8 @@ def main() -> None:
             "torch_dtype": str(args.torch_dtype),
             "min_improvement_abs": float(args.min_improvement_abs),
             "min_improvement_rel": float(args.min_improvement_rel),
+            "promotion_eval_test_hours": promotion_eval_test_hours,
+            "max_window_regression": float(args.max_window_regression),
         },
         "results": {},
     }
@@ -326,6 +442,7 @@ def main() -> None:
             "promoted": False,
             "selected_model": (current_eval["model_name"] if current_eval else None),
             "cache_rebuilt": False,
+            "promotion_window_eval": None,
             "errors": list(errors),
         }
 
@@ -389,6 +506,53 @@ def main() -> None:
             )
             symbol_result["promoted"] = bool(promote)
             symbol_result["selected_model"] = best["save_name"] if promote else current_eval["model_name"]
+
+            if promote and promotion_eval_test_hours:
+                current_ckpt = DEFAULT_OUTPUT_ROOT / str(current_eval["model_name"]) / "finetuned-ckpt"
+                candidate_ckpt = DEFAULT_OUTPUT_ROOT / str(best["save_name"]) / "finetuned-ckpt"
+                current_rows, current_errs = evaluate_model_window_grid(
+                    symbol=symbol,
+                    model_name=str(current_eval["model_name"]),
+                    model_id=current_ckpt,
+                    run_id=run_id,
+                    tag="current_window_eval",
+                    data_root=args.data_root,
+                    val_hours=args.val_hours,
+                    test_hours_grid=promotion_eval_test_hours,
+                    batch_size=args.batch_size,
+                    torch_dtype=args.torch_dtype,
+                )
+                candidate_rows, candidate_errs = evaluate_model_window_grid(
+                    symbol=symbol,
+                    model_name=str(best["save_name"]),
+                    model_id=candidate_ckpt,
+                    run_id=run_id,
+                    tag="candidate_window_eval",
+                    data_root=args.data_root,
+                    val_hours=args.val_hours,
+                    test_hours_grid=promotion_eval_test_hours,
+                    batch_size=args.batch_size,
+                    torch_dtype=args.torch_dtype,
+                )
+                symbol_result["errors"].extend(current_errs)
+                symbol_result["errors"].extend(candidate_errs)
+
+                current_by_window = {int(row["test_hours"]): float(row["test_mae_percent"]) for row in current_rows}
+                candidate_by_window = {int(row["test_hours"]): float(row["test_mae_percent"]) for row in candidate_rows}
+                robust_ok, robust_details = should_promote_on_windows(
+                    current_by_window=current_by_window,
+                    candidate_by_window=candidate_by_window,
+                    max_window_regression=float(args.max_window_regression),
+                )
+                symbol_result["promotion_window_eval"] = {
+                    "current_rows": current_rows,
+                    "candidate_rows": candidate_rows,
+                    "robust_gate_passed": bool(robust_ok),
+                    **robust_details,
+                }
+                if not robust_ok:
+                    symbol_result["promoted"] = False
+                    symbol_result["selected_model"] = current_eval["model_name"]
 
         if args.rebuild_cache and symbol_result["selected_model"]:
             ok, err = rebuild_cache_for_model(

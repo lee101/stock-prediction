@@ -2040,3 +2040,68 @@ Benchmark (real holdout, same deployed checkpoint/symbol set):
   - final equity: identical (`8928.8746`)
   - buys/sells: identical (`353/353`)
   - drawdown/sortino: numerically matched within floating-point tolerance.
+
+### 2026-03-04 Robust-Gated Chronos Promotions (Multi-Window)
+
+Objective:
+- avoid false promotions caused by single-window wins that regress on other windows.
+
+#### Algorithm update
+`unified_hourly_experiment/chronos_nonregression_sweep.py` now supports robust promotion gating:
+- `--promotion-eval-test-hours` (e.g. `168,336,672`)
+- `--max-window-regression`
+- promotion is only retained if candidate improves mean test MAE across windows and does not exceed allowed per-window regression.
+
+Added tests:
+- `tests/test_chronos_nonregression_sweep.py`
+  - covers robust gate behavior and parsing.
+
+#### Robust-gated sweeps (latest)
+
+**TRIP**
+- Artifact: `experiments/chronos_nonreg_trip_robustgate_20260304.json`
+- Candidate was rejected by robust gate; current kept.
+
+**GOOG**
+- Artifact: `experiments/chronos_nonreg_goog_robustgate_20260304.json`
+- Candidate had tiny mean improvement but regressed in 2/3 windows; robust gate rejected.
+
+**DBX**
+- Artifact: `experiments/chronos_nonreg_dbx_robustgate_20260304.json`
+- Candidate won single-window test but regressed on multi-window mean; robust gate rejected.
+
+**PLTR**
+- Artifact: `experiments/chronos_nonreg_pltr_robustgate_20260304.json`
+- Candidate improved mean but regressed on 2 windows; robust gate rejected.
+
+**MTCH**
+- Artifact: `experiments/chronos_nonreg_mtch_robustgate_20260304.json`
+- Candidate nearly tied with tiny mean gain but slight 672h regression; robust gate rejected.
+
+**NVDA**
+- Artifact: `experiments/chronos_nonreg_nvda_robustgate_20260304.json`
+- Candidate was worse across windows; robust gate rejected.
+
+Result:
+- robust cycle produced **no further promotions**, and intentionally preserved currently promoted models.
+
+#### Meta verification after robust-gate cycle
+- Artifact: `experiments/meta_post_robustgate_cycle_20260304.json`
+- Best row (deploy regime unchanged):
+  - `metric=sharpe`
+  - `selection_mode=winner`
+  - `switch_margin=0.0`
+  - `min_score_gap=0.0`
+  - `lookback=16d`
+  - `min_sortino=1.0956`
+  - `mean_sortino=2.3565`
+  - `min_return=+1.2485%`
+  - `mean_return=+1.5732%`
+  - `mean_max_drawdown=0.2962%`
+  - `min_num_buys=2`
+
+Current deploy target remains:
+- edge `0.0065`
+- sit-out threshold `0.3`
+- metric/lookback `sharpe / 16d`
+- mode `winner` with `switch_margin=0.0`, `min_score_gap=0.0`
