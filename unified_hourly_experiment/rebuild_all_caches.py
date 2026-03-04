@@ -8,19 +8,19 @@ from loguru import logger
 
 
 BEST_MODELS = {
-    "NVDA": "NVDA_lora_metaopt5_20260304_011706_ctx512_lr0p0001_st400_r32",
+    "NVDA": "NVDA_lora_nonreg_20260304_081500_ctx512_lr0p0001_st800_r32",
     "MSFT": "MSFT_lora_percent_change_ctx128_lr5e-05_r16_20260213_171918",
     "META": "META_lora_differencing_ctx128_lr5e-05_r16_20260213_172640",
     "GOOG": "GOOG_lora_metaopt6_20260304_021638_ctx512_lr0p0001_st400_r32",
     "NET": "NET_lora_differencing_ctx128_lr5e-5_r16_20260221_080636",
-    "PLTR": "PLTR_lora_metaopt4_20260304_002146_ctx512_lr0p0001_st200_r16",
+    "PLTR": "PLTR_lora_nonreg_20260304_044949_ctx512_lr0p0001_st400_r32",
     "NYT": "NYT_lora_differencing_ctx128_lr5e-5_r16_20260221_084237",
     "YELP": "YELP_lora_percent_change_ctx128_lr5e-05_r16_20260213_175101",
-    "DBX": "DBX_lora_metaopt3_20260304_000359",
+    "DBX": "DBX_lora_nonreg_20260304_044949_ctx512_lr0p00005_st400_r16",
     "TRIP": "TRIP_lora_metaopt5_20260304_011706_ctx512_lr5e-05_st400_r32",
     "KIND": "KIND_lora_differencing_ctx128_lr5e-05_r16_20260215_225721",
     "EBAY": "EBAY_lora_robust_scaling_ctx128_lr5e-5_r16_20260221_083308",
-    "MTCH": "MTCH_lora_metaopt4_20260304_002146_ctx512_lr0p0001_st400_r16",
+    "MTCH": "MTCH_lora_nonreg_20260304_044949_ctx512_lr0p0002_st400_r32",
     "ANGI": "ANGI_lora_differencing_ctx128_lr5e-05_r16_20260215_224308",
     "Z": "Z_lora_differencing_ctx128_lr5e-05_r16_20260215_224604",
     "EXPE": "EXPE_lora_differencing_ctx128_lr5e-05_r16_20260215_224859",
