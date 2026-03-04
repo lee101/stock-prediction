@@ -1,9 +1,0 @@
-[
-  {
-    "name": "fast_rw012_sm003_lagr01",
-    "return_weight": 0.12,
-    "smoothness_penalty": 0.003,
-    "fill_temperature": 0.0005,
-    "decision_lag_range": "0,1"
-  }
-]
