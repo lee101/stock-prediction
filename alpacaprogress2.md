@@ -2141,3 +2141,34 @@ Updated canonical map:
   - min_return `+1.2485%`
   - mean_return `+1.5732%`
   - mean_max_drawdown `0.2962%`
+
+#### Calibrated robust gate (mean-improvement requirement)
+Updated `chronos_nonregression_sweep.py` with:
+- `--min-window-mean-improvement` (required mean MAE improvement across promotion windows).
+
+This allows a controlled per-window tolerance while still requiring meaningful average gain.
+
+Run:
+- `experiments/chronos_nonreg_goog_robustgate_tol0p1_minmean0p02_20260304.json`
+- settings:
+  - `promotion_eval_test_hours=168,336,672`
+  - `max_window_regression=0.1`
+  - `min_window_mean_improvement=0.02`
+
+Outcome:
+- GOOG promoted to:
+  - `GOOG_lora_nonreg_20260304_203535_ctx512_lr0p00005_st400_r16_a32_d0`
+- robust gate passed with all evaluated windows improved vs current and mean improvement `0.1161`.
+
+Canonical map update:
+- `GOOG -> GOOG_lora_nonreg_20260304_203535_ctx512_lr0p00005_st400_r16_a32_d0`
+
+Post-promotion meta verification:
+- Artifact: `experiments/meta_post_goog_robustcal_20260304.json`
+- Result: deploy regime unchanged and robust:
+  - `metric=sharpe`, `lookback=16d`, `mode=winner`
+  - min_sortino `~1.096`
+  - mean_sortino `~2.356`
+  - min_return `+1.2485%`
+  - mean_return `+1.5732%`
+  - mean_max_drawdown `0.2962%`
