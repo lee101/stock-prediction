@@ -21,6 +21,9 @@ from pathlib import Path
 
 from loguru import logger
 
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from unified_hourly_experiment.rebuild_all_caches import BEST_MODELS
 
 
@@ -37,6 +40,8 @@ class CandidateConfig:
     learning_rate: float
     num_steps: int
     lora_r: int
+    lora_alpha: int
+    lora_dropout: float
     save_name: str
 
 
@@ -185,6 +190,10 @@ def train_candidate(
         str(cfg.num_steps),
         "--lora-r",
         str(cfg.lora_r),
+        "--lora-alpha",
+        str(cfg.lora_alpha),
+        "--lora-dropout",
+        str(cfg.lora_dropout),
         "--batch-size",
         str(batch_size),
         "--val-hours",
@@ -206,6 +215,8 @@ def train_candidate(
         "learning_rate": cfg.learning_rate,
         "num_steps": cfg.num_steps,
         "lora_r": cfg.lora_r,
+        "lora_alpha": cfg.lora_alpha,
+        "lora_dropout": cfg.lora_dropout,
         "report_path": str(report_path),
         "output_dir": str(payload.get("output_dir", "")),
         "val_mae_percent": float(payload["val_metrics"]["mae_percent"]),
@@ -253,6 +264,8 @@ def main() -> None:
     parser.add_argument("--learning-rates", default="5e-5,1e-4")
     parser.add_argument("--steps", default="200,400")
     parser.add_argument("--lora-ranks", default="16,32")
+    parser.add_argument("--lora-alphas", default="32")
+    parser.add_argument("--lora-dropouts", default="0.05")
     parser.add_argument("--val-hours", type=int, default=336)
     parser.add_argument("--test-hours", type=int, default=336)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -270,6 +283,8 @@ def main() -> None:
     learning_rates = parse_float_list(args.learning_rates)
     steps = parse_int_list(args.steps)
     lora_ranks = parse_int_list(args.lora_ranks)
+    lora_alphas = parse_int_list(args.lora_alphas)
+    lora_dropouts = parse_float_list(args.lora_dropouts)
 
     summary: dict = {
         "run_id": run_id,
@@ -280,6 +295,8 @@ def main() -> None:
             "learning_rates": learning_rates,
             "steps": steps,
             "lora_ranks": lora_ranks,
+            "lora_alphas": lora_alphas,
+            "lora_dropouts": lora_dropouts,
             "val_hours": int(args.val_hours),
             "test_hours": int(args.test_hours),
             "batch_size": int(args.batch_size),
@@ -320,38 +337,45 @@ def main() -> None:
             for lr in learning_rates:
                 for st in steps:
                     for rank in lora_ranks:
-                        save_name = (
-                            f"{symbol}_lora_nonreg_{run_id}_ctx{ctx}"
-                            f"_lr{float_token(lr)}_st{st}_r{rank}"
-                        )
-                        cfg = CandidateConfig(
-                            context_length=int(ctx),
-                            learning_rate=float(lr),
-                            num_steps=int(st),
-                            lora_r=int(rank),
-                            save_name=save_name,
-                        )
-                        logger.info(
-                            "[{}] ctx={} lr={} steps={} r={}",
-                            symbol,
-                            cfg.context_length,
-                            cfg.learning_rate,
-                            cfg.num_steps,
-                            cfg.lora_r,
-                        )
-                        result, err = train_candidate(
-                            symbol=symbol,
-                            cfg=cfg,
-                            data_root=args.data_root,
-                            val_hours=args.val_hours,
-                            test_hours=args.test_hours,
-                            batch_size=args.batch_size,
-                            torch_dtype=args.torch_dtype,
-                        )
-                        if err is not None:
-                            symbol_result["errors"].append(err)
-                            continue
-                        symbol_result["candidates"].append(result)
+                        for alpha in lora_alphas:
+                            for dropout in lora_dropouts:
+                                save_name = (
+                                    f"{symbol}_lora_nonreg_{run_id}_ctx{ctx}"
+                                    f"_lr{float_token(lr)}_st{st}_r{rank}"
+                                    f"_a{alpha}_d{float_token(dropout)}"
+                                )
+                                cfg = CandidateConfig(
+                                    context_length=int(ctx),
+                                    learning_rate=float(lr),
+                                    num_steps=int(st),
+                                    lora_r=int(rank),
+                                    lora_alpha=int(alpha),
+                                    lora_dropout=float(dropout),
+                                    save_name=save_name,
+                                )
+                                logger.info(
+                                    "[{}] ctx={} lr={} steps={} r={} alpha={} dropout={}",
+                                    symbol,
+                                    cfg.context_length,
+                                    cfg.learning_rate,
+                                    cfg.num_steps,
+                                    cfg.lora_r,
+                                    cfg.lora_alpha,
+                                    cfg.lora_dropout,
+                                )
+                                result, err = train_candidate(
+                                    symbol=symbol,
+                                    cfg=cfg,
+                                    data_root=args.data_root,
+                                    val_hours=args.val_hours,
+                                    test_hours=args.test_hours,
+                                    batch_size=args.batch_size,
+                                    torch_dtype=args.torch_dtype,
+                                )
+                                if err is not None:
+                                    symbol_result["errors"].append(err)
+                                    continue
+                                symbol_result["candidates"].append(result)
 
         if symbol_result["candidates"]:
             best = min(symbol_result["candidates"], key=lambda row: float(row["test_mae_percent"]))
