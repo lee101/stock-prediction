@@ -2,10 +2,10 @@
   "symbol": "PLTR",
   "model": "chronos2",
   "config": {
-    "name": "hourly_ctx1024_skip1_single",
+    "name": "hourly_ctx2048_skip1_single",
     "model_id": "amazon/chronos-2",
     "device_map": "cuda",
-    "context_length": 1024,
+    "context_length": 2048,
     "batch_size": 32,
     "quantile_levels": [
       0.1,
@@ -23,21 +23,30 @@
     "use_multivariate": false
   },
   "validation": {
-    "price_mae": 0.1313629150390625,
-    "pct_return_mae": 0.0007381183095276356,
-    "direction_accuracy": 1.0,
-    "latency_s": 0.04013681411743164
+    "price_mae": 1.4124300638834673,
+    "pct_return_mae": 0.010481855761658386,
+    "pct_return_mae_smoothness": 0.002431461610861,
+    "direction_accuracy": 0.16666666666666666,
+    "objective": 0.0029995339921264023,
+    "latency_s": 0.050649166107177734
   },
   "windows": {
-    "val_window": 168,
-    "test_window": 168,
-    "forecast_horizon": 1
+    "val_window": 336,
+    "test_window": 336,
+    "forecast_horizon": 24
   },
   "metadata": {
     "source": "hyperparam_chronos_hourly",
-    "generated_at": "2025-12-01T08:10:00.732529Z",
+    "generated_at": "2026-03-05T14:55:25.745346Z",
     "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.0007381183095276356,
-    "frequency": "hourly"
+    "selection_value": 0.010481855761658386,
+    "frequency": "hourly",
+    "smoothness_weight": 0.35,
+    "direction_bonus": 0.05,
+    "cohort_symbols": [],
+    "cohort_used_symbols": [],
+    "cohort_requested": 0,
+    "cohort_used": 0,
+    "cross_learning_enabled": false
   }
 }
