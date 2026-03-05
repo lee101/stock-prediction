@@ -15,7 +15,6 @@ from pathlib import Path
 @dataclass
 class MetaRun:
     edge: float
-    sit_out_threshold: float
     selection_mode: str
     switch_margin: float
     min_score_gap: float
@@ -53,6 +52,12 @@ def eligible_summary(summary: dict, *, min_num_buys: int) -> bool:
 
 def _float_token(value: float) -> str:
     return str(value).replace(".", "p")
+
+
+def _threshold_token(thresholds: list[float]) -> str:
+    if len(thresholds) == 1:
+        return f"th{_float_token(thresholds[0])}"
+    return "thm" + "_".join(_float_token(v) for v in thresholds)
 
 
 def build_deploy_command(
@@ -131,53 +136,51 @@ def run_once(args: argparse.Namespace) -> dict:
 
     runs: list[MetaRun] = []
     for edge in edges:
-        for threshold in thresholds:
-            for mode in selection_modes:
-                for switch_margin in switch_margins:
-                    for min_score_gap in min_score_gaps:
-                        for recency_halflife in recency_halflife_days:
-                            for trade_amount_scale in trade_amount_scales:
-                                for min_buy_amount in min_buy_amounts:
-                                    for entry_intensity_power in entry_intensity_powers:
-                                        for entry_min_intensity_fraction in entry_min_intensity_fractions:
-                                            for long_intensity_multiplier in long_intensity_multipliers:
-                                                for short_intensity_multiplier in short_intensity_multipliers:
-                                                    edge_token = _float_token(edge)
-                                                    th_token = _float_token(threshold)
-                                                    sm_token = _float_token(switch_margin)
-                                                    mg_token = _float_token(min_score_gap)
-                                                    hl_token = _float_token(recency_halflife)
-                                                    tas_token = _float_token(trade_amount_scale)
-                                                    mba_token = _float_token(min_buy_amount)
-                                                    eip_token = _float_token(entry_intensity_power)
-                                                    emif_token = _float_token(entry_min_intensity_fraction)
-                                                    lim_token = _float_token(long_intensity_multiplier)
-                                                    sim_token = _float_token(short_intensity_multiplier)
-                                                    output_path = out_dir / (
-                                                        "meta_edge"
-                                                        f"{edge_token}_th{th_token}_m{mode}"
-                                                        f"_sm{sm_token}_mg{mg_token}_hl{hl_token}"
-                                                        f"_tas{tas_token}_mba{mba_token}"
-                                                        f"_pow{eip_token}_minf{emif_token}"
-                                                        f"_lm{lim_token}_smul{sim_token}.json"
+        for mode in selection_modes:
+            for switch_margin in switch_margins:
+                for min_score_gap in min_score_gaps:
+                    for recency_halflife in recency_halflife_days:
+                        for trade_amount_scale in trade_amount_scales:
+                            for min_buy_amount in min_buy_amounts:
+                                for entry_intensity_power in entry_intensity_powers:
+                                    for entry_min_intensity_fraction in entry_min_intensity_fractions:
+                                        for long_intensity_multiplier in long_intensity_multipliers:
+                                            for short_intensity_multiplier in short_intensity_multipliers:
+                                                edge_token = _float_token(edge)
+                                                th_token = _threshold_token(thresholds)
+                                                sm_token = _float_token(switch_margin)
+                                                mg_token = _float_token(min_score_gap)
+                                                hl_token = _float_token(recency_halflife)
+                                                tas_token = _float_token(trade_amount_scale)
+                                                mba_token = _float_token(min_buy_amount)
+                                                eip_token = _float_token(entry_intensity_power)
+                                                emif_token = _float_token(entry_min_intensity_fraction)
+                                                lim_token = _float_token(long_intensity_multiplier)
+                                                sim_token = _float_token(short_intensity_multiplier)
+                                                output_path = out_dir / (
+                                                    "meta_edge"
+                                                    f"{edge_token}_{th_token}_m{mode}"
+                                                    f"_sm{sm_token}_mg{mg_token}_hl{hl_token}"
+                                                    f"_tas{tas_token}_mba{mba_token}"
+                                                    f"_pow{eip_token}_minf{emif_token}"
+                                                    f"_lm{lim_token}_smul{sim_token}.json"
+                                                )
+                                                runs.append(
+                                                    MetaRun(
+                                                        edge=edge,
+                                                        selection_mode=mode,
+                                                        switch_margin=switch_margin,
+                                                        min_score_gap=min_score_gap,
+                                                        recency_halflife_days=recency_halflife,
+                                                        trade_amount_scale=trade_amount_scale,
+                                                        min_buy_amount=min_buy_amount,
+                                                        entry_intensity_power=entry_intensity_power,
+                                                        entry_min_intensity_fraction=entry_min_intensity_fraction,
+                                                        long_intensity_multiplier=long_intensity_multiplier,
+                                                        short_intensity_multiplier=short_intensity_multiplier,
+                                                        output_path=output_path,
                                                     )
-                                                    runs.append(
-                                                        MetaRun(
-                                                            edge=edge,
-                                                            sit_out_threshold=threshold,
-                                                            selection_mode=mode,
-                                                            switch_margin=switch_margin,
-                                                            min_score_gap=min_score_gap,
-                                                            recency_halflife_days=recency_halflife,
-                                                            trade_amount_scale=trade_amount_scale,
-                                                            min_buy_amount=min_buy_amount,
-                                                            entry_intensity_power=entry_intensity_power,
-                                                            entry_min_intensity_fraction=entry_min_intensity_fraction,
-                                                            long_intensity_multiplier=long_intensity_multiplier,
-                                                            short_intensity_multiplier=short_intensity_multiplier,
-                                                            output_path=output_path,
-                                                        )
-                                                    )
+                                                )
 
     for idx, run in enumerate(runs, start=1):
         if args.skip_existing and run.output_path.exists():
@@ -237,15 +240,14 @@ def run_once(args: argparse.Namespace) -> dict:
             "--sim-backend",
             str(args.sim_backend),
             "--sit-out-if-negative",
-            "--sit-out-threshold",
-            str(run.sit_out_threshold),
+            f"--sit-out-thresholds={','.join(str(x) for x in thresholds)}",
             "--output",
             str(run.output_path),
         ]
         if args.market_order_entry:
             cmd.append("--market-order-entry")
         print(
-            f"[{idx}/{len(runs)}] edge={run.edge} threshold={run.sit_out_threshold} "
+            f"[{idx}/{len(runs)}] edge={run.edge} thresholds={thresholds} "
             f"mode={run.selection_mode} switch_margin={run.switch_margin} min_gap={run.min_score_gap} "
             f"hl={run.recency_halflife_days} "
             f"scale={run.trade_amount_scale} power={run.entry_intensity_power} "
@@ -258,29 +260,33 @@ def run_once(args: argparse.Namespace) -> dict:
     skipped_for_activity = 0
     for run in runs:
         payload = json.loads(run.output_path.read_text())
-        best = payload["best"]
-        if not eligible_summary(best, min_num_buys=args.min_num_buys):
-            skipped_for_activity += 1
-            continue
-        ranked_rows.append(
-            {
-                "edge": run.edge,
-                "sit_out_threshold": run.sit_out_threshold,
-                "selection_mode": run.selection_mode,
-                "switch_margin": run.switch_margin,
-                "min_score_gap": run.min_score_gap,
-                "recency_halflife_days": run.recency_halflife_days,
-                "trade_amount_scale": run.trade_amount_scale,
-                "min_buy_amount": run.min_buy_amount,
-                "entry_intensity_power": run.entry_intensity_power,
-                "entry_min_intensity_fraction": run.entry_min_intensity_fraction,
-                "long_intensity_multiplier": run.long_intensity_multiplier,
-                "short_intensity_multiplier": run.short_intensity_multiplier,
-                "market_order_entry": bool(args.market_order_entry),
-                "output": str(run.output_path),
-                **best,
-            }
-        )
+        summaries = payload.get("summaries") or []
+        if not summaries:
+            summaries = [payload["best"]]
+
+        for summary in summaries:
+            if not eligible_summary(summary, min_num_buys=args.min_num_buys):
+                skipped_for_activity += 1
+                continue
+            ranked_rows.append(
+                {
+                    "edge": run.edge,
+                    "sit_out_threshold": summary.get("sit_out_threshold", thresholds[0]),
+                    "selection_mode": run.selection_mode,
+                    "switch_margin": run.switch_margin,
+                    "min_score_gap": run.min_score_gap,
+                    "recency_halflife_days": run.recency_halflife_days,
+                    "trade_amount_scale": run.trade_amount_scale,
+                    "min_buy_amount": run.min_buy_amount,
+                    "entry_intensity_power": run.entry_intensity_power,
+                    "entry_min_intensity_fraction": run.entry_min_intensity_fraction,
+                    "long_intensity_multiplier": run.long_intensity_multiplier,
+                    "short_intensity_multiplier": run.short_intensity_multiplier,
+                    "market_order_entry": bool(args.market_order_entry),
+                    "output": str(run.output_path),
+                    **summary,
+                }
+            )
 
     if not ranked_rows:
         raise RuntimeError(
