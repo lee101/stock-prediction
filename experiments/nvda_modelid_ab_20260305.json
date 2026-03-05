@@ -1,0 +1,33 @@
+{
+  "symbol": "NVDA",
+  "holdout_hours": 336,
+  "prediction_length": 24,
+  "comparison": [
+    {
+      "name": "old_finetuned",
+      "model_id": "chronos2_finetuned/NVDA_lora_20260203_092111/finetuned-ckpt",
+      "context_length": 2048,
+      "skip_rates": [1, 2],
+      "aggregation_method": "weighted",
+      "pct_return_mae": 0.006250576407733188,
+      "pct_return_mae_smoothness": 0.0012326668960476028,
+      "direction_accuracy": 0.375,
+      "objective": -0.012067990178650154
+    },
+    {
+      "name": "new_base_candidate",
+      "model_id": "amazon/chronos-2",
+      "context_length": 1024,
+      "skip_rates": [1],
+      "aggregation_method": "single",
+      "pct_return_mae": 0.007174697162208287,
+      "pct_return_mae_smoothness": 0.0012064302460469943,
+      "direction_accuracy": 0.25,
+      "objective": -0.004903052251675266
+    }
+  ],
+  "decision": {
+    "winner": "old_finetuned",
+    "reason": "lower pct_return_mae and better objective under model-aware A/B"
+  }
+}

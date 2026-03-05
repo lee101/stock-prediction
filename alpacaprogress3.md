@@ -912,3 +912,76 @@ Runtime confirmation:
 - process `trade_unified_hourly_meta.py` is RUNNING with updated args.
 - startup log shows:
   - `Meta selector: metric=p10 lookback=14d mode=sticky switch_margin=0.0050 ... threshold=-0.001`
+
+## 26) Continued Autonomous Optimization (2026-03-05, later)
+
+### A) Meta refine sweep around deployed winner
+
+Run:
+- `experiments/meta_live7_opt4_refine_20260305`
+- grid refined around deployed params:
+  - `lookback_days={14,16}`
+  - `min_edge={0.001,0.0012}`
+  - `sit_out_threshold={-0.001,-0.00075}`
+  - `switch_margin={0.005,0.008}`
+  - `min_score_gap={0.0,0.002}`
+  - `short_intensity_multiplier={1.5,1.75}`
+
+Result:
+- top eligible configs matched current deployed objective envelope.
+- no strictly better robust row than deployed config.
+- deployment decision: **no meta selector change**.
+
+### B) Chronos2 MAE-focused tuning (no-cohort, gated updates)
+
+Exploratory run with cohort coupling was rejected (degraded major symbols) and rolled back.
+
+Production candidate run:
+- output: `experiments/hyperparam_chronos_hourly_live7_mae_nocohort_q1_20260305.json`
+- command profile:
+  - `--quick --holdout-hours 336 --objective pct_return_mae --cohort-size 0`
+  - symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT`
+
+Best candidates from this run:
+- `NVDA` pct MAE `0.0071747` (`ctx=1024`, `skip=[1]`, `single`)
+- `PLTR` pct MAE `0.0104819` (`ctx=2048`, `skip=[1]`, `single`)
+- `GOOG` pct MAE `0.0014194` (`ctx=2048`, `skip=[1]`, `single`)
+- `DBX` pct MAE `0.0041540` (`ctx=2048`, `skip=[1]`, `single`)
+- `TRIP` pct MAE `0.0186901` (`ctx=1024`, `skip=[1]`, `single`)
+- `MTCH` pct MAE `0.0098741` (`ctx=1024`, `skip=[1,2,3]`, `median`)
+- `NYT` pct MAE `0.0031492` (`ctx=2048`, `skip=[1,2,3]`, `median`)
+
+Fair-gate A/B (same 336h holdout):
+- artifact: `experiments/hyperparam_chronos_hourly_live7_mae_nocohort_q1_gate_20260305.json`
+- evaluated current live hyperparams on same holdout, then only accepted per-symbol improvements.
+- improved symbols accepted:
+  - `PLTR` (`0.017931 -> 0.010482`)
+  - `DBX` (`0.006669 -> 0.004154`)
+  - `TRIP` (`0.019764 -> 0.018690`)
+  - `MTCH` (`0.012935 -> 0.009874`)
+- unchanged (no improvement):
+  - `GOOG` (`0.001419` tied)
+  - `NYT` (`0.003149` tied)
+
+Model-aware NVDA guardrail:
+- artifact: `experiments/nvda_modelid_ab_20260305.json`
+- direct A/B using production-style Chronos loading:
+  - `old_finetuned` (`chronos2_finetuned/NVDA_lora_20260203_092111/finetuned-ckpt`): `pct_return_mae=0.006251`
+  - `new_base_candidate` (`amazon/chronos-2`): `pct_return_mae=0.007175`
+- decision: keep NVDA finetuned config (reverted candidate model-id change).
+
+Files updated (live Chronos hyperparams):
+- `hyperparams/chronos2/hourly/PLTR.json`
+- `hyperparams/chronos2/hourly/DBX.json`
+- `hyperparams/chronos2/hourly/TRIP.json`
+- `hyperparams/chronos2/hourly/MTCH.json`
+
+### C) Runtime rollout
+
+Applied on remote production host:
+- restarted:
+  - `stock-cache-refresh`
+  - `unified-stock-trader`
+- both confirmed `RUNNING` post-update.
+- live meta command remained:
+  - `p10`, `sticky`, `lookback=14`, `switch_margin=0.005`, `sit_out_threshold=-0.001`.
