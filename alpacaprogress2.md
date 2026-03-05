@@ -2244,3 +2244,58 @@ Result summary:
 Deployment decision:
 - no meta parameter change from this refinement cycle.
 - keep deploy controls unchanged (`edge=0.0065`, `sit_out_threshold=0.3`, `lookback=16`, `mode=winner`).
+
+### 2026-03-05 Canonical Re-Eval + Targeted TRIP/PLTR Context/Step Expansion
+
+Canonical re-evaluation (current promoted map) was run to measure headroom before additional training:
+- artifact: `experiments/canonical_eval_topk4_20260305_005137.json`
+- test MAE% snapshot (336h):
+  - `PLTR: 0.3948`
+  - `TRIP: 0.3481`
+  - `NVDA: 0.3236`
+  - `GOOG: 0.2396`
+  - `MTCH: 0.2021`
+  - `DBX: 0.1924`
+
+Targeted high-headroom sweep (TRIP/PLTR only):
+- artifact: `experiments/chronos_nonreg_trip_pltr_ctx1024_longer_v2_20260305.json`
+- runtime: `~2h30m53s`
+- settings:
+  - `symbols=TRIP,PLTR`
+  - `contexts={512,1024}`
+  - `learning_rates={5e-5,7e-5}`
+  - `steps={400,600}`
+  - `lora_ranks={16,32}`
+  - `lora_alpha=32`
+  - `lora_dropout={0,0.05}`
+  - robust gate: `promotion_eval_test_hours=168,336,672`, `max_window_regression=0.05`, `min_window_mean_improvement=0.01`, `promotion_robust_top_k=6`
+- result:
+  - `TRIP`: no promotion (all robust candidates rejected)
+  - `PLTR`: no promotion (all robust candidates rejected)
+
+#### Isolated A/B impact checks for best rejected candidates
+To avoid accidental regressions, candidate impact was tested with temporary cache roots, swapping one symbol at a time while keeping all deploy meta settings fixed.
+
+TRIP candidate swap:
+- candidate model: `TRIP_lora_nonreg_20260305_012953_ctx512_lr0p00005_st600_r32_a32_d0p05`
+- artifacts:
+  - `experiments/cache_eval_trip_candidate_20260305/`
+  - `experiments/meta_eval_trip_candidate_swap_20260305.json`
+
+PLTR candidate swap:
+- candidate model: `PLTR_lora_nonreg_20260305_012953_ctx512_lr0p00005_st600_r16_a32_d0`
+- artifacts:
+  - `experiments/cache_eval_pltr_candidate_20260305/`
+  - `experiments/meta_eval_pltr_candidate_swap_20260305.json`
+
+Fresh baseline recheck for exact apples-to-apples comparison:
+- artifact: `experiments/meta_baseline_recheck_20260305.json`
+
+Outcome (vs fresh baseline):
+- `TRIP_SWAP_DELTA`: all key metrics `0.0`
+- `PLTR_SWAP_DELTA`: all key metrics `0.0`
+- conclusion: neither rejected candidate improves portfolio-level metrics under current deploy regime.
+
+Deployment decision:
+- keep canonical promoted models unchanged.
+- keep deploy meta regime unchanged (`sharpe`, `winner`, `lookback=16`, `edge=0.0065`, `sit_out_threshold=0.3`).
