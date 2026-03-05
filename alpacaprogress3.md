@@ -1125,3 +1125,61 @@ Deployment decision:
 - **no change** (keep current live meta config unchanged).
 - current robust regime remains:
   - `p10`, `sticky`, `lookback=14`, `switch_margin=0.005`, `sit_out_threshold=-0.001`.
+
+## 29) Outside-the-Box: Weighted p10/Median Meta Scoring + Recency Re-Test (2026-03-05 UTC)
+
+### A) Selector algorithm upgrade
+Observation:
+- `recency_halflife_days` had no effect when `metric=p10` or `metric=median` because quantiles ignored sample weights.
+
+Upgrade:
+- `unified_hourly_experiment/meta_selector.py`
+  - `score_trailing_returns(..., sample_weights=...)` now uses weighted quantiles for:
+    - `p10` (weighted 10th percentile)
+    - `median` (weighted 50th percentile)
+- added helper implementation for stable weighted percentile interpolation.
+
+Tests added/updated:
+- `tests/test_meta_selector.py`
+  - weighted quantile shift test for `p10`/`median`
+  - recency-halflife winner-change test specifically under `metric=p10`
+- validation run:
+  - `pytest -q tests/test_meta_selector.py tests/test_meta_live_runtime.py tests/test_auto_meta_optimize.py tests/test_sweep_meta_portfolio_thresholds.py`
+  - result: `28 passed`
+
+### B) Remote focused weighted-p10 sweep
+Host/repo:
+- `administrator@93.127.141.100`
+- `/nvme0n1-disk/code/stock-prediction`
+
+Artifact:
+- `experiments/meta_live7_opt8_weightedp10_20260305_170106.json`
+
+Sweep config:
+- metric: `p10`
+- mode: `sticky`
+- switch margin: `0.005`
+- min score gap: `0.0`
+- recency halflife: `0.0,0.5,1.0,2.0`
+- lookbacks: `14,16,18`
+- sit-out thresholds: `-0.001,-0.0008`
+- edge: `0.001`
+- holdouts: `14,21,28`
+- activity gate applied in analysis: `min_num_buys >= 6`
+
+Results:
+- raw best remained sparse-trade artifact:
+  - `lookback=16`, `threshold=-0.0008`, `recency_halflife=null`
+  - `min_sortino=2.0936`, `min_num_buys=1` (rejected)
+- best eligible row (activity-gated):
+  - unchanged live-equivalent config:
+    - `lookback=14`, `threshold=-0.001`, `recency_halflife=null`
+    - `min_sortino=1.3605`, `mean_sortino=2.5680`
+    - `min_return=+0.2183%`, `mean_return=+0.5858%`
+    - `mean_max_drawdown=0.5427%`, `min_num_buys=7`
+- weighted recency candidates (`hl=0.5/1.0/2.0`) underperformed and often turned downside-negative in this regime.
+
+Deployment decision:
+- **no change**.
+- keep live config unchanged:
+  - `p10`, `sticky`, `lookback=14`, `switch_margin=0.005`, `sit_out_threshold=-0.001`.
