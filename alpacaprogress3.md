@@ -1058,3 +1058,70 @@ Decision:
 
 Current live remains:
 - `p10`, `sticky`, `lookback=14`, `switch_margin=0.005`, `sit_out_threshold=-0.001`.
+
+## 28) Autonomous Meta Cycle: Negative-Threshold Fix + Direct Robust Sweep (2026-03-05 UTC)
+
+### A) Orchestrator bugfix (root cause)
+Issue discovered during remote optimization:
+- `auto_meta_optimize.py` forwarded multi-threshold args as:
+  - `--sit-out-thresholds`, `-0.0015,-0.001,...`
+- when thresholds are negative, argparse treated the value as another flag and aborted.
+
+Fix:
+- changed subprocess arg emission to a single token:
+  - `--sit-out-thresholds=-0.0015,-0.001,...`
+- updated tests:
+  - `tests/test_auto_meta_optimize.py`
+  - added regression `test_run_once_passes_negative_thresholds_as_single_arg`.
+- local validation:
+  - `pytest -q tests/test_auto_meta_optimize.py tests/test_sweep_meta_portfolio_thresholds.py`
+  - result: `10 passed`.
+
+### B) Remote direct robust sweep (efficient two-edge run)
+Host/repo:
+- `administrator@93.127.141.100`
+- `/nvme0n1-disk/code/stock-prediction`
+
+Artifacts:
+- `experiments/meta_live7_opt7_direct_20260305_163549/meta_edge0p0008.json`
+- `experiments/meta_live7_opt7_direct_20260305_163549/meta_edge0p001.json`
+
+Sweep space:
+- strategies: `wd04,wd06,wd05,wd08,wd03,robb,robc`
+- symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT`
+- metric: `p10`
+- modes: `sticky,winner_cash`
+- switch margins: `0.004,0.005`
+- recency halflife: `0.0,1.0,2.0`
+- lookbacks: `14,16,18`
+- sit-out thresholds: `-0.0012,-0.001,-0.0008`
+- holdouts: `14,21,28`
+- edges: `0.0008` and `0.001`
+- realism controls matched deploy (`market-order-entry`, `bar_margin=0.0005`, `decision_lag=1`, `max_hold=5`, `max_positions=5`).
+
+Ranking gate:
+- applied `min_num_buys >= 6` on summary rows.
+
+Result:
+- total rows: `216`
+- eligible rows (`min_num_buys>=6`): `186`
+- best eligible row:
+  - `edge=0.0008`
+  - `selection_mode=sticky`
+  - `switch_margin=0.005`
+  - `lookback=14`
+  - `sit_out_threshold=-0.001`
+  - `min_sortino=1.3605`
+  - `mean_sortino=2.5680`
+  - `min_return_pct=0.2183`
+  - `mean_return_pct=0.5858`
+  - `mean_max_drawdown_pct=0.5427`
+  - `min_num_buys=7`
+
+Head-to-head with current live-equivalent row at `edge=0.001`:
+- metrics are identical across all ranking fields and activity counts.
+
+Deployment decision:
+- **no change** (keep current live meta config unchanged).
+- current robust regime remains:
+  - `p10`, `sticky`, `lookback=14`, `switch_margin=0.005`, `sit_out_threshold=-0.001`.
