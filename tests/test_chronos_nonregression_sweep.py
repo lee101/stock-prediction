@@ -3,6 +3,7 @@ from unified_hourly_experiment.chronos_nonregression_sweep import (
     parse_float_list,
     parse_int_list,
     parse_optional_int_list,
+    select_best_robust_candidate,
     should_promote,
     should_promote_on_windows,
 )
@@ -104,3 +105,20 @@ def test_should_promote_on_windows_respects_min_mean_improvement() -> None:
     )
     assert not ok
     assert details["mean_improvement_test_mae_percent"] < 0.05
+
+
+def test_select_best_robust_candidate_prefers_mean_improvement_then_test_mae() -> None:
+    c1 = {"save_name": "a", "test_mae_percent": 1.0}
+    d1 = {"mean_improvement_test_mae_percent": 0.05}
+    c2 = {"save_name": "b", "test_mae_percent": 0.8}
+    d2 = {"mean_improvement_test_mae_percent": 0.04}
+    c3 = {"save_name": "c", "test_mae_percent": 0.9}
+    d3 = {"mean_improvement_test_mae_percent": 0.05}
+
+    best = select_best_robust_candidate([(c1, d1), (c2, d2), (c3, d3)])
+    assert best is not None
+    assert best["save_name"] == "c"
+
+
+def test_select_best_robust_candidate_empty() -> None:
+    assert select_best_robust_candidate([]) is None

@@ -2172,3 +2172,41 @@ Post-promotion meta verification:
   - min_return `+1.2485%`
   - mean_return `+1.5732%`
   - mean_max_drawdown `0.2962%`
+
+### 2026-03-04 Robust Top-K Promotion Cycle (All Symbols, Calibrated Gate)
+
+Implemented and validated robust candidate selection improvements:
+- `unified_hourly_experiment/chronos_nonregression_sweep.py`
+  - added robust candidate-pool evaluation using top-K base-improving candidates (`--promotion-robust-top-k`)
+  - selects best robust-passing candidate by highest mean window improvement, tie-break by lowest max regression
+- `tests/test_chronos_nonregression_sweep.py`
+  - added/updated robust candidate-selection coverage
+
+Run:
+- artifact: `experiments/chronos_nonreg_all_topk4_calib_20260304.json`
+- sweep settings:
+  - symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH`
+  - grid: `context=512`, `lr={5e-5,7e-5}`, `steps=400`, `rank={16,32}`, `alpha=32`, `dropout={0,0.05}`
+  - robust gate: `promotion_eval_test_hours=168,336,672`, `max_window_regression=0.1`, `min_window_mean_improvement=0.02`, `promotion_robust_top_k=4`
+  - `--rebuild-cache` enabled
+- runtime: `~2h17m54s`
+
+Promotions selected (all passed robust gate):
+- `NVDA -> NVDA_lora_nonreg_20260304_213434_ctx512_lr0p00005_st400_r16_a32_d0`
+- `PLTR -> PLTR_lora_nonreg_20260304_213434_ctx512_lr0p00007_st400_r32_a32_d0p05`
+- `GOOG -> GOOG_lora_nonreg_20260304_213434_ctx512_lr0p00005_st400_r16_a32_d0p05`
+- `DBX -> DBX_lora_nonreg_20260304_213434_ctx512_lr0p00007_st400_r16_a32_d0`
+- `TRIP -> TRIP_lora_nonreg_20260304_213434_ctx512_lr0p00005_st400_r32_a32_d0`
+- `MTCH -> MTCH_lora_nonreg_20260304_213434_ctx512_lr0p00007_st400_r32_a32_d0p05`
+
+Post-promotion meta verification:
+- artifact: `experiments/meta_post_nonreg_all_topk4_calib_20260304.json`
+- best regime unchanged (deploy-stable):
+  - `metric=sharpe`, `selection_mode=winner`, `lookback=16d`
+  - `switch_margin=0.0`, `min_score_gap=0.0`
+  - `min_sortino=1.096`, `mean_sortino=2.356`
+  - `min_return=+1.25%`, `mean_return=+1.57%`
+  - `mean_max_drawdown=0.30%`
+
+Canonical model map update:
+- `unified_hourly_experiment/rebuild_all_caches.py` updated for `NVDA,PLTR,GOOG,DBX,TRIP,MTCH` to the new robust-gated winners.
