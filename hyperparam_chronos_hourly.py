@@ -84,6 +84,7 @@ DATA_DIR_CRYPTO = Path("trainingdatahourly/crypto")
 DATA_DIR_STOCKS = Path("trainingdatahourly/stocks")
 RESULTS_DIR = Path("hyperparam_hourly_results")
 HYPERPARAMS_DIR = Path("hyperparams/chronos2/hourly")
+DEFAULT_CHRONOS_MODEL_ID = "amazon/chronos-2"
 
 
 class Chronos2HourlyTuner:
@@ -94,6 +95,7 @@ class Chronos2HourlyTuner:
         holdout_hours: int = 168,  # 1 week
         device: str = "cuda",
         prediction_length: int = 24,
+        model_id: str = DEFAULT_CHRONOS_MODEL_ID,
         objective: str = "composite",
         smoothness_weight: float = 0.35,
         direction_bonus: float = 0.05,
@@ -101,10 +103,12 @@ class Chronos2HourlyTuner:
         cohort_min_abs_corr: float = 0.25,
         cohort_include_negative: bool = False,
         enable_cross_learning: bool = False,
+        preserve_existing_model_id: bool = True,
     ):
         self.holdout_hours = holdout_hours
         self.device = device
         self.prediction_length = max(1, int(prediction_length))
+        self.model_id = str(model_id)
         self.objective = objective
         self.smoothness_weight = float(smoothness_weight)
         self.direction_bonus = float(direction_bonus)
@@ -112,6 +116,7 @@ class Chronos2HourlyTuner:
         self.cohort_min_abs_corr = float(cohort_min_abs_corr)
         self.cohort_include_negative = bool(cohort_include_negative)
         self.enable_cross_learning = bool(enable_cross_learning)
+        self.preserve_existing_model_id = bool(preserve_existing_model_id)
         self.model = None
         self.results: List[Dict] = []
 
@@ -207,7 +212,7 @@ class Chronos2HourlyTuner:
 
             logger.info("Loading Chronos2 model...")
             self.model = Chronos2Pipeline.from_pretrained(
-                "amazon/chronos-2",
+                self.model_id,
                 device_map=self.device,
             )
             logger.info("Chronos2 model loaded")
@@ -615,12 +620,32 @@ class Chronos2HourlyTuner:
             "timestamp": datetime.now().isoformat(),
         }
 
+    def _resolve_output_model_id(self, symbol: str) -> Tuple[str, str]:
+        """Resolve model_id for persisted hyperparams."""
+        if self.preserve_existing_model_id:
+            existing_path = HYPERPARAMS_DIR / f"{symbol}.json"
+            if existing_path.exists():
+                try:
+                    payload = json.loads(existing_path.read_text())
+                except Exception as exc:
+                    logger.warning(f"Failed to parse existing hyperparams for {symbol}: {exc}")
+                else:
+                    existing_model_id = (
+                        payload.get("config", {}).get("model_id")
+                        if isinstance(payload, dict)
+                        else None
+                    )
+                    if isinstance(existing_model_id, str) and existing_model_id.strip():
+                        return existing_model_id.strip(), "existing_hyperparams"
+        return self.model_id, "tuner_default"
+
     def save_hyperparams(self, best_per_symbol: Dict[str, Dict]) -> None:
         """Save best hyperparameters per symbol."""
         HYPERPARAMS_DIR.mkdir(parents=True, exist_ok=True)
         selection_metric = "objective" if self.objective == "composite" else "pct_return_mae"
 
         for symbol, best in best_per_symbol.items():
+            resolved_model_id, model_id_source = self._resolve_output_model_id(symbol)
             predict_kwargs: Dict[str, Any] = {}
             if self.enable_cross_learning:
                 predict_kwargs["predict_batches_jointly"] = True
@@ -630,7 +655,7 @@ class Chronos2HourlyTuner:
                 "model": "chronos2",
                 "config": {
                     "name": f"hourly_ctx{best['context_length']}_skip{'_'.join(map(str, best['skip_rates']))}_{best['aggregation_method']}",
-                    "model_id": "amazon/chronos-2",
+                    "model_id": resolved_model_id,
                     "device_map": "cuda",
                     "context_length": best["context_length"],
                     "batch_size": 32,
@@ -670,13 +695,14 @@ class Chronos2HourlyTuner:
                     "cohort_requested": best.get("cohort_requested", 0),
                     "cohort_used": best.get("cohort_used", 0),
                     "cross_learning_enabled": self.enable_cross_learning,
+                    "model_id_source": model_id_source,
                 },
             }
 
             output_path = HYPERPARAMS_DIR / f"{symbol}.json"
             with open(output_path, "w") as f:
                 json.dump(config, f, indent=2)
-            logger.info(f"Saved {output_path}")
+            logger.info(f"Saved {output_path} (model_id={resolved_model_id}, source={model_id_source})")
 
     def unload_model(self):
         """Unload model to free memory."""
@@ -712,6 +738,11 @@ def main():
     parser.add_argument("--quick", action="store_true", help="Quick mode with smaller grid")
     parser.add_argument("--ultraquick", action="store_true", help="Ultra-quick mode for testing")
     parser.add_argument("--holdout-hours", type=int, default=168, help="Hours to hold out (default: 168 = 1 week)")
+    parser.add_argument(
+        "--model-id",
+        default=DEFAULT_CHRONOS_MODEL_ID,
+        help=f"Chronos2 model id to load for tuning (default: {DEFAULT_CHRONOS_MODEL_ID}).",
+    )
     parser.add_argument(
         "--prediction-length",
         type=int,
@@ -757,6 +788,19 @@ def main():
         "--enable-cross-learning",
         action="store_true",
         help="Persist predict_kwargs.predict_batches_jointly=True in saved hyperparams.",
+    )
+    parser.add_argument(
+        "--preserve-existing-model-id",
+        dest="preserve_existing_model_id",
+        action="store_true",
+        default=True,
+        help="When saving hyperparams, keep per-symbol existing config.model_id if present.",
+    )
+    parser.add_argument(
+        "--no-preserve-existing-model-id",
+        dest="preserve_existing_model_id",
+        action="store_false",
+        help="Always save tuner --model-id into config.model_id (disable preserve behavior).",
     )
     parser.add_argument("--device", default="cuda", help="Device (cuda or cpu)")
     parser.add_argument("--output", type=Path, default=RESULTS_DIR / "latest_results.json", help="Output file")
@@ -810,6 +854,7 @@ def main():
         holdout_hours=args.holdout_hours,
         device=args.device,
         prediction_length=args.prediction_length,
+        model_id=args.model_id,
         objective=args.objective,
         smoothness_weight=args.smoothness_weight,
         direction_bonus=args.direction_bonus,
@@ -817,6 +862,7 @@ def main():
         cohort_min_abs_corr=args.cohort_min_abs_corr,
         cohort_include_negative=args.cohort_include_negative,
         enable_cross_learning=args.enable_cross_learning,
+        preserve_existing_model_id=args.preserve_existing_model_id,
     )
 
     try:

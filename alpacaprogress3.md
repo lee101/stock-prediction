@@ -985,3 +985,76 @@ Applied on remote production host:
 - both confirmed `RUNNING` post-update.
 - live meta command remained:
   - `p10`, `sticky`, `lookback=14`, `switch_margin=0.005`, `sit_out_threshold=-0.001`.
+
+## 27) Model-ID Safety Fix + Meta Re-Optimization Round (2026-03-05, latest)
+
+### A) Chronos tuner safeguard against accidental LoRA rollback
+
+Issue:
+- `hyperparam_chronos_hourly.py` always wrote `config.model_id = "amazon/chronos-2"` during `--save-hyperparams`.
+- This can silently overwrite stronger per-symbol finetuned model IDs (e.g., NVDA).
+
+Fixes:
+- added `DEFAULT_CHRONOS_MODEL_ID`.
+- tuner now accepts:
+  - `--model-id`
+  - `--preserve-existing-model-id` (default on)
+  - `--no-preserve-existing-model-id`
+- new `_resolve_output_model_id(symbol)` preserves existing per-symbol `config.model_id` when present.
+- persisted metadata now includes `model_id_source` (`existing_hyperparams` vs `tuner_default`).
+
+Validation:
+- tests added:
+  - `tests/test_hyperparam_chronos_hourly_save.py`
+- targeted pytest:
+  - `pytest -q tests/test_hyperparam_chronos_hourly_objective.py tests/test_hyperparam_chronos_hourly_save.py`
+  - result: `3 passed`.
+
+### B) Stock meta re-optimization (`opt5b`) on remote 5090
+
+Host:
+- `administrator@93.127.141.100`
+- repo: `/nvme0n1-disk/code/stock-prediction`
+
+Runs (efficient in-process sweeps):
+- `experiments/meta_live7_opt5b_threshold_m001_20260306.json`
+  - threshold `-0.001`
+  - best:
+    - `metric=p10`, `mode=sticky`, `lookback=14`, `switch_margin=0.005`, `min_score_gap=0.0`
+    - `min_sortino=1.3605`, `mean_sortino=2.4832`
+    - `min_return=+0.2183%`, `mean_return=+0.4960%`
+    - `mean_max_drawdown=0.5432%`
+    - `min_num_buys=7`
+- `experiments/meta_live7_opt5b_threshold_m0015_20260306.json`
+  - threshold `-0.0015`
+  - best:
+    - `metric=p10`, `mode=sticky`, `lookback=18`, `switch_margin=0.005`, `min_score_gap=0.0`
+    - `min_sortino=1.5185`, `mean_sortino=1.6829`
+    - `min_return=+0.3304%`, `mean_return=+0.3372%`
+    - `mean_max_drawdown=0.4395%`
+    - `min_num_buys=5`
+
+### C) Head-to-head gate before deployment (holdout 14/21/28)
+
+Current deploy-equivalent:
+- artifact: `experiments/meta_live7_h2h_current_20260306.json`
+- config: `sticky`, `lookback=14`, `switch_margin=0.005`, `threshold=-0.001`
+- summary:
+  - `min_sortino=1.3605`, `mean_sortino=2.568`
+  - `min_return=+0.2183%`, `mean_return=+0.59%`
+  - `mean_max_drawdown=0.5432%`
+
+Candidate:
+- artifact: `experiments/meta_live7_h2h_candidate_20260306.json`
+- config: `sticky`, `lookback=18`, `switch_margin=0.005`, `threshold=-0.0015`
+- summary:
+  - `min_sortino=1.183`, `mean_sortino=1.516`
+  - `min_return=+0.33%`, `mean_return=+0.34%`
+  - `mean_max_drawdown=0.44%`
+
+Decision:
+- candidate is not a strict dominance upgrade (improves drawdown/min return but degrades Sortino profile on 14/21/28 gate).
+- keep live deployment unchanged.
+
+Current live remains:
+- `p10`, `sticky`, `lookback=14`, `switch_margin=0.005`, `sit_out_threshold=-0.001`.
