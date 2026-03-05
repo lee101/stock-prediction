@@ -133,6 +133,19 @@ def should_promote_on_windows(
     return bool(robust_ok), details
 
 
+def select_best_robust_candidate(passing_candidates: list[tuple[dict, dict]]) -> dict | None:
+    if not passing_candidates:
+        return None
+    best_pair = max(
+        passing_candidates,
+        key=lambda item: (
+            float(item[1].get("mean_improvement_test_mae_percent", float("-inf"))),
+            -float(item[0].get("test_mae_percent", float("inf"))),
+        ),
+    )
+    return best_pair[0]
+
+
 def evaluate_current_model(
     *,
     symbol: str,
@@ -395,6 +408,15 @@ def main() -> None:
         default=0.0,
         help="Minimum required mean improvement (current - candidate MAE%%) across promotion-eval windows.",
     )
+    parser.add_argument(
+        "--promotion-robust-top-k",
+        type=int,
+        default=1,
+        help=(
+            "Number of top base-ranked candidates to evaluate with robust window gate. "
+            "Use <=0 to evaluate all base-improving candidates."
+        ),
+    )
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
@@ -429,6 +451,7 @@ def main() -> None:
             "promotion_eval_test_hours": promotion_eval_test_hours,
             "max_window_regression": float(args.max_window_regression),
             "min_window_mean_improvement": float(args.min_window_mean_improvement),
+            "promotion_robust_top_k": int(args.promotion_robust_top_k),
         },
         "results": {},
     }
@@ -505,21 +528,30 @@ def main() -> None:
                                 symbol_result["candidates"].append(result)
 
         if symbol_result["candidates"]:
-            best = min(symbol_result["candidates"], key=lambda row: float(row["test_mae_percent"]))
+            sorted_candidates = sorted(symbol_result["candidates"], key=lambda row: float(row["test_mae_percent"]))
+            best = sorted_candidates[0]
             symbol_result["best_candidate"] = best
 
-            promote = should_promote(
-                current_test_mae_percent=float(current_eval["test_mae_percent"]),
-                candidate_test_mae_percent=float(best["test_mae_percent"]),
-                min_improvement_abs=float(args.min_improvement_abs),
-                min_improvement_rel=float(args.min_improvement_rel),
-            )
-            symbol_result["promoted"] = bool(promote)
-            symbol_result["selected_model"] = best["save_name"] if promote else current_eval["model_name"]
+            base_improving_candidates = [
+                row
+                for row in sorted_candidates
+                if should_promote(
+                    current_test_mae_percent=float(current_eval["test_mae_percent"]),
+                    candidate_test_mae_percent=float(row["test_mae_percent"]),
+                    min_improvement_abs=float(args.min_improvement_abs),
+                    min_improvement_rel=float(args.min_improvement_rel),
+                )
+            ]
 
-            if promote and promotion_eval_test_hours:
+            if base_improving_candidates:
+                symbol_result["promoted"] = True
+                symbol_result["selected_model"] = base_improving_candidates[0]["save_name"]
+            else:
+                symbol_result["promoted"] = False
+                symbol_result["selected_model"] = current_eval["model_name"]
+
+            if promotion_eval_test_hours and base_improving_candidates:
                 current_ckpt = DEFAULT_OUTPUT_ROOT / str(current_eval["model_name"]) / "finetuned-ckpt"
-                candidate_ckpt = DEFAULT_OUTPUT_ROOT / str(best["save_name"]) / "finetuned-ckpt"
                 current_rows, current_errs = evaluate_model_window_grid(
                     symbol=symbol,
                     model_name=str(current_eval["model_name"]),
@@ -532,38 +564,76 @@ def main() -> None:
                     batch_size=args.batch_size,
                     torch_dtype=args.torch_dtype,
                 )
-                candidate_rows, candidate_errs = evaluate_model_window_grid(
-                    symbol=symbol,
-                    model_name=str(best["save_name"]),
-                    model_id=candidate_ckpt,
-                    run_id=run_id,
-                    tag="candidate_window_eval",
-                    data_root=args.data_root,
-                    val_hours=args.val_hours,
-                    test_hours_grid=promotion_eval_test_hours,
-                    batch_size=args.batch_size,
-                    torch_dtype=args.torch_dtype,
-                )
                 symbol_result["errors"].extend(current_errs)
-                symbol_result["errors"].extend(candidate_errs)
-
                 current_by_window = {int(row["test_hours"]): float(row["test_mae_percent"]) for row in current_rows}
-                candidate_by_window = {int(row["test_hours"]): float(row["test_mae_percent"]) for row in candidate_rows}
-                robust_ok, robust_details = should_promote_on_windows(
-                    current_by_window=current_by_window,
-                    candidate_by_window=candidate_by_window,
-                    max_window_regression=float(args.max_window_regression),
-                    min_mean_improvement=float(args.min_window_mean_improvement),
+
+                top_k = int(args.promotion_robust_top_k)
+                robust_pool = (
+                    base_improving_candidates
+                    if top_k <= 0
+                    else base_improving_candidates[: min(len(base_improving_candidates), top_k)]
                 )
+                robust_eval_rows: list[dict] = []
+                robust_passes: list[tuple[dict, dict]] = []
+                for idx, candidate in enumerate(robust_pool, start=1):
+                    candidate_ckpt = DEFAULT_OUTPUT_ROOT / str(candidate["save_name"]) / "finetuned-ckpt"
+                    candidate_rows, candidate_errs = evaluate_model_window_grid(
+                        symbol=symbol,
+                        model_name=str(candidate["save_name"]),
+                        model_id=candidate_ckpt,
+                        run_id=run_id,
+                        tag=f"candidate_window_eval_{idx}",
+                        data_root=args.data_root,
+                        val_hours=args.val_hours,
+                        test_hours_grid=promotion_eval_test_hours,
+                        batch_size=args.batch_size,
+                        torch_dtype=args.torch_dtype,
+                    )
+                    symbol_result["errors"].extend(candidate_errs)
+                    candidate_by_window = {
+                        int(row["test_hours"]): float(row["test_mae_percent"])
+                        for row in candidate_rows
+                    }
+                    robust_ok, robust_details = should_promote_on_windows(
+                        current_by_window=current_by_window,
+                        candidate_by_window=candidate_by_window,
+                        max_window_regression=float(args.max_window_regression),
+                        min_mean_improvement=float(args.min_window_mean_improvement),
+                    )
+                    robust_eval_rows.append(
+                        {
+                            "candidate": candidate,
+                            "candidate_rows": candidate_rows,
+                            "robust_gate_passed": bool(robust_ok),
+                            **robust_details,
+                        }
+                    )
+                    if robust_ok:
+                        robust_passes.append((candidate, robust_details))
+
+                selected_robust = select_best_robust_candidate(robust_passes)
+                robust_ok = selected_robust is not None
+                robust_details = {}
+                if selected_robust is not None:
+                    for candidate, details in robust_passes:
+                        if candidate["save_name"] == selected_robust["save_name"]:
+                            robust_details = details
+                            break
                 symbol_result["promotion_window_eval"] = {
                     "current_rows": current_rows,
-                    "candidate_rows": candidate_rows,
+                    "candidate_evaluations": robust_eval_rows,
                     "robust_gate_passed": bool(robust_ok),
+                    "evaluated_candidates_count": len(robust_pool),
+                    "passing_candidates_count": len(robust_passes),
+                    "selected_candidate": (selected_robust["save_name"] if selected_robust is not None else None),
                     **robust_details,
                 }
                 if not robust_ok:
                     symbol_result["promoted"] = False
                     symbol_result["selected_model"] = current_eval["model_name"]
+                else:
+                    symbol_result["promoted"] = True
+                    symbol_result["selected_model"] = str(selected_robust["save_name"])
 
         if args.rebuild_cache and symbol_result["selected_model"]:
             ok, err = rebuild_cache_for_model(
