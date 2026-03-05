@@ -61,6 +61,24 @@ def parse_float_list(value: str) -> list[float]:
     return [float(x.strip()) for x in parse_csv_list(value)]
 
 
+def parse_sit_out_threshold_values(
+    *,
+    sit_out_if_negative: bool,
+    sit_out_threshold: float,
+    sit_out_thresholds: str,
+) -> list[float | None]:
+    """Resolve one or more sit-out thresholds, preserving legacy behavior."""
+    if not sit_out_if_negative:
+        return [None]
+    raw = str(sit_out_thresholds).strip()
+    if raw:
+        values = parse_float_list(raw)
+        if not values:
+            raise ValueError("--sit-out-thresholds provided but no values parsed.")
+        return [float(v) for v in values]
+    return [float(sit_out_threshold)]
+
+
 def parse_strategy_spec(spec: str) -> tuple[str, Path, int | None]:
     if "=" not in spec:
         raise ValueError(f"Invalid --strategy spec '{spec}'. Expected NAME=PATH.")
@@ -299,6 +317,7 @@ def build_meta_results(
     selection_mode: str,
     switch_margin: float,
     min_score_gap: float,
+    recency_halflife_days: float | None,
 ) -> tuple[list[dict], dict]:
     winners_by_symbol: dict[str, pd.Series] = {}
     template_actions = next(iter(actions_by_strategy.values()))
@@ -323,6 +342,7 @@ def build_meta_results(
             selection_mode=selection_mode,
             switch_margin=switch_margin,
             min_score_gap=min_score_gap,
+            recency_halflife_days=recency_halflife_days,
         )
         symbol_days = (
             template_actions[template_actions["symbol"] == symbol]["day"]
@@ -371,6 +391,7 @@ def build_meta_results(
         "selection_mode": selection_mode,
         "switch_margin": float(switch_margin),
         "min_score_gap": float(min_score_gap),
+        "recency_halflife_days": (float(recency_halflife_days) if recency_halflife_days is not None else None),
         "min_sortino": float(np.min(sortinos)),
         "mean_sortino": float(np.mean(sortinos)),
         "min_return_pct": float(np.min(returns)),
@@ -458,13 +479,35 @@ def main() -> None:
     parser.add_argument("--switch-margins", default="0.0")
     parser.add_argument("--min-score-gaps", default="0.0")
     parser.add_argument("--lookback-days", default="1,2,3,5")
+    parser.add_argument(
+        "--recency-halflife-days",
+        default="0.0",
+        help="Comma-separated exponential recency half-life (in days) for meta scoring; <=0 disables weighting.",
+    )
     parser.add_argument("--holdout-days", default="30,60,90")
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
     parser.add_argument("--max-positions", type=int, default=5)
     parser.add_argument("--min-edge", type=float, default=0.0)
     parser.add_argument("--max-hold-hours", type=int, default=6)
+    parser.add_argument("--trade-amount-scale", type=float, default=100.0)
+    parser.add_argument("--entry-intensity-power", type=float, default=1.0)
+    parser.add_argument("--entry-min-intensity-fraction", type=float, default=0.0)
+    parser.add_argument("--long-intensity-multiplier", type=float, default=1.0)
+    parser.add_argument("--short-intensity-multiplier", type=float, default=1.0)
+    parser.add_argument("--min-buy-amount", type=float, default=0.0)
     parser.add_argument("--decision-lag-bars", type=int, default=1)
+    parser.add_argument(
+        "--market-order-entry",
+        action="store_true",
+        help="Use market-order entry fill assumption in simulations.",
+    )
     parser.add_argument("--bar-margin", type=float, default=0.0005)
+    parser.add_argument(
+        "--entry-order-ttl-hours",
+        type=int,
+        default=0,
+        help="How many hourly bars to keep non-filled entry orders pending in simulator (0 disables).",
+    )
     parser.add_argument("--leverage", type=float, default=2.0)
     parser.add_argument("--force-close-slippage", type=float, default=0.003)
     parser.add_argument("--no-int-qty", action="store_true")
@@ -491,6 +534,14 @@ def main() -> None:
         default=0.0,
         help="Trailing score threshold used with --sit-out-if-negative (default: 0.0).",
     )
+    parser.add_argument(
+        "--sit-out-thresholds",
+        default="",
+        help=(
+            "Optional comma-separated sit-out thresholds. "
+            "When provided with --sit-out-if-negative, evaluates all listed thresholds in one run."
+        ),
+    )
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
@@ -504,7 +555,13 @@ def main() -> None:
     switch_margins = parse_float_list(args.switch_margins)
     min_score_gaps = parse_float_list(args.min_score_gaps)
     lookbacks = parse_int_list(args.lookback_days)
+    recency_halflifes = parse_float_list(args.recency_halflife_days)
     holdouts = parse_int_list(args.holdout_days)
+    sit_out_threshold_values = parse_sit_out_threshold_values(
+        sit_out_if_negative=bool(args.sit_out_if_negative),
+        sit_out_threshold=float(args.sit_out_threshold),
+        sit_out_thresholds=args.sit_out_thresholds,
+    )
 
     invalid_metrics = [
         m for m in metrics if m not in ("return", "sortino", "sharpe", "calmar", "omega", "gain_pain", "p10", "median")
@@ -520,6 +577,20 @@ def main() -> None:
         raise ValueError(f"min-score-gaps must all be >= 0, got {min_score_gaps}")
     if any(x <= 0 for x in lookbacks):
         raise ValueError(f"lookback-days must all be > 0, got {lookbacks}")
+    if any(x < 0 for x in recency_halflifes):
+        raise ValueError(f"recency-halflife-days must all be >= 0, got {recency_halflifes}")
+    if args.trade_amount_scale <= 0:
+        raise ValueError("--trade-amount-scale must be > 0")
+    if args.entry_intensity_power < 0:
+        raise ValueError("--entry-intensity-power must be >= 0")
+    if args.entry_min_intensity_fraction < 0:
+        raise ValueError("--entry-min-intensity-fraction must be >= 0")
+    if args.long_intensity_multiplier < 0:
+        raise ValueError("--long-intensity-multiplier must be >= 0")
+    if args.short_intensity_multiplier < 0:
+        raise ValueError("--short-intensity-multiplier must be >= 0")
+    if args.min_buy_amount < 0:
+        raise ValueError("--min-buy-amount must be >= 0")
 
     if args.device == "cpu":
         device = torch.device("cpu")
@@ -607,9 +678,16 @@ def main() -> None:
         enforce_market_hours=True,
         close_at_eod=not args.no_close_at_eod,
         symbols=symbols,
+        trade_amount_scale=args.trade_amount_scale,
+        entry_intensity_power=args.entry_intensity_power,
+        entry_min_intensity_fraction=args.entry_min_intensity_fraction,
+        long_intensity_multiplier=args.long_intensity_multiplier,
+        short_intensity_multiplier=args.short_intensity_multiplier,
+        min_buy_amount=args.min_buy_amount,
         decision_lag_bars=args.decision_lag_bars,
-        market_order_entry=False,
+        market_order_entry=bool(args.market_order_entry),
         bar_margin=args.bar_margin,
+        entry_order_ttl_hours=int(args.entry_order_ttl_hours),
         max_leverage=args.leverage,
         force_close_slippage=args.force_close_slippage,
         int_qty=not args.no_int_qty,
@@ -652,49 +730,64 @@ def main() -> None:
         for mode in selection_modes:
             for switch_margin in switch_margins:
                 for min_score_gap in min_score_gaps:
-                    for lookback in lookbacks:
-                        period_rows, summary = build_meta_results(
-                            bars=bars_full,
-                            actions_by_strategy=actions_by_strategy,
-                            daily_returns=daily_returns,
-                            symbols=symbols,
-                            lookback_days=int(lookback),
-                            metric=metric,
-                            holdout_days=holdouts,
-                            base_cfg=base_cfg,
-                            tie_break_order=tie_break_order,
-                            fallback_strategy=fallback_strategy,
-                            sit_out_threshold=(args.sit_out_threshold if args.sit_out_if_negative else None),
-                            selection_mode=mode,
-                            switch_margin=float(switch_margin),
-                            min_score_gap=float(min_score_gap),
-                        )
-                        for row in period_rows:
-                            all_rows.append(
-                                {
-                                    "metric": metric,
-                                    "lookback_days": int(lookback),
-                                    "selection_mode": mode,
-                                    "switch_margin": float(switch_margin),
-                                    "min_score_gap": float(min_score_gap),
-                                    **row,
-                                }
-                            )
-                        summary_row = {"metric": metric, **summary}
-                        summaries.append(summary_row)
-                        logger.info(
-                            "meta {} mode={} sm={:.4f} mg={:.4f} lb{} -> min_sort={:.3f} mean_sort={:.3f} min_ret={:+.2f}% mean_ret={:+.2f}% mean_dd={:.2f}%",
-                            metric,
-                            mode,
-                            switch_margin,
-                            min_score_gap,
-                            lookback,
-                            summary["min_sortino"],
-                            summary["mean_sortino"],
-                            summary["min_return_pct"],
-                            summary["mean_return_pct"],
-                            summary["mean_max_drawdown_pct"],
-                        )
+                    for recency_halflife in recency_halflifes:
+                        recency_value = float(recency_halflife)
+                        recency_for_score = recency_value if recency_value > 0 else None
+                        for sit_out_threshold in sit_out_threshold_values:
+                            for lookback in lookbacks:
+                                period_rows, summary = build_meta_results(
+                                    bars=bars_full,
+                                    actions_by_strategy=actions_by_strategy,
+                                    daily_returns=daily_returns,
+                                    symbols=symbols,
+                                    lookback_days=int(lookback),
+                                    metric=metric,
+                                    holdout_days=holdouts,
+                                    base_cfg=base_cfg,
+                                    tie_break_order=tie_break_order,
+                                    fallback_strategy=fallback_strategy,
+                                    sit_out_threshold=sit_out_threshold,
+                                    selection_mode=mode,
+                                    switch_margin=float(switch_margin),
+                                    min_score_gap=float(min_score_gap),
+                                    recency_halflife_days=recency_for_score,
+                                )
+                                for row in period_rows:
+                                    all_rows.append(
+                                        {
+                                            "metric": metric,
+                                            "lookback_days": int(lookback),
+                                            "selection_mode": mode,
+                                            "switch_margin": float(switch_margin),
+                                            "min_score_gap": float(min_score_gap),
+                                            "recency_halflife_days": (
+                                                recency_for_score if recency_for_score is not None else 0.0
+                                            ),
+                                            "sit_out_threshold": (
+                                                float(sit_out_threshold)
+                                                if sit_out_threshold is not None
+                                                else None
+                                            ),
+                                            **row,
+                                        }
+                                    )
+                                summary_row = {"metric": metric, "sit_out_threshold": sit_out_threshold, **summary}
+                                summaries.append(summary_row)
+                                logger.info(
+                                    "meta {} mode={} sm={:.4f} mg={:.4f} hl={} th={} lb{} -> min_sort={:.3f} mean_sort={:.3f} min_ret={:+.2f}% mean_ret={:+.2f}% mean_dd={:.2f}%",
+                                    metric,
+                                    mode,
+                                    switch_margin,
+                                    min_score_gap,
+                                    (recency_for_score if recency_for_score is not None else 0.0),
+                                    ("none" if sit_out_threshold is None else f"{float(sit_out_threshold):.4f}"),
+                                    lookback,
+                                    summary["min_sortino"],
+                                    summary["mean_sortino"],
+                                    summary["min_return_pct"],
+                                    summary["mean_return_pct"],
+                                    summary["mean_max_drawdown_pct"],
+                                )
 
     best = max(summaries, key=rank_key)
     logger.info(
@@ -736,18 +829,31 @@ def main() -> None:
             "switch_margins": switch_margins,
             "min_score_gaps": min_score_gaps,
             "lookback_days": lookbacks,
+            "recency_halflife_days": recency_halflifes,
             "holdout_days": holdouts,
             "default_strategy": fallback_strategy,
             "tie_break_order": tie_break_order,
             "sit_out_if_negative": bool(args.sit_out_if_negative),
             "sit_out_threshold": float(args.sit_out_threshold),
+            "sit_out_thresholds": [
+                (float(v) if v is not None else None)
+                for v in sit_out_threshold_values
+            ],
             "portfolio": {
                 "initial_cash": args.initial_cash,
                 "max_positions": args.max_positions,
                 "min_edge": args.min_edge,
                 "max_hold_hours": args.max_hold_hours,
+                "trade_amount_scale": args.trade_amount_scale,
+                "entry_intensity_power": args.entry_intensity_power,
+                "entry_min_intensity_fraction": args.entry_min_intensity_fraction,
+                "long_intensity_multiplier": args.long_intensity_multiplier,
+                "short_intensity_multiplier": args.short_intensity_multiplier,
+                "min_buy_amount": args.min_buy_amount,
                 "decision_lag_bars": args.decision_lag_bars,
+                "market_order_entry": bool(args.market_order_entry),
                 "bar_margin": args.bar_margin,
+                "entry_order_ttl_hours": int(args.entry_order_ttl_hours),
                 "leverage": args.leverage,
                 "fee_rate": args.fee_rate,
                 "close_at_eod": not args.no_close_at_eod,
