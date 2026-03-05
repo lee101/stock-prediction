@@ -2210,3 +2210,37 @@ Post-promotion meta verification:
 
 Canonical model map update:
 - `unified_hourly_experiment/rebuild_all_caches.py` updated for `NVDA,PLTR,GOOG,DBX,TRIP,MTCH` to the new robust-gated winners.
+
+### 2026-03-05 Post-TopK Meta Refinement (Guarded Activity)
+
+Objective:
+- test whether newly promoted Chronos models allow a better deploy regime around current stock meta settings.
+
+Run set:
+- directory: `experiments/meta_refine_post_topk4_20260305/`
+- sweep dimensions:
+  - `min_edge in {0.006, 0.0065, 0.007}`
+  - `sit_out_threshold in {0.25, 0.3, 0.35}`
+  - `lookback_days in {12,16,20}`
+  - `metrics in {sharpe,sortino}`
+  - mode fixed to `winner` with `switch_margin=0`, `min_score_gap=0`
+  - portfolio controls held at deploy values (`decision_lag_bars=1`, `bar_margin=0.0013`, `leverage=2`, `trade_amount_scale=100`)
+
+Coverage:
+- produced 9 artifacts (one per `min_edge x sit_out_threshold` pair):
+  - includes `meta_edge0p007_th0p35_...json` (manually completed after interrupted orchestrator session)
+
+Result summary:
+- unguarded best rows (e.g. `th=0.35`, `lookback=20`) showed very high Sortino but only `min_num_buys=1` or `0`.
+- applying deploy guard (`min_num_buys >= 2`) leaves 4 valid rows.
+- best guarded row remains exactly current deploy-equivalent regime:
+  - artifact: `meta_edge0p0065_th0p3_mwinner_sm0p0_mg0p0_tas100p0_mba0p0_pow1p0_minf0p0_lm1p0_smul1p0.json`
+  - `metric=sharpe`, `lookback=16`
+  - `min_sortino=1.0956`, `mean_sortino=2.3565`
+  - `min_return=+1.2485%`, `mean_return=+1.5732%`
+  - `mean_max_drawdown=0.2962%`
+  - `min_num_buys=2`, `mean_num_buys=3.33`
+
+Deployment decision:
+- no meta parameter change from this refinement cycle.
+- keep deploy controls unchanged (`edge=0.0065`, `sit_out_threshold=0.3`, `lookback=16`, `mode=winner`).
