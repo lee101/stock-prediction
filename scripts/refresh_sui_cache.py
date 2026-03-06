@@ -13,6 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.binance_hourly_csv_utils import append_hourly_binance_bars
+
 DATA_ROOT = PROJECT_ROOT / "binance_spot_hourly"
 CACHE_ROOT = PROJECT_ROOT / "binancechronossolexperiment" / "forecast_cache_sui_10bp"
 SYMBOL = "SUIUSDT"
@@ -28,31 +30,21 @@ SLEEP_SECONDS = 300
 def refresh_price_csv() -> None:
     from binance_data_wrapper import fetch_binance_hourly_bars
     csv_path = DATA_ROOT / f"{SYMBOL}.csv"
-    if not csv_path.exists():
-        print(f"[price] {SYMBOL}: CSV not found at {csv_path}")
-        return
-    existing = pd.read_csv(csv_path)
-    existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True)
-    last_ts = existing["timestamp"].max()
-    end_ts = datetime.now(timezone.utc)
     try:
-        new = fetch_binance_hourly_bars(SYMBOL, start=last_ts, end=end_ts)
+        result = append_hourly_binance_bars(
+            csv_path,
+            fetch_symbol=SYMBOL,
+            csv_symbol=SYMBOL,
+            fetcher=fetch_binance_hourly_bars,
+        )
     except Exception as e:
         print(f"[price] {SYMBOL}: download failed: {e}")
         return
-    if new is None or len(new) == 0:
-        return
-    new = new.reset_index()
-    new["symbol"] = SYMBOL
-    new["timestamp"] = pd.to_datetime(new["timestamp"], utc=True)
-    new = new[new["timestamp"] > last_ts]
-    if len(new) == 0:
-        return
-    combined = pd.concat([existing, new], ignore_index=True)
-    combined = combined.drop_duplicates(subset="timestamp", keep="last")
-    combined = combined.sort_values("timestamp").reset_index(drop=True)
-    combined.to_csv(csv_path, index=False)
-    print(f"[price] {SYMBOL}: +{len(new)} rows, last={combined['timestamp'].max()}")
+    if result.get("status") in {"updated", "synced"}:
+        print(
+            f"[price] {SYMBOL}: +{result.get('rows_added', 0)} rows, "
+            f"last={result.get('end')}"
+        )
 
 
 def refresh_forecast_cache() -> None:
