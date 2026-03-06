@@ -16,7 +16,14 @@ from src.torch_load_utils import torch_load_compat
 from .binance_watchers import WatcherPlan, spawn_watcher
 from .config import DatasetConfig, TrainingConfig
 from .data import BinanceHourlyDataModule
-from .execution import compute_order_quantities, get_free_balances, resolve_symbol_rules, quantize_price
+from .execution import (
+    available_quote_budget,
+    compute_order_quantities,
+    get_free_balances,
+    quantize_price,
+    reserve_quote_budget,
+    resolve_symbol_rules,
+)
 from .inference import generate_latest_action
 from .model import BinancePolicyBase, build_policy, policy_config_from_payload
 from .pnl_state import get_probe_mode
@@ -157,6 +164,7 @@ def _run_cycle(
     cache_only: bool,
     dry_run: bool,
 ) -> None:
+    quote_budget_remaining: Dict[str, float] = {}
     for symbol in symbols:
         try:
             checkpoint_path = checkpoint_map.get(symbol) or default_checkpoint
@@ -198,6 +206,11 @@ def _run_cycle(
             except Exception as exc:
                 print(f"Failed to fetch Binance balances for {symbol}: {exc}")
                 continue
+            available_quote = available_quote_budget(
+                quote_budget_remaining,
+                symbol=symbol,
+                observed_quote_free=quote_free,
+            )
             allocation_usdt_eff = _apply_probe_allocation(
                 symbol,
                 allocation_usdt,
@@ -226,7 +239,7 @@ def _run_cycle(
                 sell_amount=plan.sell_amount,
                 buy_price=buy_price,
                 sell_price=sell_price,
-                quote_free=quote_free,
+                quote_free=available_quote,
                 base_free=base_free,
                 allocation_usdt=allocation_usdt_eff,
                 rules=rules,
@@ -245,6 +258,11 @@ def _run_cycle(
                         price_tolerance=price_tolerance,
                         dry_run=dry_run,
                     )
+                )
+                reserve_quote_budget(
+                    quote_budget_remaining,
+                    symbol=symbol,
+                    reserved_notional=sizing.buy_notional,
                 )
             if sizing.sell_qty > 0:
                 spawn_watcher(
