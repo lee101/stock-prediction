@@ -8,19 +8,19 @@ from loguru import logger
 
 
 BEST_MODELS = {
-    "NVDA": "NVDA_lora_metaopt5_20260304_011706_ctx512_lr0p0001_st400_r32",
+    "NVDA": "NVDA_lora_nonreg_20260304_213434_ctx512_lr0p00005_st400_r16_a32_d0",
     "MSFT": "MSFT_lora_percent_change_ctx128_lr5e-05_r16_20260213_171918",
     "META": "META_lora_differencing_ctx128_lr5e-05_r16_20260213_172640",
-    "GOOG": "GOOG_lora_metaopt6_20260304_021638_ctx512_lr0p0001_st400_r32",
+    "GOOG": "GOOG_lora_nonreg_20260304_213434_ctx512_lr0p00005_st400_r16_a32_d0p05",
     "NET": "NET_lora_differencing_ctx128_lr5e-5_r16_20260221_080636",
-    "PLTR": "PLTR_lora_nonreg_20260304_044949_ctx512_lr0p0001_st400_r32",
+    "PLTR": "PLTR_lora_nonreg_20260304_213434_ctx512_lr0p00007_st400_r32_a32_d0p05",
     "NYT": "NYT_lora_differencing_ctx128_lr5e-5_r16_20260221_084237",
     "YELP": "YELP_lora_percent_change_ctx128_lr5e-05_r16_20260213_175101",
-    "DBX": "DBX_lora_nonreg_20260304_044949_ctx512_lr0p00005_st400_r16",
-    "TRIP": "TRIP_lora_metaopt5_20260304_011706_ctx512_lr5e-05_st400_r32",
+    "DBX": "DBX_lora_nonreg_20260304_213434_ctx512_lr0p00007_st400_r16_a32_d0",
+    "TRIP": "TRIP_lora_nonreg_20260304_213434_ctx512_lr0p00005_st400_r32_a32_d0",
     "KIND": "KIND_lora_differencing_ctx128_lr5e-05_r16_20260215_225721",
     "EBAY": "EBAY_lora_robust_scaling_ctx128_lr5e-5_r16_20260221_083308",
-    "MTCH": "MTCH_lora_nonreg_20260304_044949_ctx512_lr0p0002_st400_r32",
+    "MTCH": "MTCH_lora_nonreg_20260304_213434_ctx512_lr0p00007_st400_r32_a32_d0p05",
     "ANGI": "ANGI_lora_differencing_ctx128_lr5e-05_r16_20260215_224308",
     "Z": "Z_lora_differencing_ctx128_lr5e-05_r16_20260215_224604",
     "EXPE": "EXPE_lora_differencing_ctx128_lr5e-05_r16_20260215_224859",
@@ -35,11 +35,44 @@ CACHE_ROOT = Path("unified_hourly_experiment/forecast_cache")
 DATA_ROOT = Path("trainingdatahourly/stocks")
 MODEL_ROOT = Path("chronos2_finetuned")
 
+def _resolve_model_path(symbol: str, model_name: str) -> Path | None:
+    """Resolve a usable finetuned checkpoint path for a symbol.
+
+    Prefers the configured model name, but falls back to the most recently
+    updated local checkpoint for the symbol when mappings become stale.
+    """
+    preferred = MODEL_ROOT / model_name / "finetuned-ckpt"
+    if preferred.exists():
+        return preferred
+
+    fallback_candidates: list[tuple[float, Path]] = []
+    for candidate_dir in MODEL_ROOT.glob(f"{symbol}_*"):
+        ckpt = candidate_dir / "finetuned-ckpt"
+        if ckpt.exists():
+            try:
+                mtime = ckpt.stat().st_mtime
+            except OSError:
+                continue
+            fallback_candidates.append((mtime, ckpt))
+
+    if not fallback_candidates:
+        logger.warning("Model not found and no fallback candidates: {}", preferred)
+        return None
+
+    fallback_candidates.sort(key=lambda row: row[0], reverse=True)
+    chosen = fallback_candidates[0][1]
+    logger.warning(
+        "Model not found for {} -> {}. Falling back to latest available checkpoint: {}",
+        symbol,
+        preferred,
+        chosen,
+    )
+    return chosen
+
 def build_cache(symbol: str, model_name: str):
     """Build forecast cache for a symbol."""
-    model_path = MODEL_ROOT / model_name / "finetuned-ckpt"
-    if not model_path.exists():
-        logger.warning(f"Model not found: {model_path}")
+    model_path = _resolve_model_path(symbol, model_name)
+    if model_path is None:
         return False
 
     cmd = [

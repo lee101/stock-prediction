@@ -154,6 +154,25 @@ def main() -> None:
     )
     parser.set_defaults(always_full_exit=True)
     parser.add_argument("--decision-lag-bars", type=int, default=1)
+    parser.add_argument(
+        "--cancel-ack-delay-bars",
+        type=int,
+        default=1,
+        help="Bars to wait for same-side cancel acknowledgement before replacement is allowed.",
+    )
+    parser.add_argument(
+        "--partial-fill-on-touch",
+        dest="partial_fill_on_touch",
+        action="store_true",
+        help="Allow partial fills when a limit is only lightly touched intrabar (default).",
+    )
+    parser.add_argument(
+        "--no-partial-fill-on-touch",
+        dest="partial_fill_on_touch",
+        action="store_false",
+        help="Use legacy all-or-nothing fills once a bar touches the limit trigger.",
+    )
+    parser.set_defaults(partial_fill_on_touch=True)
     parser.add_argument("--eval-days", type=float, default=None)
     parser.add_argument("--eval-hours", type=float, default=None)
     parser.add_argument("--output-dir", default=None)
@@ -299,6 +318,8 @@ def main() -> None:
             allow_position_adds=bool(args.allow_position_adds),
             always_full_exit=bool(args.always_full_exit),
             decision_lag_bars=int(args.decision_lag_bars),
+            cancel_ack_delay_bars=int(args.cancel_ack_delay_bars),
+            partial_fill_on_touch=bool(args.partial_fill_on_touch),
             symbols=[s.upper() for s in symbols],
         )
     )
