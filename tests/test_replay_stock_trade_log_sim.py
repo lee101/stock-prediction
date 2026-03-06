@@ -9,6 +9,7 @@ import unified_hourly_experiment.replay_stock_trade_log_sim as replay_mod
 from unified_hourly_experiment.replay_stock_trade_log_sim import (
     compare_counts,
     compare_entries,
+    load_live_entry_fills,
     load_live_entries,
     parse_bool_list,
     run_replay,
@@ -90,6 +91,68 @@ def test_load_live_entries_parses_and_deduplicates_hour_symbol(tmp_path: Path) -
     assert float(mtch["entry_price"]) == 30.5
     assert float(mtch["qty"]) == 0.0
     assert mtch["timestamp"] == pd.Timestamp("2026-03-03T16:00:00Z")
+
+
+def test_load_live_entry_fills_uses_broker_closed_entry_orders(tmp_path: Path) -> None:
+    event_log = tmp_path / "stock_event_log.jsonl"
+    _write_log(
+        event_log,
+        [
+            {
+                "event_type": "entry_order_submit_succeeded",
+                "symbol": "NVDA",
+                "side": "long",
+                "order_id": "entry-1",
+                "logged_at": "2026-03-03T15:01:00Z",
+            },
+            {
+                "event_type": "exit_order_submit_succeeded",
+                "symbol": "NVDA",
+                "side": "sell",
+                "order_id": "exit-1",
+                "logged_at": "2026-03-03T15:10:00Z",
+            },
+            {
+                "event_type": "broker_closed_order",
+                "event_ts": "2026-03-03T15:05:00Z",
+                "order": {
+                    "id": "entry-1",
+                    "symbol": "NVDA",
+                    "status": "filled",
+                    "filled_qty": 7,
+                    "filled_avg_price": 100.25,
+                    "filled_at": "2026-03-03T15:05:00Z",
+                },
+            },
+            {
+                "event_type": "broker_closed_order",
+                "event_ts": "2026-03-03T15:55:00Z",
+                "order": {
+                    "id": "exit-1",
+                    "symbol": "NVDA",
+                    "status": "filled",
+                    "filled_qty": 7,
+                    "filled_avg_price": 101.0,
+                    "filled_at": "2026-03-03T15:55:00Z",
+                },
+            },
+        ],
+    )
+
+    out = load_live_entry_fills(
+        event_log=event_log,
+        symbols=None,
+        start=pd.Timestamp("2026-03-03T15:00:00Z"),
+        end=pd.Timestamp("2026-03-03T16:00:00Z"),
+    )
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["symbol"] == "NVDA"
+    assert row["side"] == "long"
+    assert float(row["qty"]) == 7.0
+    assert float(row["entry_price"]) == 100.25
+    assert row["timestamp"] == pd.Timestamp("2026-03-03T15:00:00Z")
 
 
 def test_compare_counts_computes_alignment_metrics() -> None:
