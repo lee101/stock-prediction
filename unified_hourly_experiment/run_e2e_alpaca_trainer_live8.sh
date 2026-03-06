@@ -7,9 +7,14 @@ set -euo pipefail
 PYTHON="${PYTHON:-.venv313/bin/python -u}"
 TRAIN="unified_hourly_experiment/train_bf16_efficient.py"
 SWEEP="unified_hourly_experiment/sweep_epoch_portfolio.py"
+REBUILD="unified_hourly_experiment/rebuild_all_caches.py"
 
 SYMBOLS="${SYMBOLS:-NVDA,PLTR,GOOG,TSLA,DBX,TRIP,MTCH,NYT}"
 EVAL_SYMBOLS="${EVAL_SYMBOLS:-$SYMBOLS}"
+FORECAST_HORIZONS="${FORECAST_HORIZONS:-1}"
+CACHE_HORIZONS="${CACHE_HORIZONS:-$FORECAST_HORIZONS}"
+CACHE_LOOKBACK_HOURS="${CACHE_LOOKBACK_HOURS:-8000}"
+CACHE_REBUILD="${CACHE_REBUILD:-1}"
 
 EPOCHS="${EPOCHS:-50}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
@@ -43,11 +48,21 @@ echo " Live8 Candidate Training"
 echo "=========================================="
 echo " Run: ${RUN_NAME}"
 echo " Symbols: ${SYMBOLS}"
+echo " Forecast horizons: ${FORECAST_HORIZONS} (cache rebuild: ${CACHE_HORIZONS})"
 echo " Training: epochs=${EPOCHS} bs=${BATCH_SIZE} lr=${LR} wd=${WD} rw=${RW} seq=${SEQ}"
 echo " Eval periods: ${EVAL_PERIODS}d"
 echo " Output: ${CKPT_DIR}"
 echo "=========================================="
 echo ""
+
+if [[ "${CACHE_REBUILD}" != "0" ]]; then
+    echo "=== Phase 0: Rebuild Chronos2 Forecast Caches ==="
+    $PYTHON $REBUILD \
+        --symbols "$EVAL_SYMBOLS" \
+        --horizons "$CACHE_HORIZONS" \
+        --lookback-hours "$CACHE_LOOKBACK_HOURS"
+    echo ""
+fi
 
 echo "=== Phase 1: BF16 Training ==="
 $PYTHON $TRAIN \
@@ -73,7 +88,7 @@ $PYTHON $TRAIN \
     --decision-lag-bars 1 \
     --fill-temperature 5e-4 \
     --logits-softcap 12.0 \
-    --forecast-horizons 1 \
+    --forecast-horizons "$FORECAST_HORIZONS" \
     --checkpoint-name "$RUN_NAME" \
     --eval-periods "$EVAL_PERIODS" \
     --eval-after-epoch 5 \
