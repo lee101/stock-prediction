@@ -292,6 +292,8 @@ def evaluate_lag_sweep(
     max_hold_hours: int,
     trade_amount_scale: float,
     market_order_entry: bool,
+    sim_backend: str,
+    entry_order_ttl_hours: int,
     horizon: int,
 ) -> tuple[list[dict[str, Any]], dict[str, float]]:
     lag_results: list[dict[str, Any]] = []
@@ -307,6 +309,8 @@ def evaluate_lag_sweep(
             trade_amount_scale=trade_amount_scale,
             decision_lag_bars=lag,
             market_order_entry=market_order_entry,
+            sim_backend=sim_backend,
+            entry_order_ttl_hours=int(entry_order_ttl_hours),
         )
         sim = run_portfolio_simulation(bars, actions, cfg, horizon=horizon)
         equity = sim.equity_curve.to_numpy(dtype=float)
@@ -455,6 +459,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-edge", type=float, default=0.001)
     parser.add_argument("--max-hold-hours", type=int, default=4)
     parser.add_argument("--trade-amount-scale", type=float, default=100.0)
+    parser.add_argument(
+        "--entry-order-ttl-hours",
+        type=int,
+        default=0,
+        help="How many hourly bars a non-filled entry order remains pending in simulator (0 disables).",
+    )
+    parser.add_argument(
+        "--sim-backend",
+        type=str,
+        default="auto",
+        choices=["python", "native", "auto"],
+        help="Portfolio simulator backend for holdout evaluation.",
+    )
     return parser
 
 
@@ -533,6 +550,10 @@ def main() -> None:
                 max_hold_hours=int(cfg.get("eval_max_hold_hours", args.max_hold_hours)),
                 trade_amount_scale=float(cfg.get("eval_trade_amount_scale", args.trade_amount_scale)),
                 market_order_entry=bool(cfg.get("eval_market_order_entry", args.market_order_entry)),
+                sim_backend=str(cfg.get("eval_sim_backend", args.sim_backend)),
+                entry_order_ttl_hours=int(
+                    cfg.get("eval_entry_order_ttl_hours", args.entry_order_ttl_hours)
+                ),
                 horizon=args.horizon,
             )
             avg_buys = float(lag_summary.get("num_buys_mean", 0.0))

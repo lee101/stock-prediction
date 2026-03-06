@@ -163,3 +163,171 @@ def test_hourly_trader_simulator_fill_buffer_bps_requires_trade_through_limit():
     assert [f.side for f in result.fills] == ["buy"]
     assert "ETHUSD" in result.final_positions
     assert result.final_positions["ETHUSD"] > 0.0
+
+
+def test_hourly_trader_simulator_defers_same_side_replacement_until_cancel_ack() -> None:
+    ts0 = pd.Timestamp("2026-01-01T00:00:00Z")
+    ts1 = ts0 + pd.Timedelta(hours=1)
+    ts2 = ts1 + pd.Timedelta(hours=1)
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "high": 101.0, "low": 100.5, "close": 100.0},
+            {"timestamp": ts1, "symbol": "ETHUSD", "high": 101.0, "low": 100.2, "close": 100.0},
+            {"timestamp": ts2, "symbol": "ETHUSD", "high": 101.0, "low": 100.2, "close": 100.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+            {"timestamp": ts1, "symbol": "ETHUSD", "buy_price": 99.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+            {"timestamp": ts2, "symbol": "ETHUSD", "buy_price": 99.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=1000.0,
+            allocation_usd=1000.0,
+            allocation_pct=None,
+            decision_lag_bars=1,
+            cancel_ack_delay_bars=1,
+            fee_by_symbol={"ETHUSD": 0.0},
+        )
+    )
+    result = sim.run(bars, actions)
+
+    assert result.fills == []
+    assert result.per_hour.iloc[0]["reserved_cash"] == 1000.0
+    assert result.per_hour.iloc[1]["reserved_cash"] == 1000.0
+    assert len(result.open_orders) == 1
+    assert result.open_orders[0].symbol == "ETHUSD"
+    assert result.open_orders[0].side == "buy"
+    assert result.open_orders[0].limit_price == 99.0
+    assert result.open_orders[0].placed_at == ts2
+
+
+def test_hourly_trader_simulator_pending_cancel_order_can_fill_before_ack() -> None:
+    ts0 = pd.Timestamp("2026-01-01T00:00:00Z")
+    ts1 = ts0 + pd.Timedelta(hours=1)
+    ts2 = ts1 + pd.Timedelta(hours=1)
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "high": 101.0, "low": 100.5, "close": 100.0},
+            {"timestamp": ts1, "symbol": "ETHUSD", "high": 101.0, "low": 100.2, "close": 100.0},
+            {"timestamp": ts2, "symbol": "ETHUSD", "high": 101.0, "low": 99.8, "close": 100.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+            {"timestamp": ts1, "symbol": "ETHUSD", "buy_price": 99.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+            {"timestamp": ts2, "symbol": "ETHUSD", "buy_price": 99.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=1000.0,
+            allocation_usd=1000.0,
+            allocation_pct=None,
+            decision_lag_bars=1,
+            cancel_ack_delay_bars=1,
+            fee_by_symbol={"ETHUSD": 0.0},
+            always_full_exit=False,
+        )
+    )
+    result = sim.run(bars, actions)
+
+    assert len(result.fills) == 1
+    assert result.fills[0].side == "buy"
+    assert result.fills[0].price == 100.0
+    assert result.fills[0].timestamp == ts2
+    assert result.final_positions["ETHUSD"] > 0.0
+
+
+def test_hourly_trader_simulator_touch_only_limit_fill_is_partial_until_bar_closes_through() -> None:
+    ts0 = pd.Timestamp("2026-01-01T00:00:00Z")
+    ts1 = ts0 + pd.Timedelta(hours=1)
+    ts2 = ts1 + pd.Timedelta(hours=1)
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "open": 101.0, "high": 101.0, "low": 100.5, "close": 101.0},
+            # Touches the buy limit but closes back above it, so only half the order should fill.
+            {"timestamp": ts1, "symbol": "ETHUSD", "open": 101.0, "high": 101.0, "low": 99.0, "close": 100.5},
+            # Opens below the limit, so the remaining order completes.
+            {"timestamp": ts2, "symbol": "ETHUSD", "open": 99.5, "high": 100.2, "low": 99.4, "close": 99.8},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+            {"timestamp": ts1, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+            {"timestamp": ts2, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=1000.0,
+            allocation_usd=1000.0,
+            allocation_pct=None,
+            decision_lag_bars=1,
+            fee_by_symbol={"ETHUSD": 0.0},
+            partial_fill_on_touch=True,
+        )
+    )
+    result = sim.run(bars, actions)
+
+    assert len(result.fills) == 2
+    assert result.fills[0].side == "buy"
+    assert result.fills[0].timestamp == ts1
+    assert result.fills[0].quantity == 5.0
+    assert result.per_hour.iloc[1]["reserved_cash"] == 500.0
+    assert result.fills[1].quantity == 5.0
+    assert result.final_positions["ETHUSD"] == 10.0
+    assert result.final_reserved_cash == 0.0
+
+
+def test_hourly_trader_simulator_max_leverage_reserves_buying_power_for_multiple_entries() -> None:
+    ts0 = pd.Timestamp("2026-01-05T15:00:00Z")
+    ts1 = ts0 + pd.Timedelta(hours=1)
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "NVDA", "open": 100.0, "high": 101.0, "low": 100.0, "close": 100.0},
+            {"timestamp": ts0, "symbol": "PLTR", "open": 100.0, "high": 101.0, "low": 100.0, "close": 100.0},
+            {"timestamp": ts1, "symbol": "NVDA", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
+            {"timestamp": ts1, "symbol": "PLTR", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "NVDA", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+            {"timestamp": ts0, "symbol": "PLTR", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+            {"timestamp": ts1, "symbol": "NVDA", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 0.0, "sell_amount": 0.0},
+            {"timestamp": ts1, "symbol": "PLTR", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 0.0, "sell_amount": 0.0},
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=1000.0,
+            allocation_usd=1000.0,
+            allocation_pct=None,
+            max_leverage=2.0,
+            decision_lag_bars=1,
+            enforce_market_hours=False,
+            fee_by_symbol={"NVDA": 0.0, "PLTR": 0.0},
+        )
+    )
+    result = sim.run(bars, actions)
+
+    assert result.per_hour.iloc[0]["reserved_cash"] == 2000.0
+    assert result.per_hour.iloc[0]["available_cash"] == 0.0
+    assert len(result.fills) == 2
+    assert result.final_positions == {"NVDA": 10.0, "PLTR": 10.0}
+    assert result.final_cash == -1000.0
+    assert result.per_hour.iloc[-1]["gross_exposure"] == 2000.0
