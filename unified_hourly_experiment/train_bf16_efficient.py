@@ -30,7 +30,7 @@ from loguru import logger
 from binanceneural.trainer import BinanceHourlyTrainer
 from binanceneural.data import MultiSymbolDataModule
 from binanceneural.config import DatasetConfig, TrainingConfig
-from src.trade_directions import resolve_trade_directions
+from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS, resolve_trade_directions
 
 
 def setup_bf16_optimizations():
@@ -58,7 +58,7 @@ def main():
     parser = argparse.ArgumentParser(description="BF16-optimized Alpaca stock trader training")
 
     # Symbol configuration
-    parser.add_argument("--symbols", type=str, default="NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT",
+    parser.add_argument("--symbols", type=str, default=",".join(DEFAULT_ALPACA_LIVE8_STOCKS),
                         help="Comma-separated stock symbols")
     parser.add_argument("--crypto-symbols", type=str, default="",
                         help="Comma-separated crypto symbols")

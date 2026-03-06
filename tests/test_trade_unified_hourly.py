@@ -175,6 +175,66 @@ def test_execute_trades_emits_entry_lifecycle_events(monkeypatch) -> None:
     assert state["positions"]["NVDA"]["entry_order_id"] == "entry-1"
 
 
+def test_execute_trades_uses_short_side_for_short_only_symbol(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+    submitted: list[object] = []
+    state = {"positions": {}}
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _LimitOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.LimitOrderRequest = _LimitOrderRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.OrderSide = SimpleNamespace(BUY="buy", SELL="sell")
+    fake_enums.TimeInForce = SimpleNamespace(DAY="day")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+
+    class _DummyAPI:
+        def submit_order(self, order):
+            submitted.append(order)
+            return SimpleNamespace(id="entry-short-1")
+
+    monkeypatch.setattr(
+        live,
+        "get_account_info",
+        lambda api: {"equity": 10_000.0, "buying_power": 10_000.0, "cash": 5_000.0},
+    )
+    monkeypatch.setattr(
+        live,
+        "entry_intensity_fraction",
+        lambda *args, **kwargs: (50.0, 0.5),
+    )
+    monkeypatch.setattr(live, "log_trade", lambda event: None)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    live.execute_trades(
+        _DummyAPI(),
+        {
+            "DBX": {
+                "buy_price": 20.0,
+                "sell_price": 21.0,
+                "buy_amount": 0.0,
+                "sell_amount": 50.0,
+                "edge": 0.03,
+                "hold_hours": 4.0,
+            }
+        },
+        state,
+        max_positions=5,
+    )
+
+    assert submitted
+    assert submitted[0].kwargs["side"] == "sell"
+    assert state["positions"]["DBX"]["side"] == "short"
+    assert state["positions"]["DBX"]["qty"] < 0
+
+
 def test_poll_broker_events_logs_and_dedupes(monkeypatch) -> None:
     events: list[tuple[str, dict]] = []
     request_calls: list[tuple[str, dict]] = []

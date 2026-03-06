@@ -13,11 +13,12 @@ from binanceneural.trainer import BinanceHourlyTrainer
 from binanceneural.data import MultiSymbolDataModule
 from binanceneural.config import DatasetConfig, TrainingConfig
 from loguru import logger
+from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stock-symbols", default="NVDA,MSFT,META,GOOG,NET,PLTR,NYT,YELP,DBX,TRIP")
+    parser.add_argument("--stock-symbols", default=",".join(DEFAULT_ALPACA_LIVE8_STOCKS))
     parser.add_argument("--crypto-symbols", default="SOLUSD,AVAXUSD,ETHUSD,UNIUSD")
     parser.add_argument("--stock-data-root", type=Path, default=Path("trainingdatahourly/stocks"))
     parser.add_argument("--crypto-data-root", type=Path, default=Path("trainingdatahourly/crypto"))

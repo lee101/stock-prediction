@@ -44,6 +44,21 @@ def test_resolve_stock_symbols_prefers_explicit_values(tmp_path: Path) -> None:
     assert resolved == ["MTCH", "TRIP", "GOOG"]
 
 
+def test_resolve_stock_symbols_unions_extra_symbols_with_supervisor(tmp_path: Path) -> None:
+    config_path = tmp_path / "unified-stock-trader.conf"
+    config_path.write_text(
+        "[program:x]\ncommand=/usr/bin/python trade.py --stock-symbols NVDA,PLTR,GOOG --loop\n",
+        encoding="utf-8",
+    )
+    resolved = resolve_stock_symbols(
+        symbols=None,
+        extra_symbols=["tsla", "GOOG"],
+        supervisor_config=config_path,
+        fallback=("AAPL",),
+    )
+    assert resolved == ["NVDA", "PLTR", "GOOG", "TSLA"]
+
+
 def test_normalize_stock_bars_drops_incomplete_latest_bar() -> None:
     index = pd.to_datetime(
         [
