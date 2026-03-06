@@ -13,6 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.binance_hourly_csv_utils import append_hourly_binance_bars
+
 DATA_ROOT = PROJECT_ROOT / "trainingdatahourly" / "crypto"
 CACHE_ROOT = PROJECT_ROOT / "binanceneural" / "forecast_cache"
 SYMBOLS = ["SOLUSD", "BTCUSD", "ETHUSD"]
@@ -28,32 +30,22 @@ SLEEP_SECONDS = 300  # 5 min between cycles
 def refresh_price_csv(symbol: str) -> None:
     from binance_data_wrapper import fetch_binance_hourly_bars
     csv_path = DATA_ROOT / f"{symbol.upper()}.csv"
-    if not csv_path.exists():
-        print(f"[price] {symbol}: CSV not found at {csv_path}")
-        return
-    existing = pd.read_csv(csv_path)
-    existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True)
-    last_ts = existing["timestamp"].max()
     binance_pair = USDT_FALLBACK.get(symbol.upper(), symbol.upper())
-    end_ts = datetime.now(timezone.utc)
     try:
-        new = fetch_binance_hourly_bars(binance_pair, start=last_ts, end=end_ts)
+        result = append_hourly_binance_bars(
+            csv_path,
+            fetch_symbol=binance_pair,
+            csv_symbol=symbol,
+            fetcher=fetch_binance_hourly_bars,
+        )
     except Exception as e:
         print(f"[price] {symbol}: download failed: {e}")
         return
-    if new is None or len(new) == 0:
-        return
-    new = new.reset_index()
-    new["symbol"] = symbol.upper()
-    new["timestamp"] = pd.to_datetime(new["timestamp"], utc=True)
-    new = new[new["timestamp"] > last_ts]
-    if len(new) == 0:
-        return
-    combined = pd.concat([existing, new], ignore_index=True)
-    combined = combined.drop_duplicates(subset="timestamp", keep="last")
-    combined = combined.sort_values("timestamp").reset_index(drop=True)
-    combined.to_csv(csv_path, index=False)
-    print(f"[price] {symbol}: +{len(new)} rows, last={combined['timestamp'].max()}")
+    if result.get("status") in {"updated", "synced"}:
+        print(
+            f"[price] {symbol}: +{result.get('rows_added', 0)} rows, "
+            f"last={result.get('end')}"
+        )
 
 
 def refresh_forecast_cache(symbol: str) -> None:
