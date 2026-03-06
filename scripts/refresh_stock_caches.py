@@ -2,6 +2,7 @@
 """Daemon: download fresh OHLC bars then refresh Chronos2 forecast caches."""
 import time
 import sys
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from unified_hourly_experiment.rebuild_all_caches import BEST_MODELS, build_cach
 
 REFRESH_INTERVAL = 3600
 OHLC_DIR = Path("trainingdatahourly/stocks")
+STOCK_CACHE_HORIZONS = os.getenv("STOCK_CACHE_HORIZONS", "1,24")
+STOCK_CACHE_LOOKBACK_HOURS = int(os.getenv("STOCK_CACHE_LOOKBACK_HOURS", "8000"))
 
 
 def _refresh_ohlc(symbols):
@@ -95,7 +98,12 @@ def main():
         logger.info("Rebuilding forecast caches")
         for symbol, model in BEST_MODELS.items():
             try:
-                build_cache(symbol, model)
+                build_cache(
+                    symbol,
+                    model,
+                    horizons=STOCK_CACHE_HORIZONS,
+                    lookback_hours=STOCK_CACHE_LOOKBACK_HOURS,
+                )
             except Exception as e:
                 logger.error("Cache refresh failed for {}: {}", symbol, e)
 
