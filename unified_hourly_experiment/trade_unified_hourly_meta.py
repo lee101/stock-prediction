@@ -23,6 +23,7 @@ from binanceneural.config import DatasetConfig
 from binanceneural.data import BinanceHourlyDataModule
 from binanceneural.inference import generate_actions_from_frame, generate_latest_action
 from src.hourly_trader_utils import entry_intensity_fraction
+from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
 from unified_hourly_experiment.meta_live_runtime import choose_latest_winner, compute_symbol_edge
 from unified_hourly_experiment.meta_selector import daily_returns_from_equity
@@ -525,7 +526,7 @@ def main() -> None:
         required=True,
         help="Meta strategy spec NAME=PATH or NAME=PATH:EPOCH (repeatable).",
     )
-    parser.add_argument("--stock-symbols", default="NVDA,PLTR,GOOG,DBX,TRIP,MTCH")
+    parser.add_argument("--stock-symbols", default=",".join(DEFAULT_ALPACA_LIVE8_STOCKS))
     parser.add_argument("--stock-data-root", type=Path, default=Path("trainingdatahourly/stocks"))
     parser.add_argument("--stock-cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
     parser.add_argument("--dry-run", action="store_true")

@@ -23,12 +23,20 @@ from binanceneural.data import BinanceHourlyDataModule, FeatureNormalizer
 from binanceneural.config import DatasetConfig
 from binanceneural.model import build_policy, policy_config_from_payload
 from binanceneural.inference import generate_latest_action
+from src.trade_directions import (
+    DEFAULT_ALPACA_LIVE8_STOCKS,
+    DEFAULT_LONG_ONLY_STOCKS,
+    DEFAULT_SHORT_ONLY_STOCKS,
+    is_long_only_symbol,
+    is_short_only_symbol,
+    resolve_trade_directions,
+)
 from src.torch_load_utils import torch_load_compat
 from src.symbol_utils import is_crypto_symbol
 from src.hourly_trader_utils import entry_intensity_fraction
 
-LONG_ONLY = {"NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "DBX", "TSLA", "AAPL"}
-SHORT_ONLY = {"YELP", "EBAY", "TRIP", "MTCH", "ANGI", "Z", "EXPE", "BKNG", "NWSA", "NYT"}
+LONG_ONLY = set(DEFAULT_LONG_ONLY_STOCKS)
+SHORT_ONLY = set(DEFAULT_SHORT_ONLY_STOCKS)
 
 STATE_FILE = Path("strategy_state/stock_portfolio_state.json")
 TRADE_LOG = Path("strategy_state/stock_trade_log.jsonl")
@@ -739,7 +747,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
             removed.append(symbol)
             continue
 
-        if symbol in SHORT_ONLY and qty > 0:
+        if is_short_only_symbol(symbol) and qty > 0:
             logger.info("{}: SHORT_ONLY stock held long, force closing {} shares", symbol, qty)
             log_event("manage_position_action", symbol=symbol, action="force_close", reason="short_only_long_position", qty=float(qty))
             cancel_symbol_orders(api, symbol, orders_by_symbol)
@@ -979,8 +987,9 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
             is_long = True
             is_short = False
         else:
-            is_long = symbol in LONG_ONLY or symbol not in SHORT_ONLY
-            is_short = symbol in SHORT_ONLY
+            directions = resolve_trade_directions(symbol, allow_short=True)
+            is_short = directions.can_short and not directions.can_long
+            is_long = not is_short
 
         signal_amount, intensity_frac = entry_intensity_fraction(
             action,
@@ -1164,7 +1173,7 @@ def run_cycle(
             buy_price = action.get("buy_price", 0)
             sell_price = action.get("sell_price", 0)
 
-            if symbol in SHORT_ONLY:
+            if is_short_only_symbol(symbol):
                 edge = (sell_price - pred_low) / sell_price - args.fee_rate if sell_price > 0 else 0
             else:
                 edge = (pred_high - buy_price) / buy_price - args.fee_rate if buy_price > 0 else 0
@@ -1172,15 +1181,15 @@ def run_cycle(
             if edge >= args.min_edge:
                 action["edge"] = edge
                 signals[symbol] = action
-                side = "short" if symbol in SHORT_ONLY else "long"
+                side = "short" if is_short_only_symbol(symbol) else "long"
                 signal_amount, intensity = entry_intensity_fraction(
                     action,
-                    is_short=(symbol in SHORT_ONLY),
+                    is_short=is_short_only_symbol(symbol),
                     trade_amount_scale=TRADE_AMOUNT_SCALE,
                     intensity_power=ENTRY_INTENSITY_POWER,
                     min_intensity_fraction=ENTRY_MIN_INTENSITY_FRACTION,
                     side_multiplier=(
-                        SHORT_INTENSITY_MULTIPLIER if (symbol in SHORT_ONLY) else LONG_INTENSITY_MULTIPLIER
+                        SHORT_INTENSITY_MULTIPLIER if is_short_only_symbol(symbol) else LONG_INTENSITY_MULTIPLIER
                     ),
                 )
                 logger.info("{}: {} buy={:.2f} sell={:.2f} edge={:.4f} hold={:.1f}h amt={:.3f} int={:.3f}",
@@ -1241,7 +1250,7 @@ def main():
     global LONG_INTENSITY_MULTIPLIER, SHORT_INTENSITY_MULTIPLIER
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint-dir", type=Path, required=True)
-    parser.add_argument("--stock-symbols", default="NVDA,MSFT,META,GOOG")
+    parser.add_argument("--stock-symbols", default=",".join(DEFAULT_ALPACA_LIVE8_STOCKS))
     parser.add_argument("--crypto-symbols", default="")
     parser.add_argument("--stock-data-root", type=Path, default=Path("trainingdatahourly/stocks"))
     parser.add_argument("--crypto-data-root", type=Path, default=Path("trainingdatahourly/crypto"))
@@ -1302,8 +1311,8 @@ def main():
     logger.info("Portfolio Stock Trading Bot")
     logger.info("=" * 60)
     logger.info("Stocks: {} (LONG_ONLY: {}, SHORT_ONLY: {})",
-               len(stocks), len([s for s in stocks if s in LONG_ONLY]),
-               len([s for s in stocks if s in SHORT_ONLY]))
+               len(stocks), len([s for s in stocks if is_long_only_symbol(s)]),
+               len([s for s in stocks if is_short_only_symbol(s)]))
     logger.info("Max positions: {}, Hold limit: {}h", max_pos, max_hold)
     logger.info("Mode: {}", "LIVE" if not paper else "PAPER")
     log_event(

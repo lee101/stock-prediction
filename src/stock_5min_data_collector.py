@@ -31,7 +31,7 @@ SCHEMA_COLUMNS = [
 DEFAULT_OUTPUT_ROOT = Path("trainingdata5min")
 DEFAULT_STOCK_DIRNAME = "stocks"
 DEFAULT_SUPERVISOR_CONFIG = Path("supervisor") / "unified-stock-trader.conf"
-DEFAULT_FIVE_MIN_STOCK_SYMBOLS: tuple[str, ...] = ("NVDA", "PLTR", "GOOG", "DBX", "TRIP", "MTCH", "NYT")
+DEFAULT_FIVE_MIN_STOCK_SYMBOLS: tuple[str, ...] = ("NVDA", "PLTR", "GOOG", "DBX", "TRIP", "MTCH", "NYT", "TSLA")
 DEFAULT_RECENT_LOOKBACK_MINUTES = 15
 DEFAULT_OVERLAP_MINUTES = 10
 DEFAULT_BOOTSTRAP_DAYS = 30
@@ -100,16 +100,17 @@ def extract_stock_symbols_from_supervisor(config_path: Path) -> list[str]:
 def resolve_stock_symbols(
     *,
     symbols: Sequence[str] | None,
+    extra_symbols: Sequence[str] | None = None,
     supervisor_config: Path = DEFAULT_SUPERVISOR_CONFIG,
     fallback: Sequence[str] = DEFAULT_FIVE_MIN_STOCK_SYMBOLS,
 ) -> list[str]:
     explicit = parse_symbol_tokens(symbols)
     if explicit:
-        return explicit
+        return parse_symbol_tokens([*explicit, *parse_symbol_tokens(extra_symbols)])
     from_supervisor = extract_stock_symbols_from_supervisor(supervisor_config)
     if from_supervisor:
-        return from_supervisor
-    return parse_symbol_tokens(fallback)
+        return parse_symbol_tokens([*from_supervisor, *parse_symbol_tokens(extra_symbols)])
+    return parse_symbol_tokens([*parse_symbol_tokens(fallback), *parse_symbol_tokens(extra_symbols)])
 
 
 def latest_complete_bar_open(
@@ -302,6 +303,7 @@ def fetch_stock_5min_bars(
 def collect_recent_cycle(
     *,
     symbols: Sequence[str],
+    extra_symbols: Sequence[str] | None = None,
     out_root: Path,
     now: datetime | None = None,
     recent_minutes: int = DEFAULT_RECENT_LOOKBACK_MINUTES,
@@ -315,7 +317,7 @@ def collect_recent_cycle(
     stock_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, int | str | None]] = []
 
-    for symbol in resolve_stock_symbols(symbols=symbols):
+    for symbol in resolve_stock_symbols(symbols=symbols, extra_symbols=extra_symbols):
         path = stock_dir / f"{symbol}.csv"
         start_dt = resolve_fetch_start(
             path,
@@ -340,6 +342,7 @@ def collect_recent_cycle(
 def repair_recent_history(
     *,
     symbols: Sequence[str],
+    extra_symbols: Sequence[str] | None = None,
     out_root: Path,
     days: int,
     now: datetime | None = None,
@@ -354,7 +357,7 @@ def repair_recent_history(
     stock_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[dict[str, int | str | None]] = []
-    for symbol in resolve_stock_symbols(symbols=symbols):
+    for symbol in resolve_stock_symbols(symbols=symbols, extra_symbols=extra_symbols):
         path = stock_dir / f"{symbol}.csv"
         bars = fetcher(symbol, start_dt, current)
         stats = append_stock_bars(path, bars)
@@ -391,6 +394,7 @@ def _log_cycle_results(name: str, results: Iterable[dict[str, int | str | None]]
 def run_collector_loop(
     *,
     symbols: Sequence[str] | None = None,
+    extra_symbols: Sequence[str] | None = None,
     out_root: Path = DEFAULT_OUTPUT_ROOT,
     supervisor_config: Path = DEFAULT_SUPERVISOR_CONFIG,
     interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
@@ -402,7 +406,11 @@ def run_collector_loop(
     feed: str | DataFeed = DataFeed.IEX,
     once: bool = False,
 ) -> None:
-    resolved_symbols = resolve_stock_symbols(symbols=symbols, supervisor_config=supervisor_config)
+    resolved_symbols = resolve_stock_symbols(
+        symbols=symbols,
+        extra_symbols=extra_symbols,
+        supervisor_config=supervisor_config,
+    )
     if not resolved_symbols:
         raise ValueError("No stock symbols resolved for 5-minute collector.")
 
@@ -425,6 +433,7 @@ def run_collector_loop(
         try:
             cycle_results = collect_recent_cycle(
                 symbols=resolved_symbols,
+                extra_symbols=None,
                 out_root=out_root,
                 now=cycle_now,
                 recent_minutes=recent_minutes,
@@ -441,6 +450,7 @@ def run_collector_loop(
             if should_repair:
                 repair_results = repair_recent_history(
                     symbols=resolved_symbols,
+                    extra_symbols=None,
                     out_root=out_root,
                     days=repair_days,
                     now=cycle_now,
@@ -459,6 +469,12 @@ def run_collector_loop(
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Continuously collect 5-minute stock bars from Alpaca.")
     parser.add_argument("--symbols", nargs="*", default=None, help="Optional stock symbols. Commas are supported.")
+    parser.add_argument(
+        "--extra-symbols",
+        nargs="*",
+        default=None,
+        help="Additional stock symbols to union with resolved live symbols.",
+    )
     parser.add_argument("--supervisor-config", type=Path, default=DEFAULT_SUPERVISOR_CONFIG)
     parser.add_argument("--out-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--interval-seconds", type=int, default=DEFAULT_INTERVAL_SECONDS)
@@ -477,6 +493,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     run_collector_loop(
         symbols=args.symbols,
+        extra_symbols=args.extra_symbols,
         out_root=args.out_root,
         supervisor_config=args.supervisor_config,
         interval_seconds=args.interval_seconds,

@@ -22,6 +22,7 @@ from binanceneural.data import BinanceHourlyDataModule
 from binanceneural.config import DatasetConfig, PolicyConfig
 from binanceneural.model import build_policy
 from binanceneural.inference import generate_actions_from_frame
+from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 from unified_hourly_experiment.marketsimulator import (
     PortfolioConfig, run_portfolio_simulation,
 )
@@ -44,7 +45,7 @@ def parse_holdout_days(s: str) -> list[int]:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint-dir", type=Path, required=True)
-    parser.add_argument("--symbols", default="NVDA,PLTR,TRIP,EBAY,GOOG,NET,KIND,MTCH,NYT,DBX")
+    parser.add_argument("--symbols", default=",".join(DEFAULT_ALPACA_LIVE8_STOCKS))
     parser.add_argument("--data-root", type=Path, default=Path("trainingdatahourly/stocks"))
     parser.add_argument("--cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
     parser.add_argument("--initial-cash", type=float, default=10000)

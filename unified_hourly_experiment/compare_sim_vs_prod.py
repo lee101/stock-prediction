@@ -18,6 +18,7 @@ from binanceneural.model import build_policy, policy_config_from_payload
 from binanceneural.inference import generate_actions_from_frame
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
 from unified_hourly_experiment.marketsimulator.unified_selector import _edge_score
+from src.trade_directions import is_short_only_symbol
 from src.torch_load_utils import torch_load_compat
 
 CHECKPOINT_DIR = Path("unified_hourly_experiment/checkpoints/top9_lag1_6L_lr1e5_wd03_rw10_seq48")
@@ -25,10 +26,6 @@ EPOCH = 50
 SYMBOLS = ["NVDA", "PLTR", "GOOG", "NET", "DBX", "TRIP", "EBAY", "MTCH", "NYT"]
 DATA_ROOT = Path("trainingdatahourly/stocks")
 CACHE_ROOT = Path("unified_hourly_experiment/forecast_cache")
-LONG_ONLY = {"NVDA", "PLTR", "GOOG", "NET", "DBX"}
-SHORT_ONLY = {"TRIP", "EBAY", "MTCH", "NYT"}
-
-
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -85,7 +82,7 @@ def main():
             sp = row.get("sell_price", 0)
             ba = row.get("buy_amount", 0)
             intensity = min(ba / 100.0, 1.0)
-            is_short = sym in SHORT_ONLY
+            is_short = is_short_only_symbol(sym)
             fee = 0.001
             if is_short:
                 edge = (sp - row.get("predicted_low_p50_h1", 0)) / sp - fee if sp > 0 else 0
