@@ -173,3 +173,150 @@ def test_execute_trades_emits_entry_lifecycle_events(monkeypatch) -> None:
     assert "position_tracking_created" in event_types
     assert "execute_trades_complete" in event_types
     assert state["positions"]["NVDA"]["entry_order_id"] == "entry-1"
+
+
+def test_poll_broker_events_logs_and_dedupes(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+    request_calls: list[tuple[str, dict]] = []
+    now = datetime(2026, 3, 6, 15, 0, tzinfo=timezone.utc)
+    order_ts = datetime(2026, 3, 6, 14, 30, tzinfo=timezone.utc)
+    activity_ts = datetime(2026, 3, 6, 14, 45, tzinfo=timezone.utc)
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _GetOrdersRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.GetOrdersRequest = _GetOrdersRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.QueryOrderStatus = SimpleNamespace(CLOSED="closed")
+
+    fake_wrapper = types.ModuleType("alpaca_wrapper")
+
+    def _get_account_activities(api, **kwargs):
+        request_calls.append(("activities", kwargs))
+        return [
+            {
+                "id": "fill-1",
+                "activity_type": "FILL",
+                "symbol": "NVDA",
+                "side": "buy",
+                "qty": "5",
+                "transaction_time": activity_ts.isoformat(),
+            }
+        ]
+
+    fake_wrapper.get_account_activities = _get_account_activities
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+    monkeypatch.setitem(sys.modules, "alpaca_wrapper", fake_wrapper)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    class _DummyAPI:
+        def get_orders(self, request):
+            request_calls.append(("orders", request.kwargs))
+            return [
+                SimpleNamespace(
+                    id="order-1",
+                    symbol="NVDA",
+                    side="buy",
+                    status="filled",
+                    qty="5",
+                    filled_qty="5",
+                    filled_avg_price="101.25",
+                    limit_price="101.0",
+                    updated_at=order_ts,
+                    filled_at=order_ts,
+                )
+            ]
+
+    state: dict[str, object] = {}
+    api = _DummyAPI()
+
+    live.poll_broker_events(api, state, reason="pre_cycle", now=now, lookback_hours=24)
+
+    event_types = [event_type for event_type, _ in events]
+    assert "broker_event_poll_start" in event_types
+    assert "broker_closed_order" in event_types
+    assert "broker_fill_activity" in event_types
+    assert "broker_event_poll_complete" in event_types
+    assert request_calls[0] == (
+        "orders",
+        {
+            "status": "closed",
+            "after": datetime(2026, 3, 5, 15, 0, tzinfo=timezone.utc),
+            "until": now,
+            "direction": "asc",
+            "limit": 500,
+        },
+    )
+    assert request_calls[1] == (
+        "activities",
+        {
+            "activity_types": ["FILL"],
+            "date": "2026-03-05",
+            "direction": "asc",
+            "page_size": 100,
+        },
+    )
+    assert request_calls[2] == (
+        "activities",
+        {
+            "activity_types": ["FILL"],
+            "date": "2026-03-06",
+            "direction": "asc",
+            "page_size": 100,
+        },
+    )
+    broker_cursor = state["broker_event_cursor"]
+    assert broker_cursor["closed_orders_after"] == order_ts.isoformat()
+    assert broker_cursor["fill_activities_after"] == activity_ts.isoformat()
+    assert broker_cursor["recent_order_event_keys"]
+    assert broker_cursor["recent_activity_event_keys"]
+
+    events.clear()
+    live.poll_broker_events(api, state, reason="post_cycle", now=now, lookback_hours=24)
+
+    event_types = [event_type for event_type, _ in events]
+    assert "broker_event_poll_start" in event_types
+    assert "broker_event_poll_complete" in event_types
+    assert "broker_closed_order" not in event_types
+    assert "broker_fill_activity" not in event_types
+
+
+def test_run_cycle_polls_broker_events_pre_and_post_cycle(monkeypatch) -> None:
+    poll_reasons: list[str] = []
+    args = SimpleNamespace(
+        ignore_market_hours=False,
+        dry_run=False,
+        min_edge=0.01,
+        fee_rate=0.001,
+        stock_data_root=Path("trainingdatahourly/stocks"),
+        stock_cache_root=Path("unified_hourly_experiment/forecast_cache"),
+    )
+
+    monkeypatch.setattr(live, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(live, "poll_broker_events", lambda api, state, reason, **kwargs: poll_reasons.append(reason))
+    monkeypatch.setattr(live, "manage_positions", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(live, "generate_signal_for_symbol", lambda *args, **kwargs: None)
+    monkeypatch.setattr(live, "save_state", lambda state: None)
+    monkeypatch.setattr(live, "is_market_open_now", lambda: False)
+
+    live.run_cycle(
+        model=object(),
+        feature_columns=[],
+        sequence_length=1,
+        device=None,
+        stocks=["NVDA"],
+        args=args,
+        api=object(),
+        state={"positions": {}},
+        max_positions=5,
+        max_hold_hours=6,
+        normalizer=None,
+    )
+
+    assert poll_reasons == ["pre_cycle", "post_cycle"]

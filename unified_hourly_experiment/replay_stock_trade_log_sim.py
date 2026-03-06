@@ -157,6 +157,97 @@ def load_live_entries(
     return actions
 
 
+def load_live_entry_fills(
+    *,
+    event_log: Path,
+    symbols: set[str] | None,
+    start: pd.Timestamp | None,
+    end: pd.Timestamp | None,
+) -> pd.DataFrame:
+    if not event_log.exists():
+        return pd.DataFrame(columns=["timestamp", "symbol", "side", "qty", "entry_price", "logged_at", "order_id"])
+
+    entry_orders: dict[str, dict[str, Any]] = {}
+    rows: list[dict[str, Any]] = []
+
+    with event_log.open() as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            event_type = str(payload.get("event_type", "")).strip().lower()
+            if event_type == "entry_order_submit_succeeded":
+                order_id = str(payload.get("order_id", "")).strip()
+                symbol = str(payload.get("symbol", "")).upper()
+                side = str(payload.get("side", "")).strip().lower()
+                if not order_id or not symbol or side not in {"long", "short"}:
+                    continue
+                entry_orders[order_id] = {"symbol": symbol, "side": side}
+                continue
+
+            if event_type != "broker_closed_order":
+                continue
+
+            order = payload.get("order") or {}
+            if not isinstance(order, dict):
+                continue
+            order_id = str(order.get("id", "")).strip()
+            if not order_id or order_id not in entry_orders:
+                continue
+
+            symbol = str(order.get("symbol", entry_orders[order_id]["symbol"])).upper()
+            if not symbol:
+                continue
+            if symbols and symbol not in symbols:
+                continue
+
+            event_ts = _as_utc(
+                payload.get("event_ts")
+                or order.get("filled_at")
+                or order.get("updated_at")
+                or payload.get("logged_at")
+            )
+            if pd.isna(event_ts):
+                continue
+            if start is not None and event_ts < start:
+                continue
+            if end is not None and event_ts > end:
+                continue
+
+            try:
+                qty = float(order.get("filled_qty", 0.0) or 0.0)
+                entry_price = float(order.get("filled_avg_price", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if qty <= 0 or entry_price <= 0:
+                continue
+
+            rows.append(
+                {
+                    "timestamp": event_ts.floor("h"),
+                    "symbol": symbol,
+                    "side": entry_orders[order_id]["side"],
+                    "qty": qty,
+                    "entry_price": entry_price,
+                    "logged_at": event_ts,
+                    "order_id": order_id,
+                    "order_status": str(order.get("status", "")).lower(),
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=["timestamp", "symbol", "side", "qty", "entry_price", "logged_at", "order_id"])
+
+    out = pd.DataFrame(rows).sort_values("logged_at")
+    out = out.drop_duplicates(subset=["order_id"], keep="last").reset_index(drop=True)
+    return out
+
+
 def load_bars_for_symbols(
     *,
     data_root: Path,
@@ -418,6 +509,7 @@ def compare_entries(live_entries: pd.DataFrame, sim_entries: pd.DataFrame) -> di
 def main() -> None:
     parser = argparse.ArgumentParser(description="Replay sparse live stock entry log in simulator.")
     parser.add_argument("--trade-log", type=Path, default=Path("strategy_state/stock_trade_log.jsonl"))
+    parser.add_argument("--event-log", type=Path, default=Path("strategy_state/stock_event_log.jsonl"))
     parser.add_argument("--data-root", type=Path, default=Path("trainingdatahourly/stocks"))
     parser.add_argument("--symbols", default="")
     parser.add_argument("--start", default="")
@@ -471,7 +563,17 @@ def main() -> None:
         end = actions["timestamp"].max() + pd.Timedelta(days=1)
 
     bars = load_bars_for_symbols(data_root=args.data_root, symbols=symbols, start=start, end=end)
-    live_counts = _entry_counts(actions, side_col="side")
+    compare_live_entries = load_live_entry_fills(
+        event_log=args.event_log,
+        symbols=symbols_filter,
+        start=start,
+        end=end,
+    )
+    compare_source = "broker_closed_orders"
+    if compare_live_entries.empty:
+        compare_live_entries = actions[["timestamp", "symbol", "side", "qty", "entry_price"]].copy()
+        compare_source = "trade_log"
+    live_counts = _entry_counts(compare_live_entries, side_col="side")
 
     is_hourly_trader_backend = str(args.sim_backend).strip().lower() == "hourly_trader"
     market_order_values = [False] if is_hourly_trader_backend else parse_bool_list(args.market_order_entries)
@@ -503,7 +605,7 @@ def main() -> None:
                             cancel_ack_delay_bars=cancel_ack_delay,
                             partial_fill_on_touch=partial_fill_on_touch,
                         )
-                        compare = compare_entries(actions, replay["sim_entries"])
+                        compare = compare_entries(compare_live_entries, replay["sim_entries"])
                         row = {
                             "market_order_entry": bool(market_order_entry),
                             "entry_order_ttl_hours": int(ttl),
@@ -539,9 +641,11 @@ def main() -> None:
     payload = {
         "generated_at_utc": datetime.now(UTC).isoformat(),
         "trade_log": str(args.trade_log),
+        "event_log": str(args.event_log),
         "window_start_utc": str(start),
         "window_end_utc": str(end),
         "symbols": symbols,
+        "compare_source": compare_source,
         "live_entry_count": int(live_counts["count"].sum()) if len(live_counts) else 0,
         "top": rows[:10],
         "all": rows,

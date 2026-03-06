@@ -41,6 +41,8 @@ ENTRY_INTENSITY_POWER = 1.0
 ENTRY_MIN_INTENSITY_FRACTION = 0.0
 LONG_INTENSITY_MULTIPLIER = 1.0
 SHORT_INTENSITY_MULTIPLIER = 1.0
+BROKER_EVENT_LOOKBACK_HOURS = 48.0
+BROKER_EVENT_KEY_LIMIT = 512
 
 
 def _json_safe(value: Any) -> Any:
@@ -85,6 +87,7 @@ def _serialize_order(order: object) -> dict[str, Any]:
         "time_in_force",
         "qty",
         "filled_qty",
+        "filled_avg_price",
         "limit_price",
         "stop_price",
         "submitted_at",
@@ -117,6 +120,102 @@ def _serialize_position(symbol: str, position: object) -> dict[str, Any]:
     return _json_safe(payload)
 
 
+def _record_field(record: object, field: str, default: Any = None) -> Any:
+    if isinstance(record, dict):
+        return record.get(field, default)
+    return getattr(record, field, default)
+
+
+def _normalize_enum_value(value: object) -> str:
+    if value is None:
+        return ""
+    raw_value = getattr(value, "value", value)
+    return str(raw_value).strip().lower()
+
+
+def _coerce_utc_datetime(value: object) -> Optional[datetime]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = pd.Timestamp(value).to_pydatetime()
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _serialize_activity(activity: object) -> dict[str, Any]:
+    if isinstance(activity, dict):
+        return _json_safe(dict(activity))
+    if hasattr(activity, "__dict__"):
+        try:
+            return _json_safe(vars(activity))
+        except TypeError:
+            pass
+    return {"value": _json_safe(activity)}
+
+
+def _activity_timestamp(activity: object) -> Optional[datetime]:
+    for field in ("transaction_time", "date", "created_at"):
+        timestamp = _coerce_utc_datetime(_record_field(activity, field))
+        if timestamp is not None:
+            return timestamp
+    return None
+
+
+def _order_event_timestamp(order: object) -> Optional[datetime]:
+    for field in ("updated_at", "filled_at", "canceled_at", "expired_at", "created_at", "submitted_at"):
+        timestamp = _coerce_utc_datetime(_record_field(order, field))
+        if timestamp is not None:
+            return timestamp
+    return None
+
+
+def _order_event_key(order: object) -> str:
+    return "|".join(
+        [
+            str(_record_field(order, "id", "")),
+            _normalize_enum_value(_record_field(order, "status")),
+            str(_record_field(order, "filled_qty", "")),
+            str(_record_field(order, "filled_avg_price", "")),
+            (_order_event_timestamp(order) or datetime.min.replace(tzinfo=timezone.utc)).isoformat(),
+        ]
+    )
+
+
+def _activity_event_key(activity: object) -> str:
+    return "|".join(
+        [
+            str(_record_field(activity, "id", _record_field(activity, "activity_id", ""))),
+            str(_record_field(activity, "activity_type", _record_field(activity, "type", ""))),
+            str(_record_field(activity, "symbol", "")),
+            str(_record_field(activity, "side", "")),
+            str(_record_field(activity, "qty", "")),
+            (_activity_timestamp(activity) or datetime.min.replace(tzinfo=timezone.utc)).isoformat(),
+        ]
+    )
+
+
+def _trim_recent_keys(keys: list[str], *, limit: int = BROKER_EVENT_KEY_LIMIT) -> list[str]:
+    if len(keys) <= limit:
+        return keys
+    return keys[-limit:]
+
+
+def _iter_activity_dates(start: datetime, end: datetime) -> list[str]:
+    current = start.date()
+    end_date = end.date()
+    dates: list[str] = []
+    while current <= end_date:
+        dates.append(current.isoformat())
+        current = current + timedelta(days=1)
+    return dates
+
+
 def _serialize_orders_by_symbol(orders_by_symbol: dict[str, list]) -> dict[str, list[dict[str, Any]]]:
     return {
         str(symbol): [_serialize_order(order) for order in orders]
@@ -126,10 +225,13 @@ def _serialize_orders_by_symbol(orders_by_symbol: dict[str, list]) -> dict[str, 
 
 def _tracked_state_summary(state: dict[str, Any]) -> dict[str, Any]:
     tracked = state.get("positions", {})
+    broker_cursor = state.get("broker_event_cursor", {})
     return {
         "tracked_symbols": sorted(str(symbol) for symbol in tracked.keys()),
         "tracked_count": int(len(tracked)),
         "pending_close": sorted(str(symbol) for symbol in state.get("pending_close", [])),
+        "broker_closed_orders_after": broker_cursor.get("closed_orders_after"),
+        "broker_fill_activities_after": broker_cursor.get("fill_activities_after"),
     }
 
 
@@ -340,10 +442,136 @@ def get_open_orders(api) -> Dict[str, list]:
 
 
 def _normalize_order_side(side: object) -> str:
-    if side is None:
-        return ""
-    value = getattr(side, "value", side)
-    return str(value).strip().lower()
+    return _normalize_enum_value(side)
+
+
+def poll_broker_events(
+    api,
+    state: dict[str, Any],
+    *,
+    reason: str,
+    now: Optional[datetime] = None,
+    lookback_hours: float = BROKER_EVENT_LOOKBACK_HOURS,
+) -> None:
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+    import alpaca_wrapper
+
+    now = now or datetime.now(timezone.utc)
+    cursor = state.setdefault("broker_event_cursor", {})
+    order_after = _coerce_utc_datetime(cursor.get("closed_orders_after"))
+    activity_after = _coerce_utc_datetime(cursor.get("fill_activities_after"))
+    default_after = now - timedelta(hours=max(float(lookback_hours), 1.0))
+
+    if order_after is None:
+        order_after = default_after
+    if activity_after is None:
+        activity_after = default_after
+
+    seen_order_keys = list(cursor.get("recent_order_event_keys", []))
+    seen_activity_keys = list(cursor.get("recent_activity_event_keys", []))
+    seen_order_set = set(seen_order_keys)
+    seen_activity_set = set(seen_activity_keys)
+
+    order_event_count = 0
+    activity_event_count = 0
+    latest_order_ts = order_after
+    latest_activity_ts = activity_after
+
+    log_event(
+        "broker_event_poll_start",
+        reason=reason,
+        closed_orders_after=order_after.isoformat(),
+        fill_activities_after=activity_after.isoformat(),
+    )
+
+    order_request_after = max(order_after - timedelta(seconds=1), default_after)
+    try:
+        request = GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED,
+            after=order_request_after,
+            until=now,
+            direction="asc",
+            limit=500,
+        )
+        orders = list(api.get_orders(request) or [])
+        orders.sort(key=lambda order: _order_event_timestamp(order) or datetime.min.replace(tzinfo=timezone.utc))
+        for order in orders:
+            event_key = _order_event_key(order)
+            if event_key in seen_order_set:
+                continue
+            event_ts = _order_event_timestamp(order)
+            if event_ts is not None and event_ts < order_request_after:
+                continue
+            status = _normalize_enum_value(_record_field(order, "status"))
+            log_event(
+                "broker_closed_order",
+                reason=reason,
+                event_ts=event_ts.isoformat() if event_ts is not None else None,
+                order_status=status,
+                order=_serialize_order(order),
+            )
+            seen_order_set.add(event_key)
+            seen_order_keys.append(event_key)
+            order_event_count += 1
+            if event_ts is not None and event_ts > latest_order_ts:
+                latest_order_ts = event_ts
+    except Exception as exc:
+        log_event(
+            "broker_closed_orders_poll_failed",
+            reason=reason,
+            closed_orders_after=order_request_after.isoformat(),
+            error=str(exc),
+        )
+
+    try:
+        for activity_date in _iter_activity_dates(activity_after, now):
+            activities = alpaca_wrapper.get_account_activities(
+                api,
+                activity_types=["FILL"],
+                date=activity_date,
+                direction="asc",
+                page_size=100,
+            ) or []
+            for activity in activities:
+                event_ts = _activity_timestamp(activity)
+                if event_ts is not None and event_ts < activity_after:
+                    continue
+                event_key = _activity_event_key(activity)
+                if event_key in seen_activity_set:
+                    continue
+                log_event(
+                    "broker_fill_activity",
+                    reason=reason,
+                    event_ts=event_ts.isoformat() if event_ts is not None else None,
+                    activity=_serialize_activity(activity),
+                )
+                seen_activity_set.add(event_key)
+                seen_activity_keys.append(event_key)
+                activity_event_count += 1
+                if event_ts is not None and event_ts > latest_activity_ts:
+                    latest_activity_ts = event_ts
+    except Exception as exc:
+        log_event(
+            "broker_fill_activities_poll_failed",
+            reason=reason,
+            fill_activities_after=activity_after.isoformat(),
+            error=str(exc),
+        )
+
+    cursor["closed_orders_after"] = latest_order_ts.isoformat()
+    cursor["fill_activities_after"] = latest_activity_ts.isoformat()
+    cursor["recent_order_event_keys"] = _trim_recent_keys(seen_order_keys)
+    cursor["recent_activity_event_keys"] = _trim_recent_keys(seen_activity_keys)
+
+    log_event(
+        "broker_event_poll_complete",
+        reason=reason,
+        closed_order_events=int(order_event_count),
+        fill_activity_events=int(activity_event_count),
+        closed_orders_after=cursor["closed_orders_after"],
+        fill_activities_after=cursor["fill_activities_after"],
+    )
 
 
 def _has_open_exit_order(symbol_orders: List[object], *, qty: float) -> bool:
@@ -917,6 +1145,8 @@ def run_cycle(
         max_hold_hours=float(max_hold_hours),
         tracked_positions=_json_safe(state.get("positions", {})),
     )
+    if api is not None:
+        poll_broker_events(api, state, reason="pre_cycle")
 
     num_pos = manage_positions(api, state, max_hold_hours=max_hold_hours, active_symbols=active_set)
     logger.info("Active positions: {} | Market: {}", num_pos, "OPEN" if market_open else "CLOSED")
@@ -994,6 +1224,8 @@ def run_cycle(
     else:
         execution_mode = "dry_run"
 
+    if api is not None:
+        poll_broker_events(api, state, reason="post_cycle")
     save_state(state)
     log_event(
         "cycle_complete",
