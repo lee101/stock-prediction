@@ -17,6 +17,7 @@ from src.symbol_utils import is_crypto_symbol
 
 DEFAULT_SHORT_ONLY_STOCKS = frozenset(
     {
+        "DBX",
         "ANGI",
         "BKNG",
         "EBAY",
@@ -26,6 +27,7 @@ DEFAULT_SHORT_ONLY_STOCKS = frozenset(
         "NWSA",
         "NYT",
         "TRIP",
+        "YELP",
         "Z",
     }
 )
@@ -41,8 +43,16 @@ DEFAULT_LONG_ONLY_STOCKS = frozenset(
         "MSFT",
         "NET",
         "NVDA",
+        "PLTR",
         "TSLA",
     }
+)
+
+DEFAULT_ALPACA_CORE_LONG_STOCKS: tuple[str, ...] = ("NVDA", "PLTR", "GOOG", "TSLA")
+DEFAULT_ALPACA_CORE_SHORT_STOCKS: tuple[str, ...] = ("DBX", "TRIP", "MTCH", "NYT", "YELP")
+DEFAULT_ALPACA_LIVE8_STOCKS: tuple[str, ...] = (
+    *DEFAULT_ALPACA_CORE_LONG_STOCKS,
+    *DEFAULT_ALPACA_CORE_SHORT_STOCKS[:4],
 )
 
 
@@ -114,10 +124,75 @@ def resolve_trade_directions(
     return TradeDirections(can_long=True, can_short=True)
 
 
+def is_long_only_symbol(
+    symbol: str,
+    *,
+    allow_short: bool = True,
+    long_only_symbols: Optional[Sequence[str]] = None,
+    short_only_symbols: Optional[Sequence[str]] = None,
+    use_default_groups: bool = True,
+) -> bool:
+    directions = resolve_trade_directions(
+        symbol,
+        allow_short=allow_short,
+        long_only_symbols=long_only_symbols,
+        short_only_symbols=short_only_symbols,
+        use_default_groups=use_default_groups,
+    )
+    return directions.can_long and not directions.can_short
+
+
+def is_short_only_symbol(
+    symbol: str,
+    *,
+    allow_short: bool = True,
+    long_only_symbols: Optional[Sequence[str]] = None,
+    short_only_symbols: Optional[Sequence[str]] = None,
+    use_default_groups: bool = True,
+) -> bool:
+    directions = resolve_trade_directions(
+        symbol,
+        allow_short=allow_short,
+        long_only_symbols=long_only_symbols,
+        short_only_symbols=short_only_symbols,
+        use_default_groups=use_default_groups,
+    )
+    return directions.can_short and not directions.can_long
+
+
+def trade_direction_name(
+    symbol: str,
+    *,
+    allow_short: bool = True,
+    long_only_symbols: Optional[Sequence[str]] = None,
+    short_only_symbols: Optional[Sequence[str]] = None,
+    use_default_groups: bool = True,
+) -> str:
+    directions = resolve_trade_directions(
+        symbol,
+        allow_short=allow_short,
+        long_only_symbols=long_only_symbols,
+        short_only_symbols=short_only_symbols,
+        use_default_groups=use_default_groups,
+    )
+    if directions.can_long and directions.can_short:
+        return "both"
+    if directions.can_long:
+        return "long"
+    if directions.can_short:
+        return "short"
+    return "none"
+
+
 __all__ = [
+    "DEFAULT_ALPACA_CORE_LONG_STOCKS",
+    "DEFAULT_ALPACA_CORE_SHORT_STOCKS",
+    "DEFAULT_ALPACA_LIVE8_STOCKS",
     "DEFAULT_LONG_ONLY_STOCKS",
     "DEFAULT_SHORT_ONLY_STOCKS",
     "TradeDirections",
+    "is_long_only_symbol",
+    "is_short_only_symbol",
     "resolve_trade_directions",
+    "trade_direction_name",
 ]
-

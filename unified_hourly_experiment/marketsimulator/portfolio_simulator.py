@@ -16,6 +16,7 @@ from src.fees import get_fee_for_symbol
 from src.hourly_trader_utils import entry_intensity_fraction
 from src.metrics_utils import annualized_sortino
 from src.symbol_utils import is_crypto_symbol
+from src.trade_directions import DEFAULT_LONG_ONLY_STOCKS, DEFAULT_SHORT_ONLY_STOCKS
 
 from .unified_selector import (
     _is_market_open,
@@ -27,8 +28,8 @@ from .unified_selector import (
 from .portfolio_sim_native import load_portfolio_native_extension
 
 
-LONG_ONLY_DEFAULT = {"NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "DBX", "TSLA", "AAPL"}
-SHORT_ONLY_DEFAULT = {"YELP", "EBAY", "TRIP", "MTCH", "ANGI", "Z", "EXPE", "BKNG", "NWSA", "NYT"}
+LONG_ONLY_DEFAULT = set(DEFAULT_LONG_ONLY_STOCKS)
+SHORT_ONLY_DEFAULT = set(DEFAULT_SHORT_ONLY_STOCKS)
 
 
 @dataclass
