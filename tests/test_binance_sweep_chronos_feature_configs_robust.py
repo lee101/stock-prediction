@@ -113,6 +113,7 @@ def test_build_train_command_uses_feature_cache_root() -> None:
     assert "--forecast-cache-root experiments/exp/cache/joint" in joined
     assert "--forecast-horizons 1,6,24" in joined
     assert "--max-history-hours 2880" in joined
+    assert "--run-prefix chronos_feature_sweep_exp_joint" in joined
     assert "--cache-only" in joined
     assert "--realistic-selection" in joined
 
