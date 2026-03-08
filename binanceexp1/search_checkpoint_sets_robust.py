@@ -268,6 +268,7 @@ def main() -> None:
                     "period": window_label,
                     "start_state": start_state,
                     "return_pct": float(metrics.get("total_return", 0.0) * 100.0),
+                    "annualized_return_pct": float(metrics.get("annualized_return", 0.0) * 100.0),
                     "sortino": float(metrics.get("sortino", 0.0)),
                     "calmar": float(metrics.get("calmar", 0.0)),
                     "max_drawdown_pct": float(abs(metrics.get("max_drawdown", 0.0)) * 100.0),
@@ -298,13 +299,16 @@ def main() -> None:
         }
         summary_rows.append(row)
         logger.info(
-            "[{}/{}] {} score={:.3f} worst_ret={:+.2f}% mean_ret={:+.2f}% worst_dd={:.2f}%",
+            "[{}/{}] {} score={:.3f} worst_ret={:+.2f}% mean_ret={:+.2f}% "
+            "worst_ann={:+.2f}% mean_ann={:+.2f}% worst_dd={:.2f}%",
             index,
             len(combos),
             combo_name,
             row["selection_score"],
             row["return_worst_pct"],
             row["return_mean_pct"],
+            row.get("annualized_return_worst_pct", 0.0),
+            row.get("annualized_return_mean_pct", 0.0),
             row["max_drawdown_worst_pct"],
         )
 
@@ -316,11 +320,14 @@ def main() -> None:
     manifest["best"] = best
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
     logger.success(
-        "Best combo {} | score={:.3f} | worst_ret={:+.2f}% | mean_ret={:+.2f}% | worst_dd={:.2f}%",
+        "Best combo {} | score={:.3f} | worst_ret={:+.2f}% | mean_ret={:+.2f}% | "
+        "worst_ann={:+.2f}% | mean_ann={:+.2f}% | worst_dd={:.2f}%",
         best.get("combo_name", ""),
         float(best.get("selection_score", 0.0)),
         float(best.get("return_worst_pct", 0.0)),
         float(best.get("return_mean_pct", 0.0)),
+        float(best.get("annualized_return_worst_pct", 0.0)),
+        float(best.get("annualized_return_mean_pct", 0.0)),
         float(best.get("max_drawdown_worst_pct", 0.0)),
     )
     logger.info("Saved ranking to {}", output_dir / "ranking.csv")
