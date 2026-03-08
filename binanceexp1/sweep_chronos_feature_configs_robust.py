@@ -14,6 +14,7 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
+from .config import DatasetConfig
 from .joint_chronos_forecast_cache import build_joint_forecast_cache
 
 
@@ -194,6 +195,8 @@ def build_train_command(
         "--min-trade-count-mean",
         str(float(args.min_trade_count_mean)),
     ]
+    if args.max_history_hours is not None:
+        cmd.extend(["--max-history-hours", str(int(args.max_history_hours))])
     if args.training_configs_json is not None:
         cmd.extend(["--configs-json", str(args.training_configs_json)])
     if args.preload_checkpoints:
@@ -277,6 +280,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-name", default=None)
     parser.add_argument("--data-root", type=Path, default=Path("trainingdatahourly") / "crypto")
     parser.add_argument("--validation-days", type=float, default=30.0)
+    parser.add_argument("--max-history-hours", type=int, default=None)
     parser.add_argument("--sequence-length", type=int, default=96)
     parser.add_argument("--training-configs-json", type=Path, default=None)
     parser.add_argument("--max-train-configs", type=int, default=1)
@@ -349,6 +353,9 @@ def main() -> None:
 
         joint_cache_summary: dict[str, dict[str, int]] | None = None
         if config.grouped_joint_cache:
+            grouped_history_hours = None
+            if args.max_history_hours is not None:
+                grouped_history_hours = int(args.max_history_hours) + int(DatasetConfig().max_feature_lookback_hours)
             logger.info(
                 "Building grouped Chronos caches for {} with horizons {}",
                 config.name,
@@ -361,6 +368,7 @@ def main() -> None:
                 horizons=config.forecast_horizons,
                 context_hours=int(config.context_hours),
                 batch_size=int(config.batch_size),
+                max_history_hours=grouped_history_hours,
                 use_cross_learning=bool(config.force_cross_learning),
                 use_time_covariates=bool(config.use_time_covariates),
                 force_rebuild=bool(args.force_rebuild_joint_cache),

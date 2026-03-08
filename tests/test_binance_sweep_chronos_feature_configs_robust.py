@@ -71,6 +71,7 @@ def test_build_train_command_uses_feature_cache_root() -> None:
         seeds="42",
         data_root=Path("trainingdatahourly/crypto"),
         validation_days=30.0,
+        max_history_hours=24 * 120,
         sequence_length=96,
         search_window_hours="336",
         max_train_configs=1,
@@ -111,6 +112,7 @@ def test_build_train_command_uses_feature_cache_root() -> None:
     joined = " ".join(cmd)
     assert "--forecast-cache-root experiments/exp/cache/joint" in joined
     assert "--forecast-horizons 1,6,24" in joined
+    assert "--max-history-hours 2880" in joined
     assert "--cache-only" in joined
     assert "--realistic-selection" in joined
 
