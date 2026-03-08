@@ -8,6 +8,7 @@ from src.robust_trading_metrics import (
     compute_pnl_smoothness_from_equity,
     compute_return_series,
     summarize_lag_results,
+    summarize_scenario_results,
 )
 
 
@@ -62,3 +63,42 @@ def test_summarize_lag_results_clips_sortino_outliers() -> None:
     assert clipped["sortino_mean"] == pytest.approx(10.0 / 3.0)
     assert clipped["sortino_std"] < unclipped["sortino_std"]
     assert clipped["sortino_std_raw"] == pytest.approx(unclipped["sortino_std"])
+
+
+def test_summarize_scenario_results_outputs_expected_fields() -> None:
+    scenario_results = [
+        {"sortino": 2.5, "return_pct": 6.0, "max_drawdown_pct": 2.0, "pnl_smoothness": 0.001, "trade_count": 12},
+        {"sortino": 1.0, "return_pct": 2.0, "max_drawdown_pct": 4.0, "pnl_smoothness": 0.003, "trade_count": 8},
+        {"sortino": 0.5, "return_pct": 1.0, "max_drawdown_pct": 5.0, "pnl_smoothness": 0.004, "trade_count": 6},
+        {"sortino": 0.2, "return_pct": 0.5, "max_drawdown_pct": 6.0, "pnl_smoothness": 0.006, "trade_count": 4},
+    ]
+
+    summary = summarize_scenario_results(scenario_results)
+
+    assert summary["scenario_count"] == 4.0
+    assert summary["return_mean_pct"] == pytest.approx(2.375)
+    assert summary["return_worst_pct"] == pytest.approx(0.5)
+    assert summary["negative_return_rate"] == pytest.approx(0.0)
+    assert summary["max_drawdown_worst_pct"] == pytest.approx(6.0)
+    assert summary["trade_count_mean"] == pytest.approx(7.5)
+    assert "robust_score" in summary
+
+
+def test_summarize_scenario_results_penalizes_negative_windows() -> None:
+    robust = summarize_scenario_results(
+        [
+            {"sortino": 2.0, "return_pct": 4.0, "max_drawdown_pct": 2.0, "pnl_smoothness": 0.001, "trade_count": 10},
+            {"sortino": 1.5, "return_pct": 3.0, "max_drawdown_pct": 2.5, "pnl_smoothness": 0.0015, "trade_count": 9},
+            {"sortino": 1.0, "return_pct": 2.5, "max_drawdown_pct": 3.0, "pnl_smoothness": 0.002, "trade_count": 8},
+        ]
+    )
+    fragile = summarize_scenario_results(
+        [
+            {"sortino": 2.0, "return_pct": 4.0, "max_drawdown_pct": 2.0, "pnl_smoothness": 0.001, "trade_count": 10},
+            {"sortino": 1.5, "return_pct": -1.0, "max_drawdown_pct": 7.0, "pnl_smoothness": 0.004, "trade_count": 9},
+            {"sortino": 1.0, "return_pct": 2.5, "max_drawdown_pct": 3.0, "pnl_smoothness": 0.002, "trade_count": 8},
+        ]
+    )
+
+    assert fragile["negative_return_rate"] == pytest.approx(1.0 / 3.0)
+    assert fragile["robust_score"] < robust["robust_score"]

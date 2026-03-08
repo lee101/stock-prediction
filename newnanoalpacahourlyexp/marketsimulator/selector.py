@@ -7,8 +7,9 @@ import numpy as np
 import pandas as pd
 
 from src.fees import get_fee_for_symbol
-from src.metrics_utils import annualized_sortino, compute_step_returns
+from src.robust_trading_metrics import compute_pnl_smoothness_from_equity
 from src.symbol_utils import is_crypto_symbol
+from src.tradinglib.metrics import pnl_metrics
 from src.trade_directions import resolve_trade_directions
 
 from .simulator import _end_of_day_mask, _market_open_mask, _to_new_york, _infer_periods_per_year
@@ -580,6 +581,8 @@ def _run_best_trade_simulation_on_merged(
     periods_per_year = _weighted_periods_per_year(symbol_meta, merged)
     metrics = _compute_metrics(equity_curve, periods_per_year)
     metrics["financing_cost_paid"] = float(financing_cost_paid)
+    metrics["trade_count"] = float(len(trades))
+    metrics["work_steal_count"] = float(sum(1 for trade in trades if trade.reason == "work_steal_exit"))
     return SelectorSimulationResult(
         equity_curve=equity_curve,
         per_hour=pd.DataFrame(per_hour_rows),
@@ -834,6 +837,8 @@ def _run_multi_position_simulation(
     periods_per_year = _weighted_periods_per_year(symbol_meta, merged)
     metrics = _compute_metrics(equity_curve, periods_per_year)
     metrics["financing_cost_paid"] = float(financing_cost_paid)
+    metrics["trade_count"] = float(len(trades))
+    metrics["work_steal_count"] = float(sum(1 for trade in trades if trade.reason == "work_steal_exit"))
 
     total_inv = sum(positions.values())
     open_sym = ",".join(sorted(positions.keys())) if positions else None
@@ -1148,14 +1153,30 @@ def _safe_float(value: object) -> Optional[float]:
 
 def _compute_metrics(equity_curve: pd.Series, periods_per_year: float) -> Dict[str, float]:
     if equity_curve.empty:
-        return {"total_return": 0.0, "sortino": 0.0}
-    returns = compute_step_returns(equity_curve.values)
-    sortino = annualized_sortino(returns, periods_per_year=periods_per_year)
-    total_return = (equity_curve.iloc[-1] - equity_curve.iloc[0]) / equity_curve.iloc[0]
+        return {
+            "total_return": 0.0,
+            "annualized_return": 0.0,
+            "sharpe": 0.0,
+            "sortino": 0.0,
+            "max_drawdown": 0.0,
+            "calmar": 0.0,
+            "profit_factor": 0.0,
+            "mean_hourly_return": 0.0,
+            "volatility": 0.0,
+            "pnl_smoothness": 0.0,
+        }
+    metrics = pnl_metrics(equity_curve=equity_curve.values, periods_per_year=periods_per_year)
     return {
-        "total_return": float(total_return),
-        "sortino": float(sortino),
-        "mean_hourly_return": float(returns.mean() if returns.size else 0.0),
+        "total_return": float(metrics.total_return),
+        "annualized_return": float(metrics.annualized_return),
+        "sharpe": float(metrics.sharpe),
+        "sortino": float(metrics.sortino),
+        "max_drawdown": float(metrics.max_drawdown),
+        "calmar": float(metrics.calmar),
+        "profit_factor": float(metrics.profit_factor),
+        "mean_hourly_return": float(metrics.avg_return),
+        "volatility": float(metrics.volatility),
+        "pnl_smoothness": float(compute_pnl_smoothness_from_equity(equity_curve.values)),
     }
 
 
