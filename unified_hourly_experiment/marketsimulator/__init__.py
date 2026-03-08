@@ -8,7 +8,6 @@ from .portfolio_simulator import (
     PortfolioConfig,
     PortfolioResult,
     run_portfolio_simulation,
-    write_portfolio_simulation_artifacts,
 )
 
 __all__ = [
@@ -18,5 +17,4 @@ __all__ = [
     "PortfolioConfig",
     "PortfolioResult",
     "run_portfolio_simulation",
-    "write_portfolio_simulation_artifacts",
 ]

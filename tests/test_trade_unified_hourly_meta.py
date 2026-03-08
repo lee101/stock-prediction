@@ -221,3 +221,64 @@ def test_run_cycle_logs_meta_events(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "meta_cycle_start" in event_types
     assert "meta_winner_cache_refreshed" in event_types
     assert "meta_cycle_complete" in event_types
+
+
+def test_run_cycle_passes_live_entry_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    execute_calls: list[dict] = []
+
+    monkeypatch.setattr(live, "is_market_open_now", lambda: True)
+    monkeypatch.setattr(live, "save_state", lambda state: None)
+    monkeypatch.setattr(live, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(live, "manage_positions", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        live,
+        "execute_trades",
+        lambda api, signals, state, max_positions, market_order_entry=False, entry_order_ttl_hours=0.0: execute_calls.append(
+            {
+                "signals": signals,
+                "max_positions": max_positions,
+                "market_order_entry": market_order_entry,
+                "entry_order_ttl_hours": entry_order_ttl_hours,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        meta_mod,
+        "collect_daily_returns",
+        lambda **kwargs: {"s1": {"NVDA": meta_mod.pd.Series([0.01], index=meta_mod.pd.to_datetime(["2026-03-03"], utc=True))}},
+    )
+    monkeypatch.setattr(meta_mod, "select_meta_winners", lambda **kwargs: {"NVDA": "s1"})
+    monkeypatch.setattr(
+        meta_mod,
+        "build_meta_signals",
+        lambda **kwargs: {"NVDA": {"buy_price": 100.0, "sell_price": 101.0, "edge": 0.02}},
+    )
+
+    args = SimpleNamespace(
+        ignore_market_hours=False,
+        max_hold_hours=6,
+        meta_reselect_frequency="daily",
+        dry_run=False,
+        max_positions=5,
+        market_order_entry=True,
+        entry_order_ttl_hours=6.0,
+    )
+
+    meta_mod.run_cycle(
+        strategies=[SimpleNamespace(name="s1")],
+        symbols=["NVDA"],
+        args=args,
+        device=None,
+        api=object(),
+        state={"positions": {}},
+        selection_cache=meta_mod.MetaSelectionCache(),
+    )
+
+    assert execute_calls == [
+        {
+            "signals": {"NVDA": {"buy_price": 100.0, "sell_price": 101.0, "edge": 0.02}},
+            "max_positions": 5,
+            "market_order_entry": True,
+            "entry_order_ttl_hours": 6.0,
+        }
+    ]

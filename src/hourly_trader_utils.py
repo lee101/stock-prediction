@@ -30,6 +30,16 @@ class OrderIntent:
     kind: str  # "entry" or "exit"
 
 
+def infer_working_order_kind(*, side: str, position_qty: float) -> str:
+    normalized_side = str(side).lower()
+    qty = float(position_qty)
+    if qty > 0.0:
+        return "exit" if normalized_side == "sell" else "entry"
+    if qty < 0.0:
+        return "exit" if normalized_side == "buy" else "entry"
+    return "entry"
+
+
 def build_plan_from_action(action: dict, *, intensity_scale: float) -> TradingPlan:
     buy_amount = max(0.0, min(100.0, float(action["buy_amount"]) * float(intensity_scale)))
     sell_amount = max(0.0, min(100.0, float(action["sell_amount"]) * float(intensity_scale)))

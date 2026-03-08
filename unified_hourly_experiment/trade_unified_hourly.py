@@ -31,9 +31,10 @@ from src.trade_directions import (
     is_short_only_symbol,
     resolve_trade_directions,
 )
+from src.hourly_order_reconcile import order_created_at, orders_to_cancel_for_live_symbol
 from src.torch_load_utils import torch_load_compat
 from src.symbol_utils import is_crypto_symbol
-from src.hourly_trader_utils import entry_intensity_fraction
+from src.hourly_trader_utils import OrderIntent, entry_intensity_fraction
 
 LONG_ONLY = set(DEFAULT_LONG_ONLY_STOCKS)
 SHORT_ONLY = set(DEFAULT_SHORT_ONLY_STOCKS)
@@ -453,6 +454,180 @@ def _normalize_order_side(side: object) -> str:
     return _normalize_enum_value(side)
 
 
+def _order_age_hours(order: object, *, now: Optional[datetime] = None) -> Optional[float]:
+    created_at = order_created_at(order)
+    if created_at is None:
+        return None
+    reference = now or datetime.now(timezone.utc)
+    return max(0.0, (reference - created_at).total_seconds() / 3600.0)
+
+
+def _order_qty(order: object) -> float:
+    try:
+        return float(getattr(order, "qty", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _order_limit_price(order: object) -> Optional[float]:
+    raw = getattr(order, "limit_price", None)
+    if raw in (None, ""):
+        return None
+    try:
+        price = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0.0 else None
+
+
+def _cancel_specific_orders(
+    api,
+    *,
+    symbol: str,
+    orders_by_symbol: Dict[str, list],
+    orders_with_reasons: List[tuple[object, str]],
+) -> None:
+    if not orders_with_reasons:
+        return
+
+    cancelled_ids: set[str] = set()
+    for order, reason in orders_with_reasons:
+        order_id = str(getattr(order, "id", ""))
+        if order_id in cancelled_ids:
+            continue
+        try:
+            log_event("order_cancel_requested", symbol=symbol, reason=reason, order=_serialize_order(order))
+            api.cancel_order_by_id(order.id)
+            logger.info("{}: cancelled order {} ({})", symbol, order.id, reason)
+            log_event("order_cancel_succeeded", symbol=symbol, order_id=order_id, reason=reason)
+            cancelled_ids.add(order_id)
+        except Exception as e:
+            logger.error("{}: cancel failed - {}", symbol, e)
+            log_event("order_cancel_failed", symbol=symbol, reason=reason, order=_serialize_order(order), error=str(e))
+
+    if not cancelled_ids:
+        return
+
+    remaining = [
+        order
+        for order in orders_by_symbol.get(symbol, [])
+        if str(getattr(order, "id", "")) not in cancelled_ids
+    ]
+    if remaining:
+        orders_by_symbol[symbol] = remaining
+    else:
+        orders_by_symbol.pop(symbol, None)
+
+
+def _reconcile_position_orders(
+    api,
+    *,
+    symbol: str,
+    orders_by_symbol: Dict[str, list],
+    position_qty: float,
+    exit_price: Optional[float],
+) -> list:
+    symbol_orders = list(orders_by_symbol.get(symbol, []))
+    if not symbol_orders:
+        return []
+
+    intents: list[OrderIntent] = []
+    if float(position_qty) > 0.0 and exit_price and float(exit_price) > 0.0:
+        intents.append(OrderIntent(side="sell", qty=float(abs(position_qty)), limit_price=float(exit_price), kind="exit"))
+    elif float(position_qty) < 0.0 and exit_price and float(exit_price) > 0.0:
+        intents.append(OrderIntent(side="buy", qty=float(abs(position_qty)), limit_price=float(exit_price), kind="exit"))
+
+    _cancel_specific_orders(
+        api,
+        symbol=symbol,
+        orders_by_symbol=orders_by_symbol,
+        orders_with_reasons=orders_to_cancel_for_live_symbol(
+            symbol_orders,
+            position_qty=float(position_qty),
+            intents=intents,
+        ),
+    )
+    return list(orders_by_symbol.get(symbol, []))
+
+
+def _reconcile_entry_orders(
+    api,
+    *,
+    symbol: str,
+    orders_by_symbol: Dict[str, list],
+    desired_side: str,
+    desired_qty: float,
+    desired_limit_price: Optional[float],
+    entry_order_ttl_hours: float,
+) -> Optional[object]:
+    symbol_orders = list(orders_by_symbol.get(symbol, []))
+    if not symbol_orders:
+        return None
+
+    desired_side_norm = _normalize_order_side(desired_side)
+    now = datetime.now(timezone.utc)
+    kept_order = None
+    orders_to_cancel: list[tuple[object, str]] = []
+
+    def _sort_key(order: object) -> tuple[bool, float]:
+        created_at = order_created_at(order)
+        if created_at is None:
+            return (False, 0.0)
+        return (True, created_at.timestamp())
+
+    for order in sorted(symbol_orders, key=_sort_key, reverse=True):
+        order_side = _normalize_order_side(getattr(order, "side", None))
+        if order_side != desired_side_norm:
+            orders_to_cancel.append((order, "entry_side_mismatch"))
+            continue
+
+        age_hours = _order_age_hours(order, now=now)
+        if (
+            float(entry_order_ttl_hours) > 0.0
+            and age_hours is not None
+            and age_hours >= float(entry_order_ttl_hours)
+        ):
+            orders_to_cancel.append((order, "entry_order_ttl_expired"))
+            continue
+
+        qty_diff_pct = abs(_order_qty(order) - float(desired_qty)) / float(desired_qty) if float(desired_qty) > 0 else float("inf")
+        qty_similar = qty_diff_pct < 0.05
+
+        if desired_limit_price is None:
+            price_similar = True
+        else:
+            existing_limit_price = _order_limit_price(order)
+            if existing_limit_price is None:
+                price_similar = False
+            else:
+                price_diff_pct = abs(existing_limit_price - float(desired_limit_price)) / float(desired_limit_price)
+                price_similar = price_diff_pct < 0.0003
+
+        if not (qty_similar and price_similar):
+            orders_to_cancel.append((order, "entry_order_mismatch"))
+            continue
+
+        if kept_order is None:
+            kept_order = order
+            continue
+        orders_to_cancel.append((order, "duplicate_matching_entry_order"))
+
+    _cancel_specific_orders(
+        api,
+        symbol=symbol,
+        orders_by_symbol=orders_by_symbol,
+        orders_with_reasons=orders_to_cancel,
+    )
+
+    if kept_order is None:
+        return None
+    kept_id = str(getattr(kept_order, "id", ""))
+    for order in orders_by_symbol.get(symbol, []):
+        if str(getattr(order, "id", "")) == kept_id:
+            return order
+    return None
+
+
 def poll_broker_events(
     api,
     state: dict[str, Any],
@@ -738,6 +913,28 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
         )
 
         if abs(qty) < 1:
+            pending_entry_qty = abs(float(info.get("qty", 0.0) or 0.0))
+            pending_entry_price = info.get("entry_price")
+            pending_entry_side = "sell" if str(info.get("side", "")).lower() == "short" else "buy"
+            if pending_entry_qty >= 1.0 and pending_entry_price and orders_by_symbol.get(symbol):
+                matching_entry_order = _reconcile_entry_orders(
+                    api,
+                    symbol=symbol,
+                    orders_by_symbol=orders_by_symbol,
+                    desired_side=pending_entry_side,
+                    desired_qty=float(pending_entry_qty),
+                    desired_limit_price=round(float(pending_entry_price), 2),
+                    entry_order_ttl_hours=0.0,
+                )
+                if matching_entry_order is not None:
+                    info["entry_order_id"] = str(getattr(matching_entry_order, "id", info.get("entry_order_id") or ""))
+                    log_event(
+                        "manage_position_action",
+                        symbol=symbol,
+                        action="pending_entry_present",
+                        entry_order_id=info.get("entry_order_id"),
+                    )
+                    continue
             logger.info("{}: position closed, cleaning state", symbol)
             log_trade({"event": "exit_filled", "symbol": symbol,
                        "entry_price": info.get("entry_price"),
@@ -792,7 +989,13 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
             removed.append(symbol)
             continue
 
-        symbol_orders = orders_by_symbol.get(symbol, [])
+        symbol_orders = _reconcile_position_orders(
+            api,
+            symbol=symbol,
+            orders_by_symbol=orders_by_symbol,
+            position_qty=float(qty),
+            exit_price=info.get("exit_price"),
+        )
         has_exit = _has_open_exit_order(symbol_orders, qty=qty)
         if not has_exit:
             if symbol_orders:
@@ -931,17 +1134,28 @@ def generate_signal_for_symbol(
         return None
 
 
-def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POSITIONS):
+def execute_trades(
+    api,
+    signals: Dict,
+    state: dict,
+    max_positions: int = MAX_POSITIONS,
+    *,
+    market_order_entry: bool = False,
+    entry_order_ttl_hours: float = 0.0,
+):
     from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
     account = get_account_info(api)
     equity = account["equity"]
     buying_power = account["buying_power"]
+    use_market_orders = bool(market_order_entry) and is_market_open_now()
     log_event(
         "execute_trades_start",
         signal_symbols=sorted(str(symbol) for symbol in signals.keys()),
         max_positions=int(max_positions),
+        market_order_entry=bool(market_order_entry),
+        effective_market_order_entry=bool(use_market_orders),
         tracked_positions=_json_safe(state.get("positions", {})),
         account=account,
     )
@@ -952,26 +1166,27 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
         return
 
     tracked = state.get("positions", {})
+    positions = get_current_positions(api)
+    open_orders_by_symbol = get_open_orders(api)
     current_count = len(tracked)
-    slots_available = max_positions - current_count
-
-    if slots_available <= 0:
-        logger.info("Max positions reached ({}/{})", current_count, max_positions)
-        log_event("execute_trades_aborted", reason="no_slots_available", current_count=int(current_count), max_positions=int(max_positions))
-        return
+    initial_slots_available = max_positions - current_count
+    slots_available = max(initial_slots_available, 0)
+    planning_buying_power = float(buying_power)
+    planned_slots_remaining = int(slots_available)
 
     stock_leverage = 2.0
     per_position_stock = (equity * stock_leverage) / max_positions
-
     sorted_signals = sorted(signals.items(), key=lambda x: x[1].get("edge", 0), reverse=True)
+    entry_candidates: list[dict[str, Any]] = []
 
     for symbol, action in sorted_signals:
-        if slots_available <= 0:
-            log_event("entry_skipped", symbol=symbol, reason="no_slots_remaining")
-            break
-
         if symbol in tracked:
             log_event("entry_skipped", symbol=symbol, reason="already_tracked")
+            continue
+
+        live_qty = float(positions.get(symbol, {}).get("qty", 0.0) or 0.0)
+        if abs(live_qty) >= 1.0:
+            log_event("entry_skipped", symbol=symbol, reason="live_position_already_open", live_qty=float(live_qty))
             continue
 
         buy_price = action.get("buy_price", 0)
@@ -981,15 +1196,12 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
             continue
 
         hold_hours = action.get("hold_hours", MAX_HOLD_HOURS)
-
         crypto = is_crypto_symbol(symbol)
         if crypto:
-            is_long = True
             is_short = False
         else:
             directions = resolve_trade_directions(symbol, allow_short=True)
             is_short = directions.can_short and not directions.can_long
-            is_long = not is_short
 
         signal_amount, intensity_frac = entry_intensity_fraction(
             action,
@@ -1017,39 +1229,26 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
             log_event("entry_skipped", symbol=symbol, reason="below_min_buy_amount", signal_amount=signal_amount, min_buy_amount=MIN_BUY_AMOUNT)
             continue
 
-        signal_amount, intensity_frac = entry_intensity_fraction(
-            action,
-            is_short=is_short,
-            trade_amount_scale=TRADE_AMOUNT_SCALE,
-            intensity_power=ENTRY_INTENSITY_POWER,
-            min_intensity_fraction=ENTRY_MIN_INTENSITY_FRACTION,
-            side_multiplier=SHORT_INTENSITY_MULTIPLIER if is_short else LONG_INTENSITY_MULTIPLIER,
-        )
-        if intensity_frac <= 0:
-            continue
-        if MIN_BUY_AMOUNT > 0 and signal_amount < MIN_BUY_AMOUNT:
-            continue
-
         if is_short:
             entry_price = sell_price
             exit_price = buy_price
             entry_side = OrderSide.SELL
-            exit_side = "buy"
         else:
             entry_price = buy_price
             exit_price = sell_price
             entry_side = OrderSide.BUY
-            exit_side = "sell"
 
         if entry_price <= 0:
             log_event("entry_skipped", symbol=symbol, reason="invalid_entry_price", entry_price=entry_price)
             continue
+        if planned_slots_remaining <= 0:
+            log_event("entry_skipped", symbol=symbol, reason="no_slots_remaining")
+            continue
 
         per_position = per_position_stock if not crypto else (equity / max_positions)
         position_alloc = per_position * intensity_frac
-        target_value = min(position_alloc, buying_power * 0.9)
+        target_value = min(position_alloc, planning_buying_power * 0.9)
         target_qty = int(target_value / entry_price)
-
         if target_qty <= 0:
             log_event(
                 "entry_skipped",
@@ -1059,85 +1258,182 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
                 entry_price=float(entry_price),
             )
             continue
-
-        if target_value > buying_power:
-            logger.warning("{}: insufficient buying power (${:.0f} needed, ${:.0f} avail)",
-                          symbol, target_value, buying_power)
+        if target_value > planning_buying_power:
+            logger.warning("{}: insufficient buying power (${:.0f} needed, ${:.0f} avail)", symbol, target_value, planning_buying_power)
             log_event(
                 "entry_skipped",
                 symbol=symbol,
                 reason="insufficient_buying_power",
                 target_value=float(target_value),
-                buying_power=float(buying_power),
+                buying_power=float(planning_buying_power),
             )
             continue
 
-        try:
-            order = LimitOrderRequest(
+        entry_candidates.append(
+            {
+                "symbol": symbol,
+                "action": action,
+                "entry_side": entry_side,
+                "entry_side_norm": "sell" if is_short else "buy",
+                "entry_price": float(entry_price),
+                "exit_price": float(exit_price),
+                "hold_hours": float(hold_hours),
+                "signal_amount": float(signal_amount),
+                "intensity_fraction": float(intensity_frac),
+                "position_alloc": float(position_alloc),
+                "target_value": float(target_value),
+                "target_qty": int(target_qty),
+                "side_str": "short" if is_short else "long",
+                "order_type": "market" if use_market_orders else "limit",
+            }
+        )
+        planning_buying_power = max(0.0, planning_buying_power - float(target_value))
+        planned_slots_remaining -= 1
+
+    if initial_slots_available <= 0:
+        logger.info("Max positions reached ({}/{})", current_count, max_positions)
+        log_event("execute_trades_aborted", reason="no_slots_available", current_count=int(current_count), max_positions=int(max_positions))
+
+    selected_by_symbol = {candidate["symbol"]: candidate for candidate in entry_candidates}
+    reconcile_symbols = set(open_orders_by_symbol) | set(selected_by_symbol) | set(tracked)
+    for symbol in sorted(reconcile_symbols):
+        live_qty = float(positions.get(symbol, {}).get("qty", 0.0) or 0.0)
+        if abs(live_qty) >= 1.0:
+            if symbol in tracked:
+                _reconcile_position_orders(
+                    api,
+                    symbol=symbol,
+                    orders_by_symbol=open_orders_by_symbol,
+                    position_qty=float(live_qty),
+                    exit_price=tracked.get(symbol, {}).get("exit_price"),
+                )
+            continue
+
+        candidate = selected_by_symbol.get(symbol)
+        if candidate is None:
+            _reconcile_position_orders(
+                api,
                 symbol=symbol,
-                qty=target_qty,
-                side=entry_side,
-                limit_price=round(entry_price, 2),
-                time_in_force=TimeInForce.DAY,
+                orders_by_symbol=open_orders_by_symbol,
+                position_qty=0.0,
+                exit_price=None,
             )
-            side_str = "short" if is_short else "long"
+            continue
+
+        candidate["matching_order"] = _reconcile_entry_orders(
+            api,
+            symbol=symbol,
+            orders_by_symbol=open_orders_by_symbol,
+            desired_side=candidate["entry_side_norm"],
+            desired_qty=float(candidate["target_qty"]),
+            desired_limit_price=None if candidate["order_type"] == "market" else round(float(candidate["entry_price"]), 2),
+            entry_order_ttl_hours=float(entry_order_ttl_hours),
+        )
+
+    for candidate in entry_candidates:
+        symbol = candidate["symbol"]
+        matching_order = candidate.get("matching_order")
+        if matching_order is not None:
+            tracked_at = order_created_at(matching_order) or datetime.now(timezone.utc)
+            tracked[symbol] = {
+                "qty": candidate["target_qty"] if candidate["side_str"] == "long" else -candidate["target_qty"],
+                "side": candidate["side_str"],
+                "entry_price": candidate["entry_price"],
+                "entry_time": tracked_at.isoformat(),
+                "entry_order_id": str(getattr(matching_order, "id", "")),
+                "exit_price": candidate["exit_price"],
+                "exit_order_id": None,
+                "hold_hours": candidate["hold_hours"],
+                "max_hold_until": (tracked_at + timedelta(hours=float(candidate["hold_hours"]))).isoformat(),
+            }
+            log_event("position_tracking_created", symbol=symbol, tracked_position=tracked[symbol])
+            log_event("entry_skipped", symbol=symbol, reason="existing_open_entry_order", existing_order=_serialize_order(matching_order))
+            continue
+
+        try:
+            if candidate["order_type"] == "market":
+                from alpaca.trading.requests import MarketOrderRequest
+
+                order = MarketOrderRequest(
+                    symbol=symbol,
+                    qty=int(candidate["target_qty"]),
+                    side=candidate["entry_side"],
+                    time_in_force=TimeInForce.DAY,
+                )
+            else:
+                order = LimitOrderRequest(
+                    symbol=symbol,
+                    qty=int(candidate["target_qty"]),
+                    side=candidate["entry_side"],
+                    limit_price=round(float(candidate["entry_price"]), 2),
+                    time_in_force=TimeInForce.DAY,
+                )
             log_event(
                 "entry_order_submit_requested",
                 symbol=symbol,
-                side=side_str,
-                qty=int(target_qty),
-                limit_price=round(entry_price, 2),
-                exit_price=float(exit_price),
-                edge=action.get("edge"),
-                hold_hours=float(hold_hours),
-                signal_amount=float(signal_amount),
-                intensity_fraction=float(intensity_frac),
-                position_alloc=float(position_alloc),
-                target_value=float(target_value),
+                side=candidate["side_str"],
+                qty=int(candidate["target_qty"]),
+                limit_price=round(float(candidate["entry_price"]), 2),
+                exit_price=float(candidate["exit_price"]),
+                edge=candidate["action"].get("edge"),
+                hold_hours=float(candidate["hold_hours"]),
+                signal_amount=float(candidate["signal_amount"]),
+                intensity_fraction=float(candidate["intensity_fraction"]),
+                position_alloc=float(candidate["position_alloc"]),
+                target_value=float(candidate["target_value"]),
+                order_type=candidate["order_type"],
             )
             result = api.submit_order(order)
-            logger.info("{}: {} entry {} shares @ ${:.2f} (${:.0f}, hold={:.1f}h)",
-                       symbol, side_str, target_qty, entry_price, position_alloc, hold_hours)
-            log_trade({"event": "entry", "symbol": symbol, "side": side_str,
-                       "qty": target_qty, "price": entry_price, "exit_price": exit_price,
-                       "edge": action.get("edge"), "intensity": intensity_frac,
-                       "signal_amount": signal_amount,
-                       "alloc": position_alloc, "order_id": str(result.id)})
+            logger.info(
+                "{}: {} {} entry {} shares @ ${:.2f} (${:.0f}, hold={:.1f}h)",
+                symbol,
+                candidate["order_type"],
+                candidate["side_str"],
+                candidate["target_qty"],
+                candidate["entry_price"],
+                candidate["position_alloc"],
+                candidate["hold_hours"],
+            )
+            log_trade({"event": "entry", "symbol": symbol, "side": candidate["side_str"],
+                       "qty": candidate["target_qty"], "price": candidate["entry_price"], "exit_price": candidate["exit_price"],
+                       "edge": candidate["action"].get("edge"), "intensity": candidate["intensity_fraction"],
+                       "signal_amount": candidate["signal_amount"],
+                       "alloc": candidate["position_alloc"], "order_id": str(result.id), "order_type": candidate["order_type"]})
             log_event(
                 "entry_order_submit_succeeded",
                 symbol=symbol,
-                side=side_str,
-                qty=int(target_qty),
-                limit_price=round(entry_price, 2),
-                exit_price=float(exit_price),
+                side=candidate["side_str"],
+                qty=int(candidate["target_qty"]),
+                limit_price=round(float(candidate["entry_price"]), 2),
+                exit_price=float(candidate["exit_price"]),
                 order_id=str(result.id),
+                order_type=candidate["order_type"],
             )
 
             now = datetime.now(timezone.utc)
             tracked[symbol] = {
-                "qty": target_qty if not is_short else -target_qty,
-                "side": side_str,
-                "entry_price": entry_price,
+                "qty": candidate["target_qty"] if candidate["side_str"] == "long" else -candidate["target_qty"],
+                "side": candidate["side_str"],
+                "entry_price": candidate["entry_price"],
                 "entry_time": now.isoformat(),
                 "entry_order_id": str(result.id),
-                "exit_price": exit_price,
+                "exit_price": candidate["exit_price"],
                 "exit_order_id": None,
-                "hold_hours": hold_hours,
-                "max_hold_until": (now + timedelta(hours=hold_hours)).isoformat(),
+                "hold_hours": candidate["hold_hours"],
+                "max_hold_until": (now + timedelta(hours=float(candidate["hold_hours"]))).isoformat(),
             }
             log_event("position_tracking_created", symbol=symbol, tracked_position=tracked[symbol])
 
-            buying_power -= target_value
+            buying_power -= float(candidate["target_value"])
             slots_available -= 1
-
         except Exception as e:
             logger.error("{}: order failed - {}", symbol, e)
             log_event(
                 "entry_order_submit_failed",
                 symbol=symbol,
-                side=("short" if is_short else "long"),
-                qty=int(target_qty),
-                limit_price=round(entry_price, 2),
+                side=candidate["side_str"],
+                qty=int(candidate["target_qty"]),
+                limit_price=round(float(candidate["entry_price"]), 2),
                 error=str(e),
             )
 
@@ -1235,7 +1531,14 @@ def run_cycle(
 
     execution_mode = "none"
     if market_open and not args.dry_run and signals:
-        execute_trades(api, signals, state, max_positions=max_positions)
+        execute_trades(
+            api,
+            signals,
+            state,
+            max_positions=max_positions,
+            market_order_entry=bool(getattr(args, "market_order_entry", False)),
+            entry_order_ttl_hours=float(getattr(args, "entry_order_ttl_hours", 0.0) or 0.0),
+        )
         execution_mode = "live_execute"
     elif not market_open and signals:
         logger.info("Market closed - {} signals ready, will trade when open", len(signals))
@@ -1278,6 +1581,17 @@ def main():
     parser.add_argument("--ignore-market-hours", action="store_true")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--epoch", type=int, default=None)
+    parser.add_argument(
+        "--market-order-entry",
+        action="store_true",
+        help="Use market orders for live entries during regular market hours.",
+    )
+    parser.add_argument(
+        "--entry-order-ttl-hours",
+        type=float,
+        default=6.0,
+        help="Cancel and refresh open entry orders older than this many hours (0 disables).",
+    )
     parser.add_argument("--max-positions", type=int, default=MAX_POSITIONS)
     parser.add_argument("--max-hold-hours", type=int, default=MAX_HOLD_HOURS)
     parser.add_argument("--trade-amount-scale", type=float, default=TRADE_AMOUNT_SCALE)
@@ -1327,6 +1641,8 @@ def main():
                len(stocks), len([s for s in stocks if is_long_only_symbol(s)]),
                len([s for s in stocks if is_short_only_symbol(s)]))
     logger.info("Max positions: {}, Hold limit: {}h", max_pos, max_hold)
+    logger.info("Live entry order type: {}", "MARKET" if args.market_order_entry else "LIMIT")
+    logger.info("Live entry order TTL: {}h", float(args.entry_order_ttl_hours))
     logger.info("Mode: {}", "LIVE" if not paper else "PAPER")
     log_event(
         "trader_started",
