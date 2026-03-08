@@ -71,3 +71,79 @@ def test_hourly_replay_matches_daily_when_hourly_close_is_piecewise_constant():
     assert hourly.num_orders == 2  # open + terminal close
     assert hourly.max_drawdown == pytest.approx(0.0, abs=1e-12)
     assert hourly.equity_curve.shape == (len(idx),)
+
+
+def test_simulate_daily_policy_allocation_bins_scale_position_size():
+    symbols = ["AAA"]
+    T = 3
+    S = 1
+    F = 16
+    P = 5
+
+    features = np.zeros((T, S, F), dtype=np.float32)
+    prices = np.zeros((T, S, P), dtype=np.float32)
+    prices[:, 0, 3] = np.array([100.0, 110.0, 121.0], dtype=np.float32)  # close
+    prices[:, 0, 0] = prices[:, 0, 3]
+    prices[:, 0, 1] = prices[:, 0, 3]
+    prices[:, 0, 2] = prices[:, 0, 3]
+    tradable = np.ones((T, S), dtype=np.uint8)
+    data = MktdData(version=2, symbols=symbols, features=features, prices=prices, tradable=tradable)
+
+    # alloc_bins=2 => action=1 is 50% long, action=2 is 100% long.
+    res_half = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=2,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+        action_allocation_bins=2,
+        action_level_bins=1,
+    )
+    res_full = simulate_daily_policy(
+        data,
+        lambda obs: 2,
+        max_steps=2,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+        action_allocation_bins=2,
+        action_level_bins=1,
+    )
+
+    assert res_half.total_return == pytest.approx(0.105, abs=1e-9)
+    assert res_full.total_return == pytest.approx(0.21, abs=1e-9)
+    assert res_full.total_return == pytest.approx(res_half.total_return * 2.0, abs=1e-9)
+
+
+def test_simulate_daily_policy_level_bins_require_fill():
+    symbols = ["AAA"]
+    T = 3
+    S = 1
+    F = 16
+    P = 5
+
+    features = np.zeros((T, S, F), dtype=np.float32)
+    prices = np.zeros((T, S, P), dtype=np.float32)
+    prices[:, 0, 3] = np.array([100.0, 100.0, 100.0], dtype=np.float32)  # close
+    prices[:, 0, 0] = prices[:, 0, 3]
+    prices[:, 0, 1] = prices[:, 0, 3]  # high
+    prices[:, 0, 2] = prices[:, 0, 3]  # low
+    tradable = np.ones((T, S), dtype=np.uint8)
+    data = MktdData(version=2, symbols=symbols, features=features, prices=prices, tradable=tradable)
+
+    # alloc_bins=1, level_bins=3 => action=3 is long with +max_offset_bps, which is outside bar range.
+    res_no_fill = simulate_daily_policy(
+        data,
+        lambda obs: 3,
+        max_steps=2,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+        action_allocation_bins=1,
+        action_level_bins=3,
+        action_max_offset_bps=100.0,  # +1%
+    )
+
+    assert res_no_fill.total_return == pytest.approx(0.0, abs=1e-12)
+    assert res_no_fill.num_trades == 0

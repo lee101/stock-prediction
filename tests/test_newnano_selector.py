@@ -549,11 +549,44 @@ def test_selector_can_short_when_enabled_for_short_only_stock() -> None:
         close_at_eod=False,
         fee_by_symbol={"EBAY": 0.0},
         allow_short=True,
+        max_leverage_stock=2.0,
     )
     result = run_best_trade_simulation(bars, actions, cfg, horizon=1)
     assert [t.side for t in result.trades] == ["sell", "buy"]
+    assert result.trades[0].quantity == pytest.approx(1000.0 * 2.0 / 104.0, abs=1e-9)
     assert result.open_symbol is None
     assert result.final_cash > 1000.0
+
+
+def test_selector_long_leverage_override_takes_precedence_over_base_cap() -> None:
+    bars, actions = _make_two_step_frames(
+        symbol="NVDA",
+        t0="2026-01-01T00:00:00Z",
+        t1="2026-01-01T01:00:00Z",
+        buy_price=100.0,
+        sell_price=112.0,
+        low0=99.0,
+        high0=101.0,
+        low1=100.0,
+        high1=115.0,
+        close0=100.0,
+        close1=114.0,
+    )
+    cfg = SelectionConfig(
+        initial_cash=10_000.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=False,
+        close_at_eod=False,
+        fee_by_symbol={"NVDA": 0.0},
+        max_leverage_stock=1.0,
+        long_max_leverage_stock=3.0,
+    )
+    result = run_best_trade_simulation(bars, actions, cfg, horizon=1)
+    assert [t.side for t in result.trades] == ["buy", "sell"]
+    assert result.trades[0].quantity == pytest.approx(300.0, abs=1e-9)
+    assert result.final_cash == pytest.approx(13_600.0, abs=1e-6)
 
 
 def test_selector_allows_stock_leverage_when_configured() -> None:
@@ -584,6 +617,42 @@ def test_selector_allows_stock_leverage_when_configured() -> None:
     assert [t.side for t in result.trades] == ["buy", "sell"]
     assert result.trades[0].quantity == pytest.approx(200.0, abs=1e-9)
     assert result.final_cash == pytest.approx(12_400.0, abs=1e-6)
+
+
+def test_selector_short_leverage_override_takes_precedence_over_base_cap() -> None:
+    bars, actions = _make_two_step_frames(
+        symbol="EBAY",
+        t0="2026-01-02T19:30:00Z",
+        t1="2026-01-02T20:30:00Z",
+        buy_price=90.0,
+        sell_price=100.0,
+        low0=99.0,
+        high0=101.0,
+        low1=89.0,
+        high1=95.0,
+        close0=100.0,
+        close1=90.0,
+        buy_amount0=0.0,
+        sell_amount0=1.0,
+        buy_amount1=1.0,
+        sell_amount1=0.0,
+    )
+    cfg = SelectionConfig(
+        initial_cash=1000.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=False,
+        close_at_eod=False,
+        fee_by_symbol={"EBAY": 0.0},
+        allow_short=True,
+        max_leverage_stock=2.0,
+        short_max_leverage_stock=0.5,
+    )
+    result = run_best_trade_simulation(bars, actions, cfg, horizon=1)
+    assert [t.side for t in result.trades] == ["sell", "buy"]
+    assert result.trades[0].quantity == pytest.approx(5.0, abs=1e-9)
+    assert result.final_cash == pytest.approx(1050.0, abs=1e-6)
 
 
 def test_selector_charges_margin_interest_on_debit_cash() -> None:

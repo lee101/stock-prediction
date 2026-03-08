@@ -122,3 +122,105 @@ def test_run_best_trade_simulation_merged_matches_unmerged() -> None:
         unmerged.metrics["mean_hourly_return"], rel=0.0, abs=1e-12
     )
 
+
+@pytest.mark.unit
+def test_run_best_trade_simulation_supports_seeded_initial_position() -> None:
+    ts0 = pd.Timestamp("2020-01-01 00:00:00", tz="UTC")
+    ts1 = pd.Timestamp("2020-01-01 01:00:00", tz="UTC")
+
+    merged = pd.DataFrame(
+        [
+            {
+                "timestamp": ts0,
+                "symbol": "BTCUSD",
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "buy_price": 99.5,
+                "sell_price": 101.0,
+                "buy_amount": 0.0,
+                "sell_amount": 0.0,
+                "predicted_high_p50_h1": 101.0,
+                "predicted_low_p50_h1": 99.0,
+                "predicted_close_p50_h1": 100.0,
+            },
+            {
+                "timestamp": ts1,
+                "symbol": "BTCUSD",
+                "high": 111.0,
+                "low": 109.0,
+                "close": 110.0,
+                "buy_price": 109.5,
+                "sell_price": 111.0,
+                "buy_amount": 0.0,
+                "sell_amount": 0.0,
+                "predicted_high_p50_h1": 111.0,
+                "predicted_low_p50_h1": 109.0,
+                "predicted_close_p50_h1": 110.0,
+            },
+        ]
+    )
+
+    cfg = SelectionConfig(
+        initial_cash=500.0,
+        initial_inventory=1.0,
+        initial_symbol="BTCUSD",
+        max_hold_hours=1,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=False,
+        close_at_eod=False,
+        fee_by_symbol={"BTCUSD": 0.0},
+        periods_per_year_by_symbol={"BTCUSD": 24 * 365},
+        symbols=["BTCUSD"],
+    )
+
+    result = run_best_trade_simulation_merged(merged, cfg, horizon=1)
+
+    assert result.trades[-1].reason == "max_hold"
+    assert result.trades[-1].side == "sell"
+    assert result.trades[-1].price == pytest.approx(110.0)
+    assert result.final_cash == pytest.approx(610.0)
+    assert result.final_inventory == pytest.approx(0.0)
+    assert result.open_symbol is None
+    assert result.metrics["total_return"] == pytest.approx((610.0 - 600.0) / 600.0)
+
+
+@pytest.mark.unit
+def test_run_best_trade_simulation_requires_symbol_for_seeded_position() -> None:
+    ts0 = pd.Timestamp("2020-01-01 00:00:00", tz="UTC")
+    merged = pd.DataFrame(
+        [
+            {
+                "timestamp": ts0,
+                "symbol": "BTCUSD",
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "buy_price": 99.5,
+                "sell_price": 101.0,
+                "buy_amount": 0.0,
+                "sell_amount": 0.0,
+                "predicted_high_p50_h1": 101.0,
+                "predicted_low_p50_h1": 99.0,
+                "predicted_close_p50_h1": 100.0,
+            }
+        ]
+    )
+
+    cfg = SelectionConfig(
+        initial_cash=500.0,
+        initial_inventory=1.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=False,
+        close_at_eod=False,
+        fee_by_symbol={"BTCUSD": 0.0},
+        periods_per_year_by_symbol={"BTCUSD": 24 * 365},
+        symbols=["BTCUSD"],
+    )
+
+    with pytest.raises(ValueError, match="initial_symbol is required"):
+        run_best_trade_simulation_merged(merged, cfg, horizon=1)

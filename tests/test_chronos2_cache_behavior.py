@@ -83,11 +83,11 @@ def test_chronos2_from_pretrained_uses_model_cache(tmp_path: Path, monkeypatch: 
             cls.load_sources.append(model_id)
             return cls()
 
-    monkeypatch.setattr(chronos2_wrapper, "_Chronos2Pipeline", _FakePipeline)
+    monkeypatch.setattr(chronos2_wrapper, "_ChronosBasePipeline", _FakePipeline)
 
     manager = ModelCacheManager("chronos2-test", root=tmp_path)
     kwargs = dict(
-        model_id="amazon/chronos-2",
+        model_id="amazon/chronos-t5-small",
         device_map="cpu",
         default_context_length=64,
         default_batch_size=16,
@@ -97,8 +97,8 @@ def test_chronos2_from_pretrained_uses_model_cache(tmp_path: Path, monkeypatch: 
     )
 
     Chronos2OHLCWrapper.from_pretrained(**kwargs)
-    assert _FakePipeline.load_sources == ["amazon/chronos-2"]
-    weights_dir = manager.weights_dir("amazon/chronos-2", "fp32")
+    assert _FakePipeline.load_sources == ["amazon/chronos-t5-small"]
+    weights_dir = manager.weights_dir("amazon/chronos-t5-small", "fp32")
     assert (weights_dir / "config.json").exists()
 
     Chronos2OHLCWrapper.from_pretrained(**kwargs)
@@ -154,7 +154,7 @@ def test_chronos2_prediction_cache_reuses_results(monkeypatch: pytest.MonkeyPatc
     _CountingPipeline.call_count = 0
     monkeypatch.setenv("CHRONOS2_PREDICTION_CACHE", "1")
     monkeypatch.setenv("CHRONOS_COMPILE", "0")
-    monkeypatch.setattr(chronos2_wrapper, "_Chronos2Pipeline", _CountingPipeline)
+    monkeypatch.setattr(chronos2_wrapper, "_ChronosBasePipeline", _CountingPipeline)
 
     wrapper = Chronos2OHLCWrapper.from_pretrained(
         model_id="stub/chronos2",
@@ -181,7 +181,7 @@ def test_chronos2_prediction_cache_tolerates_small_float_drift(monkeypatch: pyte
     _CountingPipeline.call_count = 0
     monkeypatch.setenv("CHRONOS2_PREDICTION_CACHE", "1")
     monkeypatch.setenv("CHRONOS_COMPILE", "0")
-    monkeypatch.setattr(chronos2_wrapper, "_Chronos2Pipeline", _CountingPipeline)
+    monkeypatch.setattr(chronos2_wrapper, "_ChronosBasePipeline", _CountingPipeline)
 
     wrapper = Chronos2OHLCWrapper.from_pretrained(
         model_id="stub/chronos2",
