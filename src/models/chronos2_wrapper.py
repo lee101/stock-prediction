@@ -132,6 +132,55 @@ def _path_contains_config(path: Path) -> bool:
         return False
 
 
+def _iter_local_model_roots(candidate_path: Path) -> List[Path]:
+    roots: List[Path] = []
+    for root in (Path("."), Path("binanceneural")):
+        resolved = (root / candidate_path).expanduser()
+        if resolved not in roots:
+            roots.append(resolved)
+    if candidate_path.parts:
+        head = candidate_path.parts[0]
+        if head == "chronos2_finetuned":
+            for root in (Path("chronos2_finetuned"), Path("binanceneural") / "chronos2_finetuned"):
+                if root not in roots:
+                    roots.append(root)
+    return roots
+
+
+def _find_local_model_fallback(candidate_path: Path) -> Optional[Path]:
+    if _path_contains_config(candidate_path):
+        return candidate_path
+
+    for rooted_candidate in _iter_local_model_roots(candidate_path):
+        if _path_contains_config(rooted_candidate):
+            return rooted_candidate
+
+    if candidate_path.name != "finetuned-ckpt":
+        return None
+
+    requested_parent = candidate_path.parent.name.strip().lower()
+    if not requested_parent:
+        return None
+    prefix = requested_parent.split("_lora", 1)[0]
+    if not prefix:
+        return None
+
+    matches: List[Path] = []
+    seen: set[Path] = set()
+    for root in _iter_local_model_roots(candidate_path):
+        search_root = root if root.name == "chronos2_finetuned" else root.parent
+        if search_root in seen or not search_root.exists():
+            continue
+        seen.add(search_root)
+        for path in sorted(search_root.glob("*/finetuned-ckpt")):
+            parent_name = path.parent.name.strip().lower()
+            if parent_name.startswith(prefix) and _path_contains_config(path):
+                matches.append(path)
+    if not matches:
+        return None
+    return matches[-1]
+
+
 def _normalize_aliases(raw_aliases: Optional[str]) -> set[str]:
     if not raw_aliases:
         return {"chronos2"}
@@ -151,8 +200,15 @@ def _resolve_model_source(model_id: Optional[str]) -> str:
         requested = _DEFAULT_MODEL_ID
 
     candidate_path = Path(requested)
-    if _path_contains_config(candidate_path):
-        return str(candidate_path)
+    local_candidate = _find_local_model_fallback(candidate_path)
+    if local_candidate is not None:
+        if str(local_candidate) != requested:
+            logger.warning(
+                "Chronos2 model_id '%s' is unavailable locally; falling back to '%s'.",
+                requested,
+                local_candidate,
+            )
+        return str(local_candidate)
 
     aliases = _normalize_aliases(os.getenv("CHRONOS2_MODEL_ALIASES"))
     if requested.lower() in aliases:
