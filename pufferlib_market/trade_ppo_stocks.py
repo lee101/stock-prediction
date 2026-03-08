@@ -80,11 +80,20 @@ def execute_signal(api, signal, prices: dict, allocation_usd: float = 1000.0):
     if price <= 0:
         return
 
-    raw_qty = allocation_usd / price
+    allocation_pct = max(0.0, min(1.0, float(getattr(signal, "allocation_pct", 1.0))))
+    target_notional = float(allocation_usd) * allocation_pct
+    if target_notional <= 0:
+        logger.info(f"Zero target allocation for {signal.action}, skip")
+        return
+
+    raw_qty = target_notional / price
     max_qty = POSITION_LIMITS.get(signal.symbol, 50)
     qty = min(raw_qty, max_qty)
 
-    logger.info(f"Entering {signal.direction} {signal.symbol}: {qty:.2f} @ ${price:.2f}")
+    logger.info(
+        f"Entering {signal.direction} {signal.symbol}: {qty:.2f} @ ${price:.2f} "
+        f"(alloc={allocation_pct:.2f}, notional=${target_notional:.2f})"
+    )
     alpaca_wrapper.open_market_order_violently(signal.symbol, qty, "buy" if signal.direction == "long" else "sell")
 
 def run_once(trader: PPOTrader, api, allocation_usd: float):
@@ -159,8 +168,7 @@ def main():
     api = TradingClient(key_id, secret, paper=paper)
     logger.info(f"Connected to Alpaca ({'paper' if paper else 'live'})")
 
-    trader = PPOTrader(args.checkpoint, args.device, long_only=False)
-    trader.SYMBOLS = SYMBOLS
+    trader = PPOTrader(args.checkpoint, args.device, long_only=False, symbols=SYMBOLS)
 
     if args.once:
         run_once(trader, api, args.allocation_usd)

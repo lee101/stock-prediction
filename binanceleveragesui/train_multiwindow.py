@@ -22,7 +22,15 @@ DATA_ROOT = REPO / "trainingdatahourlybinance"
 CHECKPOINT_ROOT = REPO / "binanceleveragesui" / "checkpoints"
 
 
-def evaluate_checkpoint(ckpt_path, dm, symbol="DOGEUSD"):
+def evaluate_checkpoint(
+    ckpt_path,
+    dm,
+    symbol="DOGEUSD",
+    *,
+    max_leverage: float = 1.0,
+    can_short: bool = False,
+    margin_hourly_rate: float = 0.0,
+):
     model, norm, fcols, meta = load_policy_checkpoint(str(ckpt_path), device="cuda")
     seq = meta.get("sequence_length", 72)
     frame = dm.full_frame.copy()
@@ -38,7 +46,8 @@ def evaluate_checkpoint(ckpt_path, dm, symbol="DOGEUSD"):
         wb = frame[frame.timestamp >= st].copy()
         wa = actions[actions.timestamp >= st].copy()
         cfg = LeverageConfig(
-            symbol=symbol, max_leverage=1.0, maker_fee=0.001,
+            symbol=symbol, max_leverage=float(max_leverage), can_short=bool(can_short), maker_fee=0.001,
+            margin_hourly_rate=float(margin_hourly_rate),
             initial_cash=10000.0, fill_buffer_pct=0.0,
             decision_lag_bars=1, intensity_scale=5.0, max_hold_bars=6,
         )
@@ -60,8 +69,21 @@ def main():
     p.add_argument("--multiwindow-fractions", default="0.25,0.5,0.75,1.0")
     p.add_argument("--aggregation", default="minimax")
     p.add_argument("--feature-noise", type=float, default=0.02)
+    p.add_argument("--batch-size", type=int, default=16)
+    p.add_argument("--transformer-dim", type=int, default=256)
+    p.add_argument("--transformer-layers", type=int, default=4)
+    p.add_argument("--transformer-heads", type=int, default=8)
+    p.add_argument("--transformer-dropout", type=float, default=0.1)
+    p.add_argument("--model-arch", default="classic")
+    p.add_argument("--num-memory-tokens", type=int, default=0)
+    p.add_argument("--dilated-strides", default="")
     p.add_argument("--seed", type=int, default=1337)
     p.add_argument("--lag", type=int, default=1)
+    p.add_argument("--can-long", type=float, default=1.0)
+    p.add_argument("--can-short", type=float, default=0.0)
+    p.add_argument("--max-leverage", type=float, default=1.0)
+    p.add_argument("--margin-hourly-rate", type=float, default=0.0)
+    p.add_argument("--preload-checkpoint", default=None)
     p.add_argument("--name", default=None)
     args = p.parse_args()
 
@@ -76,11 +98,13 @@ def main():
         model_id="amazon/chronos-t5-small", sequence_length=72,
         split_config=SplitConfig(val_days=30, test_days=30),
         cache_only=True, max_history_days=365,
+        can_long=float(args.can_long),
+        can_short=float(args.can_short),
     )
 
     ckpt_root = CHECKPOINT_ROOT / name
     tc = TrainingConfig(
-        epochs=args.epochs, batch_size=16, sequence_length=72,
+        epochs=args.epochs, batch_size=args.batch_size, sequence_length=72,
         learning_rate=args.lr, weight_decay=args.wd,
         return_weight=args.rw, seed=args.seed,
         loss_type=args.loss_type,
@@ -89,8 +113,17 @@ def main():
         multiwindow_aggregation=args.aggregation,
         decision_lag_bars=args.lag,
         feature_noise_std=args.feature_noise,
-        transformer_dim=256, transformer_layers=4, transformer_heads=8,
+        transformer_dim=args.transformer_dim,
+        transformer_layers=args.transformer_layers,
+        transformer_heads=args.transformer_heads,
+        transformer_dropout=args.transformer_dropout,
+        model_arch=args.model_arch,
+        num_memory_tokens=args.num_memory_tokens,
+        dilated_strides=args.dilated_strides,
         maker_fee=0.001, fill_temperature=0.1,
+        max_leverage=float(args.max_leverage),
+        margin_annual_rate=float(args.margin_hourly_rate) * 24.0 * 365.0,
+        preload_checkpoint_path=Path(args.preload_checkpoint).resolve() if args.preload_checkpoint else None,
         checkpoint_root=ckpt_root,
         log_dir=Path("tensorboard_logs/binanceleveragesui_mw"),
         use_compile=False,
@@ -105,7 +138,14 @@ def main():
     for ep_path in epoch_files:
         ep_name = ep_path.stem
         try:
-            results = evaluate_checkpoint(ep_path, dm, args.symbol)
+            results = evaluate_checkpoint(
+                ep_path,
+                dm,
+                args.symbol,
+                max_leverage=float(args.max_leverage),
+                can_short=bool(args.can_short > 0.0),
+                margin_hourly_rate=float(args.margin_hourly_rate),
+            )
             min_sort = min(r["sort"] for r in results.values())
             avg_ret = sum(r["ret"] for r in results.values()) / len(results)
             all_eval[ep_name] = {"results": results, "min_sort": min_sort, "avg_ret": avg_ret}

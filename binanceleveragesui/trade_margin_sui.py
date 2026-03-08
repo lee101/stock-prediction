@@ -47,6 +47,18 @@ BASE_ASSET = "SUI"  # derived from SYMBOL
 TAG = "margin"  # log prefix
 STATE_FILE = Path("strategy_state/margin_sui_state.json")
 MIN_POSITION_NOTIONAL = 5.0
+_LOG_DIR = Path("strategy_state/margin_logs")
+
+
+def _log_event(event_type: str, **data):
+    try:
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = _LOG_DIR / f"{TAG}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.jsonl"
+        record = {"ts": datetime.now(timezone.utc).isoformat(), "event": event_type, **data}
+        with open(log_file, "a") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception:
+        pass
 
 
 @dataclass
@@ -229,9 +241,14 @@ def _refresh_signal(
         print(f"[{TAG}] WARNING: sell<=buy, forced 20bp spread buy={buy_price:.4f} sell={sell_price:.4f}")
 
     print(f"[{TAG}] signal buy={buy_price:.4f}({buy_amount:.1f}%) sell={sell_price:.4f}({sell_amount:.1f}%)")
-    return {"buy_price": buy_price, "sell_price": sell_price,
-            "buy_amount": buy_amount, "sell_amount": sell_amount,
-            "ts": time.monotonic()}
+    result = {"buy_price": buy_price, "sell_price": sell_price,
+              "buy_amount": buy_amount, "sell_amount": sell_amount,
+              "ts": time.monotonic()}
+    ref_close = float(last_row.get("close", 0))
+    _log_event("signal", buy_price=buy_price, sell_price=sell_price,
+               buy_amount=buy_amount, sell_amount=sell_amount,
+               reference_close=ref_close, symbol=SYMBOL)
+    return result
 
 
 def _fast_check(
@@ -281,6 +298,10 @@ def _fast_check(
         f"[{TAG}] eq=${equity:.2f} usdt_free=${bal['usdt_free']:.2f} usdt_borrow=${bal['usdt_borrowed']:.2f} "
         f"{BASE_ASSET}={asset_total:.4f} pos=${asset_value:.2f} lev={current_leverage:.1f}x price={market_price:.4f}"
     )
+    _log_event("state", equity=equity, market_price=market_price,
+               asset_value=asset_value, leverage=current_leverage,
+               in_position=state.in_position, hours_held=state.hours_held(),
+               buy_price=buy_price, sell_price=sell_price)
 
     if state.in_position:
         _handle_exit(
@@ -384,6 +405,7 @@ def _handle_exit(
         margin=True, side_effect_type="AUTO_REPAY",
     ))
     print(f"[{TAG}] EXIT sell={sp:.4f} qty={sell_qty:.4f} amt={sell_amount:.1f}%")
+    _log_event("exit_attempt", sell_price=sp, qty=sell_qty, amount_pct=sell_amount)
 
 
 def _handle_add(
@@ -436,20 +458,24 @@ def _handle_entry(
 ):
     if buy_amount <= 0 or buy_price <= 0:
         print(f"[{TAG}] flat, no buy signal")
+        _log_event("entry_skip", reason="no_buy_signal", buy_amount=buy_amount, buy_price=buy_price)
         return
     if equity <= 0:
         print(f"[{TAG}] no equity in margin account")
+        _log_event("entry_skip", reason="no_equity", equity=equity)
         return
 
     bp, sp = enforce_min_spread(buy_price, sell_price, min_spread_pct=min_gap_pct)
     bp, sp = enforce_gap(SYMBOL, bp, sp, min_gap_pct=min_gap_pct)
     if bp <= 0 or sp <= 0 or bp >= sp:
         print(f"[{TAG}] invalid entry prices")
+        _log_event("entry_rejected", reason="invalid_prices", bp=bp, sp=sp)
         return
 
     validated = _ensure_valid_levels(SYMBOL, bp, sp, min_gap_pct=min_gap_pct, rules=rules)
     if validated is None:
         print(f"[{TAG}] invalid entry levels")
+        _log_event("entry_rejected", reason="invalid_levels", bp=bp, sp=sp)
         return
     bp, _ = validated
 
@@ -472,6 +498,7 @@ def _handle_entry(
     ))
     notional = buy_qty * bp
     print(f"[{TAG}] ENTER buy={bp:.4f} qty={buy_qty:.2f} notional=${notional:.2f} lev={max_leverage}x")
+    _log_event("entry_attempt", buy_price=bp, qty=buy_qty, notional=notional, leverage=max_leverage)
 
 
 def main():

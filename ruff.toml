@@ -69,7 +69,7 @@ unfixable = []
 "scripts/**" = ["T201", "T203"]  # Allow print in scripts
 
 [lint.isort]
-known-first-party = ["src"]
+known-first-party = ["src", "unified_hourly_experiment", "binanceneural"]
 force-single-line = false
 lines-after-imports = 2
 
