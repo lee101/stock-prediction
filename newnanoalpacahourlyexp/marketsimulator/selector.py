@@ -70,6 +70,12 @@ class SelectionConfig:
     # then places orders for the next bar.
     decision_lag_bars: int = 0
     bar_margin: float = 0.0
+    # Limit-order fill realism. "binary" preserves legacy touch/no-touch fills.
+    # "penetration" scales fill size by how far the bar traded through the limit.
+    limit_fill_model: str = "binary"
+    # Optional minimum fill fraction when the bar only touches the limit exactly.
+    # Only used when limit_fill_model="penetration".
+    touch_fill_fraction: float = 0.0
 
 
 @dataclass
@@ -135,6 +141,7 @@ def run_best_trade_simulation_merged(
     decision_lag_bars = int(getattr(cfg, "decision_lag_bars", 0) or 0)
     if decision_lag_bars < 0:
         raise ValueError(f"decision_lag_bars must be >= 0, got {cfg.decision_lag_bars}.")
+    _validate_fill_config(cfg)
     if decision_lag_bars:
         # Shift decision-time inputs back by N bars per symbol so the fill/mark-to-market
         # uses the current bar while actions/forecasts reflect what was known N bars ago.
@@ -389,7 +396,12 @@ def _run_best_trade_simulation_on_merged(
                         sbuy_int, _ = _extract_intensity(srow)
                         if sbuy_int <= 0:
                             continue
-                        if cfg.select_fillable_only and srow.low > srow.buy_price * (1 - cfg.bar_margin):
+                        if cfg.select_fillable_only and _limit_fill_fraction(
+                            srow,
+                            side="buy",
+                            limit_price=float(srow.buy_price),
+                            cfg=cfg,
+                        ) <= 0.0:
                             continue
                         score = _edge_score_long(srow, horizon=horizon, config=cfg, buy_intensity=sbuy_int, fee_rate=sfee)
                         if score is not None and score >= cfg.work_steal_min_edge:
@@ -406,10 +418,14 @@ def _run_best_trade_simulation_on_merged(
                             max_lev = _entry_max_leverage(symbol_meta, best_sym, side="long")
                             max_notional = max(0.0, float(cash) * max_lev)
                             max_buy = max_notional / (best_row.buy_price * (1 + entry_fee)) if best_row.buy_price > 0 else 0.0
-                            qty_buy = best_int * max_buy
+                            fill_fraction = _limit_fill_fraction(
+                                best_row,
+                                side="buy",
+                                limit_price=float(best_row.buy_price),
+                                cfg=cfg,
+                            )
+                            qty_buy = best_int * max_buy * fill_fraction
                             qty_buy = _cap_qty(best_sym, qty_buy)
-                            if qty_buy > 0 and (not cfg.select_fillable_only) and best_row.low > best_row.buy_price * (1 - cfg.bar_margin):
-                                qty_buy = 0.0
                             if qty_buy > 0:
                                 _execute_buy(ts, best_sym, qty_buy, float(best_row.buy_price), entry_fee, reason="work_steal_entry")
                                 buy_filled = 1.0
@@ -426,18 +442,28 @@ def _run_best_trade_simulation_on_merged(
                     buy_intensity = 0.0
                     sell_intensity = 0.0
                 if inventory > 0:
-                    sell_fill = bool(row.high >= row.sell_price * (1 + cfg.bar_margin) and sell_intensity > 0)
-                    if sell_fill:
-                        qty = sell_intensity * inventory
+                    fill_fraction = _limit_fill_fraction(
+                        row,
+                        side="sell",
+                        limit_price=float(row.sell_price),
+                        cfg=cfg,
+                    )
+                    if fill_fraction > 0.0 and sell_intensity > 0:
+                        qty = sell_intensity * inventory * fill_fraction
                         qty = _cap_qty(open_symbol, qty)
                         fee_rate = symbol_meta[open_symbol]["fee"]
                         _execute_sell(ts, open_symbol, min(qty, inventory), float(row.sell_price), fee_rate)
                         sell_filled = 1.0
                         closed_this_step = True
                 else:
-                    buy_fill_condition = bool(row.low <= row.buy_price * (1 - cfg.bar_margin) and buy_intensity > 0)
-                    if buy_fill_condition:
-                        qty = buy_intensity * abs(inventory)
+                    fill_fraction = _limit_fill_fraction(
+                        row,
+                        side="buy",
+                        limit_price=float(row.buy_price),
+                        cfg=cfg,
+                    )
+                    if fill_fraction > 0.0 and buy_intensity > 0:
+                        qty = buy_intensity * abs(inventory) * fill_fraction
                         qty = _cap_qty(open_symbol, qty)
                         fee_rate = symbol_meta[open_symbol]["fee"]
                         _execute_buy(ts, open_symbol, min(qty, abs(inventory)), float(row.buy_price), fee_rate)
@@ -461,7 +487,12 @@ def _run_best_trade_simulation_on_merged(
                 buy_intensity, sell_intensity = _extract_intensity(row)
 
                 if can_long and buy_intensity > 0:
-                    if cfg.select_fillable_only and row.low > row.buy_price * (1 - cfg.bar_margin):
+                    if cfg.select_fillable_only and _limit_fill_fraction(
+                        row,
+                        side="buy",
+                        limit_price=float(row.buy_price),
+                        cfg=cfg,
+                    ) <= 0.0:
                         pass
                     else:
                         score = _edge_score_long(
@@ -475,7 +506,12 @@ def _run_best_trade_simulation_on_merged(
                             candidates.append((score, symbol, "long", row, buy_intensity))
 
                 if can_short and sell_intensity > 0:
-                    if cfg.select_fillable_only and row.high < row.sell_price * (1 + cfg.bar_margin):
+                    if cfg.select_fillable_only and _limit_fill_fraction(
+                        row,
+                        side="sell",
+                        limit_price=float(row.sell_price),
+                        cfg=cfg,
+                    ) <= 0.0:
                         pass
                     else:
                         score = _edge_score_short(
@@ -493,32 +529,38 @@ def _run_best_trade_simulation_on_merged(
                 selected_score, selected_symbol, direction, row, intensity = candidates[0]
                 fee_rate = symbol_meta[selected_symbol]["fee"]
                 if direction == "long":
-                    if (not cfg.select_fillable_only) and row.low > row.buy_price * (1 - cfg.bar_margin):
-                        # Selected an entry order that did not fill on this bar.
-                        pass
-                    else:
+                    fill_fraction = _limit_fill_fraction(
+                        row,
+                        side="buy",
+                        limit_price=float(row.buy_price),
+                        cfg=cfg,
+                    )
+                    if fill_fraction > 0.0:
                         max_leverage = _entry_max_leverage(symbol_meta, selected_symbol, side="long")
                         max_buy_notional = max(0.0, float(cash) * max_leverage)
                         max_buy = (
                             max_buy_notional / (row.buy_price * (1 + fee_rate)) if row.buy_price > 0 else 0.0
                         )
-                        qty = intensity * max_buy
+                        qty = intensity * max_buy * fill_fraction
                         qty = _cap_qty(selected_symbol, qty)
                         if qty > 0:
                             _execute_buy(ts, selected_symbol, qty, float(row.buy_price), fee_rate)
                             buy_filled = 1.0
                             current_price = float(row.close)
                 else:
-                    if (not cfg.select_fillable_only) and row.high < row.sell_price * (1 + cfg.bar_margin):
-                        # Selected an entry order that did not fill on this bar.
-                        pass
-                    else:
+                    fill_fraction = _limit_fill_fraction(
+                        row,
+                        side="sell",
+                        limit_price=float(row.sell_price),
+                        cfg=cfg,
+                    )
+                    if fill_fraction > 0.0:
                         max_leverage = _entry_max_leverage(symbol_meta, selected_symbol, side="short")
                         max_short_notional = max(0.0, float(cash) * max_leverage)
                         max_short = (
                             max_short_notional / (row.sell_price * (1 + fee_rate)) if row.sell_price > 0 else 0.0
                         )
-                        qty = intensity * max(0.0, max_short)
+                        qty = intensity * max(0.0, max_short) * fill_fraction
                         qty = _cap_qty(selected_symbol, qty)
                         if qty > 0:
                             _execute_sell(ts, selected_symbol, qty, float(row.sell_price), fee_rate)
@@ -711,20 +753,34 @@ def _run_multi_position_simulation(
             if not _is_tradable(symbol_meta, sym, ts, cfg):
                 continue
             buy_intensity, sell_intensity = _extract_intensity(row)
-            if qty > 0 and sell_intensity > 0 and row.high >= row.sell_price * (1 + cfg.bar_margin):
-                sell_qty = sell_intensity * qty
-                cash += sell_qty * float(row.sell_price) * (1 - fee_rate)
-                positions[sym] = qty - sell_qty
-                _record(ts, sym, "sell", float(row.sell_price), sell_qty)
-                if abs(positions[sym]) < 1e-12:
-                    closed_symbols.append(sym)
-            elif qty < 0 and buy_intensity > 0 and row.low <= row.buy_price * (1 - cfg.bar_margin):
-                cover_qty = buy_intensity * abs(qty)
-                cash -= cover_qty * float(row.buy_price) * (1 + fee_rate)
-                positions[sym] = qty + cover_qty
-                _record(ts, sym, "buy", float(row.buy_price), cover_qty)
-                if abs(positions[sym]) < 1e-12:
-                    closed_symbols.append(sym)
+            if qty > 0 and sell_intensity > 0:
+                fill_fraction = _limit_fill_fraction(
+                    row,
+                    side="sell",
+                    limit_price=float(row.sell_price),
+                    cfg=cfg,
+                )
+                sell_qty = sell_intensity * qty * fill_fraction
+                if sell_qty > 0:
+                    cash += sell_qty * float(row.sell_price) * (1 - fee_rate)
+                    positions[sym] = qty - sell_qty
+                    _record(ts, sym, "sell", float(row.sell_price), sell_qty)
+                    if abs(positions[sym]) < 1e-12:
+                        closed_symbols.append(sym)
+            elif qty < 0 and buy_intensity > 0:
+                fill_fraction = _limit_fill_fraction(
+                    row,
+                    side="buy",
+                    limit_price=float(row.buy_price),
+                    cfg=cfg,
+                )
+                cover_qty = buy_intensity * abs(qty) * fill_fraction
+                if cover_qty > 0:
+                    cash -= cover_qty * float(row.buy_price) * (1 + fee_rate)
+                    positions[sym] = qty + cover_qty
+                    _record(ts, sym, "buy", float(row.buy_price), cover_qty)
+                    if abs(positions[sym]) < 1e-12:
+                        closed_symbols.append(sym)
 
         for sym in closed_symbols:
             positions.pop(sym, None)
@@ -746,7 +802,12 @@ def _run_multi_position_simulation(
                 buy_intensity, sell_intensity = _extract_intensity(row)
 
                 if bool(dirs.get("can_long", True)) and buy_intensity > 0:
-                    if cfg.select_fillable_only and row.low > row.buy_price * (1 - cfg.bar_margin):
+                    if cfg.select_fillable_only and _limit_fill_fraction(
+                        row,
+                        side="buy",
+                        limit_price=float(row.buy_price),
+                        cfg=cfg,
+                    ) <= 0.0:
                         pass
                     else:
                         score = _edge_score_long(
@@ -760,7 +821,12 @@ def _run_multi_position_simulation(
                             candidates.append((score, symbol, "long", row, buy_intensity))
 
                 if bool(dirs.get("can_short", False)) and sell_intensity > 0:
-                    if cfg.select_fillable_only and row.high < row.sell_price * (1 + cfg.bar_margin):
+                    if cfg.select_fillable_only and _limit_fill_fraction(
+                        row,
+                        side="sell",
+                        limit_price=float(row.sell_price),
+                        cfg=cfg,
+                    ) <= 0.0:
                         pass
                     else:
                         score = _edge_score_short(
@@ -782,13 +848,18 @@ def _run_multi_position_simulation(
                     break
                 slot_cash = max(0.0, float(cash)) / remaining_slots
                 if direction == "long":
-                    if (not cfg.select_fillable_only) and row.low > row.buy_price * (1 - cfg.bar_margin):
-                        # Selected an entry order that did not fill on this bar.
+                    fill_fraction = _limit_fill_fraction(
+                        row,
+                        side="buy",
+                        limit_price=float(row.buy_price),
+                        cfg=cfg,
+                    )
+                    if fill_fraction <= 0.0:
                         continue
                     max_leverage = _entry_max_leverage(symbol_meta, symbol, side="long")
                     max_buy_notional = slot_cash * max_leverage
                     max_buy = max_buy_notional / (row.buy_price * (1 + fee_rate)) if row.buy_price > 0 else 0.0
-                    qty = intensity * max_buy
+                    qty = intensity * max_buy * fill_fraction
                     if qty > 0:
                         cost = qty * float(row.buy_price) * (1 + fee_rate)
                         cash -= cost
@@ -796,13 +867,18 @@ def _run_multi_position_simulation(
                         position_open_ts[symbol] = ts
                         _record(ts, symbol, "buy", float(row.buy_price), qty)
                 else:
-                    if (not cfg.select_fillable_only) and row.high < row.sell_price * (1 + cfg.bar_margin):
-                        # Selected an entry order that did not fill on this bar.
+                    fill_fraction = _limit_fill_fraction(
+                        row,
+                        side="sell",
+                        limit_price=float(row.sell_price),
+                        cfg=cfg,
+                    )
+                    if fill_fraction <= 0.0:
                         continue
                     max_leverage = _entry_max_leverage(symbol_meta, symbol, side="short")
                     max_short_notional = slot_cash * max_leverage
                     max_short = max_short_notional / (row.sell_price * (1 + fee_rate)) if row.sell_price > 0 else 0.0
-                    qty = intensity * max(0.0, max_short)
+                    qty = intensity * max(0.0, max_short) * fill_fraction
                     if qty > 0:
                         proceeds = qty * float(row.sell_price) * (1 - fee_rate)
                         cash += proceeds
@@ -1067,6 +1143,63 @@ def _extract_intensity(row: object) -> Tuple[float, float]:
     buy_intensity = float(np.clip(float(buy_amount) / scale, 0.0, 1.0))
     sell_intensity = float(np.clip(float(sell_amount) / scale, 0.0, 1.0))
     return buy_intensity, sell_intensity
+
+
+def _normalize_fill_model(cfg: SelectionConfig) -> str:
+    model = str(getattr(cfg, "limit_fill_model", "binary") or "binary").strip().lower()
+    if model not in {"binary", "penetration"}:
+        raise ValueError(f"limit_fill_model must be one of ['binary', 'penetration'], got {cfg.limit_fill_model!r}.")
+    return model
+
+
+def _validate_fill_config(cfg: SelectionConfig) -> None:
+    _normalize_fill_model(cfg)
+    touch_fill_fraction = float(getattr(cfg, "touch_fill_fraction", 0.0) or 0.0)
+    if not np.isfinite(touch_fill_fraction) or touch_fill_fraction < 0.0 or touch_fill_fraction > 1.0:
+        raise ValueError(
+            f"touch_fill_fraction must be in [0, 1], got {getattr(cfg, 'touch_fill_fraction', None)!r}."
+        )
+
+
+def _limit_fill_fraction(
+    row: object,
+    *,
+    side: str,
+    limit_price: float,
+    cfg: SelectionConfig,
+) -> float:
+    if limit_price <= 0.0:
+        return 0.0
+    high = _safe_float(getattr(row, "high", None))
+    low = _safe_float(getattr(row, "low", None))
+    if high is None or low is None:
+        return 0.0
+    bar_high = max(float(high), float(low))
+    bar_low = min(float(high), float(low))
+    bar_margin = float(getattr(cfg, "bar_margin", 0.0) or 0.0)
+    if side == "buy":
+        threshold = float(limit_price) * (1.0 - bar_margin)
+        if bar_low > threshold:
+            return 0.0
+        penetration = max(0.0, threshold - bar_low)
+    elif side == "sell":
+        threshold = float(limit_price) * (1.0 + bar_margin)
+        if bar_high < threshold:
+            return 0.0
+        penetration = max(0.0, bar_high - threshold)
+    else:
+        raise ValueError(f"Unsupported fill side {side!r}.")
+
+    if _normalize_fill_model(cfg) == "binary":
+        return 1.0
+
+    touch_fill_fraction = float(getattr(cfg, "touch_fill_fraction", 0.0) or 0.0)
+    bar_range = max(0.0, bar_high - bar_low)
+    denom = max(bar_range, abs(threshold) * 1e-6, 1e-12)
+    fraction = penetration / denom if penetration > 0.0 else touch_fill_fraction
+    if penetration > 0.0:
+        fraction = max(touch_fill_fraction, fraction)
+    return float(np.clip(fraction, 0.0, 1.0))
 
 
 def _edge_score_long(

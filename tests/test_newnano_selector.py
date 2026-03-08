@@ -257,6 +257,129 @@ def test_selector_bar_margin_requires_trade_through_limit_buffer():
     assert math.isclose(result.final_cash, 10_000.0, rel_tol=0, abs_tol=1e-9)
 
 
+def test_selector_penetration_fill_model_scales_entry_size() -> None:
+    bars, actions = _make_two_step_frames(
+        symbol="BTCUSD",
+        t0="2026-01-01T00:00:00Z",
+        t1="2026-01-01T01:00:00Z",
+        buy_price=100.0,
+        sell_price=140.0,
+        low0=99.8,
+        high0=100.2,
+        low1=105.0,
+        high1=106.0,
+        close0=100.0,
+        close1=105.5,
+        sell_amount1=0.0,
+    )
+    cfg = SelectionConfig(
+        initial_cash=10_000.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=True,
+        close_at_eod=False,
+        fee_by_symbol={"BTCUSD": 0.0},
+        limit_fill_model="penetration",
+    )
+    result = run_best_trade_simulation(bars, actions, cfg, horizon=1)
+
+    assert [t.side for t in result.trades] == ["buy"]
+    assert result.trades[0].quantity == pytest.approx(50.0, abs=1e-9)
+    assert result.final_cash == pytest.approx(5_000.0, abs=1e-6)
+    assert result.final_inventory == pytest.approx(50.0, abs=1e-9)
+    assert result.open_symbol == "BTCUSD"
+
+
+def test_selector_penetration_fill_model_scales_exit_size_for_seeded_position() -> None:
+    ts = pd.to_datetime(["2026-01-01T00:00:00Z"], utc=True)
+    bars = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "symbol": ["BTCUSD"],
+            "open": [109.8],
+            "high": [110.5],
+            "low": [109.5],
+            "close": [110.0],
+            "volume": [1e9],
+            "predicted_high_p50_h1": [111.0],
+            "predicted_low_p50_h1": [109.0],
+            "predicted_close_p50_h1": [110.0],
+        }
+    )
+    actions = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "symbol": ["BTCUSD"],
+            "buy_price": [100.0],
+            "sell_price": [110.0],
+            "buy_amount": [0.0],
+            "sell_amount": [1.0],
+        }
+    )
+    cfg = SelectionConfig(
+        initial_cash=0.0,
+        initial_inventory=10.0,
+        initial_symbol="BTCUSD",
+        initial_open_price=100.0,
+        initial_open_ts=ts[0],
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=False,
+        close_at_eod=False,
+        fee_by_symbol={"BTCUSD": 0.0},
+        periods_per_year_by_symbol={"BTCUSD": 24 * 365},
+        symbols=["BTCUSD"],
+        limit_fill_model="penetration",
+    )
+    result = run_best_trade_simulation(bars, actions, cfg, horizon=1)
+
+    assert [t.side for t in result.trades] == ["sell"]
+    assert result.trades[0].quantity == pytest.approx(5.0, abs=1e-9)
+    assert result.final_cash == pytest.approx(550.0, abs=1e-6)
+    assert result.final_inventory == pytest.approx(5.0, abs=1e-9)
+    assert result.open_symbol == "BTCUSD"
+
+
+def test_selector_penetration_fill_model_can_require_more_than_exact_touch() -> None:
+    bars, actions = _make_two_step_frames(
+        symbol="BTCUSD",
+        t0="2026-01-01T00:00:00Z",
+        t1="2026-01-01T01:00:00Z",
+        buy_price=100.0,
+        sell_price=140.0,
+        low0=100.0,
+        high0=100.5,
+        low1=105.0,
+        high1=106.0,
+        close0=100.2,
+        close1=105.5,
+        sell_amount1=0.0,
+    )
+    base_kwargs = dict(
+        initial_cash=10_000.0,
+        min_edge=0.0,
+        risk_weight=0.0,
+        edge_mode="high_low",
+        enforce_market_hours=True,
+        close_at_eod=False,
+        fee_by_symbol={"BTCUSD": 0.0},
+        limit_fill_model="penetration",
+    )
+
+    no_touch_fill = run_best_trade_simulation(bars, actions, SelectionConfig(**base_kwargs), horizon=1)
+    with_touch_fill = run_best_trade_simulation(
+        bars,
+        actions,
+        SelectionConfig(**{**base_kwargs, "touch_fill_fraction": 0.25}),
+        horizon=1,
+    )
+
+    assert no_touch_fill.trades == []
+    assert with_touch_fill.trades[0].quantity == pytest.approx(25.0, abs=1e-9)
+
+
 def test_selector_realistic_mode_does_not_use_fillability_for_symbol_selection() -> None:
     ts = pd.to_datetime(
         [
