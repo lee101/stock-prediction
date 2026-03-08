@@ -28,6 +28,7 @@ from binanceneural.config import DatasetConfig
 from binanceneural.data import BinanceHourlyDataModule, FeatureNormalizer
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import build_policy, policy_config_from_payload
+from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 from src.torch_load_utils import torch_load_compat
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
 from unified_hourly_experiment.meta_selector import (
@@ -471,7 +472,7 @@ def main() -> None:
         required=True,
         help="Strategy spec NAME=PATH or NAME=PATH:EPOCH. PATH can be checkpoint dir or epoch_XXX.pt.",
     )
-    parser.add_argument("--symbols", default="NVDA,PLTR,GOOG,NET,DBX,TRIP,EBAY,MTCH,NYT")
+    parser.add_argument("--symbols", default=",".join(DEFAULT_ALPACA_LIVE8_STOCKS))
     parser.add_argument("--data-root", type=Path, default=Path("trainingdatahourly/stocks"))
     parser.add_argument("--cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
     parser.add_argument("--metrics", default="return,sortino,calmar,sharpe")

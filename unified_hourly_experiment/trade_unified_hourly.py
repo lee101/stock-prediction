@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -23,15 +23,24 @@ from binanceneural.data import BinanceHourlyDataModule, FeatureNormalizer
 from binanceneural.config import DatasetConfig
 from binanceneural.model import build_policy, policy_config_from_payload
 from binanceneural.inference import generate_latest_action
+from src.trade_directions import (
+    DEFAULT_ALPACA_LIVE8_STOCKS,
+    DEFAULT_LONG_ONLY_STOCKS,
+    DEFAULT_SHORT_ONLY_STOCKS,
+    is_long_only_symbol,
+    is_short_only_symbol,
+    resolve_trade_directions,
+)
 from src.torch_load_utils import torch_load_compat
 from src.symbol_utils import is_crypto_symbol
 from src.hourly_trader_utils import entry_intensity_fraction
 
-LONG_ONLY = {"NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "DBX", "TSLA", "AAPL"}
-SHORT_ONLY = {"YELP", "EBAY", "TRIP", "MTCH", "ANGI", "Z", "EXPE", "BKNG", "NWSA", "NYT"}
+LONG_ONLY = set(DEFAULT_LONG_ONLY_STOCKS)
+SHORT_ONLY = set(DEFAULT_SHORT_ONLY_STOCKS)
 
 STATE_FILE = Path("strategy_state/stock_portfolio_state.json")
 TRADE_LOG = Path("strategy_state/stock_trade_log.jsonl")
+EVENT_LOG = Path("strategy_state/stock_event_log.jsonl")
 MAX_HOLD_HOURS = 6
 MAX_POSITIONS = 10
 TRADE_AMOUNT_SCALE = 100.0
@@ -40,30 +49,238 @@ ENTRY_INTENSITY_POWER = 1.0
 ENTRY_MIN_INTENSITY_FRACTION = 0.0
 LONG_INTENSITY_MULTIPLIER = 1.0
 SHORT_INTENSITY_MULTIPLIER = 1.0
+BROKER_EVENT_LOOKBACK_HOURS = 48.0
+BROKER_EVENT_KEY_LIMIT = 512
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (datetime, pd.Timestamp)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    enum_value = getattr(value, "value", None)
+    if isinstance(enum_value, (str, int, float, bool)):
+        return enum_value
+    if hasattr(value, "__dict__"):
+        try:
+            return {str(k): _json_safe(v) for k, v in vars(value).items()}
+        except TypeError:
+            pass
+    return str(value)
+
+
+def _write_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as handle:
+            handle.write(json.dumps(_json_safe(payload), default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _serialize_order(order: object) -> dict[str, Any]:
+    fields = (
+        "id",
+        "client_order_id",
+        "symbol",
+        "side",
+        "status",
+        "type",
+        "time_in_force",
+        "qty",
+        "filled_qty",
+        "filled_avg_price",
+        "limit_price",
+        "stop_price",
+        "submitted_at",
+        "created_at",
+        "updated_at",
+        "filled_at",
+        "expired_at",
+        "canceled_at",
+    )
+    return {
+        field: _json_safe(getattr(order, field, None))
+        for field in fields
+        if getattr(order, field, None) is not None
+    }
+
+
+def _serialize_position(symbol: str, position: object) -> dict[str, Any]:
+    if isinstance(position, dict):
+        payload = dict(position)
+    else:
+        payload = {
+            "qty": getattr(position, "qty", None),
+            "price": getattr(position, "price", None),
+            "current_price": getattr(position, "current_price", None),
+            "avg_entry_price": getattr(position, "avg_entry_price", None),
+            "market_value": getattr(position, "market_value", None),
+            "side": getattr(position, "side", None),
+        }
+    payload["symbol"] = symbol
+    return _json_safe(payload)
+
+
+def _record_field(record: object, field: str, default: Any = None) -> Any:
+    if isinstance(record, dict):
+        return record.get(field, default)
+    return getattr(record, field, default)
+
+
+def _normalize_enum_value(value: object) -> str:
+    if value is None:
+        return ""
+    raw_value = getattr(value, "value", value)
+    return str(raw_value).strip().lower()
+
+
+def _coerce_utc_datetime(value: object) -> Optional[datetime]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = pd.Timestamp(value).to_pydatetime()
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _serialize_activity(activity: object) -> dict[str, Any]:
+    if isinstance(activity, dict):
+        return _json_safe(dict(activity))
+    if hasattr(activity, "__dict__"):
+        try:
+            return _json_safe(vars(activity))
+        except TypeError:
+            pass
+    return {"value": _json_safe(activity)}
+
+
+def _activity_timestamp(activity: object) -> Optional[datetime]:
+    for field in ("transaction_time", "date", "created_at"):
+        timestamp = _coerce_utc_datetime(_record_field(activity, field))
+        if timestamp is not None:
+            return timestamp
+    return None
+
+
+def _order_event_timestamp(order: object) -> Optional[datetime]:
+    for field in ("updated_at", "filled_at", "canceled_at", "expired_at", "created_at", "submitted_at"):
+        timestamp = _coerce_utc_datetime(_record_field(order, field))
+        if timestamp is not None:
+            return timestamp
+    return None
+
+
+def _order_event_key(order: object) -> str:
+    return "|".join(
+        [
+            str(_record_field(order, "id", "")),
+            _normalize_enum_value(_record_field(order, "status")),
+            str(_record_field(order, "filled_qty", "")),
+            str(_record_field(order, "filled_avg_price", "")),
+            (_order_event_timestamp(order) or datetime.min.replace(tzinfo=timezone.utc)).isoformat(),
+        ]
+    )
+
+
+def _activity_event_key(activity: object) -> str:
+    return "|".join(
+        [
+            str(_record_field(activity, "id", _record_field(activity, "activity_id", ""))),
+            str(_record_field(activity, "activity_type", _record_field(activity, "type", ""))),
+            str(_record_field(activity, "symbol", "")),
+            str(_record_field(activity, "side", "")),
+            str(_record_field(activity, "qty", "")),
+            (_activity_timestamp(activity) or datetime.min.replace(tzinfo=timezone.utc)).isoformat(),
+        ]
+    )
+
+
+def _trim_recent_keys(keys: list[str], *, limit: int = BROKER_EVENT_KEY_LIMIT) -> list[str]:
+    if len(keys) <= limit:
+        return keys
+    return keys[-limit:]
+
+
+def _iter_activity_dates(start: datetime, end: datetime) -> list[str]:
+    current = start.date()
+    end_date = end.date()
+    dates: list[str] = []
+    while current <= end_date:
+        dates.append(current.isoformat())
+        current = current + timedelta(days=1)
+    return dates
+
+
+def _serialize_orders_by_symbol(orders_by_symbol: dict[str, list]) -> dict[str, list[dict[str, Any]]]:
+    return {
+        str(symbol): [_serialize_order(order) for order in orders]
+        for symbol, orders in orders_by_symbol.items()
+    }
+
+
+def _tracked_state_summary(state: dict[str, Any]) -> dict[str, Any]:
+    tracked = state.get("positions", {})
+    broker_cursor = state.get("broker_event_cursor", {})
+    return {
+        "tracked_symbols": sorted(str(symbol) for symbol in tracked.keys()),
+        "tracked_count": int(len(tracked)),
+        "pending_close": sorted(str(symbol) for symbol in state.get("pending_close", [])),
+        "broker_closed_orders_after": broker_cursor.get("closed_orders_after"),
+        "broker_fill_activities_after": broker_cursor.get("fill_activities_after"),
+    }
+
+
+def log_event(event_type: str, /, **fields: Any) -> None:
+    payload = {
+        "logged_at": datetime.now(timezone.utc).isoformat(),
+        "event_type": str(event_type),
+        "pid": int(os.getpid()),
+        **{key: _json_safe(value) for key, value in fields.items()},
+    }
+    _write_jsonl(EVENT_LOG, payload)
 
 
 def log_trade(event: dict):
-    event["logged_at"] = datetime.now(timezone.utc).isoformat()
-    try:
-        TRADE_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(TRADE_LOG, "a") as f:
-            f.write(json.dumps(event, default=str) + "\n")
-    except Exception:
-        pass
+    payload = dict(event)
+    payload["logged_at"] = datetime.now(timezone.utc).isoformat()
+    _write_jsonl(TRADE_LOG, payload)
+    log_event(
+        "trade_log_append",
+        trade_event=payload.get("event"),
+        payload={key: value for key, value in payload.items() if key != "logged_at"},
+    )
 
 
 def load_state() -> dict:
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text())
-        except Exception:
-            pass
-    return {"positions": {}}
+            state = json.loads(STATE_FILE.read_text())
+            log_event("state_loaded", path=str(STATE_FILE), **_tracked_state_summary(state))
+            return state
+        except Exception as exc:
+            log_event("state_load_failed", path=str(STATE_FILE), error=str(exc))
+    state = {"positions": {}}
+    log_event("state_defaulted", path=str(STATE_FILE), **_tracked_state_summary(state))
+    return state
 
 
 def save_state(state: dict):
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, indent=2, default=str))
+    log_event("state_saved", path=str(STATE_FILE), **_tracked_state_summary(state))
 
 
 def load_model(checkpoint_dir: Path, epoch: int = None):
@@ -181,21 +398,30 @@ def get_current_positions(api) -> Dict[str, dict]:
                 "qty": float(pos.qty),
                 "price": float(pos.current_price),
             }
+        log_event(
+            "positions_snapshot",
+            positions=[_serialize_position(symbol, payload) for symbol, payload in positions.items()],
+            position_count=len(positions),
+        )
     except Exception as e:
         logger.error("Failed to get positions: {}", e)
+        log_event("positions_snapshot_failed", error=str(e))
     return positions
 
 
 def get_account_info(api) -> dict:
     try:
         account = api.get_account()
-        return {
+        info = {
             "equity": float(account.equity),
             "buying_power": float(account.buying_power),
             "cash": float(account.cash),
         }
+        log_event("account_snapshot", account=info)
+        return info
     except Exception as e:
         logger.error("Failed to get account: {}", e)
+        log_event("account_snapshot_failed", error=str(e))
         return {"equity": 0, "buying_power": 0, "cash": 0}
 
 
@@ -212,18 +438,165 @@ def get_open_orders(api) -> Dict[str, list]:
             if sym not in orders_by_symbol:
                 orders_by_symbol[sym] = []
             orders_by_symbol[sym].append(o)
+        log_event(
+            "open_orders_snapshot",
+            order_count=sum(len(items) for items in orders_by_symbol.values()),
+            orders_by_symbol=_serialize_orders_by_symbol(orders_by_symbol),
+        )
     except Exception as e:
         logger.error("Failed to get orders: {}", e)
+        log_event("open_orders_snapshot_failed", error=str(e))
     return orders_by_symbol
+
+
+def _normalize_order_side(side: object) -> str:
+    return _normalize_enum_value(side)
+
+
+def poll_broker_events(
+    api,
+    state: dict[str, Any],
+    *,
+    reason: str,
+    now: Optional[datetime] = None,
+    lookback_hours: float = BROKER_EVENT_LOOKBACK_HOURS,
+) -> None:
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+    import alpaca_wrapper
+
+    now = now or datetime.now(timezone.utc)
+    cursor = state.setdefault("broker_event_cursor", {})
+    order_after = _coerce_utc_datetime(cursor.get("closed_orders_after"))
+    activity_after = _coerce_utc_datetime(cursor.get("fill_activities_after"))
+    default_after = now - timedelta(hours=max(float(lookback_hours), 1.0))
+
+    if order_after is None:
+        order_after = default_after
+    if activity_after is None:
+        activity_after = default_after
+
+    seen_order_keys = list(cursor.get("recent_order_event_keys", []))
+    seen_activity_keys = list(cursor.get("recent_activity_event_keys", []))
+    seen_order_set = set(seen_order_keys)
+    seen_activity_set = set(seen_activity_keys)
+
+    order_event_count = 0
+    activity_event_count = 0
+    latest_order_ts = order_after
+    latest_activity_ts = activity_after
+
+    log_event(
+        "broker_event_poll_start",
+        reason=reason,
+        closed_orders_after=order_after.isoformat(),
+        fill_activities_after=activity_after.isoformat(),
+    )
+
+    order_request_after = max(order_after - timedelta(seconds=1), default_after)
+    try:
+        request = GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED,
+            after=order_request_after,
+            until=now,
+            direction="asc",
+            limit=500,
+        )
+        orders = list(api.get_orders(request) or [])
+        orders.sort(key=lambda order: _order_event_timestamp(order) or datetime.min.replace(tzinfo=timezone.utc))
+        for order in orders:
+            event_key = _order_event_key(order)
+            if event_key in seen_order_set:
+                continue
+            event_ts = _order_event_timestamp(order)
+            if event_ts is not None and event_ts < order_request_after:
+                continue
+            status = _normalize_enum_value(_record_field(order, "status"))
+            log_event(
+                "broker_closed_order",
+                reason=reason,
+                event_ts=event_ts.isoformat() if event_ts is not None else None,
+                order_status=status,
+                order=_serialize_order(order),
+            )
+            seen_order_set.add(event_key)
+            seen_order_keys.append(event_key)
+            order_event_count += 1
+            if event_ts is not None and event_ts > latest_order_ts:
+                latest_order_ts = event_ts
+    except Exception as exc:
+        log_event(
+            "broker_closed_orders_poll_failed",
+            reason=reason,
+            closed_orders_after=order_request_after.isoformat(),
+            error=str(exc),
+        )
+
+    try:
+        for activity_date in _iter_activity_dates(activity_after, now):
+            activities = alpaca_wrapper.get_account_activities(
+                api,
+                activity_types=["FILL"],
+                date=activity_date,
+                direction="asc",
+                page_size=100,
+            ) or []
+            for activity in activities:
+                event_ts = _activity_timestamp(activity)
+                if event_ts is not None and event_ts < activity_after:
+                    continue
+                event_key = _activity_event_key(activity)
+                if event_key in seen_activity_set:
+                    continue
+                log_event(
+                    "broker_fill_activity",
+                    reason=reason,
+                    event_ts=event_ts.isoformat() if event_ts is not None else None,
+                    activity=_serialize_activity(activity),
+                )
+                seen_activity_set.add(event_key)
+                seen_activity_keys.append(event_key)
+                activity_event_count += 1
+                if event_ts is not None and event_ts > latest_activity_ts:
+                    latest_activity_ts = event_ts
+    except Exception as exc:
+        log_event(
+            "broker_fill_activities_poll_failed",
+            reason=reason,
+            fill_activities_after=activity_after.isoformat(),
+            error=str(exc),
+        )
+
+    cursor["closed_orders_after"] = latest_order_ts.isoformat()
+    cursor["fill_activities_after"] = latest_activity_ts.isoformat()
+    cursor["recent_order_event_keys"] = _trim_recent_keys(seen_order_keys)
+    cursor["recent_activity_event_keys"] = _trim_recent_keys(seen_activity_keys)
+
+    log_event(
+        "broker_event_poll_complete",
+        reason=reason,
+        closed_order_events=int(order_event_count),
+        fill_activity_events=int(activity_event_count),
+        closed_orders_after=cursor["closed_orders_after"],
+        fill_activities_after=cursor["fill_activities_after"],
+    )
+
+
+def _has_open_exit_order(symbol_orders: List[object], *, qty: float) -> bool:
+    exit_side = "sell" if qty > 0 else "buy"
+    return any(_normalize_order_side(getattr(order, "side", None)) == exit_side for order in symbol_orders)
 
 
 def cancel_symbol_orders(api, symbol: str, orders_by_symbol: Dict):
     for order in orders_by_symbol.get(symbol, []):
         try:
+            log_event("order_cancel_requested", symbol=symbol, order=_serialize_order(order))
             api.cancel_order_by_id(order.id)
             logger.info("{}: cancelled order {}", symbol, order.id)
+            log_event("order_cancel_succeeded", symbol=symbol, order_id=str(order.id))
         except Exception as e:
             logger.error("{}: cancel failed - {}", symbol, e)
+            log_event("order_cancel_failed", symbol=symbol, order=_serialize_order(order), error=str(e))
 
 
 def place_exit_order(api, symbol: str, qty: float, sell_price: float, side: str = "sell"):
@@ -233,6 +606,7 @@ def place_exit_order(api, symbol: str, qty: float, sell_price: float, side: str 
     order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
     abs_qty = abs(qty)
     if abs_qty < 1:
+        log_event("exit_order_skipped", symbol=symbol, qty=abs_qty, side=side, reason="qty_below_one")
         return None
 
     try:
@@ -243,12 +617,36 @@ def place_exit_order(api, symbol: str, qty: float, sell_price: float, side: str 
             limit_price=round(sell_price, 2),
             time_in_force=TimeInForce.GTC,
         )
+        log_event(
+            "exit_order_submit_requested",
+            symbol=symbol,
+            qty=int(abs_qty),
+            side=side,
+            limit_price=round(sell_price, 2),
+            time_in_force="gtc",
+        )
         result = api.submit_order(order)
         logger.info("{}: exit order placed - {} {} @ ${:.2f} (id={})",
                     symbol, side, int(abs_qty), sell_price, result.id)
+        log_event(
+            "exit_order_submit_succeeded",
+            symbol=symbol,
+            qty=int(abs_qty),
+            side=side,
+            limit_price=round(sell_price, 2),
+            order_id=str(result.id),
+        )
         return str(result.id)
     except Exception as e:
         logger.error("{}: exit order failed - {}", symbol, e)
+        log_event(
+            "exit_order_submit_failed",
+            symbol=symbol,
+            qty=int(abs_qty),
+            side=side,
+            limit_price=round(sell_price, 2),
+            error=str(e),
+        )
         return None
 
 
@@ -257,10 +655,12 @@ def force_close_position(api, symbol: str, qty: float, current_price: float = 0)
     from alpaca.trading.enums import OrderSide, TimeInForce
 
     if abs(qty) < 1:
+        log_event("force_close_skipped", symbol=symbol, qty=float(qty), reason="qty_below_one")
         return
     side = OrderSide.SELL if qty > 0 else OrderSide.BUY
     if current_price <= 0:
         logger.error("{}: no price for limit close, skipping", symbol)
+        log_event("force_close_skipped", symbol=symbol, qty=float(qty), reason="missing_current_price")
         return
     try:
         if side == OrderSide.SELL:
@@ -274,12 +674,37 @@ def force_close_position(api, symbol: str, qty: float, current_price: float = 0)
             limit_price=price,
             time_in_force=TimeInForce.DAY,
         )
+        log_event(
+            "force_close_submit_requested",
+            symbol=symbol,
+            qty=int(abs(qty)),
+            side=_normalize_order_side(side),
+            limit_price=price,
+            current_price=float(current_price),
+        )
         result = api.submit_order(order)
         logger.info("{}: force-close limit {} shares @ ${:.2f} (cur=${:.2f})", symbol, int(abs(qty)), price, current_price)
         log_trade({"event": "force_close", "symbol": symbol, "qty": int(abs(qty)),
                    "price": price, "cur_price": current_price, "order_id": str(result.id)})
+        log_event(
+            "force_close_submit_succeeded",
+            symbol=symbol,
+            qty=int(abs(qty)),
+            side=_normalize_order_side(side),
+            limit_price=price,
+            current_price=float(current_price),
+            order_id=str(result.id),
+        )
     except Exception as e:
         logger.error("{}: force-close failed - {}", symbol, e)
+        log_event(
+            "force_close_submit_failed",
+            symbol=symbol,
+            qty=int(abs(qty)),
+            side=_normalize_order_side(side),
+            current_price=float(current_price),
+            error=str(e),
+        )
 
 
 def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
@@ -291,23 +716,40 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
     orders_by_symbol = get_open_orders(api)
     tracked = state.get("positions", {})
     removed = []
+    log_event(
+        "manage_positions_start",
+        active_symbols=sorted(str(symbol) for symbol in (active_symbols or set())),
+        max_hold_hours=float(max_hold_hours),
+        tracked_positions=_json_safe(tracked),
+        live_positions=[_serialize_position(symbol, payload) for symbol, payload in positions.items()],
+        open_orders_by_symbol=_serialize_orders_by_symbol(orders_by_symbol),
+    )
 
     for symbol, info in list(tracked.items()):
         pos_data = positions.get(symbol, {})
         qty = pos_data.get("qty", 0) if isinstance(pos_data, dict) else 0
         cur_price = pos_data.get("price", 0) if isinstance(pos_data, dict) else 0
+        log_event(
+            "manage_position_evaluated",
+            symbol=symbol,
+            tracked_info=info,
+            live_position=_serialize_position(symbol, pos_data),
+            open_orders=[_serialize_order(order) for order in orders_by_symbol.get(symbol, [])],
+        )
 
         if abs(qty) < 1:
             logger.info("{}: position closed, cleaning state", symbol)
             log_trade({"event": "exit_filled", "symbol": symbol,
                        "entry_price": info.get("entry_price"),
                        "exit_price": info.get("exit_price")})
+            log_event("manage_position_action", symbol=symbol, action="cleanup_closed_position")
             cancel_symbol_orders(api, symbol, orders_by_symbol)
             removed.append(symbol)
             continue
 
-        if symbol in SHORT_ONLY and qty > 0:
+        if is_short_only_symbol(symbol) and qty > 0:
             logger.info("{}: SHORT_ONLY stock held long, force closing {} shares", symbol, qty)
+            log_event("manage_position_action", symbol=symbol, action="force_close", reason="short_only_long_position", qty=float(qty))
             cancel_symbol_orders(api, symbol, orders_by_symbol)
             force_close_position(api, symbol, qty, cur_price)
             removed.append(symbol)
@@ -315,6 +757,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
 
         if active_symbols and symbol not in active_symbols:
             logger.info("{}: not in active symbol set, force closing {} shares", symbol, qty)
+            log_event("manage_position_action", symbol=symbol, action="force_close", reason="not_in_active_symbols", qty=float(qty))
             cancel_symbol_orders(api, symbol, orders_by_symbol)
             force_close_position(api, symbol, qty, cur_price)
             removed.append(symbol)
@@ -328,6 +771,14 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
 
         if hours_held >= pos_hold_limit:
             logger.info("{}: hold timeout ({:.1f} market hrs >= {:.1f}h), force closing", symbol, hours_held, pos_hold_limit)
+            log_event(
+                "manage_position_action",
+                symbol=symbol,
+                action="force_close",
+                reason="hold_timeout",
+                hours_held=float(hours_held),
+                hold_limit=float(pos_hold_limit),
+            )
             cancel_symbol_orders(api, symbol, orders_by_symbol)
             force_close_position(api, symbol, qty, cur_price)
             removed.append(symbol)
@@ -335,22 +786,49 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
 
         if not info.get("exit_price"):
             logger.info("{}: no exit price set, force closing {} shares", symbol, qty)
+            log_event("manage_position_action", symbol=symbol, action="force_close", reason="missing_exit_price", qty=float(qty))
             cancel_symbol_orders(api, symbol, orders_by_symbol)
             force_close_position(api, symbol, qty, cur_price)
             removed.append(symbol)
             continue
 
-        has_exit = len(orders_by_symbol.get(symbol, [])) > 0
+        symbol_orders = orders_by_symbol.get(symbol, [])
+        has_exit = _has_open_exit_order(symbol_orders, qty=qty)
         if not has_exit:
+            if symbol_orders:
+                logger.info(
+                    "{}: cancelling {} non-exit open orders before placing protective exit",
+                    symbol,
+                    len(symbol_orders),
+                )
+                log_event(
+                    "manage_position_action",
+                    symbol=symbol,
+                    action="cancel_open_orders_before_exit",
+                    reason="missing_protective_exit",
+                    open_order_count=len(symbol_orders),
+                )
+                cancel_symbol_orders(api, symbol, orders_by_symbol)
             exit_side = "sell" if qty > 0 else "buy"
             oid = place_exit_order(api, symbol, qty, info["exit_price"], side=exit_side)
             if oid:
                 info["exit_order_id"] = oid
+                log_event(
+                    "manage_position_action",
+                    symbol=symbol,
+                    action="protective_exit_submitted",
+                    exit_order_id=str(oid),
+                    exit_side=exit_side,
+                    exit_price=float(info["exit_price"]),
+                )
             else:
                 logger.warning("{}: failed to place exit order, force closing", symbol)
+                log_event("manage_position_action", symbol=symbol, action="force_close", reason="exit_submit_failed")
                 force_close_position(api, symbol, qty, cur_price)
                 removed.append(symbol)
                 continue
+        else:
+            log_event("manage_position_action", symbol=symbol, action="protective_exit_present")
 
     for s in removed:
         tracked.pop(s, None)
@@ -366,10 +844,12 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
         if symbol not in tracked and abs(qty) >= 1 and symbol not in pending_close:
             if active_symbols and symbol not in active_symbols:
                 logger.info("{}: untracked position not in active set ({} shares), force closing", symbol, qty)
+                log_event("manage_position_action", symbol=symbol, action="force_close_untracked", reason="untracked_not_active", qty=float(qty))
                 force_close_position(api, symbol, qty, cur_price)
                 pending_close.add(symbol)
                 continue
             logger.info("{}: untracked position found ({} shares), force closing (no exit price)", symbol, qty)
+            log_event("manage_position_action", symbol=symbol, action="force_close_untracked", reason="untracked_position", qty=float(qty))
             force_close_position(api, symbol, qty, cur_price)
             pending_close.add(symbol)
 
@@ -382,6 +862,12 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
     state["pending_close"] = still_pending
 
     state["positions"] = tracked
+    log_event(
+        "manage_positions_complete",
+        tracked_positions=_json_safe(tracked),
+        pending_close=sorted(str(symbol) for symbol in state.get("pending_close", [])),
+        removed_symbols=sorted(str(symbol) for symbol in removed),
+    )
     return len(tracked)
 
 
@@ -412,6 +898,7 @@ def generate_signal_for_symbol(
         data_module = BinanceHourlyDataModule(data_config)
     except Exception as e:
         logger.warning("Failed to load data for {}: {}", symbol, e)
+        log_event("signal_frame_load_failed", symbol=symbol, error=str(e))
         return None
 
     frame = data_module.frame.copy()
@@ -428,9 +915,19 @@ def generate_signal_for_symbol(
             horizon=1,
             device=device,
         )
+        log_event(
+            "signal_generated_raw",
+            symbol=symbol,
+            buy_price=action.get("buy_price"),
+            sell_price=action.get("sell_price"),
+            buy_amount=action.get("buy_amount"),
+            sell_amount=action.get("sell_amount"),
+            hold_hours=action.get("hold_hours"),
+        )
         return action
     except Exception as e:
         logger.error("Failed to generate action for {}: {}", symbol, e)
+        log_event("signal_generation_failed", symbol=symbol, error=str(e))
         return None
 
 
@@ -441,9 +938,17 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
     account = get_account_info(api)
     equity = account["equity"]
     buying_power = account["buying_power"]
+    log_event(
+        "execute_trades_start",
+        signal_symbols=sorted(str(symbol) for symbol in signals.keys()),
+        max_positions=int(max_positions),
+        tracked_positions=_json_safe(state.get("positions", {})),
+        account=account,
+    )
 
     if equity <= 0:
         logger.error("No equity available")
+        log_event("execute_trades_aborted", reason="non_positive_equity", account=account)
         return
 
     tracked = state.get("positions", {})
@@ -452,6 +957,7 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
 
     if slots_available <= 0:
         logger.info("Max positions reached ({}/{})", current_count, max_positions)
+        log_event("execute_trades_aborted", reason="no_slots_available", current_count=int(current_count), max_positions=int(max_positions))
         return
 
     stock_leverage = 2.0
@@ -461,14 +967,17 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
 
     for symbol, action in sorted_signals:
         if slots_available <= 0:
+            log_event("entry_skipped", symbol=symbol, reason="no_slots_remaining")
             break
 
         if symbol in tracked:
+            log_event("entry_skipped", symbol=symbol, reason="already_tracked")
             continue
 
         buy_price = action.get("buy_price", 0)
         sell_price = action.get("sell_price", 0)
         if buy_price <= 0:
+            log_event("entry_skipped", symbol=symbol, reason="invalid_buy_price", buy_price=buy_price)
             continue
 
         hold_hours = action.get("hold_hours", MAX_HOLD_HOURS)
@@ -478,8 +987,35 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
             is_long = True
             is_short = False
         else:
-            is_long = symbol in LONG_ONLY or symbol not in SHORT_ONLY
-            is_short = symbol in SHORT_ONLY
+            directions = resolve_trade_directions(symbol, allow_short=True)
+            is_short = directions.can_short and not directions.can_long
+            is_long = not is_short
+
+        signal_amount, intensity_frac = entry_intensity_fraction(
+            action,
+            is_short=is_short,
+            trade_amount_scale=TRADE_AMOUNT_SCALE,
+            intensity_power=ENTRY_INTENSITY_POWER,
+            min_intensity_fraction=ENTRY_MIN_INTENSITY_FRACTION,
+            side_multiplier=SHORT_INTENSITY_MULTIPLIER if is_short else LONG_INTENSITY_MULTIPLIER,
+        )
+        log_event(
+            "entry_candidate",
+            symbol=symbol,
+            side=("short" if is_short else "long"),
+            edge=action.get("edge"),
+            buy_price=buy_price,
+            sell_price=sell_price,
+            hold_hours=hold_hours,
+            signal_amount=signal_amount,
+            intensity_fraction=float(intensity_frac),
+        )
+        if intensity_frac <= 0:
+            log_event("entry_skipped", symbol=symbol, reason="non_positive_intensity", signal_amount=signal_amount)
+            continue
+        if MIN_BUY_AMOUNT > 0 and signal_amount < MIN_BUY_AMOUNT:
+            log_event("entry_skipped", symbol=symbol, reason="below_min_buy_amount", signal_amount=signal_amount, min_buy_amount=MIN_BUY_AMOUNT)
+            continue
 
         signal_amount, intensity_frac = entry_intensity_fraction(
             action,
@@ -506,6 +1042,7 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
             exit_side = "sell"
 
         if entry_price <= 0:
+            log_event("entry_skipped", symbol=symbol, reason="invalid_entry_price", entry_price=entry_price)
             continue
 
         per_position = per_position_stock if not crypto else (equity / max_positions)
@@ -514,11 +1051,25 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
         target_qty = int(target_value / entry_price)
 
         if target_qty <= 0:
+            log_event(
+                "entry_skipped",
+                symbol=symbol,
+                reason="target_qty_below_one",
+                target_value=float(target_value),
+                entry_price=float(entry_price),
+            )
             continue
 
         if target_value > buying_power:
             logger.warning("{}: insufficient buying power (${:.0f} needed, ${:.0f} avail)",
                           symbol, target_value, buying_power)
+            log_event(
+                "entry_skipped",
+                symbol=symbol,
+                reason="insufficient_buying_power",
+                target_value=float(target_value),
+                buying_power=float(buying_power),
+            )
             continue
 
         try:
@@ -529,8 +1080,22 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
                 limit_price=round(entry_price, 2),
                 time_in_force=TimeInForce.DAY,
             )
-            result = api.submit_order(order)
             side_str = "short" if is_short else "long"
+            log_event(
+                "entry_order_submit_requested",
+                symbol=symbol,
+                side=side_str,
+                qty=int(target_qty),
+                limit_price=round(entry_price, 2),
+                exit_price=float(exit_price),
+                edge=action.get("edge"),
+                hold_hours=float(hold_hours),
+                signal_amount=float(signal_amount),
+                intensity_fraction=float(intensity_frac),
+                position_alloc=float(position_alloc),
+                target_value=float(target_value),
+            )
+            result = api.submit_order(order)
             logger.info("{}: {} entry {} shares @ ${:.2f} (${:.0f}, hold={:.1f}h)",
                        symbol, side_str, target_qty, entry_price, position_alloc, hold_hours)
             log_trade({"event": "entry", "symbol": symbol, "side": side_str,
@@ -538,6 +1103,15 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
                        "edge": action.get("edge"), "intensity": intensity_frac,
                        "signal_amount": signal_amount,
                        "alloc": position_alloc, "order_id": str(result.id)})
+            log_event(
+                "entry_order_submit_succeeded",
+                symbol=symbol,
+                side=side_str,
+                qty=int(target_qty),
+                limit_price=round(entry_price, 2),
+                exit_price=float(exit_price),
+                order_id=str(result.id),
+            )
 
             now = datetime.now(timezone.utc)
             tracked[symbol] = {
@@ -551,14 +1125,29 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
                 "hold_hours": hold_hours,
                 "max_hold_until": (now + timedelta(hours=hold_hours)).isoformat(),
             }
+            log_event("position_tracking_created", symbol=symbol, tracked_position=tracked[symbol])
 
             buying_power -= target_value
             slots_available -= 1
 
         except Exception as e:
             logger.error("{}: order failed - {}", symbol, e)
+            log_event(
+                "entry_order_submit_failed",
+                symbol=symbol,
+                side=("short" if is_short else "long"),
+                qty=int(target_qty),
+                limit_price=round(entry_price, 2),
+                error=str(e),
+            )
 
     state["positions"] = tracked
+    log_event(
+        "execute_trades_complete",
+        tracked_positions=_json_safe(tracked),
+        remaining_buying_power=float(buying_power),
+        slots_available=int(slots_available),
+    )
 
 
 def run_cycle(
@@ -568,6 +1157,18 @@ def run_cycle(
 ):
     active_set = set(stocks)
     market_open = is_market_open_now() or args.ignore_market_hours
+    log_event(
+        "cycle_start",
+        stocks=sorted(str(symbol) for symbol in stocks),
+        market_open=bool(market_open),
+        dry_run=bool(args.dry_run),
+        ignore_market_hours=bool(args.ignore_market_hours),
+        max_positions=int(max_positions),
+        max_hold_hours=float(max_hold_hours),
+        tracked_positions=_json_safe(state.get("positions", {})),
+    )
+    if api is not None:
+        poll_broker_events(api, state, reason="pre_cycle")
 
     num_pos = manage_positions(api, state, max_hold_hours=max_hold_hours, active_symbols=active_set)
     logger.info("Active positions: {} | Market: {}", num_pos, "OPEN" if market_open else "CLOSED")
@@ -585,7 +1186,7 @@ def run_cycle(
             buy_price = action.get("buy_price", 0)
             sell_price = action.get("sell_price", 0)
 
-            if symbol in SHORT_ONLY:
+            if is_short_only_symbol(symbol):
                 edge = (sell_price - pred_low) / sell_price - args.fee_rate if sell_price > 0 else 0
             else:
                 edge = (pred_high - buy_price) / buy_price - args.fee_rate if buy_price > 0 else 0
@@ -593,31 +1194,67 @@ def run_cycle(
             if edge >= args.min_edge:
                 action["edge"] = edge
                 signals[symbol] = action
-                side = "short" if symbol in SHORT_ONLY else "long"
+                side = "short" if is_short_only_symbol(symbol) else "long"
                 signal_amount, intensity = entry_intensity_fraction(
                     action,
-                    is_short=(symbol in SHORT_ONLY),
+                    is_short=is_short_only_symbol(symbol),
                     trade_amount_scale=TRADE_AMOUNT_SCALE,
                     intensity_power=ENTRY_INTENSITY_POWER,
                     min_intensity_fraction=ENTRY_MIN_INTENSITY_FRACTION,
                     side_multiplier=(
-                        SHORT_INTENSITY_MULTIPLIER if (symbol in SHORT_ONLY) else LONG_INTENSITY_MULTIPLIER
+                        SHORT_INTENSITY_MULTIPLIER if is_short_only_symbol(symbol) else LONG_INTENSITY_MULTIPLIER
                     ),
                 )
                 logger.info("{}: {} buy={:.2f} sell={:.2f} edge={:.4f} hold={:.1f}h amt={:.3f} int={:.3f}",
                            symbol, side, buy_price, sell_price, edge,
                            action.get("hold_hours", 0), signal_amount, intensity)
+                log_event(
+                    "signal_accepted",
+                    symbol=symbol,
+                    side=side,
+                    buy_price=float(buy_price),
+                    sell_price=float(sell_price),
+                    edge=float(edge),
+                    hold_hours=float(action.get("hold_hours", 0)),
+                    signal_amount=float(signal_amount),
+                    intensity=float(intensity),
+                )
             else:
                 logger.debug("{}: edge={:.4f} below {:.4f}", symbol, edge, args.min_edge)
+                log_event(
+                    "signal_rejected",
+                    symbol=symbol,
+                    reason="edge_below_threshold",
+                    edge=float(edge),
+                    min_edge=float(args.min_edge),
+                    buy_price=float(buy_price),
+                    sell_price=float(sell_price),
+                )
+        else:
+            log_event("signal_rejected", symbol=symbol, reason="no_action")
 
+    execution_mode = "none"
     if market_open and not args.dry_run and signals:
         execute_trades(api, signals, state, max_positions=max_positions)
+        execution_mode = "live_execute"
     elif not market_open and signals:
         logger.info("Market closed - {} signals ready, will trade when open", len(signals))
+        execution_mode = "market_closed"
     elif not signals:
         logger.info("No signals above threshold")
+        execution_mode = "no_signals"
+    else:
+        execution_mode = "dry_run"
 
+    if api is not None:
+        poll_broker_events(api, state, reason="post_cycle")
     save_state(state)
+    log_event(
+        "cycle_complete",
+        execution_mode=execution_mode,
+        signal_symbols=sorted(str(symbol) for symbol in signals.keys()),
+        tracked_positions=_json_safe(state.get("positions", {})),
+    )
 
 
 def main():
@@ -626,7 +1263,7 @@ def main():
     global LONG_INTENSITY_MULTIPLIER, SHORT_INTENSITY_MULTIPLIER
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint-dir", type=Path, required=True)
-    parser.add_argument("--stock-symbols", default="NVDA,MSFT,META,GOOG")
+    parser.add_argument("--stock-symbols", default=",".join(DEFAULT_ALPACA_LIVE8_STOCKS))
     parser.add_argument("--crypto-symbols", default="")
     parser.add_argument("--stock-data-root", type=Path, default=Path("trainingdatahourly/stocks"))
     parser.add_argument("--crypto-data-root", type=Path, default=Path("trainingdatahourly/crypto"))
@@ -687,10 +1324,20 @@ def main():
     logger.info("Portfolio Stock Trading Bot")
     logger.info("=" * 60)
     logger.info("Stocks: {} (LONG_ONLY: {}, SHORT_ONLY: {})",
-               len(stocks), len([s for s in stocks if s in LONG_ONLY]),
-               len([s for s in stocks if s in SHORT_ONLY]))
+               len(stocks), len([s for s in stocks if is_long_only_symbol(s)]),
+               len([s for s in stocks if is_short_only_symbol(s)]))
     logger.info("Max positions: {}, Hold limit: {}h", max_pos, max_hold)
     logger.info("Mode: {}", "LIVE" if not paper else "PAPER")
+    log_event(
+        "trader_started",
+        checkpoint_dir=str(args.checkpoint_dir),
+        epoch=args.epoch,
+        stocks=sorted(stocks),
+        paper=bool(paper),
+        loop=bool(args.loop),
+        max_positions=int(max_pos),
+        max_hold_hours=float(max_hold),
+    )
 
     api = None if args.dry_run else get_alpaca_client(paper=paper)
     state = load_state()

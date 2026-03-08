@@ -24,6 +24,7 @@ class HourlyTraderSimulationConfig:
     allocation_usd: Optional[float] = None  # per symbol
     allocation_pct: Optional[float] = 0.05
     allocation_mode: str = "per_symbol"  # "per_symbol" | "portfolio"
+    max_leverage: float = 1.0
     intensity_scale: float = 1.0
     price_offset_pct: float = 0.0
     min_gap_pct: float = 0.001
@@ -33,6 +34,13 @@ class HourlyTraderSimulationConfig:
     # Execution realism: lag between decision bar close and earliest fill eligibility.
     # For live hourly trading, 1 is appropriate (decide on bar t, fill on bar t+1).
     decision_lag_bars: int = 1
+    # Broker realism: same-side cancel/replace is not instantaneous on Alpaca.
+    # Keep the old order working through this many additional bars before it is
+    # considered fully canceled and replacement can proceed.
+    cancel_ack_delay_bars: int = 1
+    # When a limit is only lightly touched intrabar, treat the fill as partial
+    # unless the bar opens/closes through the limit.
+    partial_fill_on_touch: bool = False
     enforce_market_hours: bool = True
     fee_by_symbol: Optional[Dict[str, float]] = None
     periods_per_year_by_symbol: Optional[Dict[str, float]] = None
@@ -65,7 +73,9 @@ class OpenOrder:
     limit_price: float
     kind: str  # "entry" or "exit"
     placed_at: pd.Timestamp
-    reserved_cash: float = 0.0  # only for buy orders
+    reserved_cash: float = 0.0  # reserved entry notional / buying power
+    cancel_requested_at: Optional[pd.Timestamp] = None
+    cancel_effective_at: Optional[pd.Timestamp] = None
 
 
 @dataclass(frozen=True)
@@ -112,10 +122,16 @@ class HourlyTraderMarketSimulator:
         decision_lag_bars = int(getattr(cfg, "decision_lag_bars", 1) or 0)
         if decision_lag_bars < 0:
             raise ValueError(f"decision_lag_bars must be >= 0, got {cfg.decision_lag_bars}.")
+        cancel_ack_delay_bars = int(getattr(cfg, "cancel_ack_delay_bars", 1) or 0)
+        if cancel_ack_delay_bars < 0:
+            raise ValueError(f"cancel_ack_delay_bars must be >= 0, got {cfg.cancel_ack_delay_bars}.")
         fill_buffer_bps = float(getattr(cfg, "fill_buffer_bps", 0.0) or 0.0)
         if not math.isfinite(fill_buffer_bps) or fill_buffer_bps < 0.0:
             raise ValueError(f"fill_buffer_bps must be finite and >= 0, got {cfg.fill_buffer_bps}.")
         fill_buffer = fill_buffer_bps / 10_000.0
+        max_leverage = float(getattr(cfg, "max_leverage", 1.0) or 1.0)
+        if not math.isfinite(max_leverage) or max_leverage <= 0.0:
+            raise ValueError(f"max_leverage must be finite and > 0, got {cfg.max_leverage}.")
         cash_buffer = float(getattr(cfg, "cash_buffer", 0.99) or 0.99)
         if not math.isfinite(cash_buffer) or cash_buffer <= 0.0 or cash_buffer > 1.0:
             raise ValueError(f"cash_buffer must be in (0, 1], got {cfg.cash_buffer}.")
@@ -214,15 +230,74 @@ class HourlyTraderMarketSimulator:
                 return float(cfg.min_notional_crypto)
             return float(cfg.min_notional_stock)
 
-        def _available_cash() -> float:
-            return max(0.0, cash - reserved_cash)
+        def _equity() -> float:
+            return float(cash) + sum(float(qty) * float(last_close.get(sym, 0.0)) for sym, qty in positions.items())
+
+        def _gross_exposure() -> float:
+            return sum(abs(float(qty)) * float(last_close.get(sym, 0.0)) for sym, qty in positions.items())
+
+        def _max_entry_capacity(sym: str | None = None) -> float:
+            leverage = max_leverage
+            if sym is not None and meta[sym]["asset_class"] == "crypto":
+                leverage = min(leverage, 1.0)
+            return max(0.0, _equity()) * leverage
+
+        def _available_cash(sym: str | None = None) -> float:
+            used = _gross_exposure() + reserved_cash
+            return max(0.0, _max_entry_capacity(sym) - used)
 
         def _is_eligible(order: OpenOrder, ts: pd.Timestamp) -> bool:
             if decision_lag_bars <= 0:
                 return True
             return ts >= (order.placed_at + pd.Timedelta(hours=decision_lag_bars))
 
-        def _fill_order(ts: pd.Timestamp, bar_high: float, bar_low: float, order: OpenOrder) -> None:
+        def _cancel_is_effective(order: OpenOrder, ts: pd.Timestamp) -> bool:
+            if order.cancel_effective_at is None:
+                return False
+            return ts >= pd.Timestamp(order.cancel_effective_at)
+
+        def _estimate_fill_fraction(
+            *,
+            order: OpenOrder,
+            bar_open: float,
+            bar_high: float,
+            bar_low: float,
+            bar_close: float,
+        ) -> float:
+            price = float(order.limit_price)
+            if price <= 0:
+                return 0.0
+
+            if order.side == "buy":
+                buy_trigger = max(0.0, price * (1.0 - fill_buffer))
+                if bar_low > buy_trigger:
+                    return 0.0
+                if not bool(getattr(cfg, "partial_fill_on_touch", True)):
+                    return 1.0
+                if bar_open <= price or bar_close <= price:
+                    return 1.0
+                cross_amount = max(0.0, price - bar_low)
+            else:
+                sell_trigger = price * (1.0 + fill_buffer)
+                if bar_high < sell_trigger:
+                    return 0.0
+                if not bool(getattr(cfg, "partial_fill_on_touch", True)):
+                    return 1.0
+                if bar_open >= price or bar_close >= price:
+                    return 1.0
+                cross_amount = max(0.0, bar_high - price)
+
+            bar_range = max(bar_high - bar_low, price * 1e-8, 1e-12)
+            return min(1.0, max(0.0, cross_amount / bar_range))
+
+        def _fill_order(
+            ts: pd.Timestamp,
+            bar_open: float,
+            bar_high: float,
+            bar_low: float,
+            bar_close: float,
+            order: OpenOrder,
+        ) -> None:
             nonlocal cash, reserved_cash
             sym = order.symbol
             fee_rate = float(meta[sym]["maker_fee"])
@@ -231,26 +306,36 @@ class HourlyTraderMarketSimulator:
             if qty <= 0 or price <= 0:
                 return
 
+            fill_fraction = _estimate_fill_fraction(
+                order=order,
+                bar_open=float(bar_open),
+                bar_high=float(bar_high),
+                bar_low=float(bar_low),
+                bar_close=float(bar_close),
+            )
+            if fill_fraction <= 0.0:
+                return
+
+            fill_qty = qty if fill_fraction >= 0.999999 else min(qty, qty * fill_fraction)
+            if fill_qty <= 1e-12:
+                return
+
+            reserved_released = 0.0
+            reserved_released = float(order.reserved_cash) * (fill_qty / qty) if qty > 0 else 0.0
+            reserved_cash = max(0.0, reserved_cash - reserved_released)
             if order.side == "buy":
-                buy_trigger = max(0.0, price * (1.0 - fill_buffer))
-                if bar_low > buy_trigger:
-                    return
-                # Consume reserved cash (approx broker behavior). Cost is deterministic in this sim.
-                notional = qty * price
+                # Consume only the reserved cash corresponding to the filled slice.
+                notional = fill_qty * price
                 fee = notional * fee_rate
                 cost = notional + fee
                 cash -= cost
-                reserved_cash -= float(order.reserved_cash)
-                positions[sym] = float(positions.get(sym, 0.0)) + qty
+                positions[sym] = float(positions.get(sym, 0.0)) + fill_qty
             else:
-                sell_trigger = price * (1.0 + fill_buffer)
-                if bar_high < sell_trigger:
-                    return
-                notional = qty * price
+                notional = fill_qty * price
                 fee = notional * fee_rate
                 proceeds = notional - fee
                 cash += proceeds
-                positions[sym] = float(positions.get(sym, 0.0)) - qty
+                positions[sym] = float(positions.get(sym, 0.0)) - fill_qty
 
             fills.append(
                 FillRecord(
@@ -258,7 +343,7 @@ class HourlyTraderMarketSimulator:
                     symbol=sym,
                     side=order.side,
                     price=price,
-                    quantity=qty,
+                    quantity=float(fill_qty),
                     fee_paid=float(fee),
                     cash_after=float(cash),
                     reserved_cash_after=float(reserved_cash),
@@ -266,15 +351,53 @@ class HourlyTraderMarketSimulator:
                     kind=order.kind,
                 )
             )
-            open_orders.pop((sym, order.side), None)
+            remaining_qty = max(0.0, qty - fill_qty)
+            if remaining_qty <= 1e-12:
+                open_orders.pop((sym, order.side), None)
+                return
+
+            remaining_reserved = max(0.0, float(order.reserved_cash) - reserved_released)
+            open_orders[(sym, order.side)] = OpenOrder(
+                symbol=order.symbol,
+                side=order.side,
+                qty=float(remaining_qty),
+                limit_price=float(order.limit_price),
+                kind=str(order.kind),
+                placed_at=order.placed_at,
+                reserved_cash=float(remaining_reserved),
+                cancel_requested_at=order.cancel_requested_at,
+                cancel_effective_at=order.cancel_effective_at,
+            )
 
         def _cancel_same_side(sym: str, side: str) -> None:
             nonlocal reserved_cash
             existing = open_orders.pop((sym, side), None)
             if existing is None:
                 return
-            if existing.side == "buy":
-                reserved_cash -= float(existing.reserved_cash)
+            if float(existing.reserved_cash) > 0.0:
+                reserved_cash = max(0.0, reserved_cash - float(existing.reserved_cash))
+
+        def _request_cancel_same_side(ts: pd.Timestamp, sym: str, side: str) -> bool:
+            existing = open_orders.get((sym, side))
+            if existing is None:
+                return False
+            if cancel_ack_delay_bars <= 0:
+                _cancel_same_side(sym, side)
+                return False
+            if existing.cancel_effective_at is not None:
+                return True
+            open_orders[(sym, side)] = OpenOrder(
+                symbol=existing.symbol,
+                side=existing.side,
+                qty=float(existing.qty),
+                limit_price=float(existing.limit_price),
+                kind=str(existing.kind),
+                placed_at=existing.placed_at,
+                reserved_cash=float(existing.reserved_cash),
+                cancel_requested_at=ts,
+                cancel_effective_at=ts + pd.Timedelta(hours=cancel_ack_delay_bars),
+            )
+            return True
 
         def _order_similar(existing: OpenOrder, *, qty: float, price: float) -> bool:
             if existing.qty <= 0 or existing.limit_price <= 0:
@@ -330,12 +453,13 @@ class HourlyTraderMarketSimulator:
             existing = open_orders.get((sym, side))
             if existing is not None and cfg.keep_similar_orders and _order_similar(existing, qty=qty, price=price):
                 return
-            _cancel_same_side(sym, side)
+            if _request_cancel_same_side(ts, sym, side):
+                return
 
-            # Reserve cash for buys at placement time (broker behavior).
+            # Reserve entry buying power at placement time (broker behavior approximation).
             reserved = 0.0
-            if side == "buy":
-                avail = _available_cash()
+            if kind == "entry":
+                avail = _available_cash(sym)
                 cost_per_unit = price * (1 + fee_rate)
                 if cost_per_unit <= 0:
                     return
@@ -378,17 +502,24 @@ class HourlyTraderMarketSimulator:
             # Fill eligible orders using this bar's range.
             for row in group.itertuples(index=False):
                 sym = str(row.symbol).upper()
+                bar_open = float(getattr(row, "open", row.close))
                 high = float(row.high)
                 low = float(row.low)
+                close = float(row.close)
 
                 # Fill sell first then buy to avoid optimistic same-bar round-trip assumptions.
                 sell_order = open_orders.get((sym, "sell"))
                 if sell_order is not None and _is_eligible(sell_order, ts):
-                    _fill_order(ts, high, low, sell_order)
+                    _fill_order(ts, bar_open, high, low, close, sell_order)
 
                 buy_order = open_orders.get((sym, "buy"))
                 if buy_order is not None and _is_eligible(buy_order, ts):
-                    _fill_order(ts, high, low, buy_order)
+                    _fill_order(ts, bar_open, high, low, close, buy_order)
+
+            # Apply deferred cancels after the bar had one last chance to fill.
+            for key, order in list(open_orders.items()):
+                if _cancel_is_effective(order, ts):
+                    _cancel_same_side(order.symbol, order.side)
 
             # Place/update orders using this bar's action row.
             for sym in symbol_order:
@@ -444,8 +575,8 @@ class HourlyTraderMarketSimulator:
 
                 account_view = SimpleNamespace(
                     cash=float(cash),
-                    equity=float(cash) + sum(float(q) * float(last_close.get(s, 0.0)) for s, q in positions.items()),
-                    buying_power=float(cash),  # conservative default (no margin) unless caller models otherwise
+                    equity=float(_equity()),
+                    buying_power=max(0.0, float(_equity())),
                 )
                 allocation = allocation_usd_for_symbol(
                     account_view,
@@ -482,8 +613,8 @@ class HourlyTraderMarketSimulator:
                     )
 
             # Record combined equity at this timestamp.
-            equity = float(cash) + sum(float(qty) * float(last_close.get(sym, 0.0)) for sym, qty in positions.items())
-            gross = sum(abs(float(qty)) * float(last_close.get(sym, 0.0)) for sym, qty in positions.items())
+            equity = float(_equity())
+            gross = float(_gross_exposure())
             equity_values.append(equity)
             per_hour_rows.append(
                 {

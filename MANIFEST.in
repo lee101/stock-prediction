@@ -6,6 +6,7 @@ include LICENSE*
 # Exclude large artifacts and datasets
 prune data
 prune trainingdata
+prune trainingdata5min
 prune trainingdatahourly
 prune trainingdatadaily
 prune trainingdatabinance

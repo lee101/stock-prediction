@@ -10,10 +10,15 @@ set -euo pipefail
 PYTHON="${PYTHON:-.venv/bin/python -u}"
 TRAIN="unified_hourly_experiment/train_bf16_efficient.py"
 SWEEP="unified_hourly_experiment/sweep_epoch_portfolio.py"
+REBUILD="unified_hourly_experiment/rebuild_all_caches.py"
 
 # Symbols
-SYMBOLS="NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT"
-EVAL_SYMBOLS="$SYMBOLS"
+SYMBOLS="${SYMBOLS:-NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT}"
+EVAL_SYMBOLS="${EVAL_SYMBOLS:-$SYMBOLS}"
+FORECAST_HORIZONS="${FORECAST_HORIZONS:-1}"
+CACHE_HORIZONS="${CACHE_HORIZONS:-$FORECAST_HORIZONS}"
+CACHE_LOOKBACK_HOURS="${CACHE_LOOKBACK_HOURS:-8000}"
+CACHE_REBUILD="${CACHE_REBUILD:-0}"
 
 # Training defaults
 EPOCHS="${EPOCHS:-50}"
@@ -28,9 +33,9 @@ LAYERS="${LAYERS:-6}"
 HEADS="${HEADS:-8}"
 
 # Eval periods
-EVAL_PERIODS="1,7,30,60,120,150"
-EVAL_FEE="0.001"
-EVAL_MARGIN="0.0625"
+EVAL_PERIODS="${EVAL_PERIODS:-1,7,30,60,120,150}"
+EVAL_FEE="${EVAL_FEE:-0.001}"
+EVAL_MARGIN="${EVAL_MARGIN:-0.0625}"
 MAX_POS="${MAX_POS:-7}"
 MAX_HOLD="${MAX_HOLD:-6}"
 MIN_EDGE="${MIN_EDGE:-0.0}"
@@ -42,7 +47,7 @@ if [[ "${1:-}" == "--quick" ]]; then
     echo "=== QUICK MODE: ${EPOCHS} epochs, eval ${EVAL_PERIODS} ==="
 fi
 
-RUN_NAME="e2e_rw${RW//.}_wd${WD//.}_seq${SEQ}_s${SEED}"
+RUN_NAME="${RUN_NAME:-e2e_rw${RW//.}_wd${WD//.}_seq${SEQ}_s${SEED}}"
 CKPT_DIR="unified_hourly_experiment/checkpoints/${RUN_NAME}"
 
 echo "=========================================="
@@ -50,12 +55,22 @@ echo " E2E Alpaca Stock Trader Training"
 echo "=========================================="
 echo " Run: ${RUN_NAME}"
 echo " Symbols: ${SYMBOLS}"
+echo " Forecast horizons: ${FORECAST_HORIZONS} (cache rebuild: ${CACHE_HORIZONS})"
 echo " Architecture: h${HIDDEN} ${LAYERS}L ${HEADS}H"
 echo " Training: epochs=${EPOCHS} bs=${BATCH_SIZE} lr=${LR} wd=${WD} rw=${RW} seq=${SEQ}"
 echo " Eval periods: ${EVAL_PERIODS}d"
 echo " Output: ${CKPT_DIR}"
 echo "=========================================="
 echo ""
+
+if [[ "${CACHE_REBUILD}" != "0" ]]; then
+    echo "=== Phase 0: Rebuild Chronos2 Forecast Caches ==="
+    $PYTHON $REBUILD \
+        --symbols "$EVAL_SYMBOLS" \
+        --horizons "$CACHE_HORIZONS" \
+        --lookback-hours "$CACHE_LOOKBACK_HOURS"
+    echo ""
+fi
 
 # Phase 1: Training
 echo "=== Phase 1: BF16 Training ==="
@@ -82,7 +97,7 @@ $PYTHON $TRAIN \
     --decision-lag-bars 1 \
     --fill-temperature 5e-4 \
     --logits-softcap 12.0 \
-    --forecast-horizons 1 \
+    --forecast-horizons "$FORECAST_HORIZONS" \
     --checkpoint-name "$RUN_NAME" \
     --eval-periods "$EVAL_PERIODS" \
     --eval-after-epoch 5 \

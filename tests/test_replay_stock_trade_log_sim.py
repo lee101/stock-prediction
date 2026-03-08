@@ -6,7 +6,14 @@ from pathlib import Path
 import pandas as pd
 
 import unified_hourly_experiment.replay_stock_trade_log_sim as replay_mod
-from unified_hourly_experiment.replay_stock_trade_log_sim import compare_counts, load_live_entries, parse_bool_list, run_replay
+from unified_hourly_experiment.replay_stock_trade_log_sim import (
+    compare_counts,
+    compare_entries,
+    load_live_entry_fills,
+    load_live_entries,
+    parse_bool_list,
+    run_replay,
+)
 
 
 def _write_log(path: Path, rows: list[dict]) -> None:
@@ -81,7 +88,71 @@ def test_load_live_entries_parses_and_deduplicates_hour_symbol(tmp_path: Path) -
     assert float(mtch["sell_price"]) == 30.5
     assert float(mtch["buy_amount"]) == 0.0
     assert float(mtch["sell_amount"]) == 10.0
+    assert float(mtch["entry_price"]) == 30.5
+    assert float(mtch["qty"]) == 0.0
     assert mtch["timestamp"] == pd.Timestamp("2026-03-03T16:00:00Z")
+
+
+def test_load_live_entry_fills_uses_broker_closed_entry_orders(tmp_path: Path) -> None:
+    event_log = tmp_path / "stock_event_log.jsonl"
+    _write_log(
+        event_log,
+        [
+            {
+                "event_type": "entry_order_submit_succeeded",
+                "symbol": "NVDA",
+                "side": "long",
+                "order_id": "entry-1",
+                "logged_at": "2026-03-03T15:01:00Z",
+            },
+            {
+                "event_type": "exit_order_submit_succeeded",
+                "symbol": "NVDA",
+                "side": "sell",
+                "order_id": "exit-1",
+                "logged_at": "2026-03-03T15:10:00Z",
+            },
+            {
+                "event_type": "broker_closed_order",
+                "event_ts": "2026-03-03T15:05:00Z",
+                "order": {
+                    "id": "entry-1",
+                    "symbol": "NVDA",
+                    "status": "filled",
+                    "filled_qty": 7,
+                    "filled_avg_price": 100.25,
+                    "filled_at": "2026-03-03T15:05:00Z",
+                },
+            },
+            {
+                "event_type": "broker_closed_order",
+                "event_ts": "2026-03-03T15:55:00Z",
+                "order": {
+                    "id": "exit-1",
+                    "symbol": "NVDA",
+                    "status": "filled",
+                    "filled_qty": 7,
+                    "filled_avg_price": 101.0,
+                    "filled_at": "2026-03-03T15:55:00Z",
+                },
+            },
+        ],
+    )
+
+    out = load_live_entry_fills(
+        event_log=event_log,
+        symbols=None,
+        start=pd.Timestamp("2026-03-03T15:00:00Z"),
+        end=pd.Timestamp("2026-03-03T16:00:00Z"),
+    )
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["symbol"] == "NVDA"
+    assert row["side"] == "long"
+    assert float(row["qty"]) == 7.0
+    assert float(row["entry_price"]) == 100.25
+    assert row["timestamp"] == pd.Timestamp("2026-03-03T15:00:00Z")
 
 
 def test_compare_counts_computes_alignment_metrics() -> None:
@@ -120,6 +191,53 @@ def test_parse_bool_list_rejects_invalid_token() -> None:
         assert "Invalid boolean token" in str(exc)
     else:
         raise AssertionError("Expected ValueError for invalid bool token")
+
+
+def test_compare_entries_tracks_qty_and_price_error() -> None:
+    live_entries = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-03-03T15:00:00Z"),
+                "symbol": "NVDA",
+                "side": "long",
+                "qty": 10.0,
+                "entry_price": 100.0,
+            },
+            {
+                "timestamp": pd.Timestamp("2026-03-03T16:00:00Z"),
+                "symbol": "MTCH",
+                "side": "short",
+                "qty": 5.0,
+                "entry_price": 30.5,
+            },
+        ]
+    )
+    sim_entries = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-03-03T15:00:00Z"),
+                "symbol": "NVDA",
+                "side": "long",
+                "qty": 8.0,
+                "entry_price": 101.0,
+            },
+            {
+                "timestamp": pd.Timestamp("2026-03-03T16:00:00Z"),
+                "symbol": "MTCH",
+                "side": "short",
+                "qty": 5.0,
+                "entry_price": 30.25,
+            },
+        ]
+    )
+
+    out = compare_entries(live_entries, sim_entries)
+
+    assert out["live_entries"] == 2
+    assert out["sim_entries"] == 2
+    assert out["hourly_abs_count_delta_total"] == 0.0
+    assert out["hourly_abs_qty_delta_total"] == 2.0
+    assert out["matched_price_mae"] == 0.625
 
 
 def test_run_replay_passes_market_order_entry(monkeypatch) -> None:
@@ -177,3 +295,79 @@ def test_run_replay_passes_market_order_entry(monkeypatch) -> None:
         sim_backend="python",
     )
     assert captured["market_order_entry"] is True
+
+
+def test_run_replay_hourly_trader_backend_generates_entry_rows() -> None:
+    ts0 = pd.Timestamp("2026-03-03T15:00:00Z")
+    ts1 = ts0 + pd.Timedelta(hours=1)
+    ts2 = ts1 + pd.Timedelta(hours=1)
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "NVDA", "open": 100.0, "high": 101.0, "low": 100.0, "close": 100.0},
+            {"timestamp": ts1, "symbol": "NVDA", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
+            {"timestamp": ts2, "symbol": "NVDA", "open": 110.0, "high": 111.0, "low": 109.0, "close": 110.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "timestamp": ts0,
+                "symbol": "NVDA",
+                "side": "long",
+                "qty": 10.0,
+                "entry_price": 100.0,
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 100.0,
+                "sell_amount": 0.0,
+            },
+            {
+                "timestamp": ts1,
+                "symbol": "NVDA",
+                "side": "long",
+                "qty": 0.0,
+                "entry_price": 100.0,
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 0.0,
+                "sell_amount": 100.0,
+            },
+            {
+                "timestamp": ts2,
+                "symbol": "NVDA",
+                "side": "long",
+                "qty": 0.0,
+                "entry_price": 100.0,
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 0.0,
+                "sell_amount": 0.0,
+            },
+        ]
+    )
+
+    out = run_replay(
+        bars=bars,
+        actions=actions,
+        symbols=["NVDA"],
+        initial_cash=1_000.0,
+        max_positions=1,
+        max_hold_hours=6,
+        min_edge=-1.0,
+        fee_rate=0.0,
+        leverage=2.0,
+        decision_lag_bars=1,
+        bar_margin=0.0,
+        entry_order_ttl_hours=0,
+        market_order_entry=False,
+        sim_backend="hourly_trader",
+        cancel_ack_delay_bars=1,
+        partial_fill_on_touch=False,
+    )
+
+    assert out["sim_counts"]["count"].sum() == 1
+    entry = out["sim_entries"].iloc[0]
+    assert entry["side"] == "long"
+    assert entry["qty"] == 20.0
+    assert entry["entry_price"] == 100.0

@@ -18,11 +18,12 @@ from binanceneural.data import BinanceHourlyDataModule, FeatureNormalizer
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import build_policy, PolicyConfig, policy_config_from_payload
 from differentiable_loss_utils import simulate_hourly_trades_binary
+from src.trade_directions import (
+    DEFAULT_ALPACA_LIVE8_STOCKS,
+    resolve_trade_directions,
+    trade_direction_name,
+)
 from src.torch_load_utils import torch_load_compat
-
-LONG_ONLY = {"NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "DBX", "TSLA", "AAPL"}
-SHORT_ONLY = {"YELP", "EBAY", "TRIP", "MTCH", "KIND", "ANGI", "Z", "EXPE", "BKNG", "NWSA", "NYT"}
-
 
 def load_model(ckpt_path, config, device):
     ckpt = torch_load_compat(ckpt_path, map_location="cpu", weights_only=False)
@@ -63,8 +64,9 @@ def backtest_symbol(model, dm, symbol, config, device, maker_fee):
     sell_amt = torch.tensor(actions["sell_amount"].values, dtype=torch.float32).unsqueeze(0) / 100.0
     trade_amt = torch.maximum(buy_amt, sell_amt)
 
-    can_long = 1.0 if symbol in LONG_ONLY or symbol not in SHORT_ONLY else 0.0
-    can_short = 1.0 if symbol in SHORT_ONLY or symbol not in LONG_ONLY else 0.0
+    directions = resolve_trade_directions(symbol, allow_short=True)
+    can_long = 1.0 if directions.can_long else 0.0
+    can_short = 1.0 if directions.can_short else 0.0
 
     sim = simulate_hourly_trades_binary(
         highs=highs, lows=lows, closes=closes,
@@ -98,7 +100,7 @@ def backtest_symbol(model, dm, symbol, config, device, maker_fee):
         "return_pct": float(round(total_return, 2)),
         "sortino": float(round(sortino, 2)),
         "max_drawdown_pct": float(round(max_dd, 2)),
-        "direction": "long" if symbol in LONG_ONLY else "short" if symbol in SHORT_ONLY else "both",
+        "direction": trade_direction_name(symbol, allow_short=True),
         "avg_hold_hours": float(round(hold_hours, 1)),
         "avg_alloc_frac": float(round(alloc_frac, 3)),
         "n_bars": int(n),
@@ -140,7 +142,7 @@ def main():
     if args.symbols:
         symbols = [s.strip().upper() for s in args.symbols.split(",")]
     else:
-        symbols = config.get("symbols", sorted(LONG_ONLY | SHORT_ONLY))
+        symbols = config.get("symbols", list(DEFAULT_ALPACA_LIVE8_STOCKS))
 
     seq_len = config.get("sequence_length", 512)
 

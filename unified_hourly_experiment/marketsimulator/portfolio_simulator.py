@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -18,6 +17,7 @@ from src.fees import get_fee_for_symbol
 from src.hourly_trader_utils import entry_intensity_fraction
 from src.metrics_utils import annualized_sortino
 from src.symbol_utils import is_crypto_symbol
+from src.trade_directions import DEFAULT_LONG_ONLY_STOCKS, DEFAULT_SHORT_ONLY_STOCKS
 
 from .unified_selector import (
     _is_market_open,
@@ -29,8 +29,8 @@ from .unified_selector import (
 from .portfolio_sim_native import load_portfolio_native_extension
 
 
-LONG_ONLY_DEFAULT = {"NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "DBX", "TSLA", "AAPL"}
-SHORT_ONLY_DEFAULT = {"YELP", "EBAY", "TRIP", "MTCH", "ANGI", "Z", "EXPE", "BKNG", "NWSA", "NYT"}
+LONG_ONLY_DEFAULT = set(DEFAULT_LONG_ONLY_STOCKS)
+SHORT_ONLY_DEFAULT = set(DEFAULT_SHORT_ONLY_STOCKS)
 
 
 @dataclass
@@ -54,9 +54,6 @@ class PortfolioConfig:
     decision_lag_bars: int = 1
     market_order_entry: bool = False
     bar_margin: float = 0.0005
-    # Optional per-symbol bar-margin overrides in basis points (1 bps = 0.01%).
-    # Example: {"MTCH": 8.0, "NVDA": 2.0, "*": 5.0}
-    symbol_bar_margin_bps: Optional[Dict[str, float]] = None
     entry_order_ttl_hours: int = 0  # 0 disables pending entry lifecycle
     entry_selection_mode: str = "edge_rank"  # edge_rank | first_trigger
     long_only_symbols: Optional[set] = None
@@ -157,6 +154,40 @@ def _get_numeric_column(frame: pd.DataFrame, name: str, *, default: float) -> np
     if name in frame.columns:
         return frame[name].to_numpy(dtype=np.float64, copy=False)
     return np.full(len(frame), default, dtype=np.float64)
+
+
+def _lag_actions_to_bar_schedule(
+    *,
+    bars: pd.DataFrame,
+    actions: pd.DataFrame,
+    lag: int,
+) -> pd.DataFrame:
+    shifted_parts: list[pd.DataFrame] = []
+    for sym in actions["symbol"].astype(str).unique():
+        sym_acts = actions[actions["symbol"] == sym].sort_values("timestamp").copy()
+        if sym_acts.empty:
+            continue
+        sym_bars = bars[bars["symbol"] == sym].sort_values("timestamp")
+        bar_ts = pd.DatetimeIndex(pd.to_datetime(sym_bars["timestamp"], utc=True))
+        if bar_ts.empty:
+            shifted_parts.append(sym_acts.iloc[0:0].copy())
+            continue
+
+        action_ts = pd.DatetimeIndex(pd.to_datetime(sym_acts["timestamp"], utc=True))
+        start_pos = bar_ts.searchsorted(action_ts, side="left")
+        target_pos = start_pos + int(lag)
+        valid = (start_pos < len(bar_ts)) & (target_pos < len(bar_ts))
+        if not np.any(valid):
+            shifted_parts.append(sym_acts.iloc[0:0].copy())
+            continue
+
+        shifted = sym_acts.loc[valid].copy()
+        shifted["timestamp"] = bar_ts.take(target_pos[valid])
+        shifted_parts.append(shifted)
+
+    if not shifted_parts:
+        return actions.iloc[0:0].copy()
+    return pd.concat(shifted_parts, ignore_index=True)
 
 
 def _run_portfolio_simulation_native(
@@ -327,30 +358,18 @@ def run_portfolio_simulation(
 ) -> PortfolioResult:
     cfg = config or PortfolioConfig()
 
-    if cfg.decision_lag_bars > 0:
-        lag = cfg.decision_lag_bars
-        shifted_parts = []
-        for sym in actions["symbol"].unique():
-            sym_acts = actions[actions["symbol"] == sym].sort_values("timestamp").copy()
-            sym_bars = bars[bars["symbol"] == sym].sort_values("timestamp")
-            bar_ts = sym_bars["timestamp"].tolist()
-            if len(sym_acts) > len(bar_ts):
-                sym_acts = sym_acts.iloc[-len(bar_ts):].copy()
-            usable = min(len(sym_acts), len(bar_ts))
-            if usable > lag:
-                # Align lag-shift only over rows where both action and bar timestamps exist.
-                sym_acts = sym_acts.iloc[: usable - lag].copy()
-                sym_acts["timestamp"] = bar_ts[lag:usable]
-            else:
-                sym_acts = sym_acts.iloc[0:0].copy()
-            shifted_parts.append(sym_acts)
-        actions = pd.concat(shifted_parts, ignore_index=True)
-
     required_keys = {"timestamp", "symbol"}
     if not required_keys.issubset(bars.columns):
         raise ValueError("Bars must contain timestamp and symbol columns")
     if not required_keys.issubset(actions.columns):
         raise ValueError("Actions must contain timestamp and symbol columns")
+
+    if cfg.decision_lag_bars > 0:
+        actions = _lag_actions_to_bar_schedule(
+            bars=bars,
+            actions=actions,
+            lag=int(cfg.decision_lag_bars),
+        )
 
     # Keep every market bar so state transitions (timeouts, EOD, pending entries)
     # advance even when no new signal row is present for that symbol/hour.
@@ -380,27 +399,9 @@ def run_portfolio_simulation(
 
     direction_by_symbol = {sym: _direction(sym) for sym in symbols}
 
-    symbol_margin_bps = dict(cfg.symbol_bar_margin_bps or {})
-
-    def _bar_margin_for_symbol(sym: str) -> float:
-        raw = symbol_margin_bps.get(sym)
-        if raw is None:
-            raw = symbol_margin_bps.get(str(sym).upper())
-        if raw is None:
-            raw = symbol_margin_bps.get("*")
-        if raw is None:
-            return float(cfg.bar_margin)
-        try:
-            bps = float(raw)
-        except (TypeError, ValueError):
-            return float(cfg.bar_margin)
-        if not np.isfinite(bps) or bps < 0:
-            return float(cfg.bar_margin)
-        return float(bps) / 10_000.0
-
     backend = _normalize_backend(cfg.sim_backend)
     # Python-only feature: pending entry order lifecycle.
-    native_allowed = int(cfg.entry_order_ttl_hours) <= 0 and not symbol_margin_bps
+    native_allowed = int(cfg.entry_order_ttl_hours) <= 0
     if backend in {"native", "auto"} and native_allowed:
         native_result = _run_portfolio_simulation_native(
             merged=merged,
@@ -439,14 +440,14 @@ def run_portfolio_simulation(
     def _equity():
         return cash + _mtm()
 
-    def _required_move_to_fill(row, *, entry_price: float, is_long: bool, bar_margin: float) -> float:
+    def _required_move_to_fill(row, *, entry_price: float, is_long: bool) -> float:
         open_px = _as_valid_positive(getattr(row, "open", None))
         if open_px is None:
             return float("inf")
         if is_long:
-            trigger = float(entry_price) * (1.0 - float(bar_margin))
+            trigger = float(entry_price) * (1.0 - float(cfg.bar_margin))
             return max(0.0, (open_px - trigger) / open_px)
-        trigger = float(entry_price) * (1.0 + float(bar_margin))
+        trigger = float(entry_price) * (1.0 + float(cfg.bar_margin))
         return max(0.0, (trigger - open_px) / open_px)
 
     groups = merged.groupby("timestamp", sort=True)
@@ -457,13 +458,12 @@ def run_portfolio_simulation(
         for row in group.itertuples(index=False):
             last_close[row.symbol] = float(row.close)
 
-        equity = _equity()
-        equity_values.append((ts, equity))
+        equity_before = _equity()
 
         # Margin interest: charge hourly rate on borrowed amount
         if cfg.margin_annual_rate > 0:
             position_value = abs(_mtm())
-            margin_used = max(0, position_value - max(0, equity))
+            margin_used = max(0, position_value - max(0, equity_before))
             if margin_used > 0:
                 cash -= margin_used * cfg.margin_annual_rate / 8760
 
@@ -574,11 +574,10 @@ def run_portfolio_simulation(
                 row = row_df.iloc[0]
                 entry_price = float(pending["entry_price"])
                 is_long = str(pending["direction"]) == "long"
-                bar_margin = _bar_margin_for_symbol(sym)
                 if is_long:
-                    fillable = row["low"] <= entry_price * (1 - bar_margin)
+                    fillable = row["low"] <= entry_price * (1 - cfg.bar_margin)
                 else:
-                    fillable = row["high"] >= entry_price * (1 + bar_margin)
+                    fillable = row["high"] >= entry_price * (1 + cfg.bar_margin)
                 if fillable:
                     qty = float(pending["qty"])
                     if qty > 0:
@@ -610,9 +609,11 @@ def run_portfolio_simulation(
         # 4. Find new entries if we have open slots
         open_slots = cfg.max_positions - len(positions) - len(pending_entries)
         if open_slots <= 0:
+            equity_values.append((ts, _equity()))
             continue
 
         held_symbols = set(positions.keys()) | set(pending_entries.keys())
+        equity_for_entries = _equity()
         candidates = []
         for row in group.itertuples(index=False):
             sym = row.symbol
@@ -623,7 +624,6 @@ def run_portfolio_simulation(
 
             direction = direction_by_symbol.get(sym, "long")
             is_long = direction == "long"
-            bar_margin = _bar_margin_for_symbol(sym)
             buy_price = _as_valid_positive(getattr(row, "buy_price", None))
             sell_price = _as_valid_positive(getattr(row, "sell_price", None))
             signal_amount, intensity_fraction = entry_intensity_fraction(
@@ -704,7 +704,6 @@ def run_portfolio_simulation(
                     row,
                     entry_price=actual_entry_price,
                     is_long=is_long,
-                    bar_margin=bar_margin,
                 ),
             })
 
@@ -716,7 +715,7 @@ def run_portfolio_simulation(
         for cand in candidates[:open_slots]:
             sym = cand["symbol"]
             sym_leverage = 1.0 if is_crypto_symbol(sym) else cfg.max_leverage
-            per_position_alloc = (equity * sym_leverage) / cfg.max_positions
+            per_position_alloc = (equity_for_entries * sym_leverage) / cfg.max_positions
             fee = symbol_fee.get(sym, 0.001)
             entry_price = cand["entry_price"]
             direction = cand["direction"]
@@ -748,6 +747,8 @@ def run_portfolio_simulation(
                     "bars_left": int(cfg.entry_order_ttl_hours),
                 }
 
+        equity_values.append((ts, _equity()))
+
     final_equity = _equity()
     if equity_values:
         eq_ts, eq_vals = zip(*equity_values)
@@ -765,170 +766,3 @@ def run_portfolio_simulation(
         symbols=symbols,
         final_equity=float(final_equity),
     )
-
-
-def _portfolio_trades_frame(trades: Sequence[UnifiedTradeRecord]) -> pd.DataFrame:
-    if not trades:
-        return pd.DataFrame(
-            columns=[
-                "timestamp",
-                "symbol",
-                "side",
-                "price",
-                "quantity",
-                "cash_after",
-                "inventory_after",
-                "reason",
-            ]
-        )
-    return pd.DataFrame(
-        [
-            {
-                "timestamp": trade.timestamp,
-                "symbol": trade.symbol,
-                "side": trade.side,
-                "price": float(trade.price),
-                "quantity": float(trade.quantity),
-                "cash_after": float(trade.cash_after),
-                "inventory_after": float(trade.inventory_after),
-                "reason": trade.reason,
-            }
-            for trade in trades
-        ]
-    )
-
-
-def _normalize_portfolio_bars_for_export(bars: pd.DataFrame) -> pd.DataFrame:
-    required = {"timestamp", "symbol"}
-    if not required.issubset(bars.columns):
-        raise ValueError("bars must contain timestamp and symbol columns")
-    columns = [c for c in ("timestamp", "symbol", "open", "high", "low", "close") if c in bars.columns]
-    normalized = bars.loc[:, columns].copy()
-    normalized["timestamp"] = pd.to_datetime(normalized["timestamp"], utc=True)
-    normalized["symbol"] = normalized["symbol"].astype(str).str.upper()
-    normalized = normalized.sort_values(["symbol", "timestamp"]).drop_duplicates(["symbol", "timestamp"], keep="last")
-    return normalized.reset_index(drop=True)
-
-
-def _write_portfolio_trade_overlay_png(
-    *,
-    bars: pd.DataFrame,
-    trades: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg", force=True)
-    import matplotlib.pyplot as plt
-
-    trade_symbols = trades["symbol"].dropna().astype(str).tolist() if "symbol" in trades.columns else []
-    ordered_trade_symbols = list(dict.fromkeys(trade_symbols))
-    ordered_bar_symbols = bars["symbol"].dropna().astype(str).tolist()
-    ordered_bar_symbols = list(dict.fromkeys(ordered_bar_symbols))
-    symbols = ordered_trade_symbols + [sym for sym in ordered_bar_symbols if sym not in ordered_trade_symbols]
-    if not symbols:
-        raise ValueError("no symbols available to plot")
-
-    height = max(3.0 * len(symbols), 4.0)
-    fig, axes = plt.subplots(len(symbols), 1, figsize=(14, height), squeeze=False)
-    axes_flat = axes[:, 0]
-
-    style_by_side = {
-        "buy": {"color": "#198754", "marker": "^", "label": "buy"},
-        "buy_cover": {"color": "#0d9488", "marker": "^", "label": "buy_cover"},
-        "sell": {"color": "#dc2626", "marker": "v", "label": "sell"},
-        "short_sell": {"color": "#f97316", "marker": "v", "label": "short_sell"},
-    }
-
-    for idx, symbol in enumerate(symbols):
-        ax = axes_flat[idx]
-        sym_bars = bars[bars["symbol"] == symbol].sort_values("timestamp")
-        sym_trades = trades[trades["symbol"] == symbol].sort_values("timestamp") if not trades.empty else trades
-
-        close_col = "close" if "close" in sym_bars.columns else "open"
-        ax.plot(sym_bars["timestamp"], sym_bars[close_col], color="#1f3b5c", linewidth=1.4, label=close_col)
-        if {"high", "low"}.issubset(sym_bars.columns):
-            ax.fill_between(
-                sym_bars["timestamp"],
-                sym_bars["low"],
-                sym_bars["high"],
-                color="#93c5fd",
-                alpha=0.18,
-                label="high-low",
-            )
-
-        used_labels: set[str] = set()
-        for side, style in style_by_side.items():
-            side_trades = sym_trades[sym_trades["side"] == side]
-            if side_trades.empty:
-                continue
-            label = style["label"] if style["label"] not in used_labels else None
-            used_labels.add(style["label"])
-            ax.scatter(
-                side_trades["timestamp"],
-                side_trades["price"],
-                color=style["color"],
-                marker=style["marker"],
-                s=70,
-                linewidths=0.6,
-                edgecolors="white",
-                zorder=4,
-                label=label,
-            )
-
-        title_suffix = "no trades" if sym_trades.empty else f"{len(sym_trades)} trades"
-        ax.set_title(f"{symbol} ({title_suffix})")
-        ax.set_ylabel("price")
-        ax.grid(alpha=0.25, linewidth=0.6)
-        if idx == len(symbols) - 1:
-            ax.set_xlabel("timestamp")
-        if ax.get_legend_handles_labels()[0]:
-            ax.legend(loc="best", fontsize=8)
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
-def write_portfolio_simulation_artifacts(
-    *,
-    bars: pd.DataFrame,
-    result: PortfolioResult,
-    output_dir: str | Path,
-    file_stem: str = "portfolio_simulation",
-) -> dict[str, Path]:
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    normalized_bars = _normalize_portfolio_bars_for_export(bars)
-    trades_df = _portfolio_trades_frame(result.trades)
-    if not trades_df.empty:
-        trades_df["timestamp"] = pd.to_datetime(trades_df["timestamp"], utc=True)
-        trades_df["symbol"] = trades_df["symbol"].astype(str).str.upper()
-        trades_df = trades_df.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
-
-    bars_path = out_dir / f"{file_stem}_bars.csv"
-    trades_path = out_dir / f"{file_stem}_trades.csv"
-    equity_path = out_dir / f"{file_stem}_equity_curve.csv"
-    metrics_path = out_dir / f"{file_stem}_metrics.json"
-    overlay_path = out_dir / f"{file_stem}_trade_overlay.png"
-
-    normalized_bars.to_csv(bars_path, index=False)
-    trades_df.to_csv(trades_path, index=False)
-    result.equity_curve.rename("equity").to_csv(equity_path, header=True)
-    with metrics_path.open("w", encoding="utf-8") as handle:
-        json.dump(result.metrics, handle, indent=2, sort_keys=True)
-
-    _write_portfolio_trade_overlay_png(
-        bars=normalized_bars,
-        trades=trades_df,
-        output_path=overlay_path,
-    )
-
-    return {
-        "bars_csv": bars_path,
-        "trades_csv": trades_path,
-        "equity_csv": equity_path,
-        "metrics_json": metrics_path,
-        "trade_overlay_png": overlay_path,
-    }

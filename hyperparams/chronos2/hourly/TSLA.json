@@ -23,21 +23,31 @@
     "use_multivariate": false
   },
   "validation": {
-    "price_mae": 0.369110107421875,
-    "pct_return_mae": 0.0007985939155332744,
+    "price_mae": 12.77777099609375,
+    "pct_return_mae": 0.031120512214278157,
+    "pct_return_mae_smoothness": 0.002125175602422178,
     "direction_accuracy": 0.0,
-    "latency_s": 0.04795384407043457
+    "objective": 0.03186432367512592,
+    "latency_s": 6.742432594299316
   },
   "windows": {
     "val_window": 168,
     "test_window": 168,
-    "forecast_horizon": 1
+    "forecast_horizon": 24
   },
   "metadata": {
     "source": "hyperparam_chronos_hourly",
-    "generated_at": "2025-12-01T08:10:00.743332Z",
-    "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.0007985939155332744,
-    "frequency": "hourly"
+    "generated_at": "2026-03-06T09:42:50.132792Z",
+    "selection_metric": "validation_objective",
+    "selection_value": 0.03186432367512592,
+    "frequency": "hourly",
+    "smoothness_weight": 0.35,
+    "direction_bonus": 0.05,
+    "cohort_symbols": [],
+    "cohort_used_symbols": [],
+    "cohort_requested": 0,
+    "cohort_used": 0,
+    "cross_learning_enabled": false,
+    "model_id_source": "existing_hyperparams"
   }
 }
