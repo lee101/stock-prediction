@@ -657,6 +657,8 @@ opentelemetry-sdk==1.38.0
     #   mlflow-tracing
 opentelemetry-semantic-conventions==0.59b0
     # via opentelemetry-sdk
+opt-einsum==3.4.0
+    # via pyro-ppl
 optuna==4.5.0
     # via
     #   -r requirements.in
@@ -776,7 +778,10 @@ ptyprocess==0.7.0
     # via
     #   pexpect
     #   terminado
-pufferlib==2.0.6
+pufferlib==3.0.0
+    # via -r requirements.in
+pyro-api==0.1.2
+pyro-ppl==1.9.1
     # via -r requirements.in
 pure-eval==0.2.3
     # via stack-data

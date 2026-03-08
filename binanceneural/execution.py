@@ -52,6 +52,12 @@ def split_binance_symbol(symbol: str) -> Tuple[str, str]:
     return normalized[:-3], normalized[-3:]
 
 
+def quote_asset_for_symbol(symbol: str) -> str:
+    pair = resolve_binance_symbol(symbol)
+    _, quote = split_binance_symbol(pair)
+    return quote
+
+
 def resolve_symbol_rules(symbol: str) -> SymbolRules:
     pair = resolve_binance_symbol(symbol)
     filters = binance_wrapper.get_symbol_filters(pair)
@@ -126,6 +132,31 @@ def get_total_balances(symbol: str) -> Tuple[float, float]:
     base_total = _coerce_float(base_entry.get("free")) + _coerce_float(base_entry.get("locked"))
     quote_total = _coerce_float(quote_entry.get("free")) + _coerce_float(quote_entry.get("locked"))
     return quote_total, base_total
+
+
+def available_quote_budget(
+    remaining_by_quote_asset: Dict[str, float],
+    *,
+    symbol: str,
+    observed_quote_free: float,
+) -> float:
+    quote_asset = quote_asset_for_symbol(symbol)
+    available = remaining_by_quote_asset.setdefault(quote_asset, max(0.0, float(observed_quote_free)))
+    return max(0.0, float(available))
+
+
+def reserve_quote_budget(
+    remaining_by_quote_asset: Dict[str, float],
+    *,
+    symbol: str,
+    reserved_notional: float,
+) -> float:
+    quote_asset = quote_asset_for_symbol(symbol)
+    current = max(0.0, float(remaining_by_quote_asset.get(quote_asset, 0.0)))
+    reserved = max(0.0, float(reserved_notional))
+    remaining = max(0.0, current - reserved)
+    remaining_by_quote_asset[quote_asset] = remaining
+    return remaining
 
 
 def compute_order_quantities(
@@ -210,10 +241,13 @@ def compute_order_quantities(
 __all__ = [
     "OrderSizingResult",
     "SymbolRules",
+    "available_quote_budget",
     "compute_order_quantities",
     "get_free_balances",
+    "quote_asset_for_symbol",
     "quantize_price",
     "quantize_qty",
+    "reserve_quote_budget",
     "resolve_binance_symbol",
     "resolve_symbol_rules",
     "split_binance_symbol",

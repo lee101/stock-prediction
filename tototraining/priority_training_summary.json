@@ -1,7 +1,0 @@
-{
-  "NVDA": {
-    "status": "error",
-    "error": "training_failed",
-    "returncode": 1
-  }
-}

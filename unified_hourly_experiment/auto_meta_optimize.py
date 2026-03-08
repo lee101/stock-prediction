@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
+
 
 @dataclass
 class MetaRun:
@@ -240,7 +242,7 @@ def run_once(args: argparse.Namespace) -> dict:
             "--sim-backend",
             str(args.sim_backend),
             "--sit-out-if-negative",
-            f"--sit-out-thresholds={','.join(str(x) for x in thresholds)}",
+            f"--sit-out-thresholds={",".join(str(x) for x in thresholds)}",
             "--output",
             str(run.output_path),
         ]
@@ -350,7 +352,7 @@ def run_once(args: argparse.Namespace) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Autonomous meta-selector sweep orchestrator.")
     parser.add_argument("--strategy", action="append", required=True, help="Repeatable NAME=PATH[:EPOCH] strategy spec")
-    parser.add_argument("--symbols", default="NVDA,PLTR,GOOG,DBX,TRIP,MTCH")
+    parser.add_argument("--symbols", default=",".join(DEFAULT_ALPACA_LIVE8_STOCKS))
     parser.add_argument("--metrics", default="sharpe,sortino,calmar")
     parser.add_argument("--lookback-days", default="5,7,10,14")
     parser.add_argument("--holdout-days", default="30,60,90")

@@ -15,11 +15,18 @@ from src.process_utils import enforce_min_spread
 from src.metrics_utils import compute_step_returns, annualized_sortino
 from src.torch_load_utils import torch_load_compat
 from src.binan import binance_wrapper
+from src.binance_hourly_csv_utils import append_hourly_binance_bars
 from stock.state import get_state_dir, resolve_state_suffix, get_paper_suffix
 
 from binanceneural.binance_watchers import WatcherPlan, spawn_watcher
 from binanceneural.config import TrainingConfig, PolicyConfig
-from binanceneural.execution import compute_order_quantities, get_free_balances, resolve_symbol_rules
+from binanceneural.execution import (
+    available_quote_budget,
+    compute_order_quantities,
+    get_free_balances,
+    reserve_quote_budget,
+    resolve_symbol_rules,
+)
 from binanceneural.inference import generate_latest_action
 from binanceneural.model import build_policy, policy_config_from_payload
 from binanceneural.pnl_state import get_probe_mode
@@ -38,30 +45,21 @@ def _refresh_price_csv(symbol: str, data_root: Path) -> None:
     except ImportError:
         return
     csv_path = data_root / f"{symbol.upper()}.csv"
-    if not csv_path.exists():
-        return
-    existing = pd.read_csv(csv_path)
-    existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True)
-    last_ts = existing["timestamp"].max()
     binance_pair = _USDT_FALLBACK.get(symbol.upper(), symbol.upper())
     try:
-        end_ts = datetime.now(timezone.utc)
-        new = fetch_binance_hourly_bars(binance_pair, start=last_ts, end=end_ts)
+        result = append_hourly_binance_bars(
+            csv_path,
+            fetch_symbol=binance_pair,
+            csv_symbol=symbol,
+            fetcher=fetch_binance_hourly_bars,
+        )
     except Exception:
         return
-    if new is None or len(new) == 0:
-        return
-    new = new.reset_index()
-    new["symbol"] = symbol.upper()
-    new["timestamp"] = pd.to_datetime(new["timestamp"], utc=True)
-    new = new[new["timestamp"] > last_ts]
-    if len(new) == 0:
-        return
-    combined = pd.concat([existing, new], ignore_index=True)
-    combined = combined.drop_duplicates(subset="timestamp", keep="last")
-    combined = combined.sort_values("timestamp").reset_index(drop=True)
-    combined.to_csv(csv_path, index=False)
-    print(f"[data-refresh] {symbol}: +{len(new)} rows, last={combined['timestamp'].max()}")
+    if result.get("status") in {"updated", "synced"}:
+        print(
+            f"[data-refresh] {symbol}: +{result.get('rows_added', 0)} rows, "
+            f"last={result.get('end')}"
+        )
 
 
 @dataclass
@@ -249,6 +247,7 @@ def _run_cycle(
     dry_run: bool,
 ) -> None:
     symbol_list = list(symbols)
+    quote_budget_remaining: Dict[str, float] = {}
     for symbol in symbol_list:
         _refresh_price_csv(symbol, data_root)
     for symbol in symbol_list:
@@ -295,6 +294,11 @@ def _run_cycle(
             except Exception as exc:
                 print(f"Failed to fetch Binance balances for {symbol}: {exc}")
                 continue
+            available_quote = available_quote_budget(
+                quote_budget_remaining,
+                symbol=symbol,
+                observed_quote_free=quote_free,
+            )
 
             allocation_usdt_eff = _apply_probe_allocation(
                 symbol,
@@ -327,7 +331,7 @@ def _run_cycle(
                 sell_amount=plan.sell_amount,
                 buy_price=buy_price,
                 sell_price=sell_price,
-                quote_free=quote_free,
+                quote_free=available_quote,
                 base_free=base_free,
                 allocation_usdt=allocation_usdt_eff,
                 rules=rules,
@@ -346,6 +350,11 @@ def _run_cycle(
                         price_tolerance=price_tolerance,
                         dry_run=dry_run,
                     )
+                )
+                reserve_quote_budget(
+                    quote_budget_remaining,
+                    symbol=symbol,
+                    reserved_notional=sizing.buy_notional,
                 )
             if sizing.sell_qty > 0:
                 spawn_watcher(

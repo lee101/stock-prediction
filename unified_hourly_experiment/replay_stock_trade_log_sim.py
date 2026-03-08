@@ -18,6 +18,7 @@ from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from newnanoalpacahourlyexp.marketsimulator import HourlyTraderMarketSimulator, HourlyTraderSimulationConfig
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
 
 
@@ -110,11 +111,19 @@ def load_live_entries(
                 buy_price, sell_price = exit_price, entry_price
                 buy_amount, sell_amount = 0.0, amount
 
+            qty_raw = payload.get("qty", 0.0)
+            try:
+                qty = float(qty_raw)
+            except (TypeError, ValueError):
+                qty = 0.0
+
             rows.append(
                 {
                     "timestamp": ts.floor("h"),
                     "symbol": symbol,
                     "side": side,
+                    "entry_price": entry_price,
+                    "qty": qty,
                     "buy_price": buy_price,
                     "sell_price": sell_price,
                     "buy_amount": buy_amount,
@@ -130,6 +139,8 @@ def load_live_entries(
                 "timestamp",
                 "symbol",
                 "side",
+                "entry_price",
+                "qty",
                 "buy_price",
                 "sell_price",
                 "buy_amount",
@@ -144,6 +155,97 @@ def load_live_entries(
     actions = raw.drop_duplicates(subset=["timestamp", "symbol"], keep="last").copy()
     actions = actions.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
     return actions
+
+
+def load_live_entry_fills(
+    *,
+    event_log: Path,
+    symbols: set[str] | None,
+    start: pd.Timestamp | None,
+    end: pd.Timestamp | None,
+) -> pd.DataFrame:
+    if not event_log.exists():
+        return pd.DataFrame(columns=["timestamp", "symbol", "side", "qty", "entry_price", "logged_at", "order_id"])
+
+    entry_orders: dict[str, dict[str, Any]] = {}
+    rows: list[dict[str, Any]] = []
+
+    with event_log.open() as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            event_type = str(payload.get("event_type", "")).strip().lower()
+            if event_type == "entry_order_submit_succeeded":
+                order_id = str(payload.get("order_id", "")).strip()
+                symbol = str(payload.get("symbol", "")).upper()
+                side = str(payload.get("side", "")).strip().lower()
+                if not order_id or not symbol or side not in {"long", "short"}:
+                    continue
+                entry_orders[order_id] = {"symbol": symbol, "side": side}
+                continue
+
+            if event_type != "broker_closed_order":
+                continue
+
+            order = payload.get("order") or {}
+            if not isinstance(order, dict):
+                continue
+            order_id = str(order.get("id", "")).strip()
+            if not order_id or order_id not in entry_orders:
+                continue
+
+            symbol = str(order.get("symbol", entry_orders[order_id]["symbol"])).upper()
+            if not symbol:
+                continue
+            if symbols and symbol not in symbols:
+                continue
+
+            event_ts = _as_utc(
+                payload.get("event_ts")
+                or order.get("filled_at")
+                or order.get("updated_at")
+                or payload.get("logged_at")
+            )
+            if pd.isna(event_ts):
+                continue
+            if start is not None and event_ts < start:
+                continue
+            if end is not None and event_ts > end:
+                continue
+
+            try:
+                qty = float(order.get("filled_qty", 0.0) or 0.0)
+                entry_price = float(order.get("filled_avg_price", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if qty <= 0 or entry_price <= 0:
+                continue
+
+            rows.append(
+                {
+                    "timestamp": event_ts.floor("h"),
+                    "symbol": symbol,
+                    "side": entry_orders[order_id]["side"],
+                    "qty": qty,
+                    "entry_price": entry_price,
+                    "logged_at": event_ts,
+                    "order_id": order_id,
+                    "order_status": str(order.get("status", "")).lower(),
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=["timestamp", "symbol", "side", "qty", "entry_price", "logged_at", "order_id"])
+
+    out = pd.DataFrame(rows).sort_values("logged_at")
+    out = out.drop_duplicates(subset=["order_id"], keep="last").reset_index(drop=True)
+    return out
 
 
 def load_bars_for_symbols(
@@ -192,6 +294,44 @@ def _entry_counts(df: pd.DataFrame, *, side_col: str) -> pd.DataFrame:
     return grouped
 
 
+def _entry_summary(
+    df: pd.DataFrame,
+    *,
+    side_col: str,
+    price_col: str | None = None,
+    qty_col: str | None = None,
+) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["hour", "symbol", "side", "count", "qty_total", "avg_price"])
+
+    out = df.copy()
+    out["hour"] = pd.to_datetime(out["timestamp"], utc=True).dt.floor("h")
+    out["side"] = out[side_col].astype(str).str.lower()
+    if qty_col and qty_col in out.columns:
+        out["qty_value"] = pd.to_numeric(out[qty_col], errors="coerce").fillna(0.0)
+    else:
+        out["qty_value"] = 0.0
+    if price_col and price_col in out.columns:
+        out["price_value"] = pd.to_numeric(out[price_col], errors="coerce").fillna(0.0)
+    else:
+        out["price_value"] = 0.0
+    out["notional_value"] = out["qty_value"] * out["price_value"]
+
+    grouped = (
+        out.groupby(["hour", "symbol", "side"], as_index=False)
+        .agg(
+            count=("side", "size"),
+            qty_total=("qty_value", "sum"),
+            notional_total=("notional_value", "sum"),
+        )
+        .sort_values(["hour", "symbol", "side"])
+        .reset_index(drop=True)
+    )
+    grouped["avg_price"] = grouped["notional_total"] / grouped["qty_total"].where(grouped["qty_total"] > 0, 1.0)
+    grouped.loc[grouped["qty_total"] <= 0, "avg_price"] = 0.0
+    return grouped[["hour", "symbol", "side", "count", "qty_total", "avg_price"]]
+
+
 def run_replay(
     *,
     bars: pd.DataFrame,
@@ -208,7 +348,57 @@ def run_replay(
     entry_order_ttl_hours: int,
     market_order_entry: bool,
     sim_backend: str,
+    cancel_ack_delay_bars: int = 1,
+    partial_fill_on_touch: bool = False,
 ) -> dict[str, Any]:
+    if str(sim_backend).strip().lower() == "hourly_trader":
+        short_symbols = set()
+        if "side" in actions.columns:
+            short_symbols = {
+                str(symbol).upper()
+                for symbol in actions.loc[actions["side"].astype(str).str.lower() == "short", "symbol"].tolist()
+            }
+        long_symbols = [s for s in symbols if s not in short_symbols]
+        hourly_cfg = HourlyTraderSimulationConfig(
+            initial_cash=float(initial_cash),
+            allocation_usd=None,
+            allocation_pct=(float(leverage) / float(max_positions)) if int(max_positions) > 0 else None,
+            allocation_mode="per_symbol",
+            max_leverage=float(leverage),
+            intensity_scale=1.0,
+            fill_buffer_bps=float(bar_margin) * 10_000.0,
+            decision_lag_bars=int(decision_lag_bars),
+            cancel_ack_delay_bars=int(cancel_ack_delay_bars),
+            partial_fill_on_touch=bool(partial_fill_on_touch),
+            enforce_market_hours=True,
+            fee_by_symbol={s: float(fee_rate) for s in symbols},
+            allow_short=bool(short_symbols),
+            long_only_symbols=long_symbols,
+            short_only_symbols=sorted(short_symbols),
+            allow_position_adds=False,
+            always_full_exit=True,
+            symbols=symbols,
+        )
+        sim = HourlyTraderMarketSimulator(hourly_cfg).run(
+            bars.copy(),
+            actions.drop(columns=["logged_at"], errors="ignore").copy(),
+        )
+        sim_entries_df = pd.DataFrame(
+            [
+                {
+                    "timestamp": fill.timestamp,
+                    "symbol": fill.symbol,
+                    "side": ("long" if fill.side == "buy" else "short"),
+                    "qty": float(fill.quantity),
+                    "entry_price": float(fill.price),
+                }
+                for fill in sim.fills
+                if fill.kind == "entry"
+            ]
+        )
+        sim_counts = _entry_counts(sim_entries_df, side_col="side")
+        return {"sim": sim, "sim_counts": sim_counts, "sim_entries": sim_entries_df}
+
     cfg = PortfolioConfig(
         initial_cash=float(initial_cash),
         max_positions=int(max_positions),
@@ -234,13 +424,15 @@ def run_replay(
             "timestamp": t.timestamp,
             "symbol": t.symbol,
             "side": ("long" if t.side == "buy" else "short"),
+            "qty": float(t.quantity),
+            "entry_price": float(t.price),
         }
         for t in sim.trades
         if t.side in {"buy", "short_sell"}
     ]
     sim_entries_df = pd.DataFrame(sim_entries)
     sim_counts = _entry_counts(sim_entries_df, side_col="side")
-    return {"sim": sim, "sim_counts": sim_counts}
+    return {"sim": sim, "sim_counts": sim_counts, "sim_entries": sim_entries_df}
 
 
 def compare_counts(live_counts: pd.DataFrame, sim_counts: pd.DataFrame) -> dict[str, Any]:
@@ -272,9 +464,52 @@ def compare_counts(live_counts: pd.DataFrame, sim_counts: pd.DataFrame) -> dict[
     }
 
 
+def compare_entries(live_entries: pd.DataFrame, sim_entries: pd.DataFrame) -> dict[str, Any]:
+    live_summary = _entry_summary(live_entries, side_col="side", price_col="entry_price", qty_col="qty")
+    sim_summary = _entry_summary(sim_entries, side_col="side", price_col="entry_price", qty_col="qty")
+
+    merged = live_summary.merge(
+        sim_summary,
+        on=["hour", "symbol", "side"],
+        how="outer",
+        suffixes=("_live", "_sim"),
+    )
+    for col in ("count_live", "count_sim", "qty_total_live", "qty_total_sim", "avg_price_live", "avg_price_sim"):
+        merged[col] = merged[col].fillna(0.0)
+    merged["abs_delta"] = (merged["count_live"] - merged["count_sim"]).abs()
+    merged["qty_abs_delta"] = (merged["qty_total_live"] - merged["qty_total_sim"]).abs()
+    merged["exact"] = (merged["count_live"] == merged["count_sim"]).astype(float)
+    price_mask = (merged["qty_total_live"] > 0) & (merged["qty_total_sim"] > 0)
+    merged["price_abs_delta"] = 0.0
+    merged.loc[price_mask, "price_abs_delta"] = (
+        merged.loc[price_mask, "avg_price_live"] - merged.loc[price_mask, "avg_price_sim"]
+    ).abs()
+
+    per_symbol = (
+        merged.groupby("symbol", as_index=False)[["count_live", "count_sim", "abs_delta", "qty_abs_delta"]]
+        .sum()
+        .sort_values(["abs_delta", "qty_abs_delta"], ascending=False)
+        .reset_index(drop=True)
+    )
+
+    return {
+        "hourly_abs_count_delta_total": float(merged["abs_delta"].sum()),
+        "hourly_abs_qty_delta_total": float(merged["qty_abs_delta"].sum()),
+        "matched_price_mae": (
+            float(merged.loc[price_mask, "price_abs_delta"].mean()) if bool(price_mask.any()) else 0.0
+        ),
+        "exact_row_ratio": float(merged["exact"].mean()) if len(merged) else 1.0,
+        "live_entries": int(live_summary["count"].sum()) if len(live_summary) else 0,
+        "sim_entries": int(sim_summary["count"].sum()) if len(sim_summary) else 0,
+        "rows_compared": int(len(merged)),
+        "per_symbol": per_symbol.to_dict(orient="records"),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Replay sparse live stock entry log in simulator.")
     parser.add_argument("--trade-log", type=Path, default=Path("strategy_state/stock_trade_log.jsonl"))
+    parser.add_argument("--event-log", type=Path, default=Path("strategy_state/stock_event_log.jsonl"))
     parser.add_argument("--data-root", type=Path, default=Path("trainingdatahourly/stocks"))
     parser.add_argument("--symbols", default="")
     parser.add_argument("--start", default="")
@@ -295,9 +530,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--sim-backend",
-        choices=["python", "native", "auto"],
+        choices=["python", "native", "auto", "hourly_trader"],
         default="python",
         help="Use python by default because pending-entry TTL is python-only.",
+    )
+    parser.add_argument("--cancel-ack-delays", default="1")
+    parser.add_argument(
+        "--partial-fill-on-touch",
+        default="0,1",
+        help="Comma-separated bool flags for the live-like hourly trader backend.",
     )
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
@@ -322,56 +563,89 @@ def main() -> None:
         end = actions["timestamp"].max() + pd.Timedelta(days=1)
 
     bars = load_bars_for_symbols(data_root=args.data_root, symbols=symbols, start=start, end=end)
-    live_counts = _entry_counts(actions, side_col="side")
+    compare_live_entries = load_live_entry_fills(
+        event_log=args.event_log,
+        symbols=symbols_filter,
+        start=start,
+        end=end,
+    )
+    compare_source = "broker_closed_orders"
+    if compare_live_entries.empty:
+        compare_live_entries = actions[["timestamp", "symbol", "side", "qty", "entry_price"]].copy()
+        compare_source = "trade_log"
+    live_counts = _entry_counts(compare_live_entries, side_col="side")
+
+    is_hourly_trader_backend = str(args.sim_backend).strip().lower() == "hourly_trader"
+    market_order_values = [False] if is_hourly_trader_backend else parse_bool_list(args.market_order_entries)
+    ttl_values = [0] if is_hourly_trader_backend else parse_int_list(args.entry_order_ttls)
+    cancel_ack_values = parse_int_list(args.cancel_ack_delays) if is_hourly_trader_backend else [0]
+    partial_fill_values = parse_bool_list(args.partial_fill_on_touch) if is_hourly_trader_backend else [False]
 
     rows: list[dict[str, Any]] = []
-    for market_order_entry in parse_bool_list(args.market_order_entries):
-        for ttl in parse_int_list(args.entry_order_ttls):
+    for market_order_entry in market_order_values:
+        for ttl in ttl_values:
             for bar_margin in parse_float_list(args.bar_margins):
-                replay = run_replay(
-                    bars=bars,
-                    actions=actions.drop(columns=["side", "logged_at"], errors="ignore"),
-                    symbols=symbols,
-                    initial_cash=args.initial_cash,
-                    max_positions=args.max_positions,
-                    max_hold_hours=args.max_hold_hours,
-                    min_edge=args.min_edge,
-                    fee_rate=args.fee_rate,
-                    leverage=args.leverage,
-                    decision_lag_bars=args.decision_lag_bars,
-                    bar_margin=bar_margin,
-                    entry_order_ttl_hours=ttl,
-                    market_order_entry=market_order_entry,
-                    sim_backend=args.sim_backend,
-                )
-                compare = compare_counts(live_counts, replay["sim_counts"])
-                row = {
-                    "market_order_entry": bool(market_order_entry),
-                    "entry_order_ttl_hours": int(ttl),
-                    "bar_margin": float(bar_margin),
-                    "decision_lag_bars": int(args.decision_lag_bars),
-                    **compare,
-                    "sim_metrics": replay["sim"].metrics,
-                }
-                rows.append(row)
-                logger.info(
-                    "mkt={} ttl={} margin={:.4f} -> abs_delta={} exact={:.4f} live={} sim={}",
-                    int(bool(market_order_entry)),
-                    ttl,
-                    bar_margin,
-                    row["hourly_abs_count_delta_total"],
-                    row["exact_row_ratio"],
-                    row["live_entries"],
-                    row["sim_entries"],
-                )
+                for cancel_ack_delay in cancel_ack_values:
+                    for partial_fill_on_touch in partial_fill_values:
+                        replay = run_replay(
+                            bars=bars,
+                            actions=actions,
+                            symbols=symbols,
+                            initial_cash=args.initial_cash,
+                            max_positions=args.max_positions,
+                            max_hold_hours=args.max_hold_hours,
+                            min_edge=args.min_edge,
+                            fee_rate=args.fee_rate,
+                            leverage=args.leverage,
+                            decision_lag_bars=args.decision_lag_bars,
+                            bar_margin=bar_margin,
+                            entry_order_ttl_hours=ttl,
+                            market_order_entry=market_order_entry,
+                            sim_backend=args.sim_backend,
+                            cancel_ack_delay_bars=cancel_ack_delay,
+                            partial_fill_on_touch=partial_fill_on_touch,
+                        )
+                        compare = compare_entries(compare_live_entries, replay["sim_entries"])
+                        row = {
+                            "market_order_entry": bool(market_order_entry),
+                            "entry_order_ttl_hours": int(ttl),
+                            "bar_margin": float(bar_margin),
+                            "decision_lag_bars": int(args.decision_lag_bars),
+                            "cancel_ack_delay_bars": int(cancel_ack_delay),
+                            "partial_fill_on_touch": bool(partial_fill_on_touch),
+                            **compare,
+                            "sim_metrics": replay["sim"].metrics,
+                        }
+                        rows.append(row)
+                        logger.info(
+                            "backend={} mkt={} ttl={} margin={:.4f} cancel_ack={} partial={} -> abs_delta={} qty_delta={:.2f} price_mae={:.4f}",
+                            args.sim_backend,
+                            int(bool(market_order_entry)),
+                            ttl,
+                            bar_margin,
+                            cancel_ack_delay,
+                            int(bool(partial_fill_on_touch)),
+                            row["hourly_abs_count_delta_total"],
+                            row["hourly_abs_qty_delta_total"],
+                            row["matched_price_mae"],
+                        )
 
-    rows.sort(key=lambda r: (r["hourly_abs_count_delta_total"], -r["exact_row_ratio"]))
+    rows.sort(
+        key=lambda r: (
+            r["hourly_abs_count_delta_total"],
+            r["hourly_abs_qty_delta_total"],
+            r["matched_price_mae"],
+            -r["exact_row_ratio"],
+        )
+    )
     payload = {
         "generated_at_utc": datetime.now(UTC).isoformat(),
         "trade_log": str(args.trade_log),
+        "event_log": str(args.event_log),
         "window_start_utc": str(start),
         "window_end_utc": str(end),
         "symbols": symbols,
+        "compare_source": compare_source,
         "live_entry_count": int(live_counts["count"].sum()) if len(live_counts) else 0,
         "top": rows[:10],
         "all": rows,

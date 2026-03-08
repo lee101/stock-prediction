@@ -12,9 +12,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from binanceneural.config import DatasetConfig, TrainingConfig
 from binanceneural.data import MultiSymbolDataModule
 from binanceneural.trainer import BinanceHourlyTrainer
+from src.trade_directions import DEFAULT_LONG_ONLY_STOCKS, DEFAULT_SHORT_ONLY_STOCKS
 
-LONG_ONLY = {"NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "DBX", "TSLA", "AAPL"}
-SHORT_ONLY = {"YELP", "EBAY", "TRIP", "MTCH", "KIND", "ANGI", "Z", "EXPE", "BKNG", "NWSA", "NYT"}
+LONG_ONLY = set(DEFAULT_LONG_ONLY_STOCKS)
+SHORT_ONLY = set(DEFAULT_SHORT_ONLY_STOCKS)
 
 ALL_SYMBOLS = sorted(LONG_ONLY | SHORT_ONLY)
 

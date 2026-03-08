@@ -25,12 +25,11 @@ from src.robust_trading_metrics import (
     compute_pnl_smoothness_from_equity,
     summarize_lag_results,
 )
+from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 from src.torch_load_utils import torch_load_compat
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
 
-DEFAULT_STOCKS = (
-    "NVDA,MSFT,META,GOOG,NET,PLTR,NYT,YELP,DBX,TRIP,KIND,EBAY,MTCH,ANGI,Z,EXPE,BKNG,NWSA"
-)
+DEFAULT_STOCKS = ",".join(DEFAULT_ALPACA_LIVE8_STOCKS)
 
 DEFAULT_CONFIGS: list[dict[str, Any]] = [
     {
