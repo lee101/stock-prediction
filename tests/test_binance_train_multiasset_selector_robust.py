@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
 from binanceexp1.train_multiasset_selector_robust import (
     build_candidate_spec,
+    build_search_command,
     choose_symbol_candidates,
     collect_top_checkpoints,
     load_configs,
@@ -85,3 +87,48 @@ def test_parse_symbol_map_accepts_directories(tmp_path: Path) -> None:
     parsed = parse_symbol_map(f"BTCUSD={ckpt_dir}", symbols=["BTCUSD"])
 
     assert parsed["BTCUSD"][0].name == "epoch_003.pt"
+
+
+def test_build_search_command_passes_max_history_hours(tmp_path: Path) -> None:
+    args = SimpleNamespace(
+        symbols=["BTCUSD", "ETHUSD", "SOLUSD"],
+        sequence_length=96,
+        forecast_horizons=(1, 6, 24),
+        data_root=Path("trainingdatahourly/crypto"),
+        forecast_cache_root=Path("experiments/cache"),
+        validation_days=30.0,
+        max_history_hours=24 * 120,
+        search_window_hours="336",
+        initial_cash=10_000.0,
+        seed_position_fraction=1.0,
+        default_intensity=6.0,
+        default_offset=0.0,
+        min_edge=0.0015,
+        risk_weight=0.25,
+        edge_mode="high_low",
+        max_hold_hours=6,
+        search_decision_lag_bars=2,
+        search_fill_buffer_bps=20.0,
+        max_volume_fraction=0.1,
+        max_concurrent_positions=1,
+        sortino_clip=10.0,
+        min_trade_count_mean=6.0,
+        cache_only=False,
+        realistic_selection=True,
+        require_all_positive=False,
+        offset_map="ETHUSD=0.0003,SOLUSD=0.0005",
+        intensity_map=None,
+        work_steal=False,
+        work_steal_min_profit_pct=0.001,
+        work_steal_min_edge=0.005,
+        work_steal_edge_margin=0.0,
+    )
+
+    cmd = build_search_command(
+        args=args,
+        candidate_spec="BTCUSD=a.pt;ETHUSD=b.pt;SOLUSD=c.pt",
+        output_dir=tmp_path / "search",
+    )
+
+    joined = " ".join(cmd)
+    assert "--max-history-hours 2880" in joined

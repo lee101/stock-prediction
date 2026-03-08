@@ -12,6 +12,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from binanceneural.forecasts import build_forecast_bundle
+from src.data_loading_utils import read_csv_tail
 
 from .config import DatasetConfig
 
@@ -184,7 +185,8 @@ class BinanceExp1DataModule:
 
     def _prepare_frame(self) -> pd.DataFrame:
         price_frame = self._load_price_history()
-        forecast_frame = self._load_forecasts()
+        start_ts, end_ts = self._history_window_bounds(price_frame)
+        forecast_frame = self._load_forecasts(start=start_ts, end=end_ts)
         merged = price_frame.merge(forecast_frame, on=["timestamp", "symbol"], how="inner")
         merged = merged.sort_values("timestamp").reset_index(drop=True)
         enriched = build_feature_frame(
@@ -192,22 +194,42 @@ class BinanceExp1DataModule:
             config=self.config,
         )
         enriched = enriched.dropna(subset=list(self.feature_columns))
+        max_rows = self._target_history_hours()
+        if max_rows is not None and len(enriched) > max_rows:
+            enriched = enriched.iloc[-max_rows:].copy()
         return enriched.reset_index(drop=True)
 
     def _load_price_history(self) -> pd.DataFrame:
         path = Path(self.config.data_root) / f"{self.config.symbol.upper()}.csv"
         if not path.exists():
             raise FileNotFoundError(f"Missing hourly dataset {path}")
-        frame = pd.read_csv(path)
+        fetch_rows = self._history_fetch_hours()
+        if fetch_rows is not None:
+            frame = read_csv_tail(
+                path,
+                max_rows=fetch_rows,
+                chunksize=200_000,
+                low_memory=False,
+            )
+        else:
+            frame = pd.read_csv(path, low_memory=False)
         frame.columns = [col.lower() for col in frame.columns]
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
         if "symbol" not in frame.columns:
             frame["symbol"] = self.config.symbol.upper()
         frame["symbol"] = frame["symbol"].astype(str).str.upper()
         cols = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
-        return frame[cols].sort_values("timestamp").reset_index(drop=True)
+        frame = frame[cols].sort_values("timestamp").reset_index(drop=True)
+        if fetch_rows is not None and len(frame) > fetch_rows:
+            frame = frame.iloc[-fetch_rows:].reset_index(drop=True)
+        return frame
 
-    def _load_forecasts(self) -> pd.DataFrame:
+    def _load_forecasts(
+        self,
+        *,
+        start: pd.Timestamp | None,
+        end: pd.Timestamp | None,
+    ) -> pd.DataFrame:
         horizons = tuple(int(h) for h in self.config.forecast_horizons)
         context_hours = _resolve_env_positive_int("CHRONOS2_CONTEXT_HOURS")
         if context_hours is None:
@@ -222,7 +244,35 @@ class BinanceExp1DataModule:
             quantile_levels=(0.1, 0.5, 0.9),
             batch_size=batch_size or 128,
             cache_only=self.config.cache_only,
+            start=start,
+            end=end,
         )
+
+    def _target_history_hours(self) -> int | None:
+        raw = getattr(self.config, "max_history_hours", None)
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"max_history_hours must be an integer, got {raw!r}.") from None
+        if value <= 0:
+            return None
+        return value
+
+    def _history_fetch_hours(self) -> int | None:
+        target_hours = self._target_history_hours()
+        if target_hours is None:
+            return None
+        return target_hours + max(0, int(self.config.max_feature_lookback_hours))
+
+    def _history_window_bounds(self, price_frame: pd.DataFrame) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+        end_ts = pd.to_datetime(price_frame["timestamp"], utc=True, errors="coerce").max()
+        fetch_hours = self._history_fetch_hours()
+        start_ts = None
+        if fetch_hours is not None and end_ts is not None and not pd.isna(end_ts):
+            start_ts = end_ts - pd.Timedelta(hours=float(fetch_hours))
+        return start_ts, end_ts
 
 
 class MultiSymbolDataset(Dataset):
@@ -277,6 +327,7 @@ class MultiSymbolDataModule:
                 sequence_length=config.sequence_length,
                 val_fraction=config.val_fraction,
                 min_history_hours=config.min_history_hours,
+                max_history_hours=config.max_history_hours,
                 max_feature_lookback_hours=config.max_feature_lookback_hours,
                 feature_columns=config.feature_columns,
                 refresh_hours=config.refresh_hours,

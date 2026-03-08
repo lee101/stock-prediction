@@ -121,3 +121,48 @@ def test_build_joint_forecast_cache_writes_symbol_parquets(tmp_path: Path, monke
     first_call = wrapper.calls[0]
     assert first_call["predict_kwargs"] == {"predict_batches_jointly": True}
     assert first_call["known_future_covariates"] == list(cache_mod._TIME_COVARIATE_COLUMNS)
+
+
+def test_build_joint_forecast_cache_limits_history_window(tmp_path: Path, monkeypatch) -> None:
+    data_root = tmp_path / "data"
+    cache_root = tmp_path / "cache"
+    data_root.mkdir()
+    _write_history(data_root / "BTCUSD.csv", "BTCUSD", rows=120)
+
+    wrapper = _RecordingWrapper()
+
+    class _WrapperFactory:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):  # type: ignore[no-untyped-def]
+            del args, kwargs
+            return wrapper
+
+    monkeypatch.setattr(
+        cache_mod,
+        "resolve_chronos2_params",
+        lambda symbol, frequency="hourly": {  # type: ignore[no-untyped-def]
+            "model_id": "amazon/chronos-2",
+            "device_map": "cpu",
+            "quantile_levels": (0.1, 0.5, 0.9),
+        },
+    )
+    monkeypatch.setattr(cache_mod, "Chronos2OHLCWrapper", _WrapperFactory)
+
+    summary = cache_mod.build_joint_forecast_cache(
+        symbols=["BTCUSD"],
+        data_root=data_root,
+        cache_root=cache_root,
+        horizons=(1,),
+        context_hours=16,
+        batch_size=8,
+        max_history_hours=48,
+        use_cross_learning=False,
+        use_time_covariates=False,
+        force_rebuild=True,
+    )
+
+    timestamps = pd.date_range("2026-01-01", periods=120, freq="h", tz="UTC")
+    btc_cache = pd.read_parquet(cache_root / "h1" / "BTCUSD.parquet")
+
+    assert summary["h1"]["BTCUSD"] == 32
+    assert pd.to_datetime(btc_cache["timestamp"], utc=True).min() == timestamps[-32]
