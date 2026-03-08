@@ -17,6 +17,10 @@ from .simulator import _end_of_day_mask, _market_open_mask, _to_new_york, _infer
 @dataclass
 class SelectionConfig:
     initial_cash: float = 10_000.0
+    initial_inventory: float = 0.0
+    initial_symbol: Optional[str] = None
+    initial_open_price: Optional[float] = None
+    initial_open_ts: Optional[pd.Timestamp] = None
     min_edge: float = 0.0
     risk_weight: float = 0.5
     edge_mode: str = "high_low"
@@ -45,6 +49,10 @@ class SelectionConfig:
     # Leverage/financing realism knobs (defaults preserve legacy behaviour).
     max_leverage_stock: float = 1.0
     max_leverage_crypto: float = 1.0
+    long_max_leverage_stock: Optional[float] = None
+    short_max_leverage_stock: Optional[float] = None
+    long_max_leverage_crypto: Optional[float] = None
+    short_max_leverage_crypto: Optional[float] = None
     margin_interest_annual: float = 0.0
     short_borrow_cost_annual: float = 0.0
     # Multi-position: 1 = legacy single-position, 2+ = hold up to N simultaneously.
@@ -191,13 +199,18 @@ def _run_best_trade_simulation_on_merged(
     groups = merged.groupby("timestamp", sort=True)
 
     symbol_meta = _build_symbol_meta(merged, cfg)
+    initial_position = _resolve_initial_position(merged, cfg)
 
     cash = float(cfg.initial_cash)
-    inventory = 0.0  # signed: >0 long, <0 short
-    open_symbol: Optional[str] = None
-    open_ts: Optional[pd.Timestamp] = None
-    open_price: float = 0.0
-    last_close: Dict[str, float] = {}
+    inventory = float(initial_position["inventory"]) if initial_position is not None else 0.0  # signed: >0 long, <0 short
+    open_symbol: Optional[str] = str(initial_position["symbol"]) if initial_position is not None else None
+    open_ts: Optional[pd.Timestamp] = initial_position["open_ts"] if initial_position is not None else None
+    open_price: float = float(initial_position["open_price"]) if initial_position is not None else 0.0
+    last_close: Dict[str, float] = (
+        {str(initial_position["symbol"]): float(initial_position["mark_price"])}
+        if initial_position is not None
+        else {}
+    )
     financing_cost_paid = 0.0
     prev_ts: Optional[pd.Timestamp] = None
     equity_values: List[float] = []
@@ -389,7 +402,7 @@ def _run_best_trade_simulation_on_merged(
                             _execute_sell(ts, open_symbol, qty_sell, float(cur_row.close), exit_fee, reason="work_steal_exit")
                             sell_filled = 1.0
                             entry_fee = symbol_meta[best_sym]["fee"]
-                            max_lev = float(symbol_meta[best_sym].get("max_leverage", 1.0))
+                            max_lev = _entry_max_leverage(symbol_meta, best_sym, side="long")
                             max_notional = max(0.0, float(cash) * max_lev)
                             max_buy = max_notional / (best_row.buy_price * (1 + entry_fee)) if best_row.buy_price > 0 else 0.0
                             qty_buy = best_int * max_buy
@@ -483,7 +496,7 @@ def _run_best_trade_simulation_on_merged(
                         # Selected an entry order that did not fill on this bar.
                         pass
                     else:
-                        max_leverage = float(symbol_meta[selected_symbol].get("max_leverage", 1.0))
+                        max_leverage = _entry_max_leverage(symbol_meta, selected_symbol, side="long")
                         max_buy_notional = max(0.0, float(cash) * max_leverage)
                         max_buy = (
                             max_buy_notional / (row.buy_price * (1 + fee_rate)) if row.buy_price > 0 else 0.0
@@ -499,7 +512,7 @@ def _run_best_trade_simulation_on_merged(
                         # Selected an entry order that did not fill on this bar.
                         pass
                     else:
-                        max_leverage = float(symbol_meta[selected_symbol].get("max_leverage", 1.0))
+                        max_leverage = _entry_max_leverage(symbol_meta, selected_symbol, side="short")
                         max_short_notional = max(0.0, float(cash) * max_leverage)
                         max_short = (
                             max_short_notional / (row.sell_price * (1 + fee_rate)) if row.sell_price > 0 else 0.0
@@ -588,12 +601,25 @@ def _run_multi_position_simulation(
     merged = merged.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
     groups = merged.groupby("timestamp", sort=True)
     symbol_meta = _build_symbol_meta(merged, cfg)
+    initial_position = _resolve_initial_position(merged, cfg)
 
     max_pos = max(1, int(cfg.max_concurrent_positions))
     cash = float(cfg.initial_cash)
-    positions: Dict[str, float] = {}  # symbol -> signed qty
-    position_open_ts: Dict[str, pd.Timestamp] = {}
-    last_close: Dict[str, float] = {}
+    positions: Dict[str, float] = (
+        {str(initial_position["symbol"]): float(initial_position["inventory"])}
+        if initial_position is not None
+        else {}
+    )  # symbol -> signed qty
+    position_open_ts: Dict[str, pd.Timestamp] = (
+        {str(initial_position["symbol"]): initial_position["open_ts"]}
+        if initial_position is not None
+        else {}
+    )
+    last_close: Dict[str, float] = (
+        {str(initial_position["symbol"]): float(initial_position["mark_price"])}
+        if initial_position is not None
+        else {}
+    )
     financing_cost_paid = 0.0
     prev_ts: Optional[pd.Timestamp] = None
     equity_values: List[float] = []
@@ -752,12 +778,11 @@ def _run_multi_position_simulation(
                 if remaining_slots <= 0:
                     break
                 slot_cash = max(0.0, float(cash)) / remaining_slots
-                max_leverage = float(symbol_meta[symbol].get("max_leverage", 1.0))
-
                 if direction == "long":
                     if (not cfg.select_fillable_only) and row.low > row.buy_price * (1 - cfg.bar_margin):
                         # Selected an entry order that did not fill on this bar.
                         continue
+                    max_leverage = _entry_max_leverage(symbol_meta, symbol, side="long")
                     max_buy_notional = slot_cash * max_leverage
                     max_buy = max_buy_notional / (row.buy_price * (1 + fee_rate)) if row.buy_price > 0 else 0.0
                     qty = intensity * max_buy
@@ -771,6 +796,7 @@ def _run_multi_position_simulation(
                     if (not cfg.select_fillable_only) and row.high < row.sell_price * (1 + cfg.bar_margin):
                         # Selected an entry order that did not fill on this bar.
                         continue
+                    max_leverage = _entry_max_leverage(symbol_meta, symbol, side="short")
                     max_short_notional = slot_cash * max_leverage
                     max_short = max_short_notional / (row.sell_price * (1 + fee_rate)) if row.sell_price > 0 else 0.0
                     qty = intensity * max(0.0, max_short)
@@ -852,6 +878,79 @@ def _prepare_frame(
     return merged
 
 
+def _resolve_initial_position(merged: pd.DataFrame, cfg: SelectionConfig) -> Optional[Dict[str, object]]:
+    inventory = float(getattr(cfg, "initial_inventory", 0.0) or 0.0)
+    if abs(inventory) <= 1e-12:
+        return None
+
+    symbol_raw = getattr(cfg, "initial_symbol", None)
+    symbol = str(symbol_raw or "").strip().upper()
+    if not symbol:
+        raise ValueError("initial_symbol is required when initial_inventory is non-zero.")
+    if symbol not in set(merged["symbol"].astype(str).str.upper()):
+        raise ValueError(f"initial_symbol '{symbol}' is not present in the merged frame.")
+
+    symbol_rows = merged[merged["symbol"].astype(str).str.upper() == symbol]
+    if symbol_rows.empty:
+        raise ValueError(f"No rows available for initial_symbol '{symbol}'.")
+
+    first_row = symbol_rows.iloc[0]
+    mark_price = _safe_float(first_row.get("close"))
+    if mark_price is None or mark_price <= 0.0:
+        raise ValueError(f"Could not resolve a valid starting close for initial_symbol '{symbol}'.")
+
+    open_price = _safe_float(getattr(cfg, "initial_open_price", None))
+    if open_price is None or open_price <= 0.0:
+        open_price = float(mark_price)
+
+    open_ts_raw = getattr(cfg, "initial_open_ts", None)
+    open_ts = pd.Timestamp(open_ts_raw) if open_ts_raw is not None else pd.Timestamp(first_row["timestamp"])
+    if open_ts.tzinfo is None:
+        open_ts = open_ts.tz_localize("UTC")
+    else:
+        open_ts = open_ts.tz_convert("UTC")
+
+    return {
+        "symbol": symbol,
+        "inventory": float(inventory),
+        "open_price": float(open_price),
+        "open_ts": open_ts,
+        "mark_price": float(mark_price),
+    }
+
+
+def _base_max_leverage(cfg: SelectionConfig, *, symbol: str, asset_class: str) -> float:
+    attr = "max_leverage_crypto" if asset_class == "crypto" else "max_leverage_stock"
+    value = float(getattr(cfg, attr))
+    if not np.isfinite(value) or value <= 0.0:
+        raise ValueError(f"{attr} must be > 0 for {symbol} (asset_class={asset_class}), got {value}.")
+    return value
+
+
+def _directional_max_leverage(
+    cfg: SelectionConfig,
+    *,
+    symbol: str,
+    asset_class: str,
+    side: str,
+    fallback: float,
+) -> float:
+    attr = f"{side}_max_leverage_crypto" if asset_class == "crypto" else f"{side}_max_leverage_stock"
+    raw_value = getattr(cfg, attr, None)
+    if raw_value is None:
+        return float(fallback)
+    value = float(raw_value)
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError(f"{attr} must be >= 0 for {symbol} (asset_class={asset_class}), got {value}.")
+    return value
+
+
+def _entry_max_leverage(symbol_meta: Dict[str, Dict[str, object]], symbol: str, *, side: str) -> float:
+    meta = symbol_meta[symbol]
+    key = "long_max_leverage" if side == "long" else "short_max_leverage"
+    return max(0.0, float(meta.get(key, meta.get("max_leverage", 1.0))))
+
+
 def _build_symbol_meta(merged: pd.DataFrame, cfg: SelectionConfig) -> Dict[str, Dict[str, object]]:
     meta: Dict[str, Dict[str, object]] = {}
     fee_map = cfg.fee_by_symbol or {}
@@ -866,9 +965,21 @@ def _build_symbol_meta(merged: pd.DataFrame, cfg: SelectionConfig) -> Dict[str, 
             long_only_symbols=cfg.long_only_symbols,
             short_only_symbols=cfg.short_only_symbols,
         )
-        max_leverage = float(cfg.max_leverage_crypto) if asset_class == "crypto" else float(cfg.max_leverage_stock)
-        if not np.isfinite(max_leverage) or max_leverage <= 0.0:
-            raise ValueError(f"max_leverage must be > 0 for {symbol} (asset_class={asset_class}), got {max_leverage}.")
+        max_leverage = _base_max_leverage(cfg, symbol=symbol, asset_class=asset_class)
+        long_max_leverage = _directional_max_leverage(
+            cfg,
+            symbol=symbol,
+            asset_class=asset_class,
+            side="long",
+            fallback=max_leverage,
+        )
+        short_max_leverage = _directional_max_leverage(
+            cfg,
+            symbol=symbol,
+            asset_class=asset_class,
+            side="short",
+            fallback=max_leverage,
+        )
         if symbol in periods_map:
             periods_per_year = float(periods_map[symbol])
         else:
@@ -889,6 +1000,8 @@ def _build_symbol_meta(merged: pd.DataFrame, cfg: SelectionConfig) -> Dict[str, 
             "market_open_ts": market_open_ts,
             "directions": {"can_long": bool(dirs.can_long), "can_short": bool(dirs.can_short)},
             "max_leverage": max_leverage,
+            "long_max_leverage": long_max_leverage,
+            "short_max_leverage": short_max_leverage,
         }
     return meta
 

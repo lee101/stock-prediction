@@ -108,9 +108,17 @@ def execute_signal(api, signal, prices: dict, allocation_usd: float = 1000.0):
         logger.error(f"Invalid price for {signal.symbol}")
         return
 
-    qty = allocation_usd / price
+    allocation_pct = max(0.0, min(1.0, float(getattr(signal, "allocation_pct", 1.0))))
+    target_notional = float(allocation_usd) * allocation_pct
+    if target_notional <= 0:
+        logger.info(f"Zero target allocation for {signal.action}, skipping")
+        return
+    qty = target_notional / price
 
-    logger.info(f"Entering {signal.direction} {signal.symbol}: {qty:.6f} @ {price:.2f}")
+    logger.info(
+        f"Entering {signal.direction} {signal.symbol}: {qty:.6f} @ {price:.2f} "
+        f"(alloc={allocation_pct:.2f}, notional=${target_notional:.2f})"
+    )
 
     if signal.direction == "long":
         alpaca_wrapper.open_market_order_violently(signal.symbol, qty, "buy")
@@ -177,7 +185,7 @@ def main():
     api = TradingClient(key_id, secret, paper=paper)
     logger.info(f"Connected to Alpaca ({'paper' if paper else 'live'})")
 
-    trader = PPOTrader(args.checkpoint, args.device, long_only=args.long_only)
+    trader = PPOTrader(args.checkpoint, args.device, long_only=args.long_only, symbols=SYMBOLS)
 
     if args.once:
         run_once(trader, api, args.allocation_usd)

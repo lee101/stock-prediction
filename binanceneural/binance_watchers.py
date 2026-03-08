@@ -20,6 +20,8 @@ STATE_SUFFIX = resolve_state_suffix()
 PAPER_SUFFIX = get_paper_suffix()
 WATCHERS_DIR = get_state_dir() / f"binanceneural_watchers{PAPER_SUFFIX}{STATE_SUFFIX or ''}"
 WATCHERS_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_PLAN_PRICE_REL_TOL = 0.0005  # 5 bps
+DEFAULT_PLAN_QTY_REL_TOL = 0.02  # 2%
 
 
 @dataclass
@@ -57,7 +59,7 @@ def _load_metadata(path: Path) -> Optional[dict]:
         with path.open("r", encoding="utf-8") as handle:
             return json.load(handle)
     except Exception as exc:  # pragma: no cover
-        logger.warning("Failed to read watcher metadata %s: %s", path, exc)
+        logger.warning("Failed to read watcher metadata {}: {}", path, exc)
         return None
 
 
@@ -69,7 +71,7 @@ def _persist_metadata(path: Path, payload: dict) -> None:
             json.dump(payload, handle, indent=2, sort_keys=True)
         temp_path.replace(path)
     except Exception as exc:  # pragma: no cover
-        logger.warning("Failed to persist watcher metadata %s: %s", path, exc)
+        logger.warning("Failed to persist watcher metadata {}: {}", path, exc)
 
 
 def _is_pid_alive(pid: Optional[int]) -> bool:
@@ -94,9 +96,9 @@ def _cancel_order(metadata: dict) -> None:
         else:
             client = binance_wrapper.get_client()
             client.cancel_order(symbol=symbol, orderId=order_id)
-        logger.info("Canceled Binance order %s for %s", order_id, symbol)
+        logger.info("Canceled Binance order {} for {}", order_id, symbol)
     except Exception as exc:
-        logger.warning("Failed to cancel Binance order %s for %s: %s", order_id, symbol, exc)
+        logger.warning("Failed to cancel Binance order {} for {}: {}", order_id, symbol, exc)
 
 
 def stop_existing_watcher(path: Path, *, reason: str = "replaced") -> None:
@@ -107,9 +109,9 @@ def stop_existing_watcher(path: Path, *, reason: str = "replaced") -> None:
     if isinstance(pid, int) and pid > 0:
         try:
             os.killpg(pid, signal.SIGTERM)
-            logger.info("Terminated watcher process group %s (%s)", pid, path.name)
+            logger.info("Terminated watcher process group {} ({})", pid, path.name)
         except Exception as exc:  # pragma: no cover
-            logger.warning("Failed to terminate watcher %s pgid=%s: %s", path, pid, exc)
+            logger.warning("Failed to terminate watcher {} pgid={}: {}", path, pid, exc)
     _cancel_order(metadata)
     metadata["active"] = False
     metadata["state"] = "stopped"
@@ -120,6 +122,22 @@ def stop_existing_watcher(path: Path, *, reason: str = "replaced") -> None:
 
 def _float_eq(a: float, b: float, tol: float = 1e-8) -> bool:
     return abs(float(a) - float(b)) <= tol
+
+
+def _float_rel_eq(a: float, b: float, rel_tol: float, abs_tol: float = 1e-8) -> bool:
+    af = float(a)
+    bf = float(b)
+    scale = max(abs(af), abs(bf), 1.0)
+    tol = max(abs_tol, rel_tol * scale)
+    return abs(af - bf) <= tol
+
+
+def _float_qty_eq(a: float, b: float, rel_tol: float, abs_tol: float = 1e-8) -> bool:
+    af = float(a)
+    bf = float(b)
+    scale = max(abs(af), abs(bf), abs_tol)
+    tol = max(abs_tol, rel_tol * scale)
+    return abs(af - bf) <= tol
 
 
 def _matches_plan(metadata: dict, plan: WatcherPlan) -> bool:
@@ -133,9 +151,19 @@ def _matches_plan(metadata: dict, plan: WatcherPlan) -> bool:
         return False
     if metadata.get("mode") != plan.mode:
         return False
-    if not _float_eq(metadata.get("limit_price", -1.0), plan.limit_price):
+    if bool(metadata.get("margin", False)) != bool(plan.margin):
         return False
-    if not _float_eq(metadata.get("target_qty", -1.0), plan.target_qty):
+    metadata_side_effect = str(metadata.get("side_effect_type", "NO_SIDE_EFFECT") or "NO_SIDE_EFFECT")
+    if metadata_side_effect != str(plan.side_effect_type or "NO_SIDE_EFFECT"):
+        return False
+    price_rel_tol = max(
+        DEFAULT_PLAN_PRICE_REL_TOL,
+        float(metadata.get("price_tolerance", 0.0) or 0.0),
+        float(plan.price_tolerance),
+    )
+    if not _float_rel_eq(metadata.get("limit_price", -1.0), plan.limit_price, rel_tol=price_rel_tol):
+        return False
+    if not _float_qty_eq(metadata.get("target_qty", -1.0), plan.target_qty, rel_tol=DEFAULT_PLAN_QTY_REL_TOL):
         return False
     expiry_at = metadata.get("expiry_at")
     if expiry_at:
@@ -154,16 +182,24 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
     config_path = watcher_config_path(plan.symbol, plan.side, plan.mode, suffix=price_suffix)
 
     pattern = f"{_sanitize(plan.symbol)}_{_sanitize(plan.side)}_{plan.mode}_*.json"
+    active_paths: list[Path] = []
     for path in WATCHERS_DIR.glob(pattern):
+        metadata = _load_metadata(path)
+        if not metadata or not metadata.get("active"):
+            continue
+        if _matches_plan(metadata, plan):
+            logger.debug("Watcher already active for {} {} {} via {}", plan.symbol, plan.side, plan.mode, path.name)
+            return path
+        active_paths.append(path)
+
+    for path in active_paths:
         if path == config_path:
             continue
-        metadata = _load_metadata(path)
-        if metadata and metadata.get("active"):
-            stop_existing_watcher(path, reason="superseded")
+        stop_existing_watcher(path, reason="superseded")
 
     existing = _load_metadata(config_path)
     if existing and _matches_plan(existing, plan):
-        logger.debug("Watcher already active for %s %s %s", plan.symbol, plan.side, plan.mode)
+        logger.debug("Watcher already active for {} {} {}", plan.symbol, plan.side, plan.mode)
         return config_path
 
     if existing:
@@ -224,7 +260,7 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
     if plan.margin:
         command.extend(["--margin", "--side-effect-type", plan.side_effect_type])
 
-    logger.info("Launching Binance watcher: %s", " ".join(command))
+    logger.info("Launching Binance watcher: {}", " ".join(command))
     try:
         process = subprocess.Popen(
             command,
@@ -250,9 +286,11 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
 
 
 def cancel_entry_watchers(*, exclude_symbol: Optional[str] = None) -> None:
-    for path in WATCHERS_DIR.glob("*_buy_entry_*.json"):
+    for path in WATCHERS_DIR.glob("*.json"):
         metadata = _load_metadata(path)
         if not metadata or not metadata.get("active"):
+            continue
+        if metadata.get("mode") != "entry":
             continue
         if exclude_symbol and metadata.get("symbol") == exclude_symbol:
             continue

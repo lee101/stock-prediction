@@ -66,7 +66,11 @@ class ChronosForecastManager:
         self.cache = ForecastCache(self.config.cache_dir)
         self._wrapper: Optional[object] = None
         self._predict_kwargs: Dict[str, object] = {}
+        self._use_multivariate: bool = False
+        self._use_cross_learning: bool = False
+        self._resolved_params: Dict[str, object] = {}
         self._warned_missing = False
+        self._load_inference_params()
 
     def ensure_latest(
         self,
@@ -243,14 +247,7 @@ class ChronosForecastManager:
         contexts = [rec["context"] for rec in records]
         symbols = [rec["batch_symbol"] for rec in records]
         try:
-            batches = wrapper.predict_ohlc_batch(  # type: ignore[attr-defined]
-                contexts,
-                symbols=symbols,
-                prediction_length=self.config.prediction_horizon_hours,
-                context_length=self.config.context_hours,
-                batch_size=self.config.batch_size,
-                predict_kwargs=self._predict_kwargs,
-            )
+            batches = self._predict_batches(wrapper, contexts, symbols)
         except Exception as exc:
             logger.warning("Chronos forecast failed for %s: %s", self.config.symbol, exc)
             rows = [self._heuristic_forecast(rec["context"], rec["target_ts"]) for rec in records]
@@ -328,6 +325,85 @@ class ChronosForecastManager:
         suffix = pd.Timestamp(target_ts).strftime("%Y%m%dT%H%M%SZ")
         return f"{self.config.symbol.upper()}__{suffix}__{ordinal}"
 
+    def _load_inference_params(self) -> None:
+        """Load symbol-specific inference defaults from chronos2 params."""
+        try:
+            params = resolve_chronos2_params(self.config.symbol, frequency="hourly")
+        except Exception as exc:
+            logger.debug("Failed to resolve Chronos2 params for %s: %s", self.config.symbol, exc)
+            return
+
+        self._resolved_params = dict(params)
+        resolved_predict_kwargs = dict(params.get("predict_kwargs") or {})
+        if resolved_predict_kwargs:
+            # Let explicit runtime overrides win over defaults from hyperparams.
+            self._predict_kwargs = {**resolved_predict_kwargs, **self._predict_kwargs}
+        self._use_multivariate = bool(params.get("use_multivariate", False))
+        self._use_cross_learning = bool(params.get("use_cross_learning", False))
+
+    def _predict_batches(
+        self,
+        wrapper: object,
+        contexts: Sequence[pd.DataFrame],
+        symbols: Sequence[str],
+    ) -> List[object]:
+        """Run forecast inference with configured policy, falling back safely."""
+        prediction_length = int(self.config.prediction_horizon_hours)
+        context_length = int(self.config.context_hours)
+        batch_size = int(self.config.batch_size)
+        quantile_levels = list(self.config.quantile_levels)
+
+        if self._use_multivariate:
+            if self._use_cross_learning and len(contexts) > 1 and hasattr(wrapper, "predict_ohlc_joint"):
+                try:
+                    joint_batches = wrapper.predict_ohlc_joint(  # type: ignore[attr-defined]
+                        contexts,
+                        symbols=list(symbols),
+                        prediction_length=prediction_length,
+                        context_length=context_length,
+                        quantile_levels=quantile_levels,
+                        predict_batches_jointly=True,
+                        batch_size=batch_size,
+                    )
+                    if len(joint_batches) == len(contexts):
+                        return list(joint_batches)
+                    logger.warning(
+                        "Chronos joint prediction for %s returned %d/%d batches; falling back.",
+                        self.config.symbol,
+                        len(joint_batches),
+                        len(contexts),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Chronos joint prediction failed for %s, falling back: %s",
+                        self.config.symbol,
+                        exc,
+                    )
+
+            if hasattr(wrapper, "predict_ohlc_multivariate"):
+                multi_batches: List[object] = []
+                for context, symbol in zip(contexts, symbols):
+                    batch = wrapper.predict_ohlc_multivariate(  # type: ignore[attr-defined]
+                        context,
+                        symbol=symbol,
+                        prediction_length=prediction_length,
+                        context_length=context_length,
+                        quantile_levels=quantile_levels,
+                        batch_size=batch_size,
+                    )
+                    multi_batches.append(batch)
+                if len(multi_batches) == len(contexts):
+                    return multi_batches
+
+        return wrapper.predict_ohlc_batch(  # type: ignore[attr-defined]
+            contexts,
+            symbols=list(symbols),
+            prediction_length=prediction_length,
+            context_length=context_length,
+            batch_size=batch_size,
+            predict_kwargs=self._predict_kwargs,
+        )
+
     def _ensure_wrapper(self) -> Optional[object]:
         if self._wrapper is not None:
             return self._wrapper
@@ -343,9 +419,13 @@ class ChronosForecastManager:
                 )
                 self._warned_missing = True
             return None
-        params = resolve_chronos2_params(self.config.symbol, frequency="hourly")
+        params = self._resolved_params or resolve_chronos2_params(self.config.symbol, frequency="hourly")
         quantiles = tuple(params.get("quantile_levels") or self.config.quantile_levels)
-        self._predict_kwargs = dict(params.get("predict_kwargs") or {})
+        resolved_predict_kwargs = dict(params.get("predict_kwargs") or {})
+        if resolved_predict_kwargs:
+            self._predict_kwargs = {**resolved_predict_kwargs, **self._predict_kwargs}
+        self._use_multivariate = bool(params.get("use_multivariate", self._use_multivariate))
+        self._use_cross_learning = bool(params.get("use_cross_learning", self._use_cross_learning))
 
         self._wrapper = Chronos2OHLCWrapper.from_pretrained(  # type: ignore[assignment]
             model_id=params.get("model_id", "amazon/chronos-2"),

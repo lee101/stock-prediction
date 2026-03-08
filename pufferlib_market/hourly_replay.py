@@ -182,6 +182,34 @@ def _close_position(cash: float, pos: Position, price: float, fee_rate: float) -
     return float(cash), bool(win)
 
 
+def _resolve_limit_fill_price(*, low: float, high: float, target_price: float) -> float | None:
+    lo = float(min(low, high))
+    hi = float(max(low, high))
+    tp = float(target_price)
+    if tp < lo or tp > hi:
+        return None
+    return tp
+
+
+def _action_allocation_pct(*, alloc_idx: int, alloc_bins: int) -> float:
+    bins = max(1, int(alloc_bins))
+    if bins <= 1:
+        return 1.0
+    idx = max(0, min(int(alloc_idx), bins - 1))
+    pct = float(idx + 1) / float(bins)
+    return float(min(1.0, max(0.01, pct)))
+
+
+def _action_level_offset_bps(*, level_idx: int, level_bins: int, max_offset_bps: float) -> float:
+    bins = max(1, int(level_bins))
+    max_bps = max(0.0, float(max_offset_bps))
+    if bins <= 1 or max_bps <= 0.0:
+        return 0.0
+    idx = max(0, min(int(level_idx), bins - 1))
+    frac = float(idx) / float(bins - 1)
+    return (2.0 * frac - 1.0) * max_bps
+
+
 def _open_long(cash: float, sym: int, price: float, fee_rate: float, max_leverage: float) -> tuple[float, Optional[Position]]:
     if price <= 0.0 or cash <= 0.0:
         return float(cash), None
@@ -199,6 +227,76 @@ def _open_short(cash: float, sym: int, price: float, fee_rate: float, max_levera
     qty = sell_budget / (price * (1.0 + fee_rate))
     cash += qty * price * (1.0 - fee_rate)
     return float(cash), Position(sym=sym, is_short=True, qty=float(qty), entry_price=float(price))
+
+
+def _open_long_limit(
+    *,
+    cash: float,
+    sym: int,
+    close_price: float,
+    low_price: float,
+    high_price: float,
+    fee_rate: float,
+    max_leverage: float,
+    allocation_pct: float,
+    level_offset_bps: float,
+) -> tuple[float, Optional[Position]]:
+    if close_price <= 0.0 or cash <= 0.0:
+        return float(cash), None
+    target_price = float(close_price) * (1.0 + float(level_offset_bps) / 10_000.0)
+    fill_price = _resolve_limit_fill_price(low=float(low_price), high=float(high_price), target_price=target_price)
+    if fill_price is None:
+        return float(cash), None
+    alloc = min(1.0, max(0.0, float(allocation_pct)))
+    if alloc <= 0.0:
+        return float(cash), None
+    buy_budget = float(cash) * float(max_leverage) * alloc
+    denom = fill_price * (1.0 + float(fee_rate))
+    if buy_budget <= 0.0 or denom <= 0.0:
+        return float(cash), None
+    qty = buy_budget / denom
+    cost = qty * denom
+    if qty <= 0.0 or cost <= 0.0:
+        return float(cash), None
+    if cost > cash:
+        cost = float(cash)
+        qty = cost / denom
+        if qty <= 0.0:
+            return float(cash), None
+    cash -= cost
+    return float(cash), Position(sym=sym, is_short=False, qty=float(qty), entry_price=float(fill_price))
+
+
+def _open_short_limit(
+    *,
+    cash: float,
+    sym: int,
+    close_price: float,
+    low_price: float,
+    high_price: float,
+    fee_rate: float,
+    max_leverage: float,
+    allocation_pct: float,
+    level_offset_bps: float,
+) -> tuple[float, Optional[Position]]:
+    if close_price <= 0.0 or cash <= 0.0:
+        return float(cash), None
+    target_price = float(close_price) * (1.0 + float(level_offset_bps) / 10_000.0)
+    fill_price = _resolve_limit_fill_price(low=float(low_price), high=float(high_price), target_price=target_price)
+    if fill_price is None:
+        return float(cash), None
+    alloc = min(1.0, max(0.0, float(allocation_pct)))
+    if alloc <= 0.0:
+        return float(cash), None
+    sell_budget = float(cash) * float(max_leverage) * alloc
+    denom = fill_price * (1.0 + float(fee_rate))
+    if sell_budget <= 0.0 or denom <= 0.0:
+        return float(cash), None
+    qty = sell_budget / denom
+    if qty <= 0.0:
+        return float(cash), None
+    cash += qty * fill_price * (1.0 - float(fee_rate))
+    return float(cash), Position(sym=sym, is_short=True, qty=float(qty), entry_price=float(fill_price))
 
 
 def _build_obs(
@@ -251,6 +349,9 @@ def simulate_daily_policy(
     max_leverage: float = 1.0,
     periods_per_year: float = 365.0,
     initial_cash: float = INITIAL_CASH,
+    action_allocation_bins: int = 1,
+    action_level_bins: int = 1,
+    action_max_offset_bps: float = 0.0,
 ) -> DailySimResult:
     """Pure-python simulation matching the C env's daily step semantics.
 
@@ -267,6 +368,7 @@ def simulate_daily_policy(
     hold_steps = 0
     step = 0
     peak_equity = float(initial_cash)
+    max_dd = 0.0
     initial_equity = float(initial_cash)
 
     num_trades = 0
@@ -277,6 +379,10 @@ def simulate_daily_policy(
     ret_count = 0
 
     actions = np.zeros((max_steps,), dtype=np.int32)
+    alloc_bins = max(1, int(action_allocation_bins))
+    level_bins = max(1, int(action_level_bins))
+    per_symbol_actions = alloc_bins * level_bins
+    side_block = S * per_symbol_actions
 
     while True:
         t = step
@@ -293,8 +399,8 @@ def simulate_daily_policy(
 
         obs = _build_obs(data, t, pos, cash, hold_steps, step, max_steps)
         action = int(policy_fn(obs))
-        if action < 0 or action > 2 * S:
-            action = 0
+        if action < 0 or action > 2 * side_block:
+            action = -1
         if step < max_steps:
             actions[step] = action
 
@@ -309,10 +415,24 @@ def simulate_daily_policy(
                     hold_steps = 0
                 else:
                     hold_steps += 1
-        elif 1 <= action <= S:
-            target_sym = action - 1
+        elif 1 <= action <= 2 * side_block:
+            action_idx = action - 1
+            is_short_target = action_idx >= side_block
+            if is_short_target:
+                action_idx -= side_block
+            target_sym = action_idx // per_symbol_actions
+            rem = action_idx % per_symbol_actions
+            alloc_idx = rem // level_bins
+            level_idx = rem % level_bins
+            target_alloc = _action_allocation_pct(alloc_idx=alloc_idx, alloc_bins=alloc_bins)
+            level_bps = _action_level_offset_bps(
+                level_idx=level_idx,
+                level_bins=level_bins,
+                max_offset_bps=action_max_offset_bps,
+            )
+            target_pos_id = target_sym + S if is_short_target else target_sym
             target_tradable = _is_tradable(data, t, target_sym)
-            if pos is not None and (not pos.is_short) and pos.sym == target_sym:
+            if pos is not None and ((S + pos.sym) if pos.is_short else pos.sym) == target_pos_id:
                 hold_steps += 1
             else:
                 if not target_tradable:
@@ -325,26 +445,38 @@ def simulate_daily_policy(
                         cash, win = _close_position(cash, pos, price_cur, fee_rate)
                         num_trades += 1
                         winning_trades += int(win)
-                    cash, pos = _open_long(cash, target_sym, float(data.prices[t, target_sym, P_CLOSE]), fee_rate, max_leverage)
-                    hold_steps = 0
+                    close_px = float(data.prices[t, target_sym, P_CLOSE])
+                    low_px = float(data.prices[t, target_sym, P_LOW])
+                    high_px = float(data.prices[t, target_sym, P_HIGH])
+                    if is_short_target:
+                        cash, pos = _open_short_limit(
+                            cash=cash,
+                            sym=target_sym,
+                            close_price=close_px,
+                            low_price=low_px,
+                            high_price=high_px,
+                            fee_rate=fee_rate,
+                            max_leverage=max_leverage,
+                            allocation_pct=target_alloc,
+                            level_offset_bps=level_bps,
+                        )
+                    else:
+                        cash, pos = _open_long_limit(
+                            cash=cash,
+                            sym=target_sym,
+                            close_price=close_px,
+                            low_price=low_px,
+                            high_price=high_px,
+                            fee_rate=fee_rate,
+                            max_leverage=max_leverage,
+                            allocation_pct=target_alloc,
+                            level_offset_bps=level_bps,
+                        )
+                    if pos is not None and ((S + pos.sym) if pos.is_short else pos.sym) == target_pos_id:
+                        hold_steps = 0
         else:
-            target_sym = action - S - 1
-            target_tradable = _is_tradable(data, t, target_sym)
-            if pos is not None and pos.is_short and pos.sym == target_sym:
+            if pos is not None:
                 hold_steps += 1
-            else:
-                if not target_tradable:
-                    if pos is not None:
-                        hold_steps += 1
-                elif pos is not None and not cur_tradable:
-                    hold_steps += 1
-                else:
-                    if pos is not None:
-                        cash, win = _close_position(cash, pos, price_cur, fee_rate)
-                        num_trades += 1
-                        winning_trades += int(win)
-                    cash, pos = _open_short(cash, target_sym, float(data.prices[t, target_sym, P_CLOSE]), fee_rate, max_leverage)
-                    hold_steps = 0
 
         # advance time
         step += 1
@@ -370,6 +502,9 @@ def simulate_daily_policy(
 
         if equity_after > peak_equity:
             peak_equity = equity_after
+        dd = (peak_equity - equity_after) / peak_equity if peak_equity > 0 else 0.0
+        if dd > max_dd:
+            max_dd = dd
 
         done = (step >= max_steps) or (t_new >= T - 1) or (equity_after < initial_cash * 0.01)
         if done:
@@ -383,7 +518,6 @@ def simulate_daily_policy(
 
             final_equity = float(cash)
             total_return = (final_equity - initial_equity) / initial_equity
-            max_dd = (peak_equity - equity_after) / peak_equity if peak_equity > 0 else 0.0
 
             sortino = 0.0
             if ret_count > 1 and sum_neg_sq > 0.0:

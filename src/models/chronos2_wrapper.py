@@ -35,6 +35,7 @@ try:  # pragma: no cover - surface chronos version info when available
 except Exception:  # pragma: no cover
     _chronos_pkg = None  # type: ignore
 
+from chronos import BaseChronosPipeline as _ChronosBasePipeline
 from chronos import Chronos2Pipeline as _Chronos2Pipeline
 from preaug_sweeps.augmentations import BaseAugmentation
 try:  # pragma: no cover - backward compatibility with pre-helper snapshots
@@ -206,14 +207,14 @@ def _default_preaug_dirs(frequency: Optional[str]) -> Tuple[Path, ...]:
     return tuple(ordered)
 
 
-def _require_chronos2_pipeline() -> type:
-    """Return the Chronos2Pipeline class or raise a descriptive error."""
+def _require_chronos_pipeline() -> type:
+    """Return the Chronos base pipeline so Chronos 1 and 2 model ids both load."""
 
-    if _Chronos2Pipeline is None:
+    if _ChronosBasePipeline is None:
         raise RuntimeError(
-            "chronos>=2.0 is unavailable; install `chronos-forecasting>=2.0` to enable Chronos2Pipeline."
+            "chronos is unavailable; install `chronos-forecasting>=2.0` to enable Chronos pipelines."
         )
-    return _Chronos2Pipeline
+    return _ChronosBasePipeline
 
 
 def _quantile_column(level: float) -> str:
@@ -488,7 +489,7 @@ class Chronos2OHLCWrapper:
         if policy not in {"prefer", "never", "only"}:
             raise ValueError("Chronos2 cache_policy must be 'prefer', 'never', or 'only'.")
 
-        pipeline_cls = _require_chronos2_pipeline()
+        pipeline_cls = _require_chronos_pipeline()
         resolved_model_id = _resolve_model_source(model_id)
         if resolved_model_id != model_id:
             logger.info("Resolved Chronos2 model_id '%s' to '%s'", model_id, resolved_model_id)
@@ -509,7 +510,7 @@ class Chronos2OHLCWrapper:
 
         with manager.compilation_env(resolved_model_id, dtype_token):
             metadata = manager.load_metadata(resolved_model_id, dtype_token) if use_cache else None
-            pipeline: _Chronos2Pipeline
+            pipeline: _ChronosBasePipeline
             if (
                 use_cache
                 and not force_refresh

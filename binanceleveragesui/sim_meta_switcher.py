@@ -19,8 +19,8 @@ DATA_ROOT = REPO / "trainingdatahourlybinance"
 FORECAST_CACHE = REPO / "binanceneural/forecast_cache"
 MARGIN_HOURLY_RATE = 0.0000025457
 
-DOGE_CKPT = REPO / "binanceleveragesui/checkpoints/DOGEUSD_r4_R4_h384_cosine/binanceneural_20260301_065549/epoch_001.pt"
-AAVE_CKPT = REPO / "binanceleveragesui/checkpoints/AAVEUSD_sweep_AAVE_h384_cosine_rw05/binanceneural_20260302_102218/epoch_003.pt"
+DOGE_CKPT = REPO / "binanceleveragesui/checkpoints/r5_DOGE_rw05_drop15/binanceneural_20260303_001154/epoch_008.pt"
+AAVE_CKPT = REPO / "binanceleveragesui/checkpoints/r5_AAVE_rw05_strides_long/binanceneural_20260303_023521/epoch_002.pt"
 
 
 def load_model_and_actions(ckpt_path, symbol, val_days=30, test_days=90):

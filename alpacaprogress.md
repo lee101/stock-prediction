@@ -1,8 +1,47 @@
-# Alpaca Cross‑Learning Progress
+# Alpaca Cross-Learning Progress
 
-Tracking Chronos2 multi‑symbol fine‑tunes + global trading policy results.
+Tracking Chronos2 multi-symbol fine-tunes + global trading policy results.
 
-## Deployment: ft01 ep6 (2026-02-21) -- Sort=10.81, +34.2%
+## Multi-Period Audit (2026-03-01)
+
+### Stock Algorithm (wd_0.04 ep9) - 7 symbols, $46k equity
+All 20 epochs swept across 1d/3d/7d/14d/30d/60d holdouts. NO epoch qualifies (all periods positive).
+
+**Deployed ep9 results:**
+| Period | Return | Sortino | DD | Buys | WR |
+|--------|--------|---------|-----|------|----|
+| 1d | -0.00% | -0.16 | 0.0% | 2 | 50% |
+| 3d | -1.28% | -9.86 | 1.3% | 7 | 43% |
+| 7d | -1.28% | -6.34 | 1.3% | 7 | 29% |
+| 14d | -0.66% | -2.22 | 1.5% | 21 | 57% |
+| 30d | +1.48% | 2.57 | 1.6% | 59 | 54% |
+| 60d | +2.51% | 2.78 | 1.6% | 111 | 60% |
+
+Verdict: short-term drawdown (1-14d negative), long-term still positive. ep9 remains best available. Later epochs overtrade catastrophically (ep20: -29% at 60d).
+
+### DOGE Algorithm (h384_cosine ep1) - $3,320 equity
+| Period | Sort@1x | Ret@1x | DD@1x | Sort@2x | Ret@2x | DD@2x |
+|--------|---------|--------|-------|---------|--------|-------|
+| 3d | -14.2 | -0.8% | -0.8% | -14.2 | -1.5% | -1.5% |
+| 7d | -3.5 | -0.3% | -0.8% | -3.5 | -0.7% | -1.7% |
+| 14d | 62.5 | +102.4% | -3.1% | 62.4 | +281.0% | -6.2% |
+| 30d | 40.0 | +101.3% | -3.1% | 40.0 | +276.9% | -6.2% |
+| 60d | 28.8 | +116.2% | -3.1% | 28.8 | +334.1% | -6.2% |
+| 90d | 15.2 | +112.5% | -7.2% | 15.1 | +315.7% | -14.2% |
+
+Verdict: outstanding. Recent 3-7d minor dip, 14d+ massively profitable. 2x leverage nearly triples returns with Sortino preserved and DD only -6.2%.
+
+**Action: Increased DOGE leverage from 1.0x to 2.0x** (Sort unchanged, DD -3.1% -> -6.2%, Ret 3x)
+
+### ETH Algorithm (btcmarketsbot market exit agent)
+Only 2 completed trades: +5.16% and +1.18%. Too few to evaluate. Currently holding 6.05 ETH @ $1900.76.
+
+### Simulator Math Validation
+22/22 tests pass (tests/test_simulator_math.py):
+- Fee deduction, margin interest, leverage sizing, fill buffers, drawdown calc, Sortino formula
+- Cross-simulator consistency between stock and crypto sims
+
+## Deployment: wd_0.04 ep9 (2026-03-01) -- Sort=2.68, +1.71%
 
 **DEPLOYED** top9_lag1_6L_seq48_bm05_ft01 epoch 6 to Alpaca LIVE
 - Sortino: 10.81 (bm=0.05%), 11.44 (bm=0%)

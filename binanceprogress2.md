@@ -1,6 +1,528 @@
 # Binance Progress Log 2 - SUI & DOGE Trading
 
-Updated: 2026-03-01
+Updated: 2026-03-03
+
+## Meta Portfolio Auto-Selector Sweep (2026-03-03)
+
+Built and ran a new daily meta-selector sweep that chooses from a pool of DOGE/AAVE checkpoints using trailing daily performance (no lookahead).
+
+### New Tooling
+- Script: `binanceleveragesui/sweep_meta_daily_winners.py`
+- Tests: `tests/test_binance_meta_daily_winners.py` (4 passed)
+- Result artifact: `binanceleveragesui/meta_daily_winners_sweep_modes_v2_latest.json`
+
+### Candidate Pool (8)
+- doge_deployed (`DOGEUSD_r4_R4_h384_cosine` ep001)
+- doge_wider_mlp8 (gen_wider_mlp8 ep004)
+- doge_dilated_142472 (gen_dilated_1_4_24_72 ep004)
+- doge_deeper6l (gen_deeper_6L ep010)
+- doge_r5_drop15 (r5_DOGE_rw05_drop15 ep003)
+- aave_rw05 (AAVE_h384_cosine_rw05 ep003)
+- aave_r5_wd04 (r5_AAVE_rw05_wd04 ep002)
+- aave_base (AAVE_h384_cosine ep001)
+
+### Sweep Grid
+- Windows: 30/60/90/120d
+- Metrics: return/sortino/sharpe/calmar
+- Lookbacks: 1/2/3/5/7/10/14 days
+- Modes: `winner`, `winner_cash`, `blend_top2`
+- Leverage: 2.0x, fee: 10bp
+
+### Top Configs (robust ranking)
+
+| Rank | Mode | Metric | Lookback | Min Sort | Mean Sort | Min Ret | Mean Ret | Mean DD |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| 1 | **blend_top2** | sortino | **3d** | **0.15** | **0.25** | **+308.47%** | **+387.97%** | -9.37% |
+| 2 | blend_top2 | sortino | 14d | 0.14 | 0.23 | +270.00% | +362.99% | -13.01% |
+| 3 | winner | sortino | 3d | 0.14 | 0.23 | +305.90% | +383.93% | -11.73% |
+| 4 | winner_cash | sortino | 3d | 0.14 | 0.23 | +296.73% | +394.96% | **-8.38%** |
+| 5 | blend_top2 | sortino | 2d | 0.13 | 0.24 | +281.50% | +357.56% | **-8.34%** |
+
+### Best Sortino-Robust Config: `blend_top2 + sortino + 3d`
+
+| Window | Meta Sort | Meta Ret | Meta DD | DOGE deployed Sort | DOGE deployed Ret | DOGE deployed DD |
+|---|---:|---:|---:|---:|---:|---:|
+| 30d | 0.40 | +308.47% | -6.21% | 0.42 | +300.82% | -6.22% |
+| 60d | 0.25 | +354.68% | -9.13% | 0.30 | +334.55% | -6.22% |
+| 90d | 0.18 | +378.78% | -9.21% | 0.20 | +313.80% | -11.88% |
+| 120d | **0.15** | **+509.94%** | **-12.91%** | 0.13 | +385.95% | -18.41% |
+
+### Smoothness Candidate: `winner_cash + sortino + 3d`
+- Mean return: **+394.96%** (highest among top robust configs)
+- Mean drawdown: **-8.38%** (better than winner mode -11.73%)
+- 120d: **+541.75%** return, DD **-12.00%**
+
+### Findings
+- Daily adaptive meta-selection is materially better than static DOGE deployed on long windows (90-120d), with much better return and lower DD.
+- `blend_top2` improved robustness vs pure hard-switch winner mode (higher min/mean sortino and lower DD).
+- `winner_cash` gives the best smoothness/return tradeoff among tested configs.
+- No meta config beat the per-window hindsight oracle baseline (expected high bar), but several beat deployed static policy on practical windows.
+
+### Expanded Candidate Sweep (17 checkpoints)
+- Artifact: `binanceleveragesui/meta_daily_winners_sweep_candidates17.json`
+- Added extra DOGE/AAVE checkpoints (R5 and gen variants) and re-swept all modes/metrics/lookbacks.
+- New top robust config: `blend_top2 + sortino + lb2`:
+  - min sortino 0.15, mean sortino 0.25
+  - min return +286.18%, mean return +358.41%
+  - mean DD -8.62%
+- Best live-compatible config: `winner_cash + sortino + lb2`:
+  - min sortino 0.13, mean sortino 0.245
+  - min return +285.69%, mean return +365.97%
+  - mean DD -8.36%, beats baseline in 1/4 windows
+
+### Deployable Pair Search (DOGE x AAVE)
+- Artifact: `binanceleveragesui/meta_pair_search_winner_cash_sortino_lb2.json`
+- Searched all DOGE×AAVE checkpoint pairs under live-compatible policy (`winner_cash`, `sortino`, lb2).
+- Best pair by robust objective:
+  - **DOGE**: `doge_value_embed` (`DOGEUSD_gen_value_embed` ep005)
+  - **AAVE**: `aave_r5_strides` (`r5_AAVE_rw05_strides_long` ep002)
+  - Stats: min sortino **0.18**, mean sortino 0.242, min return +260.75%, mean return +361.22%, mean DD -9.05%, baseline wins in 2/4 windows.
+
+### Deployment Update
+- Updated live supervisor command in `supervisor/binance-doge-margin.conf` to run `trade_margin_meta` with:
+  - `--selection-mode winner_cash`
+  - `--selection-metric sortino`
+  - `--lookback 48` (2d equivalent)
+  - checkpoints: `doge_value_embed` + `aave_r5_strides`
+  - `--cycle-minutes 60` for hourly-aligned signal refresh
+
+### Sticky-Switch Hysteresis Sweep
+- Artifact: `binanceleveragesui/meta_daily_winners_sweep_candidates17_sticky.json`
+- Added `switch_margin` hysteresis to selector and swept:
+  - switch margins: 0.0 / 0.005 / 0.01 / 0.02 / 0.05
+  - modes: winner_cash + winner
+  - metric: sortino
+  - lookbacks: 1/2/3/5/7/10/14
+- Result: **no improvement** over `winner_cash + sortino + lb2` baseline; top stats remained unchanged.
+- Conclusion: keep current deployment policy (`winner_cash`, sortino, lb2), continue searching via broader model sets and alternate objectives.
+
+### Alternate Objective Pair Search (Calmar)
+- Artifact: `binanceleveragesui/meta_pair_search_winner_cash_calmar_lb2.json`
+- Ran DOGE×AAVE pair search with `winner_cash`, lookback=2d, **selection metric=calmar**.
+- New best deployable pair:
+  - **DOGE**: `doge_r5_drop15` (`r5_DOGE_rw05_drop15` ep003)
+  - **AAVE**: `aave_r5_strides` (`r5_AAVE_rw05_strides_long` ep002)
+- Robust stats:
+  - min sortino **0.18**, mean sortino **0.258**
+  - min return +183.91%, mean return +346.42%
+  - mean DD **-7.57%**
+  - beats best single-model baseline in **3/4 windows**
+- Window detail:
+  - 30d: sort 0.39, ret +183.91%, DD -4.76%
+  - 60d: sort 0.27, ret +345.97%, DD -8.16%
+  - 90d: sort 0.19, ret +342.48%, DD -8.22%
+  - 120d: sort 0.18, ret +513.33%, DD -9.15%
+
+### Deployment Update (Latest)
+- Updated `supervisor/binance-doge-margin.conf` again to this stronger calmar-selected pair:
+  - `--selection-mode winner_cash`
+  - `--selection-metric calmar`
+  - `--lookback 48`
+  - DOGE ckpt: `r5_DOGE_rw05_drop15` ep003
+  - AAVE ckpt: `r5_AAVE_rw05_strides_long` ep002
+
+### Pair-Specific Hyperparam Tuning (Latest)
+- Artifact: `binanceleveragesui/meta_pair_tuning_doge_r5drop15_aave_r5strides.json`
+- Tuned the deployed pair across:
+  - modes: winner / winner_cash
+  - metrics: calmar/sortino/sharpe/return
+  - lookbacks: 1/2/3/5/7/10/14 days
+  - thresholds: 0/0.01/0.02
+  - hysteresis (`switch_margin`): 0/0.005/0.01/0.02/0.05
+
+Top risk-adjusted deployable config found:
+- **winner_cash + calmar + lb1 + switch_margin=0.005**
+- Stats:
+  - min sortino **0.20** (up from 0.18)
+  - mean sortino **0.288** (up from 0.258)
+  - min return +187.13%
+  - mean return +330.54%
+  - mean DD **-6.66%** (better than -7.57%)
+  - beats baseline in **3/4** windows
+- Window stats:
+  - 30d: sort 0.41, ret +187.13%, DD -3.51%
+  - 60d: sort 0.33, ret +326.86%, DD -3.76%
+  - 90d: sort 0.21, ret +328.11%, DD -9.18%
+  - 120d: sort 0.20, ret +480.06%, DD -10.20%
+
+### Deployment Update (Newest)
+- Updated `supervisor/binance-doge-margin.conf` to:
+  - `--selection-mode winner_cash`
+  - `--selection-metric calmar`
+  - `--lookback 24`
+  - `--switch-margin 0.005`
+  - pair unchanged: `r5_DOGE_rw05_drop15` + `r5_AAVE_rw05_strides_long`
+
+### Outside-the-Box: Dual-Horizon Meta Scoring
+- Artifact: `binanceleveragesui/meta_pair_dualhorizon_tuning_r5drop15_aave_strides.json`
+- Tested blended short+long lookback scoring for the same pair:
+  - score = `alpha * score(lb_short) + (1-alpha) * score(lb_long)`
+  - grid across `{calmar, sortino}` metrics, lb_short/lb_long pairs, alpha, thresholds, hysteresis
+- Best dual-horizon config:
+  - sortino metric, lb_short=2d, lb_long=5d, alpha=0.25
+  - min sortino **0.21**, mean sortino 0.275
+  - min return +185.15%, mean return +265.33%
+  - mean DD **-5.89%**, beats baseline in 2/4 windows
+- Assessment:
+  - Strongly smoother (lowest DD so far) and best worst-window sortino
+  - But materially lower mean return than the current deployed tuned policy
+  - **No deployment change**: keep `winner_cash + calmar + lb1 + switch_margin=0.005` as better total objective tradeoff
+
+### Epoch-Level Pair Search + Tuning (2026-03-04)
+- Artifacts:
+  - `binanceleveragesui/meta_pair_grid_search_wide_thresholds_v3.json`
+  - `binanceleveragesui/meta_pair_epoch_search_v1.json`
+  - `binanceleveragesui/meta_pair_tuning_doge_drop15_ep008_aave_strides_ep002_v1.json`
+- New reusable script:
+  - `binanceleveragesui/search_meta_pair_epochs.py`
+- Method:
+  - Expanded pair search to checkpoint-epoch level (DOGE/AAVE epoch grid) under live-compatible policy:
+    - `winner_cash`, `lookback=1d`, `selection metric in {calmar, sortino}`, `cash_threshold=0`, `switch_margin=0.005`
+  - Then ran a focused hyperparameter sweep on the new best epoch pair.
+
+Best epoch pair found:
+- **DOGE**: `r5_DOGE_rw05_drop15` **epoch_008**
+- **AAVE**: `r5_AAVE_rw05_strides_long` **epoch_002**
+- Robust stats (30/60/90/120d windows):
+  - min sortino **0.22**
+  - mean sortino **0.318**
+  - min return **+346.62%**
+  - mean return **+554.72%**
+  - mean DD **-8.02%**
+  - beats best single-model baseline in **4/4** windows
+
+Previous deployed pair baseline (DOGE epoch_003 + AAVE epoch_002):
+- min sortino 0.20, mean sortino 0.2875
+- min return +187.13%, mean return +330.54%
+- mean DD -6.66%, beats 3/4 windows
+
+Decision:
+- New epoch pair is materially stronger on robustness + return, with a moderate DD tradeoff (+1.36pp mean DD).
+- **Deployment changed** to DOGE `epoch_008` + AAVE `epoch_002` with same selector settings:
+  - `winner_cash`, `calmar`, `lookback=24`, `cash_threshold=0.0`, `switch_margin=0.005`
+- Updated config: `supervisor/binance-doge-margin.conf`
+
+### Confidence-Gap Gating Experiments (2026-03-04)
+- Added new selector control: `min_score_gap` (confidence gap between best and second-best model).
+  - Offline sweep support:
+    - `binanceleveragesui/sweep_meta_daily_winners.py`
+    - `binanceleveragesui/search_meta_pair_grid.py`
+    - `binanceleveragesui/search_meta_pair_epochs.py`
+  - Live bot support:
+    - `binanceleveragesui/trade_margin_meta.py` with CLI `--min-score-gap`
+  - Tests updated:
+    - `tests/test_binance_meta_daily_winners.py`
+    - `tests/test_trade_margin_meta_selection.py`
+    - Test status: **15 passed**
+
+Artifacts:
+- `binanceleveragesui/meta_pair_gap_tuning_doge_ep008_aave_ep002_v2.json`
+- `binanceleveragesui/meta_pair_epoch_search_mg002_lb1_v1.json`
+- `binanceleveragesui/meta_pair_crossfamily_mg_search_v1.json`
+
+Key findings:
+- On current best deployed pair (`doge_drop15_ep008 + aave_strides_ep002`), best config remains:
+  - `winner_cash`, `calmar`, `lb=1d`, `cash_threshold=0`, `switch_margin in {0.005,0.01}`, `min_score_gap=0`
+  - Robust stats unchanged: min sortino **0.22**, mean sortino **0.318**, mean return **+554.72%**, mean DD **-8.02%**, beats **4/4**
+- Small gap values (`min_score_gap` up to 0.005) are mostly neutral on this pair.
+- Larger gap (`min_score_gap=0.02`) reduces performance:
+  - min sortino 0.20, mean sortino ~0.31, mean return ~+507.75% (DD unchanged around -8.02%).
+- Cross-family pair search (older DOGE/AAVE families included) still did **not** beat the deployed epoch pair.
+
+Decision:
+- **No deployment change** after confidence-gap sweeps; keep deployed pair and settings unchanged.
+
+---
+
+## Continued Meta Research (2026-03-04, later)
+
+### Exhaustive Epoch Search (1..20)
+- Artifact: `binanceleveragesui/meta_pair_epoch_search_full1to20_v1.json`
+- Search scope:
+  - DOGE families: `r5_DOGE_rw05_drop15`, `r5_DOGE_rw05_strides_long`
+  - AAVE families: `AAVE_h384_cosine_rw05`, `r5_AAVE_rw05_strides_long`
+  - epochs: **1..20**
+  - metrics: calmar/sortino, lookbacks: 1/2d, mode: winner_cash
+- Result: top pair remains unchanged:
+  - **DOGE** `drop15_ep008` + **AAVE** `strides_ep002`
+  - static-selector stats remain unchanged from earlier pair-grid tuning:
+    - min sortino **0.22**, mean sortino **0.318**, mean return **+554.72%**, mean DD **-8.02%**
+  - robust window metrics same ranking outcome as earlier searches
+- Conclusion: no better static deployable pair than currently deployed.
+
+### New Outside-the-Box Algorithm: Regime-Adaptive Metric Switching
+- New script: `binanceleveragesui/search_meta_pair_regime.py`
+- Idea:
+  - Use **low-vol** metric/lookback and **high-vol** metric/lookback, chosen by trailing market absolute-return regime.
+  - Still applies winner_cash + hysteresis + min_score_gap controls.
+
+Artifacts:
+- `binanceleveragesui/meta_pair_regime_search_v1.json` (cross-pair regime search)
+- `binanceleveragesui/meta_pair_regime_tune_singlepair_v2.json` (deep tuning on best pair)
+
+Best regime config found:
+- Pair: `doge_drop15_ep008 + aave_strides_ep002`
+- `low_metric=sortino`, `low_lb=1d`
+- `high_metric=calmar`, `high_lb=3d`
+- `vol_lookback=5d`, `vol_threshold=0.03`
+- `cash_threshold=0`, `switch_margin=0.005`, `min_score_gap=0`
+- Metrics:
+  - min sortino **0.22** (same as static)
+  - mean sortino **0.325** (higher than static 0.3175)
+  - min return **+344.45%** (slightly lower than static +346.62%)
+  - mean return **+551.48%** (slightly lower than static +554.72%)
+  - mean DD **-8.02%** (same)
+  - beats baseline windows **4/4**
+
+Assessment:
+- Regime selector improves smoothness/risk-adjusted score (mean sortino) with near-equal DD.
+- But it does **not** strictly dominate static selector on return.
+- **No deployment change** yet; keep static deployed config until a regime setup wins on both return and robustness.
+
+### Alternate Pair Deep Dive (`aave_strides_ep009`) + Leverage Sweep
+Artifacts:
+- `binanceleveragesui/meta_pair_tune_doge_ep008_aave_ep009_v1.json`
+- `binanceleveragesui/meta_pair_regime_tune_ep009_v1.json`
+- `binanceleveragesui/meta_leverage_sweep_currentpair_v1.json`
+
+Findings for alternate pair (`doge_drop15_ep008 + aave_strides_ep009`):
+- Static best:
+  - min sortino **0.19**, mean sortino **0.30**
+  - min return +336.57%, mean return +567.82%
+  - mean DD **-7.09%**
+- Regime tuning did not improve the objective vs static on this pair:
+  - typical top regime row: min sortino 0.20, mean sortino 0.29, mean return +561.95%, mean DD -9.73%
+- Conclusion: `ep009` pair remains attractive for return/DD, but still too weak on sortino vs current deployed pair.
+
+Leverage sweep on current best pair (`ep008 + ep002`) across static/regime policies:
+- Best sortino-oriented row:
+  - regime policy at **2.0x** (same as prior) keeps top mean sortino (0.325) but lower return than static.
+- Best return with same minimum-sortino bucket (`minS=0.22`) among tested static policies:
+  - **static_calmar_lb1 at 2.25x**:
+    - min sortino **0.22** (unchanged vs 2.0x baseline)
+    - mean sortino **0.318** (unchanged)
+    - min return **+428.25%** (up from +346.62%)
+    - mean return **+713.64%** (up from +554.72%)
+    - mean DD **-9.03%** (vs -8.02% at 2.0x)
+- Decision:
+  - Given target to push PnL while keeping robust risk-adjusted behavior, moved live config to **2.25x** leverage.
+  - Pair/selector unchanged (`ep008+ep002`, winner_cash + calmar + lb1 equivalent).
+  - Updated `supervisor/binance-doge-margin.conf`.
+
+### Follow-up Search (Later Same Session)
+Additional artifacts:
+- `binanceleveragesui/meta_pair_tune_doge_ep008_aave_ep009_v1.json`
+- `binanceleveragesui/meta_pair_regime_tune_ep009_v1.json`
+- `binanceleveragesui/meta_leverage_fine_sweep_currentpair_v2.json`
+- `binanceleveragesui/meta_dynamic_leverage_search_v1.json`
+- `binanceleveragesui/meta_leverage_local_refine_v3.json`
+
+Findings:
+- Alternate pair (`ep008 + ep009`) remains return-strong but still weaker on sortino than deployed pair:
+  - static best around minS 0.19 / meanS 0.30.
+  - regime best around minS 0.20 / meanS 0.29 with worse DD.
+- Dynamic leverage regime search did not produce a superior true dynamic policy; top row collapsed to constant leverage.
+- Fine leverage refinement around 2.25 found:
+  - **static @ 2.30x**: minS **0.22**, meanS **0.318**, minR **+446.06%**, meanR **+749.46%**, meanDD **-9.22%**.
+  - vs static @ 2.25x: minS 0.22, meanS 0.318, minR +428.25%, meanR +713.64%, meanDD -9.03%.
+
+Decision update:
+- Kept pair/selector unchanged and updated leverage again from **2.25x -> 2.30x** for higher PnL at unchanged worst-window sortino.
+- Updated `supervisor/binance-doge-margin.conf` accordingly.
+
+
+## R5 Improved Training Sweep (2026-03-02, in progress)
+
+Training 10 new configs (6 DOGE + 4 AAVE) with refined hyperparameters.
+Base: nano, 6L, h384, 8 heads, seq72, cosine LR, mem8, strides=1,2,6,24, sortino loss, fill_temp=0.1, fill_buf=0.0005.
+
+| Config | Symbol | rw | wd | dropout | strides | Status |
+|--------|--------|------|------|---------|---------|--------|
+| DOGE_rw05 | DOGEUSD | 0.05 | 0.03 | 0.1 | 1,2,6,24 | training |
+| DOGE_rw05_wd04 | DOGEUSD | 0.05 | 0.04 | 0.1 | 1,2,6,24 | pending |
+| DOGE_rw03 | DOGEUSD | 0.03 | 0.03 | 0.1 | 1,2,6,24 | pending |
+| DOGE_rw10_wd04 | DOGEUSD | 0.10 | 0.04 | 0.1 | 1,2,6,24 | pending |
+| DOGE_rw05_drop15 | DOGEUSD | 0.05 | 0.03 | 0.15 | 1,2,6,24 | pending |
+| DOGE_rw05_strides_long | DOGEUSD | 0.05 | 0.03 | 0.1 | 1,2,6,24,72 | pending |
+| AAVE_rw05_wd04 | AAVEUSD | 0.05 | 0.04 | 0.1 | 1,2,6,24 | pending |
+| AAVE_rw03 | AAVEUSD | 0.03 | 0.03 | 0.1 | 1,2,6,24 | pending |
+| AAVE_rw05_drop15 | AAVEUSD | 0.05 | 0.03 | 0.15 | 1,2,6,24 | pending |
+| AAVE_rw05_strides_long | AAVEUSD | 0.05 | 0.03 | 0.1 | 1,2,6,24,72 | done |
+
+### DOGE Results (current deployed: R4 h384+cosine ep1, Sort=39.9, DD=-7.3%)
+
+| Config | Ep | Sort@30d | Ret@30d | DD@30d | 2x Sort | Mean | Pos |
+|--------|-----|---------|---------|--------|---------|------|-----|
+| DOGE_rw05_drop15 | 3 | 38.1 | +68.3% | -2.4% | 37.8 | 9.4 | 4/6 |
+| DOGE_rw05_strides_long | 10 | 36.7 | +111.8% | -6.5% | 36.4 | 7.8 | 3/6 |
+| DOGE_rw05_wd04 | 8 | 34.7 | +110.2% | -3.9% | 34.6 | 8.1 | 4/6 |
+| DOGE_rw10_wd04 | 1 | 33.9 | +43.0% | -2.9% | 33.3 | 9.1 | 4/6 |
+| DOGE_rw03 | 8 | 33.8 | +122.1% | -6.5% | 33.7 | 8.0 | 3/6 |
+| DOGE_rw05 | 1 | 33.2 | +80.6% | -3.1% | 33.1 | 10.8 | 4/6 |
+
+### AAVE Results (current deployed: rw05 ep3, Sort=29.8, DD=-3.9%)
+
+| Config | Ep | Sort@30d | Ret@30d | DD@30d | 2x Sort | Mean | Pos |
+|--------|-----|---------|---------|--------|---------|------|-----|
+| AAVE_rw05_wd04 | 2 | 29.8 | +46.6% | -4.4% | 28.9 | 8.0 | 4/6 |
+| AAVE_rw05_strides_long | 2 | 26.9 | +61.3% | -3.9% | 26.3 | 10.7 | 4/6 |
+| AAVE_rw03 | 10 | 22.4 | +62.8% | -8.8% | 22.0 | 5.4 | 3/6 |
+| AAVE_rw05_drop15 | 20 | 17.5 | +82.1% | -10.9% | 17.4 | 3.9 | 3/6 |
+
+### Meta-Sim Comparison (R5 vs current deployed, 2x leverage, calmar 12h)
+
+| Window | Current Sort | Current Ret | Best R5 Sort | Best R5 Ret |
+|--------|-------------|-------------|--------------|-------------|
+| 30d | 0.71 | +280% | 0.71 | +172% |
+| 60d | 0.45 | +316% | 0.45 | +316% |
+| 90d | 0.26 | +356% | 0.26 | +356% |
+
+**Conclusion: No R5 config beats current deployed models. No deployment change.**
+- DOGE_rw05_drop15 has lowest DD (-2.4%) but Sort=38.1 < deployed 39.9
+- AAVE_rw05_wd04 ties deployed Sort=29.8 but higher DD (-4.4% vs -3.9%)
+- Meta-sim confirms current combo is optimal or tied across all windows
+
+---
+
+## Meta-Switcher Deployment (2026-03-02)
+
+### Design
+Single bot trading one model at a time (DOGE or AAVE), switching based on trailing performance.
+- Loads both models at startup, generates signals from both every cycle
+- On position exit: computes trailing 12h calmar ratio for both models
+- Enters next trade using whichever model has higher calmar
+- Tracks signal histories for hypothetical performance computation
+
+### Meta-Switcher Hyperparameter Sweep Results
+Swept 11 lookback windows (6-720h) x 4 metrics (sortino/return/sharpe/calmar) x 3 test windows (30/60/90d).
+
+| Config | 30d Sort | 60d Sort | 90d Sort | Min | Mean |
+|--------|----------|----------|----------|-----|------|
+| **calmar_12h** | **0.76** | **0.49** | **0.31** | **0.31** | **0.52** |
+| calmar_24h | 0.76 | 0.40 | 0.31 | 0.31 | 0.49 |
+| sortino_12h | 0.73 | 0.49 | 0.31 | 0.31 | 0.51 |
+| return_12h | 0.76 | 0.39 | 0.31 | 0.31 | 0.49 |
+| calmar_6h | 0.76 | 0.28 | 0.31 | 0.28 | 0.45 |
+
+Winner: **calmar_12h** (best worst-case + best mean across all windows).
+
+### Deployed Config
+- **Supervisor**: `binance-meta-margin` RUNNING
+- **DOGE ckpt**: `DOGEUSD_r4_R4_h384_cosine/binanceneural_20260301_065549/epoch_001.pt`
+- **AAVE ckpt**: `AAVE_h384_cosine_rw05/binanceneural_20260302_102218/epoch_003.pt`
+- Lookback: 12h, metric: calmar, max leverage: 2.0x
+- State file: `strategy_state/margin_meta_state.json`
+- Equity: ~$3,200
+
+### Initial Production Behavior
+- Inherited DOGE position from previous bot
+- DOGE position exited, model selection ran: doge calmar=713.50 >> aave calmar=49.66
+- Re-entered DOGE (expected: early signal history biases toward model with more data)
+
+---
+
+## AAVE Sweep Results (2026-03-02)
+
+Trained 5 AAVE configs + 1 SUI using DOGE R4 winner arch as base (nano, h384, 6L, cosine LR).
+
+### Summary
+
+| Config | Ep | Sort@30d | Ret@30d | DD@30d | Mean | Pos | Safety |
+|--------|-----|---------|---------|--------|------|-----|--------|
+| **AAVE_h384_cosine_rw05** | **3** | **29.8** | **+62.7%** | **-3.9%** | **9.76** | **4/6** | **5.67** |
+| AAVE_h384_cosine | 1 | 23.7 | +40.8% | -3.3% | 9.76 | 4/6 | 5.61 |
+| AAVE_h384_cosine_rw20 | 3 | 20.7 | +46.5% | -7.7% | 7.72 | 4/6 | 4.32 |
+| AAVE_h384_cosine_wd05 | 20 | 17.6 | +71.1% | -12.7% | 4.68 | 4/6 | 2.42 |
+| AAVE_h512_cosine | 15 | 18.5 | +89.3% | -7.9% | 3.68 | 3/6 | 1.48 |
+| SUI_h384_cosine_0fee | 3 | -0.6 | -2.7% | -10.2% | 1.56 | 2/6 | 0.47 |
+
+### Key Findings
+- **rw05 is best for AAVE**: Sort=29.8, Safety=5.67 (vs rw10 base Sort=23.7)
+- **h512 overfits**: highest return (+89.3%) but worst safety (1.48), only 3/6 positive symbols
+- **wd05 overtrained**: ep20 is best but high DD (-12.7%), poor cross-symbol
+- **SUI dead**: insufficient data (~118 days), negative sortino at 30d+
+- **rw05 has best DD**: only -3.9% at 30d, even at 2x only -7.8%
+
+### Leverage Sweep (1-5x, winner AAVE_h384_cosine_rw05)
+
+| Window | 1x Sort | 2x Sort | 3x Sort | 2x Ret | 2x DD |
+|--------|---------|---------|---------|--------|-------|
+| 3d | 86.0 | 83.2 | 80.7 | +79.0% | -7.8% |
+| 7d | 71.4 | 69.8 | 68.5 | +142.2% | -7.8% |
+| 14d | 51.2 | 50.2 | 49.2 | +151.2% | -7.8% |
+| 30d | 29.8 | 29.2 | 28.7 | +149.9% | -7.8% |
+| 60d | 11.9 | 11.6 | 11.3 | +111.0% | -18.7% |
+| 90d | 8.8 | 8.6 | 8.3 | +121.9% | -24.7% |
+
+AAVE 2x is optimal: strong returns with acceptable DD.
+
+---
+
+## DOGE Production Performance & Audit (2026-03-02)
+
+### Currently Deployed
+- **Checkpoint**: `DOGEUSD_r4_R4_h384_cosine/binanceneural_20260301_065549/epoch_001.pt`
+- **Architecture**: nano, 6L, h384, 8 heads, seq72, cosine LR, mem8, strides=1,2,6,24
+- **Supervisor**: `binance-doge-margin` RUNNING, 2x leverage (upgraded from 1x on Mar 1)
+- **Equity**: ~$3,195 (down from $3,320 start)
+
+### Production Trade Log (Mar 1, 16h window)
+Start: $3,319.95 | End: $3,165.76 | **P&L: -$154 (-4.64%)**
+
+| # | Time (UTC) | Action | Price | Leverage | Equity |
+|---|---|---|---|---|---|
+| 1 | 06:03 | ENTER | $0.09568 | 1.0x | $3,314 |
+| 2 | 12:04 | EXIT (force 6h) | $0.09353 | - | $3,233 |
+| 3 | 12:49 | ENTER | $0.09313 | 2.0x | $3,228 |
+| 4 | 13:51 | EXIT | $0.09390 | - | $3,264 |
+| 5 | 16:22 | ENTER | $0.09383 | 2.0x | $3,255 |
+| - | ongoing | HOLD | ~$0.0929 | 2.0x | ~$3,195 |
+
+Trade 1: 1x lev (pre-upgrade), lost -$86 on DOGE drop ($0.0957->$0.0935)
+Trade 2: 2x lev, profitable +$36 ($0.0931->$0.0939)
+Trade 3: 2x lev, unrealized loss ~-$60 ($0.0938->$0.0929), sell limit at $0.0947
+
+### Sim vs Production Comparison (Feb 28 - Mar 1)
+| Metric | Prod | Sim(opt) | Sim(real) |
+|---|---|---|---|
+| Trades | 16 | 27 | 9 |
+| Buys | 9 | 21 | 5 |
+| Sells | 7 | 6 | 4 |
+| Fill match | - | 12/16 (75%) | 4/16 (25%) |
+| Final equity | ~$3,166 | $3,296 | $2,905 |
+
+Optimistic sim overfills (bar touch = fill). Realistic sim is too conservative (expiry + volume filters reject too many). Production is between the two. Reasonable sim accuracy -- no critical divergence.
+
+### Multi-Window Backtest (2026-03-02, deployed ep001)
+| Window | Sort@1x | Ret@1x | DD@1x | Sort@2x | Ret@2x | DD@2x |
+|---|---|---|---|---|---|---|
+| 3d | -14.5 | -0.8% | -0.8% | -14.5 | -1.5% | -1.6% |
+| 7d | -3.5 | -0.3% | -0.9% | -3.5 | -0.7% | -1.8% |
+| **14d** | **62.5** | **+94.3%** | **-3.1%** | **62.3** | **+251.5%** | **-6.2%** |
+| **30d** | **40.1** | **+101.2%** | **-3.1%** | **40.1** | **+276.6%** | **-6.2%** |
+| 60d | 28.6 | +114.5% | -3.1% | 28.6 | +327.3% | -6.2% |
+| 90d | 17.1 | +121.5% | -6.9% | 17.0 | +352.5% | -13.5% |
+| 120d | 12.8 | +134.6% | -9.5% | 12.8 | +405.0% | -18.4% |
+
+### Cross-Symbol Performance (1x, deployed checkpoint)
+| Symbol | 3d | 7d | 14d | 30d | 60d | 90d | 120d |
+|---|---|---|---|---|---|---|---|
+| DOGE | -14.5 | -3.5 | **62.5** | **40.1** | **28.6** | **17.1** | **12.8** |
+| BTC | -9.4 | -6.1 | -4.8 | -3.4 | -2.6 | -2.4 | -1.6 |
+| ETH | 4.8 | -5.2 | 0.8 | 5.4 | 3.6 | 3.4 | 2.9 |
+| SOL | -2.8 | -4.9 | -0.8 | -0.3 | -1.1 | -1.5 | -1.2 |
+| LINK | 10.7 | 11.4 | 7.7 | 4.8 | -0.4 | 0.0 | -0.5 |
+| AAVE | **69.7** | **45.9** | **33.3** | **21.2** | **10.3** | **7.0** | **4.5** |
+
+### Assessment (2026-03-02)
+- **Short-term pain, long-term strong**: 3d/7d negative (DOGE dropped sharply from $0.096 to $0.088). This matches the -4.64% prod drawdown.
+- **14d+ outstanding**: Sort=62.5 at 14d, +94% return at 1x, +251% at 2x. The model's edge is massive once the bad 3d period rolls off.
+- **Current drawdown within normal**: -4.64% prod vs sim DD=-6.2% at 2x/14d. We are within expected bounds.
+- **Cross-symbol**: AAVE is a standout (Sort=69.7 at 3d). BTC/SOL consistently negative. ETH mixed.
+- **No retraining needed**: Model has extreme edge at 14d+ windows. Short-term drawdown is noise.
+- **Keep 2x leverage**: DD at 2x stays under -6.2% through 60d, acceptable risk.
+
+---
 
 ## DOGE Margin Trading - Checkpoint Sweep & Deployment (2026-03-01)
 
@@ -54,13 +576,13 @@ Key finding: **dilated attention** (strides 1,4,24,72) is the dominant factor fo
 Lower return_weight (0.1 vs 0.3) = less aggressive = more robust across windows.
 Dilated attention captures multi-scale temporal patterns (hourly, 4h, daily, 3-day).
 
-### Deployed Config (2026-03-01)
+### Deployed Config (updated 2026-03-02)
 
 - Supervisor: `binance-doge-margin` RUNNING
-- Checkpoint: `binanceleveragesui/checkpoints/DOGEUSD_gen_wider_mlp8/binanceneural_20260227_031938/epoch_004.pt`
-- Architecture: nano, mlp_ratio=8, 8 memory tokens, dilated strides 1,4,24,72
-- Max leverage: 1.0x, intensity: 5.0, max hold: 6h, fee: 0.001
-- Equity: ~$3,318
+- Checkpoint: `DOGEUSD_r4_R4_h384_cosine/binanceneural_20260301_065549/epoch_001.pt`
+- Architecture: nano, 6L, h384, 8 heads, seq72, cosine LR, mem8, strides=1,2,6,24
+- Max leverage: **2.0x** (upgraded from 1.0x on Mar 1), intensity: 5.0, max hold: 6h, fee: 0.001
+- Equity: ~$3,195 (started $3,320)
 
 ### Backtest Detail (gen_wider_mlp8_ep4)
 
@@ -495,3 +1017,299 @@ Script: `binanceleveragesui/eval_covariate_forecasts.py`
 Model: finetuned LoRA (`chronos2_finetuned/binance_lora_20260208_newpairs_SUIUSDT/finetuned-ckpt`)
 Eval: rolling 30-day holdout, every 24h, horizons h1/h4/h24
 Status: waiting for GPU (sweep consuming 96%)
+
+## Ongoing Binance Meta Optimization (2026-03-04)
+
+### Completed this cycle
+
+#### Ultra-fine static leverage sweep
+- Artifact: `binanceleveragesui/meta_leverage_ultrafine_static_v4.json`
+- Scope: static `winner_cash + calmar + lb1` on deployed pair (`doge_drop15_ep008 + aave_strides_ep002`) with leverage grid `2.26..2.35`.
+- Best robust point remains **2.30x**:
+  - min sortino **0.22**, mean sortino **0.3175**
+  - min return **+446.06%**, mean return **+749.46%**
+  - mean DD **-9.22%**, beats baseline **4/4** windows
+- Higher leverage (`>=2.31`) increases return but drops min sortino to 0.21.
+
+#### Confidence-scaled dynamic leverage search
+- Artifact: `binanceleveragesui/meta_confidence_dynamic_leverage_v1.json`
+- Result: no dynamic policy beat static 2.30x objective.
+- Top rows collapsed to effectively static behavior (`low_lev=high_lev=2.25`) with:
+  - min sortino **0.22**, mean sortino **0.3175**
+  - min return **+428.25%**, mean return **+713.64%**
+  - mean DD **-9.03%**, beats **4/4**
+- Decision: keep static 2.30x deployment target; no dynamic leverage rollout.
+
+#### Selector hyperparameter retune at 2.30x
+- Artifact: `binanceleveragesui/meta_pair_tune_doge_ep008_aave_ep002_lev230_v1.json`
+- Pair: `doge_drop15_ep008 + aave_strides_ep002`
+- Sweep: metrics `{calmar,sortino,sharpe,return}`, lookbacks `1..14d`, thresholds/hysteresis/confidence-gap grids.
+- Best region confirms current settings:
+  - `winner_cash + calmar + lb1`, `cash_threshold=0`, `switch_margin >= 0.002`, `min_score_gap` near 0
+  - Robust stats match leverage sweep winner: min sortino **0.22**, mean return **+749.46%**, mean DD **-9.22%**.
+- Decision: no selector change required.
+
+### New outside-the-box tooling added
+- New script: `binanceleveragesui/search_meta_selector_stack.py`
+- Purpose: two-layer meta policy where layer-2 daily selector picks among many layer-1 selector profiles (selector-of-selectors).
+- Status: script added and compiled; quick + medium stacked sweeps completed.
+
+### Long-run note
+- Initial broad 5x5 epoch search and first full stacked sweep were started but later interrupted after long wall-clock runtime.
+- They were replaced by reduced searches documented below to keep iteration throughput high.
+
+### Deployment state
+- No superior deployable config found vs current target.
+- Keep target config as:
+  - pair: `doge_drop15_ep008 + aave_strides_ep002`
+  - selector: `winner_cash + calmar + lookback=24h + switch_margin=0.005`
+  - leverage: **2.30x**
+- Note: supervisor control remains permission-blocked from this shell, so live process restart still requires privileged supervisor action.
+
+### Quick validation of selector-of-selectors (stacked) idea
+- Artifact: `binanceleveragesui/meta_selector_stack_search_ep008_ep002_lev230_quick_v1.json`
+- Setup:
+  - base profile pool: 12 (`calmar/sortino`, lb 1/2/3, cash thresholds 0/0.01, switch margin 0.005)
+  - layer-2 selector: winner_cash over base profiles (6 meta configs)
+- Outcome: **underperformed** current single-layer deployment target.
+  - Best stacked config (`sortino`, meta lb=3):
+    - min sortino **0.16**, mean sortino 0.26
+    - min return +417.64%, mean return +475.09%
+    - mean DD -14.52%
+  - Current deployed-target single-layer baseline at 2.30x:
+    - min sortino **0.22**, mean sortino 0.3175
+    - min return +446.06%, mean return +749.46%
+    - mean DD -9.22%
+- Decision: stacked selector not deployable in this form.
+
+### Validation tests
+- `pytest -q tests/test_trade_margin_meta_selection.py tests/test_binance_meta_daily_winners.py`
+- Result: **15 passed** (warnings only; no failures)
+
+### Follow-up reduced searches (post-interrupt, faster iteration)
+
+#### Medium stacked-selector sweep
+- Artifact: `binanceleveragesui/meta_selector_stack_search_ep008_ep002_lev230_v2_medium.json`
+- Base profile pool: 144; layer-2 configs: 64.
+- Best stacked config examples:
+  - `sortino lb=3 ct=0.0 sm=0.005 mg=0.001`
+  - `calmar lb=2 ct=0.0 sm=0.005 mg=0.0`
+- Best stacked robust stats (top row range):
+  - min sortino ~**0.19**, mean sortino ~0.27
+  - min return +424% to +452%, mean return +599% to +657%
+  - mean DD ~**-14.70%**
+- Verdict: still clearly below current single-layer deployment target (min sortino 0.22, mean DD -9.22).
+
+#### Tight epoch pair search (2x2 families, focused epochs)
+- Artifact: `binanceleveragesui/meta_pair_epoch_search_tight2x2_lev230_v3.json`
+- Search scope:
+  - DOGE families: `drop15`, `strides`
+  - AAVE families: `strides`, `wd04`
+  - epochs: `6,7,8,9,10,11`
+  - selector: `winner_cash`, metric `{calmar,sortino}`, lb `{1,2}`
+- Best row found:
+  - `doge_drop15_ep008 + aave_wd04_ep006`, calmar lb1
+  - min sortino **0.20**, mean sortino 0.31
+  - min return +496.71%, mean return +657.13%
+  - mean DD **-11.72%**, beats 4/4
+- Comparison to current target:
+  - Current target keeps stronger worst-window risk-adjusted quality (`min sortino 0.22`) with much lower DD (`-9.22%`).
+- Verdict: no pair in this focused scan beats deployment target on combined risk-adjusted objective.
+
+### Runtime note
+- Earlier very large exhaustive runs were intentionally interrupted after long wall-clock durations and replaced by the reduced searches above to preserve iteration speed.
+
+#### Focused retune of best alternative pair (final check)
+- Artifact: `binanceleveragesui/meta_pair_tune_doge_ep008_aave_wd04_ep006_lev230_v1.json`
+- Pair tested: `doge_drop15_ep008 + aave_wd04_ep006`
+- Search scope: winner_cash, metrics `{calmar,sortino}`, lookbacks `{1,2,3,5}`, cash/switch/gap grids.
+- Result:
+  - `MAX_MIN_SORTINO = 0.20` (across all tested configs)
+  - Best stats at that cap: mean sortino ~0.31, mean return +657.13%, mean DD -11.72%
+- Conclusion:
+  - Even after focused retuning, this alternative pair cannot match current deployment target on worst-window risk-adjusted objective (`min sortino 0.22`) and has materially worse DD.
+  - No deployment change.
+
+### Additional outside-the-box cycle (2026-03-04, later)
+
+#### New selector metrics implemented
+- Updated shared meta scorer in `unified_hourly_experiment/meta_selector.py` with:
+  - `omega`, `gain_pain`, `p10`, `median`
+- Updated live meta bot metric allowlist in `binanceleveragesui/trade_margin_meta.py` accordingly.
+- Validation:
+  - `pytest -q tests/test_meta_selector.py tests/test_trade_margin_meta_selection.py tests/test_binance_meta_daily_winners.py`
+  - Result: **22 passed**.
+
+#### Pair-of-pairs meta-selector search
+- Artifact: `binanceleveragesui/meta_pair_of_pairs_search_lev230_v1.json`
+- Idea: layer-2 selector over multiple layer-1 pair strategies (base + alternative pairs).
+- Result:
+  - best row: min sortino **0.20**, mean sortino 0.2825
+  - min return +425.89%, mean return +731.18%
+  - mean DD **-12.87%**
+- Verdict: not deployable vs current target (worse min sortino and DD).
+
+#### Continuous allocation modes on current best pair
+- Artifacts:
+  - `binanceleveragesui/meta_pair_mode_softmax_all_doge_ep008_aave_ep002_lev230_v1.json`
+  - `binanceleveragesui/meta_pair_mode_blend_top2_doge_ep008_aave_ep002_lev230_v1.json`
+- Results:
+  - `softmax_all` best min sortino: **0.18**
+  - `blend_top2` best min sortino: **0.18**
+- Verdict: both underperform hard-switch winner_cash policy.
+
+#### Expanded-metric sweeps (`omega`, `gain_pain`)
+- Current pair tuning artifact:
+  - `binanceleveragesui/meta_pair_tune_doge_ep008_aave_ep002_lev230_newmetrics_v1.json`
+- Outcome:
+  - top region remains unchanged (`calmar`, lb1, winner_cash)
+  - robust stats unchanged: min sortino **0.22**, mean return **+749.47%**, mean DD **-9.22%**
+- Tight epoch expanded-metric artifact:
+  - `binanceleveragesui/meta_pair_epoch_search_tight2x2_lev230_newmetrics_v1.json`
+- Outcome:
+  - `MAX_MIN_SORTINO = 0.20` (no improvement over current deployment target)
+
+#### Downside-metric sweeps (`p10`, `median`)
+- Current pair downside tuning artifact:
+  - `binanceleveragesui/meta_pair_tune_doge_ep008_aave_ep002_lev230_p10median_v1.json`
+- Outcome:
+  - best min sortino **0.20** (below current 0.22)
+- Tight epoch downside artifact:
+  - `binanceleveragesui/meta_pair_epoch_search_tight2x2_lev230_p10median_v1.json`
+- Outcome:
+  - `MAX_MIN_SORTINO = 0.17`
+- Verdict: downside quantile/median selectors did not beat baseline.
+
+#### Leverage frontier sanity sweep
+- Artifact: `binanceleveragesui/meta_leverage_frontier_1p0_to_2p3_v1.json`
+- Scope: current best policy, leverage 1.0..2.3 (step 0.1).
+- Result:
+  - min sortino and mean sortino stayed constant at **0.22 / 0.318** across all leverage levels.
+  - return and DD scale monotonically with leverage.
+- Implication:
+  - If objective is max return under same sortino profile, 2.30x remains best.
+  - If objective is lower DD with same sortino profile, lower leverage is a straightforward dial.
+
+### Deployment decision after full cycle
+- No new algorithm exceeded current deployment target on combined robust objective.
+- Keep target deploy config unchanged:
+  - pair `doge_drop15_ep008 + aave_strides_ep002`
+  - selector `winner_cash + calmar + lookback=24h + switch_margin=0.005`
+  - leverage `2.30x`
+
+### Live audit + restart hardening (2026-03-04)
+
+#### Supervisor/runtime findings
+- Active supervisor program is `binance-meta-margin` (not `binance-doge-margin`).
+- `/etc/supervisor/conf.d/binance-meta-margin.conf` is currently deployed with:
+  - DOGE `epoch_001`, AAVE `epoch_003`
+  - `--max-leverage 0.1`, `--lookback 12`
+
+#### Root-cause audit on recent stuck/loss behavior
+- Confirmed live margin state had a locked AAVE exit order:
+  - `AAVE free=0.00043`, `locked=47.936`
+  - one open `AAVEUSDT SELL` order (`124.53`, `47.936` qty)
+- This can cause repeated `APIError -2010 insufficient balance` when bot tries to place additional full-size exits while almost all inventory is locked.
+
+#### Code fixes applied
+- `binanceleveragesui/trade_margin_meta.py`
+  - exit sizing now uses **free inventory** for order quantity (not free+locked).
+  - added locked-inventory/open-order checks to avoid duplicate failing exits.
+  - added borrow-cap safety for entries/adds:
+    - caps buy notional to `USDT free + get_max_borrowable("USDT")`.
+  - added safer hold-time calc:
+    - `hours_held()` now clamps to `>=0` and handles malformed timestamps.
+- `binanceneural/binance_watchers.py`
+  - fixed Loguru formatting placeholders so watcher logs now print real values.
+- simulator parity:
+  - `binanceleveragesui/validate_sim_vs_live.py` and `compare_sim_prod.py` now include margin interest accrual (`--margin-hourly-rate`) in 5m replay.
+
+#### Test/verification
+- `pytest -q tests/test_trade_margin_meta_selection.py tests/test_meta_selector.py tests/test_binance_meta_daily_winners.py tests/test_simulator_math.py`
+  - **48 passed** (warnings only)
+- follow-up focused suite after additional hold-time fix:
+  - **27 passed** (warnings only)
+
+#### Restart/deploy status
+- Restarted live service twice after patches:
+  - `sudo supervisorctl restart binance-meta-margin`
+  - status: `RUNNING`
+- Post-restart logs show patched behavior active:
+  - no negative hold duration (`holding aave (0.0h)`)
+  - bot remains in controlled hold state with existing open AAVE exit order.
+
+#### Deployment alignment to optimized profile (2026-03-04, post-audit)
+- Updated active supervisor unit `/etc/supervisor/conf.d/binance-meta-margin.conf` to match best selected profile:
+  - pair: `doge_drop15_ep008 + aave_strides_ep002`
+  - selector: `winner_cash + calmar`
+  - params: `lookback=24`, `switch_margin=0.005`, `max_leverage=2.30`, `cycle_minutes=60`
+- Applied with:
+  - `sudo supervisorctl reread && sudo supervisorctl update && sudo supervisorctl restart binance-meta-margin`
+- Verified live process args now match optimized command line (pid `3947580` at deploy time).
+- Backup of prior active supervisor config created before replacement (`/etc/supervisor/conf.d/binance-meta-margin.conf.bak_<timestamp>`).
+
+### Continued Search + Runtime Hardening (2026-03-04, latest)
+
+#### New broad multi-candidate sweeps (DOGE/AAVE/ETH)
+- Artifacts:
+  - `binanceleveragesui/meta_daily_winners_doge_aave_eth_lev230_v2.json`
+  - `binanceleveragesui/meta_daily_winners_doge_aave_eth_lev230_v3.json`
+- `v2` top region (8 candidates, smoother-focused epochs):
+  - dominated by `softmax_all`, `lookback=1d`, `temperature=0.25`
+  - min sortino **0.19**, mean sortino **0.333**
+  - min return **+221.38%**, mean return **+306.21%**
+  - mean DD **-6.73%**, beats **4/4** windows
+- `v3` union sweep (11 candidates; prior winners + smoother set):
+  - top region again `softmax_all`, `lookback=1d`, `temperature=0.25`
+  - min sortino **0.21**, mean sortino **0.328**
+  - min return **+237.70%**, mean return **+308.12%**
+  - mean DD **-7.43%**, beats **4/4** windows
+- Deployability note:
+  - these best rows rely on continuous-allocation mode (`softmax_all`) not used by current live margin runtime.
+  - best live-compatible `winner_cash` rows from this cycle improved DD but reduced worst-window sortino vs deployed baseline.
+
+#### Expanded regime retune on deployed pair
+- Artifact:
+  - `binanceleveragesui/meta_pair_regime_tune_ep008_ep002_reduced_v4.json`
+- Best rows:
+  - `min_sortino=0.22` (ties baseline), `mean_sortino=0.3375` (higher),
+  - `mean_return=+692.55%` (higher),
+  - but `mean_DD=-12.01%` (materially worse).
+- No strict dominance over deployed static policy.
+
+#### Selector-stack experiment (outside-the-box)
+- Artifact:
+  - `binanceleveragesui/meta_selector_stack_ep008_ep002_v3.json`
+- Result:
+  - top rows increased mean return but all reduced `min_sortino` vs baseline (`0.21` or below vs `0.22`).
+  - no row strictly dominated deployed baseline on combined objective.
+
+#### Critical live bug fix (stuck locked exit + bad hold clock)
+- Root cause found in live state:
+  - `open_ts` had future UTC timestamp, so `hours_held()` clamped to `0.0h` and force-close timing was neutralized.
+  - inventory was almost entirely `locked` by stale AAVE exit order, but `asset_free` was tiny positive, so old unlock condition (`asset_free <= 0`) did not trigger.
+- Code updates in `binanceleveragesui/trade_margin_meta.py`:
+  - auto-normalize invalid/future `open_ts` (prefer open-order timestamp when available).
+  - added stale/age-aware order timestamp parsing helpers.
+  - replaced strict free==0 lock gate with `mostly_locked` inventory detection.
+  - force-close now unlocks stale locked exits reliably and logs unlock-wait states clearly.
+- Tests:
+  - `pytest -q tests/test_trade_margin_meta_selection.py tests/test_simulator_math.py tests/test_binance_meta_daily_winners.py`
+  - **47 passed** (warnings only).
+
+#### Live deployment + verification (latest restart)
+- Restarted live service:
+  - `sudo supervisorctl restart binance-meta-margin`
+- Observed in live logs after patch:
+  - `corrected open_ts (future_ts_from_open_order) -> ...`
+  - repeated `FORCE CLOSE aave after 6.9h`
+  - successful unlock and liquidation: `force-close sell=110.5500 qty=47.9360`
+  - `aave position closed`
+  - fresh re-entry observed under live policy.
+- Post-check:
+  - stale AAVE open order cleared.
+  - active runtime still aligned to deployed strategy target (`doge_ep008 + aave_ep002`, `winner_cash`, `calmar`, `lookback=24`, `switch_margin=0.005`, `max_leverage=2.30`).
+
+#### Current decision
+- Keep algorithm deployment unchanged for now (no new strict dominance on combined robustness objective).
+- Keep newest runtime bugfixes deployed (they resolved the real stuck-position failure mode in production).

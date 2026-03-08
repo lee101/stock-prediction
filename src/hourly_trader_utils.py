@@ -6,9 +6,10 @@ offline backtests without requiring Alpaca credentials.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 
 @dataclass
@@ -40,6 +41,55 @@ def build_plan_from_action(action: dict, *, intensity_scale: float) -> TradingPl
         sell_amount=sell_amount,
         timestamp=action["timestamp"],
     )
+
+
+def directional_entry_amount(action: Mapping[str, Any] | object, *, is_short: bool) -> float:
+    """Return side-aware entry amount from model action payload.
+
+    Long entries should use `buy_amount`; short entries should use `sell_amount`.
+    `trade_amount` is used as a fallback for legacy payloads.
+    """
+
+    primary = "sell_amount" if is_short else "buy_amount"
+    secondary = "trade_amount"
+    tertiary = "buy_amount" if is_short else "sell_amount"
+    for key in (primary, secondary, tertiary):
+        value = _read_optional_numeric_field(action, key)
+        if value is not None:
+            return max(0.0, value)
+    return 0.0
+
+
+def entry_intensity_fraction(
+    action: Mapping[str, Any] | object,
+    *,
+    is_short: bool,
+    trade_amount_scale: float,
+    intensity_power: float = 1.0,
+    min_intensity_fraction: float = 0.0,
+    side_multiplier: float = 1.0,
+) -> tuple[float, float]:
+    """Return `(signal_amount, intensity_fraction)` for position sizing."""
+
+    amount = directional_entry_amount(action, is_short=is_short)
+    scale = float(trade_amount_scale)
+    if scale <= 0:
+        return amount, 0.0
+    raw_fraction = min(max(amount / scale, 0.0), 1.0)
+
+    power = float(intensity_power)
+    if power <= 0:
+        adjusted = raw_fraction
+    elif power == 1.0:
+        adjusted = raw_fraction
+    else:
+        adjusted = raw_fraction**power
+
+    adjusted *= max(float(side_multiplier), 0.0)
+    if raw_fraction > 0:
+        adjusted = max(adjusted, max(float(min_intensity_fraction), 0.0))
+    adjusted = min(max(adjusted, 0.0), 1.0)
+    return amount, adjusted
 
 
 def ensure_valid_levels(buy_price: float, sell_price: float, *, min_gap_pct: float) -> Optional[Tuple[float, float]]:
@@ -195,10 +245,35 @@ def build_order_intents(
     return intents
 
 
+def _read_numeric_field(action: Mapping[str, Any] | object, key: str) -> float:
+    value = _read_optional_numeric_field(action, key)
+    return 0.0 if value is None else value
+
+
+def _read_optional_numeric_field(action: Mapping[str, Any] | object, key: str) -> Optional[float]:
+    value: Any
+    missing = object()
+    if isinstance(action, Mapping):
+        value = action.get(key, missing)
+    else:
+        value = getattr(action, key, missing)
+    if value is missing:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
 __all__ = [
     "OrderIntent",
     "TradingPlan",
     "build_order_intents",
     "build_plan_from_action",
+    "directional_entry_amount",
+    "entry_intensity_fraction",
     "ensure_valid_levels",
 ]

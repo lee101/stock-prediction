@@ -45,6 +45,8 @@ class ChronosSolDataModule:
         cache_only: bool = False,
         preaugmentation_dirs: Optional[Sequence[Path]] = None,
         device_map: str = "cuda",
+        can_long: float = 1.0,
+        can_short: float = 0.0,
     ) -> None:
         self.symbol = symbol.upper()
         self.data_root = Path(data_root)
@@ -62,6 +64,8 @@ class ChronosSolDataModule:
         self.cache_only = bool(cache_only)
         self.preaugmentation_dirs = tuple(preaugmentation_dirs) if preaugmentation_dirs else None
         self.device_map = device_map
+        self.can_long = float(can_long)
+        self.can_short = float(can_short)
 
         if feature_columns is None:
             self.feature_columns = tuple(build_default_feature_columns(self.forecast_horizons))
@@ -105,18 +109,24 @@ class ChronosSolDataModule:
             norm_train,
             self.sequence_length,
             primary_horizon=primary_horizon,
+            can_long=self.can_long,
+            can_short=self.can_short,
         )
         self.val_dataset = BinanceHourlyDataset(
             val_frame,
             norm_val,
             self.sequence_length,
             primary_horizon=primary_horizon,
+            can_long=self.can_long,
+            can_short=self.can_short,
         )
         self.test_dataset = BinanceHourlyDataset(
             test_frame,
             norm_test,
             self.sequence_length,
             primary_horizon=primary_horizon,
+            can_long=self.can_long,
+            can_short=self.can_short,
         )
 
     def train_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:

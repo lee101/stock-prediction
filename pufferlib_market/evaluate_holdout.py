@@ -22,9 +22,10 @@ from torch.distributions import Categorical
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 
 
-def _mask_all_shorts(logits: torch.Tensor, *, num_symbols: int) -> torch.Tensor:
+def _mask_all_shorts(logits: torch.Tensor, *, num_symbols: int, per_symbol_actions: int = 1) -> torch.Tensor:
     masked = logits.clone()
-    masked[:, 1 + num_symbols :] = torch.finfo(masked.dtype).min
+    side_block = int(num_symbols) * max(1, int(per_symbol_actions))
+    masked[:, 1 + side_block :] = torch.finfo(masked.dtype).min
     return masked
 
 
@@ -32,6 +33,7 @@ def _mask_disallowed_shorts(
     logits: torch.Tensor,
     *,
     num_symbols: int,
+    per_symbol_actions: int,
     shortable_mask: torch.Tensor,
 ) -> torch.Tensor:
     if shortable_mask.numel() != num_symbols:
@@ -42,9 +44,12 @@ def _mask_disallowed_shorts(
         return logits
     masked = logits.clone()
     min_val = torch.finfo(masked.dtype).min
+    side_block = int(num_symbols) * max(1, int(per_symbol_actions))
     disallowed = (~shortable_mask).nonzero(as_tuple=False).view(-1).tolist()
     for sym_idx in disallowed:
-        masked[:, 1 + num_symbols + int(sym_idx)] = min_val
+        start = 1 + side_block + int(sym_idx) * max(1, int(per_symbol_actions))
+        end = start + max(1, int(per_symbol_actions))
+        masked[:, start:end] = min_val
     return masked
 
 
@@ -108,6 +113,52 @@ def _infer_num_actions(state_dict: dict[str, torch.Tensor], fallback: int) -> in
             if t.ndim == 2:
                 return int(t.shape[0])
     return int(fallback)
+
+
+def _infer_action_grid(
+    *,
+    payload: object,
+    state_dict: dict[str, torch.Tensor],
+    num_symbols: int,
+) -> tuple[int, int, int, float]:
+    alloc_bins = 1
+    level_bins = 1
+    max_offset_bps = 0.0
+    if isinstance(payload, dict):
+        try:
+            alloc_bins = max(1, int(payload.get("action_allocation_bins", 1)))
+        except (TypeError, ValueError):
+            alloc_bins = 1
+        try:
+            level_bins = max(1, int(payload.get("action_level_bins", 1)))
+        except (TypeError, ValueError):
+            level_bins = 1
+        try:
+            max_offset_bps = max(0.0, float(payload.get("action_max_offset_bps", 0.0)))
+        except (TypeError, ValueError):
+            max_offset_bps = 0.0
+
+    per_symbol_actions = int(alloc_bins) * int(level_bins)
+    expected_actions = 1 + 2 * int(num_symbols) * int(per_symbol_actions)
+    num_actions = _infer_num_actions(state_dict, fallback=expected_actions)
+    if num_actions != expected_actions:
+        denom = 2 * int(num_symbols)
+        rem = int(num_actions) - 1
+        if rem <= 0 or denom <= 0 or rem % denom != 0:
+            raise ValueError(
+                f"Checkpoint num_actions={num_actions} incompatible with num_symbols={num_symbols} "
+                f"(cannot infer action grid)"
+            )
+        inferred_per_symbol = rem // denom
+        if inferred_per_symbol % int(level_bins) == 0:
+            alloc_bins = inferred_per_symbol // int(level_bins)
+        else:
+            level_bins = 1
+            alloc_bins = inferred_per_symbol
+        per_symbol_actions = inferred_per_symbol
+    if per_symbol_actions < 1:
+        raise ValueError("Invalid action grid (per_symbol_actions < 1)")
+    return int(num_actions), int(alloc_bins), int(level_bins), float(max_offset_bps)
 
 
 def _infer_arch(state_dict: dict[str, torch.Tensor]) -> str:
@@ -233,10 +284,12 @@ def main() -> None:
     data = read_mktd(Path(args.data_path))
     num_symbols = data.num_symbols
     obs_size = int(num_symbols) * 16 + 5 + int(num_symbols)
-    fallback_actions = 1 + 2 * int(num_symbols)
-    num_actions = _infer_num_actions(state_dict, fallback=fallback_actions)
-    if num_actions != fallback_actions:
-        raise ValueError(f"Checkpoint num_actions={num_actions} does not match expected={fallback_actions}")
+    num_actions, alloc_bins, level_bins, max_offset_bps = _infer_action_grid(
+        payload=payload,
+        state_dict=state_dict,
+        num_symbols=int(num_symbols),
+    )
+    per_symbol_actions = int(alloc_bins) * int(level_bins)
 
     arch = _infer_arch(state_dict)
     hidden = _infer_hidden_size(state_dict, arch=arch)
@@ -259,10 +312,17 @@ def main() -> None:
         with torch.no_grad():
             logits, _ = policy(obs_t)
         if args.disable_shorts:
-            logits = _mask_all_shorts(logits, num_symbols=int(num_symbols))
+            logits = _mask_all_shorts(
+                logits,
+                num_symbols=int(num_symbols),
+                per_symbol_actions=int(per_symbol_actions),
+            )
         elif shortable_mask is not None:
             logits = _mask_disallowed_shorts(
-                logits, num_symbols=int(num_symbols), shortable_mask=shortable_mask.to(device=logits.device)
+                logits,
+                num_symbols=int(num_symbols),
+                per_symbol_actions=int(per_symbol_actions),
+                shortable_mask=shortable_mask.to(device=logits.device),
             )
         if args.deterministic:
             action_now = int(torch.argmax(logits, dim=-1).item())
@@ -309,6 +369,9 @@ def main() -> None:
             fee_rate=float(args.fee_rate),
             max_leverage=float(args.max_leverage),
             periods_per_year=float(args.periods_per_year),
+            action_allocation_bins=int(alloc_bins),
+            action_level_bins=int(level_bins),
+            action_max_offset_bps=float(max_offset_bps),
         )
         metrics.append(
             WindowMetric(
@@ -338,6 +401,9 @@ def main() -> None:
         "decision_lag": int(decision_lag),
         "fee_rate": float(args.fee_rate),
         "max_leverage": float(args.max_leverage),
+        "action_allocation_bins": int(alloc_bins),
+        "action_level_bins": int(level_bins),
+        "action_max_offset_bps": float(max_offset_bps),
         "periods_per_year": float(args.periods_per_year),
         "summary": {
             "median_total_return": float(_percentile(returns, 50)),
@@ -362,4 +428,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
