@@ -1,0 +1,26 @@
+[
+  {
+    "name": "baseline_h1_24_ctx336",
+    "forecast_horizons": [1, 24],
+    "context_hours": 336,
+    "batch_size": 128,
+    "description": "Seeded baseline using the existing 1h and 24h caches."
+  },
+  {
+    "name": "h1_6_24_ctx1024",
+    "forecast_horizons": [1, 6, 24],
+    "context_hours": 1024,
+    "batch_size": 64,
+    "description": "Blend 1h, 6h, and 24h Chronos features with a longer context."
+  },
+  {
+    "name": "h1_6_24_joint_ctx1024_cov",
+    "forecast_horizons": [1, 6, 24],
+    "context_hours": 1024,
+    "batch_size": 96,
+    "force_cross_learning": true,
+    "grouped_joint_cache": true,
+    "use_time_covariates": true,
+    "description": "Grouped BTC/ETH/SOL Chronos cache generation with cross-learning and time covariates."
+  }
+]

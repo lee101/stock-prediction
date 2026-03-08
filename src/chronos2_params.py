@@ -21,6 +21,100 @@ _multivariate_config_cache: Optional[Dict[str, Dict[str, Any]]] = None
 CHRONOS2_USE_MULTIVARIATE = os.getenv("CHRONOS2_USE_MULTIVARIATE", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_env_bool(name: str) -> Optional[bool]:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _parse_env_int(name: str) -> Optional[int]:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+def _parse_env_skip_rates(name: str) -> Optional[Tuple[int, ...]]:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    values = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            value = int(token)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return None
+        values.append(value)
+    if not values:
+        return None
+    return tuple(values)
+
+
+def _apply_env_overrides(params: Dict[str, object]) -> Dict[str, object]:
+    updated = dict(params)
+    predict_kwargs = dict(updated.get("predict_kwargs") or {})
+
+    force_multivariate = _parse_env_bool("CHRONOS2_FORCE_MULTIVARIATE")
+    if force_multivariate is not None:
+        updated["use_multivariate"] = force_multivariate
+
+    force_cross_learning = _parse_env_bool("CHRONOS2_FORCE_CROSS_LEARNING")
+    if force_cross_learning is None:
+        force_cross_learning = _parse_env_bool("CHRONOS2_CROSS_LEARNING")
+    if force_cross_learning is not None:
+        updated["use_cross_learning"] = force_cross_learning
+        if force_cross_learning:
+            predict_kwargs.setdefault("predict_batches_jointly", True)
+        else:
+            predict_kwargs.pop("predict_batches_jointly", None)
+
+    context_length = _parse_env_int("CHRONOS2_CONTEXT_LENGTH")
+    if context_length is not None:
+        updated["context_length"] = context_length
+
+    batch_size = _parse_env_int("CHRONOS2_BATCH_SIZE")
+    if batch_size is not None:
+        updated["batch_size"] = batch_size
+
+    aggregation_method = os.getenv("CHRONOS2_AGGREGATION_METHOD")
+    if aggregation_method is not None and aggregation_method.strip():
+        normalized_method = aggregation_method.strip()
+        updated["aggregation_method"] = normalized_method
+        updated["multiscale_method"] = normalized_method
+
+    skip_rates = _parse_env_skip_rates("CHRONOS2_SKIP_RATES")
+    if skip_rates is not None:
+        updated["skip_rates"] = skip_rates
+        if len(skip_rates) > 1:
+            updated["use_multiscale"] = True
+
+    force_multiscale = _parse_env_bool("CHRONOS2_FORCE_MULTISCALE")
+    if force_multiscale is None:
+        force_multiscale = _parse_env_bool("CHRONOS2_MULTISCALE")
+    if force_multiscale is not None:
+        updated["use_multiscale"] = force_multiscale
+
+    updated["predict_kwargs"] = predict_kwargs
+    return updated
+
+
 def _normalize_frequency(value: Optional[str]) -> str:
     if not value:
         return "daily"
@@ -202,6 +296,7 @@ def resolve_chronos2_params(
         }
         logger.info("No stored Chronos2 hyperparameters for %s (frequency=%s); using defaults.", symbol, freq)
 
+    params = _apply_env_overrides(params)
     _chronos2_params_cache[cache_key] = dict(params)
     return dict(params)
 
