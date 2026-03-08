@@ -126,11 +126,69 @@ def main() -> None:
     parser.add_argument("--intensity-map", help="Comma-separated SYMBOL=VALUE overrides for intensity.")
     parser.add_argument("--offset-map", help="Comma-separated SYMBOL=VALUE overrides for offset.")
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
+    parser.add_argument("--allow-short", action="store_true", help="Enable short entries for supported stock symbols.")
+    parser.add_argument(
+        "--max-leverage-stock",
+        type=float,
+        default=1.0,
+        help="Base stock leverage cap. Applies to both sides unless a directional override is set.",
+    )
+    parser.add_argument(
+        "--max-leverage-crypto",
+        type=float,
+        default=1.0,
+        help="Base crypto leverage cap. Applies to both sides unless a directional override is set.",
+    )
+    parser.add_argument(
+        "--long-max-leverage-stock",
+        type=float,
+        default=None,
+        help="Override the stock leverage cap for long entries only.",
+    )
+    parser.add_argument(
+        "--short-max-leverage-stock",
+        type=float,
+        default=None,
+        help="Override the stock leverage cap for short entries only.",
+    )
+    parser.add_argument(
+        "--long-max-leverage-crypto",
+        type=float,
+        default=None,
+        help="Override the crypto leverage cap for long entries only.",
+    )
+    parser.add_argument(
+        "--short-max-leverage-crypto",
+        type=float,
+        default=None,
+        help="Override the crypto leverage cap for short entries only.",
+    )
+    parser.add_argument("--initial-symbol", default=None, help="Optional symbol to seed as an open position.")
+    parser.add_argument("--initial-inventory", type=float, default=0.0, help="Signed starting quantity for --initial-symbol.")
+    parser.add_argument("--initial-open-price", type=float, default=None, help="Optional entry price for the starting position.")
+    parser.add_argument("--initial-open-ts", default=None, help="Optional UTC timestamp for when the starting position was opened.")
     parser.add_argument("--min-edge", type=float, default=0.0)
     parser.add_argument("--risk-weight", type=float, default=0.5)
     parser.add_argument("--edge-mode", default="high_low", choices=["high_low", "high", "close"])
     parser.add_argument("--max-hold-hours", type=int, default=None)
     parser.add_argument("--allow-reentry-same-bar", action="store_true")
+    parser.add_argument(
+        "--bar-margin",
+        type=float,
+        default=0.0,
+        help="Decimal fill buffer on bar extremums (0.001 = 10 bps).",
+    )
+    parser.add_argument(
+        "--decision-lag-bars",
+        type=int,
+        default=0,
+        help="Shift actions+forecast inputs back by N bars (live-like execution delay).",
+    )
+    parser.add_argument(
+        "--realistic-selection",
+        action="store_true",
+        help="Select entry candidates by edge score first, then simulate whether the limit order actually fills.",
+    )
     parser.add_argument(
         "--strategy",
         default="independent",
@@ -213,12 +271,26 @@ def main() -> None:
     if run_best_trade_simulation is not None and SelectionConfig is not None:
         sim_config = SelectionConfig(
             initial_cash=args.initial_cash,
+            initial_inventory=args.initial_inventory,
+            initial_symbol=args.initial_symbol,
+            initial_open_price=args.initial_open_price,
+            initial_open_ts=args.initial_open_ts,
             min_edge=args.min_edge,
             risk_weight=args.risk_weight,
             edge_mode=args.edge_mode,
             max_hold_hours=args.max_hold_hours,
             symbols=symbols,
+            allow_short=args.allow_short,
             allow_reentry_same_bar=args.allow_reentry_same_bar,
+            max_leverage_stock=args.max_leverage_stock,
+            max_leverage_crypto=args.max_leverage_crypto,
+            long_max_leverage_stock=args.long_max_leverage_stock,
+            short_max_leverage_stock=args.short_max_leverage_stock,
+            long_max_leverage_crypto=args.long_max_leverage_crypto,
+            short_max_leverage_crypto=args.short_max_leverage_crypto,
+            bar_margin=float(args.bar_margin),
+            decision_lag_bars=int(args.decision_lag_bars),
+            select_fillable_only=not bool(args.realistic_selection),
             work_steal_enabled=args.work_steal,
             work_steal_min_profit_pct=args.work_steal_min_profit_pct,
             work_steal_min_edge=args.work_steal_min_edge,
@@ -239,6 +311,25 @@ def main() -> None:
         if args.output_dir:
             output_dir = Path(args.output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
+            horizon_int = int(args.horizon)
+            forecast_cols = [
+                f"predicted_high_p50_h{horizon_int}",
+                f"predicted_low_p50_h{horizon_int}",
+                f"predicted_close_p50_h{horizon_int}",
+            ]
+            bar_cols = ["timestamp", "symbol", "high", "low", "close"]
+            if "volume" in bars.columns:
+                bar_cols.append("volume")
+            for col in forecast_cols:
+                if col in bars.columns:
+                    bar_cols.append(col)
+            bars[bar_cols].to_csv(output_dir / "bars.csv", index=False)
+
+            action_cols = ["timestamp", "symbol", "buy_price", "sell_price", "buy_amount", "sell_amount"]
+            if "trade_amount" in actions.columns:
+                action_cols.append("trade_amount")
+            actions[action_cols].to_csv(output_dir / "actions.csv", index=False)
+
             result.per_hour.to_csv(output_dir / "selector_per_hour.csv", index=False)
             trades_df = pd.DataFrame([t.__dict__ for t in result.trades])
             trades_df.to_csv(output_dir / "selector_trades.csv", index=False)

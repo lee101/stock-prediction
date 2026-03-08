@@ -11,7 +11,7 @@ import struct
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import torch
@@ -56,6 +56,7 @@ class TradingSignal:
     confidence: float  # softmax probability
     value_estimate: float  # critic value
     allocation_pct: float = 1.0  # allocation as fraction of account
+    level_offset_bps: float = 0.0
 
 
 class PPOTrader:
@@ -63,10 +64,18 @@ class PPOTrader:
 
     SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "LINKUSD"]
 
-    def __init__(self, checkpoint_path: str, device: str = "cpu", long_only: bool = False):
+    def __init__(
+        self,
+        checkpoint_path: str,
+        device: str = "cpu",
+        long_only: bool = False,
+        symbols: Optional[Sequence[str]] = None,
+    ):
         self.device = torch.device(device)
         self.checkpoint_path = checkpoint_path
         self.long_only = long_only
+        if symbols:
+            self.SYMBOLS = [str(s).upper() for s in symbols]
 
         ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
 
@@ -89,14 +98,41 @@ class PPOTrader:
         else:
             self.num_actions = 1 + 2 * self.num_symbols
 
-        # Check for allocation bins
+        self.action_allocation_bins = 1
+        self.action_level_bins = 1
+        self.action_max_offset_bps = 0.0
+        if isinstance(ckpt, dict):
+            try:
+                self.action_allocation_bins = max(1, int(ckpt.get("action_allocation_bins", 1)))
+            except (TypeError, ValueError):
+                self.action_allocation_bins = 1
+            try:
+                self.action_level_bins = max(1, int(ckpt.get("action_level_bins", 1)))
+            except (TypeError, ValueError):
+                self.action_level_bins = 1
+            try:
+                self.action_max_offset_bps = max(0.0, float(ckpt.get("action_max_offset_bps", 0.0)))
+            except (TypeError, ValueError):
+                self.action_max_offset_bps = 0.0
+
         basic_actions = 1 + 2 * self.num_symbols
         if self.num_actions > basic_actions:
-            self.alloc_bins = (self.num_actions - 1) // (2 * self.num_symbols)
-            self.per_symbol_actions = self.alloc_bins
+            rem = self.num_actions - 1
+            denom = 2 * self.num_symbols
+            if rem > 0 and denom > 0 and rem % denom == 0:
+                inferred_per_symbol = rem // denom
+            else:
+                inferred_per_symbol = max(1, self.action_allocation_bins * self.action_level_bins)
+            expected_per_symbol = max(1, self.action_allocation_bins * self.action_level_bins)
+            if inferred_per_symbol != expected_per_symbol:
+                if inferred_per_symbol % self.action_level_bins == 0:
+                    self.action_allocation_bins = max(1, inferred_per_symbol // self.action_level_bins)
+                else:
+                    self.action_allocation_bins = max(1, inferred_per_symbol)
+                    self.action_level_bins = 1
+            self.per_symbol_actions = max(1, inferred_per_symbol)
             self.side_block = self.num_symbols * self.per_symbol_actions
         else:
-            self.alloc_bins = 0
             self.per_symbol_actions = 1
             self.side_block = self.num_symbols
 
@@ -121,7 +157,15 @@ class PPOTrader:
         self.step = 0
         self.max_steps = config.get("max_steps", 720)
 
-        print(f"Loaded model from {checkpoint_path} (actions={self.num_actions}, alloc_bins={self.alloc_bins})")
+        print(
+            "Loaded model from {} (actions={}, alloc_bins={}, level_bins={}, max_offset_bps={:.1f})".format(
+                checkpoint_path,
+                self.num_actions,
+                int(self.action_allocation_bins),
+                int(self.action_level_bins),
+                float(self.action_max_offset_bps),
+            )
+        )
 
     def build_observation(self, features: np.ndarray, prices: dict) -> np.ndarray:
         """
@@ -189,25 +233,32 @@ class PPOTrader:
 
         # Decode action
         if action == 0:
-            return TradingSignal("flat", None, None, confidence, value_est, 0.0)
+            return TradingSignal("flat", None, None, confidence, value_est, 0.0, 0.0)
         else:
-            if self.alloc_bins > 0:
+            if self.per_symbol_actions > 1:
                 # Allocation bins mode
                 action_idx = action - 1
                 is_short = action_idx >= self.side_block
                 if is_short:
                     action_idx -= self.side_block
                 sym_idx = action_idx // self.per_symbol_actions
-                alloc_idx = action_idx % self.per_symbol_actions
-                alloc_pct = (alloc_idx + 1) / self.alloc_bins
+                rem = action_idx % self.per_symbol_actions
+                alloc_idx = rem // self.action_level_bins
+                level_idx = rem % self.action_level_bins
+                alloc_pct = (alloc_idx + 1) / max(1, self.action_allocation_bins)
+                if self.action_level_bins > 1 and self.action_max_offset_bps > 0:
+                    frac = level_idx / max(1, self.action_level_bins - 1)
+                    level_bps = (2.0 * frac - 1.0) * self.action_max_offset_bps
+                else:
+                    level_bps = 0.0
                 symbol = self.SYMBOLS[sym_idx]
                 direction = "short" if is_short else "long"
                 action_str = f"{direction}_{symbol}"
-                return TradingSignal(action_str, symbol, direction, confidence, value_est, alloc_pct)
+                return TradingSignal(action_str, symbol, direction, confidence, value_est, alloc_pct, level_bps)
             elif self.long_only:
                 sym_idx = action - 1
                 symbol = self.SYMBOLS[sym_idx]
-                return TradingSignal(f"long_{symbol}", symbol, "long", confidence, value_est, 1.0)
+                return TradingSignal(f"long_{symbol}", symbol, "long", confidence, value_est, 1.0, 0.0)
             else:
                 action_idx = action - 1
                 is_short = action_idx >= self.num_symbols
@@ -215,7 +266,7 @@ class PPOTrader:
                 symbol = self.SYMBOLS[sym_idx]
                 direction = "short" if is_short else "long"
                 action_str = f"{direction}_{symbol}"
-                return TradingSignal(action_str, symbol, direction, confidence, value_est, 1.0)
+                return TradingSignal(action_str, symbol, direction, confidence, value_est, 1.0, 0.0)
 
     def update_state(self, action: int, fill_price: float, symbol: str):
         """Update internal state after trade execution."""

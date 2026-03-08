@@ -25,6 +25,7 @@ from binanceneural.model import build_policy, policy_config_from_payload
 from binanceneural.inference import generate_latest_action
 from src.torch_load_utils import torch_load_compat
 from src.symbol_utils import is_crypto_symbol
+from src.hourly_trader_utils import entry_intensity_fraction
 
 LONG_ONLY = {"NVDA", "MSFT", "META", "GOOG", "NET", "PLTR", "DBX", "TSLA", "AAPL"}
 SHORT_ONLY = {"YELP", "EBAY", "TRIP", "MTCH", "ANGI", "Z", "EXPE", "BKNG", "NWSA", "NYT"}
@@ -35,6 +36,10 @@ MAX_HOLD_HOURS = 6
 MAX_POSITIONS = 10
 TRADE_AMOUNT_SCALE = 100.0
 MIN_BUY_AMOUNT = 0.0
+ENTRY_INTENSITY_POWER = 1.0
+ENTRY_MIN_INTENSITY_FRACTION = 0.0
+LONG_INTENSITY_MULTIPLIER = 1.0
+SHORT_INTENSITY_MULTIPLIER = 1.0
 
 
 def log_trade(event: dict):
@@ -463,12 +468,7 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
 
         buy_price = action.get("buy_price", 0)
         sell_price = action.get("sell_price", 0)
-        buy_amount = action.get("buy_amount", 0)
-        intensity_frac = min(buy_amount / TRADE_AMOUNT_SCALE, 1.0)
-
-        if buy_price <= 0 or intensity_frac <= 0:
-            continue
-        if MIN_BUY_AMOUNT > 0 and buy_amount < MIN_BUY_AMOUNT:
+        if buy_price <= 0:
             continue
 
         hold_hours = action.get("hold_hours", MAX_HOLD_HOURS)
@@ -480,6 +480,19 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
         else:
             is_long = symbol in LONG_ONLY or symbol not in SHORT_ONLY
             is_short = symbol in SHORT_ONLY
+
+        signal_amount, intensity_frac = entry_intensity_fraction(
+            action,
+            is_short=is_short,
+            trade_amount_scale=TRADE_AMOUNT_SCALE,
+            intensity_power=ENTRY_INTENSITY_POWER,
+            min_intensity_fraction=ENTRY_MIN_INTENSITY_FRACTION,
+            side_multiplier=SHORT_INTENSITY_MULTIPLIER if is_short else LONG_INTENSITY_MULTIPLIER,
+        )
+        if intensity_frac <= 0:
+            continue
+        if MIN_BUY_AMOUNT > 0 and signal_amount < MIN_BUY_AMOUNT:
+            continue
 
         if is_short:
             entry_price = sell_price
@@ -523,6 +536,7 @@ def execute_trades(api, signals: Dict, state: dict, max_positions: int = MAX_POS
             log_trade({"event": "entry", "symbol": symbol, "side": side_str,
                        "qty": target_qty, "price": entry_price, "exit_price": exit_price,
                        "edge": action.get("edge"), "intensity": intensity_frac,
+                       "signal_amount": signal_amount,
                        "alloc": position_alloc, "order_id": str(result.id)})
 
             now = datetime.now(timezone.utc)
@@ -580,11 +594,19 @@ def run_cycle(
                 action["edge"] = edge
                 signals[symbol] = action
                 side = "short" if symbol in SHORT_ONLY else "long"
-                buy_amt = action.get("buy_amount", 0)
-                intensity = min(buy_amt / TRADE_AMOUNT_SCALE, 1.0)
-                logger.info("{}: {} buy={:.2f} sell={:.2f} edge={:.4f} hold={:.1f}h int={:.3f}",
+                signal_amount, intensity = entry_intensity_fraction(
+                    action,
+                    is_short=(symbol in SHORT_ONLY),
+                    trade_amount_scale=TRADE_AMOUNT_SCALE,
+                    intensity_power=ENTRY_INTENSITY_POWER,
+                    min_intensity_fraction=ENTRY_MIN_INTENSITY_FRACTION,
+                    side_multiplier=(
+                        SHORT_INTENSITY_MULTIPLIER if (symbol in SHORT_ONLY) else LONG_INTENSITY_MULTIPLIER
+                    ),
+                )
+                logger.info("{}: {} buy={:.2f} sell={:.2f} edge={:.4f} hold={:.1f}h amt={:.3f} int={:.3f}",
                            symbol, side, buy_price, sell_price, edge,
-                           action.get("hold_hours", 0), intensity)
+                           action.get("hold_hours", 0), signal_amount, intensity)
             else:
                 logger.debug("{}: edge={:.4f} below {:.4f}", symbol, edge, args.min_edge)
 
@@ -599,6 +621,9 @@ def run_cycle(
 
 
 def main():
+    global TRADE_AMOUNT_SCALE, MIN_BUY_AMOUNT
+    global ENTRY_INTENSITY_POWER, ENTRY_MIN_INTENSITY_FRACTION
+    global LONG_INTENSITY_MULTIPLIER, SHORT_INTENSITY_MULTIPLIER
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint-dir", type=Path, required=True)
     parser.add_argument("--stock-symbols", default="NVDA,MSFT,META,GOOG")
@@ -620,7 +645,32 @@ def main():
     parser.add_argument("--max-hold-hours", type=int, default=MAX_HOLD_HOURS)
     parser.add_argument("--trade-amount-scale", type=float, default=TRADE_AMOUNT_SCALE)
     parser.add_argument("--min-buy-amount", type=float, default=MIN_BUY_AMOUNT)
+    parser.add_argument("--entry-intensity-power", type=float, default=ENTRY_INTENSITY_POWER)
+    parser.add_argument(
+        "--entry-min-intensity-fraction",
+        type=float,
+        default=ENTRY_MIN_INTENSITY_FRACTION,
+        help="Floor intensity fraction applied to non-zero signals (0-1).",
+    )
+    parser.add_argument(
+        "--long-intensity-multiplier",
+        type=float,
+        default=LONG_INTENSITY_MULTIPLIER,
+        help="Multiply long-side signal intensity (post power transform).",
+    )
+    parser.add_argument(
+        "--short-intensity-multiplier",
+        type=float,
+        default=SHORT_INTENSITY_MULTIPLIER,
+        help="Multiply short-side signal intensity (post power transform).",
+    )
     args = parser.parse_args()
+    TRADE_AMOUNT_SCALE = float(args.trade_amount_scale)
+    MIN_BUY_AMOUNT = float(args.min_buy_amount)
+    ENTRY_INTENSITY_POWER = float(args.entry_intensity_power)
+    ENTRY_MIN_INTENSITY_FRACTION = float(args.entry_min_intensity_fraction)
+    LONG_INTENSITY_MULTIPLIER = float(args.long_intensity_multiplier)
+    SHORT_INTENSITY_MULTIPLIER = float(args.short_intensity_multiplier)
 
     max_pos = args.max_positions
     max_hold = args.max_hold_hours

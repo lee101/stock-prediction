@@ -151,6 +151,47 @@ def main() -> None:
     parser.add_argument("--intensity-map", help="Comma-separated SYMBOL=VALUE overrides for intensity.")
     parser.add_argument("--offset-map", help="Comma-separated SYMBOL=VALUE overrides for offset.")
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
+    parser.add_argument("--allow-short", action="store_true", help="Enable short entries for supported stock symbols.")
+    parser.add_argument(
+        "--max-leverage-stock",
+        type=float,
+        default=1.0,
+        help="Base stock leverage cap. Applies to both sides unless a directional override is set.",
+    )
+    parser.add_argument(
+        "--max-leverage-crypto",
+        type=float,
+        default=1.0,
+        help="Base crypto leverage cap. Applies to both sides unless a directional override is set.",
+    )
+    parser.add_argument(
+        "--long-max-leverage-stock",
+        type=float,
+        default=None,
+        help="Override the stock leverage cap for long entries only.",
+    )
+    parser.add_argument(
+        "--short-max-leverage-stock",
+        type=float,
+        default=None,
+        help="Override the stock leverage cap for short entries only.",
+    )
+    parser.add_argument(
+        "--long-max-leverage-crypto",
+        type=float,
+        default=None,
+        help="Override the crypto leverage cap for long entries only.",
+    )
+    parser.add_argument(
+        "--short-max-leverage-crypto",
+        type=float,
+        default=None,
+        help="Override the crypto leverage cap for short entries only.",
+    )
+    parser.add_argument("--initial-symbol", default=None, help="Optional symbol to seed as an open position.")
+    parser.add_argument("--initial-inventory", type=float, default=0.0, help="Signed starting quantity for --initial-symbol.")
+    parser.add_argument("--initial-open-price", type=float, default=None, help="Optional entry price for the starting position.")
+    parser.add_argument("--initial-open-ts", default=None, help="Optional UTC timestamp for when the starting position was opened.")
     parser.add_argument("--min-edge", type=float, default=0.0)
     parser.add_argument("--risk-weight", type=float, default=0.5)
     parser.add_argument("--edge-mode", default="high_low", choices=["high_low", "high", "close"])
@@ -301,14 +342,25 @@ def main() -> None:
 
     sim_config = SelectionConfig(
         initial_cash=args.initial_cash,
+        initial_inventory=args.initial_inventory,
+        initial_symbol=args.initial_symbol,
+        initial_open_price=args.initial_open_price,
+        initial_open_ts=args.initial_open_ts,
         min_edge=args.min_edge,
         risk_weight=args.risk_weight,
         edge_mode=args.edge_mode,
         max_hold_hours=args.max_hold_hours,
         symbols=symbols,
+        allow_short=args.allow_short,
         allow_reentry_same_bar=args.allow_reentry_same_bar,
         enforce_market_hours=not args.no_enforce_market_hours,
         close_at_eod=not args.no_close_at_eod,
+        max_leverage_stock=args.max_leverage_stock,
+        max_leverage_crypto=args.max_leverage_crypto,
+        long_max_leverage_stock=args.long_max_leverage_stock,
+        short_max_leverage_stock=args.short_max_leverage_stock,
+        long_max_leverage_crypto=args.long_max_leverage_crypto,
+        short_max_leverage_crypto=args.short_max_leverage_crypto,
         bar_margin=bar_margin,
         decision_lag_bars=args.decision_lag_bars,
         select_fillable_only=not bool(args.realistic_selection),
