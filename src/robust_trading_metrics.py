@@ -107,3 +107,79 @@ def summarize_lag_results(
         "pnl_smoothness_mean": smoothness_mean,
         "robust_score": float(robust_score),
     }
+
+
+def summarize_scenario_results(
+    scenario_results: Sequence[Mapping[str, Any]],
+    *,
+    sortino_clip: float = 10.0,
+) -> dict[str, float]:
+    """Aggregate multi-window / multi-start results into a single robustness score.
+
+    Expected rows contain at least:
+    - ``sortino``
+    - ``return_pct``
+    - ``max_drawdown_pct`` as a positive drawdown magnitude
+    - ``pnl_smoothness``
+
+    Optional ``trade_count`` values are summarized when present so callers can
+    apply activity floors without coupling that policy into the score itself.
+    """
+    if not scenario_results:
+        raise ValueError("scenario_results must not be empty")
+
+    sortinos_raw = _to_1d_float_array(float(row.get("sortino", 0.0) or 0.0) for row in scenario_results)
+    if sortino_clip > 0:
+        sortinos = np.clip(sortinos_raw, -float(sortino_clip), float(sortino_clip))
+    else:
+        sortinos = sortinos_raw
+    returns = _to_1d_float_array(float(row.get("return_pct", 0.0) or 0.0) for row in scenario_results)
+    drawdowns = _to_1d_float_array(float(row.get("max_drawdown_pct", 0.0) or 0.0) for row in scenario_results)
+    smoothness = _to_1d_float_array(float(row.get("pnl_smoothness", 0.0) or 0.0) for row in scenario_results)
+    trade_counts = _to_1d_float_array(float(row.get("trade_count", 0.0) or 0.0) for row in scenario_results)
+
+    sortino_mean = float(np.mean(sortinos))
+    sortino_p25 = float(np.percentile(sortinos, 25))
+    sortino_worst = float(np.min(sortinos))
+    return_mean = float(np.mean(returns))
+    return_p25 = float(np.percentile(returns, 25))
+    return_worst = float(np.min(returns))
+    negative_return_rate = float(np.mean(returns <= 0.0))
+    drawdown_mean = float(np.mean(drawdowns))
+    drawdown_worst = float(np.max(drawdowns))
+    smoothness_mean = float(np.mean(smoothness))
+    smoothness_worst = float(np.max(smoothness))
+
+    # Prefer configurations that remain profitable under different windows and
+    # seeded positions, while penalizing jagged equity curves and deeper losses.
+    robust_score = (
+        1.5 * return_worst
+        + 0.75 * return_p25
+        + 0.35 * return_mean
+        + 2.0 * sortino_p25
+        + 0.5 * sortino_worst
+        - 0.8 * drawdown_worst
+        - 0.25 * drawdown_mean
+        - 175.0 * smoothness_mean
+        - 50.0 * negative_return_rate
+    )
+
+    return {
+        "scenario_count": float(len(scenario_results)),
+        "sortino_clip": float(sortino_clip),
+        "sortino_mean": sortino_mean,
+        "sortino_p25": sortino_p25,
+        "sortino_worst": sortino_worst,
+        "sortino_mean_raw": float(np.mean(sortinos_raw)),
+        "return_mean_pct": return_mean,
+        "return_p25_pct": return_p25,
+        "return_worst_pct": return_worst,
+        "negative_return_rate": negative_return_rate,
+        "max_drawdown_mean_pct": drawdown_mean,
+        "max_drawdown_worst_pct": drawdown_worst,
+        "pnl_smoothness_mean": smoothness_mean,
+        "pnl_smoothness_worst": smoothness_worst,
+        "trade_count_mean": float(np.mean(trade_counts)) if trade_counts.size else 0.0,
+        "trade_count_min": float(np.min(trade_counts)) if trade_counts.size else 0.0,
+        "robust_score": float(robust_score),
+    }

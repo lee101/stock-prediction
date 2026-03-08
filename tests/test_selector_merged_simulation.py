@@ -121,6 +121,11 @@ def test_run_best_trade_simulation_merged_matches_unmerged() -> None:
     assert merged.metrics["mean_hourly_return"] == pytest.approx(
         unmerged.metrics["mean_hourly_return"], rel=0.0, abs=1e-12
     )
+    assert merged.metrics["max_drawdown"] == pytest.approx(unmerged.metrics["max_drawdown"], rel=0.0, abs=1e-12)
+    assert merged.metrics["calmar"] == pytest.approx(unmerged.metrics["calmar"], rel=0.0, abs=1e-12)
+    assert merged.metrics["pnl_smoothness"] == pytest.approx(
+        unmerged.metrics["pnl_smoothness"], rel=0.0, abs=1e-12
+    )
 
 
 @pytest.mark.unit
