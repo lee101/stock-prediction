@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -208,14 +209,18 @@ class BinanceExp1DataModule:
 
     def _load_forecasts(self) -> pd.DataFrame:
         horizons = tuple(int(h) for h in self.config.forecast_horizons)
+        context_hours = _resolve_env_positive_int("CHRONOS2_CONTEXT_HOURS")
+        if context_hours is None:
+            context_hours = _resolve_env_positive_int("CHRONOS2_CONTEXT_LENGTH")
+        batch_size = _resolve_env_positive_int("CHRONOS2_BATCH_SIZE")
         return build_forecast_bundle(
             symbol=self.config.symbol.upper(),
             data_root=Path(self.config.data_root),
             cache_root=Path(self.config.forecast_cache_root),
             horizons=horizons,
-            context_hours=24 * 14,
+            context_hours=context_hours or (24 * 14),
             quantile_levels=(0.1, 0.5, 0.9),
-            batch_size=128,
+            batch_size=batch_size or 128,
             cache_only=self.config.cache_only,
         )
 
@@ -505,6 +510,19 @@ def _zscore(series: pd.Series, window: int) -> pd.Series:
     z = z.replace([np.inf, -np.inf], np.nan)
     z = z.mask(std_zero, 0.0)
     return z
+
+
+def _resolve_env_positive_int(name: str) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value
 
 
 def _cycle_features(values: pd.Series, period: int) -> Tuple[pd.Series, pd.Series]:
