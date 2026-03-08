@@ -36,7 +36,8 @@ def test_manage_positions_replaces_open_entry_order_with_protective_exit(monkeyp
             }
         }
     }
-    calls: dict[str, object] = {"cancelled": [], "placed": []}
+    calls: dict[str, object] = {"placed": []}
+    cancelled: list[str] = []
 
     monkeypatch.setattr(
         live,
@@ -50,13 +51,6 @@ def test_manage_positions_replaces_open_entry_order_with_protective_exit(monkeyp
     )
     monkeypatch.setattr(
         live,
-        "cancel_symbol_orders",
-        lambda api, symbol, orders_by_symbol: calls["cancelled"].append(
-            (symbol, [getattr(order, "id", None) for order in orders_by_symbol.get(symbol, [])])
-        ),
-    )
-    monkeypatch.setattr(
-        live,
         "place_exit_order",
         lambda api, symbol, qty, sell_price, side="sell": calls["placed"].append(
             (symbol, qty, sell_price, side)
@@ -64,9 +58,13 @@ def test_manage_positions_replaces_open_entry_order_with_protective_exit(monkeyp
         or "exit-1",
     )
 
-    live.manage_positions(object(), state, max_hold_hours=6, active_symbols={"NVDA"})
+    class _DummyAPI:
+        def cancel_order_by_id(self, order_id):
+            cancelled.append(str(order_id))
 
-    assert calls["cancelled"] == [("NVDA", ["entry-1"])]
+    live.manage_positions(_DummyAPI(), state, max_hold_hours=6, active_symbols={"NVDA"})
+
+    assert cancelled == ["entry-1"]
     assert calls["placed"] == [("NVDA", 5.0, 110.0, "sell")]
     assert state["positions"]["NVDA"]["exit_order_id"] == "exit-1"
 
@@ -141,6 +139,8 @@ def test_execute_trades_emits_entry_lifecycle_events(monkeypatch) -> None:
         "get_account_info",
         lambda api: {"equity": 10_000.0, "buying_power": 10_000.0, "cash": 5_000.0},
     )
+    monkeypatch.setattr(live, "get_current_positions", lambda api: {})
+    monkeypatch.setattr(live, "get_open_orders", lambda api: {})
     monkeypatch.setattr(
         live,
         "entry_intensity_fraction",
@@ -205,6 +205,8 @@ def test_execute_trades_uses_short_side_for_short_only_symbol(monkeypatch) -> No
         "get_account_info",
         lambda api: {"equity": 10_000.0, "buying_power": 10_000.0, "cash": 5_000.0},
     )
+    monkeypatch.setattr(live, "get_current_positions", lambda api: {})
+    monkeypatch.setattr(live, "get_open_orders", lambda api: {})
     monkeypatch.setattr(
         live,
         "entry_intensity_fraction",
@@ -233,6 +235,126 @@ def test_execute_trades_uses_short_side_for_short_only_symbol(monkeypatch) -> No
     assert submitted[0].kwargs["side"] == "sell"
     assert state["positions"]["DBX"]["side"] == "short"
     assert state["positions"]["DBX"]["qty"] < 0
+
+
+def test_manage_positions_keeps_pending_entry_order(monkeypatch) -> None:
+    state = {
+        "positions": {
+            "NVDA": {
+                "qty": 5,
+                "side": "long",
+                "entry_price": 100.0,
+                "entry_time": datetime.now(timezone.utc).isoformat(),
+                "entry_order_id": "entry-1",
+                "exit_price": 110.0,
+                "hold_hours": 6.0,
+            }
+        }
+    }
+    events: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(live, "get_current_positions", lambda api: {})
+    monkeypatch.setattr(
+        live,
+        "get_open_orders",
+        lambda api: {
+            "NVDA": [
+                SimpleNamespace(
+                    id="entry-1",
+                    side="buy",
+                    qty="5",
+                    limit_price="100.0",
+                    created_at=datetime.now(timezone.utc),
+                )
+            ]
+        },
+    )
+    monkeypatch.setattr(live, "log_trade", lambda event: None)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    class _DummyAPI:
+        def cancel_order_by_id(self, order_id):
+            raise AssertionError("pending entry should not be cancelled")
+
+    live.manage_positions(_DummyAPI(), state, max_hold_hours=6, active_symbols={"NVDA"})
+
+    assert "NVDA" in state["positions"]
+    assert any(event_type == "manage_position_action" and fields.get("action") == "pending_entry_present" for event_type, fields in events)
+
+
+def test_execute_trades_skips_existing_matching_open_entry_order(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+    submitted: list[object] = []
+    state = {"positions": {}}
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _LimitOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.LimitOrderRequest = _LimitOrderRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.OrderSide = SimpleNamespace(BUY="buy", SELL="sell")
+    fake_enums.TimeInForce = SimpleNamespace(DAY="day")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+
+    class _DummyAPI:
+        def submit_order(self, order):
+            submitted.append(order)
+            return SimpleNamespace(id="should-not-submit")
+
+        def cancel_order_by_id(self, order_id):
+            raise AssertionError("matching order should not be cancelled")
+
+    monkeypatch.setattr(live, "get_current_positions", lambda api: {})
+    monkeypatch.setattr(
+        live,
+        "get_open_orders",
+        lambda api: {
+            "NVDA": [
+                SimpleNamespace(
+                    id="entry-1",
+                    symbol="NVDA",
+                    side="buy",
+                    qty="20",
+                    limit_price="100.0",
+                    created_at=datetime.now(timezone.utc),
+                )
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        live,
+        "get_account_info",
+        lambda api: {"equity": 10_000.0, "buying_power": 10_000.0, "cash": 5_000.0},
+    )
+    monkeypatch.setattr(live, "entry_intensity_fraction", lambda *args, **kwargs: (50.0, 0.5))
+    monkeypatch.setattr(live, "log_trade", lambda event: None)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    live.execute_trades(
+        _DummyAPI(),
+        {
+            "NVDA": {
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 50.0,
+                "sell_amount": 0.0,
+                "edge": 0.02,
+                "hold_hours": 4.0,
+            }
+        },
+        state,
+        max_positions=5,
+    )
+
+    assert submitted == []
+    assert state["positions"]["NVDA"]["entry_order_id"] == "entry-1"
+    assert any(event_type == "entry_skipped" and fields.get("reason") == "existing_open_entry_order" for event_type, fields in events)
 
 
 def test_poll_broker_events_logs_and_dedupes(monkeypatch) -> None:

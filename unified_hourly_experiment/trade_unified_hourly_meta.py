@@ -498,7 +498,14 @@ def run_cycle(
     )
 
     if market_open and not args.dry_run and signals:
-        live.execute_trades(api, signals, state, max_positions=int(args.max_positions))
+        live.execute_trades(
+            api,
+            signals,
+            state,
+            max_positions=int(args.max_positions),
+            market_order_entry=bool(args.market_order_entry),
+            entry_order_ttl_hours=float(args.entry_order_ttl_hours),
+        )
         execution_mode = "live_execute"
     elif not market_open and signals:
         logger.info("Market closed - {} signals ready, will trade when open", len(signals))
@@ -575,8 +582,8 @@ def main() -> None:
     parser.add_argument("--bar-margin", type=float, default=0.0013)
     parser.add_argument(
         "--entry-order-ttl-hours",
-        type=int,
-        default=0,
+        type=float,
+        default=6.0,
         help="How many hourly bars non-filled entry orders stay pending in selector simulations (0 disables).",
     )
     parser.add_argument("--leverage", type=float, default=2.0)
