@@ -53,3 +53,7 @@ def test_annualized_return_from_returns_compound():
     returns = [0.01] * 10
     ann = annualized_return_from_returns(returns, periods_per_year=10)
     assert ann > 0
+
+
+def test_annualized_return_from_returns_returns_zero_for_single_period():
+    assert annualized_return_from_returns([0.09], periods_per_year=24 * 365) == 0.0

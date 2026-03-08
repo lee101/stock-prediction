@@ -52,15 +52,20 @@ def total_return(equity_curve: Iterable[float]) -> float:
 
 def annualized_return_from_returns(returns: Iterable[float], periods_per_year: float) -> float:
     arr = np.asarray(list(returns), dtype=np.float64)
-    if arr.size == 0:
+    if arr.size < 2:
         return 0.0
-    compounded = float(np.prod(1.0 + arr))
-    if compounded <= 0.0:
+    gross = 1.0 + arr
+    if np.any(gross <= 0.0):
         return 0.0
     years = arr.size / float(periods_per_year)
     if years <= 0:
         return 0.0
-    return float(compounded ** (1.0 / years) - 1.0)
+    annualized_log_return = float(np.sum(np.log(gross)) / years)
+    if annualized_log_return <= -50.0:
+        return -1.0
+    if annualized_log_return >= 50.0:
+        return float(np.expm1(50.0))
+    return float(np.expm1(annualized_log_return))
 
 
 def drawdown_curve(equity_curve: Iterable[float]) -> np.ndarray:

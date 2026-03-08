@@ -179,10 +179,28 @@ def main() -> None:
         help="Decimal fill buffer on bar extremums (0.001 = 10 bps).",
     )
     parser.add_argument(
+        "--fill-buffer-bps",
+        type=float,
+        default=None,
+        help="Fill buffer in bps; overrides --bar-margin when provided.",
+    )
+    parser.add_argument(
         "--decision-lag-bars",
         type=int,
         default=0,
         help="Shift actions+forecast inputs back by N bars (live-like execution delay).",
+    )
+    parser.add_argument(
+        "--max-volume-fraction",
+        type=float,
+        default=None,
+        help="Cap fills to a fraction of each bar's reported volume (base units).",
+    )
+    parser.add_argument(
+        "--max-concurrent-positions",
+        type=int,
+        default=1,
+        help="Allow holding up to N symbols simultaneously.",
     )
     parser.add_argument(
         "--realistic-selection",
@@ -267,6 +285,9 @@ def main() -> None:
 
     bars = pd.concat(bars_frames, ignore_index=True)
     actions = pd.concat(actions_frames, ignore_index=True)
+    bar_margin = float(args.fill_buffer_bps) / 10_000.0 if args.fill_buffer_bps is not None else float(args.bar_margin)
+    if bar_margin < 0.0:
+        raise ValueError(f"bar margin/fill buffer must be >= 0, got {bar_margin}.")
 
     if run_best_trade_simulation is not None and SelectionConfig is not None:
         sim_config = SelectionConfig(
@@ -288,8 +309,10 @@ def main() -> None:
             short_max_leverage_stock=args.short_max_leverage_stock,
             long_max_leverage_crypto=args.long_max_leverage_crypto,
             short_max_leverage_crypto=args.short_max_leverage_crypto,
-            bar_margin=float(args.bar_margin),
+            bar_margin=bar_margin,
             decision_lag_bars=int(args.decision_lag_bars),
+            max_volume_fraction=args.max_volume_fraction,
+            max_concurrent_positions=int(args.max_concurrent_positions),
             select_fillable_only=not bool(args.realistic_selection),
             work_steal_enabled=args.work_steal,
             work_steal_min_profit_pct=args.work_steal_min_profit_pct,
@@ -301,6 +324,9 @@ def main() -> None:
         metrics = result.metrics
         print(f"total_return: {metrics.get('total_return', 0.0):.4f}")
         print(f"sortino: {metrics.get('sortino', 0.0):.4f}")
+        print(f"max_drawdown: {metrics.get('max_drawdown', 0.0):.4f}")
+        print(f"calmar: {metrics.get('calmar', 0.0):.4f}")
+        print(f"pnl_smoothness: {metrics.get('pnl_smoothness', 0.0):.6f}")
         print(f"final_cash: {result.final_cash:.4f}")
         print(f"final_inventory: {result.final_inventory:.6f}")
         print(f"open_symbol: {result.open_symbol}")
