@@ -67,10 +67,38 @@ def test_summarize_lag_results_clips_sortino_outliers() -> None:
 
 def test_summarize_scenario_results_outputs_expected_fields() -> None:
     scenario_results = [
-        {"sortino": 2.5, "return_pct": 6.0, "max_drawdown_pct": 2.0, "pnl_smoothness": 0.001, "trade_count": 12},
-        {"sortino": 1.0, "return_pct": 2.0, "max_drawdown_pct": 4.0, "pnl_smoothness": 0.003, "trade_count": 8},
-        {"sortino": 0.5, "return_pct": 1.0, "max_drawdown_pct": 5.0, "pnl_smoothness": 0.004, "trade_count": 6},
-        {"sortino": 0.2, "return_pct": 0.5, "max_drawdown_pct": 6.0, "pnl_smoothness": 0.006, "trade_count": 4},
+        {
+            "sortino": 2.5,
+            "return_pct": 6.0,
+            "annualized_return_pct": 24.0,
+            "max_drawdown_pct": 2.0,
+            "pnl_smoothness": 0.001,
+            "trade_count": 12,
+        },
+        {
+            "sortino": 1.0,
+            "return_pct": 2.0,
+            "annualized_return_pct": 8.0,
+            "max_drawdown_pct": 4.0,
+            "pnl_smoothness": 0.003,
+            "trade_count": 8,
+        },
+        {
+            "sortino": 0.5,
+            "return_pct": 1.0,
+            "annualized_return_pct": 4.0,
+            "max_drawdown_pct": 5.0,
+            "pnl_smoothness": 0.004,
+            "trade_count": 6,
+        },
+        {
+            "sortino": 0.2,
+            "return_pct": 0.5,
+            "annualized_return_pct": 2.0,
+            "max_drawdown_pct": 6.0,
+            "pnl_smoothness": 0.006,
+            "trade_count": 4,
+        },
     ]
 
     summary = summarize_scenario_results(scenario_results)
@@ -78,6 +106,8 @@ def test_summarize_scenario_results_outputs_expected_fields() -> None:
     assert summary["scenario_count"] == 4.0
     assert summary["return_mean_pct"] == pytest.approx(2.375)
     assert summary["return_worst_pct"] == pytest.approx(0.5)
+    assert summary["annualized_return_mean_pct"] == pytest.approx(9.5)
+    assert summary["annualized_return_worst_pct"] == pytest.approx(2.0)
     assert summary["negative_return_rate"] == pytest.approx(0.0)
     assert summary["max_drawdown_worst_pct"] == pytest.approx(6.0)
     assert summary["trade_count_mean"] == pytest.approx(7.5)

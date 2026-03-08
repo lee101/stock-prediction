@@ -55,6 +55,58 @@ def compute_pnl_smoothness_from_equity(equity_curve: Iterable[float] | np.ndarra
     return compute_pnl_smoothness(compute_return_series(equity_curve))
 
 
+def compute_ulcer_index(equity_curve: Iterable[float] | np.ndarray) -> float:
+    """Compute ulcer index from an equity curve."""
+    equity = _to_1d_float_array(equity_curve)
+    if equity.size == 0:
+        return 0.0
+
+    peaks = np.maximum.accumulate(equity)
+    drawdowns_pct = np.zeros_like(equity, dtype=np.float64)
+    valid = peaks > 0.0
+    drawdowns_pct[valid] = ((equity[valid] / peaks[valid]) - 1.0) * 100.0
+    return float(np.sqrt(np.mean(np.square(drawdowns_pct))))
+
+
+def compute_trade_rate(
+    trade_count: float | int,
+    period_count: float | int,
+    *,
+    min_period_count: int = 24,
+) -> float:
+    effective_periods = max(int(period_count), int(min_period_count), 1)
+    count = max(float(trade_count), 0.0)
+    return float(count / effective_periods)
+
+
+def compute_market_sim_goodness_score(
+    *,
+    total_return: float,
+    sortino: float,
+    max_drawdown: float,
+    pnl_smoothness: float,
+    ulcer_index: float = 0.0,
+    trade_rate: float = 0.0,
+    period_count: int | float | None = None,
+    min_period_count: int = 24,
+) -> float:
+    """Combine return, downside risk, smoothness, and activity into one score."""
+    coverage = 1.0
+    if period_count is not None and min_period_count > 0:
+        coverage = min(max(float(period_count), 1.0) / float(min_period_count), 1.0)
+
+    smoothness_score = 1.0 / (1.0 + 250.0 * max(float(pnl_smoothness), 0.0))
+    raw_score = (
+        100.0 * float(total_return)
+        + 0.8 * float(sortino)
+        + 0.5 * smoothness_score
+        - 12.0 * float(max_drawdown)
+        - 0.08 * float(ulcer_index)
+        - 2.0 * max(float(trade_rate) - (1.0 / max(min_period_count, 1)), 0.0)
+    )
+    return float(raw_score * coverage)
+
+
 def summarize_lag_results(
     lag_results: Sequence[Mapping[str, Any]],
     *,
@@ -77,6 +129,8 @@ def summarize_lag_results(
     returns = _to_1d_float_array(float(row.get("return_pct", 0.0) or 0.0) for row in lag_results)
     drawdowns = _to_1d_float_array(float(row.get("max_drawdown_pct", 0.0) or 0.0) for row in lag_results)
     smoothness = _to_1d_float_array(float(row.get("pnl_smoothness", 0.0) or 0.0) for row in lag_results)
+    ulcer_index = _to_1d_float_array(float(row.get("ulcer_index", 0.0) or 0.0) for row in lag_results)
+    trade_rate = _to_1d_float_array(float(row.get("trade_rate", 0.0) or 0.0) for row in lag_results)
 
     sortino_mean = float(np.mean(sortinos))
     sortino_std = float(np.std(sortinos))
@@ -84,6 +138,8 @@ def summarize_lag_results(
     return_mean = float(np.mean(returns))
     drawdown_mean = float(np.mean(drawdowns))
     smoothness_mean = float(np.mean(smoothness))
+    ulcer_mean = float(np.mean(ulcer_index))
+    trade_rate_mean = float(np.mean(trade_rate))
 
     # Prefer high downside-adjusted performance that remains stable under lag shifts.
     robust_score = (
@@ -92,6 +148,8 @@ def summarize_lag_results(
         + 0.03 * return_mean
         - 0.08 * drawdown_mean
         - 120.0 * smoothness_mean
+        - 0.04 * ulcer_mean
+        - 1.5 * trade_rate_mean
     )
 
     return {
@@ -105,6 +163,8 @@ def summarize_lag_results(
         "return_mean_pct": return_mean,
         "max_drawdown_mean_pct": drawdown_mean,
         "pnl_smoothness_mean": smoothness_mean,
+        "ulcer_index_mean": ulcer_mean,
+        "trade_rate_mean": trade_rate_mean,
         "robust_score": float(robust_score),
     }
 
@@ -134,6 +194,9 @@ def summarize_scenario_results(
     else:
         sortinos = sortinos_raw
     returns = _to_1d_float_array(float(row.get("return_pct", 0.0) or 0.0) for row in scenario_results)
+    annualized_returns = _to_1d_float_array(
+        float(row.get("annualized_return_pct", 0.0) or 0.0) for row in scenario_results
+    )
     drawdowns = _to_1d_float_array(float(row.get("max_drawdown_pct", 0.0) or 0.0) for row in scenario_results)
     smoothness = _to_1d_float_array(float(row.get("pnl_smoothness", 0.0) or 0.0) for row in scenario_results)
     trade_counts = _to_1d_float_array(float(row.get("trade_count", 0.0) or 0.0) for row in scenario_results)
@@ -144,6 +207,9 @@ def summarize_scenario_results(
     return_mean = float(np.mean(returns))
     return_p25 = float(np.percentile(returns, 25))
     return_worst = float(np.min(returns))
+    annualized_return_mean = float(np.mean(annualized_returns))
+    annualized_return_p25 = float(np.percentile(annualized_returns, 25))
+    annualized_return_worst = float(np.min(annualized_returns))
     negative_return_rate = float(np.mean(returns <= 0.0))
     drawdown_mean = float(np.mean(drawdowns))
     drawdown_worst = float(np.max(drawdowns))
@@ -174,6 +240,9 @@ def summarize_scenario_results(
         "return_mean_pct": return_mean,
         "return_p25_pct": return_p25,
         "return_worst_pct": return_worst,
+        "annualized_return_mean_pct": annualized_return_mean,
+        "annualized_return_p25_pct": annualized_return_p25,
+        "annualized_return_worst_pct": annualized_return_worst,
         "negative_return_rate": negative_return_rate,
         "max_drawdown_mean_pct": drawdown_mean,
         "max_drawdown_worst_pct": drawdown_worst,
